@@ -70,6 +70,15 @@ var openAIBrowserOpener = func(rawURL string) error {
 	return cmd.Start()
 }
 
+var (
+	// errConflictingLoginFlows identifies a login that forces both the device
+	// and the browser flow.
+	errConflictingLoginFlows = errors.New("conflicting flags: --device and --no-device cannot both be set")
+	// errRedirectURLRequired identifies an empty answer to the manual redirect
+	// URL prompt.
+	errRedirectURLRequired = errors.New("redirect URL is required")
+)
+
 func runOpenAI(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		printOpenAIUsage(stderr)
@@ -88,7 +97,7 @@ func runOpenAI(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return nil
 	default:
 		printOpenAIUsage(stderr)
-		return fmt.Errorf("unknown openai command %q", args[0])
+		return &unknownSubcommandError{group: "openai", name: args[0]}
 	}
 }
 
@@ -122,10 +131,10 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		return unexpectedArguments(fs)
 	}
 	if *device && *noDevice {
-		return errors.New("conflicting flags: --device and --no-device cannot both be set")
+		return errConflictingLoginFlows
 	}
 
 	resolvedStateDir, err := resolveOpenAIStateDirAction(*workDir, *stateDir)
@@ -268,7 +277,7 @@ func makeRedirectURLReader(stdin io.Reader, stderr io.Writer) func(context.Conte
 		}
 		line = strings.TrimSpace(line)
 		if line == "" {
-			return "", errors.New("redirect URL is required")
+			return "", errRedirectURLRequired
 		}
 		return line, nil
 	}

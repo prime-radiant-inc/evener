@@ -36,6 +36,18 @@ var osExit = os.Exit
 var llmcallEntry = llmcallMain
 var newLLMClient = func() (*llm.Client, error) { return cmdutil.LoadClient("") }
 
+// Sentinels for the invocation mistakes llmcall rejects before or instead of
+// answering, so callers and tests can tell them apart without reading copy.
+var (
+	errNoPrompt           = errors.New("no prompt provided")
+	errNoModel            = errors.New("no model specified")
+	errNoProvider         = errors.New("no provider specified")
+	errInvalidTimeout     = errors.New("invalid --timeout")
+	errInvalidFormat      = errors.New("invalid --format")
+	errInvalidMetadata    = errors.New("invalid --meta")
+	errToolCallsForbidden = errors.New("tool calls are not allowed")
+)
+
 type stringSliceFlag = cmdutil.StringSliceFlag
 
 type llmCallConfig struct {
@@ -163,13 +175,13 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 	}
 	if cfg.prompt == "" {
 		fs.Usage()
-		return errors.New("no prompt provided")
+		return errNoPrompt
 	}
 
 	if timeoutStr != "" {
 		d, err := time.ParseDuration(timeoutStr)
 		if err != nil {
-			return fmt.Errorf("invalid --timeout %q: %w", timeoutStr, err)
+			return fmt.Errorf("%w %q: %w", errInvalidTimeout, timeoutStr, err)
 		}
 		cfg.timeoutTotal = d
 	}
@@ -188,7 +200,7 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		cfg.model = envvars.EVENERModel.Getenv()
 	}
 	if cfg.model == "" {
-		return fmt.Errorf("no model specified: use --model or set %s/%s", envvars.LLMModel.Name, envvars.EVENERModel.Name)
+		return fmt.Errorf("%w: use --model or set %s/%s", errNoModel, envvars.LLMModel.Name, envvars.EVENERModel.Name)
 	}
 
 	cfg.systemAppend = []string(systemAppend)
@@ -223,7 +235,7 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 		cfg.provider = client.DefaultProvider()
 	}
 	if cfg.provider == "" {
-		return fmt.Errorf("no provider specified: use --provider or set %s/%s", envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
+		return fmt.Errorf("%w: use --provider or set %s/%s", errNoProvider, envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
 	}
 
 	system := ""
@@ -276,7 +288,7 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 	// Validate --format before branching so an invalid value is rejected no
 	// matter which output mode is selected. Schema mode still writes JSON.
 	if cfg.format != "text" && cfg.format != "json" {
-		return fmt.Errorf("invalid --format %q: must be text|json", cfg.format)
+		return fmt.Errorf("%w %q: must be text|json", errInvalidFormat, cfg.format)
 	}
 
 	if cfg.schema != "" {
@@ -292,7 +304,7 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 			return err
 		}
 		if len(res.ToolCalls) > 0 {
-			return fmt.Errorf("tool calls are not allowed (got %d)", len(res.ToolCalls))
+			return fmt.Errorf("%w (got %d)", errToolCallsForbidden, len(res.ToolCalls))
 		}
 		if cfg.verbose {
 			printUsage(cfg.stderr, res)
@@ -309,7 +321,7 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 		return err
 	}
 	if len(res.ToolCalls) > 0 {
-		return fmt.Errorf("tool calls are not allowed (got %d)", len(res.ToolCalls))
+		return fmt.Errorf("%w (got %d)", errToolCallsForbidden, len(res.ToolCalls))
 	}
 	if cfg.verbose {
 		printUsage(cfg.stderr, res)
@@ -388,7 +400,7 @@ func parseMetadata(pairs []string) (map[string]string, error) {
 		}
 		parts := strings.SplitN(kv, "=", 2)
 		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
-			return nil, fmt.Errorf("invalid --meta %q: expected key=value", kv)
+			return nil, fmt.Errorf("%w %q: expected key=value", errInvalidMetadata, kv)
 		}
 		out[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 	}

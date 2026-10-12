@@ -1,7 +1,7 @@
 package main
 
 import (
-	"strings"
+	"errors"
 	"testing"
 )
 
@@ -16,7 +16,7 @@ func TestAskResponderPayloadNamesUnrecordedArguments(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error for a pending ask with no recorded arguments")
 	}
-	if strings.Contains(err.Error(), "no pending") || !strings.Contains(err.Error(), "not recorded") {
-		t.Fatalf("error = %q, want it to say the pending questions' arguments were not recorded", err)
+	if !errors.Is(err, errPendingAskArgumentsUnrecorded) {
+		t.Fatalf("error = %v, want errPendingAskArgumentsUnrecorded", err)
 	}
 }

@@ -3,6 +3,7 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
+import { markedNodes, markers } from "../markerTestUtils";
 import { render, renderedText } from "../renderNative.testkit";
 import type { SearchSnapshot } from "./boardSearch";
 import { SearchResults, type SearchResultsProps } from "./SearchResults";
@@ -125,25 +126,24 @@ it("opens a result when it's tapped", () => {
 
 it("says so when nothing matches", () => {
 	const { tree } = mount({ search: { ...answered, results: { live: [], past: [past] } }, scope: "live" });
-	expect(renderedText(tree)).toContain("No sessions match.");
+	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
 	expect(resultRows(tree)).toHaveLength(0);
 });
 
 it("says it's searching while the hub has the query and nothing has landed", () => {
 	const { tree } = mount({ search: { query: "fix", results: null, searching: true, failed: false } });
-	expect(renderedText(tree)).toContain("Searching…");
+	expect(markers(tree, "search-note")).toEqual(["searching"]);
 	// Nothing to show before the debounce ends.
 	const resting = mount({ search: { query: "fix", results: null, searching: false, failed: false } });
-	expect(renderedText(resting.tree)).not.toContain("Searching…");
+	expect(markers(resting.tree, "search-note")).toEqual([]);
 	expect(resultRows(resting.tree)).toHaveLength(0);
 });
 
 it("says a failed search failed, in ink, and never asks you to retry", () => {
 	const { tree } = mount({ search: { query: "fix", results: null, searching: false, failed: true } });
-	const text = renderedText(tree);
-	expect(text).toContain("Couldn't search this hub's sessions.");
-	expect(flatten(textWith(tree, "Couldn't search this hub's sessions.").props.style).color).toBe(palette.inkMid);
-	expect(text).not.toMatch(/retry|try again|refresh/i);
+	const [note] = markedNodes(tree, "search-note");
+	expect(note?.props.testID).toBe("search-note:failed");
+	expect(flatten(note?.props.style).color).toBe(palette.inkMid);
 	// Only the scope chips are controls.
 	expect(pressables(tree).map((node) => node.props.accessibilityLabel)).toEqual(["All", "Live"]);
 });
@@ -153,13 +153,13 @@ it("says search waits for the hub while it's out of reach", () => {
 		connected: false,
 		search: { query: "fix", results: null, searching: false, failed: false },
 	});
-	expect(renderedText(tree)).toContain("Search works when the hub is connected.");
+	expect(markers(tree, "search-note")).toEqual(["disconnected"]);
 });
 
 it("keeps the last answer's rows while the hub is out of reach", () => {
 	const { tree } = mount({ connected: false });
 	expect(resultRows(tree)).toHaveLength(3);
-	expect(renderedText(tree)).not.toContain("Search works when the hub is connected.");
+	expect(markers(tree, "search-note")).toEqual([]);
 });
 
 it("shows recent searches when the field is empty, each one searchable, with Clear", () => {
@@ -192,7 +192,9 @@ it("shows only the scope chips when the field is empty and there are no recent s
 
 it("names an untitled session", () => {
 	const { tree } = mount({ search: { ...answered, results: { live: [result("x", { title: "" })], past: [] } } });
-	expect(resultRows(tree)[0].props.accessibilityLabel).toBe("Untitled session, evener, 2 minutes");
+	const [name, ...rest] = resultRows(tree)[0].props.accessibilityLabel.split(", ");
+	expect(name).not.toBe("");
+	expect(rest).toEqual(["evener", "2 minutes"]);
 });
 
 it("lists the matching projects after the sessions, each opening its project", () => {

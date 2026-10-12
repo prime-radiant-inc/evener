@@ -111,7 +111,6 @@ func FuzzAuthOpenAISeedReplay(f *testing.F) {
 		{name: "TestRequestDeviceCodeCreatesClientWhenNil", run: TestRequestDeviceCodeCreatesClientWhenNil},
 		{name: "TestRequestDeviceCodeDefaultsIntervalWhenMissing", run: TestRequestDeviceCodeDefaultsIntervalWhenMissing},
 		{name: "TestRequestDeviceCodeNotEnabledIsSentinel", run: TestRequestDeviceCodeNotEnabledIsSentinel},
-		{name: "TestRequestDeviceCodeNotFoundIsClearError", run: TestRequestDeviceCodeNotFoundIsClearError},
 		{name: "TestRequestDeviceCodeRejectsInvalidJSON", run: TestRequestDeviceCodeRejectsInvalidJSON},
 		{name: "TestRequestDeviceCodeRejectsMissingFields", run: TestRequestDeviceCodeRejectsMissingFields},
 		{name: "TestRequestDeviceCodeSuccessParsesInterval", run: TestRequestDeviceCodeSuccessParsesInterval},

@@ -171,11 +171,10 @@ func fuzzCatalogEdges(t *testing.T) {
 	if _, err := ParseCatalog(root); err == nil {
 		t.Fatal("malformed catalog succeeded")
 	}
-	if got := catalogPluginName([]byte("{")); got != "(unknown)" {
-		t.Fatalf("bad plugin name = %q", got)
-	}
-	if got := catalogPluginName([]byte(`{"name":""}`)); got != "(unknown)" {
-		t.Fatalf("empty plugin name = %q", got)
+	// Malformed JSON and an empty name both fall back to one stand-in name.
+	bad, empty := catalogPluginName([]byte("{")), catalogPluginName([]byte(`{"name":""}`))
+	if bad == "" || bad != empty {
+		t.Fatalf("bad plugin name = %q, empty plugin name = %q, want one non-empty stand-in", bad, empty)
 	}
 
 	m := NewManager(t.TempDir())

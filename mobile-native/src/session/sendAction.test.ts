@@ -111,8 +111,14 @@ describe("Send while offline (phase 6)", () => {
 	});
 
 	it("says Send waits for the connection", () => {
-		expect(sendLabel("queue", false, false)).toBe("Send when you're back online");
-		expect(sendLabel("queue", true, false)).toBe("Send answer when you're back online");
-		expect(sendLabel("queue", false)).toBe("Queue message");
+		// Offline, Send says it waits, whatever it would do online; an answer
+		// says so apart from a message.
+		const offline = sendLabel("queue", false, false);
+		expect(offline).toBe(sendLabel("send", false, false));
+		expect(offline).not.toBe(sendLabel("queue", false));
+		expect(offline).not.toBe(sendLabel("send", false));
+		const answerOffline = sendLabel("queue", true, false);
+		expect(answerOffline).not.toBe(offline);
+		expect(answerOffline).not.toBe(sendLabel("queue", true));
 	});
 });

@@ -147,10 +147,13 @@ the index in full. A scope with a baseline is read only at the first
 model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. When another
 session changed a known index, that read adds one change section for the
-scope instead of the full index: the quoted page lines added and removed since the
-baseline (the tag header and the not-shown line are never listed). A change whose section would pass 2 KiB is reported as counts of
-added and removed lines. The new index becomes the baseline, so an unchanged
-turn appends nothing.
+scope instead of the full index: the quoted page lines added since the
+baseline (the tag header and the not-shown line are never listed). A change
+whose section would pass 2 KiB is reported as a count of added lines. Removed
+lines are never reported, so a page another session deleted adds nothing, and a
+changed description arrives as its new line only. The new index becomes the
+baseline even when nothing is reported, so an unchanged turn or a removal-only
+change appends nothing and a removal is never reported later.
 
 The session also keeps a record (a content digest, or absence) of each page it
 read with `memory_read`, other than `MEMORY.md`. The record is taken from the
@@ -158,8 +161,9 @@ bytes that read loaded, so a change another session makes right after it is
 noticed; an `offset` or `limit` read loads the whole page too, so it records
 the whole page as of that read. Its own write, edit or delete of such a page
 updates the record from a read-back of the file. The same first-model-call read rechecks
-those pages, and when another session changed or removed one, adds one
-notice section per scope naming each such page as changed or removed. A notice
+those pages, and when another session changed one, adds one notice section per
+scope naming each such page. A page another session removed is not reported;
+its record still advances, so a page that returns is reported as changed. A notice
 never carries page contents and never names a page the
 session has not read. The session tracks at most the 32 pages per scope it
 most recently read with `memory_read`; reading a 33rd stops tracking the least

@@ -172,13 +172,14 @@ describe("Composer", () => {
 		const expand = pressable(tree, "Expand editor");
 		expect(expand?.findByType("SymbolView" as never).props.name).toBe("arrow.up.left.and.arrow.down.right");
 		act(() => expand?.props.onPress());
-		expect(renderedText(tree)).toContain("Done");
+		// The full-screen editor opens with its own field.
+		expect(fields(tree)).toHaveLength(2);
 		const editor = fields(tree)[1];
 		expect(editor?.props.value).toBe(`${six}\n7`);
 		act(() => editor?.props.onChangeText("shorter"));
 		expect(props.onChangeText).toHaveBeenCalledWith("shorter");
 		act(() => pressable(tree, "Done")?.props.onPress());
-		expect(renderedText(tree)).not.toContain("Done");
+		expect(fields(tree)).toHaveLength(1);
 	});
 
 	// The full-screen editor's own field takes the keyboard, so what folds

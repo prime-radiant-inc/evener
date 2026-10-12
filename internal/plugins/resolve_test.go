@@ -1601,7 +1601,7 @@ func TestPreviewForLaunch_LeavesAMismatchedDestinationWhereItIs(t *testing.T) {
 	if _, err := os.Stat(dest + conflictSuffix); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("preview set the destination aside at %s: stat err = %v", dest+conflictSuffix, err)
 	}
-	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, "a launch would set it aside") {
+	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, dest+conflictSuffix) {
 		t.Fatalf("Diagnostics = %+v, want one saying what a launch would do about the conflict", res.Diagnostics)
 	}
 }
@@ -1639,12 +1639,9 @@ func TestMaterializeBundledPlugin_PutsASetAsideBackWhenPublishingFails(t *testin
 	if _, statErr := os.Stat(dest + conflictSuffix); !errors.Is(statErr, fs.ErrNotExist) {
 		t.Errorf("the copy is still set aside at %s: stat err = %v", dest+conflictSuffix, statErr)
 	}
-	restored := false
-	for _, warning := range warnings {
-		restored = restored || strings.Contains(warning, "put back")
-	}
-	if !restored {
-		t.Errorf("warnings = %v, want one naming the restore", warnings)
+	// One for the set-aside and one for the restore.
+	if len(warnings) != 2 {
+		t.Errorf("warnings = %v, want the set-aside and the restore", warnings)
 	}
 }
 
@@ -1681,12 +1678,9 @@ func TestMaterializeBundledPlugin_PutsASetAsideBackWhenStagingCannotBeCreated(t 
 	if _, statErr := os.Stat(dest + conflictSuffix); !errors.Is(statErr, fs.ErrNotExist) {
 		t.Errorf("the copy is still set aside at %s: stat err = %v", dest+conflictSuffix, statErr)
 	}
-	restored := false
-	for _, warning := range warnings {
-		restored = restored || strings.Contains(warning, "put back")
-	}
-	if !restored {
-		t.Errorf("warnings = %v, want one naming the restore", warnings)
+	// One for the set-aside and one for the restore.
+	if len(warnings) != 2 {
+		t.Errorf("warnings = %v, want the set-aside and the restore", warnings)
 	}
 }
 

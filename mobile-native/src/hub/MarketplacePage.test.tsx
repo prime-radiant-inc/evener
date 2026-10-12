@@ -9,7 +9,8 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { alertRequests, render, renderedText } from "../renderNative.testkit";
+import { MarketplaceDetail } from "../MarketplaceBrowser";
+import { alertRequests, render, testIDSuffixes } from "../renderNative.testkit";
 import type { HubRoutes } from "./hubSheetContext";
 import { SearchField } from "../sheet/SearchField";
 import { MarketplacePage } from "./MarketplacePage";
@@ -106,7 +107,7 @@ it("shows its marketplace from the Plugins page's publication for its hub", asyn
 	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
 	const slot = slotFor("hub-1");
 	const tree = await pushedOver(slot, navigation);
-	expect(renderedText(tree)).toContain("Update source");
+	expect(tree.root.findAllByType(MarketplaceDetail)).toHaveLength(1);
 	expect(navigation.goBack).not.toHaveBeenCalled();
 });
 
@@ -121,7 +122,7 @@ it("goes back when the publication is another hub's", async () => {
 	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
 	const tree = await pushedOver(slotFor("hub-2"), navigation);
 	expect(navigation.goBack).toHaveBeenCalledTimes(1);
-	expect(renderedText(tree)).not.toContain("Update source");
+	expect(tree.root.findAllByType(MarketplaceDetail)).toHaveLength(0);
 });
 
 it("follows the Plugins page's newer publication", async () => {
@@ -168,7 +169,7 @@ it("shows nothing on the new connection's page from a write the old one left out
 	await act(async () => tree.update(page(hubSlot("hub-1").slot, navigation)));
 	await act(async () => fail(new Error("upstream 502")));
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("Could not confirm the change");
+	expect(testIDSuffixes(tree, "marketplace-problem-")).toEqual([]);
 });
 
 it("goes back once when its marketplace leaves the hub's list, however often the list changes after", async () => {

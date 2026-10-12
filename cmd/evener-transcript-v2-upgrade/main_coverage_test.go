@@ -2,11 +2,28 @@ package transcriptv2upgrade
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// assertUsageRefusal checks that run refused its invocation before doing any
+// work: exit status 2, a diagnostic on stderr, and no summary on stdout.
+func assertUsageRefusal(t *testing.T, code int, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	if code != 2 {
+		t.Fatalf("code = %d, want 2; stderr=%s", code, stderr.String())
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("refusal wrote nothing to stderr")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("refusal printed a summary: %q", stdout.String())
+	}
+}
 
 // TestRunBadFlag covers the flag-parse error path.
 func TestRunBadFlag(t *testing.T) {
@@ -20,37 +37,23 @@ func TestRunBadFlag(t *testing.T) {
 // TestRunPositionalArgs covers the positional-args rejection path.
 func TestRunPositionalArgs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"extra"}, testNow, &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("code = %d, want 2", code)
-	}
-	if !strings.Contains(stderr.String(), "positional arguments are not accepted") {
-		t.Fatalf("stderr missing positional args rejection: %s", stderr.String())
-	}
+	// The other flags are valid, so only the positional argument is refused.
+	code := run([]string{"-root", t.TempDir(), "extra"}, testNow, &stdout, &stderr)
+	assertUsageRefusal(t, code, &stdout, &stderr)
 }
 
 // TestRunEmptyRoot covers the empty-root validation path.
 func TestRunEmptyRoot(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run(nil, testNow, &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("code = %d, want 2", code)
-	}
-	if !strings.Contains(stderr.String(), "--root is required") {
-		t.Fatalf("stderr missing root required: %s", stderr.String())
-	}
+	assertUsageRefusal(t, code, &stdout, &stderr)
 }
 
 // TestRunNonPositiveSince covers the negative-since validation path.
 func TestRunNonPositiveSince(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-root", "/tmp", "-since", "0s"}, testNow, &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("code = %d, want 2", code)
-	}
-	if !strings.Contains(stderr.String(), "--since must be positive") {
-		t.Fatalf("stderr missing since positive: %s", stderr.String())
-	}
+	code := run([]string{"-root", t.TempDir(), "-since", "0s"}, testNow, &stdout, &stderr)
+	assertUsageRefusal(t, code, &stdout, &stderr)
 }
 
 // TestRunNonexistentRoot covers the upgradeRoot error path.
@@ -60,8 +63,8 @@ func TestRunNonexistentRoot(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
-	if !strings.Contains(stderr.String(), "discover transcripts") {
-		t.Fatalf("stderr missing discover error: %s", stderr.String())
+	if stdout.Len() != 0 || stderr.Len() == 0 {
+		t.Fatalf("a failed discovery reports on stderr and prints no summary: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 
@@ -93,7 +96,7 @@ func TestInspectTranscriptHeaderEmptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err := inspectTranscriptHeader(path)
-	if err == nil || !strings.Contains(err.Error(), "empty transcript") {
+	if !errors.Is(err, errEmptyTranscript) {
 		t.Fatalf("inspectTranscriptHeader on empty file err = %v, want empty transcript", err)
 	}
 }
@@ -105,7 +108,7 @@ func TestInspectTranscriptHeaderIncomplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err := inspectTranscriptHeader(path)
-	if err == nil || !strings.Contains(err.Error(), "incomplete") {
+	if !errors.Is(err, errIncompleteHeader) {
 		t.Fatalf("inspectTranscriptHeader on incomplete err = %v, want incomplete", err)
 	}
 }
@@ -117,7 +120,7 @@ func TestInspectTranscriptHeaderBadJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err := inspectTranscriptHeader(path)
-	if err == nil || !strings.Contains(err.Error(), "decode") {
+	if !errors.As(err, new(*json.SyntaxError)) {
 		t.Fatalf("inspectTranscriptHeader on bad JSON err = %v, want decode error", err)
 	}
 }
@@ -129,7 +132,7 @@ func TestInspectTranscriptHeaderWrongKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err := inspectTranscriptHeader(path)
-	if err == nil || !strings.Contains(err.Error(), "not a transcript header") {
+	if !errors.Is(err, errNotTranscriptHeader) {
 		t.Fatalf("inspectTranscriptHeader wrong kind err = %v", err)
 	}
 }

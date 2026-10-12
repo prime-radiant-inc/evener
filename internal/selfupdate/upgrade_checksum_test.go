@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -96,7 +97,7 @@ func TestUpgradeRefusesMissingChecksumEntry(t *testing.T) {
 
 	prefix := filepath.Join(t.TempDir(), ".local")
 	_, err := Upgrade(t.Context(), upgradeForChecksumTest(prefix, server.URL))
-	if err == nil || !strings.Contains(err.Error(), "checksums.txt has no entry") {
+	if !errors.Is(err, errChecksumMissing) {
 		t.Fatalf("err = %v, want a missing-entry error", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(prefix, "share", "evener", "bin")); !os.IsNotExist(statErr) {
@@ -114,8 +115,7 @@ func TestUpgradeRefusesAmbiguousChecksumEntry(t *testing.T) {
 	server := checksumTestServer(t, archive, dup)
 	t.Cleanup(server.Close)
 
-	if _, err := Upgrade(t.Context(), upgradeForChecksumTest(t.TempDir(), server.URL)); err == nil ||
-		!strings.Contains(err.Error(), "more than one entry") {
+	if _, err := Upgrade(t.Context(), upgradeForChecksumTest(t.TempDir(), server.URL)); !errors.Is(err, errChecksumAmbiguous) {
 		t.Fatalf("err = %v, want an ambiguous-entry error", err)
 	}
 }

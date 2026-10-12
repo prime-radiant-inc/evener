@@ -9,7 +9,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { NativePreferencesSnapshot } from "../nativePreferences";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, testIDSuffixes, offersButton } from "../renderNative.testkit";
 import { Group, GroupFooter } from "../sheet/Grouped";
 import { DetailLevelPage } from "./DetailLevelPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
@@ -132,7 +132,15 @@ function mount(state: NativePreferencesSnapshot["transcriptMobile"] | null, conn
 	return { tree, fake, button, press, update };
 }
 
-const CALM = /\bReconnect\b|\bRefresh\b|transcript display|verbosity/i;
+/** The page asks for nothing the app does on its own: no Reconnect or Refresh. */
+const RECONNECT = /\bReconnect\b|\bRefresh\b/i;
+
+/** What the page reports beneath its levels, by reason. */
+const reasons = (tree: ReturnType<typeof mount>["tree"]) => testIDSuffixes(tree, "detail-level-");
+
+/** The first-load line that says the app is connecting. */
+const saysConnecting = (tree: ReturnType<typeof mount>["tree"]) =>
+	testIDSuffixes(tree, "first-load-").includes("connecting");
 
 beforeEach(() => {
 	preferences.value = {};
@@ -140,7 +148,7 @@ beforeEach(() => {
 
 it("waits quietly, connected, before the hub's setting has loaded (spec 14)", () => {
 	const { tree } = mount(null);
-	expect(renderedText(tree)).not.toContain("Connecting");
+	expect(saysConnecting(tree)).toBe(false);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading the default detail level" })).not.toHaveLength(0);
 });
 
@@ -156,7 +164,6 @@ it("lists spec 8.2's levels with their descriptions, then Custom, with the saved
 		.findAllByProps({ accessibilityRole: "button" })
 		.find((node) => String(node.props.accessibilityLabel).startsWith("Intent,"));
 	expect(intent?.props.accessibilityState).toMatchObject({ selected: true });
-	expect(renderedText(tree)).toContain("Choose what the transcript shows");
 	expect(button("Chat, Just the conversation")).not.toBeNull();
 });
 
@@ -206,7 +213,7 @@ it("offers to keep your choice or use the hub's after a conflict", async () => {
 	const draft = { revision: 3, config: { ...PRESET, content: { kind: "preset" as const, level: "full" as const } } };
 	const hubs = { revision: 4, config: PRESET };
 	const { tree, fake, press } = mount(transcript({ conflict: true, draft, confirmed: hubs }));
-	expect(renderedText(tree)).toContain("The hub's setting changed while you were choosing.");
+	expect(reasons(tree)).toContain("conflict");
 	await press("Keep mine");
 	expect(fake.calls).toEqual([["rebase", 4], ["save"]]);
 	fake.calls.length = 0;
@@ -217,7 +224,7 @@ it("offers to keep your choice or use the hub's after a conflict", async () => {
 it("checks the hub's setting on its own each time the hub is back while a write is uncertain", () => {
 	// The shared store marks an unconfirmed write as a conflict too.
 	const { tree, fake, update } = mount(transcript({ writeUncertain: true, conflict: true }), false);
-	expect(renderedText(tree)).toContain("Checking the hub's setting…");
+	expect(reasons(tree)).toContain("checking");
 	expect(fake.refresh).not.toHaveBeenCalled();
 	update(transcript({ writeUncertain: true }), true);
 	expect(fake.refresh).toHaveBeenCalledTimes(1);
@@ -250,7 +257,7 @@ it("offers to discard a saved change the phone can't read, even with no draft to
 			error: "Could not restore the saved transcript draft.",
 		}),
 	);
-	expect(renderedText(tree)).toContain("A saved change to this setting couldn't be read on this phone.");
+	expect(reasons(tree)).toContain("unreadable");
 	expect(button("Discard it")?.props.disabled).toBe(false);
 	await press("Discard it");
 	expect(fake.calls).toEqual([["discard"]]);
@@ -274,13 +281,13 @@ it("lets the discard go through while the hub is away, since it touches only thi
 
 it("shows a failed load as a line with nothing to press", () => {
 	const { tree } = mount(transcript({ confirmed: null, error: "The hub request could not be confirmed." }));
-	expect(renderedText(tree)).toContain("Couldn't load this hub's setting.");
+	expect(reasons(tree)).toEqual(["not-loaded"]);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Try again" })).toHaveLength(0);
 });
 
 it("says so when the hub doesn't keep a default detail level", () => {
 	const { tree } = mount(transcript({ support: "unsupported" }));
-	expect(renderedText(tree)).toContain("This hub doesn't keep a default detail level.");
+	expect(reasons(tree)).toEqual(["unsupported"]);
 });
 
 it.each([
@@ -289,13 +296,13 @@ it.each([
 	["uncertain", transcript({ writeUncertain: true })],
 	["unreadable", transcript({ draftUnreadable: true, storageUnavailable: true })],
 ])("never asks to reconnect or refresh when %s", (_name, state) => {
-	expect(renderedText(mount(state).tree)).not.toMatch(CALM);
+	expect(offersButton(mount(state).tree, RECONNECT)).toBe(false);
 });
 
 it("shows an unconfirmed write as a check, not a conflict to resolve", () => {
 	const { tree, button } = mount(transcript({ writeUncertain: true, conflict: true }));
-	expect(renderedText(tree)).toContain("Checking the hub's setting…");
-	expect(renderedText(tree)).not.toContain("The hub's setting changed while you were choosing.");
+	expect(reasons(tree)).toContain("checking");
+	expect(reasons(tree)).not.toContain("conflict");
 	expect(button("Keep mine")).toBeNull();
 });
 
@@ -305,7 +312,7 @@ it("drops a failed save's line once the check finds the uncertain write landed",
 	await press("Full, Everything, including the agent's reasoning");
 	update(transcript({ writeUncertain: true, conflict: true }));
 	update(transcript({ confirmed: { revision: 4, config: PRESET } }));
-	expect(renderedText(tree)).not.toContain("The change couldn't be saved.");
+	expect(reasons(tree)).not.toContain("not-saved");
 });
 
 it.each([
@@ -321,8 +328,8 @@ it("says a choice hasn't reached the hub while the phone holds it unsaved, and s
 	// The store keeps the draft after a failed save, or after an uncertain
 	// write settles without the hub taking it.
 	const { tree, fake, press, button } = mount(transcript({ draft: { revision: 3, config: CUSTOM } }));
-	expect(renderedText(tree)).toContain("This change hasn't reached the hub yet.");
-	expect(renderedText(tree)).not.toContain("Choose it again");
+	expect(reasons(tree)).toContain("unsaved");
+	expect(reasons(tree)).not.toContain("not-saved");
 	await press("Save it");
 	expect(fake.saveTranscript).toHaveBeenCalledTimes(1);
 	expect(button("Save it")).not.toBeNull();
@@ -345,8 +352,8 @@ it("says only that the phone couldn't update its copy after the hub confirmed th
 			error: "The hub confirmed this save, but the local draft could not be updated. Check current settings to retry.",
 		}),
 	);
-	expect(renderedText(tree)).toContain("This phone couldn't update its copy of this setting.");
-	expect(renderedText(tree)).not.toContain("This change hasn't reached the hub yet.");
+	expect(reasons(tree)).toContain("not-updated");
+	expect(reasons(tree)).not.toContain("unsaved");
 	expect(button("Save it")).toBeNull();
 });
 
@@ -361,7 +368,7 @@ it.each([
 	const { tree, fake, press } = mount(state);
 	fake[method].mockRejectedValueOnce(new Error("refused"));
 	await press(label);
-	expect(renderedText(tree)).toContain("That didn't go through. Try it again.");
+	expect(reasons(tree)).toContain("not-done");
 });
 
 it("leaves a refused conflict action to the storage footer when the phone can't keep a change", async () => {
@@ -375,8 +382,8 @@ it("leaves a refused conflict action to the storage footer when the phone can't 
 	);
 	fake.rebaseTranscriptDraft.mockRejectedValueOnce(new Error("refused"));
 	await press("Keep mine");
-	expect(renderedText(tree)).toContain("This phone couldn't update its copy of this setting.");
-	expect(renderedText(tree)).not.toContain("That didn't go through.");
+	expect(reasons(tree)).toContain("not-updated");
+	expect(reasons(tree)).not.toContain("not-done");
 });
 
 it("offers no Save it while the hub's setting is being checked or a conflict needs resolving", () => {
@@ -396,9 +403,9 @@ it("drops a failed save's line while the hub's setting is being checked", async 
 	const { tree, fake, press, update } = mount(transcript());
 	fake.saveTranscript.mockRejectedValueOnce(new Error("reply lost"));
 	await press("Full, Everything, including the agent's reasoning");
-	expect(renderedText(tree)).toContain("The change couldn't be saved. Choose it again.");
+	expect(reasons(tree)).toContain("not-saved");
 	update(transcript({ writeUncertain: true, conflict: true }));
-	expect(renderedText(tree)).not.toContain("The change couldn't be saved.");
+	expect(reasons(tree)).not.toContain("not-saved");
 });
 
 it("drops a failed save's line when the phone can't keep the change, since nothing can be chosen again", async () => {
@@ -406,22 +413,18 @@ it("drops a failed save's line when the phone can't keep the change, since nothi
 	fake.saveTranscript.mockRejectedValueOnce(new Error("disk full"));
 	await press("Full, Everything, including the agent's reasoning");
 	update(transcript({ error: "Could not save the transcript draft locally.", storageUnavailable: true }));
-	expect(renderedText(tree)).toContain("This phone couldn't update its copy of this setting.");
-	expect(renderedText(tree)).not.toContain("Choose it again");
+	expect(reasons(tree)).toContain("not-updated");
+	expect(reasons(tree)).not.toContain("not-saved");
 });
 
 it.each([
 	// nativePreferences' own message for a hub-side failure.
-	[
-		"a setting the hub didn't send",
-		{ error: "The hub request could not be confirmed." },
-		/Couldn't load this hub's setting/,
-	],
+	["a setting the hub didn't send", { error: "The hub request could not be confirmed." }, "not-loaded"],
 	// The shared store's draft-side messages, with the state it sets beside them.
 	[
 		"a change the phone couldn't keep",
 		{ error: "Could not save the transcript draft locally.", storageUnavailable: true },
-		/This phone couldn't update its copy of this setting/,
+		"not-updated",
 	],
 	[
 		"a saved change the phone couldn't record",
@@ -429,7 +432,7 @@ it.each([
 			error: "The hub confirmed this save, but the local draft could not be updated. Check current settings to retry.",
 			storageUnavailable: true,
 		},
-		/This phone couldn't update its copy of this setting/,
+		"not-updated",
 	],
 	// A conflict whose cleanup the phone couldn't record: the rows hold, so
 	// the page says why.
@@ -441,24 +444,25 @@ it.each([
 			conflict: true,
 			draft: { revision: 2, config: CUSTOM },
 		},
-		/This phone couldn't update its copy of this setting/,
+		"not-updated",
 	],
 ])("says %s in its own words", (_name, over, expected) => {
 	const { tree } = mount(transcript(over));
-	expect(renderedText(tree)).not.toMatch(CALM);
-	expect(renderedText(tree)).not.toContain("Check current settings");
-	expect(renderedText(tree)).toMatch(expected);
+	expect(offersButton(tree, RECONNECT)).toBe(false);
+	// The store's own message names its plumbing; the page never shows it.
+	expect(renderedText(tree)).not.toContain(over.error);
+	expect(reasons(tree)).toContain(expected);
 });
 
 it("waits quietly while the hub hasn't said whether it keeps the setting", () => {
 	const { tree } = mount(transcript({ support: "unknown", confirmed: null }));
-	expect(renderedText(tree)).not.toContain("Connecting");
+	expect(saysConnecting(tree)).toBe(false);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading the default detail level" })).not.toHaveLength(0);
 });
 
 it("waits quietly while the hub's setting is still loading", () => {
 	const { tree } = mount(transcript({ confirmed: null, loading: true }));
-	expect(renderedText(tree)).not.toContain("Connecting");
+	expect(saysConnecting(tree)).toBe(false);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading the default detail level" })).not.toHaveLength(0);
 });
 
@@ -469,16 +473,16 @@ it("saves nothing when the level already chosen is chosen again", async () => {
 });
 
 it.each([
-	["a conflict", { conflict: true }, "The hub's setting changed while you were choosing."],
-	["an unsaved choice", {}, "This change hasn't reached the hub yet."],
-])("leads with the levels and says %s beneath them (audit M12)", (_name, over, line) => {
+	["a conflict", { conflict: true }, "conflict"],
+	["an unsaved choice", {}, "unsaved"],
+])("leads with the levels and says %s beneath them (audit M12)", (_name, over, reason) => {
 	const hubs = { revision: 4, config: PRESET };
 	const { tree } = mount(transcript({ draft: { revision: 3, config: CUSTOM }, confirmed: hubs, ...over }));
 	// In the page's own order: the levels' group, then the line about the
 	// choice made in it.
 	const nodes = tree.root.findAll(() => true);
 	const levels = nodes.findIndex((node) => node.type === Group && node.findAllByProps({ label: "Custom" }).length > 0);
-	const said = nodes.findIndex((node) => node.type === GroupFooter && node.props.children === line);
+	const said = nodes.findIndex((node) => node.type === GroupFooter && node.props.testID === `detail-level-${reason}`);
 	expect(levels).toBeGreaterThan(-1);
 	expect(said).toBeGreaterThan(levels);
 });

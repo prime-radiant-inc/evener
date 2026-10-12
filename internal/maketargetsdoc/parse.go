@@ -115,7 +115,7 @@ func ParseFamily(src []byte) ([]Target, error) {
 
 		case strings.TrimSpace(line) == "":
 			if pending != nil {
-				return nil, fmt.Errorf("line %d: blank line separates the ## block (opened at line %d) from its rule; a block must be contiguous with the rule it documents", lineNo, pending.startLine)
+				return nil, reject(errBlockDetached, "line %d: blank line separates the ## block (opened at line %d) from its rule; a block must be contiguous with the rule it documents", lineNo, pending.startLine)
 			}
 
 		default:
@@ -129,13 +129,13 @@ func ParseFamily(src []byte) ([]Target, error) {
 				// "#" rationale directly above the rule, and a "##" summary
 				// placed above that rationale must not be forced to move.
 				if pending != nil && !strings.HasPrefix(line, "#") {
-					return nil, fmt.Errorf("line %d: %q separates the ## block (opened at line %d) from its rule; a block must be contiguous with the rule it documents", lineNo, line, pending.startLine)
+					return nil, reject(errBlockDetached, "line %d: %q separates the ## block (opened at line %d) from its rule; a block must be contiguous with the rule it documents", lineNo, line, pending.startLine)
 				}
 
 			case strings.HasPrefix(name, "."):
 				// A directive such as .PHONY: never carries an annotation.
 				if pending != nil {
-					return nil, fmt.Errorf("line %d: %q is a directive, not a rule; the ## block opened at line %d cannot attach to it", lineNo, line, pending.startLine)
+					return nil, reject(errBlockOnDirective, "line %d: %q is a directive, not a rule; the ## block opened at line %d cannot attach to it", lineNo, line, pending.startLine)
 				}
 
 			case targetSpecificVariable.MatchString(rest):
@@ -143,15 +143,15 @@ func ParseFamily(src []byte) ([]Target, error) {
 				// a rule line, but it carries a target-specific variable, not
 				// the prerequisites/recipe the annotation documents.
 				if pending != nil {
-					return nil, fmt.Errorf("line %d: %q is a target-specific variable line, not the rule; move the ## block (opened at line %d) to sit directly above the line that carries %s's prerequisites/recipe", lineNo, line, pending.startLine, name)
+					return nil, reject(errBlockOnTargetVariable, "line %d: %q is a target-specific variable line, not the rule; move the ## block (opened at line %d) to sit directly above the line that carries %s's prerequisites/recipe", lineNo, line, pending.startLine, name)
 				}
 
 			default:
 				if pending == nil {
-					return nil, fmt.Errorf("line %d: target %q has no ## annotation block above it", lineNo, name)
+					return nil, reject(errTargetUnannotated, "line %d: target %q has no ## annotation block above it", lineNo, name)
 				}
 				if pending.Summary == "" {
-					return nil, fmt.Errorf("line %d: target %q's ## block (opened at line %d) has no summary line; a summary is required even when structured fields are present", lineNo, name, pending.startLine)
+					return nil, reject(errBlockWithoutSummary, "line %d: target %q's ## block (opened at line %d) has no summary line; a summary is required even when structured fields are present", lineNo, name, pending.startLine)
 				}
 				t := pending.Target
 				t.Name = name
@@ -162,7 +162,7 @@ func ParseFamily(src []byte) ([]Target, error) {
 	}
 
 	if pending != nil {
-		return nil, fmt.Errorf("## block at line %d is never attached to a rule", pending.startLine)
+		return nil, reject(errBlockUnattached, "## block at line %d is never attached to a rule", pending.startLine)
 	}
 	return targets, nil
 }
@@ -181,12 +181,12 @@ func accumulate(pending *block, line string, lineNo int) (*block, error) {
 	case len(rest) >= 1 && rest[0] == ' ' && (len(rest) == 1 || rest[1] != ' '):
 		content = rest[1:]
 	default:
-		return nil, fmt.Errorf("line %d: %q is not a valid ## line; content must start with exactly one space (a summary or field line) or exactly three spaces (a continuation)", lineNo, line)
+		return nil, reject(errMalformedAnnotationLine, "line %d: %q is not a valid ## line; content must start with exactly one space (a summary or field line) or exactly three spaces (a continuation)", lineNo, line)
 	}
 
 	if continuation {
 		if pending == nil {
-			return nil, fmt.Errorf("line %d: continuation line %q has nothing to continue; it must follow a summary or field line already open in the same block", lineNo, line)
+			return nil, reject(errContinuationWithoutBlock, "line %d: continuation line %q has nothing to continue; it must follow a summary or field line already open in the same block", lineNo, line)
 		}
 		pending.appendToCurrent(content)
 		return pending, nil

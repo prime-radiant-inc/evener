@@ -4,6 +4,7 @@ package llm
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,8 +27,8 @@ func TestAPILogTargetLockRejectsSecondOwnerAndReleasesOnClose(t *testing.T) {
 		_ = second.Close()
 		t.Fatal("NewAPILogger allowed a second owner for the same target")
 	}
-	if !strings.Contains(err.Error(), "already running") {
-		t.Fatalf("second-owner error = %q, want already-running guidance", err)
+	if !errors.Is(err, ErrAPILogTargetLocked) {
+		t.Fatalf("second-owner error = %v, want ErrAPILogTargetLocked", err)
 	}
 
 	if err := owner.Close(); err != nil {

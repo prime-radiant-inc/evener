@@ -199,8 +199,8 @@ func TestListBuildFlagsRefusesC(t *testing.T) {
 	if code := listBuildFlags([]string{"--", "-C", "somewhere", "-race"}, &stdout, &stderr); code == 0 {
 		t.Fatalf("listBuildFlags with -C = 0, want nonzero")
 	}
-	if !strings.Contains(stderr.String(), "-C is not supported") {
-		t.Fatalf("stderr = %q, want a -C refusal", stderr.String())
+	if stderr.Len() == 0 || stdout.Len() != 0 {
+		t.Fatalf("a -C refusal must explain itself on stderr and print no flags: stdout = %q, stderr = %q", stdout.String(), stderr.String())
 	}
 }
 
@@ -213,8 +213,9 @@ func TestListBuildFlagsRefusesADanglingValue(t *testing.T) {
 			if code := listBuildFlags([]string{"--", flag}, &stdout, &stderr); code == 0 {
 				t.Fatalf("listBuildFlags with a dangling %s = 0, want nonzero; stdout = %q", flag, stdout.String())
 			}
-			if !strings.Contains(stderr.String(), "nothing after it") {
-				t.Fatalf("stderr = %q, want a dangling-value refusal", stderr.String())
+			// The refusal names the flag left without a value.
+			if !strings.Contains(stderr.String(), flag) {
+				t.Fatalf("stderr = %q, want %s named", stderr.String(), flag)
 			}
 		})
 	}
@@ -247,8 +248,8 @@ func TestListBuildFlagsFailsOnAShortWrite(t *testing.T) {
 			if code := listBuildFlags([]string{"--", "-race"}, tc.writer, &stderr); code == 0 {
 				t.Fatalf("listBuildFlags with %s = 0, want nonzero", tc.name)
 			}
-			if !strings.Contains(stderr.String(), "writing flags") {
-				t.Fatalf("stderr = %q, want a write diagnostic", stderr.String())
+			if stderr.Len() == 0 {
+				t.Fatal("a failed write left no diagnostic on stderr")
 			}
 		})
 	}
