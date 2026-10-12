@@ -2405,12 +2405,11 @@ func TestHubModelForceSteerBannerNamesTheStatusReason(t *testing.T) {
 		t.Fatal("ctrl+s while awaiting produced a command")
 	}
 	after := updated.(hubModel)
-	view := after.sessionView()
-	if strings.Contains(view, "does not advertise steer") {
-		t.Fatalf("banner blamed the harness for a status refusal:\n%s", view)
+	if reason := after.sessionControls().drainReason; reason != drainNoActiveTurn {
+		t.Fatalf("drain refusal = %v, want the status reason, not the harness", reason)
 	}
-	if !strings.Contains(view, "no active turn") {
-		t.Fatalf("banner missing the status reason:\n%s", view)
+	if len(after.session.messages) != len(m.session.messages)+1 || after.session.messages[len(after.session.messages)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("refused ctrl+s posted no banner: %+v", after.session.messages)
 	}
 }
 
@@ -2473,12 +2472,12 @@ func TestHubModelDrainReasonNamesTheStatusBeforeTheStaleRevision(t *testing.T) {
 		t.Fatal("precondition: the partial drain should have marked the revision stale")
 	}
 	got.detail.State = appwire.ThreadStatusAwaiting
-	if reason := got.sessionControls().drainReason; reason != "no active turn" {
-		t.Fatalf("drainReason while awaiting with a stale revision = %q, want the status reason", reason)
+	if reason := got.sessionControls().drainReason; reason != drainNoActiveTurn {
+		t.Fatalf("drainReason while awaiting with a stale revision = %v, want the status reason", reason)
 	}
 	got.detail.State = appwire.ThreadStatusActive
-	if reason := got.sessionControls().drainReason; reason != "the queue is syncing after the last force-steer; retry in a moment" {
-		t.Fatalf("drainReason while active with a stale revision = %q, want the revision reason", reason)
+	if reason := got.sessionControls().drainReason; reason != drainQueueSyncing {
+		t.Fatalf("drainReason while active with a stale revision = %v, want the revision reason", reason)
 	}
 }
 
