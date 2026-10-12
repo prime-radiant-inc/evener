@@ -48,58 +48,58 @@ fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/copy-oracle-mutate.XXXXXX")
 work="$scratch/worktree"
 log="$scratch.log"
-# child is a running test launcher bash has not waited for; group is a reaped
-# launcher's process group, still to be drained.
+launch_pipe="$scratch/launch"
+mkfifo "$launch_pipe"
+# child is the pid, and so the process group id, of a launched test run.
+# launching is set while a run is between fork and its setpgrp, when a signal
+# has no group to stop yet; pending_signal holds such a signal's exit status.
 child=""
-group=""
+launching=""
+pending_signal=""
 
-# stop <target> stops a pid, or a process group given as -pgid: TERM, up to 5
-# seconds' grace, then KILL, then up to 5 more seconds for the kernel to reap
-# it. It is bounded, and fails if something is still there.
-stop() {
-  local target=$1 deadline
-  kill -TERM -- "$target" 2>/dev/null || return 0
-  deadline=$((SECONDS + 5))
-  while ((SECONDS < deadline)) && kill -0 -- "$target" 2>/dev/null; do sleep 0.1; done
-  kill -KILL -- "$target" 2>/dev/null || return 0
-  deadline=$((SECONDS + 5))
-  while ((SECONDS < deadline)) && kill -0 -- "$target" 2>/dev/null; do sleep 0.1; done
-  ! kill -0 -- "$target" 2>/dev/null
-}
-
-# stop_group <pgid> stops every process in a test run's process group, so
-# workers that outlive their runner are stopped too. A process that will not
-# die is reported and left behind in the throwaway tree.
+# stop_group <pgid> stops every process in a test run's process group: TERM,
+# up to 5 seconds' grace, then KILL, then up to 5 more seconds for the kernel
+# to reap them. It keys on the group, so workers that outlive their runner are
+# stopped too, and it is bounded: a process that will not die is reported and
+# left behind in the throwaway tree.
 stop_group() {
-  local pgid=$1
+  local pgid=$1 deadline
   kill -0 -"$pgid" 2>/dev/null || return 0
-  if ! stop -"$pgid"; then
+  kill -TERM -"$pgid" 2>/dev/null || true
+  deadline=$((SECONDS + 5))
+  while ((SECONDS < deadline)) && kill -0 -"$pgid" 2>/dev/null; do sleep 0.1; done
+  kill -KILL -"$pgid" 2>/dev/null || true
+  deadline=$((SECONDS + 5))
+  while ((SECONDS < deadline)) && kill -0 -"$pgid" 2>/dev/null; do sleep 0.1; done
+  if kill -0 -"$pgid" 2>/dev/null; then
     echo "warning: test process group $pgid did not exit after KILL" >&2
   fi
 }
 
 cleanup() {
   if [[ -n "$child" ]]; then
-    # A signal can land between the fork and the child's setpgrp, when there
-    # is no group to signal yet: stop the child itself, but only while bash
-    # still lists it as running, since a reaped child's pid may name an
-    # unrelated process by now. Then drain any group it formed meanwhile.
-    if ! kill -0 -"$child" 2>/dev/null && [[ " $(jobs -rp | tr '\n' ' ') " == *" $child "* ]]; then
-      stop "$child" || true
-    fi
     stop_group "$child"
     wait "$child" 2>/dev/null || true
   fi
-  if [[ -n "$group" ]]; then
-    stop_group "$group"
-  fi
   git worktree remove --force "$work" 2>/dev/null || true
+  rm -f "$launch_pipe"
   rmdir "$scratch" 2>/dev/null || true
 }
+
+# on_signal <status> exits with status, through cleanup. During a launch it
+# only records the signal: run_tests honours it once the run's process group
+# exists, so cleanup can stop the whole group.
+on_signal() {
+  if [[ -n "$launching" ]]; then
+    pending_signal=$1
+    return
+  fi
+  exit "$1"
+}
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 # Build the throwaway tree: HEAD, then the caller's uncommitted tracked
 # changes and untracked (not ignored) files, so a test edited but not yet
@@ -129,15 +129,34 @@ done < <(git ls-files -- '*package.json' 'package.json')
 # mutation. perl makes the process its own group leader (setpgrp) and then
 # execs the command in place, so the group id is the pid in $!; bash job
 # control (set -m) races the subshell's exec and can leave it in ours.
+#
+# The launcher reports on the launch pipe (fd 4 in the child) once setpgrp has
+# run, and only then is the run registered in child. A signal before that is
+# deferred until registration, so cleanup only ever signals a process group,
+# never a bare pid that may already belong to another process. Holding fd 4
+# open read-write until the launcher has it keeps opening the FIFO from
+# blocking; closing it afterwards turns a launcher that dies early into EOF.
 run_tests() {
-  local status=0
-  (cd "$work" && exec perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@") >"$log" 2>&1 &
-  child=$!
-  wait "$child" || status=$?
-  group=$child
+  local status=0 pid line=""
+  launching=1
+  exec 4<>"$launch_pipe"
+  exec 3<"$launch_pipe"
+  (exec 3<&- && cd "$work" && exec perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; open(my $launch, ">&=", 4) or die "launch pipe: $!\n"; print $launch "launched\n"; close $launch; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@") >"$log" 2>&1 &
+  pid=$!
+  exec 4>&-
+  # If a deferred signal interrupts read (status above 128), read again.
+  until read -r line <&3; do (($? > 128)) || break; done
+  exec 3<&-
+  if [[ "$line" == launched ]]; then
+    child=$pid
+  fi
+  launching=""
+  if [[ -n "$pending_signal" ]]; then
+    exit "$pending_signal"
+  fi
+  wait "$pid" || status=$?
+  stop_group "$pid"
   child=""
-  stop_group "$group"
-  group=""
   return "$status"
 }
 
