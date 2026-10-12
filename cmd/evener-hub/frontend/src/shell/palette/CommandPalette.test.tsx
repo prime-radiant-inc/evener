@@ -757,12 +757,7 @@ test("Enter on an unknown slash command against a fenced session toasts the refu
   act(() => {
     threadsStore.setState((state) => ({ stoppingRefs: new Set(state.stoppingRefs).add("local:ref_a") }));
   });
-  render(
-    <>
-      <CommandPalette />
-      <Toast />
-    </>,
-  );
+  render(<CommandPalette />);
   const send = vi.spyOn(threadsStore.getState(), "send");
   act(() => openPalette("/frobnicate main"));
 
@@ -770,11 +765,9 @@ test("Enter on an unknown slash command against a fenced session toasts the refu
 
   // The admission's own refusal surfaces as an error toast, the palette stays
   // open with the typed text, and the rejection never escapes unhandled.
-  const refusal: unknown = await send.mock.results[0]?.value.catch((err: unknown) => err);
+  const refusal: Error = await send.mock.results[0]?.value.catch((err: Error) => err);
   expect(refusal).toBeInstanceOf(Error);
-  await waitFor(() =>
-    expect(getToasts()).toEqual([expect.objectContaining({ kind: "error", text: (refusal as Error).message })]),
-  );
+  await waitFor(() => expect(getToasts()).toEqual([expect.objectContaining({ kind: "error", text: refusal.message })]));
   expect(screen.getByRole("dialog")).toBeTruthy();
   expect((screen.getByRole("combobox") as HTMLInputElement).value).toBe("/frobnicate main");
 });
@@ -944,7 +937,6 @@ test("a Send-resumes fallthrough whose resume fails parks the row, closes the pa
     <>
       <CommandPalette />
       <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
-      <Toast />
     </>,
   );
   act(() => openPalette("/frobnicate main"));
