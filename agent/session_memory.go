@@ -205,7 +205,7 @@ func (s *Session) unavailableMemoryToolNames() []string {
 // decides what to keep, so a delegate keeps only read and search. Run after
 // registration, before caching definitions.
 func (s *Session) filterUnavailableMemoryTools() {
-	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
+	if memoryNamespaceUnavailable(s.cfg) {
 		for name := range s.reg.RegisteredNames() {
 			if strings.HasPrefix(name, "memory_") {
 				s.reg.Remove(name)
@@ -218,6 +218,16 @@ func (s *Session) filterUnavailableMemoryTools() {
 			s.reg.Remove(name)
 		}
 	}
+}
+
+// memoryNamespaceUnavailable reports that cfg has no memory namespace, so
+// filterUnavailableMemoryTools removes every memory_-prefixed tool name. It is
+// the single owner of that predicate: the result tool's registration refuses a
+// memory_ name on exactly this condition (registerCommunicateTool), and the two
+// must not diverge. Session.memoryContextEnabled is deliberately NOT used — it
+// consults the registry, which is not yet installed while core tools register.
+func memoryNamespaceUnavailable(cfg SessionConfig) bool {
+	return cfg.DisableMemory || cfg.MemoryStateRoot == ""
 }
 
 // openMemoryEnvironment opens scope, creating its directory if it is absent.

@@ -55,6 +55,12 @@ type toolDeps struct {
 	// (Session.hasHumanPartnerToAsk).
 	offersEndReason bool
 
+	// memoryToolsStripped reports that this session has no memory namespace
+	// (memoryNamespaceUnavailable), so filterUnavailableMemoryTools will remove
+	// every memory_-prefixed name — which makes the whole prefix unavailable as
+	// a result tool name (issue #4218). The flag is fixed for a session.
+	memoryToolsStripped bool
+
 	// cmdTimeouts is a live getter for the default and max shell command
 	// timeouts. It reads cfg on every call so cfg mutations are visible;
 	// the values are NOT snapshotted at registration time.
@@ -357,6 +363,7 @@ func newToolDeps(s *Session) *toolDeps {
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		offersEndReason:        s.hasHumanPartnerToAsk(),
+		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok
@@ -437,8 +444,7 @@ func registerMinimalWorktreeTools(reg *tool.Registry, s *Session) error {
 		return err
 	}
 	registerWorktreeTool(reg, deps)
-	registerCommunicateTool(reg, deps)
-	return nil
+	return registerCommunicateTool(reg, deps)
 }
 
 func registerCoreTools(reg *tool.Registry, s *Session) error {
@@ -471,7 +477,6 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	registerWorktreeTool(reg, deps)
 	registerCompactTool(reg, deps)
 	registerWebTools(reg, deps)
-	registerCommunicateTool(reg, deps)
 	// ask_user is root-only and interactive-only (spec §7 point 1): invisible,
 	// not merely disabled, when nobody can answer and in every subagent.
 	if s.hasHumanPartnerToAsk() {
@@ -494,5 +499,10 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 			return err
 		}
 	}
-	return nil
+	// The result tool registers LAST so its own registration sees every other
+	// intrinsic tool: a ResultToolName that names one of them is a collision,
+	// not a rename (issue #4218). Nothing here depends on communicate being
+	// registered earlier — the profile's use_skill stub and every other
+	// registration are looked up by their own names.
+	return registerCommunicateTool(reg, deps)
 }
