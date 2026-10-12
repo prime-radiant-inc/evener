@@ -174,6 +174,9 @@ func TestSplit(t *testing.T) {
 		{"CRLF line endings read as newlines", "---\r\na: 1\r\n---\r\nbody\r\n", "a: 1\n", "body\n", true},
 		{"lone carriage returns read as newlines", "---\ra: 1\r---\rbody\r", "a: 1\n", "body\n", true},
 		{"an unframed document comes back with newline endings", "body\r\nmore\r", "", "body\nmore\n", false},
+		{"a leading BOM is dropped", "\ufeff---\r\na: 1\r\n---\r\nbody\r\n", "a: 1\n", "body\n", true},
+		{"an unframed BOM-prefixed document comes back without it", "\ufeffbody\n", "", "body\n", false},
+		{"a second byte-order mark is content, not framing", "\ufeff\ufeff---\na: 1\n---\nbody\n", "", "\ufeff---\na: 1\n---\nbody\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

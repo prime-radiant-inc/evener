@@ -18,13 +18,14 @@ const delimiter = "---\n"
 
 // Split cuts raw into its frontmatter block and the body after the closing
 // delimiter, the first line that is exactly "---". It reads raw with each
-// "\r\n" and lone "\r" line ending turned into "\n", so a CRLF document has
-// the same frontmatter, and block and body end their lines in "\n". ok is
-// false, with body set to all of the normalized raw, when raw has no complete
-// frontmatter. It matches agent/internal/frontmatter, which this module
-// cannot import.
+// "\r\n" and lone "\r" line ending turned into "\n" and a single leading UTF-8
+// byte-order mark dropped, so a CRLF or BOM-prefixed document has the same
+// frontmatter, and block and body end their lines in "\n". ok is false, with
+// body set to all of the normalized raw, when raw has no complete frontmatter.
+// It matches agent/internal/frontmatter, which this module cannot import; that
+// package additionally reports how the document was framed.
 func Split(raw string) (block, body string, ok bool) {
-	raw = strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", "\n"), "\r", "\n")
+	raw = strings.TrimPrefix(strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", "\n"), "\r", "\n"), "\ufeff")
 	rest, found := strings.CutPrefix(raw, delimiter)
 	if !found {
 		return "", raw, false
