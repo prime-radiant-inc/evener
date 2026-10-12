@@ -2031,7 +2031,11 @@ func checkSummaryReply(reply, instructions string) error {
 		// content under a section, never one.
 		if section, rest, ok := summarySectionHeading(withoutEdgeFraming(line)); ok && !fence.inside() && !indentedCode(raw) {
 			inSection = !strings.EqualFold(section, permissionsSection)
-			if inSection && rest != "" {
+			// The heading's own text counts only if it is text: the edge markers
+			// are read through above, but markup can hold one inside it
+			// ("**Progress: [END SUMMARY]**"), and a heading with nothing but
+			// framing under it has summarized nothing.
+			if inSection && rest != "" && !markerOnly(rest) {
 				return nil
 			}
 			continue

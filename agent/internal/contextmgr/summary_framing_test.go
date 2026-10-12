@@ -42,6 +42,7 @@ func TestSummarizeWithLLM_RejectsFramingWithNoContent(t *testing.T) {
 	for name, reply := range map[string]string{
 		"markers alone":    summaryMarkerStart + "\n" + summaryMarkerEnd,
 		"beside a heading": summaryMarkerStart + " ## Progress: " + summaryMarkerEnd,
+		"bold heading":     "**Progress: " + summaryMarkerEnd + "**",
 		"in a fence":       "## Progress\n```\n" + summaryMarkerEnd + "\n```",
 	} {
 		t.Run(name, func(t *testing.T) {
