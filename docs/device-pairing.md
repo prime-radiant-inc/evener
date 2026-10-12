@@ -23,6 +23,11 @@ the invitation and cannot be moved to another key. A different device needs a
 new invitation. A party hearing the sound can submit a competing claim, but
 cannot decrypt the selected device's result or silently replace that claim.
 
+Closing setup cancels an untouched pending invitation. Once the operator submits
+approval, closing the browser leaves the invitation retrievable until expiry:
+an acknowledgement lost on the way back must not revoke a committed approval.
+The explicit cancel method still revokes the named invitation.
+
 The six digits authenticate the operator's choice; they are not an encryption
 key. The encrypted response is bound to the selected X25519 key. HTTP over
 Tailscale relies on the tailnet for transport authentication/encryption; a

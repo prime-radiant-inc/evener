@@ -29,5 +29,5 @@
 
 .progress {
   width: 100%;
-  accent-color: var(--ink);
+  accent-color: var(--ink-hi);
 }

@@ -2,7 +2,7 @@ import nacl from "tweetnacl";
 import { createPairingClaim, invitationText, toHex } from "@evener/appwire-client/pairing";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { AddHub } from "./AddHub";
 
 type Permission = { granted: boolean; canAskAgain: boolean; status: string };
@@ -340,7 +340,9 @@ it("never shows the token or offers to retry or reconnect", async () => {
 });
 
 afterEach(() => {
+	unmountMountedTrees();
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
 });
 it("shows a locally calculated code for an invitation without saving credentials", async () => {
 	const invitation = { invitation: "01".repeat(24), origin: "http://magic-kingdom:9180", tailnet: true, expiresAt: 0 };
@@ -358,7 +360,7 @@ it("shows a locally calculated code for an invitation without saving credentials
 	expect(mocks.saveHub).not.toHaveBeenCalled();
 });
 
-it("reviews an approved invitation before saving the Hub", async () => {
+function approvedPairingFixture() {
 	const invitation = { invitation: "01".repeat(24), origin: "http://magic-kingdom:9180", tailnet: true, expiresAt: 0 };
 	const claim = createPairingClaim(invitation, new Uint8Array(32).fill(7));
 	const sender = nacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(9)),
@@ -389,10 +391,12 @@ it("reviews an approved invitation before saving the Hub", async () => {
 			...nacl.box(plain, nonce, claim.publicKeyBytes, sender.secretKey),
 		]),
 	);
-	vi.stubGlobal(
-		"fetch",
-		async () => new Response(JSON.stringify({ state: "approved", comparison: claim.comparison, envelope })),
-	);
+	return { invitation, reply: { state: "approved", comparison: claim.comparison, envelope } };
+}
+
+it("reviews an approved invitation before saving the Hub", async () => {
+	const { invitation, reply } = approvedPairingFixture();
+	vi.stubGlobal("fetch", async () => new Response(JSON.stringify(reply)));
 	const { tree } = mount("scan");
 	await act(async () => {
 		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
@@ -404,7 +408,7 @@ it("reviews an approved invitation before saving the Hub", async () => {
 });
 
 it("ignores a claim response arriving after cancellation", async () => {
-	const invitation = { invitation: "01".repeat(24), origin: "http://magic-kingdom:9180", tailnet: true, expiresAt: 0 };
+	const { invitation, reply } = approvedPairingFixture();
 	let answer: ((response: Response) => void) | undefined;
 	vi.stubGlobal(
 		"fetch",
@@ -419,8 +423,152 @@ it("ignores a claim response arriving after cancellation", async () => {
 	});
 	await press(tree, "Cancel pairing");
 	await act(async () => {
-		answer?.(new Response(JSON.stringify({ state: "expired" })));
+		answer?.(new Response(JSON.stringify(reply)));
 	});
 	expect(camera(tree)).toBeDefined();
 	expect(mocks.saveHub).not.toHaveBeenCalled();
 });
+
+type ClaimRequest = {
+	body: { invitation: string; publicKey: string; client: string };
+	signal: AbortSignal;
+	answer(reply: unknown): void;
+	fail(): void;
+};
+
+function captureClaims(honorAbort = true) {
+	const requests: ClaimRequest[] = [];
+	vi.stubGlobal(
+		"fetch",
+		(_url: string, options: RequestInit) =>
+			new Promise<Response>((resolve, reject) => {
+				if (!options.signal || typeof options.body !== "string") throw new Error("Missing claim request");
+				const signal = options.signal;
+				requests.push({
+					body: JSON.parse(options.body),
+					signal,
+					answer: (reply) => resolve(new Response(JSON.stringify(reply))),
+					fail: () => reject(new TypeError("Network unavailable")),
+				});
+				if (honorAbort) signal.addEventListener("abort", () => reject(new Error("Request aborted")), { once: true });
+			}),
+	);
+	return requests;
+}
+
+async function startInvitation() {
+	const fixture = approvedPairingFixture();
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(fixture.invitation) });
+	});
+	return { tree, ...fixture };
+}
+
+async function advancePairingTime(milliseconds: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(milliseconds);
+	});
+}
+
+it.each(["network failure", "request timeout"])(
+	"retries %s with the same device key and reviews before saving",
+	async (failure) => {
+		vi.useFakeTimers();
+		const requests = captureClaims();
+		const { tree, invitation, reply } = await startInvitation();
+		const first = requests[0];
+		if (!first) throw new Error("Missing initial claim");
+		if (failure === "network failure")
+			await act(async () => {
+				first.fail();
+			});
+		else {
+			await advancePairingTime(10000);
+			expect(first.signal.aborted).toBe(true);
+		}
+		await advancePairingTime(1200);
+		expect(requests).toHaveLength(2);
+		const retry = requests[1];
+		if (!retry) throw new Error("Missing retry");
+		expect(retry.body).toEqual(first.body);
+		expect(renderedText(tree)).toContain(reply.comparison);
+		await act(async () => {
+			retry.answer(reply);
+		});
+		expect(field(tree, "Name").props.value).toBe("magic-kingdom");
+		expect(mocks.saveHub).not.toHaveBeenCalled();
+		await advancePairingTime(30000);
+		expect(requests).toHaveLength(2);
+		await press(tree, "Connect");
+		expect(mocks.saveHub).toHaveBeenCalledExactlyOnceWith({
+			name: "magic-kingdom",
+			origin: invitation.origin,
+			token: TOKEN,
+		});
+	},
+);
+
+it("pauses background polling, ignores its late approval, and resumes with the same key", async () => {
+	vi.useFakeTimers();
+	const requests = captureClaims(false);
+	const { tree, reply } = await startInvitation();
+	const first = requests[0];
+	if (!first) throw new Error("Missing initial claim");
+	await act(async () => {
+		for (const listener of mocks.appState) listener("background");
+	});
+	expect(first.signal.aborted).toBe(true);
+	await advancePairingTime(30000);
+	expect(requests).toHaveLength(1);
+	await act(async () => {
+		first.answer(reply);
+	});
+	expect(button(tree, "Cancel pairing")).toBeDefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await act(async () => {
+		for (const listener of mocks.appState) listener("active");
+	});
+	expect(requests).toHaveLength(2);
+	const resumed = requests[1];
+	if (!resumed) throw new Error("Missing foreground claim");
+	expect(resumed.body).toEqual(first.body);
+	expect(renderedText(tree)).toContain(reply.comparison);
+	await act(async () => {
+		resumed.answer(reply);
+	});
+	expect(field(tree, "Name").props.value).toBe("magic-kingdom");
+	await advancePairingTime(30000);
+	expect(requests).toHaveLength(2);
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await press(tree, "Connect");
+	expect(mocks.saveHub).toHaveBeenCalledTimes(1);
+});
+
+it.each(["expired", "rejected"])(
+	"stops a %s invitation after returning from the background without saving it",
+	async (state) => {
+		vi.useFakeTimers();
+		const requests = captureClaims();
+		const { tree } = await startInvitation();
+		await act(async () => {
+			for (const listener of mocks.appState) listener("background");
+		});
+		await advancePairingTime(600000);
+		expect(requests).toHaveLength(1);
+		await act(async () => {
+			for (const listener of mocks.appState) listener("active");
+		});
+		const resumed = requests[1];
+		if (!resumed) throw new Error("Missing foreground claim");
+		await act(async () => {
+			resumed.answer({ state });
+		});
+		await advancePairingTime(30000);
+		expect(requests).toHaveLength(2);
+		expect(button(tree, "Cancel pairing")).toBeDefined();
+		expect(mocks.saveHub).not.toHaveBeenCalled();
+		await press(tree, "Cancel pairing");
+		expect(camera(tree)).toBeDefined();
+	},
+);

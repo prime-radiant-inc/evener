@@ -22,12 +22,15 @@ export function DeviceSetup({ onClose }: { onClose(): void }) {
     [error, setError] = useState("");
   const mounted = useRef(true),
     pending = useRef<DevicePairingInvitation | null>(null),
-    approved = useRef(false);
+    approved = useRef(false),
+    approvalSubmitted = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      if (pending.current && !approved.current)
+      // An approval may have committed even if its reply never reached us.
+      // Preserve that invitation until expiry so the device can retrieve it.
+      if (pending.current && !approved.current && !approvalSubmitted.current)
         void client.request("evener/devicePairing/cancel", { invitation: pending.current.invitation }).catch(() => {});
     };
   }, [client]);
@@ -39,9 +42,10 @@ export function DeviceSetup({ onClose }: { onClose(): void }) {
       try {
         const next = await client.request("evener/devicePairing/read", { invitation: invite.invitation });
         if (cancelled) return;
-        if (approved.current && next.state === "pending") return;
-        approved.current = next.state === "approved";
-        setStatus(next);
+        if (!(approved.current && next.state === "pending")) {
+          approved.current = next.state === "approved";
+          setStatus(next);
+        }
         setError("");
         if (next.state === "expired") return;
       } catch {
@@ -69,6 +73,7 @@ export function DeviceSetup({ onClose }: { onClose(): void }) {
       }
       pending.current = next;
       approved.current = false;
+      approvalSubmitted.current = false;
       setInvite(next);
       setStatus(null);
     } catch (problem) {
@@ -79,6 +84,7 @@ export function DeviceSetup({ onClose }: { onClose(): void }) {
   }
   async function approve(publicKey: string) {
     if (!invite) return;
+    approvalSubmitted.current = true;
     setBusy(true);
     setError("");
     try {

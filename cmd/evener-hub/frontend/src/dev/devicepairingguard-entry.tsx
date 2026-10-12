@@ -1,4 +1,5 @@
-import { AppwireClient } from "@evener/appwire-client";
+import { AppwireClient, type WebSocketLike } from "@evener/appwire-client";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { MobileSection } from "../panes/settings/sections/mobile";
 import { ClientProvider } from "../shell/clientContext";
@@ -14,16 +15,72 @@ declare global {
       waitFor: (text: string) => Promise<void>;
       click: (label: string) => void;
       invitationPixels: () => Promise<number[]>;
+      holdApproval: () => void;
+      approvalReceived: Promise<void>;
+      drain: () => Promise<void>;
     };
   }
+}
+let holdApproval = false;
+let approvalReceived = () => {};
+const receivedApproval = new Promise<void>((resolve) => {
+  approvalReceived = resolve;
+});
+const inFlight = new Map<unknown, { method: string; received: Promise<void>; resolve(): void }>();
+
+// Delay only wire delivery to the browser. The real Hub still commits approval
+// and answers every request, including teardown cancellation if the UI sends it.
+function pairingSocket(url: string): WebSocketLike {
+  const socket = new WebSocket(url);
+  const transport: WebSocketLike = {
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+    close: (code) => socket.close(code),
+    send(data) {
+      const frame = JSON.parse(data);
+      if (frame.id !== undefined && frame.method) {
+        let resolve = () => {};
+        const received = new Promise<void>((done) => {
+          resolve = done;
+        });
+        inFlight.set(frame.id, { method: frame.method, received, resolve });
+      }
+      socket.send(data);
+    },
+  };
+  socket.onopen = () => transport.onopen?.();
+  socket.onerror = () => transport.onerror?.();
+  socket.onclose = (event) => transport.onclose?.(event);
+  socket.onmessage = (event) => {
+    const frame = JSON.parse(event.data);
+    const request = inFlight.get(frame.id);
+    request?.resolve();
+    inFlight.delete(frame.id);
+    if (holdApproval && request?.method === "evener/devicePairing/approve") {
+      approvalReceived();
+      return;
+    }
+    if (holdApproval && request?.method === "evener/devicePairing/read") return;
+    transport.onmessage?.(event);
+  };
+  return transport;
 }
 window.devicePairingGuard = {
   samples: [],
   nodes: [],
+  holdApproval() {
+    holdApproval = true;
+  },
+  approvalReceived: receivedApproval,
+  async drain() {
+    await Promise.all(Array.from(inFlight.values(), (request) => request.received));
+  },
   click(label: string) {
     const button = Array.from(document.querySelectorAll("button")).find((node) => node.textContent.trim() === label);
     if (!button || button.disabled) throw new Error("Button unavailable");
-    button.click();
+    flushSync(() => button.click());
   },
   async invitationPixels() {
     const svg = document.querySelector('[aria-label="Device pairing invitation QR code"] svg');
@@ -64,7 +121,7 @@ AudioBufferSourceNode.prototype.start = function (when?: number, offset?: number
   window.devicePairingGuard.nodes.push(this);
   start.call(this, when, offset, duration);
 };
-const client = new AppwireClient({ url: `ws://${location.host}/rpc` });
+const client = new AppwireClient({ url: `ws://${location.host}/rpc`, socketFactory: pairingSocket });
 await client.connect();
 connectionStore.getState().connect(client);
 const root = document.getElementById("root");

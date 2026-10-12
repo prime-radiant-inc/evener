@@ -5,12 +5,12 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { createServer } from "vite";
 import WebSocket from "ws";
 import jsQR from "jsqr";
 import { applyViewport, connectOnlyPage, evaluate, navigateTo } from "./browserGuardCdp.mjs";
 import { startBrowserGuard, waitForBrowserReady } from "./browserGuardProcess.mjs";
 import { buildNativePairingCheck } from "./playdateNativeCheck.mjs";
+import { loadPairingModules } from "./pairingModules.mjs";
 
 const frontend = fileURLToPath(new URL("..", import.meta.url));
 const endpoint = process.env.EVENER_PAIRING_E2E_URL;
@@ -27,7 +27,7 @@ execFileSync("make", ["-f", "check/Makefile", "build/check/receiver"], {
   },
 });
 const runFile = promisify(execFile);
-const modules = await createServer({ root: frontend, server: { middlewareMode: true }, appType: "custom" });
+const modules = await loadPairingModules();
 const { AppwireClient } = await modules.ssrLoadModule(
   fileURLToPath(new URL("../../../../appwire-client/typescript/client.ts", import.meta.url)),
 );
@@ -163,6 +163,38 @@ try {
       `PASS ${width}px HTTP browser -> invitation PCM -> C/mobile protocol -> real Hub claim/approval -> both decrypt -> authenticated request`,
     );
   }
+  // A committed approval must survive closing the browser before its reply is
+  // delivered. Wait for actual wire completion, not a guessed cleanup delay.
+  await click("Pair a device");
+  await wait("Create invitation");
+  await click("Create invitation");
+  await wait("Play setup sound");
+  const pixels = await evaluate(send, "window.devicePairingGuard.invitationPixels()");
+  const qr = jsQR(new Uint8ClampedArray(pixels), 768, 768);
+  assert.ok(qr);
+  const invitation = pairing.parseInvitation(qr.data);
+  const phone = pairing.createPairingClaim(invitation, new Uint8Array(32).fill(0x3a));
+  const claim = () =>
+    fetch(`${endpoint}/api/device-pairing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        invitation: invitation.invitation,
+        publicKey: phone.publicKey,
+        client: "Mobile recovery",
+      }),
+    }).then((response) => response.json());
+  assert.equal((await claim()).state, "pending");
+  await wait(`Approve code ${phone.comparison}`);
+  await evaluate(send, "window.devicePairingGuard.holdApproval()");
+  await click(`Approve code ${phone.comparison}`);
+  await evaluate(send, "window.devicePairingGuard.approvalReceived");
+  await click("Close setup");
+  await evaluate(send, "window.devicePairingGuard.drain()");
+  const approved = await claim();
+  assert.equal(approved.state, "approved", "closing setup must preserve an approval with a lost acknowledgement");
+  assert.equal(pairing.openPairingEnvelope(phone, approved.envelope).token, "synthetic-pairing-token");
+  console.log("PASS committed approval survives lost browser acknowledgement and immediate close");
 } finally {
   page?.close();
   await guard.cleanup();
