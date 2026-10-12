@@ -58,6 +58,7 @@ export function StatusDot({ state }: StatusDotProps) {
     <span
       role="img"
       aria-label={STATUS_LABEL[state]}
+      data-state={state}
       data-shape={state === "failed" ? "diamond" : "dot"}
       className={`${BASE_CLASS.dot} ${FAMILY_CLASS[family]}${working}`}
     />
