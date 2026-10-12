@@ -33,9 +33,6 @@ file=$1 subst=$2
 shift 3
 root=$(git rev-parse --show-toplevel)
 cd "$root"
-# shellcheck source=scripts/lib/gate-bounded.sh
-. "$root/scripts/lib/gate-bounded.sh"
-
 # One mutation at a time per worktree: a second run would mutate files under
 # the first run's tests, or restore them mid-run. The lock is an OS lock
 # (flock, taken through perl since macOS ships no flock command) on fd 9. The
@@ -72,20 +69,38 @@ recover_dead_run() {
   rm -f "$record"
 }
 
+# stop_group <pgid> stops every process in a test run's process group: TERM,
+# up to 5 seconds' grace, then KILL. It keys on the group, not the leader, so
+# workers that outlive their runner are stopped too. A no-op once the group is
+# empty.
+stop_group() {
+  local pgid=$1 deadline
+  kill -0 -"$pgid" 2>/dev/null || return 0
+  kill -TERM -"$pgid" 2>/dev/null || true
+  deadline=$((SECONDS + 5))
+  while ((SECONDS < deadline)) && kill -0 -"$pgid" 2>/dev/null; do sleep 0.1; done
+  kill -KILL -"$pgid" 2>/dev/null || true
+  while kill -0 -"$pgid" 2>/dev/null; do sleep 0.1; done
+}
+
 # Every exit path, including HUP/INT/TERM, stops the test process group
-# (TERM, a bounded grace, then KILL) before restoring the file, so no test
-# process outlives the run and reads the restored source.
-mutated=0 child=""
+# before touching the file, so no test process outlives the run and reads the
+# restored source. The file is restored only while it holds exactly our
+# mutation: an edit made during the run is kept, with the record left for
+# whoever reviews it.
+mutated=0 mutated_hash="" child=""
 cleanup() {
   if [[ -n "$child" ]]; then
-    stop_command "$child"
+    stop_group "$child"
     wait "$child" 2>/dev/null || true
   fi
-  # The record is ours only once we mutate; a refusal leaves a dead run's
-  # record for the person reviewing its leftover edit.
   if ((mutated)); then
-    git restore -- "$file"
-    rm -f "$record"
+    if [[ "$(git hash-object -- "$file")" == "$mutated_hash" ]]; then
+      git restore -- "$file"
+      rm -f "$record"
+    else
+      echo "left $file as is: it was edited during the run; review it with git diff, then delete $record" >&2
+    fi
   fi
 }
 trap cleanup EXIT
@@ -105,8 +120,9 @@ if ! git diff --quiet -- "$file"; then
   exit 2
 fi
 
-# Run the tests in their own process group (job control) so cleanup can stop
-# everything they forked with one signal.
+# Run the tests in their own process group (job control; the leader's pid is
+# the group id) and drain the whole group afterwards, so no worker from the
+# baseline runs into the mutation, or from the mutation past the restore.
 run_tests() {
   local status=0
   set -m
@@ -114,6 +130,7 @@ run_tests() {
   child=$!
   set +m
   wait "$child" || status=$?
+  stop_group "$child"
   child=""
   return "$status"
 }
@@ -126,9 +143,14 @@ if ! run_tests "$@"; then
   echo "BASELINE-FAIL the test command fails without the mutation (log: $log)" >&2
   exit 2
 fi
+if ! git diff --quiet -- "$file"; then
+  echo "refusing: $file was edited while the baseline ran" >&2
+  exit 2
+fi
 # Record the mutated contents before writing them, so a run killed at any
 # point after this leaves a record that matches what is on disk.
-printf '%s\n%s\n' "$file" "$(perl -0pe "$subst" "$file" | git hash-object --stdin)" >"$record.tmp.$$"
+mutated_hash=$(perl -0pe "$subst" "$file" | git hash-object --stdin)
+printf '%s\n%s\n' "$file" "$mutated_hash" >"$record.tmp.$$"
 mv -f "$record.tmp.$$" "$record"
 mutated=1
 perl -0pi -e "$subst" "$file"
