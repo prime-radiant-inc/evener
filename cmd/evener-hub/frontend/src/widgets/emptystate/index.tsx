@@ -25,7 +25,7 @@ export interface EmptyStateProps {
   reason?: EmptyStateReason;
 }
 
-export type EmptyStateReason = "deleted" | "unavailable" | "no-turns" | "not-built";
+export type EmptyStateReason = "deleted" | "unavailable" | "no-turns" | "not-built" | "needs-configuration";
 
 const BASE_CLASS = {
   emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),

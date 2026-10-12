@@ -401,13 +401,13 @@ test("a failed reload after a successful load shows a reload notice and keeps th
 
   act(() => {
     fake.on("evener/settings/agentsDoc/get", () => {
-      throw new WireError("hub unreachable", -1);
+      throw new WireError("reload-failure-from-hub", -1);
     });
     fake.emitStateChange("reconnecting");
     fake.emitReady();
   });
 
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("hub unreachable"));
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("reload-failure-from-hub"));
   expect(editor().value).toBe("# hi\n");
 
   const user = userEvent.setup();
@@ -430,12 +430,12 @@ test("Reload in the reload notice re-reads the file", async () => {
 
   act(() => {
     fake.on("evener/settings/agentsDoc/get", () => {
-      throw new WireError("hub unreachable", -1);
+      throw new WireError("reload-failure-from-hub", -1);
     });
     fake.emitStateChange("reconnecting");
     fake.emitReady();
   });
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("hub unreachable"));
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("reload-failure-from-hub"));
 
   fake.on("evener/settings/agentsDoc/get", () => ({ ...DOC, content: "# back\n" }));
   await userEvent.setup().click(screen.getByRole("button", { name: "Reload" }));

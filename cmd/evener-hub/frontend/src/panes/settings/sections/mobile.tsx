@@ -30,6 +30,7 @@ class QRChunkBoundary extends Component<{ children: ReactNode }, { failed: boole
         <EmptyState
           title="Couldn't load the QR renderer"
           hint="The pairing link below still works — copy it instead, or reload this page to try again."
+          reason="unavailable"
         />
       );
     }
@@ -67,13 +68,20 @@ export function MobileSection() {
     return (
       <EmptyState
         title="Mobile pairing needs a reachable Hub origin"
+        reason="needs-configuration"
         hint="Configure mobile_base_url in ~/.config/evener/hub.toml to an HTTP(S) origin your phone can reach, then reload this page."
       />
     );
   }
 
   if (state.kind === "error") {
-    return <EmptyState title="Couldn't create a mobile pairing link" hint="Reload this page to try again." />;
+    return (
+      <EmptyState
+        title="Couldn't create a mobile pairing link"
+        hint="Reload this page to try again."
+        reason="unavailable"
+      />
+    );
   }
 
   const isPlaintextHTTP = state.authURL.toLowerCase().startsWith("http://");
@@ -92,9 +100,11 @@ export function MobileSection() {
       <Button size="sm" variant="secondary" onClick={() => void copyText(state.authURL)}>
         Copy pairing link
       </Button>
-      <p>
+      <p data-testid="mobile-reuse-warning">
         {isPlaintextHTTP && (
-          <>Private-network HTTP connection: anyone who can observe this network can observe the pairing capability. </>
+          <span data-testid="mobile-http-warning">
+            Private-network HTTP connection: anyone who can observe this network can observe the pairing capability.{" "}
+          </span>
         )}
         This link remains valid and can be reused until the Hub auth token is rotated.
       </p>

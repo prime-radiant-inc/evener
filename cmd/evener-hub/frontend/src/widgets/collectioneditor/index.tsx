@@ -149,7 +149,7 @@ export function CollectionEditor<T>({
     <div className={CLASS.root}>
       <ul aria-label={label} className={CLASS.list}>
         {items.length === 0 && inheritedItems.length === 0 ? (
-          <li className={CLASS.empty} data-kind="empty">
+          <li className={CLASS.empty} data-reason="empty">
             {emptyMessage}
           </li>
         ) : (

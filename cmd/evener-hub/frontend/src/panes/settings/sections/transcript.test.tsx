@@ -520,13 +520,13 @@ test("does not toast when an overlapping PATCH conflicts with the committed winn
 
   await act(async () => {
     responses[1]?.reject(
-      new WireError("revision conflict", -32013, {
+      new WireError("conflict-from-hub", -32013, {
         evenerErrorInfo: "conflict",
         layout: "desktop",
         current: { revision: 2, config: toWireConfig(firstDraft) },
       }),
     );
-    await expect(competingPatch).rejects.toThrow("revision conflict");
+    await expect(competingPatch).rejects.toThrow("conflict-from-hub");
   });
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: firstDraft });
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
@@ -559,14 +559,14 @@ test("reports a conflict instead of acknowledging two patches with one expected 
   await waitFor(() => expect(responses).toHaveLength(2));
   responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
   responses[1]?.reject(
-    new WireError("revision conflict", -32013, {
+    new WireError("conflict-from-hub", -32013, {
       evenerErrorInfo: "conflict",
       layout: "desktop",
       current: { revision: 2, config: toWireConfig(firstDraft) },
     }),
   );
 
-  expect((await screen.findByRole("alert")).textContent).toContain("revision conflict");
+  expect((await screen.findByRole("alert")).textContent).toContain("conflict-from-hub");
   expect(successToasts()).toEqual([]);
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: firstDraft });

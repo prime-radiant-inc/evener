@@ -638,7 +638,7 @@ describe("EnvMapField", () => {
 
     const list = screen.getByRole("list", { name: "Environment variables" });
     expect(within(list).getByText("EDITOR=vim")).toBeTruthy();
-    expect(list.querySelector("[data-kind='empty']")).toBeNull();
+    expect(list.querySelector("[data-reason='empty']")).toBeNull();
   });
 });
 
@@ -752,7 +752,7 @@ describe("McpServerListField", () => {
 
     const list = screen.getByRole("list", { name: "MCP servers" });
     expect(within(list).getByText("docs → npx docs-mcp")).toBeTruthy();
-    expect(list.querySelector("[data-kind='empty']")).toBeNull();
+    expect(list.querySelector("[data-reason='empty']")).toBeNull();
   });
 });
 

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { showsEmptyRow } from "./chipTestUtils";
 import { MarketplacesSection } from "./MarketplacesSection";
 
 const MARKETPLACE_A: MarketplaceEntry = {
@@ -53,7 +54,7 @@ test("shows the empty state when there are no marketplaces", () => {
   connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   render(<MarketplacesSection onSelect={vi.fn()} />);
-  expect(screen.getByText("No marketplaces registered. Add one below.")).toBeTruthy();
+  expect(showsEmptyRow()).toBe(true);
 });
 
 test("the Add form and the + Add marketplace button are mutually exclusive", async () => {

@@ -396,7 +396,7 @@ export function MarketplaceSheet({
                 </FormRow>
               )}
               {sourceTouched && (
-                <p className={CLASS.sheetNote} role="status">
+                <p className={CLASS.sheetNote} role="status" data-testid="marketplace-refetch-note">
                   Saving re-fetches the marketplace. Installed plugins are unaffected.
                 </p>
               )}
@@ -409,13 +409,23 @@ export function MarketplaceSheet({
             <div className={CLASS.metaList}>
               <div className={CLASS.metaRow}>
                 <span className={CLASS.metaLabel}>Install location</span>
-                <span className={`${CLASS.metaValue} ${CLASS.rowMeta}`}>
+                <span
+                  className={`${CLASS.metaValue} ${CLASS.rowMeta}`}
+                  data-testid="marketplace-install-location"
+                  data-state={entry.installLocation ? undefined : "unfetched"}
+                >
                   {entry.installLocation || "not fetched yet"}
                 </span>
               </div>
               <div className={CLASS.metaRow}>
                 <span className={CLASS.metaLabel}>Last updated</span>
-                <span className={`${CLASS.metaValue} ${CLASS.rowMeta}`}>{lastUpdatedText(entry.lastUpdated)}</span>
+                <span
+                  className={`${CLASS.metaValue} ${CLASS.rowMeta}`}
+                  data-testid="marketplace-last-updated"
+                  data-state={entry.lastUpdated > 0 ? undefined : "never"}
+                >
+                  {lastUpdatedText(entry.lastUpdated)}
+                </span>
               </div>
             </div>
             <div className={CLASS.sheetActions}>
