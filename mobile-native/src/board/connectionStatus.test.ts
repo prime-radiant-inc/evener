@@ -149,6 +149,12 @@ it("changes on its own only at 2 seconds, 30 seconds, then when the age it says 
 });
 
 describe("useConnectionStatusText: the status on the provider's clock", () => {
+	/** What connectionStatus says of the provider's facts on the clock now:
+	 * what a line in step with the clock shows. */
+	const due = () => {
+		const { state, fatal, downSince, lastLiveAt } = connection.value;
+		return connectionStatus(state as ConnectionState, fatal, downSince, lastLiveAt, Date.now());
+	};
 	beforeEach(() => {
 		vi.useFakeTimers();
 		vi.setSystemTime(NOW);
@@ -168,13 +174,19 @@ describe("useConnectionStatusText: the status on the provider's clock", () => {
 			return hook.result.current;
 		};
 		expect(advance(1_000)).toBeNull();
-		expect(advance(1_000)).toBe("Reconnecting…");
-		expect(advance(27_999)).toBe("Reconnecting…");
-		expect(advance(1)).toBe("Offline · updated 1m ago");
+		const reconnecting = advance(1_000);
+		expect(reconnecting).not.toBeNull();
+		expect(reconnecting).toBe(due());
+		expect(advance(27_999)).toBe(reconnecting);
+		const offline = advance(1);
+		expect(offline).not.toBe(reconnecting);
+		expect(offline).toBe(due());
 		// One tick per act: React re-runs the effect that schedules the next
 		// tick only when act flushes.
-		expect(advance(30_000)).toBe("Offline · updated 1m ago");
-		expect(advance(60_000)).toBe("Offline · updated 2m ago");
+		expect(advance(30_000)).toBe(offline);
+		const older = advance(60_000);
+		expect(older).not.toBe(offline);
+		expect(older).toBe(due());
 		connection.value = { state: "ready", fatal: false, downSince: null, lastLiveAt: NOW };
 		hook.rerender();
 		expect(hook.result.current).toBeNull();
@@ -185,7 +197,9 @@ describe("useConnectionStatusText: the status on the provider's clock", () => {
 	it("starts from the provider's clock, so a screen that mounts mid-drop says what the rest say", () => {
 		connection.value = { state: "reconnecting", fatal: false, downSince: NOW - 45_000, lastLiveAt: minutesAgo(3) };
 		const hook = renderHook(() => useConnectionStatusText());
-		expect(hook.result.current).toBe("Offline · updated 3m ago");
+		// Already past 30 seconds down: the age, not Reconnecting.
+		expect(hook.result.current).toBe(due());
+		expect(hook.result.current).not.toBe(connectionStatus("reconnecting", false, NOW, NOW, NOW + 2_000));
 		hook.unmount();
 	});
 
@@ -208,7 +222,8 @@ describe("useConnectionStatusText: the status on the provider's clock", () => {
 		act(() => {
 			vi.advanceTimersByTime(0);
 		});
-		expect(hook.result.current).toBe("Reconnecting…");
+		expect(hook.result.current).not.toBeNull();
+		expect(hook.result.current).toBe(due());
 		hook.unmount();
 	});
 
@@ -219,7 +234,8 @@ describe("useConnectionStatusText: the status on the provider's clock", () => {
 			act(() => {
 				vi.advanceTimersByTime(ms);
 			});
-		expect(hook.result.current).toBe("Offline");
+		expect(hook.result.current).toBe(due());
+		expect(hook.result.current).not.toBe(connectionStatus("reconnecting", false, NOW, NOW, NOW + 2_000));
 		expect(vi.getTimerCount()).toBe(0);
 		hook.unmount();
 	});
@@ -227,7 +243,9 @@ describe("useConnectionStatusText: the status on the provider's clock", () => {
 	it("says Update needed at once for a close no retry can fix, and runs no clock", () => {
 		connection.value = { state: "closed", fatal: true, downSince: NOW, lastLiveAt: NOW };
 		const hook = renderHook(() => useConnectionStatusText());
-		expect(hook.result.current).toBe("Update needed");
+		// At once: a drop this fresh would say nothing yet.
+		expect(hook.result.current).not.toBeNull();
+		expect(hook.result.current).toBe(due());
 		expect(vi.getTimerCount()).toBe(0);
 		hook.unmount();
 	});

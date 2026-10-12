@@ -50,7 +50,7 @@ func runModels(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 		return nil
 	default:
 		printModelsUsage(stderr)
-		return fmt.Errorf("unknown models command %q", args[0])
+		return &unknownSubcommandError{group: "models", name: args[0]}
 	}
 }
 
@@ -63,7 +63,7 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		return unexpectedArguments(fs)
 	}
 	r, _, err := loadCLIRegistryWithNotices(stderr)
 	if err != nil {
@@ -240,7 +240,7 @@ func runModelsRefresh(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		return unexpectedArguments(fs)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

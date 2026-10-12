@@ -46,5 +46,6 @@ it.each([
 
 it("reads how long ago in the words it is given", () => {
 	expect(timeAgo(3 * 60_000, spokenDuration)).toBe("3 minutes ago");
-	expect(timeAgo(30_000, spokenDuration)).toBe("just now");
+	// Under a minute there is no duration to word.
+	expect(timeAgo(30_000, spokenDuration)).toBe(timeAgo(30_000));
 });

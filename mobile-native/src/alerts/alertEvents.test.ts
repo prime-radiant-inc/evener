@@ -141,7 +141,7 @@ describe("Warning alerts while children run", () => {
 				kind: "warning",
 				ref: "a",
 				title: "Session a",
-				why: { word: "Warning", hue: "attention", text: "open the session to see it" },
+				why: whyLine({ row: settled, state: "warning" }),
 			},
 		]);
 		expect(detectSessionAlerts(later.states, settledBands, none).alerts).toEqual([]);

@@ -99,6 +99,10 @@ func runAskResponderLoop(ctx context.Context, sess *agent.Session, cfg runConfig
 	return result, nil
 }
 
+// errPendingAskArgumentsUnrecorded identifies a pending question whose ask_user
+// call arguments were never recorded, so there is nothing to send a responder.
+var errPendingAskArgumentsUnrecorded = errors.New("a question is pending but its ask_user arguments were not recorded (the turn failed and its asks were rebuilt from the transcript); ending with it unanswered")
+
 // askResponderPayload builds the responder's stdin: every pending ask_user
 // call's own arguments (Session.PendingAskArguments — durable session
 // state, not the best-effort event stream), parsed into their full
@@ -116,7 +120,7 @@ func askResponderPayload(pendingCallArgs [][]byte) ([]byte, error) {
 		// The loop calls this only while a question is pending, so an empty
 		// list means the pending set was rebuilt from the transcript (after a
 		// failed turn), which records no call arguments to send.
-		return nil, errors.New("a question is pending but its ask_user arguments were not recorded (the turn failed and its asks were rebuilt from the transcript); ending with it unanswered")
+		return nil, errPendingAskArgumentsUnrecorded
 	}
 	return json.Marshal(struct {
 		Questions []agent.AskUserQuestion `json:"questions"`

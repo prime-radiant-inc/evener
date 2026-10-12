@@ -115,6 +115,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 				<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
 					<SymbolView name="hand.raised.circle.fill" tintColor={palette.attention} size={22 * scale} />
 					<Text
+						testID="approval-wants"
 						allowFontScaling={allowFontScaling}
 						style={{ flex: 1, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
 					>
@@ -127,7 +128,10 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 				>
 					{card.target ? `${card.tool}  ${wrapAfterSlashes(card.target)}` : card.tool}
 				</Text>
-				<Text {...body}>{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}</Text>
+				<Text testID="approval-scope" {...body}>
+					{card.scope}
+					{card.partiallyRan ? <Text testID="approval-partially-ran"> Part of this may already have run.</Text> : null}
+				</Text>
 				{waiting > 0 ? (
 					<Text
 						allowFontScaling={allowFontScaling}
@@ -151,6 +155,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 			{controls ? (
 				<>
 					<Pressable
+						testID={`approval-allow:${card.primary.kind}`}
 						accessibilityRole="button"
 						accessibilityLabel={card.primary.label}
 						accessibilityHint={card.primary.detail}
@@ -186,6 +191,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 						</Text>
 					</Pressable>
 					<Pressable
+						testID="approval-deny"
 						accessibilityRole="button"
 						accessibilityLabel="Deny"
 						accessibilityState={{ disabled: off }}
