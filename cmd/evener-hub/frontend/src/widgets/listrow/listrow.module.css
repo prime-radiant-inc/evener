@@ -135,10 +135,10 @@
   color: var(--ink-low);
 }
 
-/* Phone tap floor (--tap-min, tokens.css's phone block). A read-only
+/* Tap floor (--tap-min, phones and coarse pointers). A read-only
  * collection row takes it too, so it stays the same row as its tappable
  * twin. */
-@media (max-width: 899px) {
+@media (max-width: 899px), (pointer: coarse) {
   .collection,
   .interactive {
     min-height: var(--tap-min);
