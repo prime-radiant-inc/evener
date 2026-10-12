@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,16 +23,18 @@ import (
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
-// TestDocumentAnnotationBrowserJourney is the early production-stack journey
-// for document annotations. It drives the real embedded SPA in real Chrome
-// against a real evener-hub process and the real daemon it spawns (only the LLM
-// provider is scripted), opens the actual document from a real session file
-// card, selects the literal FIRST passage with real CDP mouse input, and then
-// exercises the full annotation journey: the comment Send, the literal saved
-// note, the independent clipped geometry and the unchanged-source reopen. The
-// driver reports the five required assertion names, and this test validates
-// them independently and requires zero forbidden mutations and zero console
-// errors.
+// TestDocumentAnnotationBrowserJourney is the full-stack journey for document
+// annotations. It drives the real embedded SPA in real Chrome against a real
+// evener-hub process and the real daemon it spawns (only the LLM provider is
+// scripted), opens the actual document from a real session file card, selects
+// the literal FIRST passage with real CDP mouse input, and then exercises the
+// full annotation journey: the comment Send, the exact original-session draft,
+// the literal saved note reached through a genuine highlight click, the
+// independent clipped geometry, the unchanged-source reopen with a fresh real
+// IndexedDB read, and the preservation of unrelated drafts with correct
+// original-session routing. The driver reports the five required assertion
+// names, and this test validates them independently and requires zero
+// forbidden mutations and zero console errors.
 //
 // A four-minute test-body tripwire bounds the whole run. The authenticated URL
 // travels on the driver's stdin only; the token never appears in process
@@ -46,27 +47,15 @@ const annotationBrowserTripwire = 4 * time.Minute
 // driver asserts. It is NOT the synthetic repository REFERENCE/APPENDED golden.
 const annotationSource = "First occurrence: same\n\nOther context for a second occurrence is nearby: same\n"
 
-// annotationLongSource builds the overflowing long-document fixture. It must
-// produce byte-identical output to fixtures.mjs's LONG_SOURCE so the hub's
-// /doc/file ETag equals the driver's pinned LONG_SOURCE_SHA256; the wrapper
-// below pins that literal hash before starting the browser stack.
-func annotationLongSource() string {
-	var builder strings.Builder
-	builder.WriteString("Long document opening target: same\n\n")
-	for index := 1; index <= 160; index++ {
-		if index > 1 {
-			builder.WriteString("\n\n")
-		}
-		builder.WriteString("Section ")
-		builder.WriteString(strconv.Itoa(index))
-		builder.WriteString(" of the long fixture document.")
-	}
-	builder.WriteString("\n")
-	return builder.String()
-}
-
 // annotationSetupInput is the exact user text the scripted setup turn carries.
 const annotationSetupInput = "ANNOTATION_FIXTURE"
+
+// annotationOtherInput is the exact user text the SECOND session's opening turn
+// carries. That session exists so the journey can hold a real unrelated-session
+// composer draft: the driver opens it, types a draft through the production
+// composer, then returns to the annotation session. The provider observer answers
+// this turn's one round as setup traffic too.
+const annotationOtherInput = "ANNOTATION_OTHER_FIXTURE"
 
 // annotationDriverResult is the inventory the driver writes to result.json. The
 // Go test derives the required assertion names below itself; it never trusts
@@ -95,76 +84,17 @@ type annotationServerState struct {
 }
 
 // annotationJourneyAssertions is derived here, independently of what the driver
-// emits. These are the short-document sentinel's own names.
+// emits. These are the retained short-document journey's own names.
 var annotationJourneyAssertions = []string{
 	"finished-selection", "exact-draft", "exact-highlight", "literal-note", "unchanged-reopen",
 }
 
-// annotationLongDocumentAssertions is the long-document journey's own list: the
-// visible control surface, the real save, the visible revealed note and the
-// independent clipped-band oracle.
-var annotationLongDocumentAssertions = []string{
-	"finished-selection", "controls-visible", "exact-draft", "note-visible", "exact-highlight",
-}
-
-// annotationNoteStackAssertions is the note-stack journey's own list: real
-// overlapping saves plus the bounded, wrapped and reachable revealed stack.
-var annotationNoteStackAssertions = []string{
-	"finished-selection", "exact-stack-notes", "stack-bounded", "unbroken-wrapped", "stack-reachable",
-}
-
-// annotationBrowserSpec selects one real browser journey: the literal fixture
-// document written into the session workspace, the driver scenario name that
-// chooses the assertion continuation, and the assertion names this test
-// validates independently.
-type annotationBrowserSpec struct {
-	scenario string
-	source   string
-	required []string
-}
-
-// TestDocumentAnnotationBrowserJourney is the unchanged short-document journey.
+// TestDocumentAnnotationBrowserJourney is the one retained full-stack journey.
 func TestDocumentAnnotationBrowserJourney(t *testing.T) {
-	runAnnotationBrowserGuard(t, annotationBrowserSpec{
-		scenario: "short",
-		source:   annotationSource,
-		required: annotationJourneyAssertions,
-	})
+	runAnnotationBrowserGuard(t)
 }
 
-// TestDocumentAnnotationBrowserLongDocument drives the same real hub, SPA,
-// IndexedDB and AppWire against a genuinely overflowing fixture, requiring the
-// comment controls and the revealed note to sit at the reading position.
-func TestDocumentAnnotationBrowserLongDocument(t *testing.T) {
-	source := annotationLongSource()
-	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(source))); got != "d202b4b90d7caa31111dc04884d9cc300b79ea2070edaa344023ae377540ddae" {
-		t.Fatalf("the long fixture bytes drifted from the pinned SHA256: got %s", got)
-	}
-	runAnnotationBrowserGuard(t, annotationBrowserSpec{
-		scenario: "long",
-		source:   source,
-		required: annotationLongDocumentAssertions,
-	})
-}
-
-// TestDocumentAnnotationBrowserNoteStack saves three overlapping notes through
-// real finished selections, the editor and Send, then requires the complete
-// revealed stack to be bounded inside the actual scroll body, unbroken text to
-// wrap with no hidden horizontal remainder, and every note's end to be reachable
-// by genuine wheel input inside the stack.
-func TestDocumentAnnotationBrowserNoteStack(t *testing.T) {
-	source := annotationLongSource()
-	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(source))); got != "d202b4b90d7caa31111dc04884d9cc300b79ea2070edaa344023ae377540ddae" {
-		t.Fatalf("the note-stack fixture bytes drifted from the pinned SHA256: got %s", got)
-	}
-	runAnnotationBrowserGuard(t, annotationBrowserSpec{
-		scenario: "notestack",
-		source:   source,
-		required: annotationNoteStackAssertions,
-	})
-}
-
-func runAnnotationBrowserGuard(t *testing.T, spec annotationBrowserSpec) {
+func runAnnotationBrowserGuard(t *testing.T) {
 	if testing.Short() {
 		t.Skip("browser guard requires Chrome and real daemons")
 	}
@@ -189,7 +119,7 @@ func runAnnotationBrowserGuard(t *testing.T, spec annotationBrowserSpec) {
 
 	// Replace the owned fixture's bytes with the literal fixture document before
 	// the scripted read. This is test workspace state, never a repository file.
-	if err := os.WriteFile(stack.readableFile, []byte(spec.source), 0o600); err != nil {
+	if err := os.WriteFile(stack.readableFile, []byte(annotationSource), 0o600); err != nil {
 		t.Fatalf("write the literal fixture document: %v", err)
 	}
 
@@ -209,49 +139,53 @@ func runAnnotationBrowserGuard(t *testing.T, spec annotationBrowserSpec) {
 		}
 	})
 
-	writeAnnotationSourceIdentity(t, artifacts, spec.source)
+	writeAnnotationSourceIdentity(t, artifacts, annotationSource)
 
-	// The scripted provider observer. It answers ONLY the setup turn and then
-	// parks on provider.Next with an explicit cancellation boundary the test
-	// joins after its final real-server observation, so an unexpected extra
-	// session-loop request cannot slip past an abandoned observer. A cancellation
-	// caused by the test's own observerCancel is not a provider event.
+	// The scripted provider observer. It answers the annotation session's setup
+	// turn and the second session's setup turn, then parks on provider.Next with
+	// an explicit cancellation boundary the test joins after its final
+	// real-server observation, so an unexpected extra session-loop request cannot
+	// slip past an abandoned observer. A cancellation caused by the test's own
+	// observerCancel is not a provider event.
 	observerCtx, observerCancel := context.WithCancel(ctx)
 	defer observerCancel()
 	observerDone := make(chan struct{})
 	scriptErr := make(chan error, 1)
 	go func() {
 		defer close(observerDone)
-		round1, err := provider.Next(observerCtx.Done())
-		if err != nil {
-			if observerCtx.Err() == nil {
-				scriptErr <- fmt.Errorf("initial provider request: %w", err)
+		// The annotation session's rounds are counted positionally: the first is
+		// the read_file round, the second ends the turn, and a third is an
+		// annotation action (or the draft) reaching the model, which must fail.
+		// The second session contributes exactly one round and is routed by its
+		// own prompt text.
+		annotationRounds := 0
+		for {
+			call, err := provider.Next(observerCtx.Done())
+			if err != nil {
+				if observerCtx.Err() == nil {
+					scriptErr <- fmt.Errorf("provider observer stopped before the join boundary: %w", err)
+				}
+				return
 			}
-			return
-		}
-		if !round1.Contains(annotationSetupInput) {
-			scriptErr <- fmt.Errorf("initial provider request lost the fixture prompt; messages:\n%s", strings.Join(round1.Texts(), "\n"))
-			return
-		}
-		round1.RespondToolCall("read_file", map[string]any{"file_path": stack.readableFile})
-		round2, err := provider.Next(observerCtx.Done())
-		if err != nil {
-			if observerCtx.Err() == nil {
-				scriptErr <- fmt.Errorf("provider request after the read_file round: %w", err)
+			if call.Contains(annotationOtherInput) && !call.Contains(annotationSetupInput) {
+				call.RespondToolCall("communicate", communicateArgs("annotation other fixture ready"))
+				continue
 			}
-			return
-		}
-		round2.RespondToolCall("communicate", communicateArgs("annotation fixture ready"))
-		// The opening turn is setup traffic. A further session-loop request means
-		// an annotation action (or the draft) reached the model, which must fail.
-		call, err := provider.Next(observerCtx.Done())
-		if err != nil {
-			if observerCtx.Err() == nil {
-				scriptErr <- fmt.Errorf("provider observer stopped before the join boundary: %w", err)
+			if !call.Contains(annotationSetupInput) {
+				scriptErr <- fmt.Errorf("unexpected provider input during the annotation window: %s", strings.Join(call.Texts(), "\n"))
+				return
 			}
-			return
+			annotationRounds++
+			switch annotationRounds {
+			case 1:
+				call.RespondToolCall("read_file", map[string]any{"file_path": stack.readableFile})
+			case 2:
+				call.RespondToolCall("communicate", communicateArgs("annotation fixture ready"))
+			default:
+				scriptErr <- fmt.Errorf("unexpected provider input during the annotation window: %s", strings.Join(call.Texts(), "\n"))
+				return
+			}
 		}
-		scriptErr <- fmt.Errorf("unexpected provider input during the annotation window: %s", strings.Join(call.Texts(), "\n"))
 	}()
 
 	// Idempotent join for the provider observer: cancel it, wait for it to
@@ -302,6 +236,29 @@ func runAnnotationBrowserGuard(t *testing.T, spec annotationBrowserSpec) {
 	requireAnnotationSetupInput(t, "server baseline", baseline)
 	writeAnnotationServerEvidence(t, artifacts, "server-baseline.json", baseline)
 
+	// A real SECOND session, so the journey can hold a genuine unrelated-session
+	// composer draft. It is started and settled before the driver, and its own
+	// setup turn is answered by the observer above.
+	startedOther, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+		Harness: "evener", CWD: stack.workDir, Model: stack.model,
+		Input:           []appwire.InputItem{{Type: "text", Text: annotationOtherInput}},
+		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRef := threadRef(startedOther.Thread)
+	t.Cleanup(func() {
+		cleanupCtx, stop := context.WithTimeout(context.Background(), 20*time.Second)
+		defer stop()
+		if _, err := clientRequest[appwire.EmptyResponse](cleanupCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: otherRef}); err != nil {
+			t.Errorf("thread/shutdown left the second daemon running: %v", err)
+		}
+	})
+	awaitThread(ctx, t, client, otherRef, "the second session's opening turn to finish", func(thread appwire.Thread) bool {
+		return thread.Evener.ActiveTurnID == "" && thread.Evener.TurnCount > 0
+	})
+
 	// Create the driver's owned artifact files BEFORE it starts (its milestone
 	// and control appends assume they exist).
 	for _, name := range []string{"control.jsonl", "milestones.jsonl"} {
@@ -314,7 +271,7 @@ func runAnnotationBrowserGuard(t *testing.T, spec annotationBrowserSpec) {
 		"url":           hubedge.AuthURLFor("http://"+stack.addr, stack.token),
 		"artifactDir":   artifacts,
 		"rootRef":       rootRef,
-		"scenario":      spec.scenario,
+		"otherRef":      otherRef,
 		"controlPath":   filepath.Join(artifacts, "control.jsonl"),
 		"milestonePath": filepath.Join(artifacts, "milestones.jsonl"),
 	})
@@ -366,17 +323,17 @@ func runAnnotationBrowserGuard(t *testing.T, spec annotationBrowserSpec) {
 		skillGuardLogDriverTail(t, log.Name())
 		if haveResult {
 			t.Errorf("annotation browser journey stopped: %v\ncompleted assertions: %v\nblocked assertions: %v\nforbidden mutation calls: %d\nconsole errors: %d\nevidence: %s",
-				runErr, annotationReached(result, spec.required, true), result.Blocked, result.ForbiddenMutationCalls, result.ConsoleErrors, artifacts)
+				runErr, annotationReached(result, annotationJourneyAssertions, true), result.Blocked, result.ForbiddenMutationCalls, result.ConsoleErrors, artifacts)
 		}
 		t.Fatalf("annotation browser journey did not complete: %v (evidence: %s)", runErr, artifacts)
 	}
 
-	// Clean pass shape (unreached while the reader UI is absent): every
-	// required assertion holds and the annotation issued no input mutation.
+	// Clean pass shape: every required assertion holds and the annotation issued
+	// no input mutation.
 	if !haveResult {
 		t.Fatalf("the driver exited zero without a result.json inventory (evidence: %s)", artifacts)
 	}
-	for _, name := range spec.required {
+	for _, name := range annotationJourneyAssertions {
 		if !result.Assertions[name] {
 			t.Errorf("missing passing assertion %s", name)
 		}

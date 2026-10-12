@@ -1,13 +1,23 @@
-# documentannotationguard — early browser annotation journey
+# documentannotationguard — browser annotation checks
 
-The early production-stack guard for the document-annotation journey. It drives
-the **real** hub, SPA, IndexedDB and AppWire in real Chrome; **only the LLM
-provider is scripted**. It opens the actual document from a real session file
-card, selects the literal FIRST passage with real CDP mouse input, and then runs
-the whole journey: the annotation comment Send, the literal saved note, the
-independent clipped geometry, and the unchanged-source reopen.
+Two browser checks for document annotations, both registered in the standard
+browser gate (`make test-web-browser`):
 
-## What it proves
+- **One full-stack journey** (`run.mjs`, driven by the Go test
+  `TestDocumentAnnotationBrowserJourney`) drives the **real** hub, SPA,
+  IndexedDB and AppWire in real Chrome; **only the LLM provider is scripted**.
+- **Small production-component cases** (`components.mjs`) mount the real
+  scaffold, markdown renderer, source binding, saved-highlight overlay and
+  comment controls through Vite and drive them with genuine CDP input.
+
+## The full-stack journey
+
+It opens the actual document from a real session file card, selects the literal
+FIRST passage with real CDP mouse input, and then runs the whole journey: the
+annotation comment Send, the literal saved note, the independent clipped
+geometry, and the unchanged-source reopen.
+
+### What it proves
 
 - The production stack boots for one real session whose scripted opening turn
   calls `read_file` on the fixture `NOTES.md` and finishes through
@@ -22,10 +32,6 @@ independent clipped geometry, and the unchanged-source reopen.
   trusted `pointerdown`/`pointerup`/`mousemove` observations captured by passive
   listeners installed **before** the input; the `selectionchange` trace holds
   selected strings only and carries no trust flag.
-- The guard reacquires the actual document scope AND its child scroll owner from
-  the rendered literal text (never the optional `data-pane-scaffold` marker),
-  and runs the SAME independent Range/actual-clip measurement used as the later
-  geometry comparison — finite positive clipped fragments, 1 CSS pixel bound.
 - `exact-draft` — the document-scoped comment editor takes the literal note and
   its `Send` appends the literal reference to the **original mounted session
   composer** draft, which then renders exactly `JOURNEY_APPENDED` (bounded wait,
@@ -49,7 +55,9 @@ independent clipped geometry, and the unchanged-source reopen.
   compares the retained original operation/capture/note/destination and draft
   token (and applied draft revision) against fresh rows, re-runs the rendered
   draft, literal note and clipped geometry assertions, and requires no second
-  append before the zero-input checks.
+  append before the zero-input checks. The whole `composerDrafts` store is
+  compared, so every unrelated draft is preserved by value, and the target draft
+  row must route to the original session ref.
 - Only the LLM provider is scripted; the annotation action is proven to send no
   agent input. The durable storage read refuses a missing
   `evener-mutation-outbox` database or a missing required store instead of
@@ -61,7 +69,7 @@ independent clipped geometry, and the unchanged-source reopen.
   server thread state is read through the real public seam before and after the
   driver, and the provider observer is joined at an explicit boundary.
 
-The five plan-named assertions the Go test validates independently are
+The five assertion names the Go test validates independently are
 `finished-selection`, `exact-draft`, `exact-highlight`, `literal-note` and
 `unchanged-reopen`.
 
@@ -73,7 +81,37 @@ only as `selectionchange` strings; `selectionchange` carries no trust flag, so
 no trust is claimed for those entries. Pointer trust and the `buttons===1` drag
 move are asserted from the `pointerdown`/`pointerup`/`mousemove` records.
 
-## Accessible contract the reader exposes
+## The production-component cases
+
+`components.mjs` mounts the production document-annotation entry
+(`src/dev/documentannotationguard-entry.tsx`) in a real pane and drives these
+cases with genuine input. All seven are expected-pass:
+
+- `pane-resize` — a pane-only width change (no browser viewport resize) reflows
+  the text; the saved highlight's painted extent must follow the browser's own
+  text ranges within a one-pixel tolerance, and the selected glyphs must stay
+  visible.
+- `nested-scroll` — a genuine wheel over a pending reference nested in a long
+  scrollable note stack scrolls that reference, leaves the outer stack and
+  document unmoved, and is not cancelled; the outer stack also reaches its
+  independently computed maximum through genuine wheel input.
+- `selection` — genuine forward and reverse drags across a saved band.
+- `selection-shift` — genuine Shift+Arrow adjustment of the selection.
+- `copy` — genuine Ctrl+C read back at the browser clipboard boundary.
+- `overlap-access` — hover, keyboard and emulated-tap access, each from a fresh
+  unrevealed state, with before/after focus and reading-position checks. Touch
+  is explicitly emulation, not physical-phone behavior.
+- `comment-controls` — the note editor and Send sit inside the real footer,
+  pane and viewport clips, and a long saved note really wraps and stays
+  reachable inside the stack's client clip.
+
+The harness serves its page through Vite's `/@fs/` route rather than its bare
+path: the dev server proxies every URL whose prefix is `/doc` to a running
+hub, and the authorized guard page is named `documentannotationguard.html`, so
+the bare URL would be answered by the hub with 401. `/@fs/` serves the same file
+from the allowed frontend root with no proxy prefix.
+
+## The component page's accessible contract
 
 The reader UI exposes this contract and does not require a new production hook
 just to be testable:
@@ -91,19 +129,30 @@ just to be testable:
 ## Prerequisites
 
 - Go toolchain, Node, and Chrome/Chromium on `PATH`.
-- The production frontend built and embedded: `make build-web`.
+- The full-stack journey needs the production frontend built and embedded:
+  `make build-web`. The component cases mount components from source through
+  Vite and do not need the dist.
 
 ## Run
 
-From the repository root:
+The full-stack journey, from the repository root:
 
 ```sh
-go test -tags browserguard ./cmd/evener-hub -run '^TestDocumentAnnotationBrowser(Journey|LongDocument|NoteStack)$' -count=1 -v
+go test -tags browserguard ./cmd/evener-hub -run '^TestDocumentAnnotationBrowserJourney$' -count=1 -v
 ```
+
+The component cases, from `cmd/evener-hub/frontend`:
+
+```sh
+npm run documentannotationguard
+```
+
+Both are part of `make test-web-browser`. The gate runs real browsers under
+load-aware slots.
 
 ### Two distinct visibility roots
 
-The guard measures containment against TWO different roots on purpose:
+The journey measures containment against TWO different roots on purpose:
 
 - **Pane root** (`__annotationDocumentScope`, the scroll owner's parent): the
   visible pane that legally contains the scaffold footer. Footer controls — the
@@ -113,78 +162,27 @@ The guard measures containment against TWO different roots on purpose:
   it and is checked against this smaller root, so a note rectangle that extends
   into the footer is *not* accepted as visible.
 
-The pure containment rules live in `assertions.mjs`; the nested Vitest suite
+The pure containment rules live in `assertions.mjs`; the regression
 `assertions.test.mjs` exercises them directly (pane-inside/body-outside rejected,
-ordinary contained accepted, empty rectangles rejected, the 1 CSS pixel tolerance
-honored without broadening). Run it through the package script:
+ordinary contained accepted, empty rectangles rejected, the 1 CSS pixel
+tolerance honored without broadening). It runs under both the package's Vitest
+runner and `node --test`:
 
 ```sh
-cd cmd/evener-hub/frontend && npm test -- scripts/documentannotationguard/assertions.test.mjs
+node --test scripts/documentannotationguard/assertions.test.mjs
 ```
-
-`TestDocumentAnnotationBrowserJourney` is the short-document sentinel above.
-`TestDocumentAnnotationBrowserLongDocument` passes `"scenario": "long"` in the
-driver's fixture input (test-only) so the same driver runs the same real stack
-against the overflowing `LONG_SOURCE` fixture in `fixtures.mjs`:
-
-- `finished-selection` — a genuine CDP drag selects the early `same` at
-  1:31-1:34.
-- `controls-visible` — observed BEFORE any scrolling/focusing helper: the note
-  editor and the Send and Cancel controls are each fully inside the visible
-  PANE root (the footer is legal there), the finished selection did not focus
-  the editor, and the reading position moved at most 1 CSS pixel. A normal-flow
-  box after the whole document reports all three controls outside the pane.
-- `exact-draft` — the same real save/literal-draft/storage oracles as the short
-  journey, against the long fixture's own literal SHA256 and reference.
-- `note-visible` — the note is reached through a genuine highlight click, and
-  the revealed `[data-annotation-note]` rectangle is fully inside the actual
-  SCROLL-BODY clip without the reveal jumping the reading position to the
-  document bottom.
-- `exact-highlight` — the unchanged independent clipped-band oracle.
-
-Each test independently validates its own assertion names. The long journey adds
-`controls-visibility.json` and `note-visibility.json` receipts (clip, element
-rectangles, active element, reading position) beside the shared artifacts.
-A missing control element before the drag is a **setup** failure, not an
-assertion failure.
-
-`TestDocumentAnnotationBrowserNoteStack` passes `"scenario": "notestack"` and
-runs the same real stack against the same overflowing fixture, but saves three
-overlapping notes through real finished selections, the editor and `Send`, then
-reveals the stack through a real highlight click and checks the required
-long-note behavior on the unchanged source:
-
-- `stack-bounded` — the complete revealed stack is inside the actual scroll-body
-  clip; a long multiline note or enough overlaps otherwise run past the body.
-- `unbroken-wrapped` — an unbroken token wraps with no hidden horizontal
-  remainder (`scrollWidth` within the client width).
-- `stack-reachable` — across bounded, settled genuine wheel steps, each note's
-  OWN beginning text and end marker must become visible, measured as DOM Range
-  fragments inside the intersection of the note stack, the actual scroll-body
-  clip and the browser viewport (`markerVisible`). A tall note's beginning and
-  end appear at different internal scroll offsets, and the whole note is never
-  required to fit at once. A non-scrollable or stuck stack trips a bounded
-  failure guard instead of looping. The document reading position must stay
-  within 1 CSS pixel before and after the reveal and at each step.
-
-Creating the overlapping stack surfaced a real setup problem: the preserved
-diagnostic milestones show a planned drag endpoint inside a saved band and a
-later Selection focus of BUTTON, while the passive input receipt stops at the
-earlier drag. That supports overlay interference as the cause but does not by
-itself prove the second release target or the whole root cause. The scenario
-picks endpoints outside every earlier band; selecting text underneath a saved
-band remains an unqualified Task6 selection/copy obligation, not resolved here.
 
 ## Expected result
 
-The journey passes all five assertions: `result.json` shows them all `true`,
-`failure` `null`, `blocked` empty, `forbiddenMutationCalls` `0` and
-`consoleErrors` `0`. A compile error, a missing element before the drag, or a
-timeout before selection is a **setup** failure, not an assertion failure.
+The full-stack journey passes its five assertions; `result.json` shows each one
+`true`, `failure` `null`, `blocked` empty, `forbiddenMutationCalls` `0` and
+`consoleErrors` `0`. The component cases report seven PASS verdicts and exit
+zero. A compile error, a missing element before the drag, or a timeout before
+selection is a **setup** failure, not an assertion failure.
 
 ## Artifacts
 
-Written into a kept temp directory path printed as
+The full-stack journey writes into a kept temp directory path printed as
 `annotation browser evidence: …`:
 
 - Success receipts: `result.json` (assertion inventory, failure, blocked,
@@ -192,34 +190,42 @@ Written into a kept temp directory path printed as
   commit, worktree dirtiness, fixture identity, embedded frontend hash),
   `doc-reads.json`, `rpc-frames.json`, `console.json`, `input-observations.json`,
   `geometry-preflight.json`, `highlight-geometry.json`, `storage-baseline.json`,
-  `storage-final.json`, `server-baseline.json`, `server-final.json`, and
-  `driver.log` (the driver's stdout/stderr).
+  `drafts-baseline.json`, `drafts-final.json`, `storage-final.json`,
+  `server-baseline.json`, `server-final.json`, and `driver.log` (the driver's
+  stdout/stderr).
 - Failure-only: `failure.png` and `failure.html` are captured only when the
   journey throws; a passing run writes neither.
 
 Set `ANNOTATIONGUARD_KEEP_ARTIFACTS=1` to keep the artifact directory on a pass.
 
+The component cases write their receipts to a temporary directory (created with
+`mkdtempSync`), never into the repository or `.superpowers/`. Set
+`DOCUMENTANNOTATIONGUARD_EVIDENCE_DIR` to keep a run's receipts somewhere
+specific.
+
 ## Cleanup
 
-The driver owns and stops its own Chrome/profile; the hub and daemon are reaped
-by `startHubStack` and `thread/shutdown`. On a clean pass the artifact directory
-is removed (unless `ANNOTATIONGUARD_KEEP_ARTIFACTS=1` is set); on failure it is
-kept.
+The journey driver owns and stops its own Chrome/profile; the hub and daemon are
+reaped by `startHubStack` and `thread/shutdown`. On a clean pass the artifact
+directory is removed (unless `ANNOTATIONGUARD_KEEP_ARTIFACTS=1` is set); on
+failure it is kept. The component harness owns and stops its own Chrome, profile
+and Vite dev server.
 
 ## Scope and limits
 
-This early desktop journey does **not** qualify the broader fault, multi-tab or
-responsive matrix, and it does **not** prove genuine physical-phone selection or
-an OS on-screen keyboard; those remain later work. It is not a full feature
-release claim. Native is deferred.
+These desktop checks do **not** qualify the broader fault, multi-tab or
+responsive matrix, and they do **not** prove genuine physical-phone selection or
+an OS on-screen keyboard; those remain later work. The component touch case is
+emulation. This is not a full feature release claim. Native is deferred.
 
 ## Layout
 
-- `run.mjs` — the journey driver.
-- `fixtures.mjs` — literal-only fixtures (`SOURCE`, `FIRST`, the literal SHA256,
-  `JOURNEY_REFERENCE`/`JOURNEY_APPENDED`, `NOTE`). Nothing here derives from
-  production mapper/renderer/context/formatter code.
+- `run.mjs` — the full-stack journey driver.
+- `components.mjs` — the production-component cases.
+- `component-fixtures.mjs` — literal fixtures for the component cases.
+- `fixtures.mjs` — literal-only fixtures for the journey (`SOURCE`, `FIRST`, the
+  literal SHA256, `JOURNEY_REFERENCE`/`JOURNEY_APPENDED`, `NOTE`). Nothing here
+  derives from production mapper/renderer/context/formatter code.
 - `assertions.mjs` — the pure containment rules for the two visibility roots.
-- `assertions.test.mjs` — the Vitest regression for those rules (nested scripts
-  suite, collected by the package's Vitest runner).
+- `assertions.test.mjs` — the regression for those rules.
 - `README.md` — this document.

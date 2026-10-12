@@ -1422,7 +1422,7 @@ wait for the real evidence global separately, with its own timeout.
 
 The full-stack skill guard is a different KIND of check:
 
-- **`web-skillguard`** (`make test-web-browser`'s last step;
+- **`web-skillguard`** (`make test-web-browser`;
   `cmd/evener-hub/skill_composer_browser_test.go` driving
   `cmd/evener-hub/frontend/scripts/skillguard/run.mjs`, behind the
   `browserguard` build tag) proves canonical SKILL SELECTION through the real
@@ -1441,10 +1441,31 @@ The full-stack skill guard is a different KIND of check:
   dist): `make test-web-browser` builds it first via `build-web`, and the gate
   (`evener-dev dev web-browser-guards`, cmd/evener-dev/webbrowser.go) still
   builds one when the dist is missing rather than skipping.
+- **`docannotationjourney`** (`make test-web-browser`;
+  `document_annotations_browser_test.go`'s `TestDocumentAnnotationBrowserJourney`,
+  behind the `browserguard` build tag, driving
+  `frontend/scripts/documentannotationguard/run.mjs`) is the full-stack
+  document-annotation journey: the production SPA served by a REAL hub in real
+  Chrome, against the real daemon the hub spawns, with only the LLM provider
+  scripted. It proves a genuine selection and comment/Send, the exact
+  original-session draft, saved-note access through a highlight click, the
+  independent clipped highlight geometry, native IndexedDB persistence across an
+  unchanged reopen, preservation of unrelated drafts and correct
+  original-session routing, and zero agent input mutations. It needs the BUILT
+  frontend (the hub serves the embedded dist), which the gate builds first when
+  it is missing, and a Go-owned `unsignalled` lifecycle: its `t.Cleanup` joins
+  the provider observer and reaps the daemon, so an interrupt must wait for it
+  rather than signal it.
 
 These guards are owned by `make test-web-browser`, which is required by the CI web
 job and remains separate from `make lint` and `make test` because it needs
-Chrome.
+Chrome. The gate schedules them through shared load-aware slots: `scripts/web/test-web-browser.sh`
+sizes `BROWSER_GUARD_CONCURRENCY` from the host's spare cores — every guard at
+once on an idle runner, one at a time on a saturated host — and
+`browserGuardSlots` in `cmd/evener-dev/webbrowser.go` reads that value, falling
+back to a single slot only when the environment supplies nothing usable, so the
+default run is load-limited rather than fixed-serial, and
+`BROWSER_GUARD_CONCURRENCY=1` forces one at a time.
 
 Three traps, each of which produced a false-green here. They are listed in the
 order they were found, because each was hiding the next.

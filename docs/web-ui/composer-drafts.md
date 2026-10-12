@@ -83,8 +83,20 @@ resolves a saved note's destination against that retained, still-live source,
 using the existing WeakMap and workspace record, and returns null for a closed,
 replaced or mismatched one. A missing origin stays readable and session-bound; a
 malformed serialized origin is refused by the doc pane's `parseParams`, not read
-as the older origin-less shape. Reader UI, automatic handoff and browser/phone
-qualification are not part of this contract.
+as the older origin-less shape. The reader's selection and highlight surfaces
+are described by the annotation guard; physical-phone qualification remains the
+later-work limit of the annotation delivery, not this draft-storage contract.
+
+[appendAnnotation](../../cmd/evener-hub/frontend/src/stores/browserDraftRepository.ts)
+appends a document annotation's literal reference (whole-file revision plus
+context) to the ordinary draft under the same per-session revision, keyed by the
+document's browser origin and session ref. It edits the same ordinary draft the
+retained composer owns, so an unrelated session's row is never touched and the
+appended reference routes to the original session. It returns no usable capture
+while the source's work remains unsaved, and it never authorizes a recovered or
+expired draft. The document reader's selection, highlight access and the
+full-stack browser qualification are exercised by the
+[annotation guard](../../cmd/evener-hub/frontend/scripts/documentannotationguard/README.md).
 
 ## Submission and cleanup
 
