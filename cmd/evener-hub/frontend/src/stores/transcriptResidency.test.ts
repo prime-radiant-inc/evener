@@ -405,38 +405,42 @@ describe("transcript residency", () => {
 
   test("limits background hydration to two slots and starts queued foreground work first", async () => {
     const model = hydrateThread(currentRead("local:one"), "local:one", 1);
-    const { residency, port } = setup(model);
+    const { residency } = setup(model);
     const refs = ["local:one", "local:two", "local:three", "local:four"];
+    const intents = new Map<string, "background" | "foreground">([
+      ["local:one", "background"],
+      ["local:two", "background"],
+      ["local:three", "background"],
+      ["local:four", "foreground"],
+    ]);
     const gates = new Map(refs.map((ref) => [ref, deferred<void>()]));
     const started: Array<{ ref: string; intent: string }> = [];
-    port.hydrate = async (ref, intent) => {
-      started.push({ ref, intent });
-      await gates.get(ref)?.promise;
-    };
-    for (const ref of refs) {
-      residency.owners(ref, {
-        foreground: ref === "local:four" ? 1 : 0,
-        history: 0,
-        mutationPinned: false,
-        background: 1,
-      });
-    }
-    residency.revoke("local:one", "gap");
-    residency.revoke("local:two", "gap");
-    await vi.waitFor(() => expect(started.map(({ ref }) => ref)).toEqual(["local:one", "local:two"]));
-    residency.revoke("local:three", "gap");
-    residency.revoke("local:four", "gap");
-    expect(residency.snapshot().networkHydrations).toBe(2);
-    gates.get("local:one")?.resolve();
-    await vi.waitFor(() => expect(started.map(({ ref }) => ref)).toEqual(["local:one", "local:two", "local:four"]));
-    expect(started[2]).toEqual({ ref: "local:four", intent: "foreground" });
-    gates.get("local:two")?.resolve();
-    await vi.waitFor(() =>
-      expect(started.map(({ ref }) => ref)).toEqual(["local:one", "local:two", "local:four", "local:three"]),
+    const tasks = refs.map((ref) =>
+      residency.scheduleHydration(ref, intents.get(ref) ?? "background", async () => {
+        started.push({ ref, intent: intents.get(ref) ?? "background" });
+        await gates.get(ref)?.promise;
+      }),
     );
-    gates.get("local:four")?.resolve();
-    gates.get("local:three")?.resolve();
-    await vi.waitFor(() => expect(residency.snapshot().networkHydrations).toBe(0));
+    try {
+      await vi.waitFor(() => expect(started.map(({ ref }) => ref)).toEqual(["local:one", "local:two"]));
+      // A queued foreground task runs before queued background work once a slot frees.
+      expect(residency.snapshot().queuedHydrationRefs).toEqual(["local:four", "local:three"]);
+      expect(residency.snapshot().networkHydrations).toBe(2);
+      gates.get("local:one")?.resolve();
+      await vi.waitFor(() => expect(started.map(({ ref }) => ref)).toEqual(["local:one", "local:two", "local:four"]));
+      expect(started[2]).toEqual({ ref: "local:four", intent: "foreground" });
+      gates.get("local:two")?.resolve();
+      gates.get("local:four")?.resolve();
+      await vi.waitFor(() =>
+        expect(started.map(({ ref }) => ref)).toEqual(["local:one", "local:two", "local:four", "local:three"]),
+      );
+      gates.get("local:three")?.resolve();
+      await Promise.all(tasks);
+      expect(residency.snapshot().networkHydrations).toBe(0);
+    } finally {
+      residency.dispose();
+      await Promise.allSettled(tasks);
+    }
   });
 
   test("queued foreground hydration wins the next real Appwire request slot", async () => {

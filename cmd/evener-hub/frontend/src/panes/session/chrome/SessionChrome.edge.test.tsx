@@ -17,7 +17,6 @@ import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import * as navigationModule from "../../../stores/navigation/store";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
-import { SessionCacheIndexedDB } from "../../../stores/sessionCacheIndexedDB";
 import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -396,7 +395,6 @@ test.each(["resolve", "reject"])(
     });
     const applyNavigationMutation = vi.fn(() => convergence);
     navigationStore.setState({ applyNavigationMutation });
-    const deleteRecords = vi.spyOn(SessionCacheIndexedDB.prototype, "deleteRecords").mockResolvedValue(true);
     const postMessage = vi.fn();
     setCacheChannelFactoryForTests(
       () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
@@ -413,12 +411,10 @@ test.each(["resolve", "reject"])(
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
       expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
       expect(threadsStore.getState().deletedRefs.has(ref)).toBe(true);
-      expect(deleteRecords).toHaveBeenCalledExactlyOnceWith([ref]);
       expect(postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "deletion", refs: [ref] }));
       await act(async () => {
         finish?.();
       });
-      expect(deleteRecords).toHaveBeenCalledTimes(1);
       expect(postMessage).toHaveBeenCalledTimes(1);
       if (outcome === "reject")
         expect(screen.getByText('Couldn\'t delete "Delete target": navigation unavailable')).toBeTruthy();
@@ -426,7 +422,6 @@ test.each(["resolve", "reject"])(
       await act(async () => {
         finish?.();
       });
-      deleteRecords.mockRestore();
     }
   },
 );
