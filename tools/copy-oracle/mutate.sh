@@ -29,6 +29,10 @@ file=$1 subst=$2
 shift 3
 root=$(git rev-parse --show-toplevel)
 cd "$root"
+if ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
+  echo "refusing: $file is not tracked by git, so it cannot be restored" >&2
+  exit 2
+fi
 if ! git diff --quiet -- "$file"; then
   echo "refusing: $file has uncommitted edits; mutate.sh restores it with git restore" >&2
   exit 2

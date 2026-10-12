@@ -150,13 +150,24 @@ def scan_ts(paths_filter):
     return hits, fixtures
 
 
+GO_ESCAPE = re.compile(r"\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2}|.)")
+GO_SIMPLE_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v"}
+
+
 def go_unquote(dq, raw):
+    """A Go string literal's value: raw strings as-is; interpreted strings
+    with their escapes decoded and every other character (em dashes, arrows)
+    left alone."""
     if raw is not None:
         return raw
-    try:
-        return bytes(dq, "utf-8").decode("unicode_escape")
-    except Exception:
-        return dq
+
+    def decode(m):
+        esc = m.group(1)
+        if esc[0] in "uUx":
+            return chr(int(esc[1:], 16))
+        return GO_SIMPLE_ESCAPES.get(esc, esc)
+
+    return GO_ESCAPE.sub(decode, dq)
 
 
 def scan_go(paths_filter):
