@@ -2,7 +2,7 @@ package hub
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -27,7 +27,7 @@ func TestHubUpdateApplyRefusesUnsupportedRestart(t *testing.T) {
 	})
 	restarts := stubScheduleRestart(t)
 	_, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{Channel: "snapshot"})
-	if err == nil || !strings.Contains(err.Error(), "not supported") {
+	if !errors.Is(err, errInPlaceRestartUnsupported) {
 		t.Fatalf("err = %v, want an unsupported-platform refusal", err)
 	}
 	if *upgrades != 0 || len(*restarts) != 0 {

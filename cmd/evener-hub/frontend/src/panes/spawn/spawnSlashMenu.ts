@@ -6,8 +6,7 @@ import {
   type PaletteRunContext,
   type ScopedCommand,
 } from "../../shell/palette/commands";
-import type { ToastKind } from "../../widgets";
-import type { ModelCatalog } from "../../widgets/modelCatalog";
+import type { ModelCatalog, ToastKind } from "../../widgets";
 
 // The pre-session allowlist: the only session builtins the spawn box offers.
 // Turn-gated commands (steer, queue, interrupt, drain-as-steer) have no turn

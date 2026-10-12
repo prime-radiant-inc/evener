@@ -117,7 +117,7 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 			if err != nil {
 				t.Fatalf("mode %d: a providers.toml the registry cannot read must not stop the hub: %v", mode, err)
 			}
-			if !strings.Contains(stderr.String(), "providers config:") {
+			if !strings.Contains(stderr.String(), stop.Error()) {
 				t.Fatalf("mode %d: the hub must announce the degraded config: %s", mode, stderr.String())
 			}
 			return

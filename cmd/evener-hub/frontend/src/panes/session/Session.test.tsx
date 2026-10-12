@@ -42,6 +42,7 @@ import {
 } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Toast } from "../../widgets";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import ReadOnlyTranscript from "../transcript/testing/CommittedTranscript";
@@ -518,8 +519,9 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
   await flushUntil(() => fake.calls.some((c) => c.method === "thread/read"));
   // Give the deletion probe's own microtask chain a few turns to (not) settle.
   await flushUntil(() => false, 5);
-  expect(screen.getByText(/loading/i)).toBeTruthy();
-  expect(screen.queryByText(/deleted/i)).toBeNull();
+  // Loading is a status, never an EmptyState of any reason (deleted included).
+  expect(screen.getByRole("status")).toBeTruthy();
+  expect(emptyStateReasons(document.body)).toEqual([]);
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 });
 

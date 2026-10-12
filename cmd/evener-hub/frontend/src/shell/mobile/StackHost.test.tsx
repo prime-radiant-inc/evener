@@ -147,8 +147,8 @@ beforeAll(async () => {
 const PANE_WARMUP_TRIPWIRE_MS = 10_000;
 
 // Waits until the stack shows a pane of `paneType` whose body has rendered
-// its empty state: welcome's "nothing open" landing, or a session panel still
-// loading its model. The pane type comes from the stack body's own marker, so
+// its empty state: welcome's "nothing open" landing. The pane type comes from
+// the stack body's own marker, so
 // this proves which pane is on screen without reading its copy.
 async function findStackedEmptyState(paneType: string, timeout?: number): Promise<HTMLElement> {
   return waitFor(
@@ -578,6 +578,12 @@ test("hosts the tree drawer trigger in the top bar, regardless of which pane is 
   expect(await screen.findByRole("button", { name: "Sessions" })).toBeTruthy();
 });
 
+test("a single-pane route offers no tree drawer trigger", async () => {
+  render(<StackHost singlePane />);
+  expect(await screen.findByTestId("topbar-title")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+});
+
 // --- back navigation ---------------------------------------------------
 
 test("the back affordance is hidden while welcome (the stack's root) is focused", async () => {
@@ -606,7 +612,12 @@ test("a session panel pane's top-bar Back returns to the parent session, not the
   act(() => {
     workspaceStore.getState().openPane("sessionDetails", { ref: "local:ref_panel" });
   });
-  await findStackedEmptyState("sessionDetails");
+  const sessionDetails = await waitFor(() => {
+    const body = document.querySelector('[data-stacked-pane-type="sessionDetails"]');
+    if (!(body instanceof HTMLElement)) throw new Error("No stacked sessionDetails pane");
+    return body;
+  });
+  expect(await within(sessionDetails).findByRole("status")).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Back" }));
 

@@ -16,7 +16,7 @@ import { CONNECTION_REPLACED_ERROR, errorText } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useState } from "react";
 import { openInNewTab } from "../../../../shell/openInNewTab";
 import { credentialsStore, devicePollOnHost, fetchHost, isStaleListingRefusal } from "../../../../stores/credentials";
-import { Button, Dialog, FormRow, Input, useToasts } from "../../../../widgets";
+import { Button, Dialog, FormRow, Input, OpenButton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { copyText } from "./clipboard";
 import styles from "./oauthDialogs.module.css";
@@ -95,9 +95,7 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
       <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
         <p className={CLASS.help}>
           Authorize in browser, then paste the full redirect URL back here.{" "}
-          <a href={authUrl} target="_blank" rel="noopener">
-            Re-open authorize URL
-          </a>
+          <OpenButton href={authUrl} word="Re-open authorize URL" />
         </p>
         <FormRow label="Redirect URL" htmlFor="oauth-redirect-url" error={error ?? undefined}>
           <Input

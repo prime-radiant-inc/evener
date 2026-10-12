@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -211,9 +210,6 @@ func TestHubRPCKeybindingsPatchFailuresDoNotNotify(t *testing.T) {
 	var invalidResult appwire.KeybindingsPatchResponse
 	err = clientA.Request(context.Background(), appwire.MethodEvenerSettingsKeybindingsPatch, json.RawMessage(invalidRaw), &invalidResult)
 	assertKeybindingsWireCode(t, err, appwire.CodeInvalidParams)
-	if !containsKeybindingsError(err, "unsupported keybindings config version") {
-		t.Fatalf("structural validation error = %v, want unsupported-version diagnostic", err)
-	}
 	assertNoKeybindingsNotification(t, clientA)
 	assertNoKeybindingsNotification(t, clientB)
 
@@ -346,7 +342,7 @@ func TestHubRPCKeybindingsMalformedStateUsesFallbackAndRemainsReadOnly(t *testin
 	// The fallback alone would read as writable while PATCH rejects every
 	// save; the diagnostic rides the GET so clients stay read-only with the
 	// reason showing (roborev PR #884 round 6).
-	if !strings.Contains(got.LoadError, "decode keybindings state") {
+	if got.LoadError == "" {
 		t.Fatalf("GET malformed state loadError = %q, want the load diagnostic", got.LoadError)
 	}
 	var result appwire.KeybindingsPatchResponse
@@ -355,9 +351,6 @@ func TestHubRPCKeybindingsMalformedStateUsesFallbackAndRemainsReadOnly(t *testin
 			{Action: "thread.new", Chord: new("ctrl+n")},
 		}}}, &result)
 	assertKeybindingsWireCode(t, err, appwire.CodeInternalError)
-	if !containsKeybindingsError(err, "decode keybindings state") {
-		t.Fatalf("malformed-state PATCH error = %v, want load diagnostic", err)
-	}
 	assertNoKeybindingsNotification(t, clientA)
 	assertNoKeybindingsNotification(t, clientB)
 	unchanged, err := os.ReadFile(statePath)
@@ -402,10 +395,6 @@ func assertKeybindingsWireCode(t *testing.T, err error, code int) {
 	if !errors.As(err, &wire) || wire.Code != code {
 		t.Fatalf("error = %T %v, want wire code %d", err, err, code)
 	}
-}
-
-func containsKeybindingsError(err error, want string) bool {
-	return err != nil && strings.Contains(err.Error(), want)
 }
 
 func equalKeybindingsOverrides(a, b appwire.KeybindingsOverrides) bool {

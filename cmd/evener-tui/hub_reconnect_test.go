@@ -277,7 +277,7 @@ func TestHubModelKeepsRetryingWhileTheHubStaysDown(t *testing.T) {
 	if !ok {
 		t.Fatalf("notices=%+v, want one explaining the lost connection", m.notices)
 	}
-	if !strings.Contains(notice.Reason, "connection refused") || !strings.Contains(notice.NextAction, "attempt 2") {
+	if !strings.Contains(notice.Reason, "connection refused") || !strings.Contains(notice.NextAction, hubReconnectDelay(m.reconnectAttempt).String()) {
 		t.Fatalf("notice=%+v, want the dial failure as the cause and the next attempt as the next action", notice)
 	}
 }

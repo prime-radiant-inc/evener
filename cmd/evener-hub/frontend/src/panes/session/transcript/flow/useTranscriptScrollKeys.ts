@@ -28,7 +28,7 @@ import { keybindingsRegistry } from "../../../../keybindings/appRegistry";
 import { installKeybindings } from "../../../../shell/installKeybindings";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { workspaceStore } from "../../../../shell/workspace";
-import type { VirtualListHandle } from "../../../../widgets/virtuallist";
+import type { VirtualListHandle } from "../../../../widgets";
 
 /** One line-scroll step in pixels (≈ one transcript row's text line). */
 export const TRANSCRIPT_LINE_SCROLL_PX = 40;

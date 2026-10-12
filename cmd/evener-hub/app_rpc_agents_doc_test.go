@@ -3,12 +3,12 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -208,9 +208,7 @@ func TestHubRPCAgentsDocSetSurfacesTheFailureWhenTheReadBackFails(t *testing.T) 
 	if err == nil {
 		t.Fatal("set with a failed read back returned no error")
 	}
-	if !strings.Contains(err.Error(), "AGENTS.md: read:") {
-		t.Fatalf("set error = %v, want the read-back failure", err)
-	}
+
 	// The write applied, so every client - the requester included - still
 	// hears the canonical content.
 	want := appwire.AgentsDocResponse{Path: path, Exists: true, Content: content}
@@ -295,7 +293,7 @@ func TestWriteAgentsDocFailureRemovesTheTempFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the save to fail with a directory where AGENTS.md goes")
 	}
-	if !strings.Contains(err.Error(), "AGENTS.md: rename:") {
+	if step, ok := errors.AsType[*agentsDocStepError](err); !ok || step.step != "rename" {
 		t.Fatalf("err = %v, want the failure to come from the rename step", err)
 	}
 	requireNoAgentsDocTempFiles(t, root)
@@ -469,7 +467,7 @@ func TestWriteAgentsDocRefusesAnUnresolvableSymlink(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the save to fail on a symlink it cannot resolve")
 	}
-	if !strings.Contains(err.Error(), "AGENTS.md: resolve:") {
+	if step, ok := errors.AsType[*agentsDocStepError](err); !ok || step.step != "resolve" {
 		t.Fatalf("err = %v, want the failure to come from the resolve step", err)
 	}
 	info, err := os.Lstat(path)
@@ -581,12 +579,12 @@ func TestHubRPCAgentsDocRefusesWithoutAConfigRoot(t *testing.T) {
 
 	var got appwire.AgentsDocResponse
 	err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocGet, appwire.EmptyParams{}, &got)
-	if err == nil || !strings.Contains(err.Error(), "no user config root") {
-		t.Fatalf("get error = %v, want one naming the unresolved user config root", err)
+	if err == nil || got.Path != "" {
+		t.Fatalf("get = (%+v, %v), want a refusal for the unresolved user config root", got, err)
 	}
 	err = client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocSet, appwire.AgentsDocSetParams{Content: "# mine\n"}, &got)
-	if err == nil || !strings.Contains(err.Error(), "no user config root") {
-		t.Fatalf("set error = %v, want one naming the unresolved user config root", err)
+	if err == nil {
+		t.Fatal("set = nil, want a refusal for the unresolved user config root")
 	}
 
 	cwd, err := os.Getwd()

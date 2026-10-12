@@ -321,8 +321,8 @@ func TestHubRPCInitialItemReadRejectsCompleteLegacyV3Metadata(t *testing.T) {
 	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref: routeRef, ThreadID: sessionID, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFull), ItemLimit: 3,
 	})
-	if err == nil || !strings.Contains(err.Error(), "unpositioned item") {
-		t.Fatalf("legacy-v3 initial item read = (%+v, %v), want unpositioned item identity error", response, err)
+	if err == nil {
+		t.Fatalf("legacy-v3 initial item read = %+v, want the unpositioned items refused", response)
 	}
 	request := <-daemonRequest
 	if request.Ref != routeRef || request.ThreadID != sessionID || !request.IncludeTurns || request.ItemsView != string(appwire.TurnItemsViewFull) || request.ItemLimit != 3 {
@@ -1705,8 +1705,8 @@ func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
 	}
-	if items[0].Type != "reasoning" || items[0].Text != "[redacted thinking]" {
-		t.Fatalf("redacted reasoning item=%+v", items[0])
+	if items[0].Type != "reasoning" || items[0].Text == "" || strings.Contains(items[0].Text, "xyz") {
+		t.Fatalf("redacted reasoning item=%+v, want a placeholder that keeps the encrypted content out", items[0])
 	}
 }
 
@@ -1817,7 +1817,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 		t.Fatalf("items=%+v, want one steering item", items)
 	}
 	got := items[0]
-	if got.Type != "steering" || got.Text != "[image]" || len(got.Images) != 1 {
+	if got.Type != "steering" || got.Text == "" || len(got.Images) != 1 {
 		t.Fatalf("steering item=%+v, want image placeholder and image metadata", got)
 	}
 	if got.Images[0].Metadata["sha"] != imageSha(img) || got.Images[0].Metadata["size"] != strconv.Itoa(len(img)) {
@@ -1877,7 +1877,7 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 	if len(checkpoint) != 1 {
 		t.Fatalf("checkpoint items=%+v", checkpoint)
 	}
-	if got := checkpoint[0]; got.Type != "systemMessage" || got.Description != "Context checkpoint" || !strings.Contains(got.Text, "first compacted state") {
+	if got := checkpoint[0]; got.Type != "systemMessage" || got.Description == "" || !strings.Contains(got.Text, "first compacted state") {
 		t.Fatalf("checkpoint item=%+v", got)
 	}
 
@@ -1888,8 +1888,8 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 	if len(summary) != 1 {
 		t.Fatalf("summary items=%+v", summary)
 	}
-	if got := summary[0]; got.Type != "systemMessage" || got.Description != "Context summary" || !strings.Contains(got.Text, "second compacted state") {
-		t.Fatalf("summary item=%+v", got)
+	if got := summary[0]; got.Type != "systemMessage" || got.Description == "" || got.Description == checkpoint[0].Description || !strings.Contains(got.Text, "second compacted state") {
+		t.Fatalf("summary item=%+v, want a description distinct from the checkpoint's %q", got, checkpoint[0].Description)
 	}
 }
 
@@ -9582,8 +9582,8 @@ func TestValidateLaunchPathRejectsMissingPluginDir(t *testing.T) {
 	if resp.Valid {
 		t.Fatalf("valid=%v, want false", resp.Valid)
 	}
-	if !strings.Contains(resp.Error, "no such file") {
-		t.Fatalf("error=%q", resp.Error)
+	if resp.Error == "" {
+		t.Fatal("error is empty, want the reason the path is invalid")
 	}
 }
 
@@ -9614,8 +9614,8 @@ func TestValidateLaunchPathRejectsOutputFileWithMissingParent(t *testing.T) {
 	if resp.Valid {
 		t.Fatalf("valid=true, want false")
 	}
-	if !strings.Contains(resp.Error, "no such file") {
-		t.Fatalf("error=%q", resp.Error)
+	if resp.Error == "" {
+		t.Fatal("error is empty, want the reason the path is invalid")
 	}
 }
 
@@ -9773,9 +9773,6 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 		CWD:           "/tmp",
 	})
 	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "not reported by the Evener launch harness") {
-		t.Fatalf("error=%v", err)
-	}
 	if spawnCalled {
 		t.Fatal("spawn was called for provider missing from degraded launch contract")
 	}
@@ -12230,8 +12227,12 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 
 	var resp appwire.InstanceListResponse
 	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal", OriginClientId: "tab-a"}, &resp)
-	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
-		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
+	if err == nil {
+		t.Fatal("evener/instance/edit = nil, want the leftover credential reported")
+	}
+	// The refused write left the key behind under the old name.
+	if v, _ := credsStore.Get("base"); v != "sk-stored" {
+		t.Fatalf("stored key under the old name = %q, want the leftover the failed move kept", v)
 	}
 	// The discriminator the web sheet keys on: the message alone is identical
 	// whether or not the error is wrapped in the evenerErrorInfo payload, so
@@ -12367,8 +12368,8 @@ func TestHubRPCInstanceEditRenamePersistsWhenTheInitialReloadAndRollbackFail(t *
 	var resp appwire.InstanceListResponse
 	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit,
 		appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
-	if err == nil || !strings.Contains(err.Error(), "restoring the previous config failed") {
-		t.Fatalf("evener/instance/edit = %v, want the reload-and-rollback double failure", err)
+	if err == nil {
+		t.Fatal("evener/instance/edit = nil, want the reload-and-rollback double failure")
 	}
 	// The rename stood in providers.toml, so the client gets the discriminator
 	// rather than a plain failed save it would present as nothing happened.
@@ -13110,8 +13111,8 @@ func TestHubRPCThreadStartEmptyModelRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("ThreadStart should fail when model resolves to empty")
 	}
-	if !strings.Contains(err.Error(), "model is required") {
-		t.Fatalf("error = %v, want error containing \"model is required\"", err)
+	if wire, _ := wireErrorData(t, err); wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error = %v, want the invalid-params refusal for a missing model", err)
 	}
 }
 

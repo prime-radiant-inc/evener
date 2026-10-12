@@ -10,7 +10,10 @@ export function SubagentRow({ line, onOpen }: { line: SubagentLine; onOpen?: (re
 	const scale = useTextScale();
 	const rail = line.state === "running" ? palette.alive : line.state === "failed" ? palette.danger : palette.edgeStrong;
 	const body = (
-		<View style={{ borderLeftWidth: 2, borderLeftColor: rail, paddingLeft: 12, paddingVertical: 4, gap: 2 }}>
+		<View
+			testID={`subagent-row:${line.state}`}
+			style={{ borderLeftWidth: 2, borderLeftColor: rail, paddingLeft: 12, paddingVertical: 4, gap: 2 }}
+		>
 			<View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
 				<Text
 					allowFontScaling={allowFontScaling}
@@ -21,6 +24,7 @@ export function SubagentRow({ line, onOpen }: { line: SubagentLine; onOpen?: (re
 				</Text>
 				<Text
 					allowFontScaling={allowFontScaling}
+					testID="subagent-row-state"
 					style={{
 						fontSize: 13 * scale,
 						lineHeight: 18 * scale,
@@ -34,6 +38,7 @@ export function SubagentRow({ line, onOpen }: { line: SubagentLine; onOpen?: (re
 			{line.activity ? (
 				<Text
 					allowFontScaling={allowFontScaling}
+					testID={`subagent-row-activity:${line.activityFrom ?? "roster"}`}
 					style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkMid }}
 				>
 					{line.activity}

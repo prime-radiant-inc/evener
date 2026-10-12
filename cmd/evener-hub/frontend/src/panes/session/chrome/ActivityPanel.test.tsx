@@ -118,7 +118,7 @@ test("empty bounded progress remains loading and advances to useful activity wit
   connectionStore.getState().connect(client);
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
   await act(async () => await entered.promise);
-  expect(screen.getByText("Loading activity…")).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Loading activity…" })).toBeTruthy();
   expect(screen.queryByText("No retained activity yet")).toBeNull();
   await act(async () =>
     finish.resolve({

@@ -44,6 +44,7 @@ export function SessionNotice({
 			</Text>
 			{error ? (
 				<Text
+					testID="session-notice-error"
 					accessibilityRole="alert"
 					allowFontScaling={allowFontScaling}
 					style={{ color: palette.dangerInk, fontSize: 13 * scale, lineHeight: 18 * scale }}

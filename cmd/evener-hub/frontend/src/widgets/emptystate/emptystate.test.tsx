@@ -1,6 +1,12 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
+import rawStyles from "./emptystate.module.css";
 import { EmptyState } from "./index";
+
+const compactClass = rawStyles.compact ?? "compact-class-missing";
 
 test("renders the title", () => {
   render(<EmptyState title="No sessions yet" />);
@@ -48,6 +54,50 @@ test("size=display adds the display-size title class; the default does not", () 
   expect(title()?.className).toMatch(/titleDisplay/);
   rerender(<EmptyState title="No session open" />);
   expect(title()?.className).not.toMatch(/titleDisplay/);
+});
+
+// size="compact" is the empty message inside a list or section (a settings
+// collection with nothing in it, the activity sidebar's "No jobs at this
+// level."): the same title/hint/action contract, set as one quiet line.
+test("size=compact renders title, hint, and action", () => {
+  render(
+    <EmptyState
+      size="compact"
+      title="No plugins installed yet."
+      hint="Install one from Browse."
+      action={<button type="button">Browse</button>}
+    />,
+  );
+  expect(screen.getByText("No plugins installed yet.")).toBeTruthy();
+  expect(screen.getByText("Install one from Browse.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Browse" })).toBeTruthy();
+});
+
+test("size=compact applies the compact layout to the whole block, and only that size does", () => {
+  const { container, rerender } = render(<EmptyState title="No jobs at this level." size="compact" />);
+  const root = () => container.querySelector('[data-testid="empty-state"]');
+  expect(root()?.classList.contains(compactClass)).toBe(true);
+  rerender(<EmptyState title="No jobs at this level." />);
+  expect(root()?.classList.contains(compactClass)).toBe(false);
+  rerender(<EmptyState title="No jobs at this level." size="display" />);
+  expect(root()?.classList.contains(compactClass)).toBe(false);
+});
+
+// jsdom applies no stylesheet, so the declarations are the checkable truth -
+// comments stripped first so a doc comment cannot satisfy the match.
+test("size=compact declares a left-aligned block on the UI type step", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "emptystate.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const block = /\.compact\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(block).toContain("align-items: flex-start");
+  expect(block).toContain("text-align: start");
+  const title = /\.compact \.title\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(title).toContain("font-size: var(--font-size-ui)");
+  expect(title).toContain("font-family: var(--font-sans)");
+  const hint = /\.compact \.hint\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(hint).toContain("font-size: var(--font-size-caption)");
 });
 
 test("exposes why it is empty as data-reason, and omits it when not given", () => {

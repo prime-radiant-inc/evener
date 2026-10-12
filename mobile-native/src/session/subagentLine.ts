@@ -15,6 +15,9 @@ export interface SubagentLine {
 	state: "running" | "failed" | "stopped" | "done";
 	stateText: string;
 	activity?: string;
+	/** Where the activity came from: what the roster knows, or the outcome the
+	 * coordinator's tree gives a finished subagent. Unset means the roster. */
+	activityFrom?: "roster" | "tree";
 	/** The subagent's own transcript, which tapping the row opens. */
 	ref?: string;
 	/** The subagent's id, for its outcome in the coordinator's tree. */

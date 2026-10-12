@@ -349,30 +349,69 @@ func formatExactGap(gapMS int64) string {
 // "(model)" immediately after cause, matching the web reference's own
 // modelTag placement.
 func composerRetryChip(retry *appwire.ThreadModelRetryParams, primaryModel string, inProgress bool) string {
-	if retry == nil {
+	chip, ok := retryChipFor(retry, primaryModel, inProgress)
+	if !ok {
 		return ""
 	}
-	cause := "provider error"
-	if retry.ErrorClass == "rate_limit" {
-		cause = "rate limited"
+	return chip.text()
+}
+
+// retryChip is what the composer's retry chip reports, before it is worded.
+type retryChip struct {
+	rateLimited bool
+	// fallbackModel is the retried model when it is not the session's
+	// primary model, and "" otherwise.
+	fallbackModel string
+	attempt       int
+	// attemptCap is the honest bound on attempts, or 0 when none is known.
+	attemptCap int
+	// waitSeconds is the reported delay before the next attempt; the chip
+	// shows it only while not inProgress.
+	waitSeconds int64
+	inProgress  bool
+	elapsedMS   int64
+}
+
+// retryChipFor derives the chip from the latest retry report; it reports
+// false when there is no retry to show.
+func retryChipFor(retry *appwire.ThreadModelRetryParams, primaryModel string, inProgress bool) (retryChip, bool) {
+	if retry == nil {
+		return retryChip{}, false
+	}
+	chip := retryChip{
+		rateLimited: retry.ErrorClass == "rate_limit",
+		attempt:     retry.Attempt,
+		attemptCap:  retry.AttemptCap,
+		waitSeconds: max((retry.DelayMS+500)/1000, 0),
+		inProgress:  inProgress,
+		elapsedMS:   retry.GroupElapsedMS,
 	}
 	if model := strings.TrimSpace(retry.Model); model != "" && model != strings.TrimSpace(primaryModel) {
-		cause += " (" + model + ")"
+		chip.fallbackModel = model
 	}
-	wait := fmt.Sprintf("retrying in %ds", max((retry.DelayMS+500)/1000, 0))
-	if inProgress {
+	if chip.attemptCap <= 0 {
+		chip.attemptCap = max(retry.MaxAttempts, 0)
+	}
+	return chip, true
+}
+
+func (c retryChip) text() string {
+	cause := "provider error"
+	if c.rateLimited {
+		cause = "rate limited"
+	}
+	if c.fallbackModel != "" {
+		cause += " (" + c.fallbackModel + ")"
+	}
+	wait := fmt.Sprintf("retrying in %ds", c.waitSeconds)
+	if c.inProgress {
 		wait = "in progress"
 	}
-	attemptCap := retry.AttemptCap
-	if attemptCap <= 0 {
-		attemptCap = retry.MaxAttempts
+	attempt := fmt.Sprintf("attempt %d", c.attempt)
+	if c.attemptCap > 0 {
+		attempt = fmt.Sprintf("attempt %d/%d", c.attempt, c.attemptCap)
 	}
-	attempt := fmt.Sprintf("attempt %d", retry.Attempt)
-	if attemptCap > 0 {
-		attempt = fmt.Sprintf("attempt %d/%d", retry.Attempt, attemptCap)
-	}
-	elapsed := formatExactGap(retry.GroupElapsedMS)
-	return fmt.Sprintf("%s — %s — %s — %s on this call", cause, attempt, wait, elapsed)
+	return fmt.Sprintf("%s — %s — %s — %s on this call", cause, attempt, wait, formatExactGap(c.elapsedMS))
 }
 
 // composeProviderModel returns "<provider>/<abbreviated-model>" when a

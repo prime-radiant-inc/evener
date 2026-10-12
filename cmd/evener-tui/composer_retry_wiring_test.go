@@ -29,11 +29,11 @@ func TestComposerPanelRendersModelRetryFromNotification(t *testing.T) {
 		t.Fatal("precondition: notification did not record modelRetry")
 	}
 
-	view := m.sessionComposerPanel().View()
-	if !strings.Contains(view, "rate limited") {
-		t.Errorf("composer view does not surface the retry.\nview:\n%s", view)
+	panel := m.sessionComposerPanel()
+	if want := composerRetryChip(m.modelRetry, m.detail.Model, m.modelRetryInProgress); want == "" || panel.ChipContext.Retry != want {
+		t.Errorf("composer chip context retry = %q, want the recorded retry's chip %q", panel.ChipContext.Retry, want)
 	}
-	if !strings.Contains(view, "attempt 9/11") {
+	if view := panel.View(); !strings.Contains(view, "9/11") {
 		t.Errorf("composer view lacks the attempt position.\nview:\n%s", view)
 	}
 }

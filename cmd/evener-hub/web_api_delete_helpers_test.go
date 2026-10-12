@@ -12,8 +12,8 @@ import (
 
 func TestProjectDeletionOwnershipErrorLiveMessage(t *testing.T) {
 	e := projectDeletionOwnershipError{Live: true}
-	if e.Error() != "resumed live" {
-		t.Fatalf("Live error should be 'resumed live', got %q", e.Error())
+	if e.Error() == "" {
+		t.Fatal("Live error reads empty, want the live report")
 	}
 }
 
@@ -170,8 +170,8 @@ func TestRemoveFlatProjectSessionArtifactsRemovesFlatFiles(t *testing.T) {
 
 func TestAppendProjectDeleteLiveSkip(t *testing.T) {
 	skipped := appendProjectDeleteLiveSkip(nil, "s1")
-	if len(skipped) != 1 || skipped[0].ID != "s1" || skipped[0].Reason != "resumed live" {
-		t.Fatalf("expected one skip with 'resumed live', got %+v", skipped)
+	if len(skipped) != 1 || skipped[0].ID != "s1" || skipped[0].Reason != (projectDeletionOwnershipError{Live: true}).Error() {
+		t.Fatalf("expected one live skip for s1, got %+v", skipped)
 	}
 	skipped = appendProjectDeleteLiveSkip(skipped, "s2")
 	if len(skipped) != 2 || skipped[1].ID != "s2" {

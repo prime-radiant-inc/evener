@@ -1,3 +1,4 @@
+import { sessionActionError } from "@evener/appwire-client";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
@@ -12,7 +13,7 @@ import { type OpenPaneRecord, workspaceStore } from "../../shell/workspace";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
-import { Button, EmptyState, PaneScaffold } from "../../widgets";
+import { Button, EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ConversationBody, type ConversationSeat } from "../session/ConversationBody";
 import { retainedConversationComposer } from "../session/composer/retainedComposer";
@@ -150,18 +151,15 @@ function ScopeConversation({
                   state === "deleted" ? (
                     <EmptyState title="This session was deleted" hint="Its transcript is gone." reason="deleted" />
                   ) : state === "loading" ? (
-                    <EmptyState
-                      title={
-                        snapshot?.summaryState?.permanent && snapshot.summaryState.unavailable
-                          ? "Transcript unavailable"
-                          : "Loading transcript…"
-                      }
-                      reason={
-                        snapshot?.summaryState?.permanent && snapshot.summaryState.unavailable
-                          ? "unavailable"
-                          : "loading"
-                      }
-                    />
+                    snapshot?.summaryState?.permanent && snapshot.summaryState.unavailable ? (
+                      <EmptyState
+                        title="Transcript unavailable"
+                        reason="unavailable"
+                        hint={sessionActionError("Couldn't load transcript", snapshot.summaryState.error)}
+                      />
+                    ) : (
+                      <Loader label="Loading transcript" />
+                    )
                   ) : (
                     content
                   )
@@ -171,12 +169,7 @@ function ScopeConversation({
             )}
           />
         ) : (
-          <CascadeColumn
-            paneId={pane.id}
-            scope={activity}
-            content={<EmptyState title="Loading transcript…" reason="loading" />}
-            conversationFooter={null}
-          />
+          <CascadeColumn paneId={pane.id} scope={activity} content={<Skeleton />} conversationFooter={null} />
         )
       ) : (
         <CascadeSpine paneId={pane.id} scope={activity} />

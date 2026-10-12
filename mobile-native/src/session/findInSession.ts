@@ -92,9 +92,20 @@ export function stepMatch(matches: readonly number[], current: number | null, di
 	return matches.findLast((index) => index < current) ?? null;
 }
 
+/** Where you are among the matches: which one (1-based, 0 with none) of how
+ * many. With no current match it sits on the newest. */
+export interface MatchPosition {
+	position: number;
+	count: number;
+}
+
+export function matchPosition(matches: readonly number[], current: number | null): MatchPosition {
+	if (matches.length === 0) return { position: 0, count: 0 };
+	return { position: current === null ? matches.length : matches.indexOf(current) + 1, count: matches.length };
+}
+
 /** Where you are among the matches, "2 of 3", or "No matches". */
 export function matchLabel(matches: readonly number[], current: number | null): string {
-	if (matches.length === 0) return "No matches";
-	const position = current === null ? matches.length : matches.indexOf(current) + 1;
-	return `${position} of ${matches.length}`;
+	const { position, count } = matchPosition(matches, current);
+	return count === 0 ? "No matches" : `${position} of ${count}`;
 }

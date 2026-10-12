@@ -496,11 +496,15 @@ func (m *hubHostManager) validateRecoveryOperator(ctx context.Context, operator 
 		return nil
 	}
 	if operator != identity {
-		return appwire.InvalidParams(fmt.Sprintf(
-			"teardown-recover attestation operator %q is not the session's authenticated identity %q", operator, identity))
+		return invalidParamsFor(fmt.Errorf(
+			"teardown-recover attestation operator %q %w %q", operator, errOperatorNotSessionIdentity, identity))
 	}
 	return nil
 }
+
+// errOperatorNotSessionIdentity refuses a recovery attestation whose operator
+// is not the session's authenticated identity.
+var errOperatorNotSessionIdentity = errors.New("is not the session's authenticated identity")
 
 // sessionOperatorKey carries the session's authenticated identity, when one is
 // known, to the handlers that must compare it.

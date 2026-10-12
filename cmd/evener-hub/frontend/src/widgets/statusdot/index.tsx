@@ -21,7 +21,9 @@ const STATE_FAMILY: Record<CadenceState, Family> = {
   ended: "neutral",
 };
 
-const STATE_LABEL: Record<CadenceState, string> = {
+/** The one session-status vocabulary: StatusDot's accessible names, reused
+ * by any text that names a session's state (a hover card's status line). */
+export const STATUS_LABEL: Record<CadenceState, string> = {
   idle: "Idle",
   working: "Working",
   "needs-you": "Needs you",
@@ -38,14 +40,26 @@ const FAMILY_CLASS: Record<Family, string> = {
 
 const BASE_CLASS = {
   dot: requireClass(styles.dot, "statusdot.module.css", "dot"),
+  working: requireClass(styles.working, "statusdot.module.css", "working"),
 };
 
 /** A standalone session-state indicator: just the dot, no activity trace.
+ * The working state turns as a spinner (a static dot under reduced motion)
+ * so an active agent always reads as active. Failed is a diamond so it never
+ * depends on hue alone to differ from needs-you.
  * Use Cadence instead where the trailing ~60s trace is wanted; StatusDot is
  * for tighter contexts (tree rows, compact lists) that only have room for
  * the dot. Passive - no interaction, no focus ring - but carries its own
  * accessible name since (unlike Cadence's dot) nothing else labels it. */
 export function StatusDot({ state }: StatusDotProps) {
   const family = STATE_FAMILY[state];
-  return <span role="img" aria-label={STATE_LABEL[state]} className={`${BASE_CLASS.dot} ${FAMILY_CLASS[family]}`} />;
+  const working = state === "working" ? ` ${BASE_CLASS.working}` : "";
+  return (
+    <span
+      role="img"
+      aria-label={STATUS_LABEL[state]}
+      data-shape={state === "failed" ? "diamond" : "dot"}
+      className={`${BASE_CLASS.dot} ${FAMILY_CLASS[family]}${working}`}
+    />
+  );
 }

@@ -9,8 +9,7 @@
 // other.
 import { type PluginSelectionState, selectedPluginNames } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
-import { Button, Sheet } from "../../widgets";
-import { DirectoryPicker, type DirectoryPickerProps } from "../../widgets/directorypicker";
+import { Button, Chevron, DirectoryPicker, type DirectoryPickerProps, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
@@ -79,7 +78,7 @@ function MobileSettingRow({ label, value, onClick, expanded = false, disabled = 
       </span>
       {interactive && (
         <span className={CLASS.caret} aria-hidden="true">
-          ›
+          <Chevron direction="right" />
         </span>
       )}
     </>

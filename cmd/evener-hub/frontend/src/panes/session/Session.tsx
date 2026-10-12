@@ -22,9 +22,10 @@ import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Button, EmptyState, PaneScaffold } from "../../widgets";
+import { Button, EmptyState, Loader, PaneScaffold } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import { RepoLocation } from "./composer/RepoLocation";
+import styles from "./session.module.css";
 import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
 import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
 
@@ -170,16 +171,17 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               title={title}
               edgeFooter={edgeFooter}
             >
-              <EmptyState
-                title="Loading transcript…"
-                reason="loading"
-                hint={
-                  ref.startsWith("local:")
-                    ? "If the session is unresponsive, you can stop its process to recover it."
-                    : undefined
-                }
-                action={ref.startsWith("local:") ? <SessionForceStopRecovery sessionRef={ref} /> : undefined}
-              />
+              <div className={styles.loading}>
+                <Loader label="Loading transcript" />
+                {ref.startsWith("local:") && (
+                  <>
+                    <p className={styles.loadingHint}>
+                      If the session is unresponsive, you can stop its process to recover it.
+                    </p>
+                    <SessionForceStopRecovery sessionRef={ref} />
+                  </>
+                )}
+              </div>
             </PaneScaffold>
           );
         }

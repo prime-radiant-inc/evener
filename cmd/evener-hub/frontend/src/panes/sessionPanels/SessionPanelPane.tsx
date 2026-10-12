@@ -1,7 +1,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { useThreadModel } from "../../stores/useThreadModel";
-import { EmptyState, PaneScaffold } from "../../widgets";
+import { Loader, PaneScaffold } from "../../widgets";
 import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
 import { TasksPanelBody } from "../session/chrome/TasksPanel";
 import { NOW_TICK_MS, useNowTick } from "../session/liveness";
@@ -32,7 +32,7 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
   if (!model) {
     return (
       <PaneScaffold title={title} paneId={paneId} focused={focused} scaffoldMarker={`session-panel:${kind}:${ref}`}>
-        <EmptyState title="Loading session panel…" />
+        <Loader label="Loading session panel" />
       </PaneScaffold>
     );
   }

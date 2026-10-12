@@ -61,9 +61,9 @@ var (
 // anything: no session exists, so it says the start was not accepted and a
 // client may let the person start that draft again (#3184). Like any refusal
 // marked so, it asks for no automatic retry: the same start would be refused
-// the same way.
+// the same way. err stays in the chain behind the wire refusal.
 func startRefused(err error) (appwire.ThreadStartResponse, error) {
-	return appwire.ThreadStartResponse{}, appserver.WireError(err).NotAccepted("")
+	return appwire.ThreadStartResponse{}, causedWireError{wire: appserver.WireError(err).NotAccepted(""), cause: err}
 }
 
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
@@ -287,7 +287,7 @@ type localSpawnPlan struct {
 // exists.
 func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadStartParams) (localSpawnPlan, error) {
 	if cfg.Spawner == nil {
-		return localSpawnPlan{}, appwire.Unavailable("spawner not configured")
+		return localSpawnPlan{}, wireRefusal(appwire.Unavailable, errSpawnerNotConfigured)
 	}
 	workingDir := params.CWD
 	if workingDir != "" {
@@ -361,10 +361,10 @@ func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwir
 		// whatever the resolver could list.
 		if spawnResolved.Effective.EnabledPlugins != nil ||
 			errors.Is(pluginErr, context.Canceled) || errors.Is(pluginErr, context.DeadlineExceeded) {
-			return localSpawnPlan{}, appwire.HubLaunchError(pluginErr.Error())
+			return localSpawnPlan{}, launchRefusal(pluginErr)
 		}
 	} else if err := pluginResolution.ValidateSelection(); err != nil {
-		return localSpawnPlan{}, appwire.InvalidParams(err.Error())
+		return localSpawnPlan{}, invalidParamsFor(err)
 	}
 	// One last look at the connection before the handler stops listening to
 	// it. Everything above is validation, and a request the caller abandoned
@@ -434,6 +434,13 @@ func refuseHarnessNamingHost(sources *appsource.Registry, harness string) error 
 	}
 	return nil
 }
+
+// errResumeOwnerExitUnconfirmed refuses a recovery resume while the previous
+// owner's exit is not proven, so no replacement launches beside it.
+var errResumeOwnerExitUnconfirmed = errors.New("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+
+// errSpawnerNotConfigured refuses a local launch on a hub with no spawner.
+var errSpawnerNotConfigured = errors.New("spawner not configured")
 
 func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
 	return resumeThread(ctx, cfg, sources, params, false)
@@ -692,7 +699,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		}
 	}
 	if cfg.Spawner == nil {
-		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
+		return appwire.ThreadResumeResponse{}, wireRefusal(appwire.Unavailable, errSpawnerNotConfigured)
 	}
 	prepareDone := trace.stage(ctx, "request_preparation")
 	resumeReq, err := resumeRequestForConfig(cfg, sessionID)
@@ -735,11 +742,11 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			// identity the force stop persisted. Only then is the exit
 			// confirmed durably and the launch allowed.
 			if cfg.Roster == nil || recoveryGroupClaimExists(cfg.Roster, cfg.ResumeLocks.RecoveryAliases(sessionID)) {
-				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+				return appwire.ThreadResumeResponse{}, wireRefusal(appwire.Unavailable, errResumeOwnerExitUnconfirmed)
 			}
 			owner, ok := cfg.ResumeLocks.RecoveryOwner(sessionID)
 			if !ok {
-				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+				return appwire.ThreadResumeResponse{}, wireRefusal(appwire.Unavailable, errResumeOwnerExitUnconfirmed)
 			}
 			controller := cfg.DaemonProcesses
 			if controller == nil {
@@ -752,7 +759,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 				defer func() { _ = process.Close() }()
 			}
 			if !errors.Is(err, daemonprocess.ErrExited) {
-				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+				return appwire.ThreadResumeResponse{}, wireRefusal(appwire.Unavailable, errResumeOwnerExitUnconfirmed)
 			}
 			if err := cfg.ResumeLocks.ConfirmForceStop(state.ResumeSessionID); err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable("confirm recovery exit: " + err.Error())

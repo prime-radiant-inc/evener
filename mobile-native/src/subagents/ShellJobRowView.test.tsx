@@ -4,7 +4,7 @@
 import type { ActivityJob } from "@evener/appwire-client";
 import { describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, textOf } from "../renderNative.testkit";
 import type { ShellJobRow } from "./subagentModel";
 import { ShellJobRowView } from "./ShellJobRowView";
 
@@ -79,7 +79,11 @@ describe("a shell job's row", () => {
 		expect(label(ended("done", "stopped", "neutral"))).toContain("stopped, 3 minutes");
 		const done = ended("done", "completed", "success");
 		expect(renderedText(done)).toContain("3m");
-		expect(renderedText(done)).not.toContain("Done");
+		// The clean ending VoiceOver hears isn't shown: the duration stands alone.
+		const ending = label(done).split(", ")[2];
+		expect(ending).toMatch(/\S/);
+		expect(renderedText(done)).not.toContain(ending);
+		expect(done.root.findAll((node) => String(node.type) === "Text").map(textOf)).toContain("3m");
 		expect(label(done)).toBe("Shell job, Serving the docs, completed, 3 minutes, under Fix race in tree settle");
 		expect(glyphColor(done)).toBe(palette.inkLow);
 	});

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -162,7 +163,7 @@ func TestValidateNavigationResourceSnapshotRejectsWrongSchema(t *testing.T) {
 			if err == nil {
 				t.Fatal("invalid snapshot accepted")
 			}
-			if !strings.Contains(err.Error(), "navigation schema: "+test.category) {
+			if violation, ok := errors.AsType[navigationSchemaViolationError](err); !ok || violation.category != test.category {
 				t.Fatalf("error category = %q, want %q", err, test.category)
 			}
 			for _, private := range []string{"private-generation", "private-body-value", "private-child", "private-missing-owner", "private-second-key"} {

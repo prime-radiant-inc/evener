@@ -175,7 +175,10 @@ function HubSettings({
 			<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
 				<Copy>{hubName}</Copy>
 				{state.loading && !data && <Spinner label="Loading hub information" />}
-				<ErrorMessage message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED} />
+				<ErrorMessage
+					message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED}
+					testID="hub-overview-failed"
+				/>
 				{state.error && (
 					<Button
 						text

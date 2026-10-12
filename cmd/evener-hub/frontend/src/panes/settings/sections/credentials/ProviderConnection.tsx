@@ -16,7 +16,7 @@ import {
   isStaleListingRefusal,
   useCredentialsStore,
 } from "../../../../stores/credentials";
-import { Button, Chevron, Dialog, Disclosure, FormRow, Input, Skeleton } from "../../../../widgets";
+import { Button, Chevron, Dialog, Disclosure, FormRow, Input, OpenButton, Skeleton } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { AddInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
@@ -155,6 +155,7 @@ export function ProviderConnection(props: ProviderConnectionProps) {
   // would put two same-named buttons (and two same-named tab stops) on
   // screen.
   const [showAll, setShowAll] = useState(false);
+  const [existingAccessOpen, setExistingAccessOpen] = useState(false);
   const [search, setSearch] = useState("");
   const errorRef = useRef<HTMLDivElement>(null);
   useConnectedEffect(store.fetch, [store.fetch]);
@@ -202,12 +203,15 @@ export function ProviderConnection(props: ProviderConnectionProps) {
             <ProviderChoices rows={matching} disabled={listingUnavailable} onSelect={selectProvider} />
           </div>
         </Disclosure>
-        <details>
-          <summary>Already configured access on this host?</summary>
+        <Disclosure
+          open={existingAccessOpen}
+          onOpenChange={setExistingAccessOpen}
+          summary="Already configured access on this host?"
+        >
           <Button variant="quiet" onClick={props.onOpenSettings}>
             Manage existing connections
           </Button>
-        </details>
+        </Disclosure>
         <Button variant="quiet" onClick={props.onClose}>
           Cancel
         </Button>
@@ -255,6 +259,7 @@ function SelectedConnection({
   const [error, setError] = useState("");
   const [result, setResult] = useState<AuthTestResponse | null>(null);
   const [review, setReview] = useState<InstanceEntry | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const errorRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
   const active = useEditorLifetime();
@@ -715,11 +720,7 @@ function SelectedConnection({
         )}
         {help && (
           <>
-            {modes.includes("apiKey") && (
-              <a href={help.keyUrl} target="_blank" rel="noreferrer">
-                Get an API key
-              </a>
-            )}
+            {modes.includes("apiKey") && <OpenButton href={help.keyUrl} word="Get an API key" />}
             <p>{help.billing}</p>
           </>
         )}
@@ -843,8 +844,7 @@ function SelectedConnection({
           </div>
         )}
         {connection !== "ready" && <p role="status">Waiting for the Evener host to reconnect.</p>}
-        <details>
-          <summary>Advanced settings</summary>
+        <Disclosure open={advancedOpen} onOpenChange={setAdvancedOpen} summary="Advanced settings">
           <div className={styles.actions}>
             {storedMode && (
               <Button
@@ -870,7 +870,7 @@ function SelectedConnection({
           <p>
             Existing host access keeps whatever authentication the host resolves; it does not disable authentication.
           </p>
-        </details>
+        </Disclosure>
         <div className={styles.actions}>
           <Button variant="quiet" onClick={() => leave(onChange)}>
             Change provider

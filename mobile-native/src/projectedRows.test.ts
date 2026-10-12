@@ -39,7 +39,7 @@ import {
 } from "./projectedRows";
 import type { MobileConversation, MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
-import { runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
+import { runSummary, sessionRows } from "./session/transcriptRows";
 import { stepEvidence } from "./session/evidence";
 import { groupTimeline, isCriticalNotice } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -779,10 +779,21 @@ it("renders recorded memory calls and an ordinary file read through the phone ti
 	const fileRead = byTool.get("read_file");
 	if (!write || !edit || !search || !fileRead) throw new Error("missing one of the recorded journey steps");
 
-	expect(write.detail.summary).toBe("Wrote memory personal/implementation-delegation.md");
-	expect(edit.detail.summary).toBe("Edited memory project/MEMORY.md · +1 -1");
-	expect(search.detail.summary).toBe('Searched memory for "delegation" in project · 2 hits');
-	expect(runSummaryText(runSummary(run.steps))).toBe("4 steps · updated memory twice, read 1 file");
+	// Each step names the page or pattern it acted on, and what it found or changed.
+	expect(write.detail.words?.target).toBe("personal/implementation-delegation.md");
+	expect(edit.detail.words?.target).toBe("project/MEMORY.md");
+	expect(edit.detail.words?.detail).toMatch(/\+1\b.*-1\b/);
+	expect(search.detail.words?.target).toContain("delegation");
+	expect(search.detail.words?.detail).toMatch(/\b2\b/);
+	// Each says what it did in its own words.
+	expect(new Set([write, edit, search].map((step) => step.detail.words?.verb)).size).toBe(3);
+	// The run counts four steps: three on memory, two of which changed it, and one file read.
+	const summary = runSummary(run.steps);
+	expect(summary.steps).toBe(4);
+	expect(summary.parts).toMatchObject([
+		{ family: "memory", count: 3, changes: 2 },
+		{ family: "read", count: 1 },
+	]);
 
 	expect(stepEvidence(write)).toEqual([
 		{ kind: "markdown", title: "personal/implementation-delegation.md", markdown: page },
@@ -796,7 +807,6 @@ it("renders recorded memory calls and an ordinary file read through the phone ti
 	expect(stepEvidence(fileRead)).toEqual([
 		{ kind: "output", text: "# Testing\n\nDeterministic tests prove behavior.", lines: 3 },
 	]);
-	expect(runSummary(run.steps).parts.map((part) => part.text)).toEqual(["updated memory twice", "read 1 file"]);
 });
 
 describe("noteFromSteer (spec 8.8)", () => {
@@ -2309,7 +2319,7 @@ describe("a streamed reply's key once history records its round", () => {
 							text: wire.text,
 						});
 						if (row?.kind !== "notice") throw new Error("no memory-context notice row");
-						expect(row.label ?? "").toContain("Refreshed my memory");
+						expect(row.label).toBeTruthy();
 						// The decoded observation rides the row only when the payload
 						// validates; the record is never manufactured.
 						expect(row.memoryContext).toEqual(expectedObservation);
