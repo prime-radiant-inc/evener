@@ -64,13 +64,11 @@ func safeMobileOrigin(raw string) (string, bool) {
 		if addr.IsLoopback() || addr.IsUnspecified() {
 			return "", false
 		}
-	} else {
+	} else if hasNumericHostSuffix(host) {
 		// Browsers parse a numeric final label as IPv4, even when the input
 		// is malformed. Only canonical IPs accepted above can be shared with
 		// the browser; do not publish a numeric spelling as a DNS hostname.
-		if hasNumericHostSuffix(host) {
-			return "", false
-		}
+		return "", false
 	}
 	return strings.TrimRight(raw, "/"), true
 }
