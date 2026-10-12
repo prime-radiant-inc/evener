@@ -241,8 +241,13 @@ test("AppShell's injected v2 handshake selects navigation through AppWire", asyn
   const calls: NavigationReadParams[] = [];
   client.on("evener/navigation/read", (params) => {
     calls.push(params);
-    if (params.resource !== "manifest") throw new Error(`unexpected navigation resource: ${params.resource}`);
-    return { ...navigationReadResponse("app-generation"), etag: '"app-manifest"' };
+    if (params.resource === "manifest") {
+      return { ...navigationReadResponse("app-generation"), etag: '"app-manifest"' };
+    }
+    if (params.resource === "section") {
+      return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false }, '"app-section"');
+    }
+    throw new Error(`unexpected navigation resource: ${params.resource}`);
   });
 
   const connect = vi.spyOn(client, "connect");
@@ -259,10 +264,21 @@ test("AppShell's injected v2 handshake selects navigation through AppWire", asyn
       if (manifestResult?.type !== "return") throw new Error("AppShell did not start the manifest load");
       await manifestResult.value;
     });
-    await vi.waitFor(() => expect(calls).toEqual([{ resource: "manifest", representationVersion: 3 }]));
-
+    // The shell now also owns the Live roster through the navigation store's
+    // background page lease (startBackgroundTranscripts), so the handshake
+    // reads the manifest AND the first live-roster page. Assert the whole
+    // real set: the manifest, then exactly the live section page it requests.
+    await vi.waitFor(() =>
+      expect(calls).toEqual([
+        { resource: "manifest", representationVersion: 3 },
+        { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 3 },
+      ]),
+    );
     expect(navigationStore.getState().mode).toBe("v3");
-    expect(calls).toEqual([{ resource: "manifest", representationVersion: 3 }]);
+    expect(calls).toEqual([
+      { resource: "manifest", representationVersion: 3 },
+      { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 3 },
+    ]);
   } finally {
     connect.mockRestore();
     loadManifest.mockRestore();
