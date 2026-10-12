@@ -154,7 +154,7 @@ func TestExtractReleaseArchiveMissingBinary(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	err := extractReleaseArchive(t.Context(), archivePath, root, filepath.Join(t.TempDir(), "out"))
-	if err == nil || !strings.Contains(err.Error(), "did not contain") {
+	if !errors.Is(err, errArchiveMissingBinary) {
 		t.Fatalf("err=%v, want missing-binary error", err)
 	}
 }
@@ -175,7 +175,7 @@ func TestExtractReleaseArchiveRejectsNonRegularFile(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	err := extractReleaseArchive(t.Context(), archivePath, root, filepath.Join(t.TempDir(), "out"))
-	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+	if !errors.Is(err, errArchiveEntryNotRegular) {
 		t.Fatalf("err=%v, want non-regular-file error", err)
 	}
 }
@@ -323,7 +323,7 @@ func TestExtractArchiveErrors(t *testing.T) {
 	t.Run("ignores unrelated entry", func(t *testing.T) {
 		archive := filepath.Join(t.TempDir(), "a")
 		_ = os.WriteFile(archive, tarGz(t, map[string][]byte{"unrelated/readme": []byte("x")}, nil), 0o600)
-		if err := extractReleaseArchive(t.Context(), archive, root, t.TempDir()); err == nil || !strings.Contains(err.Error(), "did not contain") {
+		if err := extractReleaseArchive(t.Context(), archive, root, t.TempDir()); !errors.Is(err, errArchiveMissingBinary) {
 			t.Fatalf("err=%v", err)
 		}
 	})
