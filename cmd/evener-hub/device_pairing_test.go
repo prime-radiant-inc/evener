@@ -1,0 +1,216 @@
+package hub
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+	"time"
+
+	"golang.org/x/crypto/nacl/box"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+)
+
+func pairingRPC[T any](t *testing.T, web *WebServer, method string, params any) (T, error) {
+	t.Helper()
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := web.appRPC.Router().Dispatch(context.Background(), appwire.Request{ID: appwire.NewIntID(1), Method: method, Params: raw})
+	var out T
+	if err == nil {
+		var ok bool
+		out, ok = result.(T)
+		if !ok {
+			t.Fatalf("response type %T", result)
+		}
+	}
+	return out, err
+}
+func pairingClaimHTTP(t *testing.T, web *WebServer, invitation, publicKey string) (appwire.DevicePairingClaimResponse, int) {
+	t.Helper()
+	raw, _ := json.Marshal(appwire.DevicePairingClaimParams{Invitation: invitation, PublicKey: publicKey, Client: "mobile"})
+	req := httptest.NewRequest(http.MethodPost, "/api/device-pairing", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	web.Handler().ServeHTTP(w, req)
+	var out appwire.DevicePairingClaimResponse
+	if w.Code == http.StatusOK {
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out, w.Code
+}
+func TestDevicePairingApprovalBindsOneKeyAndRetries(t *testing.T) {
+	t.Parallel()
+	web := NewWebServer(hubcore.WebConfig{AuthToken: "private-hub-credential"})
+	invite, err := pairingRPC[appwire.DevicePairingInvitation](t, web, "evener/devicePairing/create", appwire.DevicePairingCreateParams{Origin: "http://magic-kingdom:9180", Tailnet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, secret, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := hex.EncodeToString(public[:])
+	claim, code := pairingClaimHTTP(t, web, invite.Invitation, key)
+	if code != 200 || claim.State != "pending" || claim.Envelope != "" {
+		t.Fatalf("unapproved claim: %+v, %d", claim, code)
+	}
+	rival, rivalSecret, _ := box.GenerateKey(rand.Reader)
+	rivalKey := hex.EncodeToString(rival[:])
+	if _, status := pairingClaimHTTP(t, web, invite.Invitation, rivalKey); status != http.StatusOK {
+		t.Fatalf("rival claim status: %d", status)
+	}
+	read, err := pairingRPC[appwire.DevicePairingStatus](t, web, "evener/devicePairing/read", appwire.DevicePairingParams{Invitation: invite.Invitation})
+	if err != nil || len(read.Claims) != 2 {
+		t.Fatalf("claims: %+v, %v", read, err)
+	}
+	// Short comparison codes can collide; full public keys own distinct claims.
+	if read.Claims[0].PublicKey != key || read.Claims[1].PublicKey != rivalKey {
+		t.Fatalf("claim ownership: %+v", read.Claims)
+	}
+	_, err = pairingRPC[appwire.DevicePairingStatus](t, web, "evener/devicePairing/approve", appwire.DevicePairingApproveParams{Invitation: invite.Invitation, PublicKey: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, _ := pairingClaimHTTP(t, web, invite.Invitation, key)
+	retry, _ := pairingClaimHTTP(t, web, invite.Invitation, key)
+	if approved.State != "approved" || approved.Envelope == "" || approved != retry {
+		t.Fatal("approved claim not recoverable")
+	}
+	denied, _ := pairingClaimHTTP(t, web, invite.Invitation, rivalKey)
+	if denied.State != "rejected" || denied.Envelope != "" {
+		t.Fatal("rival received credentials")
+	}
+	envelope, err := hex.DecodeString(approved.Envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sender [32]byte
+	copy(sender[:], envelope[12:44])
+	var nonce [24]byte
+	copy(nonce[:], envelope[44:68])
+	plain, ok := box.Open(nil, envelope[68:], &nonce, &sender, secret)
+	if !ok || !bytes.HasSuffix(plain, []byte("private-hub-credential")) {
+		t.Fatal("credential not encrypted to approved key")
+	}
+	if _, ok := box.Open(nil, envelope[68:], &nonce, &sender, rivalSecret); ok {
+		t.Fatal("rival decrypted credential")
+	}
+	_, err = pairingRPC[appwire.DevicePairingStatus](t, web, "evener/devicePairing/approve", appwire.DevicePairingApproveParams{Invitation: invite.Invitation, PublicKey: rivalKey})
+	if err == nil {
+		t.Fatal("approval changed winner")
+	}
+}
+func TestDevicePairingExpiryCancelAndBounds(t *testing.T) {
+	t.Parallel()
+	web := NewWebServer(hubcore.WebConfig{AuthToken: "secret"})
+	now := time.Unix(1700000000, 0)
+	web.pairings.now = func() time.Time { return now }
+	create := func() appwire.DevicePairingInvitation {
+		v, err := pairingRPC[appwire.DevicePairingInvitation](t, web, "evener/devicePairing/create", appwire.DevicePairingCreateParams{Origin: "http://100.64.1.2:9180", Tailnet: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	invite := create()
+	if _, status := pairingClaimHTTP(t, web, invite.Invitation, "00"); status != 400 {
+		t.Fatalf("bad key status %d", status)
+	}
+	if _, status := pairingClaimHTTP(t, web, invite.Invitation, string(bytes.Repeat([]byte("0"), 64))); status != 400 {
+		t.Fatalf("low order key status %d", status)
+	}
+	for i := 0; i < 8; i++ {
+		pub, _, _ := box.GenerateKey(rand.Reader)
+		if _, status := pairingClaimHTTP(t, web, invite.Invitation, hex.EncodeToString(pub[:])); status != 200 {
+			t.Fatal(status)
+		}
+	}
+	pub, _, _ := box.GenerateKey(rand.Reader)
+	key := hex.EncodeToString(pub[:])
+	if _, status := pairingClaimHTTP(t, web, invite.Invitation, key); status != 429 {
+		t.Fatal(status)
+	}
+	now = now.Add(10 * time.Minute)
+	expired, status := pairingClaimHTTP(t, web, invite.Invitation, key)
+	if status != 200 || expired.State != "expired" {
+		t.Fatalf("expiry %+v %d", expired, status)
+	}
+	invite = create()
+	if _, err := pairingRPC[appwire.DevicePairingStatus](t, web, "evener/devicePairing/cancel", appwire.DevicePairingParams{Invitation: invite.Invitation}); err != nil {
+		t.Fatal(err)
+	}
+	expired, _ = pairingClaimHTTP(t, web, invite.Invitation, key)
+	if expired.State != "expired" {
+		t.Fatal("cancel did not revoke")
+	}
+	// The bootstrap exception must not make the authenticated RPC transport public.
+	w := httptest.NewRecorder()
+	web.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/rpc", nil))
+	if w.Code != 401 {
+		t.Fatalf("RPC lost auth: %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	web.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/device-pairing", nil))
+	if w.Code != 405 {
+		t.Fatalf("bootstrap GET: %d", w.Code)
+	}
+}
+
+func TestDevicePairingSupportsGenericClientsAndIPv6(t *testing.T) {
+	t.Parallel()
+	p := newDevicePairings(hubcore.WebConfig{AuthToken: "credential"})
+	invite, err := p.create(appwire.DevicePairingCreateParams{Origin: "https://[fd7a:115c:a1e0::1]:9180", Tailnet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, _, _ := box.GenerateKey(rand.Reader)
+	reply, status := p.claim(appwire.DevicePairingClaimParams{Invitation: invite.Invitation, PublicKey: hex.EncodeToString(pub[:]), Client: "Kitchen terminal"})
+	if status != 200 || reply.State != "pending" {
+		t.Fatalf("generic client: %+v %d", reply, status)
+	}
+}
+
+func TestDevicePairingCanonicalDestinationMatchesEnvelope(t *testing.T) {
+	for _, tc := range []struct{ input, origin string }{
+		{"http://MAGIC-KINGDOM:80/", "http://magic-kingdom"},
+		{"https://BÜCHER.example:443", "https://xn--bcher-kva.example"},
+		{"https://[fd7a:115c:a1e0:0:0:0:0:1]:9180", "https://[fd7a:115c:a1e0::1]:9180"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			p := newDevicePairings(hubcore.WebConfig{AuthToken: "credential"})
+			invite, err := p.create(appwire.DevicePairingCreateParams{Origin: tc.input, Tailnet: true})
+			if err != nil || invite.Origin != tc.origin {
+				t.Fatalf("canonical invitation: %+v, %v", invite, err)
+			}
+			pub, secret, _ := box.GenerateKey(rand.Reader)
+			sealed, err := sealDeviceCredential(invite, hex.EncodeToString(pub[:]), "credential")
+			if err != nil {
+				t.Fatal(err)
+			}
+			envelope, _ := hex.DecodeString(sealed)
+			var sender [32]byte
+			copy(sender[:], envelope[12:44])
+			var nonce [24]byte
+			copy(nonce[:], envelope[44:68])
+			plain, ok := box.Open(nil, envelope[68:], &nonce, &sender, secret)
+			if !ok {
+				t.Fatal("could not open envelope")
+			}
+			origin, _ := url.Parse(tc.origin)
+			if string(plain[8:8+int(plain[4])]) != origin.Hostname() {
+				t.Fatal("envelope destination differs from invitation")
+			}
+		})
+	}
+}

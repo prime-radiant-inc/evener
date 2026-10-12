@@ -572,3 +572,8 @@ readback.
 The shared connection example uses the platform WebSocket. If your hub requires
 an Authorization header, adapt `clientFromEnvironment` to the authenticated
 `socketFactory` described above before using these examples.
+
+`@evener/appwire-client/pairing` owns temporary device invitation encoding,
+comparison fingerprints, claim requests and encrypted credential decoding.
+It is a separate subpath so ordinary AppWire consumers do not load NaCl. See
+[the device pairing protocol](../../docs/device-pairing.md) for the wire contract.

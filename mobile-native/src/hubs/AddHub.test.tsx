@@ -1,5 +1,7 @@
+import nacl from "tweetnacl";
+import { createPairingClaim, invitationText, toHex } from "@evener/appwire-client/pairing";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render, renderedText } from "../renderNative.testkit";
 import { AddHub } from "./AddHub";
 
@@ -13,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 	saveHub: vi.fn(),
 	openSettings: vi.fn(),
 }));
+vi.mock("expo-crypto", () => ({ getRandomBytes: () => new Uint8Array(32).fill(7) }));
 vi.mock("expo-camera", () => ({
 	CameraView: "CameraView",
 	useCameraPermissions: () => [mocks.permission.value, mocks.request, mocks.get],
@@ -334,4 +337,90 @@ it("never shows the token or offers to retry or reconnect", async () => {
 		expect(text).not.toContain(TOKEN);
 		expect(text).not.toMatch(/Retry|Reconnect/);
 	}
+});
+
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
+it("shows a locally calculated code for an invitation without saving credentials", async () => {
+	const invitation = { invitation: "01".repeat(24), origin: "http://magic-kingdom:9180", tailnet: true, expiresAt: 0 };
+	const comparison = createPairingClaim(invitation, new Uint8Array(32).fill(7)).comparison;
+	vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ state: "pending", comparison })));
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
+	});
+	expect(tree.root.findAll((node) => String(node.type) === "CameraView")).toHaveLength(0);
+	expect(renderedText(tree)).toContain(comparison);
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await press(tree, "Cancel pairing");
+	expect(camera(tree)).toBeDefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+});
+
+it("reviews an approved invitation before saving the Hub", async () => {
+	const invitation = { invitation: "01".repeat(24), origin: "http://magic-kingdom:9180", tailnet: true, expiresAt: 0 };
+	const claim = createPairingClaim(invitation, new Uint8Array(32).fill(7));
+	const sender = nacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(9)),
+		nonce = new Uint8Array(24).fill(2);
+	const host = "magic-kingdom",
+		path = "/rpc",
+		token = TOKEN;
+	const plain = new Uint8Array([
+		1,
+		1,
+		35,
+		220,
+		host.length,
+		path.length,
+		0,
+		token.length,
+		...new TextEncoder().encode(host + path + token),
+	]);
+	const envelope = toHex(
+		new Uint8Array([
+			69,
+			86,
+			80,
+			49,
+			...new Uint8Array(8).fill(1),
+			...sender.publicKey,
+			...nonce,
+			...nacl.box(plain, nonce, claim.publicKeyBytes, sender.secretKey),
+		]),
+	);
+	vi.stubGlobal(
+		"fetch",
+		async () => new Response(JSON.stringify({ state: "approved", comparison: claim.comparison, envelope })),
+	);
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
+	});
+	expect(field(tree, "Name").props.value).toBe("magic-kingdom");
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await press(tree, "Connect");
+	expect(mocks.saveHub).toHaveBeenCalledWith({ name: "magic-kingdom", origin: invitation.origin, token: TOKEN });
+});
+
+it("ignores a claim response arriving after cancellation", async () => {
+	const invitation = { invitation: "01".repeat(24), origin: "http://magic-kingdom:9180", tailnet: true, expiresAt: 0 };
+	let answer: ((response: Response) => void) | undefined;
+	vi.stubGlobal(
+		"fetch",
+		() =>
+			new Promise<Response>((resolve) => {
+				answer = resolve;
+			}),
+	);
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
+	});
+	await press(tree, "Cancel pairing");
+	await act(async () => {
+		answer?.(new Response(JSON.stringify({ state: "expired" })));
+	});
+	expect(camera(tree)).toBeDefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
 });

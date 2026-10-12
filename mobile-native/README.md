@@ -284,3 +284,21 @@ See the [current status](../docs/design/mobile/status.md) for SDK evidence and
 current qualification boundaries. The latest real SDK shutdown journey received
 `thread/closed` from backend `3284d6ac5`; older failures remain historical `d2d5eedf9`
 evidence.
+
+## Adding a Hub
+
+In the Hub Web UI, open **Settings → Mobile app → Pair a device** and create an
+invitation. **Scan pairing code** in the native app reads its QR and displays a
+six-digit code. Compare that code with the claim shown in the Web UI and approve
+it there. The app then opens its existing name/review step; **Connect** commits
+the Hub to secure storage. Scanning a second code cannot replace a pending
+invitation. Cancellation, backgrounding and navigation stop polling, and late
+responses cannot select or save a Hub. Foregrounding resumes with the same key.
+Network failures retry; an expired or rejected invitation requires a new scan.
+The phone uses the operating system's Tailscale connection when the Hub is on a
+tailnet. No microphone access is needed for pairing.
+
+Direct credential QR codes, pairing links and manual entry remain available.
+The shared [device pairing protocol](../docs/device-pairing.md) specifies the
+invitation and encrypted approval; the Hub is the approval authority, while the
+native Hub store remains the authority for saved connections.
