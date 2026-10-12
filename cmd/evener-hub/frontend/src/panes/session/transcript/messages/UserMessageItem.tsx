@@ -17,11 +17,8 @@ import { sessionActionError } from "@evener/appwire-client";
 import { memo, type ReactNode, useState } from "react";
 import { workspaceStore } from "../../../../shell/workspace";
 import { threadsStore } from "../../../../stores/threads";
-import { IconButton, useToasts } from "../../../../widgets";
+import { IconButton, SpeakerAvatar, type SpeakerAvatarSpeaker, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-// Direct widget path, NOT the widgets barrel: the barrel is controller-owned
-// and does not re-export SpeakerAvatar yet.
-import { SpeakerAvatar, type SpeakerAvatarSpeaker } from "../../../../widgets/speakeravatar";
 import { writeDraft } from "../../composer/draft";
 import { EntityText } from "../EntityText";
 import { ImageGallery } from "../flow/ImageGallery";
@@ -88,15 +85,16 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
   }
 
   return (
-    <IconButton
-      label="Fork from here"
-      title="Fork from here"
-      icon={<ForkGlyph />}
-      variant="quiet"
-      size="sm"
-      disabled={busy}
-      onClick={() => void handleFork()}
-    />
+    <Tooltip label="Fork from here">
+      <IconButton
+        label="Fork from here"
+        icon={<ForkGlyph />}
+        variant="quiet"
+        size="sm"
+        disabled={busy}
+        onClick={() => void handleFork()}
+      />
+    </Tooltip>
   );
 }
 

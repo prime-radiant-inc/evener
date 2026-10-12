@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
+import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import { seedCurrentDelegate } from "./currentDelegate.testFixture";
@@ -1351,6 +1352,8 @@ test("a headless card exposes hidden identity and status, a visible status shape
   const regionId = disclosure.getAttribute("aria-controls");
   expect(regionId).toBeTruthy();
   expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+  expect(disclosure.hasAttribute("title")).toBe(false);
+  expect(hoverForTooltip(disclosure).textContent).toBe("Show recent activity");
   await user.click(disclosure);
   expect(disclosure.getAttribute("aria-expanded")).toBe("true");
   expect(within(row).getByRole("region").id).toBe(regionId);

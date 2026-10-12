@@ -43,6 +43,14 @@ test("each variant renders a distinct class", () => {
   expect(new Set([primaryClass, quietClass, dangerClass, dangerQuietClass]).size).toBe(4);
 });
 
+// Button's link variant is underlined text; an icon-only control has no text
+// to underline, so IconButton does not offer it. The typecheck is the test.
+test("does not accept Button's link variant", () => {
+  // @ts-expect-error link is a text-only Button variant
+  const props: IconButtonProps = { label: "Go", icon: <DotIcon />, variant: "link" };
+  expect(props.variant).toBe("link");
+});
+
 test("each size renders a distinct class", () => {
   const { rerender } = render(<IconButton label="Go" icon={<DotIcon />} size="xs" />);
   const xsClass = screen.getByRole("button").className;
@@ -62,6 +70,25 @@ test("disabled blocks onClick", async () => {
   render(<IconButton label="Go" icon={<DotIcon />} disabled onClick={onClick} />);
   await user.click(screen.getByRole("button"));
   expect(onClick).not.toHaveBeenCalled();
+});
+
+test("an aria-disabled refusal swallows the click but keeps focus, exactly as Button does", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  const { rerender } = render(<IconButton label="Go" icon={<DotIcon />} aria-disabled={true} onClick={onClick} />);
+  const button = screen.getByRole("button", { name: "Go" });
+  await user.click(button);
+  expect(onClick).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(button);
+
+  // The other spelling of the attribute is the same refusal.
+  rerender(<IconButton label="Go" icon={<DotIcon />} aria-disabled="true" onClick={onClick} />);
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  expect(onClick).not.toHaveBeenCalled();
+
+  rerender(<IconButton label="Go" icon={<DotIcon />} onClick={onClick} />);
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  expect(onClick).toHaveBeenCalledOnce();
 });
 
 test("disabled marks the native button inert (not focusable)", () => {
@@ -166,7 +193,7 @@ test("xs size is square at 24px, matching Button's own xs height", () => {
 // width/height, so the desktop squares above stay the desktop rule.
 test("mobile: all icon-button sizes meet the 44px tap floor in both dimensions", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "iconbutton.module.css"), "utf8");
-  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
   expect(mobile, "iconbutton.module.css must have a max-width:899px media block").not.toBeNull();
   for (const size of ["xs", "sm", "md"]) {
     const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));
@@ -174,4 +201,18 @@ test("mobile: all icon-button sizes meet the 44px tap floor in both dimensions",
     expect(rule![1]).toContain("min-width: var(--tap-min)");
     expect(rule![1]).toContain("min-height: var(--tap-min)");
   }
+});
+
+test("an aria-disabled reset icon button does not reset its form", async () => {
+  render(
+    <form>
+      <input aria-label="Name" defaultValue="" />
+      <IconButton type="reset" label="Clear" icon={<span>x</span>} aria-disabled="true" />
+    </form>,
+  );
+  const user = userEvent.setup();
+  const field = screen.getByRole("textbox", { name: "Name" });
+  await user.type(field, "kept");
+  await user.click(screen.getByRole("button", { name: "Clear" }));
+  expect(field).toHaveProperty("value", "kept");
 });

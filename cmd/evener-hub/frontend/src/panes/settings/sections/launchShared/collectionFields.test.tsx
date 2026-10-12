@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogClient";
-import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
+import {
+  EnvMapField,
+  McpServerListField,
+  ModelListField,
+  PathListField,
+  parseMcpServerEntry,
+} from "./collectionFields";
 
 // modelList adds come from the shared searchable ModelCatalog picker, which
 // calls model/list; the wire loader is mocked so these stay hermetic.
@@ -682,6 +688,25 @@ describe("McpServerListField", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  test("removing one server keeps another whose args differ only in how they split", async () => {
+    const quoted = { name: "fs", command: "mcp-fs", args: ["a b"] };
+    const split = { name: "fs", command: "mcp-fs", args: ["a", "b"] };
+    const onChange = vi.fn();
+    render(
+      <McpServerListField
+        option={mcpOption}
+        items={[quoted, split]}
+        onChange={onChange}
+        validateCommand={async () => ({ path: "mcp-fs", valid: true })}
+      />,
+    );
+    const list = screen.getByRole("list", { name: "MCP servers" });
+    const [removeQuoted] = within(list).getAllByRole("button");
+    if (removeQuoted === undefined) throw new Error("no rows rendered");
+    await userEvent.setup().click(removeQuoted);
+    expect(onChange).toHaveBeenCalledWith([split]);
+  });
+
   test("missing a command token is rejected without calling validateCommand at all", async () => {
     const user = userEvent.setup();
     const validateCommand = vi.fn();
@@ -728,5 +753,43 @@ describe("McpServerListField", () => {
     const list = screen.getByRole("list", { name: "MCP servers" });
     expect(within(list).getByText("docs → npx docs-mcp")).toBeTruthy();
     expect(within(list).queryByText(/No MCP servers configured/i)).toBeNull();
+  });
+});
+
+describe("parseMcpServerEntry", () => {
+  test("a quoted token keeps its spaces, so a command path may contain them", () => {
+    expect(parseMcpServerEntry("fs \"/opt/My Tools/server\" --root '/srv/a b'")).toEqual({
+      name: "fs",
+      command: "/opt/My Tools/server",
+      args: ["--root", "/srv/a b"],
+    });
+  });
+
+  test("unquoted entries still split on whitespace", () => {
+    expect(parseMcpServerEntry("fs  /usr/bin/fs-mcp --ro")).toEqual({
+      name: "fs",
+      command: "/usr/bin/fs-mcp",
+      args: ["--ro"],
+    });
+  });
+
+  test("quoted and unquoted fragments with no space between them are one token", () => {
+    expect(parseMcpServerEntry("fs \"/opt/My Tools/server\"-dev --tag='a b'")).toEqual({
+      name: "fs",
+      command: "/opt/My Tools/server-dev",
+      args: ["--tag=a b"],
+    });
+  });
+
+  test("a backslash escapes the next character, as in a shell", () => {
+    expect(parseMcpServerEntry('fs server --message "say \\"hello\\"" a\\ b')).toEqual({
+      name: "fs",
+      command: "server",
+      args: ["--message", 'say "hello"', "a b"],
+    });
+  });
+
+  test("an unterminated quote is a usage error, not a guess", () => {
+    expect(parseMcpServerEntry('fs "/opt/My Tools/server')).toBeNull();
   });
 });

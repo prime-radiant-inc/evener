@@ -64,6 +64,11 @@ export interface TextareaProps {
    * inputCard). The card must then own the focus affordance itself
    * (:focus-within), since a seamless field has no ring of its own. */
   seamless?: boolean;
+  /** Set the text in the mono face, for content the user edits as code or
+   * config (an AGENTS.md file, a credential's JSON). Only the face changes:
+   * the size stays the field's own, at or above the phone's control-size
+   * floor. */
+  monospace?: boolean;
 }
 
 /** The field's smallest comfortable target, in text lines. Mirrored by
@@ -77,6 +82,7 @@ export const MAX_HEIGHT_VIEWPORT_FRACTION = 0.5;
 const BASE_CLASS = {
   textarea: requireClass(styles.textarea, "textarea.module.css", "textarea"),
   seamless: requireClass(styles.seamless, "textarea.module.css", "seamless"),
+  monospace: requireClass(styles.monospace, "textarea.module.css", "monospace"),
 };
 
 // resizeToFitContent mirrors the legacy composer's grow() (cmd/evener-hub/
@@ -131,6 +137,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     onBlur,
     "aria-label": ariaLabel,
     seamless = false,
+    monospace = false,
   },
   forwardedRef,
 ) {
@@ -179,7 +186,9 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       }}
       id={id}
       name={name}
-      className={seamless ? `${BASE_CLASS.textarea} ${BASE_CLASS.seamless}` : BASE_CLASS.textarea}
+      className={[BASE_CLASS.textarea, seamless && BASE_CLASS.seamless, monospace && BASE_CLASS.monospace]
+        .filter(Boolean)
+        .join(" ")}
       value={value}
       onChange={onChange}
       onKeyDown={onKeyDown}

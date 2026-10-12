@@ -1,0 +1,27 @@
+/* Two columns: chords right-aligned against their descriptions, so a
+   column of mixed-length chords reads as one edge. Each item is
+   display: contents so its dt/dd pair joins the list's grid. */
+.list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: var(--space-3);
+  row-gap: var(--space-2);
+  align-items: center;
+  margin: 0;
+}
+
+.item {
+  display: contents;
+}
+
+.keys {
+  justify-self: end;
+}
+
+.label {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+}

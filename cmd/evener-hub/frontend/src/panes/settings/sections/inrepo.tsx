@@ -9,7 +9,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
-import { Button, FormRow, Loader, PathField } from "../../../widgets";
+import { Button, CodeBlock, FormRow, Loader, PathField } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./inrepo.module.css";
@@ -21,7 +21,6 @@ const CLASS = {
   status: requireClass(styles.status, "inrepo.module.css", "status"),
   note: requireClass(styles.note, "inrepo.module.css", "note"),
   hash: requireClass(styles.hash, "inrepo.module.css", "hash"),
-  preview: requireClass(styles.preview, "inrepo.module.css", "preview"),
   error: requireClass(styles.error, "inrepo.module.css", "error"),
 };
 
@@ -174,7 +173,7 @@ function ResolvedStatus({
       ) : (
         <p className={CLASS.note}>{TRUST_NOTE[repo.trust] ?? repo.trust}</p>
       )}
-      {repo.preview && <pre className={CLASS.preview}>{repo.preview}</pre>}
+      {repo.preview && <CodeBlock text={repo.preview} />}
       {repo.trust !== "trusted" && (
         <Button type="button" disabled={trusting} onClick={() => repo.hash && onTrust(repo.hash)}>
           Trust this file

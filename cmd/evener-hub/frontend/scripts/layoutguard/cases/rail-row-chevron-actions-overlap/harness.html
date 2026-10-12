@@ -68,7 +68,7 @@ function chevronHtml(id) {
 }
 
 function kebabHtml(id, label) {
-  return `<div class="root"><button type="button" class="trigger triggerQuiet" id="kebab-${id}" aria-haspopup="menu" aria-expanded="false" tabindex="-1"><span aria-hidden="true">&#8943;</span><span class="srOnly">Actions for ${label}</span></button></div>`;
+  return `<div class="root"><button type="button" class="trigger triggerQuiet" id="kebab-${id}" aria-haspopup="menu" aria-expanded="false" tabindex="-1"><span aria-hidden="true">&#8943;</span><span class="visuallyHidden">Actions for ${label}</span></button></div>`;
 }
 
 // SessionRow anatomy (RailRow.tsx): textCol(titleLine(label, chevron)), then

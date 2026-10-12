@@ -756,10 +756,9 @@ deleted — <text>` with `Copy` (`:349-374`).
 **Rail** (`shell/rail/RailRow.tsx`, `Rail.tsx`): a session row is
 `[data-session-ref="local:<SID>"]` — note
 `data-session-ref`, not the legacy `data-ref`, and there is no `.sb-row`
-class anywhere. The row is one line. Its status signal is either
-`[data-testid="rail-status-spinner"][aria-label="Running"]` or
-`[data-testid="rail-status-dot"]`, whose `data-status` is `needs-you` or
-`failed` and whose accessible label is `Needs you` or `Broken`. Quiet rows
+class anywhere. The row is one line. Its status signal is the StatusDot
+`[data-testid="rail-row-signal"] [role="img"]`, whose accessible label is
+`Working`, `Needs you`, or `Failed`. Quiet rows
 have no signal. Hover `[data-testid="rail-row-title"]` to expose the rich
 `[role="tooltip"]` context card, whose header carries the detailed status
 word (`Question waiting`, `Restart required`, and so on); on a touch-only
@@ -876,7 +875,7 @@ JSON.stringify({
   steerRendered: !!document.querySelector('[data-testid="composer-steer"]'),
   stopRendered: !!document.querySelector('[data-testid="composer-stop"]'),
   turns: document.querySelectorAll('[data-testid="turn-block"]').length,
-  indicator: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-status-spinner"], [data-session-ref="local:<SID>"] [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
+  indicator: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-row-signal"] [role="img"]')?.getAttribute("aria-label"),
   queueHeading: document.querySelector("h3")?.textContent,   // "Queued messages (N)"
 })
 ```

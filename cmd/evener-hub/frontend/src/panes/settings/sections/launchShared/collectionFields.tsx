@@ -32,9 +32,9 @@ import {
   type PathValidateResponse,
   validatePathListAdd,
 } from "@evener/appwire-client";
-import { type ReactNode, useId } from "react";
+import type { ReactNode } from "react";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
-import { Button, CollectionEditor, Input, PathField, Switch } from "../../../../widgets";
+import { Button, CollectionEditor, Input, PathField, Switch, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./collectionFields.module.css";
 import { controllerLaunchFormPaths, type LaunchFormPaths } from "./fields";
@@ -51,7 +51,6 @@ const CLASS = {
   modelAddField: requireClass(styles.modelAddField, "collectionFields.module.css", "modelAddField"),
   pathAddRow: requireClass(styles.pathAddRow, "collectionFields.module.css", "pathAddRow"),
   pathAddField: requireClass(styles.pathAddField, "collectionFields.module.css", "pathAddField"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "collectionFields.module.css", "visuallyHidden"),
 };
 
 function SectionHeader({ label, help }: { label: string; help?: string }) {
@@ -367,38 +366,30 @@ function EnvAddFields({
   onChange: (value: string) => void;
   disabled: boolean;
 }) {
-  const nameId = useId();
-  const valueId = useId();
   const eq = value.indexOf("=");
   const name = eq === -1 ? value : value.slice(0, eq);
   const envValue = eq === -1 ? "" : value.slice(eq + 1);
 
   return (
     <>
-      <span className={CLASS.envField}>
-        <label className={CLASS.visuallyHidden} htmlFor={nameId}>
-          Variable name
-        </label>
+      <label className={CLASS.envField}>
+        <VisuallyHidden>Variable name</VisuallyHidden>
         <Input
-          id={nameId}
           value={name}
           onChange={(e) => onChange(`${e.target.value.replace(/=/g, "")}=${envValue}`)}
           placeholder="NAME"
           disabled={disabled}
         />
-      </span>
-      <span className={CLASS.envField}>
-        <label className={CLASS.visuallyHidden} htmlFor={valueId}>
-          Variable value
-        </label>
+      </label>
+      <label className={CLASS.envField}>
+        <VisuallyHidden>Variable value</VisuallyHidden>
         <Input
-          id={valueId}
           value={envValue}
           onChange={(e) => onChange(`${name}=${e.target.value}`)}
           placeholder="value"
           disabled={disabled}
         />
-      </span>
+      </label>
       <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
         Add
       </Button>
@@ -462,13 +453,67 @@ export interface McpServerListFieldProps {
   inheritedItems?: readonly MCPServerSpec[];
 }
 
-function specKey(spec: MCPServerSpec): string {
-  return `${spec.name}|${spec.command}|${(spec.args ?? []).join(" ")}`;
+export function mcpServerKey(spec: MCPServerSpec): string {
+  return JSON.stringify([spec.name, spec.command, spec.args ?? []]);
 }
 
-function renderSpec(spec: MCPServerSpec): string {
+export function mcpServerLabel(spec: MCPServerSpec): string {
   const args = spec.args && spec.args.length > 0 ? ` ${spec.args.join(" ")}` : "";
   return `${spec.name} → ${spec.command}${args}`;
+}
+
+export const MCP_SERVER_ENTRY_USAGE = "Use: name command [args...], quoting any part with spaces";
+
+/** Splits a "name command [args...]" add entry on whitespace; null when the
+ * name or command is missing. */
+export function parseMcpServerEntry(entry: string): { name: string; command: string; args: string[] } | null {
+  const tokens = splitEntryTokens(entry);
+  if (tokens === null) return null;
+  const [name, command, ...args] = tokens;
+  if (!name || !command) return null;
+  return { name, command, args };
+}
+
+// Shell-style words: whitespace separates them, a '...' or "..." run keeps
+// its spaces, and fragments with no space between them join into one word
+// ("/opt/My Tools/server"-dev is one path). A backslash escapes the next
+// character outside quotes, and only " or \\ inside double quotes; single
+// quotes are literal. null for an unterminated quote or a trailing
+// backslash, so the caller shows usage instead of guessing.
+function splitEntryTokens(entry: string): string[] | null {
+  const tokens: string[] = [];
+  let word: string | null = null;
+  let quote: '"' | "'" | null = null;
+  const chars = [...entry];
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i] as string;
+    const next = chars[i + 1];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else word += ch;
+    } else if (quote === '"') {
+      if (ch === "\\" && (next === '"' || next === "\\")) {
+        word += next;
+        i++;
+      } else if (ch === '"') quote = null;
+      else word += ch;
+    } else if (ch === "\\") {
+      if (next === undefined) return null;
+      word = (word ?? "") + next;
+      i++;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      word ??= "";
+    } else if (/\s/.test(ch)) {
+      if (word !== null) tokens.push(word);
+      word = null;
+    } else {
+      word = (word ?? "") + ch;
+    }
+  }
+  if (quote !== null) return null;
+  if (word !== null) tokens.push(word);
+  return tokens;
 }
 
 /** mcpServerList kind: `mcps`. Add syntax is "name command [args...]"
@@ -483,12 +528,11 @@ export function McpServerListField({
   inheritedItems = [],
 }: McpServerListFieldProps) {
   async function handleAdd(trimmed: string): Promise<CollectionAddResult> {
-    const tokens = trimmed.split(/\s+/).filter(Boolean);
-    const [name, command, ...args] = tokens;
-    if (!name || !command) return { ok: false, error: "Use: name command [args...]" };
-    const result = await validateCommand(command);
+    const entry = parseMcpServerEntry(trimmed);
+    if (entry === null) return { ok: false, error: MCP_SERVER_ENTRY_USAGE };
+    const result = await validateCommand(entry.command);
     if (!result.valid) return { ok: false, error: result.error || "invalid command" };
-    onChange([...items, { name, command: result.path || command, args }]);
+    onChange([...items, { ...entry, command: result.path || entry.command }]);
     return { ok: true };
   }
 
@@ -499,10 +543,10 @@ export function McpServerListField({
         label={option.label}
         items={items}
         inheritedItems={inheritedItems}
-        getKey={specKey}
-        renderItem={renderSpec}
-        removeLabel={(spec) => `Remove ${renderSpec(spec)}`}
-        onRemove={(spec) => onChange(items.filter((i) => specKey(i) !== specKey(spec)))}
+        getKey={mcpServerKey}
+        renderItem={mcpServerLabel}
+        removeLabel={(spec) => `Remove ${mcpServerLabel(spec)}`}
+        onRemove={(spec) => onChange(items.filter((i) => i !== spec))}
         emptyMessage="No MCP servers configured."
         addPlaceholder="name command args..."
         onAdd={handleAdd}

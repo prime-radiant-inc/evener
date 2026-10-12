@@ -2,7 +2,8 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { expect, test, vi } from "vitest";
-import { DirectoryPicker, type DirectoryPickerProps } from "./index";
+import { DirectoryIcon as FromBarrel } from "..";
+import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "./index";
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
   const props: DirectoryPickerProps = {
@@ -22,6 +23,10 @@ function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => vo
   );
   return { ...props, user: userEvent.setup() };
 }
+
+test("its folder glyph is exported from the widget barrel", () => {
+  expect(FromBarrel).toBe(DirectoryIcon);
+});
 
 test("navigation and recent folders stay draft until explicitly selected", async () => {
   const { user, onPick } = setup();

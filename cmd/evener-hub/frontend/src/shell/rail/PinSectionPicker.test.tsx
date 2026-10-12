@@ -106,7 +106,8 @@ describe("PinSectionPicker", () => {
     );
 
     const first = render(<PinSectionPicker {...props()} />);
-    expect(screen.getByRole("status").textContent).toMatch(/loading sections/i);
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Pin sections" })).toBeNull();
     expect(fn).toHaveBeenCalledTimes(1);
     // Re-seed with just [CLIENT] so the resolved catalog shows one section.
     seedPinCatalog([CLIENT]);
@@ -200,19 +201,26 @@ describe("PinSectionPicker", () => {
   });
 
   test.each([
-    ["only whitespace", "   ", "Section name is required"],
-    ["81 Unicode code points", "界".repeat(81), "Section names must be 80 characters or fewer"],
-  ])("rejects %s before assigning", async (_case, value, message) => {
+    ["only whitespace", "   "],
+    ["81 Unicode code points", "界".repeat(81)],
+  ])("rejects %s with an alert the name field describes, before assigning", async (_case, value) => {
     const onAssign = vi.fn().mockResolvedValue(undefined);
     render(<PinSectionPicker {...props({ onAssign })} />);
     const user = userEvent.setup();
 
     await user.click(await screen.findByRole("button", { name: "New section…" }));
-    await user.type(screen.getByRole("textbox", { name: "Section name" }), value);
+    const input = screen.getByRole("textbox", { name: "Section name" }) as HTMLInputElement;
+    await user.type(input, value);
     await user.click(screen.getByRole("button", { name: "Create and pin" }));
 
-    expect(screen.getByRole("alert").textContent).toBe(message);
+    const alert = screen.getByRole("alert");
+    expect(input.getAttribute("aria-describedby")).toBe(alert.id);
     expect(onAssign).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Section name" })).toBe(input);
+    expect(input.value).toBe(value);
+    await user.type(input, "x");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(input.hasAttribute("aria-describedby")).toBe(false);
   });
 
   test("Cancel closes and Dialog restores focus to the opener", async () => {

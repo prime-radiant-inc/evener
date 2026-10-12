@@ -22,6 +22,9 @@ Keep those references current when changing the behavior they describe.
 - **[fuzzing.md](fuzzing.md)** — the front door to evener's fuzzing toolkit:
   the `testing.F`/`rapid.Check` targets, coverage, gating, and regression
   promotion.
+- **[design-system.md](design-system.md)** — how to build hub web UI on
+  the design system: compose from the widget library, tokens only, and what
+  to do when no widget fits.
 - **[environment.md](environment.md)** — every environment variable evener
   reads, keyed to the `envvars` package that's their source of truth.
 - **[worktrees.md](worktrees.md)** — the `manage_worktree` tool and delegate

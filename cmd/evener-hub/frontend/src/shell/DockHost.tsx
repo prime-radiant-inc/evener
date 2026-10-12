@@ -15,7 +15,7 @@ import { navigationSummaryFor, resolveThreadName } from "../panes/session/thread
 import { parseZoomParams } from "../panes/zoom/intent";
 import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
-import { EmptyState } from "../widgets/emptystate";
+import { Skeleton } from "../widgets";
 import { chromeStore, useChromeStore } from "./chromeStore";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
@@ -101,7 +101,7 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   const Component = paneFor(params.paneType).component;
   return (
     <PaneVisibilityContext.Provider value={visible}>
-      <Suspense fallback={<EmptyState title="Loading…" />}>
+      <Suspense fallback={<Skeleton />}>
         <Component params={params.paneParams} paneId={api.id} focused={focused} />
       </Suspense>
     </PaneVisibilityContext.Provider>

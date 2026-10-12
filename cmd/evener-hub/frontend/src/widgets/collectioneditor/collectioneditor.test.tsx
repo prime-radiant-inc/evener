@@ -294,3 +294,46 @@ describe("renderAddField", () => {
     expect(screen.getAllByRole("button", { name: "Add" })).toHaveLength(1);
   });
 });
+
+// Persisted lists may hold identical entries (the settings pages surface them
+// with a diagnostic rather than refusing), so rows cannot be keyed by content
+// alone: removing one occurrence must leave exactly the others on screen.
+test("identical items each keep their own row through a removal", async () => {
+  function Harness() {
+    const [items, setItems] = useState<DirItem[]>([{ path: "/a" }, { path: "/dup" }, { path: "/dup" }, { path: "/z" }]);
+    return (
+      <CollectionEditor<DirItem>
+        {...baseProps({
+          items,
+          onRemove: (item) => setItems((current) => current.filter((i) => i !== item)),
+        })}
+      />
+    );
+  }
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  render(<Harness />);
+  expect(errors).not.toHaveBeenCalled();
+  const removes = screen.getAllByRole("button", { name: "Remove /dup" });
+  expect(removes).toHaveLength(2);
+  const [firstDuplicate] = removes;
+  if (firstDuplicate === undefined) throw new Error("no duplicate rows rendered");
+  await userEvent.setup().click(firstDuplicate);
+  expect(screen.getAllByRole("button", { name: /^Remove / }).map((b) => b.getAttribute("aria-label"))).toEqual([
+    "Remove /a",
+    "Remove /dup",
+    "Remove /z",
+  ]);
+  errors.mockRestore();
+});
+
+test("an item whose key looks like another row's occurrence still gets its own row", () => {
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  render(
+    <CollectionEditor<DirItem>
+      {...baseProps({ items: [{ path: "/tmp/item" }, { path: "/tmp/item" }, { path: "/tmp/item#1" }] })}
+    />,
+  );
+  expect(errors).not.toHaveBeenCalled();
+  expect(screen.getAllByRole("button", { name: /^Remove / })).toHaveLength(3);
+  errors.mockRestore();
+});

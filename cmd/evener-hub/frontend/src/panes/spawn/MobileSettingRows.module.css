@@ -52,10 +52,10 @@
 }
 
 .caret {
+  display: inline-flex;
   flex: 0 0 auto;
+  align-items: center;
   color: var(--ink-mid);
-  font-size: var(--font-size-pane-title);
-  line-height: 1;
 }
 
 .sheetBody {

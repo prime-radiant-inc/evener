@@ -41,18 +41,18 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 		? row === undefined
 			? // A partial tree may hold the job in the part it couldn't read.
 				snapshot.partial
-				? "This job can't be listed right now."
-				: "This job is no longer listed."
+				? "partial"
+				: "unlisted"
 			: null
 		: snapshot.failed
-			? "This job couldn't be read right now."
+			? "failed"
 			: null;
 	const header = (
 		<View style={{ paddingBottom: 12, gap: 12 }}>
 			{row ? <JobFacts row={row} now={now} /> : null}
 			{gone ? (
-				<Text allowFontScaling={allowFontScaling} style={quiet}>
-					{gone}
+				<Text testID={`job-gone:${gone}`} allowFontScaling={allowFontScaling} style={quiet}>
+					{GONE_WORDS[gone]}
 				</Text>
 			) : null}
 			{row ? <OutputNote output={output} /> : null}
@@ -68,6 +68,14 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 		</View>
 	);
 }
+
+/** Why the job isn't shown: the tree couldn't all be read, it no longer
+ * lists the job, or it couldn't be read at all. */
+const GONE_WORDS = {
+	partial: "This job can't be listed right now.",
+	unlisted: "This job is no longer listed.",
+	failed: "This job couldn't be read right now.",
+} as const;
 
 /** The command, how it's doing, its exit code when that isn't 0, and who
  * started it. */
@@ -89,7 +97,7 @@ function JobFacts({ row, now }: { row: ShellJobRow; now: number }) {
 				{shellJobMeta(row, now)}
 			</Text>
 			{exitCode !== undefined && exitCode !== 0 ? (
-				<Text allowFontScaling={allowFontScaling} style={small}>
+				<Text testID="job-exit-code" allowFontScaling={allowFontScaling} style={small}>
 					{`Exited ${exitCode}`}
 				</Text>
 			) : null}
@@ -100,6 +108,12 @@ function JobFacts({ row, now }: { row: ShellJobRow; now: number }) {
 	);
 }
 
+const OUTPUT_NOTE_WORDS = {
+	failed: "The output couldn't be read right now.",
+	empty: "No output.",
+	tail: "Showing the end of the output.",
+} as const;
+
 /** What the output below is: nothing while it's read, why there's none, or
  * that it starts partway through the job's output. */
 function OutputNote({ output }: { output: ShellJobOutput }) {
@@ -107,19 +121,20 @@ function OutputNote({ output }: { output: ShellJobOutput }) {
 	const scale = useTextScale();
 	const note =
 		output.status === "failed"
-			? "The output couldn't be read right now."
+			? "failed"
 			: output.status === "read" && output.text === ""
-				? "No output."
+				? "empty"
 				: output.status === "read" && output.page.offsetBytes > 0
-					? "Showing the end of the output."
+					? "tail"
 					: null;
 	if (note === null) return null;
 	return (
 		<Text
+			testID={`output-note:${note}`}
 			allowFontScaling={allowFontScaling}
 			style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 		>
-			{note}
+			{OUTPUT_NOTE_WORDS[note]}
 		</Text>
 	);
 }

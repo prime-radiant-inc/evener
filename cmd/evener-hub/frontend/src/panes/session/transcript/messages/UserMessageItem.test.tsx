@@ -13,6 +13,7 @@ import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
+import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { readDraft } from "../../composer/draft";
 import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
@@ -347,6 +348,20 @@ describe("per-message fork affordance", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: /fork from here/i })).toBeNull();
+  });
+
+  test("the fork button's hover label is the shared Tooltip, not a native title", () => {
+    render(
+      <UserMessageItem
+        item={item({ text: "fix the bug", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+        turn={turn}
+        live={false}
+        sessionRef="ref_a"
+      />,
+    );
+    const button = screen.getByRole("button", { name: /fork from here/i });
+    expect(button.hasAttribute("title")).toBe(false);
+    expect(hoverForTooltip(button).textContent).toBe("Fork from here");
   });
 
   // thread/fork's sourceItemKey names an item key (transcriptindex.ItemKey),

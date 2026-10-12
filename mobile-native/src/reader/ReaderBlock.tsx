@@ -232,6 +232,7 @@ function CommentMarker({ count, onPress }: { count: number; onPress(): void }) {
 	const scale = useTextScale();
 	return (
 		<Pressable
+			testID={`comment-pill:${count}`}
 			accessibilityRole="button"
 			accessibilityLabel={`${count} ${count === 1 ? "comment" : "comments"}`}
 			onPress={onPress}

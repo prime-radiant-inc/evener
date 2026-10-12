@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { MermaidDiagram as FromBarrel } from "..";
 import { MermaidDiagram } from "./index";
 import { installJsdomSvgShims } from "./jsdomSvgShims";
 
@@ -38,6 +39,10 @@ afterEach(() => {
 });
 
 describe("MermaidDiagram", () => {
+  it("is exported from the widget barrel", () => {
+    expect(FromBarrel).toBe(MermaidDiagram);
+  });
+
   it("renders a real flowchart with its labels", async () => {
     render(<MermaidDiagram source={"graph TD; A[Start node]-->B{Decision label}"} />);
     await waitFor(() => expect(document.querySelector("[data-mermaid-diagram] svg")).not.toBeNull(), {

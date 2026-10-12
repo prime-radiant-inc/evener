@@ -8,7 +8,8 @@
     "widgets/menu/menu.module.css",
     "widgets/button/button.module.css",
     "widgets/iconbutton/iconbutton.module.css",
-    "widgets/badge/badge.module.css"
+    "widgets/badge/badge.module.css",
+    "widgets/visuallyhidden/visuallyhidden.module.css"
   ],
   "viewport": {
     "width": 1000,

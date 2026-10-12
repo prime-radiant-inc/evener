@@ -44,6 +44,7 @@ export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 				contentContainerStyle={{ paddingVertical: 8 }}
 				ListEmptyComponent={
 					<Text
+						testID="files-empty"
 						allowFontScaling={allowFontScaling}
 						style={{ padding: 16, color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
 					>
