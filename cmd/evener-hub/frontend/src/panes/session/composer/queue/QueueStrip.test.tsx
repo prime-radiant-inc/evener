@@ -406,11 +406,10 @@ describe("visibility", () => {
     },
   );
 
-  // Queries for the "Queued messages" heading specifically, not a bare
-  // `section` selector - <Toast/> (rendered alongside the strip in every
-  // test via renderStrip) also mounts its own <section>, which a generic
-  // selector would false-positive against regardless of QueueStrip's own
-  // visibility.
+  // Queries the strip by its testid, not a bare `section` selector - <Toast/>
+  // (rendered alongside the strip in every test via renderStrip) also mounts
+  // its own <section>, which a generic selector would false-positive against
+  // regardless of QueueStrip's own visibility.
   test("renders nothing before the thread has hydrated", () => {
     renderStrip(defaultProps());
     expect(queueStrip()).toBeNull();
@@ -771,8 +770,7 @@ describe("durable recovery rows", () => {
     );
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
     await flushPendingTurnsProjectionForTests();
-    const row = screen.getByText("still uncertain input").closest("li");
-    if (!row) throw new Error("missing blocked row after Retry");
+    const row = await findRow("blocked");
     await within(row).findByRole("button", { name: "Retry" });
     expect(within(row).getAllByRole("alert")).toHaveLength(1);
     expect(within(row).getByRole("alert").textContent).not.toBe("");
@@ -1005,8 +1003,7 @@ describe("canceled rows", () => {
     await readInFlight;
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
     await flushPendingTurnsProjectionForTests();
-    const row = screen.getByText("refused retry input").closest("li");
-    if (!row) throw new Error("missing canceled row after Retry");
+    const row = await findRow("canceled");
     await within(row).findByRole("button", { name: "Retry" });
     expect(within(row).getAllByRole("alert")).toHaveLength(1);
     expect(within(row).getByRole("alert").textContent).not.toBe("");
