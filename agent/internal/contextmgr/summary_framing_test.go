@@ -19,6 +19,8 @@ func TestStripSummaryFraming(t *testing.T) {
 		"marker then text":   {summaryMarkerStart + " ## Progress\nFixed it.", "## Progress\nFixed it."},
 		"text then marker":   {"## Progress: " + summaryMarkerEnd, "## Progress:"},
 		"framing both ends":  {summaryMarkerStart + " ## Progress: " + summaryMarkerEnd, "## Progress:"},
+		"framing no colon":   {summaryMarkerStart + " ## Progress " + summaryMarkerEnd, "## Progress"},
+		"framing repeated":   {summaryMarkerStart + summaryMarkerStart + " ## Progress", "## Progress"},
 		"indented delimiter": {"## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~", "## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~"},
 		"marker in a line":   {"See the framing " + summaryMarkerEnd + " for the format.", "See the framing " + summaryMarkerEnd + " for the format."},
 		"named in prose":     {"## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing.", "## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing."},
@@ -107,6 +109,26 @@ func TestSummarizeWithLLM_RejectsAMarkerBesideAHeadingWithNoContent(t *testing.T
 	reply := summaryMarkerStart + " ## Progress: " + summaryMarkerEnd
 	if result, err := summarizeReplying(t, reply, ""); err == nil {
 		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+	}
+}
+
+// The markers an echoing model wraps a heading's line in can sit at either end
+// and repeat: the heading behind them is still the summary's own, and the
+// content under it counts.
+func TestSummarizeWithLLM_ReadsAHeadingBehindMarkersAtBothEnds(t *testing.T) {
+	for name, reply := range map[string]string{
+		"both ends":       summaryMarkerStart + " ## Progress " + summaryMarkerEnd + "\nFixed the auth bug.",
+		"repeated marker": summaryMarkerStart + summaryMarkerStart + " ## Progress\nFixed the auth bug.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := summarizeReplying(t, reply, "")
+			if err != nil {
+				t.Fatalf("summarizeWithLLM: %v", err)
+			}
+			if stored := result[0].Message.Text(); !strings.Contains(stored, "## Progress\nFixed the auth bug.") {
+				t.Fatalf("the heading behind the echoed markers was not read as the summary's own:\n%s", stored)
+			}
+		})
 	}
 }
 

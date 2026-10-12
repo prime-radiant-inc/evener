@@ -149,24 +149,31 @@ func indentedCode(line string) bool {
 }
 
 // framingBesideHeading takes the framing markers off a line's edges, in however
-// many copies sit there, when what is left is a section heading: the heading the
-// model wrote beside an echoed marker is the summary's own, and the markers
-// beside it are not part of it. A marker beside anything else is that text's own
-// word and is left in place.
+// many copies sit there, and reports whether what is left is a section heading:
+// the heading the model wrote beside an echoed marker is the summary's own, and
+// the markers around it are no part of it. What matters is the line without
+// them: a marker between two pieces of text is that text's own word, so a line
+// the markers do not leave as a heading is left whole.
 func framingBesideHeading(line string) (rest string, cut bool) {
-	rest = line
+	bare := line
 	for {
-		remainder, found := cutFramingMarker(rest)
+		without, found := cutEdgeMarker(bare)
 		if !found {
-			return rest, cut
+			break
 		}
-		rest, cut = remainder, true
+		bare, cut = without, true
 	}
+	if !cut {
+		return line, false
+	}
+	if _, _, ok := summarySectionHeading(bare); !ok {
+		return line, false
+	}
+	return bare, true
 }
 
-// cutFramingMarker takes one framing marker off a line's edge when the rest of
-// the line is a section heading.
-func cutFramingMarker(line string) (string, bool) {
+// cutEdgeMarker takes one framing marker off a line's edge, if one is there.
+func cutEdgeMarker(line string) (string, bool) {
 	for _, edge := range []struct {
 		marker string
 		atEnd  bool
@@ -183,12 +190,8 @@ func cutFramingMarker(line string) (string, bool) {
 		} else {
 			remainder, found = strings.CutPrefix(line, edge.marker)
 		}
-		if !found {
-			continue
-		}
-		remainder = strings.TrimSpace(remainder)
-		if _, _, ok := summarySectionHeading(remainder); ok {
-			return remainder, true
+		if found {
+			return strings.TrimSpace(remainder), true
 		}
 	}
 	return line, false
