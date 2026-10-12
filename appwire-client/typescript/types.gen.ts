@@ -503,6 +503,39 @@ export interface DeletionSkip {
   kind?: string;
 }
 
+export interface DevicePairingApproveParams {
+  invitation: string;
+  publicKey: string;
+}
+
+export interface DevicePairingClaim {
+  publicKey: string;
+  client: string;
+  comparison: string;
+}
+
+export interface DevicePairingCreateParams {
+  origin: string;
+  tailnet: boolean;
+}
+
+export interface DevicePairingInvitation {
+  invitation: string;
+  origin: string;
+  tailnet: boolean;
+  expiresAt: number;
+}
+
+export interface DevicePairingParams {
+  invitation: string;
+}
+
+export interface DevicePairingStatus {
+  state: string;
+  claims: DevicePairingClaim[];
+  approvedKey?: string;
+}
+
 export interface DiagnosticCause {
   kind: string;
   provider?: string;
@@ -4693,6 +4726,10 @@ export const METHOD_NAMES = [
   "evener/path/validate",
   "evener/git/head",
   "evener/mobile/pairing",
+  "evener/devicePairing/create",
+  "evener/devicePairing/read",
+  "evener/devicePairing/approve",
+  "evener/devicePairing/cancel",
   "evener/navigation/read",
   "evener/favorite/set",
   "evener/archive/set",
@@ -5003,6 +5040,10 @@ export interface MethodTypes {
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
   "evener/git/head": { params: GitHeadParams; result: GitHeadResponse };
   "evener/mobile/pairing": { params: MobilePairingParams; result: MobilePairingResponse };
+  "evener/devicePairing/create": { params: DevicePairingCreateParams; result: DevicePairingInvitation };
+  "evener/devicePairing/read": { params: DevicePairingParams; result: DevicePairingStatus };
+  "evener/devicePairing/approve": { params: DevicePairingApproveParams; result: DevicePairingStatus };
+  "evener/devicePairing/cancel": { params: DevicePairingParams; result: DevicePairingStatus };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
   "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
   "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };

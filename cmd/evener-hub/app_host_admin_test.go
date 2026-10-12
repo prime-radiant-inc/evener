@@ -459,14 +459,20 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// remote admin proxy, so both are denied deliberately rather than left
 		// undecided — an unlisted method is refused with appwire.InvalidParams
 		// and never forwarded.
-		"evener/daemon/list":    false,
-		"evener/daemon/retire":  false,
-		"evener/delegate/stop":  false,
-		"evener/dirs/create":    true, // discovery: create the host directory the spawn form asked for
-		"evener/favorite/set":   false,
-		"evener/git/head":       true, // discovery: read-only branch metadata for a remote path
-		"evener/harnesses/list": true, // discovery: the host's own harnesses
-		"evener/host/request":   false,
+		"evener/daemon/list":   false,
+		"evener/daemon/retire": false,
+		"evener/delegate/stop": false,
+		// Pairing owns this Hub's invitations and credential, so its methods
+		// remain local like mobile pairing rather than forwarding to a host.
+		"evener/devicePairing/create":  false,
+		"evener/devicePairing/read":    false,
+		"evener/devicePairing/approve": false,
+		"evener/devicePairing/cancel":  false,
+		"evener/dirs/create":           true, // discovery: create the host directory the spawn form asked for
+		"evener/favorite/set":          false,
+		"evener/git/head":              true, // discovery: read-only branch metadata for a remote path
+		"evener/harnesses/list":        true, // discovery: the host's own harnesses
+		"evener/host/request":          false,
 		// evener/host/attach is controller-LOCAL: it dials a host this
 		// controller owns through the Ensure-backed seam. There is no host to
 		// forward to until the attach succeeds, so it is never a proxied call,

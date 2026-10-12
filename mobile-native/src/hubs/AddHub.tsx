@@ -2,6 +2,8 @@
 // paste its pairing link, or type an address and token by hand (ruling 23).
 // Each way ends on one review step that names the hub and saves it. The token
 // is held in state and handed to saveHub; it is never rendered as text.
+import { parseInvitation, type DevicePairingInvitation } from "@evener/appwire-client/pairing";
+import { PairingApproval } from "./PairingApproval";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStringAsync } from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
@@ -33,6 +35,9 @@ export function AddHub({
 	const { saveHub } = useConnection();
 	const [how, setHow] = useState(initialHow);
 	const [review, setReview] = useState<Review | null>(null);
+	const [invitation, setInvitation] = useState<DevicePairingInvitation | null>(null);
+	const pendingInvitation = useRef<DevicePairingInvitation | null>(null);
+	const selected = useRef(false);
 	const [saving, setSaving] = useState(false);
 	const [refused, setRefused] = useState(false);
 	// Leaving mid-save (first run's Back) keeps the hub saved, but the page
@@ -48,7 +53,9 @@ export function AddHub({
 	// The first pairing link wins: the camera keeps reporting codes until it
 	// unmounts, and a later one must not replace the hub being reviewed.
 	function startReview(target: PairingTarget) {
-		setReview((current) => current ?? { target, name: suggestedHubName(target.origin) });
+		if (selected.current) return;
+		selected.current = true;
+		setReview({ target, name: suggestedHubName(target.origin) });
 	}
 
 	async function connect() {
@@ -70,6 +77,24 @@ export function AddHub({
 			if (mounted.current) setSaving(false);
 		}
 	}
+
+	if (invitation && !review)
+		return (
+			<PairingApproval
+				invitation={invitation}
+				onApproved={(target) => {
+					if (!mounted.current || pendingInvitation.current !== invitation) return;
+					pendingInvitation.current = null;
+					setReview({ target, name: suggestedHubName(target.origin) });
+				}}
+				onCancel={() => {
+					if (pendingInvitation.current !== invitation) return;
+					pendingInvitation.current = null;
+					selected.current = false;
+					setInvitation(null);
+				}}
+			/>
+		);
 
 	if (review)
 		return (
@@ -104,6 +129,13 @@ export function AddHub({
 		return (
 			<Scan
 				onPairing={startReview}
+				onInvitation={(next) => {
+					if (!selected.current) {
+						selected.current = true;
+						pendingInvitation.current = next;
+						setInvitation(next);
+					}
+				}}
 				onPasteInstead={() => {
 					setHow("paste");
 					onHowChange?.("paste");
@@ -114,7 +146,15 @@ export function AddHub({
 	return <Address onPairing={startReview} />;
 }
 
-function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget): void; onPasteInstead(): void }) {
+function Scan({
+	onPairing,
+	onPasteInstead,
+	onInvitation,
+}: {
+	onPairing(target: PairingTarget): void;
+	onPasteInstead(): void;
+	onInvitation(invitation: DevicePairingInvitation): void;
+}) {
 	const [permission, requestPermission, getPermission] = useCameraPermissions();
 	const [notPairing, setNotPairing] = useState(false);
 	const asked = useRef(false);
@@ -171,6 +211,16 @@ function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget):
 					facing="back"
 					barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
 					onBarcodeScanned={({ data }) => {
+						try {
+							const invitation = parseInvitation(data);
+							if (invitation) {
+								onInvitation(invitation);
+								return;
+							}
+						} catch {
+							setNotPairing(true);
+							return;
+						}
 						const target = pairingFrom(data);
 						if (target) onPairing(target);
 						else setNotPairing(true);

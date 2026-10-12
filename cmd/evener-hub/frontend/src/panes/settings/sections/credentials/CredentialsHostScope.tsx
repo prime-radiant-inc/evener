@@ -35,6 +35,7 @@ import { HostPicker } from "../../HostPicker";
 import { useSettingsHost } from "../../settingsHost";
 import styles from "./CredentialsHostScope.module.css";
 import { CredentialsSection, Diagnostics } from "./CredentialsSection";
+import type { FormError } from "./formError";
 import { DeviceCodeDialog } from "./oauthDialogs";
 import { ProviderInstanceGroups } from "./ProviderInstanceGroups";
 import { useEditorLifetime } from "./useEditorLifetime";
@@ -74,7 +75,7 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
     // being read, the host's own partition (or its typed refusal) is shown
     // instead of a premature "no longer configured".
     body = (
-      <p className={CLASS.note} role="status">
+      <p className={CLASS.note} role="status" data-reason="host-unconfigured">
         Host {host} is no longer configured, so it has no provider listing to show.
       </p>
     );
@@ -114,6 +115,10 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
   );
 }
 
+/** Why a "Sign in on host" did not open its editor, as the alert's
+ * data-reason: the host's client offers no device flow, or the start failed. */
+type HostSignInErrorReason = "device-flow-unavailable" | "start-failed";
+
 /** HostSignInEditor is one in-progress "Sign in on host" device flow for a Codex
  * instance of the selected remote host. */
 interface HostSignInEditor {
@@ -149,7 +154,7 @@ function RemoteHostInstances({
 }) {
   const state = useHostInstances(host);
   const [signIn, setSignIn] = useState<HostSignInEditor | null>(null);
-  const [signInError, setSignInError] = useState<string | null>(null);
+  const [signInError, setSignInError] = useState<FormError<HostSignInErrorReason> | null>(null);
   // Async start work may finish after the pane unmounts; a mounted editor owns
   // its feedback. This tracks the MOUNT alone, never which host the editor was
   // started for: that tie is the SUBTREE's key at this component's call site,
@@ -206,9 +211,10 @@ function RemoteHostInstances({
           // (cmd/evener/openai_login.go), so the sign-in has to be completed on
           // the host itself, through that CLI, against this instance - whose
           // paste-back browser flow (--no-device) needs no browser there.
-          setSignInError(
-            `Device-code sign-in is not enabled on ${host}: this host's OpenAI client offers no device-code flow, and no browser on ${host} can complete the redirect one. Complete the sign-in on ${host} itself: \`evener openai login --instance ${name} --no-device\` pastes the redirect URL back without a browser.`,
-          );
+          setSignInError({
+            reason: "device-flow-unavailable",
+            message: `Device-code sign-in is not enabled on ${host}: this host's OpenAI client offers no device-code flow, and no browser on ${host} can complete the redirect one. Complete the sign-in on ${host} itself: \`evener openai login --instance ${name} --no-device\` pastes the redirect URL back without a browser.`,
+          });
           return;
         }
         setSignIn({
@@ -220,7 +226,7 @@ function RemoteHostInstances({
         });
       } catch (err) {
         if (!active.current || startGeneration.current !== generation) return;
-        setSignInError(`Couldn't start sign-in on ${host}: ${errorText(err)}`);
+        setSignInError({ reason: "start-failed", message: `Couldn't start sign-in on ${host}: ${errorText(err)}` });
       }
     },
     [host, active],
@@ -267,6 +273,7 @@ function RemoteHostInstances({
         )}
         {unverifiable && (
           <EmptyState
+            reason="unverifiable"
             title={`Couldn't check ${host}'s registration`}
             hint="The hosts list didn't load, so this host's own provider listing can't be verified as still belonging to the name it was selected by. Retry to read the hosts list again."
             action={
@@ -278,7 +285,7 @@ function RemoteHostInstances({
         )}
         {state.error === null && !unverifiable && pending && <Skeleton />}
         {!unverifiable && verified && !pending && state.error === null && empty && (
-          <EmptyState title={`No provider instances on ${host}.`} />
+          <EmptyState reason="no-instances" title={`No provider instances on ${host}.`} />
         )}
         {!unverifiable && verified && !empty && (
           <ProviderInstanceGroups
@@ -289,8 +296,8 @@ function RemoteHostInstances({
           />
         )}
         {signInError !== null && (
-          <p className={CLASS.error} role="alert">
-            {signInError}
+          <p className={CLASS.error} role="alert" data-reason={signInError.reason}>
+            {signInError.message}
           </p>
         )}
         {signIn !== null && (
@@ -505,31 +512,31 @@ function PushCredentials({
           reasons are told apart because they are different states of the
           registry - no answer yet, and a read that failed. */}
       {unverifiable && (
-        <p className={CLASS.note}>
+        <p className={CLASS.note} data-reason="registry-unreadable">
           The hosts list couldn't be read, so nothing here confirms {host} is still a configured host: the push is held
           until the hosts list answers.
         </p>
       )}
       {!unverifiable && !registryNamesHost && (
-        <p className={CLASS.note}>
+        <p className={CLASS.note} data-reason="registry-unanswered">
           The hosts list has no answer for {host} yet, and this sends this hub's keys: the push is offered only while
           that listing names {host}.
         </p>
       )}
       {shown?.phase === "failed" && (
-        <p className={CLASS.error} role="alert">
+        <p className={CLASS.error} role="alert" data-reason="failed">
           Couldn't push credentials to {host}: {shown.message}
         </p>
       )}
       {shown?.phase === "unknown" && (
-        <p className={CLASS.error} role="alert">
+        <p className={CLASS.error} role="alert" data-reason="unknown-outcome">
           The push to {host} didn't answer before this page's deadline, so its outcome is not known here: {host} may
           have applied the keys already. Check what {host} now holds, and send them again only if you mean to - a second
           push can apply them twice or overwrite what {host} has taken since.
         </p>
       )}
       {orphaned && (
-        <p className={CLASS.error} role="alert">
+        <p className={CLASS.error} role="alert" data-reason="orphaned">
           The hub connection was replaced while the push to {host} was in flight, so its outcome is not known here: this
           connection never saw the result. Push again only if you mean to send the keys again.
         </p>
@@ -539,7 +546,7 @@ function PushCredentials({
           silently forgotten) and named, rather than left standing over a listing
           that has already been re-read for the connection in use now. */}
       {staleOutcome && (
-        <p className={CLASS.error} role="alert">
+        <p className={CLASS.error} role="alert" data-reason="stale-outcome">
           The hub connection was replaced after the push to {host} settled, so the connection in use now never saw its
           outcome: it is not shown here. Push again only if you mean to send the keys again.
         </p>
@@ -560,7 +567,7 @@ function PushReport({ response }: { response: HostPushCredentialsResponse }) {
   const label = `Push report for ${response.host}`;
   if (response.results.length === 0) {
     return (
-      <p className={CLASS.note} role="status" aria-label={label}>
+      <p className={CLASS.note} role="status" aria-label={label} data-reason="no-keys">
         Nothing to push to {response.host}: this hub has no provider-instance keys.
       </p>
     );
