@@ -597,7 +597,7 @@ it("runs the Session sheet's actions as the menu does, and hands back their toas
 	await act(async () => {
 		archived = await sessionInfoHost().act("archive");
 	});
-	expect(archived).toMatchObject({ text: "Session archived", action: { label: "Undo" } });
+	expect(archived).toMatchObject({ kind: "archive:archived", action: { label: "Undo" } });
 	expect(requests.filter(({ method }) => method === "evener/archive/set").map(({ params }) => params)).toEqual([
 		{ kind: "session", id: ref, archived: true },
 	]);
@@ -667,7 +667,7 @@ it("shows the chosen detail level and confirms it", async () => {
 	// Spec 16.6: a selection tick on a detail level.
 	expect(playedHaptics).toEqual(["selection"]);
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
-	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
+	expect(levelAction("Full").state).toBe("on");
 	expect(markers(tree, "toast")).toEqual(["level:full"]);
 	await act(async () => tree.unmount());
 });
@@ -933,7 +933,7 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	act(() => detailLevels("hub-1").set(ref, "full"));
 	await settle();
 	expect(renderedText(tree)).toContain("pondering the fix");
-	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
+	expect(levelAction("Full").state).toBe("on");
 	await act(async () => tree.unmount());
 });
 
@@ -1831,7 +1831,8 @@ it("resumes an older-match search beyond its saved boundary after actual route d
 		expect(findMatches(journey.tree)).toEqual({ position: 1, count: 1 });
 		act(() => bar().props.onStep(-1));
 		await advanceHistory(0);
-		expect(bar().props).toMatchObject({ settled: true, label: "1 of 2" });
+		expect(bar().props.settled).toBe(true);
+		expect(findMatches(journey.tree)).toEqual({ position: 1, count: 2 });
 		act(() => bar().props.onStep(-1));
 		await advanceHistory(0);
 		expect(cursors).toEqual(["older-page", "oldest-page"]);
@@ -1847,7 +1848,8 @@ it("resumes an older-match search beyond its saved boundary after actual route d
 		expect(cursors).toHaveLength(3);
 		await advanceHistory(1);
 		expect(cursors).toEqual(["older-page", "oldest-page", "older-page", "oldest-page"]);
-		expect(bar().props).toMatchObject({ query: "needle", settled: true, label: "1 of 3" });
+		expect(bar().props).toMatchObject({ query: "needle", settled: true });
+		expect(findMatches(journey.tree)).toEqual({ position: 1, count: 3 });
 	} finally {
 		act(() => journey.tree.unmount());
 	}

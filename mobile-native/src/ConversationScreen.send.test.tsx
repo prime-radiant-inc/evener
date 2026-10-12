@@ -17,7 +17,7 @@ import {
 	type Thread,
 	WireError,
 } from "@evener/appwire-client";
-import { findBar, findShows } from "./findBarTestUtils";
+import { findBar, findMatches, findShows } from "./findBarTestUtils";
 import { hasTestID, markers } from "./markerTestUtils";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
@@ -3944,15 +3944,15 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		flatListCalls.length = 0;
 		await search(tree, "settle");
 		// Rows: ask 1, reply 1, ask 2, reply 2. Both matches are in turn 1.
-		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
 		expect(findScrolls()).toEqual([1]);
 		expect(washed(tree).join(" ")).toContain("The race is in settle.");
 		await press(tree, "Older match");
-		expect(renderedText(tree)).toContain("1 of 2");
+		expect(findMatches(tree)).toEqual({ position: 1, count: 2 });
 		expect(findScrolls()).toEqual([1, 0]);
 		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
 		await press(tree, "Newer match");
-		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
 		act(() => pressable(tree, "Done")?.props.onPress());
 		await settle();
 		expect(washed(tree)).toEqual([]);
@@ -4066,11 +4066,18 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 	it("tells VoiceOver the count a search settles on, and nothing on the way", async () => {
 		const { tree } = await mount(findTurns("ref-find-announce"));
 		chooseMenu("Find in session");
-		const announce = vi.spyOn(AccessibilityInfo, "announceForAccessibility");
+		// Where the bar says you are at each announcement.
+		const announced: ReturnType<typeof findMatches>[] = [];
+		const announce = vi.spyOn(AccessibilityInfo, "announceForAccessibility").mockImplementation(() => {
+			announced.push(findMatches(tree));
+		});
 		try {
 			await search(tree, "settle");
 			await search(tree, "settle test");
-			expect(announce.mock.calls).toEqual([["2 of 2"], ["1 of 1"]]);
+			expect(announced).toEqual([
+				{ position: 2, count: 2 },
+				{ position: 1, count: 1 },
+			]);
 		} finally {
 			announce.mockRestore();
 		}
@@ -4090,14 +4097,14 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		});
 		chooseMenu("Find in session");
 		await search(tree, "settle");
-		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
 		await press(tree, "Older match");
 		await press(tree, "Older match");
 		expect(
 			hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
 		).toEqual(["cursor-1"]);
 		expect(washed(tree).join(" ")).toContain("Is settle flaky?");
-		expect(renderedText(tree)).toContain("1 of 3");
+		expect(findMatches(tree)).toEqual({ position: 1, count: 3 });
 	});
 
 	describe("following the live end while find pages older history", () => {
