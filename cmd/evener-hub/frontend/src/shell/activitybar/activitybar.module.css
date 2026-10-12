@@ -89,8 +89,10 @@
    * would otherwise sit OUTSIDE this box (the task rows' visually-hidden
    * status words are position: absolute with no nearer anchor) escapes the
    * clip entirely, and the deepest row's span then sets the page's height -
-   * a task list taller than the viewport made the whole page frame scroll
-   * (the same contract the rail's own body already carries). */
+   * a task list taller than the viewport made the whole page frame scroll.
+   * The same page-frame contract the rail's own body carries; the rail
+   * anchors its rows' positioned decorations on the rows (railRow position:
+   * relative), while the Overview's tab bodies share this one viewport. */
   position: relative;
 }
 

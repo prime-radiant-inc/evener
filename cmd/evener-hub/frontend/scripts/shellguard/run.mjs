@@ -475,6 +475,11 @@ function assertMobileResult(result) {
 const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
 const OVERVIEW_THEMES = ["light", "dark"];
 const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
+// The Overview sweep's tall task list renders this many live rows (40-row
+// fixture, every fourth settled into the collapsed fold). The wait gate and
+// the fixture-sanity assert below share it, so resizing the fixture cannot
+// desync them into an unexplained wait timeout.
+const TALL_TASK_ROWS = 30;
 const RAIL_ACTION = '[data-session-actions-ref="local:p0-s0"]:not([data-pane-id])';
 const LONG_VALUES = [
   `anthropic/${"modelidentifier".repeat(12)}`,
@@ -678,6 +683,16 @@ async function measureOverview(send) {
   })()`);
 }
 
+// Shared into the page evals below via .toString(), like fullTextMeasurement:
+// every scroll container under the Overview, in document order. The viewport
+// finders below want ActivityViewport's own body div - the first DIV in the
+// list; a non-div scroller can sit earlier (the breadcrumb strip's
+// overflow-x hidden pairs its overflow-y to computed auto), so they must keep
+// the tagName filter, while the pre-screenshot reset walks the whole list.
+function overviewScrollContainers(root) {
+  return Array.from(root.querySelectorAll("*")).filter((el) => ["auto", "scroll"].includes(getComputedStyle(el).overflowY));
+}
+
 // The Tasks tab over a list taller than the viewport (the harness's
 // evener/tasks/list fixture answers with 40 rows): the same page-height
 // contract the rail scenario asserts, extended to the Overview's own tab
@@ -685,27 +700,18 @@ async function measureOverview(send) {
 // document must not grow: a tall task list scrolling the whole page frame
 // is the bug this step exists to catch.
 async function measureOverviewTasks(send) {
-  await evaluate(send, `(() => {
-    document.querySelector('[data-overview-guard-tasks]')?.removeAttribute('data-overview-guard-tasks');
-    const item = Array.from(document.querySelectorAll(${JSON.stringify(OVERVIEW)} + ' [role="radio"]'))
-      .find(e => e.textContent.includes('Tasks'));
-    if (!item) throw new Error('Overview has no Tasks tab');
-    item.dataset.overviewGuardTasks = '';
-  })()`);
-  await clickControl(send, '[data-overview-guard-tasks]');
+  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Tasks"]`);
   await waitForDom(
     send,
-    `document.querySelectorAll('[data-testid="task-row"]').length >= 30`,
+    `document.querySelectorAll('[data-testid="task-row"]').length >= ${TALL_TASK_ROWS}`,
     "the Overview's tall task list rendered",
   );
   await settleOverview(send);
   return evaluate(send, `(() => {
+    const overviewScrollContainers = ${overviewScrollContainers.toString()};
     const de = document.documentElement;
     const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
-    // The tab viewport: the first scroll container under the aside, in
-    // document order - ActivityViewport's own body div.
-    const scroller = Array.from(aside.querySelectorAll('div'))
-      .find(el => ['auto', 'scroll'].includes(getComputedStyle(el).overflowY));
+    const scroller = overviewScrollContainers(aside).find((el) => el.tagName === "DIV");
     const rows = document.querySelectorAll('[data-testid="task-row"]').length;
     return {
       rows,
@@ -723,7 +729,9 @@ function assertOverviewTasks(result, viewport) {
   const failures = [];
   // Fixture sanity: the tall list really rendered, so "no page overflow" is
   // a measurement of the loaded tab, not of an empty one that never fetched.
-  if (result.rows < 30) failures.push(`expected a tall task list in the Overview, found ${result.rows} rows`);
+  if (result.rows < TALL_TASK_ROWS) {
+    failures.push(`expected a tall task list in the Overview, found ${result.rows} rows`);
+  }
   // The list must actually overflow the tab, so the document check below is
   // a real measurement: a list shorter than the viewport would make it vacuous.
   if (!result.scroller || result.scroller.scrollHeight <= result.scroller.clientHeight + 1) {
@@ -734,6 +742,9 @@ function assertOverviewTasks(result, viewport) {
       `the task list set the page's height: document ${result.document.height}px in a ${viewport.height}px viewport - ` +
         "the Overview's tab scroller, not the page frame, must own the tall list",
     );
+  }
+  if (result.document.width > viewport.width + 1) {
+    failures.push(`the task list set the page's width: document ${result.document.width}px in a ${viewport.width}px viewport`);
   }
   return failures;
 }
@@ -923,8 +934,9 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
 
 async function measureActivityRowPadding(send, viewport) {
   const outer = await evaluate(send, `(() => {
+    const overviewScrollContainers = ${overviewScrollContainers.toString()};
     const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
-    const body = [...aside.querySelectorAll('div')].find(el => getComputedStyle(el).overflowY === 'auto');
+    const body = overviewScrollContainers(aside).find((el) => el.tagName === "DIV");
     if (!body) throw new Error('Overview scroll viewport missing');
     const style = getComputedStyle(body);
     return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
@@ -991,10 +1003,9 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     const result = await measureOverview(send);
     if (process.env.EVENER_SCRATCH_DIR) {
       await evaluate(send, `(() => {
+        const overviewScrollContainers = ${overviewScrollContainers.toString()};
         const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
-        for (const element of aside.querySelectorAll('*')) {
-          if (['auto', 'scroll'].includes(getComputedStyle(element).overflowY)) element.scrollTop = 0;
-        }
+        for (const element of overviewScrollContainers(aside)) element.scrollTop = 0;
       })()`);
       const screenshot = await send("Page.captureScreenshot", { format: "png" });
       await writeFile(path.join(process.env.EVENER_SCRATCH_DIR, `overview-${viewport.width}-${theme}.png`), Buffer.from(screenshot.result.data, "base64"));
