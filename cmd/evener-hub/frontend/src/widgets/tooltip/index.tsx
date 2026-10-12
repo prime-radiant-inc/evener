@@ -36,10 +36,11 @@ const CLASS = {
 export function Tooltip({ label, children }: TooltipProps) {
   const { visible, wrapperRef, triggerProps, setBubbleRef, bubbleStyle, bubbleID, describedBy, dismiss } =
     useFloatingBubble();
-  // An inactive tooltip is inert: it takes no hover/focus handlers, so it never
-  // holds a "visible" state the reveal's measurement did not run for, and one
-  // that goes inactive while shown dismisses. It appears only through a real
-  // reveal, which measures and observes the bubble.
+  // An inactive tooltip is inert: it takes no hover/focus handlers that start a
+  // reveal, so it never holds a "visible" state the reveal's measurement did
+  // not run for, and one that goes inactive while shown dismisses. It keeps the
+  // leave/blur handlers, which only clear the lifecycle's hovered/focused flags,
+  // so a leave while inactive is still recorded when it reactivates.
   const active = label !== "";
   useLayoutEffect(() => {
     if (!active) dismiss();
@@ -52,7 +53,11 @@ export function Tooltip({ label, children }: TooltipProps) {
     // a new interactive control needing a role; it's showing/hiding a
     // role="tooltip" description already wired to the real trigger element
     // via aria-describedby (describedChild below).
-    <span ref={wrapperRef} className={CLASS.wrapper} {...(active ? triggerProps : {})}>
+    <span
+      ref={wrapperRef}
+      className={CLASS.wrapper}
+      {...(active ? triggerProps : { onMouseLeave: triggerProps.onMouseLeave, onBlur: triggerProps.onBlur })}
+    >
       {describeChild(children, active ? describedBy : undefined)}
       <FloatingBubblePortal
         as="span"

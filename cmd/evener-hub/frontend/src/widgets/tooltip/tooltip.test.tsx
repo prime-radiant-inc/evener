@@ -428,3 +428,37 @@ test("a tooltip that goes inactive while shown dismisses, and reactivating does 
   );
   expect(screen.queryByRole("tooltip")).toBeNull();
 });
+
+// Leaving while inactive must still be recorded: a tooltip deactivated while
+// focused, blurred while inactive, then reactivated must dismiss when the
+// pointer next leaves, not stay up on a stale "still focused" flag.
+test("leaving while inactive is still recorded, so a reactivated tooltip dismisses on its next leave", () => {
+  vi.useFakeTimers();
+  const { rerender } = render(
+    <Tooltip label="Session is busy">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  const trigger = screen.getByRole("button", { name: "Steer" });
+  const wrapper = trigger.parentElement as HTMLElement;
+  act(() => trigger.focus());
+  advance(400);
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+  rerender(
+    <Tooltip label="">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  act(() => trigger.blur());
+  rerender(
+    <Tooltip label="Session is busy">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  fireEvent.mouseEnter(wrapper);
+  advance(400);
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+  fireEvent.mouseLeave(wrapper);
+  advance(400);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+});
