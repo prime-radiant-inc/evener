@@ -758,13 +758,22 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 	}
 	// Removing the read page also removes its index line: neither the page nor
 	// the line is reported, so the removal turn and the one after add nothing.
-	changedTurn, removedTurn, unchangedTurn, restoredTurn := noticeTurn(2), noticeTurn(2), noticeTurn(2), noticeTurn(3)
+	changedTurn, removedTurn, unchangedTurn := noticeTurn(2), noticeTurn(2), noticeTurn(2)
+	var restoredSections []apptranscript.MemoryContextSection
+	restoredTurn := func(req llm.Request) llm.Response {
+		if got := memoryContextMessages(req); got != 3 {
+			t.Fatalf("turn after the page returns carries %d memory contexts, want 3", got)
+		}
+		restoredSections, _ = memoryScopeSections(latestMemoryContextMessage(req), "personal")
+		return finalResponse("observed")
+	}
+	afterRestoreTurn := noticeTurn(3)
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-read-page.md"})
 		},
 		func(llm.Request) llm.Response { return finalResponse("read") },
-		changedTurn, removedTurn, unchangedTurn, restoredTurn,
+		changedTurn, removedTurn, unchangedTurn, restoredTurn, afterRestoreTurn,
 	))
 	turn := func() {
 		t.Helper()
@@ -781,11 +790,15 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 	}
 	turn()
 	turn()
-	// The removal advanced the page's record, so restoring it is one change.
-	writeMemoryPage(t, root, "opaque-read-page.md", describedMemoryPage("opaque-page-body-3\n"))
+	// The removal advanced the page's record, so restoring the exact
+	// pre-deletion contents is a change, and the turn after it adds nothing.
+	writeMemoryPage(t, root, "opaque-read-page.md", describedMemoryPage("opaque-page-body-2\n"))
 	turn()
-	if !strings.Contains(notices[len(notices)-1], "opaque-read-page.md") {
-		t.Fatalf("restored page not reported as changed: %q", notices[len(notices)-1])
+	turn()
+	if !slices.ContainsFunc(restoredSections, func(section apptranscript.MemoryContextSection) bool {
+		return section.Kind == apptranscript.MemoryContextPages && strings.Contains(section.Text, "opaque-read-page.md")
+	}) {
+		t.Fatalf("restored page not reported as changed: %+v", restoredSections)
 	}
 	if !strings.Contains(notices[0], "opaque-read-page.md") {
 		t.Fatalf("notice does not name the read page: %q", notices[0])
