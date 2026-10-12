@@ -46,8 +46,13 @@ test("the kata's own example: llm dominates, sub-ms fields are dropped rather th
   expect(summary?.round).toBe(0);
   expect(summary?.totalMs).toBeCloseTo(6411.312958, 3);
   // Only llm, tools, persistence, overhead round to >= 1ms.
-  expect(summary?.phases.map((p) => p.label)).toEqual(["LLM", "Tools", "Persistence", "Overhead"]);
-  expect(summary?.dominant?.label).toBe("LLM");
+  expect(summary?.phases.map((p) => p.key)).toEqual([
+    "llm_call_ns",
+    "tool_exec_ns",
+    "persistence_ns",
+    "loop_overhead_ns",
+  ]);
+  expect(summary?.dominant?.key).toBe("llm_call_ns");
   expect(summary?.dominant?.ms).toBe(4936);
   // context (8.625µs), prompt (83ns), history (12.5µs), after_action (500ns)
   // all round under 1ms and are counted as omitted, not silently vanished.
@@ -56,7 +61,7 @@ test("the kata's own example: llm dominates, sub-ms fields are dropped rather th
 
 test("phases are sorted descending by rounded duration, not field order", () => {
   const summary = roundTimingsSummary(raw({ tool_exec_ns: 40_000_000, llm_call_ns: 10_000_000 }));
-  expect(summary?.phases.map((p) => p.label)).toEqual(["Tools", "LLM"]);
+  expect(summary?.phases.map((p) => p.key)).toEqual(["tool_exec_ns", "llm_call_ns"]);
 });
 
 test("percent is rounded from the raw ns fraction of the total, not from already-rounded ms", () => {
@@ -70,7 +75,7 @@ test("percent is rounded from the raw ns fraction of the total, not from already
 test("a phase whose share rounds to 0% still appears if its own duration rounds to >= 1ms", () => {
   const summary = roundTimingsSummary(raw({ total_round_ns: 10_000_000_000, tool_exec_ns: 1_000_000 }));
   const phase = summary?.phases[0];
-  expect(phase?.label).toBe("Tools");
+  expect(phase?.key).toBe("tool_exec_ns");
   expect(phase?.ms).toBe(1);
   expect(phase?.pct).toBe(0);
 });
@@ -84,6 +89,6 @@ test("no phase reaching 1ms yields an empty phases array and no dominant, total 
 
 test("a zero or negative phase value is skipped, not shown as a 0ms row", () => {
   const summary = roundTimingsSummary(raw({ llm_call_ns: 0, tool_exec_ns: 5_000_000 }));
-  expect(summary?.phases.map((p) => p.label)).toEqual(["Tools"]);
+  expect(summary?.phases.map((p) => p.key)).toEqual(["tool_exec_ns"]);
   expect(summary?.omittedCount).toBe(0);
 });
