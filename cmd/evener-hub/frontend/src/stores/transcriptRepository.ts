@@ -1047,7 +1047,19 @@ export class TranscriptRepository {
               );
               if (!older.stale) olderRows = older.rows;
             }
-            if (olderRows.length === 0) {
+            // The certified older query is scoped to connected certificates, so
+            // it can return the rows its chain does reach and still stop short
+            // of the oldest row the opening cut had loaded: another baseline's
+            // chain, an uncertified earlier window, or a gap below the connected
+            // component all leave the oldest identities body-less. Supplement
+            // with the bounded durable rows whenever the certified rows do not
+            // reach `loadedStart`, so a recorded row whose body is still on disk
+            // is never published as an empty settle (global-contracts: isolated
+            // stored seeds merge without certifying an interval).
+            const certifiedReachesLoadedStart = olderRows.some(
+              (row) => comparePosition(row.position, loadedStart) <= 0,
+            );
+            if (olderRows.length === 0 || !certifiedReachesLoadedStart) {
               olderRows = await this.#cache.getLatest(this.#binding.historyKey, limit);
             }
             const boundedOlder = olderRows.filter(
