@@ -220,19 +220,16 @@ function routePlacementIsApplied(
   if (location === null) {
     if (locationGone) return main.type === "welcome";
     if (!locationTerminal) return false;
-    // A terminal read cannot confirm top-level ownership - the recorded
-    // parent may itself be nested - so it must not restructure anything
-    // (openRouteAsPane's terminal arm only focuses). The placement is
-    // applied when the routed conversation is already held beside its
-    // recorded context, whatever main currently shows: the retained
-    // context, not the missing location, owns the placement until a
-    // successful read confirms ownership.
-    if (main.type === "session" && sessionRefOf(main) === ref) return true;
-    const held = panes.find((pane) => pane.type === "session" && sessionRefOf(pane) === ref);
-    const heldParent = held === undefined ? undefined : conversationOpenParentRef(held);
-    return heldParent !== undefined && heldParent !== ref;
   }
-  const ancestorRef = location.top_level ? ref : location.top_level_ref;
+  // A terminal read cannot confirm top-level ownership - the recorded parent
+  // may itself be nested - so the terminal arm below must not restructure
+  // anything (openRouteAsPane's terminal arm only focuses). Placement counts
+  // as applied only while the routed conversation is both held beside its
+  // recorded context and the visible one: the retained context, not the
+  // missing location, owns the placement until a successful read confirms
+  // ownership, and a fresh navigation to that route must still focus it.
+  const terminalUnconfirmed = location === null;
+  const ancestorRef = location === null ? ref : location.top_level ? ref : location.top_level_ref;
   const focusedPane = panes.find((pane) => pane.id === workspace.focusedPaneId);
   const transcriptMatchesRoute = (pane: OpenPaneRecord | undefined): boolean => {
     if (pane?.type !== "transcript") return false;
@@ -317,6 +314,12 @@ function routePlacementIsApplied(
     workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion) || focusedSeparatedInspection;
 
   if (ancestorRef === null || ancestorRef === ref) {
+    if (terminalUnconfirmed) {
+      if (main.type === "session" && sessionRefOf(main) === ref) return focusIsApplied(main.id);
+      const held = panes.find((pane) => pane.type === "session" && sessionRefOf(pane) === ref);
+      const heldParent = held === undefined ? undefined : conversationOpenParentRef(held);
+      return held !== undefined && heldParent !== undefined && heldParent !== ref && focusIsApplied(held.id);
+    }
     return (
       focusIsApplied(main.id) &&
       main.type === "session" &&

@@ -2408,6 +2408,44 @@ test("a deferred deep link beats a restored active session panel", async () => {
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
 });
 
+test("a fresh navigation to a held child focuses it when the location read is terminal", async () => {
+  window.history.pushState({}, "", "/s/local:child");
+  installLocationForRoute("local:child");
+  render(<AppShell client={navClient()} />);
+
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+    expect(paneFor("local:child")?.slot).toBe("secondary");
+  });
+  const childId = paneFor("local:child")?.id;
+  const ownerId = workspaceStore.getState().mainPane()?.id;
+
+  // The location read now fails outright, and the user moves to another
+  // conversation. The terminal arm must not treat the held child's route as
+  // applied while a different conversation is the visible one.
+  act(() => installFailedLocation("local:child"));
+  act(() => workspaceStore.getState().openPane("session", { ref: "local:other" }, { slot: "secondary" }));
+  const otherId = workspaceStore
+    .getState()
+    .panes.find((pane) => (pane.params as { ref?: string }).ref === "local:other")?.id;
+  act(() => workspaceStore.getState().focusPane(otherId ?? ""));
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(otherId));
+
+  // A fresh navigation (Back/Forward) onto the child's route names the child
+  // in the URL, so the visible conversation must become the child's again -
+  // by focusing the held pane, never by restructuring the workspace.
+  act(() => {
+    window.history.pushState({}, "", "/s/local%3Achild");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(childId));
+  const panes = workspaceStore.getState().panes;
+  expect(panes.find((pane) => pane.id === ownerId)?.params).toEqual({ ref: "local:owner" });
+  expect(panes.some((pane) => (pane.params as { ref?: string }).ref === "local:other")).toBe(true);
+  expect(panes.filter((pane) => pane.type === "session")).toHaveLength(3);
+});
+
 test("a deferred deep link preserves a restored cascade main and its neighbors", async () => {
   const { cascadeId, secondaryId } = await saveRealCascadeLayout();
 

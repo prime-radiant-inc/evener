@@ -31,7 +31,13 @@ import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
 import { openDocBeside } from "../panes/doc/openDoc";
 import { paneFor } from "./paneRegistry";
-import { documentPaneState, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import {
+  conversationOpenParentRef,
+  documentPaneState,
+  registerDockviewApi,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "./workspace";
 import "./AppShell"; // side effect: the boot-time pane-type registrations under test
 
 // A minimal DockviewApi double covering only what workspace.ts touches
@@ -233,4 +239,59 @@ test("a saved session-ref transcript pane restores as the live conversation pane
     { id: "p6", type: "session", params: { ref: "ref_b" }, slot: "secondary" },
     { id: "p7", type: "transcript", params: { ref: "job:job-2", parentRef: "ref_a" }, slot: "secondary" },
   ]);
+});
+
+test("a layout holding both a session pane and a legacy transcript pane for one conversation restores it once", () => {
+  const fake = new FakeDockviewApi();
+  const saved = {
+    grid: {
+      root: { type: "branch", data: [{ type: "leaf", data: { views: ["p1", "p2", "p3"] } }] },
+      activeGroup: "group-1",
+    },
+    panels: {
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "local:owner" } },
+      },
+      p2: {
+        id: "p2",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "local:child" } },
+      },
+      p3: {
+        id: "p3",
+        contentComponent: "default",
+        params: { paneType: "transcript", paneParams: { ref: "local:child", parentRef: "local:owner" } },
+      },
+    },
+    activeGroup: "group-1",
+  };
+  fake.serialized = saved;
+  // Model dockview itself: the panels it builds come from the JSON the
+  // migration hands it, so dropping a panel has to happen before fromJSON
+  // (the live api would otherwise hold the duplicate too).
+  fake.fromJSONBehavior = (data) => {
+    const layout = data as { panels?: Record<string, { params?: unknown }> };
+    fake.panels = Object.entries(layout.panels ?? {}).map(([id, panel]) => ({ id, params: panel.params }));
+    fake.activePanel = { id: "p1" };
+  };
+  registerDockviewApi(asDockviewApi(fake));
+
+  expect(workspaceStore.getState().restoreLayout(saved)).toBe(true);
+
+  // One conversation, one pane: route reconciliation requires exactly one
+  // child pane, so the legacy read-only pane must not survive beside it.
+  expect(
+    workspaceStore.getState().panes.map((pane) => ({ id: pane.id, ref: (pane.params as { ref?: string }).ref })),
+  ).toEqual([
+    { id: "p1", ref: "local:owner" },
+    { id: "p2", ref: "local:child" },
+  ]);
+  expect(fake.panels.map((panel) => panel.id)).toEqual(["p1", "p2"]);
+  // The dropped pane's open-parent edge moves to the survivor, or the
+  // conversation's Back walk is lost with the duplicate.
+  const child = workspaceStore.getState().panes.find((pane) => pane.id === "p2");
+  if (!child) throw new Error("child pane missing");
+  expect(conversationOpenParentRef(child)).toBe("local:owner");
 });
