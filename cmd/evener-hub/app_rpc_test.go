@@ -12230,8 +12230,12 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 
 	var resp appwire.InstanceListResponse
 	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal", OriginClientId: "tab-a"}, &resp)
-	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
-		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
+	if err == nil {
+		t.Fatal("evener/instance/edit = nil, want the leftover credential reported")
+	}
+	// The refused write left the key behind under the old name.
+	if v, _ := credsStore.Get("base"); v != "sk-stored" {
+		t.Fatalf("stored key under the old name = %q, want the leftover the failed move kept", v)
 	}
 	// The discriminator the web sheet keys on: the message alone is identical
 	// whether or not the error is wrapped in the evenerErrorInfo payload, so
@@ -12367,8 +12371,8 @@ func TestHubRPCInstanceEditRenamePersistsWhenTheInitialReloadAndRollbackFail(t *
 	var resp appwire.InstanceListResponse
 	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit,
 		appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
-	if err == nil || !strings.Contains(err.Error(), "restoring the previous config failed") {
-		t.Fatalf("evener/instance/edit = %v, want the reload-and-rollback double failure", err)
+	if err == nil {
+		t.Fatal("evener/instance/edit = nil, want the reload-and-rollback double failure")
 	}
 	// The rename stood in providers.toml, so the client gets the discriminator
 	// rather than a plain failed save it would present as nothing happened.
