@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect } from "react";
 import { describeChild, FloatingBubblePortal, useFloatingBubble } from "../hovercard/floatingBubble";
 import { requireClass } from "../internal/requireClass";
 import styles from "./tooltip.module.css";
@@ -34,8 +34,16 @@ const CLASS = {
  * documents why a portaled, viewport-positioned bubble is required).
  */
 export function Tooltip({ label, children }: TooltipProps) {
-  const { visible, wrapperRef, triggerProps, setBubbleRef, bubbleStyle, bubbleID, describedBy } = useFloatingBubble();
+  const { visible, wrapperRef, triggerProps, setBubbleRef, bubbleStyle, bubbleID, describedBy, dismiss } =
+    useFloatingBubble();
+  // An inactive tooltip is inert: it takes no hover/focus handlers, so it never
+  // holds a "visible" state the reveal's measurement did not run for, and one
+  // that goes inactive while shown dismisses. It appears only through a real
+  // reveal, which measures and observes the bubble.
   const active = label !== "";
+  useLayoutEffect(() => {
+    if (!active) dismiss();
+  }, [active, dismiss]);
 
   return (
     // Already both mouse- AND keyboard-triggered (onFocus/onBlur mirror
@@ -44,7 +52,7 @@ export function Tooltip({ label, children }: TooltipProps) {
     // a new interactive control needing a role; it's showing/hiding a
     // role="tooltip" description already wired to the real trigger element
     // via aria-describedby (describedChild below).
-    <span ref={wrapperRef} className={CLASS.wrapper} {...triggerProps}>
+    <span ref={wrapperRef} className={CLASS.wrapper} {...(active ? triggerProps : {})}>
       {describeChild(children, active ? describedBy : undefined)}
       <FloatingBubblePortal
         as="span"
