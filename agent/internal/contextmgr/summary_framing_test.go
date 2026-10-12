@@ -18,6 +18,8 @@ func TestStripSummaryFraming(t *testing.T) {
 		"framed reply":       {summaryMarkerStart + "\n## Progress\nFixed it.\n" + summaryMarkerEnd, "## Progress\nFixed it."},
 		"marker then text":   {summaryMarkerStart + " ## Progress\nFixed it.", "## Progress\nFixed it."},
 		"text then marker":   {"## Progress: " + summaryMarkerEnd, "## Progress:"},
+		"framing both ends":  {summaryMarkerStart + " ## Progress: " + summaryMarkerEnd, "## Progress:"},
+		"indented delimiter": {"## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~", "## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~"},
 		"marker in a line":   {"See the framing " + summaryMarkerEnd + " for the format.", "See the framing " + summaryMarkerEnd + " for the format."},
 		"named in prose":     {"## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing.", "## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing."},
 		"prose then marker":  {"## Progress\n- Renamed " + summaryMarkerStart, "## Progress\n- Renamed " + summaryMarkerStart},
@@ -96,5 +98,28 @@ func TestSummarizeWithLLM_RejectsAFenceHoldingOnlyAMarker(t *testing.T) {
 	reply := "## Progress\n```\n" + summaryMarkerEnd + "\n```"
 	if result, err := summarizeReplying(t, reply, ""); err == nil {
 		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+	}
+}
+
+// A marker beside a heading is not content whichever end of the heading's line
+// it sits on: a reply of framing alone has not summarized anything.
+func TestSummarizeWithLLM_RejectsAMarkerBesideAHeadingWithNoContent(t *testing.T) {
+	reply := summaryMarkerStart + " ## Progress: " + summaryMarkerEnd
+	if result, err := summarizeReplying(t, reply, ""); err == nil {
+		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+	}
+}
+
+// A fenced quote of the framing is the model's content, even when the block's
+// own delimiter is indented by four spaces: Markdown reads that as code inside
+// the block, not as a delimiter, so the quote's marker lines are not framing.
+func TestSummarizeWithLLM_KeepsAFencedQuoteWithAnIndentedDelimiter(t *testing.T) {
+	quoted := "## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~\nFixed the auth bug."
+	result, err := summarizeReplying(t, quoted, "")
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+	if stored := result[0].Message.Text(); !strings.Contains(stored, summaryMarkerEnd+"\n~~~") {
+		t.Fatalf("the summary lost the framing it quoted:\n%s", stored)
 	}
 }

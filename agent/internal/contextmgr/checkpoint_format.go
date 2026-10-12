@@ -113,7 +113,9 @@ func stripSummaryFraming(reply string) string {
 	var fence fenceTracker
 	for line := range strings.Lines(reply) {
 		trimmed := strings.TrimSpace(line)
-		if fence.step(trimmed) || fence.inside() || indentedCode(line) {
+		// The tracker reads the line as written: its own rule is that a delimiter
+		// indented by four spaces is code inside the block, not a delimiter.
+		if fence.step(line) || fence.inside() || indentedCode(line) {
 			b.WriteString(line)
 			continue
 		}
@@ -146,10 +148,25 @@ func indentedCode(line string) bool {
 	return strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t")
 }
 
-// framingBesideHeading takes a framing marker off a line's edge and reports
-// whether the rest of the line is a section heading. A marker beside anything
-// else is that text's own word and is left in place.
+// framingBesideHeading takes the framing markers off a line's edges, in however
+// many copies sit there, when what is left is a section heading: the heading the
+// model wrote beside an echoed marker is the summary's own, and the markers
+// beside it are not part of it. A marker beside anything else is that text's own
+// word and is left in place.
 func framingBesideHeading(line string) (rest string, cut bool) {
+	rest = line
+	for {
+		remainder, found := cutFramingMarker(rest)
+		if !found {
+			return rest, cut
+		}
+		rest, cut = remainder, true
+	}
+}
+
+// cutFramingMarker takes one framing marker off a line's edge when the rest of
+// the line is a section heading.
+func cutFramingMarker(line string) (string, bool) {
 	for _, edge := range []struct {
 		marker string
 		atEnd  bool

@@ -2015,14 +2015,16 @@ func checkSummaryReply(reply, instructions string) error {
 	// A heading inside a fenced block is quoted text, not a section.
 	inSection := false
 	var fence fenceTracker
-	for line := range strings.Lines(text) {
-		line = strings.TrimSpace(line)
-		if fence.step(line) {
+	for raw := range strings.Lines(text) {
+		line := strings.TrimSpace(raw)
+		// The tracker reads the line as written: a delimiter indented by four
+		// spaces is code inside the block, not a delimiter.
+		if fence.step(raw) {
 			continue
 		}
 		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() {
 			inSection = !strings.EqualFold(section, permissionsSection)
-			if inSection && rest != "" {
+			if inSection && rest != "" && !markerOnly(rest) {
 				return nil
 			}
 			continue
