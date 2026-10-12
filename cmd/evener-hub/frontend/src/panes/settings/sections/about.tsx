@@ -67,20 +67,22 @@ export function AboutSection() {
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.identity}>
+      <p className={CLASS.identity} data-testid="about-identity">
         evener hub
         {hub?.version !== undefined && <> {hub.version}</>}
         {hub?.commit !== undefined && <FieldDim> ({hub.commit})</FieldDim>}
       </p>
       {hub?.version === undefined && data === null && error !== null && (
-        <p className={CLASS.help}>Version unavailable: {friendlyErrorMessage(error)}</p>
+        <p className={CLASS.help} data-testid="about-version-unavailable">
+          Version unavailable: {friendlyErrorMessage(error)}
+        </p>
       )}
 
-      <p className={CLASS.help}>
+      <p className={CLASS.help} data-testid="design-credit">
         The visual design language is adapted from Beautiful UI (https://www.beautifului.dev) by Shane Levine, used
         under the MIT License.
       </p>
-      <Disclosure id="about-mit-license" summary="MIT License">
+      <Disclosure id="about-mit-license" summary="MIT License" data-testid="about-mit-license">
         <CodeBlock text={MIT_LICENSE_TEXT} fold={false} />
       </Disclosure>
 

@@ -8,6 +8,7 @@ import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { BrowseSection } from "./BrowseSection";
+import { chipKinds, showsEmptyRow } from "./marketplacesTestUtils";
 
 const MARKETPLACE_A: MarketplaceEntry = {
   name: "acme-plugins",
@@ -80,7 +81,7 @@ test("shows the no-marketplaces empty state", () => {
   connectFakeClient();
   extensionsStore.setState({ marketplaces: [], plugins: [] });
   render(<Harness />);
-  expect(screen.getByText("No marketplaces registered. Add one from the Marketplaces tab.")).toBeTruthy();
+  expect(showsEmptyRow()).toBe(true);
 });
 
 test("expanding a node lazily fetches its catalog once; re-expanding does not refetch", async () => {
@@ -148,10 +149,10 @@ test("shows a Loader while a marketplace's catalog is loading", async () => {
   await user.click(marketplaceToggle("acme-plugins"));
 
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
-  expect(screen.queryByText("Loading…")).toBeNull();
+  expect(showsEmptyRow()).toBe(false);
 
   release();
-  await screen.findByText("This marketplace has no plugins.");
+  await waitFor(() => expect(showsEmptyRow()).toBe(true));
 });
 
 test("shows loading, then error, for a failed browse", async () => {
@@ -173,7 +174,7 @@ test("an empty catalog shows its own empty message", async () => {
   fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [] }));
   render(<Harness />);
   await user.click(marketplaceToggle("acme-plugins"));
-  expect(await screen.findByText("This marketplace has no plugins.")).toBeTruthy();
+  await waitFor(() => expect(showsEmptyRow()).toBe(true));
 });
 
 test("an already-installed plugin shows an Installed badge instead of an Install button", async () => {
@@ -188,7 +189,7 @@ test("an already-installed plugin shows an Installed badge instead of an Install
   await user.click(marketplaceToggle("acme-plugins"));
   await screen.findByText("linter");
   const linterRow = screen.getByText("linter").closest("li") as HTMLElement;
-  expect(within(linterRow).getByText("Installed")).toBeTruthy();
+  expect(chipKinds(linterRow)).toEqual(["installed"]);
   expect(within(linterRow).queryByRole("button", { name: "Install" })).toBeNull();
   const formatterRow = screen.getByText("formatter").closest("li") as HTMLElement;
   expect(within(formatterRow).getByRole("button", { name: "Install" })).toBeTruthy();

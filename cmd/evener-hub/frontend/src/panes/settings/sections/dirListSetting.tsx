@@ -237,14 +237,14 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
       <header className={CLASS.header}>
         <h2 className={CLASS.title}>{label}</h2>
         {showCount && (
-          <span className={CLASS.count}>
+          <span className={CLASS.count} data-count={items.length}>
             {items.length} {items.length === 1 ? "entry" : "entries"}
           </span>
         )}
       </header>
       <p className={CLASS.help}>{copy}</p>
       {error !== null ? (
-        <EmptyState title="Failed to load" hint={error} />
+        <EmptyState title="Failed to load" hint={error} reason="unavailable" />
       ) : loading && layer === null ? (
         <Skeleton />
       ) : (

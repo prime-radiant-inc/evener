@@ -176,7 +176,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
     return (
       <div className={CLASS.root}>
         <h2>Project launch settings</h2>
-        <p className={CLASS.help}>
+        <p className={CLASS.help} data-reason="no-project">
           No project selected. Open this page via the gear icon next to a project in the sidebar, or navigate here with
           a <code>?cwd=</code> query parameter.
         </p>
@@ -193,7 +193,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       </p>
       {load.phase === "loading" && <Loader label="Loading project launch settings" />}
       {load.phase === "error" && (
-        <p className={CLASS.error}>
+        <p className={CLASS.error} data-reason="load-failed">
           Failed to load project launch settings. {load.message}{" "}
           <Button type="button" onClick={() => retryLoad()}>
             Retry
@@ -203,7 +203,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       {load.phase === "ready" && (
         <>
           {refreshError !== null && (
-            <p className={CLASS.error} role="status">
+            <p className={CLASS.error} role="status" data-reason="refresh-failed">
               Could not re-read this host's project settings. {refreshError}{" "}
               <Button type="button" onClick={() => reload()}>
                 Retry

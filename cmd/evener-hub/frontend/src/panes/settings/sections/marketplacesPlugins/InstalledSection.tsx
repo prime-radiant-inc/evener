@@ -66,7 +66,9 @@ export function InstalledSection({ onSelect }: InstalledSectionProps) {
       </div>
       <ul aria-label="Installed plugins" className={CLASS.list}>
         {plugins.length === 0 ? (
-          <li className={CLASS.empty}>No plugins installed yet. Install one from Browse.</li>
+          <li className={CLASS.empty} data-reason="empty">
+            No plugins installed yet. Install one from Browse.
+          </li>
         ) : visible.length === 0 ? (
           <li className={CLASS.empty}>{`No plugins match "${filterQuery.trim()}".`}</li>
         ) : (

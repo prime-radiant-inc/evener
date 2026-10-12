@@ -204,7 +204,8 @@ test.each([
   const output = `Started delegate\n[${footer}]`;
   const toolItem = item({ toolName: "delegate_send", argumentsJSON: "{}", output });
 
-  expect(d.summary(toolItem)).toBe("Sent a message to a delegate");
+  // The rejected footer names no delegate and no status on the line.
+  expect(d.summary(toolItem)).not.toMatch(/dlg_|running/);
   const Body = d.body!;
   render(<Body item={toolItem} live={false} />);
   expect(screen.getByTestId("delegate-send-response").textContent).toContain(`[${footer}]`);

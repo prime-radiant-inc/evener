@@ -63,7 +63,7 @@ export function HostScopedSurface({ children }: HostScopedSurfaceProps) {
     <div className={CLASS.root}>
       <HostPicker />
       {gone ? (
-        <p className={CLASS.note} role="status">
+        <p className={CLASS.note} role="status" data-reason="host-gone">
           Host {host} is no longer configured, so it has no settings to show here.
         </p>
       ) : (

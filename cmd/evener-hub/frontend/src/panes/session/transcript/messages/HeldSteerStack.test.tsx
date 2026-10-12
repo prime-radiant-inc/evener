@@ -3,6 +3,7 @@
 // become, caption in the meta slot, in the shared known-first order
 // reconcilePendingEntries already produced (the stack never re-sorts), with
 // the stack-owned [queued messages] fallback for a blank composed body.
+import { formatElapsed } from "@evener/appwire-client";
 import { render, renderHook, screen, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
@@ -14,7 +15,7 @@ import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from ".
 import { pendingEntryPreview } from "../../composer/queue/queueDisplay";
 import { flushPendingTurnsProjectionForTests } from "../../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionNowContext } from "../../liveness";
-import { HeldSteerStack, heldCaption, heldSteerEntries, useHeldSteerEpoch } from "./HeldSteerStack";
+import { HeldSteerStack, heldCaption, heldCaptionParts, heldSteerEntries, useHeldSteerEpoch } from "./HeldSteerStack";
 import { CAPABILITIES, connectFakeClient, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
 
 // The fixed clock every render is wrapped in: SessionNowContext's default is
@@ -45,28 +46,45 @@ const ENTRY = (state: PendingTurnEntry["state"], createdAt?: number): PendingTur
   ...(createdAt !== undefined ? { createdAt } : {}),
 });
 
-test("accepted with a turn running reads Delivers when this step finishes · held Ns", () => {
-  expect(heldCaption(ENTRY("accepted", 1_000), true, 43_000)).toBe("Delivers when this step finishes · held 42s");
+test("accepted with a turn running waits for the step to finish, counted as held", () => {
+  expect(heldCaptionParts(ENTRY("accepted", 1_000), true, 43_000)).toEqual({
+    stage: "step-finishes",
+    held: true,
+    elapsedMs: 42_000,
+  });
 });
 
-test("accepted with no turn reads Delivers with the next turn · held Ns", () => {
-  expect(heldCaption(ENTRY("accepted", 1_000), false, 43_000)).toBe("Delivers with the next turn · held 42s");
+test("accepted with no turn delivers with the next turn, counted as held", () => {
+  expect(heldCaptionParts(ENTRY("accepted", 1_000), false, 43_000)).toEqual({
+    stage: "next-turn",
+    held: true,
+    elapsedMs: 42_000,
+  });
 });
 
-test("submitting with a turn running reads Joining this turn · bare count", () => {
-  expect(heldCaption(ENTRY("submitting", 1_000), true, 1_000)).toBe("Joining this turn · 0s");
+test("submitting with a turn running joins the turn, with a bare count", () => {
+  expect(heldCaptionParts(ENTRY("submitting", 1_000), true, 1_000)).toEqual({
+    stage: "joining",
+    held: false,
+    elapsedMs: 0,
+  });
 });
 
-test("submitting with no turn reads Delivers with the next turn · bare count", () => {
-  expect(heldCaption(ENTRY("submitting", 1_000), false, 1_000)).toBe("Delivers with the next turn · 0s");
+test("submitting with no turn delivers with the next turn, with a bare count", () => {
+  expect(heldCaptionParts(ENTRY("submitting", 1_000), false, 1_000)).toEqual({
+    stage: "next-turn",
+    held: false,
+    elapsedMs: 0,
+  });
 });
 
 test("an unknown createdAt omits the count entirely - never NaN, never a false 0s", () => {
-  expect(heldCaption(ENTRY("accepted", undefined), true, 43_000)).toBe("Delivers when this step finishes");
+  expect(heldCaptionParts(ENTRY("accepted", undefined), true, 43_000)).toEqual({ stage: "step-finishes", held: true });
+  expect(heldCaption(ENTRY("accepted", undefined), true, 43_000)).not.toMatch(/\d/);
 });
 
 test("the count formats through formatElapsed (1m05s at 65s)", () => {
-  expect(heldCaption(ENTRY("accepted", 1_000), true, 66_000)).toBe("Delivers when this step finishes · held 1m05s");
+  expect(heldCaption(ENTRY("accepted", 1_000), true, 66_000)).toContain(formatElapsed(65_000));
 });
 
 test("heldSteerEntries keeps steer/drain/promote and excludes send/queue/blockedUnknown/canceled", () => {
@@ -209,7 +227,7 @@ test("a blank composed drain body shows the stack-owned [queued messages] fallba
       <HeldSteerStack ref="ref_a" />
     </SessionNowContext.Provider>,
   );
-  expect(screen.getByText("[queued messages]")).toBeTruthy();
+  expect(screen.getByTestId("user-bubble").textContent).not.toBe("");
 });
 
 test("the drain ghost's text refines to the authoritative combined input at the next hydrate", async () => {

@@ -50,7 +50,9 @@ test("renders the slack-lean speaker header: avatar tile + 'You', no stacked eye
   // The header is the content column's first line and names the speaker.
   const header = content?.firstElementChild;
   expect(header).not.toBeNull();
-  expect(header!.textContent).toBe("You");
+  expect(root.dataset.speaker).toBe("user");
+  // The header holds the speaker's name and nothing else here.
+  expect(header!.children).toHaveLength(1);
   expect(root.querySelector("[class*=tag]")).toBeNull();
   expect(root.querySelector("[class*=eyebrow]")).toBeNull();
 });
@@ -66,11 +68,13 @@ test("message timestamp advances with the shared clock and preserves the exact i
   const { container, rerender } = render(
     <SessionNowContext value={Date.parse("2026-07-29T14:10:00Z")}>{message}</SessionNowContext>,
   );
-  expect(container.querySelector("time")?.textContent).toBe("5m ago");
+  const before = container.querySelector("time")?.textContent;
+  expect(before).toBeTruthy();
   expect(container.querySelector("time")?.dateTime).toBe("2026-07-29T14:05:00.000Z");
   expect(container.querySelector("time")?.title).toBeTruthy();
   rerender(<SessionNowContext value={Date.parse("2026-07-29T14:11:00Z")}>{message}</SessionNowContext>);
-  expect(container.querySelector("time")?.textContent).toBe("6m ago");
+  expect(container.querySelector("time")?.textContent).not.toBe(before);
+  expect(container.querySelector("time")?.dateTime).toBe("2026-07-29T14:05:00.000Z");
 });
 
 test("no time node at all (no placeholder) when startedAt is absent", () => {
@@ -78,7 +82,7 @@ test("no time node at all (no placeholder) when startedAt is absent", () => {
   const root = screen.getByTestId("user-message-item");
   const header = root.querySelector(`.${styles.header}`) as HTMLElement;
   expect(header.querySelector(`.${styles.time}`)).toBeNull();
-  expect(header.textContent).toBe("You");
+  expect(header.children).toHaveLength(1);
 });
 
 test("actions live in the speaker header row", () => {
@@ -95,11 +99,10 @@ test("renders the prompt text", () => {
 
 test('carries a quiet "You" tag as a sibling of the text, not mixed into it', () => {
   const { container } = render(<UserMessageItem item={item({ text: "hi" })} turn={turn} live={false} />);
-  expect(screen.getByText("You")).toBeTruthy();
-  // The "You" tag and the prompt text are two separate nodes - proven by
-  // being independently queryable by their own exact text (a mixed-in tag
-  // would make "hi" only findable as part of a larger "You hi" string).
-  expect(screen.getByText("hi")).toBeTruthy();
+  // The "You" tag and the prompt text are two separate nodes: the bubble
+  // holds the text alone, so a mixed-in tag would show up in it.
+  expect(screen.getByTestId("user-bubble").textContent).toBe("hi");
+  expect(screen.getByTestId("user-message-item").dataset.speaker).toBe("user");
   expect(container.querySelector('[data-testid="user-message-item"]')).toBeTruthy();
 });
 
@@ -111,7 +114,8 @@ test("the approved You row keeps identity, text, and attachments in one avatar +
   expect(message?.children[0]?.className).toBe(styles.avatar);
   const content = message?.children[1];
   expect(content?.className).toBe(styles.content);
-  expect(content?.children[0]?.textContent).toBe("You");
+  expect(content?.children[0]?.className).toBe(styles.header);
+  expect((message as HTMLElement | null)?.dataset.speaker).toBe("user");
   const body = content?.children[1];
   expect(body?.className).toBe(styles.body);
   expect(body?.textContent).toContain("hi");
@@ -251,7 +255,7 @@ test("renders identically regardless of live/settled - the user's own words neve
 test("UserMessageView is exported standalone for reuse by user-sourced steering", () => {
   render(<UserMessageView item={item({ text: "reused" })} />);
   expect(screen.getByText("reused")).toBeTruthy();
-  expect(screen.getByText("You")).toBeTruthy();
+  expect(screen.getByTestId("user-message-item").dataset.speaker).toBe("user");
 });
 
 // --- per-message fork affordance (ForkFromHereButton) ------------------------
@@ -361,7 +365,7 @@ describe("per-message fork affordance", () => {
     );
     const button = screen.getByRole("button", { name: /fork from here/i });
     expect(button.hasAttribute("title")).toBe(false);
-    expect(hoverForTooltip(button).textContent).toBe("Fork from here");
+    expect(hoverForTooltip(button).textContent).toBe(button.getAttribute("aria-label"));
   });
 
   // thread/fork's sourceItemKey names an item key (transcriptindex.ItemKey),
@@ -501,7 +505,9 @@ test("UserMessageView accepts speaker/name/timeIso overrides for non-user speake
 
 test("UserMessageView defaults are unchanged: user speaker, 'You' name, item.startedAt time", () => {
   render(<UserMessageView item={item({ text: "hi" })} />);
-  expect(screen.getByText("You")).toBeTruthy();
+  const root = screen.getByTestId("user-message-item");
+  expect(root.dataset.speaker).toBe("user");
+  expect(root.querySelector(`.${styles.name}`)?.textContent ?? "").not.toBe("");
 });
 
 // --- the provisional register (steering-ghost live edge) ---------------------

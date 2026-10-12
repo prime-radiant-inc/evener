@@ -36,11 +36,18 @@ function outputCode(container: HTMLElement): HTMLElement | null {
 
 // --- summary ----------------------------------------------------------
 
+// The summary leads with its verb and ends with the command, verbatim, with
+// nothing after it: no result or exit-code suffix.
+function expectSummaryEndsWithCommand(summary: string, command: string) {
+  expect(summary.endsWith(` ${command}`)).toBe(true);
+  expect(summary.length).toBeGreaterThan(command.length + 1);
+}
+
 test("summary: leads with the command, no result suffix on a clean run", () => {
   const d = toolRendererFor("shell");
   // agent/session_tools_shell.go formatShellResult's own footer shape.
   const out = "ok  \tagent/... 0.4s\n[exit 0]";
-  expect(d.summary(withCommand("go test ./...", { output: out }))).toBe("Ran go test ./...");
+  expectSummaryEndsWithCommand(d.summary(withCommand("go test ./...", { output: out })), "go test ./...");
 });
 
 // A2: the exit code stops being the summary's headline. The failure glyph
@@ -51,7 +58,7 @@ test("summary: leads with the command, no result suffix on a clean run", () => {
 test("summary: a nonzero exit is NOT in the summary text - the glyph carries that signal", () => {
   const d = toolRendererFor("shell");
   const out = "some output\n[exit 1]";
-  expect(d.summary(withCommand("false", { output: out }))).toBe("Ran false");
+  expectSummaryEndsWithCommand(d.summary(withCommand("false", { output: out })), "false");
 });
 
 test("failed: true for a nonzero exit parsed from the output footer", () => {
@@ -71,7 +78,7 @@ test("failed: false when no exit code is detectable at all (still running/backgr
 
 test("summary: no footer at all (still running, or backgrounded) shows no exit suffix", () => {
   const d = toolRendererFor("shell");
-  expect(d.summary(withCommand("sleep 10", { output: "partial output so far" }))).toBe("Ran sleep 10");
+  expectSummaryEndsWithCommand(d.summary(withCommand("sleep 10", { output: "partial output so far" })), "sleep 10");
 });
 
 test("failed: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
@@ -92,25 +99,28 @@ test("failed: also recognizes the buffered-execenv fallback's differently-shaped
 test("summary: a long command passes through UNCLIPPED - truncation is the row's job", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
-  expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(100)}`);
+  expectSummaryEndsWithCommand(d.summary(withCommand(longCmd)), longCmd);
 });
 
 test("summary: falls back to the `cmd` arg key when `command` is absent", () => {
   const d = toolRendererFor("shell");
   const args = JSON.stringify({ cmd: "ls" });
-  expect(d.summary(item({ toolName: "shell", argumentsJSON: args }))).toBe("Ran ls");
+  expectSummaryEndsWithCommand(d.summary(item({ toolName: "shell", argumentsJSON: args })), "ls");
 });
 
 test("summary: strips the redundant cd-cwd prefix when a ToolSummaryContext cwd is given", () => {
   const d = toolRendererFor("shell");
-  expect(d.summary(withCommand("cd /Users/jesse/work && make test"), { cwd: "/Users/jesse/work" })).toBe(
-    "Ran make test",
-  );
+  const summary = d.summary(withCommand("cd /Users/jesse/work && make test"), { cwd: "/Users/jesse/work" });
+  expectSummaryEndsWithCommand(summary, "make test");
+  expect(summary).not.toContain("/Users/jesse/work");
 });
 
 test("summary: with no context (or no cwd), the prefix passes through unstripped", () => {
   const d = toolRendererFor("shell");
-  expect(d.summary(withCommand("cd /Users/jesse/work && make test"))).toBe("Ran cd /Users/jesse/work && make test");
+  expectSummaryEndsWithCommand(
+    d.summary(withCommand("cd /Users/jesse/work && make test")),
+    "cd /Users/jesse/work && make test",
+  );
 });
 
 test("exec_command and run_shell_command alias to the same descriptor as shell", () => {
@@ -160,7 +170,7 @@ test("the command reads straight from a settled item's own argumentsJSON (the mo
     argumentsJSON: JSON.stringify({ command: "echo settled" }),
     output: "settled\n[exit 0]",
   });
-  expect(d.summary(settled)).toBe("Ran echo settled");
+  expectSummaryEndsWithCommand(d.summary(settled), "echo settled");
 });
 
 test("body renders the raw formatted command above the existing output block", () => {
@@ -501,8 +511,8 @@ test("body renders a LONG command in full - the command block never folds", () =
 test("summary does NOT repeat the exit code", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
-  expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(100)}`);
-  expect(d.summary(withCommand(longCmd, { exitCode: 0 }))).toBe(`Ran ${"x".repeat(100)}`);
+  expectSummaryEndsWithCommand(d.summary(withCommand(longCmd)), longCmd);
+  expectSummaryEndsWithCommand(d.summary(withCommand(longCmd, { exitCode: 0 })), longCmd);
 });
 
 describe("stripRedundantCd", () => {

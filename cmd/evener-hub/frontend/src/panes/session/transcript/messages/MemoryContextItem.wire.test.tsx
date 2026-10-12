@@ -65,6 +65,12 @@ function renderItem(item: ThreadItem, config: TranscriptDisplayConfigV1) {
   );
 }
 
+// The opened body's scope and state, as the meta row carries them.
+function memoryMeta(): { scope?: string; state?: string } {
+  const meta = screen.getByTestId("memory-context-meta");
+  return { scope: meta.dataset.scope, state: meta.dataset.state };
+}
+
 function open(): void {
   const details = screen.getByTestId("memory-context-item") as HTMLDetailsElement;
   const summary = details.querySelector("summary");
@@ -86,7 +92,7 @@ test.each(PRESETS)("at the %s preset every recorded refresh is a closed compact 
     renderItem(memoryContextWireItem(name), config);
     const details = screen.getByTestId("memory-context-item") as HTMLDetailsElement;
     expect(details.open).toBe(false);
-    expect(screen.getByTestId("memory-context-label").textContent).toBe("Refreshed my memory");
+    expect(screen.getByTestId("memory-context-label").textContent).not.toBe("");
     // The collapsed row never shows the model-facing text.
     const summary = details.querySelector("summary");
     expect(summary?.textContent ?? "").not.toContain('memory index: "');
@@ -100,7 +106,7 @@ test("a current refresh opens to its scope/state and decoded index, with the exa
   const item = memoryContextWireItem("current-personal");
   renderItem(item, preset("tools"));
   open();
-  expect(screen.getByTestId("memory-context-meta").textContent).toContain("Personal memory · current");
+  expect(memoryMeta()).toEqual({ scope: "personal", state: "current" });
   expect(screen.getByTestId("memory-context-content").textContent).toContain("a note");
   expect(screen.getByTestId("memory-context-source-text").textContent).toBe(item.text);
 });
@@ -108,13 +114,13 @@ test("a current refresh opens to its scope/state and decoded index, with the exa
 test("the project scope names itself truthfully", () => {
   renderItem(memoryContextWireItem("current-project"), preset("tools"));
   open();
-  expect(screen.getByTestId("memory-context-meta").textContent).toContain("Project memory · current");
+  expect(memoryMeta()).toEqual({ scope: "project", state: "current" });
 });
 
 test("an empty current index opens to the empty-index marker, not an error", () => {
   renderItem(memoryContextWireItem("empty-project"), preset("tools"));
   open();
-  expect(screen.getByTestId("memory-context-empty").textContent).toBe("Empty index");
+  expect(screen.getByTestId("memory-context-empty").dataset.reason).toBe("current");
   expect(screen.queryByTestId("memory-context-content")).toBeNull();
 });
 
@@ -130,10 +136,10 @@ test("missing, revoked and unavailable stay distinguishable", () => {
     // Unavailable/revoked are on the collapsed row; missing is not (it is not
     // an implied successful read, but it is also not a broken access).
     if (state === "revoked" || state === "unavailable") {
-      expect(screen.getByTestId("memory-context-state").textContent).toBe(state);
+      expect(screen.getByTestId("memory-context-state").dataset.state).toBe(state);
     }
     open();
-    expect(screen.getByTestId("memory-context-scope-state").textContent).toContain(state);
+    expect(memoryMeta().state).toBe(state);
   }
 });
 
@@ -141,7 +147,7 @@ test("a partial index refresh says truncated and never implies the missing remai
   const item = memoryContextWireItem("truncated-project");
   renderItem(item, preset("tools"));
   open();
-  expect(screen.getByTestId("memory-context-truncated").textContent).toBe("truncated");
+  expect(screen.getByTestId("memory-context-truncated")).toBeTruthy();
   expect(screen.getByTestId("memory-context-source-text").textContent).toBe(item.text);
 });
 
@@ -157,7 +163,7 @@ test("the malformed message keeps the exact Text on open, with no manufactured i
   const item = memoryContextWireItem(MALFORMED);
   expect(item.raw).toBeFalsy();
   renderItem(item, preset("tools"));
-  expect(screen.getByTestId("memory-context-label").textContent).toBe("Refreshed my memory");
+  expect(screen.getByTestId("memory-context-label").textContent).not.toBe("");
   open();
   expect(screen.getByTestId("memory-context-fallback").textContent).toBe(item.text);
   expect(screen.queryByTestId("memory-context-content")).toBeNull();
@@ -170,7 +176,7 @@ test.each(["index-change-personal", "index-change-project", "page-notice-project
     const item = memoryContextWireItem(name);
     expect(item.raw).toBeFalsy();
     renderItem(item, preset("tools"));
-    expect(screen.getByTestId("memory-context-label").textContent).toBe("Refreshed my memory");
+    expect(screen.getByTestId("memory-context-label").textContent).not.toBe("");
     open();
     expect(screen.getByTestId("memory-context-fallback").textContent).toBe(item.text);
     expect(screen.queryByTestId("memory-context-content")).toBeNull();

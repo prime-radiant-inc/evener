@@ -42,6 +42,7 @@ export function GeneralSection() {
     return (
       <EmptyState
         title="Couldn't load general settings"
+        reason="unavailable"
         // friendlyErrorMessage, not the raw store error: settingsOverview.ts
         // stores errorText(err) as-is, which is AppwireClient's own message
         // verbatim for a client-unreachable rejection - internal wiring
@@ -68,8 +69,9 @@ export function GeneralSection() {
         these values.
       </p>
       <dl className={CLASS.list}>
-        <SettingsField label="Hub address" value={hub?.listenAddr ?? ""} />
+        <SettingsField field="hub-address" label="Hub address" value={hub?.listenAddr ?? ""} />
         <SettingsField
+          field="bearer-token"
           label="Bearer token"
           value={
             <>
@@ -84,13 +86,15 @@ export function GeneralSection() {
           }
         />
         <SettingsField
+          field="run-dir"
           label="Run dir"
           value={hub?.runDir ?? ""}
           help="Per-PID rendezvous files; the hub watches this directory to discover live daemons."
         />
-        <SettingsField label="State dir" value={data.storage?.stateDir ?? ""} />
+        <SettingsField field="state-dir" label="State dir" value={data.storage?.stateDir ?? ""} />
         {pastIndex !== undefined && (
           <SettingsField
+            field="past-index"
             label="Past index"
             value={
               <>
@@ -105,12 +109,16 @@ export function GeneralSection() {
           />
         )}
         <SettingsField
+          field="spawn-timeout"
           label="Spawn timeout"
           value={hub?.spawnTimeout ?? ""}
           help="How long the hub waits for a daemon to report ready after spawn before treating it as failed."
         />
-        {pastIndex !== undefined && <SettingsField label="Past results per page" value={pastIndex.perPage ?? 0} />}
+        {pastIndex !== undefined && (
+          <SettingsField field="past-results-per-page" label="Past results per page" value={pastIndex.perPage ?? 0} />
+        )}
         <SettingsField
+          field="hub-config"
           label="Hub config"
           value={
             <>
@@ -119,6 +127,7 @@ export function GeneralSection() {
           }
         />
         <SettingsField
+          field="hub-version"
           label="Hub version"
           value={
             <>

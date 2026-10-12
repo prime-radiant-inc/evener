@@ -7,6 +7,7 @@ import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { InstalledSection } from "./InstalledSection";
+import { chipKinds, showsEmptyRow } from "./marketplacesTestUtils";
 
 const LINTER: PluginEntry = {
   plugin: "linter",
@@ -63,7 +64,7 @@ test("shows the empty state when no plugins are installed", () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [] });
   render(<InstalledSection onSelect={() => {}} />);
-  expect(screen.getByText("No plugins installed yet. Install one from Browse.")).toBeTruthy();
+  expect(showsEmptyRow()).toBe(true);
 });
 
 test("shows broken/disabled/auto-upgrade badges only when applicable", () => {
@@ -72,18 +73,14 @@ test("shows broken/disabled/auto-upgrade badges only when applicable", () => {
     plugins: [{ ...LINTER, broken: true, enabled: false, autoUpgrade: true }],
   });
   render(<InstalledSection onSelect={() => {}} />);
-  expect(screen.getByText("broken")).toBeTruthy();
-  expect(screen.getByText("off by default")).toBeTruthy();
-  expect(screen.getByText("auto-upgrade")).toBeTruthy();
+  expect(chipKinds()).toEqual(["broken", "disabled", "auto-upgrade"]);
 });
 
 test("no badges render for a healthy, enabled, non-auto-upgrading plugin", () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
   render(<InstalledSection onSelect={() => {}} />);
-  expect(screen.queryByText("broken")).toBeNull();
-  expect(screen.queryByText("off by default")).toBeNull();
-  expect(screen.queryByText("auto-upgrade")).toBeNull();
+  expect(chipKinds()).toEqual([]);
 });
 
 test("the status dot reads broken > disabled > idle, in that priority order", () => {
@@ -159,5 +156,5 @@ test("marks a plugin the hub found an update for", () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }, FORMATTER] });
   render(<InstalledSection onSelect={() => {}} />);
-  expect(screen.getAllByText("update available")).toHaveLength(1);
+  expect(chipKinds()).toEqual(["update-available"]);
 });

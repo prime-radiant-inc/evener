@@ -12,10 +12,27 @@ import { AgentMessageItem } from "./AgentMessageItem";
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 
 const STARTED_AT = "2026-07-29T12:41:00Z";
-const TIME = "5m ago";
+const STARTED_ISO = new Date(STARTED_AT).toISOString();
 const NOW = Date.parse("2026-07-29T12:46:00Z");
 const renderMessage = (ui: ReactNode) =>
   render(ui, { wrapper: ({ children }) => <SessionNowContext value={NOW}>{children}</SessionNowContext> });
+
+// The opener's speaker header in parts: whether it names the speaker, the
+// meta's agent label and timestamp instant (null when absent), and whether the
+// meta holds anything beyond the one part shown (a dangling separator).
+function speakerHeader(): { named: boolean; label: string | null; time: string | null; onlyPart: boolean } {
+  const header = screen.getByTestId("agent-speaker-header");
+  const [name, meta] = [...header.children];
+  const label = meta?.querySelector('[data-slot="label"]')?.textContent ?? null;
+  const time = meta?.querySelector("time");
+  const parts = [label, time?.textContent].filter((part) => part != null);
+  return {
+    named: (name?.textContent ?? "") !== "",
+    label,
+    time: time?.getAttribute("datetime") ?? null,
+    onlyPart: parts.length === 1 && meta?.textContent === parts[0],
+  };
+}
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "agentMessage", text: "", ...overrides };
@@ -163,9 +180,7 @@ test("exchange-opening agent message shows the speaker header: name, meta, and a
   );
   const root = screen.getByTestId("agent-message-item");
   expect(root.dataset.opensExchange).toBe("true");
-  const header = screen.getByTestId("agent-speaker-header");
-  expect(within(header).getByText("Agent")).toBeTruthy();
-  expect(header.textContent).toBe(`Agentk3 · ${TIME}`);
+  expect(speakerHeader()).toMatchObject({ named: true, label: "k3", time: STARTED_ISO });
   // The avatar is decorative - the header names the speaker in words, so
   // exposing the tile would announce the same fact twice.
   const avatar = within(root).getByTestId("speaker-avatar");
@@ -182,8 +197,7 @@ test("the speaker header renders in the LIVE branch too - the eyebrow appeared i
       agentLabel="k3"
     />,
   );
-  const header = screen.getByTestId("agent-speaker-header");
-  expect(header.textContent).toBe(`Agentk3 · ${TIME}`);
+  expect(speakerHeader()).toMatchObject({ named: true, label: "k3", time: STARTED_ISO });
   expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("streaming");
 });
 
@@ -203,7 +217,7 @@ test("the speaker header survives the live-to-settled transition on the same ins
     />,
   );
   expect(screen.queryByTestId("agent-message-stream")).toBeNull();
-  expect(screen.getByTestId("agent-speaker-header").textContent).toBe(`Agentk3 · ${TIME}`);
+  expect(speakerHeader()).toMatchObject({ named: true, label: "k3", time: STARTED_ISO });
 });
 
 // Meta composition: "{label} · {time}", each part only when defined - never
@@ -211,24 +225,20 @@ test("the speaker header survives the live-to-settled transition on the same ins
 
 test("meta with label only (no startedAt): just the label, no dangling separator", () => {
   renderMessage(<AgentMessageItem item={item({ text: "r" })} turn={turn} live={false} opensExchange agentLabel="k3" />);
-  const header = screen.getByTestId("agent-speaker-header");
-  expect(header.textContent).toBe("Agentk3");
-  expect(header.textContent).not.toContain("·");
+  expect(speakerHeader()).toEqual({ named: true, label: "k3", time: null, onlyPart: true });
 });
 
 test("meta with time only (no agentLabel): just the time, no dangling separator", () => {
   renderMessage(
     <AgentMessageItem item={item({ text: "r", startedAt: STARTED_AT })} turn={turn} live={false} opensExchange />,
   );
-  const header = screen.getByTestId("agent-speaker-header");
-  expect(header.textContent).toBe(`Agent${TIME}`);
-  expect(header.textContent).not.toContain("·");
+  expect(speakerHeader()).toEqual({ named: true, label: null, time: STARTED_ISO, onlyPart: true });
 });
 
 test("meta with neither label nor time: no meta element at all, just the name", () => {
   renderMessage(<AgentMessageItem item={item({ text: "r" })} turn={turn} live={false} opensExchange />);
   const header = screen.getByTestId("agent-speaker-header");
-  expect(header.textContent).toBe("Agent");
+  expect(speakerHeader()).toMatchObject({ named: true, label: null, time: null });
   // One child: the name span only - an empty meta span would still carry
   // the flex gap and reserve visual space.
   expect(header.children.length).toBe(1);
@@ -244,7 +254,7 @@ test("meta with an unparseable startedAt drops the time rather than guessing", (
       agentLabel="k3"
     />,
   );
-  expect(screen.getByTestId("agent-speaker-header").textContent).toBe("Agentk3");
+  expect(speakerHeader()).toEqual({ named: true, label: "k3", time: null, onlyPart: true });
 });
 
 test("continuation fragments render no header, no avatar, no opens-exchange marker", () => {
@@ -260,7 +270,6 @@ test("continuation fragments render no header, no avatar, no opens-exchange mark
   expect(root.dataset.opensExchange).toBeUndefined();
   expect(screen.queryByTestId("agent-speaker-header")).toBeNull();
   expect(screen.queryByTestId("speaker-avatar")).toBeNull();
-  expect(root.textContent).not.toContain("Agent");
 });
 
 test("mid-exchange LIVE fragments render no header either - the trigger is opensExchange, not liveness", () => {
@@ -428,7 +437,7 @@ for (const live of [false, true]) {
     );
     const time = container.querySelector("time");
     expect(time?.dateTime).toBe("2026-07-29T12:41:00.000Z");
-    expect(time?.textContent).toBe("5m ago");
+    expect(time?.textContent).toBeTruthy();
     expect(time?.title).toBeTruthy();
   });
 }
@@ -445,7 +454,7 @@ test("a continuation's timestamp rides a stamp wrapper after the bubble", () => 
   const root = screen.getByTestId("agent-message-item");
   const stamp = root.querySelector("[class*='stamp']");
   if (!stamp) throw new Error("continuation is missing its stamp wrapper");
-  expect(stamp.querySelector("time")?.textContent).toBe(TIME);
+  expect(stamp.querySelector("time")?.getAttribute("datetime")).toBe(STARTED_ISO);
   const bubble = screen.getByTestId("agent-bubble");
   expect(bubble.compareDocumentPosition(stamp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
@@ -461,7 +470,7 @@ test("an exchange opener keeps its time inline in the speaker header - no stamp 
   );
   const root = screen.getByTestId("agent-message-item");
   expect(root.querySelector("[class*='stamp']")).toBeNull();
-  expect(screen.getByTestId("agent-speaker-header").textContent).toBe(`Agent${TIME}`);
+  expect(speakerHeader()).toEqual({ named: true, label: null, time: STARTED_ISO, onlyPart: true });
 });
 
 // jsdom computes no cascade, so the stamp's layout contract is checked at

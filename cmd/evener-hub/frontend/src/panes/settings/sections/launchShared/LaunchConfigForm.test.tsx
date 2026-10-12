@@ -12,16 +12,21 @@ import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { LaunchConfigForm } from "./LaunchConfigForm";
 
 afterEach(() => {
   cleanup();
-  // handleSubmit's catch pushes "Save failed" into the module-singleton
+  // handleSubmit's catch pushes an error toast into the module-singleton
   // toast store regardless of whether <Toast/> is mounted; an earlier
   // failed-save test's undisplayed toast otherwise outlives cleanup() and
-  // collides with a later test's singular getByText("Save failed").
+  // collides with a later test's exact toast list.
   resetToastStoreForTests();
 });
+
+function saveStatus(): HTMLElement {
+  return screen.getByTestId("launch-config-status");
+}
 
 // The path-kind rows render PathField, whose completion loader is the
 // extensions store's own completePaths - so opening one needs a connected
@@ -283,7 +288,7 @@ describe("validation blocks save", () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     fake.on("evener/paths/complete", () => ({ data: ["/tmp/not-real.jsonl"] }));
-    const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "invalid path" });
+    const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "validator-refusal" });
     const onSave = vi.fn().mockResolvedValue(RESOLVED);
     render(
       <LaunchConfigForm
@@ -299,7 +304,7 @@ describe("validation blocks save", () => {
     // The panel portals to document.body, so its rows are queried from screen.
     await user.click(await screen.findByRole("option", { name: /not-real\.jsonl/ }));
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
-    await waitFor(() => expect(screen.getByText("invalid path")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("validator-refusal")).toBeTruthy());
     expect(validatePath).toHaveBeenCalledWith("/tmp/not-real.jsonl", "output-file");
     expect(onSave).not.toHaveBeenCalled();
   });
@@ -363,11 +368,8 @@ describe("successful save", () => {
       </>,
     );
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
-    await waitFor(() => expect(screen.getByText(/^Saved at /)).toBeTruthy());
-    // Toast is a module-singleton queue that outlives unmount between tests
-    // (see widgets/rail/Rail.test.tsx's identical convention) - assert
-    // presence, not exclusivity.
-    expect(screen.getAllByText("Launch defaults saved").length).toBeGreaterThan(0);
+    await waitFor(() => expect(saveStatus().getAttribute("data-state")).toBe("saved"));
+    expect(toastKinds()).toEqual(["success"]);
   });
 
   test("calls onSaved with the resolved config the store returned", async () => {
@@ -414,8 +416,9 @@ describe("failed save", () => {
       </>,
     );
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
-    await waitFor(() => expect(screen.getByText("Error: disk full")).toBeTruthy());
-    expect(screen.getByText("Save failed")).toBeTruthy();
+    await waitFor(() => expect(saveStatus().getAttribute("data-state")).toBe("error"));
+    expect(saveStatus().textContent).toContain("disk full");
+    expect(toastKinds()).toEqual(["error"]);
   });
 
   test("an env-credential-shaped backend error additionally attaches inline to the env field", async () => {
@@ -452,12 +455,13 @@ describe("status self-clear", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Save launch defaults" }));
     await act(() => flushMicrotasks());
-    expect(screen.getByText(/^Saved at /)).toBeTruthy();
+    expect(saveStatus().getAttribute("data-state")).toBe("saved");
 
     act(() => {
       vi.advanceTimersByTime(5001);
     });
-    expect(screen.queryByText(/^Saved at /)).toBeNull();
+    expect(saveStatus().hasAttribute("data-state")).toBe(false);
+    expect(saveStatus().textContent).toBe("");
   });
 
   test("an error status does not self-clear", async () => {
@@ -476,11 +480,12 @@ describe("status self-clear", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Save launch defaults" }));
     await act(() => flushMicrotasks());
-    expect(screen.getByText("Error: boom")).toBeTruthy();
+    expect(saveStatus().getAttribute("data-state")).toBe("error");
 
     act(() => {
       vi.advanceTimersByTime(10000);
     });
-    expect(screen.getByText("Error: boom")).toBeTruthy();
+    expect(saveStatus().getAttribute("data-state")).toBe("error");
+    expect(saveStatus().textContent).toContain("boom");
   });
 });
