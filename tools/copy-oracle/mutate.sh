@@ -37,14 +37,21 @@ cd "$root"
 . "$root/scripts/lib/gate-bounded.sh"
 
 # One mutation at a time per worktree: a second run would mutate files under
-# the first run's tests, or restore them mid-run. The lock is a symlink whose
-# target is the owner's pid, so taking it and naming the owner is one atomic
-# step. The record names the file being mutated and the hash of its mutated
-# contents, so a later run can tell a dead run's leftover mutation from real
-# edits.
+# the first run's tests, or restore them mid-run. The lock is an OS lock
+# (flock, taken through perl since macOS ships no flock command) on fd 9. The
+# kernel drops it only when every process holding fd 9 is gone, and the tests
+# inherit fd 9, so a run killed outright keeps the worktree locked until its
+# orphaned tests exit too. There is no stale lock to recover.
 gitdir=$(git rev-parse --absolute-git-dir)
-lock="$gitdir/copy-oracle-mutate.lock"
+lockfile="$gitdir/copy-oracle-mutate.lock"
+# The record names the file being mutated and the hash of its mutated
+# contents, so a later run can tell a dead run's leftover mutation from edits.
 record="$gitdir/copy-oracle-mutate.record"
+exec 9>>"$lockfile"
+if ! perl -MFcntl=:flock -e 'open(my $fh, ">>&=", 9) or die "fd 9: $!\n"; exit(flock($fh, LOCK_EX | LOCK_NB) ? 0 : 1)'; then
+  echo "refusing: another mutate.sh, or the tests of one that died, still holds this worktree" >&2
+  exit 2
+fi
 
 # Restore a dead run's target only while it still holds exactly that run's
 # mutation; anything else is someone's edit and is left alone.
@@ -65,26 +72,6 @@ recover_dead_run() {
   rm -f "$record"
 }
 
-if ! ln -s "$$" "$lock" 2>/dev/null; then
-  owner=$(readlink "$lock" 2>/dev/null || true)
-  if [[ -n "$owner" ]] && kill -0 "$owner" 2>/dev/null; then
-    echo "refusing: another mutate.sh (pid $owner) is running in this worktree" >&2
-    exit 2
-  fi
-  # Claim the stale lock with an atomic rename, so of two runs recovering at
-  # once only one wins; the other sees the lock gone or retaken and refuses.
-  if ! mv "$lock" "$lock.stale.$$" 2>/dev/null; then
-    echo "refusing: another mutate.sh is recovering the lock in this worktree" >&2
-    exit 2
-  fi
-  rm -f "$lock.stale.$$"
-  echo "recovering the lock of a run that died (pid ${owner:-unknown})" >&2
-  if ! ln -s "$$" "$lock" 2>/dev/null; then
-    echo "refusing: another mutate.sh took the lock first" >&2
-    exit 2
-  fi
-fi
-
 # Every exit path, including HUP/INT/TERM, stops the test process group
 # (TERM, a bounded grace, then KILL) before restoring the file, so no test
 # process outlives the run and reads the restored source.
@@ -100,7 +87,6 @@ cleanup() {
     git restore -- "$file"
     rm -f "$record"
   fi
-  if [[ "$(readlink "$lock" 2>/dev/null)" == "$$" ]]; then rm -f "$lock"; fi
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
