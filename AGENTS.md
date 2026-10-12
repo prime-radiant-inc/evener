@@ -53,6 +53,9 @@ reconnect after loading multiple pages, including a visible row on a later page.
 ## Testing
 
 Before adding or changing tests, read `docs/developing-evener/testing.md`.
+Never assert on phrasing: no test may check that copy, error messages, or other
+human-readable strings match a hardcoded phrase or a constant imported from the
+code. Assert the behavior instead ("Copy Is Not a Test Oracle" in that doc).
 For the rest of the dev-facing docs (building, linting, coverage, fuzzing,
 environment, worktrees), see `docs/developing-evener/README.md`; for every
 `make` target with a one-line summary, run `make help`.
@@ -92,6 +95,15 @@ Use this boundary:
 
 A provider API key by itself must never cause default tests to issue live
 requests.
+
+## Building web UI
+
+Before adding or changing UI in `cmd/evener-hub/frontend/src`, read
+`docs/developing-evener/design-system.md`. Build from the widget library
+(`src/widgets`, imported through its barrel) and design tokens: no raw
+`<button>`/`<input>`/`<select>`/`<textarea>` outside `src/widgets`, no CSS
+that reaches into a widget's DOM, and no new widget or widget prop without
+asking Jesse first.
 
 ## Frontend gates
 
