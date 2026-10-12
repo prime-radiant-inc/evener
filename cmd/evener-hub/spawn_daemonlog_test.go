@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -322,8 +322,8 @@ func TestSpawnFailsWhenTheDaemonLogCannotBeOpened(t *testing.T) {
 		t.Fatal("spawn succeeded with an unopenable daemon log")
 	}
 	// A regular file where the log directory belongs is what refused the
-	// create.
-	if !errors.Is(err, syscall.ENOTDIR) {
+	// create, so the failure is about a path under it.
+	if pathErr, ok := errors.AsType[*fs.PathError](err); !ok || !strings.HasPrefix(pathErr.Path, filepath.Join(runDir, "logs")) {
 		t.Fatalf("error is not the daemon log's own failure: %v", err)
 	}
 	if _, statErr := os.Stat(ran); statErr == nil {

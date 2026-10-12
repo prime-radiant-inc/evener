@@ -570,7 +570,7 @@ sleep 30
 					t.Fatal("launch succeeded, want a failure")
 				}
 				for _, outcome := range launchOutcomes {
-					if errors.Is(err, outcome) != (outcome == tc.want) {
+					if errors.Is(err, outcome) != errors.Is(tc.want, outcome) {
 						t.Fatalf("failure reports %v as %v, want only %v:\n%v", outcome, errors.Is(err, outcome), tc.want, err)
 					}
 				}
@@ -955,7 +955,7 @@ exit 2
 				err := check.call(ctx, evenerBinary)
 				assertHubLaunchError(t, err)
 				for _, outcome := range checkOutcomes {
-					if errors.Is(err, outcome) != (outcome == tc.want) {
+					if errors.Is(err, outcome) != errors.Is(tc.want, outcome) {
 						t.Fatalf("failure reports %v as %v, want only %v:\n%v", outcome, errors.Is(err, outcome), tc.want, err)
 					}
 				}
