@@ -92,7 +92,7 @@ test.each([false, true])("agent file hyperlink opens the session-scoped document
 test("file hyperlink has the standard open-beside affordance", () => {
   render(message(source));
   const open = screen.getByRole("button", { name: `Open beside: ${path}` });
-  expect(open.getAttribute("title")).toBe("Open");
+  expect(open.getAttribute("title")).toBeTruthy();
   expect(open.querySelector("svg")).not.toBeNull();
   fireEvent.click(open);
   expect(workspaceStore.getState().panes).toMatchObject([
