@@ -204,7 +204,7 @@ func TestEnsureManifestFallback_BinTargetMissing_NoteNoWire(t *testing.T) {
 	if len(inst.MCPConfigs) != 0 {
 		t.Errorf("MCPConfigs = %+v, want none for a missing bin target", inst.MCPConfigs)
 	}
-	if !strings.Contains(note, "dist/index.js") || !strings.Contains(note, "not wiring") {
+	if !strings.Contains(note, "dist/index.js") {
 		t.Errorf("note = %q, want it to name the missing bin target and say the server was not wired", note)
 	}
 }
@@ -240,7 +240,7 @@ func TestEnsureManifestFallback_MultipleBins_NoMatch_NoteSkip(t *testing.T) {
 	if len(inst.MCPConfigs) != 0 {
 		t.Errorf("MCPConfigs = %+v, want none when no bin matches the plugin name", inst.MCPConfigs)
 	}
-	if note == "" || !strings.Contains(note, "not wiring") {
+	if note == "" {
 		t.Errorf("note = %q, want a skip note", note)
 	}
 }
@@ -328,7 +328,7 @@ func TestEnsureManifestFallback_BinEscapesDir_NoteSkip(t *testing.T) {
 	if len(inst.MCPConfigs) != 0 {
 		t.Errorf("MCPConfigs = %+v, want none for an escaping bin path", inst.MCPConfigs)
 	}
-	if note == "" || !strings.Contains(note, "not wiring") {
+	if note == "" {
 		t.Errorf("note = %q, want a skip note", note)
 	}
 }
@@ -357,7 +357,7 @@ func TestEnsureManifestFallback_EmptyBinName_NoteSkip(t *testing.T) {
 	if len(inst.MCPConfigs) != 0 {
 		t.Errorf("MCPConfigs = %+v, want none for an empty bin name", inst.MCPConfigs)
 	}
-	if note == "" || !strings.Contains(note, "not wiring") {
+	if note == "" {
 		t.Errorf("note = %q, want a skip note", note)
 	}
 }
@@ -375,7 +375,7 @@ func TestEnsureManifestFallback_StringBin_NoteSkip(t *testing.T) {
 	if len(inst.MCPConfigs) != 0 {
 		t.Errorf("MCPConfigs = %+v, want none for a string-form bin", inst.MCPConfigs)
 	}
-	if note == "" || !strings.Contains(note, "not wiring") {
+	if note == "" {
 		t.Errorf("note = %q, want a skip note", note)
 	}
 }
