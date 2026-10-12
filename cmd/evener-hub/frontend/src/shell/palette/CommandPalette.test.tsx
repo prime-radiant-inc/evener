@@ -176,6 +176,7 @@ function setNeedsYouRows(rows: NavigationSessionSummary[] | null): void {
   navigationStore.setState({
     mode: "v3",
     clientGenerationID: "generation_test",
+    visibleResourceKeys: rows === null ? new Set<string>() : new Set([keyID(key)]),
     resources:
       rows === null
         ? new Map()

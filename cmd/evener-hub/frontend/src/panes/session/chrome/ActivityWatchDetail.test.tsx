@@ -634,7 +634,9 @@ test("keeps the loaded compact recipient identity after a read-only child transc
     });
     expect(screen.getByText("Notifies Chosen child title")).toBeTruthy();
     act(() => threadsStore.getState().releaseThread(childRef));
-    expect(threadsStore.getState().threads.has(childRef)).toBe(false);
+    // The ordinary entry route retires through a finite final read before it
+    // drops the ref, so the release is asynchronous.
+    await waitFor(() => expect(threadsStore.getState().threads.has(childRef)).toBe(false));
     const calls = client.calls.length;
     expect(screen.getByText("Notifies navigation-observer")).toBeTruthy();
     expect(client.calls).toHaveLength(calls);
