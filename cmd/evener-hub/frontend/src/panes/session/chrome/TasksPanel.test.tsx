@@ -1,7 +1,7 @@
 import type { Task, TaskListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { absoluteTime, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
@@ -9,8 +9,9 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
+import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { STATUS_TOUCH } from "../transcript/tools/taskCheck";
 import { TasksPanel, TasksPanelBody } from "./TasksPanel";
@@ -141,6 +142,20 @@ beforeEach(() => {
   resetDisclosureStoreForTests();
 });
 
+function errorToasts(): string[] {
+  return getToasts()
+    .filter((toast) => toast.kind === "error")
+    .map((toast) => toast.text);
+}
+
+// The failed first-fetch EmptyState's title and hint, joined the way a toast
+// joins the same failure's headline and detail.
+function failedStateSentence(): string {
+  const failed = document.querySelector('[data-testid="empty-state"][data-reason="failed"]');
+  if (!failed) throw new Error("Missing failed empty state");
+  return [...failed.querySelectorAll("p")].map((p) => p.textContent).join(": ");
+}
+
 // --- trigger badge: unchanged, still driven by the live-pushed aggregate ---
 // (model.tasks stays the live signal per the plan's push-driven-plus-fetch-
 // on-open model - it's cheap and already-live without opening anything.)
@@ -264,7 +279,7 @@ test("empty groups render nothing, so Open leads when there are no in-progress t
   const liveGroups = await screen.findAllByTestId("task-group-live");
   expect(liveGroups).toHaveLength(1);
   expect(liveGroups[0]?.getAttribute("data-status")).toBe("open");
-  expect(screen.queryByText(/in progress/i)).toBeNull();
+  expect(document.querySelector('[data-testid="task-group-live"][data-status="in_progress"]')).toBeNull();
   expect(screen.queryByTestId("task-settled-group")).toBeNull();
 });
 
@@ -567,7 +582,8 @@ test("an expanded bare task shows only the type meta and 'No updates yet.'", asy
   expect(body.querySelector("[data-testid='task-meta']")?.textContent).not.toContain("reasoning");
   expect(body.querySelector("[data-testid='task-times']")).toBeNull();
   expect(body.querySelector("[data-testid='task-prompt']")).toBeNull();
-  expect(body.textContent).toContain("No updates yet.");
+  expect(body.querySelector("[data-testid='task-notes-empty']")).not.toBeNull();
+  expect(body.querySelector("[data-testid='task-notes']")).toBeNull();
 });
 
 test("an expanded task shows the meta strip and timestamps line", async () => {
@@ -674,7 +690,7 @@ test("the expanded row is a real native disclosure (<details open>), not just co
   expect(details.open).toBe(true);
 });
 
-test("a confirmed-empty fetch (real daemon, genuinely zero tasks) shows the definitive legacy empty-state copy", async () => {
+test("a confirmed-empty fetch (real daemon, genuinely zero tasks) shows the definitive empty state", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
@@ -682,8 +698,8 @@ test("a confirmed-empty fetch (real daemon, genuinely zero tasks) shows the defi
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  expect(await screen.findByText("No tasks yet")).toBeTruthy();
-  expect(screen.getByText(/agent's task list is empty for this session/i)).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["empty"]));
+  expect(screen.queryByTestId("tasks-stale")).toBeNull();
 });
 
 test("re-opening after closing re-fetches (the plan's fetch-on-open model, not a one-time fetch)", async () => {
@@ -748,8 +764,10 @@ test("a source-backed actionUnavailable rejection shows the honest unsupported s
   );
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  expect(await screen.findByText(/task list isn.t available/i)).toBeTruthy();
-  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unsupported"]));
+  expect(errorToasts()).toEqual([]);
+  // No Try again: the source cannot answer this call at all.
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
 });
 
 // --- other failures: toast + inline error state ----------------------------
@@ -769,11 +787,9 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
   );
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  await screen.findByText(/couldn.t load tasks: tasks boom/i);
-  // The toast and the inline state both surface the same failure - assert
-  // the inline one separately from the toast region so this doesn't just
-  // pass because the toast's own text happened to match.
-  expect(screen.getAllByText(/couldn.t load tasks/i).length).toBeGreaterThanOrEqual(2);
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
+  // The toast and the inline state report the same failure.
+  expect(errorToasts()).toEqual([failedStateSentence()]);
 });
 
 // The store already rejects an obsolete completion (fetchID mismatch), so the
@@ -810,11 +826,13 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
 
   await act(async () => calls[0]?.reject(new Error("tasks boom")));
   await waitFor(() => expect(calls).toHaveLength(2));
-  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  expect(errorToasts()).toEqual([]);
+  expect(emptyStateReasons(document.body)).not.toContain("failed");
 
   await act(async () => calls[1]?.resolve({ data: TASKS_DATA }));
   await screen.findByText("Wire up session actions");
-  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  expect(errorToasts()).toEqual([]);
+  expect(screen.queryByTestId("tasks-stale")).toBeNull();
 });
 
 // The hub resumes a cold session before it can list anything
@@ -836,18 +854,27 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
   );
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  await screen.findByText("Couldn't start this session: evener launch-check timed out"); // the toast
-  expect(screen.getByText("Couldn't start this session")).toBeTruthy(); // the inline heading
-  expect(screen.getByText("evener launch-check timed out")).toBeTruthy(); // the inline detail
-  // The action's own name is gone from both, not merely absent from one.
-  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
+  // The toast is exactly the inline heading and detail.
+  expect(errorToasts()).toEqual([failedStateSentence()]);
+  const resumeHeading = failedStateSentence().split(": ")[0];
+
+  // The same rejection text without the hubLaunch discriminator is a plain
+  // load failure, and gets the action's own heading instead.
+  cleanup();
+  resetToastStoreForTests();
+  fake.on("evener/tasks/list", () => {
+    throw new Error("evener launch-check timed out");
+  });
+  render(<TasksPanelBody sessionRef="ref_b" model={testModel({ ref: "ref_b" })} />);
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
+  expect(failedStateSentence().split(": ")[0]).not.toBe(resumeHeading);
 });
 
 // The toast drops the separator when a rejection carries no text of its own
 // (protocol/errors.ts). The inline half has to drop the detail line for the
 // same rejection, or one failure reads as a headline in the toast and a
-// headline plus a blank line in the panel. No <Toast/> here: it would put a
-// second "Couldn't load tasks" on screen and blunt the count below.
+// headline plus a blank line in the panel.
 test("a rejection with no text of its own shows the headline alone, with no empty detail line", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -858,8 +885,10 @@ test("a rejection with no text of its own shows the headline alone, with no empt
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  const headline = await screen.findByText("Couldn't load tasks");
-  expect(headline.parentElement?.querySelectorAll("p")).toHaveLength(1);
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
+  const failed = screen.getByTestId("empty-state");
+  expect(failed.querySelectorAll("p")).toHaveLength(1);
+  expect(failed.querySelector('[data-slot="hint"]')).toBeNull();
 });
 
 // --- a failed LIVE re-fetch keeps the list it already has -------------------
@@ -924,7 +953,11 @@ test("the retained list says it is out of date, so a failed refresh doesn't read
   await openThenPush(fake);
 
   const stale = await screen.findByTestId("tasks-stale");
-  expect(stale.textContent).toContain("Showing the last list that loaded");
+  expect(within(stale).getByRole("alert").textContent).not.toBe("");
+  // The notice sits above the retained rows, so it is read before them.
+  const firstRow = screen.getAllByTestId("task-row")[0];
+  if (!firstRow) throw new Error("Missing retained task row");
+  expect(stale.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 // The other direction of the same confusion. "No tasks yet" is the panel's
@@ -938,7 +971,7 @@ test("a retained EMPTY list under a failed refresh is marked stale, not left as 
   await openThenPush(fake);
 
   await screen.findByTestId("tasks-stale");
-  expect(screen.getByText("No tasks yet")).toBeTruthy();
+  expect(emptyStateReasons(document.body)).toEqual(["empty"]);
 });
 
 // bv13's invariant, carried onto the retained-list path: the toast and the
@@ -954,10 +987,9 @@ test("the stale notice and the toast report a re-fetch failure in the same words
 
   await openThenPush(fake);
 
-  const sentence = "Couldn't start this session: evener launch-check timed out";
-  await waitFor(() => expect(screen.getAllByText(sentence)).toHaveLength(2));
-  // The action's own name is gone from both, not merely absent from one.
-  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  const stale = await screen.findByTestId("tasks-stale");
+  await waitFor(() => expect(errorToasts()).toHaveLength(1));
+  expect(errorToasts()).toEqual([within(stale).getByRole("alert").textContent]);
 });
 
 // evener/task/updated is event-driven, never scheduled (internal/appprojector/
@@ -1007,7 +1039,7 @@ test("thread-not-found on a session that never had a live aggregate still shows 
   render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: null })} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  expect(await screen.findByText("No tasks yet")).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["empty"]));
   expect(screen.queryByTestId("tasks-daemon-gone")).toBeNull();
 });
 
@@ -1032,7 +1064,7 @@ test("closing then re-opening after the daemon exits keeps the rows already show
   await screen.findByTestId("tasks-daemon-gone");
   expect(screen.getAllByTestId("task-row")).toHaveLength(2);
   expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
-  expect(screen.queryByText("No tasks yet")).toBeNull();
+  expect(emptyStateReasons(document.body)).toEqual([]);
 });
 
 test("that terminal notice offers no Try again - the hub never tracked this session, so asking again fails identically forever", async () => {
@@ -1055,8 +1087,8 @@ test("thread-not-found with a known aggregate but no rows ever fetched shows a t
   render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
   await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
 
-  await screen.findByText("This session has ended");
-  expect(screen.queryByText("No tasks yet")).toBeNull();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["ended"]));
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
 });
 
 test("no toast for a dead-daemon rejection - it's not a bug, it's an expected terminal state", async () => {
@@ -1074,8 +1106,8 @@ test("no toast for a dead-daemon rejection - it's not a bug, it's an expected te
   );
   await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
 
-  await screen.findByText("This session has ended");
-  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["ended"]));
+  expect(errorToasts()).toEqual([]);
 });
 
 // The first fetch has no previous page to keep, so it still blanks - but it
@@ -1097,14 +1129,14 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
   // whose title and hint are two elements. The stale notice renders the same
   // failure as one sentence in one element. Same words either way - a combined
   // matcher just cannot span the EmptyState pair.
-  await screen.findByText("Couldn't load tasks");
-  await screen.findByText("tasks boom");
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
+  expect(failedStateSentence()).toContain("tasks boom");
 
   await user.click(screen.getByRole("button", { name: "Try again" }));
 
   expect(await screen.findAllByTestId("task-row")).toHaveLength(2);
   expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
-  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  expect(emptyStateReasons(document.body)).toEqual([]);
 });
 
 test("cancelled history never claims completion and preserves every current and remaining task", async () => {
