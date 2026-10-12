@@ -2,21 +2,41 @@ package hub
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
-// TestProjectDeletionOwnershipErrorLive covers the Live=true path in Error().
-func TestProjectDeletionOwnershipErrorLive(t *testing.T) {
-	// A live owner reads the same whatever ownership error rode along, and
-	// never as that error.
-	e := projectDeletionOwnershipError{ThreadID: "s1", Live: true, Err: errors.New("ownership probe failed")}
-	if got, bare := e.Error(), (projectDeletionOwnershipError{Live: true}).Error(); got == "" || got != bare || got == e.Err.Error() {
-		t.Fatalf("Live error = %q, want the live report %q regardless of its cause", got, bare)
+// TestOwnershipSkipClassifiesLiveOwners: a session a live daemon owns, or
+// whose API log another process holds, is skipped as live whatever ownership
+// error rode along; any other ownership failure is skipped with its cause.
+func TestOwnershipSkipClassifiesLiveOwners(t *testing.T) {
+	probeFailed := errors.New("ownership probe failed")
+	for _, tc := range []struct {
+		name     string
+		err      projectDeletionOwnershipError
+		wantLive bool
+	}{
+		{name: "live owner", err: projectDeletionOwnershipError{ThreadID: "s1", Live: true, Err: probeFailed}, wantLive: true},
+		{name: "API log held", err: projectDeletionOwnershipError{ThreadID: "s1", Err: fmt.Errorf("open: %w", llm.ErrAPILogTargetLocked)}, wantLive: true},
+		{name: "other failure", err: projectDeletionOwnershipError{ThreadID: "s1", Err: probeFailed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			skip := ownershipSkip("s1", &tc.err)
+			if skip.ID != "s1" || (skip.Kind == appwire.SkipKindLive) != tc.wantLive {
+				t.Fatalf("skip = %+v, want s1 skipped live=%v", skip, tc.wantLive)
+			}
+			if !tc.wantLive && !strings.Contains(skip.Reason, probeFailed.Error()) {
+				t.Fatalf("skip = %+v, want the ownership failure as its reason", skip)
+			}
+		})
 	}
 }
 
@@ -44,19 +64,6 @@ func TestProjectDeletionOwnershipErrorUnwrapNilGaps(t *testing.T) {
 	e := projectDeletionOwnershipError{ThreadID: "s1", Live: true}
 	if e.Unwrap() != nil {
 		t.Fatal("Unwrap with nil Err should return nil")
-	}
-}
-
-// TestAppendProjectDeleteLiveSkipGaps covers the helper function.
-func TestAppendProjectDeleteLiveSkipGaps(t *testing.T) {
-	skipped := appendProjectDeleteLiveSkip(nil, "session-1")
-	if len(skipped) != 1 || skipped[0].ID != "session-1" || skipped[0].Reason != (projectDeletionOwnershipError{Live: true}).Error() {
-		t.Fatalf("expected one live skip for session-1, got %v", skipped)
-	}
-	// Append to existing
-	skipped = appendProjectDeleteLiveSkip(skipped, "session-2")
-	if len(skipped) != 2 {
-		t.Fatalf("expected 2 skips, got %d", len(skipped))
 	}
 }
 

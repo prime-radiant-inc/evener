@@ -6,16 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/rendezvous"
 )
-
-func TestProjectDeletionOwnershipErrorLiveMessage(t *testing.T) {
-	e := projectDeletionOwnershipError{Live: true}
-	if e.Error() == "" {
-		t.Fatal("Live error reads empty, want the live report")
-	}
-}
 
 func TestProjectDeletionOwnershipErrorWrappedMessage(t *testing.T) {
 	inner := errors.New("some failure")
@@ -168,14 +162,10 @@ func TestRemoveFlatProjectSessionArtifactsRemovesFlatFiles(t *testing.T) {
 	}
 }
 
-func TestAppendProjectDeleteLiveSkip(t *testing.T) {
-	skipped := appendProjectDeleteLiveSkip(nil, "s1")
-	if len(skipped) != 1 || skipped[0].ID != "s1" || skipped[0].Reason != (projectDeletionOwnershipError{Live: true}).Error() {
-		t.Fatalf("expected one live skip for s1, got %+v", skipped)
-	}
-	skipped = appendProjectDeleteLiveSkip(skipped, "s2")
-	if len(skipped) != 2 || skipped[1].ID != "s2" {
-		t.Fatalf("expected two skips, got %+v", skipped)
+func TestOwnershipSkipOfALiveOwner(t *testing.T) {
+	skip := ownershipSkip("s1", &projectDeletionOwnershipError{ThreadID: "s1", Live: true})
+	if skip.ID != "s1" || skip.Kind != appwire.SkipKindLive {
+		t.Fatalf("skip = %+v, want s1 skipped as live", skip)
 	}
 }
 
