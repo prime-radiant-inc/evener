@@ -1,11 +1,16 @@
+import nacl from "tweetnacl";
+import { createPairingClaim, invitationText, toHex } from "@evener/appwire-client/pairing";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { hasTestID, markers, withTestID } from "../markerTestUtils";
-import { offersButton, render, renderedText, textOf } from "../renderNative.testkit";
+import { offersButton, render, renderedText, textOf, unmountMountedTrees } from "../renderNative.testkit";
 import { AddHub } from "./AddHub";
+import { PairingApproval } from "./PairingApproval";
 
 type Permission = { granted: boolean; canAskAgain: boolean; status: string };
 const mocks = vi.hoisted(() => ({
+	fetch: vi.fn(),
+	random: vi.fn(),
 	permission: { value: null as Permission | null },
 	request: vi.fn(),
 	get: vi.fn(),
@@ -14,6 +19,23 @@ const mocks = vi.hoisted(() => ({
 	saveHub: vi.fn(),
 	openSettings: vi.fn(),
 }));
+const navigation = vi.hoisted(() => {
+	const state = { focused: true };
+	const listeners = { focus: new Set<() => void>(), blur: new Set<() => void>() };
+	const api = {
+		isFocused: () => state.focused,
+		addListener: (event: "focus" | "blur", listener: () => void) => {
+			listeners[event].add(listener);
+			return () => {
+				listeners[event].delete(listener);
+			};
+		},
+	};
+	return { state, listeners, api };
+});
+vi.mock("@react-navigation/native", () => ({ useNavigation: () => navigation.api }));
+vi.mock("expo/fetch", () => ({ fetch: mocks.fetch }));
+vi.mock("expo-crypto", () => ({ getRandomBytes: mocks.random }));
 vi.mock("expo-camera", () => ({
 	CameraView: "CameraView",
 	useCameraPermissions: () => [mocks.permission.value, mocks.request, mocks.get],
@@ -39,6 +61,15 @@ const OTHER_LINK = "https://paradise-park:9180/auth/other-token";
 const GRANTED: Permission = { granted: true, canAskAgain: true, status: "granted" };
 
 beforeEach(() => {
+	mocks.fetch.mockReset();
+	mocks.random.mockReset().mockImplementation(() => new Uint8Array(32).fill(7));
+	navigation.state.focused = true;
+	navigation.listeners.focus.clear();
+	navigation.listeners.blur.clear();
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(() => Promise.reject(new Error("Global fetch must not serve native pairing"))),
+	);
 	mocks.permission.value = GRANTED;
 	mocks.request.mockReset();
 	mocks.get.mockReset();
@@ -338,4 +369,332 @@ it("never shows the token or offers to retry or reconnect", async () => {
 		expect(hasTestID(tree, `hub-save-refused:${how === "address" ? "address" : "link"}`)).toBe(true);
 		expect(offersButton(tree, /\b(Retry|Reconnect)\b/)).toBe(false);
 	}
+});
+
+afterEach(() => {
+	unmountMountedTrees();
+	vi.unstubAllGlobals();
+	vi.useRealTimers();
+});
+it("shows a locally calculated code for an invitation without saving credentials", async () => {
+	const invitation = { invitation: "01".repeat(24), origin: "http://magic-kingdom:9180", tailnet: true, expiresAt: 0 };
+	const comparison = createPairingClaim(invitation, new Uint8Array(32).fill(7)).comparison;
+	mocks.fetch.mockImplementation(async () => new Response(JSON.stringify({ state: "pending", comparison })));
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
+	});
+	expect(tree.root.findAll((node) => String(node.type) === "CameraView")).toHaveLength(0);
+	expect(renderedText(tree)).toContain(comparison);
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await press(tree, "Cancel pairing");
+	expect(camera(tree)).toBeDefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+});
+
+function approvedPairingFixture() {
+	const invitation = { invitation: "01".repeat(24), origin: "http://magic-kingdom:9180", tailnet: true, expiresAt: 0 };
+	const claim = createPairingClaim(invitation, new Uint8Array(32).fill(7));
+	const sender = nacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(9)),
+		nonce = new Uint8Array(24).fill(2);
+	const host = "magic-kingdom",
+		path = "/rpc",
+		token = TOKEN;
+	const plain = new Uint8Array([
+		1,
+		1,
+		35,
+		220,
+		host.length,
+		path.length,
+		0,
+		token.length,
+		...new TextEncoder().encode(host + path + token),
+	]);
+	const envelope = toHex(
+		new Uint8Array([
+			69,
+			86,
+			80,
+			49,
+			...new Uint8Array(8).fill(1),
+			...sender.publicKey,
+			...nonce,
+			...nacl.box(plain, nonce, claim.publicKeyBytes, sender.secretKey),
+		]),
+	);
+	return { invitation, reply: { state: "approved", comparison: claim.comparison, envelope } };
+}
+
+it("reviews an approved invitation before saving the Hub", async () => {
+	const { invitation, reply } = approvedPairingFixture();
+	mocks.fetch.mockImplementation(async () => new Response(JSON.stringify(reply)));
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
+	});
+	expect(field(tree, "Name").props.value).toBe("magic-kingdom");
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await press(tree, "Connect");
+	expect(mocks.saveHub).toHaveBeenCalledWith({ name: "magic-kingdom", origin: invitation.origin, token: TOKEN });
+});
+
+it("ignores a claim response arriving after cancellation", async () => {
+	const { invitation, reply } = approvedPairingFixture();
+	let answer: ((response: Response) => void) | undefined;
+	mocks.fetch.mockImplementation(
+		() =>
+			new Promise<Response>((resolve) => {
+				answer = resolve;
+			}),
+	);
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
+	});
+	await press(tree, "Cancel pairing");
+	await act(async () => {
+		answer?.(new Response(JSON.stringify(reply)));
+	});
+	expect(camera(tree)).toBeDefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+});
+
+type ClaimRequest = {
+	body: { invitation: string; publicKey: string; client: string };
+	signal: AbortSignal;
+	answer(reply: unknown): void;
+	fail(): void;
+};
+
+function captureClaims(honorAbort = true) {
+	const requests: ClaimRequest[] = [];
+	mocks.fetch.mockImplementation(
+		(_url: string, options: RequestInit) =>
+			new Promise<Response>((resolve, reject) => {
+				if (!options.signal || typeof options.body !== "string") throw new Error("Missing claim request");
+				const signal = options.signal;
+				requests.push({
+					body: JSON.parse(options.body),
+					signal,
+					answer: (reply) => resolve(new Response(JSON.stringify(reply))),
+					fail: () => reject(new TypeError("Network unavailable")),
+				});
+				if (honorAbort) signal.addEventListener("abort", () => reject(new Error("Request aborted")), { once: true });
+			}),
+	);
+	return requests;
+}
+
+async function startInvitation() {
+	const fixture = approvedPairingFixture();
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(fixture.invitation) });
+	});
+	return { tree, ...fixture };
+}
+
+async function advancePairingTime(milliseconds: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(milliseconds);
+	});
+}
+
+it.each(["network failure", "request timeout"])(
+	"retries %s with the same device key and reviews before saving",
+	async (failure) => {
+		vi.useFakeTimers();
+		const requests = captureClaims();
+		const { tree, invitation, reply } = await startInvitation();
+		const first = requests[0];
+		if (!first) throw new Error("Missing initial claim");
+		if (failure === "network failure")
+			await act(async () => {
+				first.fail();
+			});
+		else {
+			await advancePairingTime(10000);
+			expect(first.signal.aborted).toBe(true);
+		}
+		await advancePairingTime(1200);
+		expect(requests).toHaveLength(2);
+		const retry = requests[1];
+		if (!retry) throw new Error("Missing retry");
+		expect(retry.body).toEqual(first.body);
+		expect(renderedText(tree)).toContain(reply.comparison);
+		await act(async () => {
+			retry.answer(reply);
+		});
+		expect(field(tree, "Name").props.value).toBe("magic-kingdom");
+		expect(mocks.saveHub).not.toHaveBeenCalled();
+		await advancePairingTime(30000);
+		expect(requests).toHaveLength(2);
+		await press(tree, "Connect");
+		expect(mocks.saveHub).toHaveBeenCalledExactlyOnceWith({
+			name: "magic-kingdom",
+			origin: invitation.origin,
+			token: TOKEN,
+		});
+	},
+);
+
+it("pauses background polling, ignores its late approval, and resumes with the same key", async () => {
+	vi.useFakeTimers();
+	const requests = captureClaims(false);
+	const { tree, reply } = await startInvitation();
+	const first = requests[0];
+	if (!first) throw new Error("Missing initial claim");
+	await act(async () => {
+		for (const listener of mocks.appState) listener("background");
+	});
+	expect(first.signal.aborted).toBe(true);
+	await advancePairingTime(30000);
+	expect(requests).toHaveLength(1);
+	await act(async () => {
+		first.answer(reply);
+	});
+	expect(button(tree, "Cancel pairing")).toBeDefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await act(async () => {
+		for (const listener of mocks.appState) listener("active");
+	});
+	expect(requests).toHaveLength(2);
+	const resumed = requests[1];
+	if (!resumed) throw new Error("Missing foreground claim");
+	expect(resumed.body).toEqual(first.body);
+	expect(renderedText(tree)).toContain(reply.comparison);
+	await act(async () => {
+		resumed.answer(reply);
+	});
+	expect(field(tree, "Name").props.value).toBe("magic-kingdom");
+	await advancePairingTime(30000);
+	expect(requests).toHaveLength(2);
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await press(tree, "Connect");
+	expect(mocks.saveHub).toHaveBeenCalledTimes(1);
+});
+
+it.each(["expired", "rejected"])(
+	"stops a %s invitation after returning from the background without saving it",
+	async (state) => {
+		vi.useFakeTimers();
+		const requests = captureClaims();
+		const { tree } = await startInvitation();
+		await act(async () => {
+			for (const listener of mocks.appState) listener("background");
+		});
+		await advancePairingTime(600000);
+		expect(requests).toHaveLength(1);
+		await act(async () => {
+			for (const listener of mocks.appState) listener("active");
+		});
+		const resumed = requests[1];
+		if (!resumed) throw new Error("Missing foreground claim");
+		await act(async () => {
+			resumed.answer({ state });
+		});
+		await advancePairingTime(30000);
+		expect(requests).toHaveLength(2);
+		expect(button(tree, "Cancel pairing")).toBeDefined();
+		expect(mocks.saveHub).not.toHaveBeenCalled();
+		await press(tree, "Cancel pairing");
+		expect(camera(tree)).toBeDefined();
+	},
+);
+
+it("uses the native streaming transport when global fetch has no response stream", async () => {
+	const { invitation, reply } = approvedPairingFixture();
+	const globalFetch = vi.fn(async () => ({ ok: true, status: 200, body: null }) as Response);
+	vi.stubGlobal("fetch", globalFetch);
+	mocks.fetch.mockResolvedValue(new Response(JSON.stringify(reply)));
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
+	});
+	expect(pairingWith(tree)).toBe(invitation.origin);
+	expect(mocks.fetch).toHaveBeenCalledTimes(1);
+	expect(globalFetch).not.toHaveBeenCalled();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+});
+
+it("cancels a pending approval before its parent commits unmount", async () => {
+	vi.useFakeTimers();
+	const requests = captureClaims(false);
+	vi.stubGlobal("fetch", mocks.fetch);
+	const { invitation, reply } = approvedPairingFixture();
+	const onApproved = vi.fn(),
+		onCancel = vi.fn();
+	// The parent records Cancel but deliberately has not committed unmount yet.
+	const tree = render(<PairingApproval invitation={invitation} onApproved={onApproved} onCancel={onCancel} />);
+	const first = requests[0];
+	if (!first) throw new Error("Missing initial claim");
+	onCancel.mockImplementation(() => expect(first.signal.aborted).toBe(true));
+	await press(tree, "Cancel pairing");
+	expect(onCancel).toHaveBeenCalledTimes(1);
+	await act(async () => {
+		first.answer(reply);
+	});
+	expect(onApproved).not.toHaveBeenCalled();
+	expect(first.signal.aborted).toBe(true);
+	await advancePairingTime(30000);
+	expect(requests).toHaveLength(1);
+});
+
+it("does not review a cancelled invitation after another scan starts", async () => {
+	captureClaims(false);
+	const { tree, invitation } = await startInvitation();
+	const staleApproval = tree.root.findByType(PairingApproval).props.onApproved;
+	await press(tree, "Cancel pairing");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText({ ...invitation, invitation: "02".repeat(24) }) });
+	});
+	await act(async () => {
+		staleApproval({ origin: invitation.origin, token: TOKEN });
+	});
+	expect(pairingWith(tree)).toBeUndefined();
+	expect(button(tree, "Cancel pairing")).toBeDefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+});
+
+it("pauses a retained screen on navigation blur and resumes the same claim on focus", async () => {
+	vi.useFakeTimers();
+	const requests = captureClaims(false);
+	const { tree, reply, invitation } = await startInvitation();
+	const first = requests[0];
+	if (!first) throw new Error("Missing initial claim");
+	act(() => {
+		navigation.state.focused = false;
+		for (const listener of navigation.listeners.blur) listener();
+	});
+	expect(first.signal.aborted).toBe(true);
+	await act(async () => {
+		for (const listener of mocks.appState) listener("background");
+		for (const listener of mocks.appState) listener("active");
+		first.answer(reply);
+	});
+	await advancePairingTime(30000);
+	expect(requests).toHaveLength(1);
+	expect(pairingWith(tree)).toBeUndefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	act(() => {
+		navigation.state.focused = true;
+		for (const listener of navigation.listeners.focus) listener();
+	});
+	expect(requests).toHaveLength(2);
+	const resumed = requests[1];
+	if (!resumed) throw new Error("Missing focused claim");
+	expect(resumed.body).toEqual(first.body);
+	expect(mocks.random).toHaveBeenCalledTimes(1);
+	await act(async () => {
+		resumed.answer(reply);
+	});
+	expect(pairingWith(tree)).toBe(invitation.origin);
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await press(tree, "Connect");
+	expect(mocks.saveHub).toHaveBeenCalledExactlyOnceWith({
+		name: "magic-kingdom",
+		origin: invitation.origin,
+		token: TOKEN,
+	});
 });
