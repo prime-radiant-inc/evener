@@ -150,8 +150,7 @@ describe("transcript residency: hydration scheduling", () => {
     await task;
     expect(residency.snapshot().networkHydrations).toBe(1);
     gate.resolve();
-    await residency.settled();
-    expect(residency.snapshot().networkHydrations).toBe(0);
+    await vi.waitFor(() => expect(residency.snapshot().networkHydrations).toBe(0));
     residency.dispose();
   });
 
@@ -167,12 +166,11 @@ describe("transcript residency: hydration scheduling", () => {
     residency.retireClaims();
     await task; // the owner-facing wait is retired synchronously
     first.resolve();
-    await residency.settled();
+    await vi.waitFor(() => expect(residency.snapshot().networkHydrations).toBe(0));
     // The issued request kept its slot until its real promise settled, then the
     // abort re-issued a fresh run.
     residency.releaseClearClaim();
     await vi.waitFor(() => expect(runs.length).toBe(2));
-    await residency.settled();
     residency.dispose();
   });
 
@@ -188,7 +186,6 @@ describe("transcript residency: hydration scheduling", () => {
     residency.dispose();
     await task;
     gate.resolve();
-    await residency.settled();
-    expect(residency.snapshot().networkHydrations).toBe(0);
+    await vi.waitFor(() => expect(residency.snapshot().networkHydrations).toBe(0));
   });
 });
