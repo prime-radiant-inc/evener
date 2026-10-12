@@ -380,17 +380,20 @@ func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 
 func TestMemoryWriteNotesMissingWhen(t *testing.T) {
 	t.Parallel()
-	s, _ := memoryWritesSession(t)
+	s, scope := memoryWritesSession(t)
 	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "---\ndescription: has one\n---\n"})
 	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingWhenNote) {
 		t.Fatalf("%+v", res)
 	}
 	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "b.md", "content": "---\ndescription: has one\nwhen: Writing a commit message\n---\n"})
-	if strings.Contains(res.Output, "\n\n") {
-		t.Fatalf("page with when noted: %q", res.Output)
+	if res.IsError || strings.Contains(res.Output, "\n\n") {
+		t.Fatalf("page with when noted: %+v", res)
+	}
+	if raw, err := os.ReadFile(filepath.Join(scope, "b.md")); err != nil || !strings.Contains(string(raw), "when: Writing a commit message\n") {
+		t.Fatalf("b.md not persisted with its when: %q, %v", raw, err)
 	}
 	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "c.md", "content": "# A heading\n"})
-	if !strings.HasSuffix(res.Output, memoryMissingDescriptionNote) || strings.Contains(res.Output, memoryMissingWhenNote) {
+	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingDescriptionNote) || strings.Contains(res.Output, memoryMissingWhenNote) {
 		t.Fatalf("undescribed page should get only the description note: %q", res.Output)
 	}
 }
