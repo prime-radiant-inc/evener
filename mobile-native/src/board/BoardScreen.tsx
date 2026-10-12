@@ -2026,6 +2026,7 @@ function IdleFold({
 	const dot = folded && unseen;
 	return (
 		<Pressable
+			testID="idle-fold"
 			accessibilityRole="button"
 			accessibilityLabel={`Idle, ${plural(count, "session")}${dot ? ", unread sessions inside" : ""}`}
 			accessibilityState={{ expanded: !folded }}
@@ -2074,7 +2075,7 @@ function FirstReadFailed() {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ paddingHorizontal: 16, paddingVertical: 32 }}>
+		<View testID="empty-state:firstReadFailed" style={{ paddingHorizontal: 16, paddingVertical: 32 }}>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}
@@ -2089,7 +2090,10 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ paddingHorizontal: 16, paddingVertical: 32, alignItems: "center", rowGap: 16 }}>
+		<View
+			testID="empty-state:noSessions"
+			style={{ paddingHorizontal: 16, paddingVertical: 32, alignItems: "center", rowGap: 16 }}
+		>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}

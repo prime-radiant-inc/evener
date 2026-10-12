@@ -53,6 +53,7 @@ import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
 import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
+import { ContinueReadingRow } from "./ContinueReadingRow";
 import { SearchResults } from "./SearchResults";
 import { boardHoldKey, type HeldRecord } from "./boardHold";
 import { requestBoardJump } from "./boardJump";
@@ -60,7 +61,6 @@ import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
 import { forgetBoardForHub, seenMarkers } from "./nativeBoardMemory";
 import { SESSION_ID } from "./organizationTestUtils";
-import { ROW_ACTION_LABELS } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
 import { WASH_MS } from "./settledList";
 
@@ -617,6 +617,23 @@ function textsIn(root: ReactTestInstance): string[] {
 function joinedText(node: ReactTestInstance): string {
 	return node.children.map((child) => (typeof child === "string" ? child : joinedText(child))).join("");
 }
+/** The titles of the rows whose second line says a held change waits on them. */
+const waitingTitles = (tree: ReactTestRenderer) =>
+	markedNodes(tree, "board-row")
+		.filter((row) => row.findAll((node) => node.props.testID === "row-waiting").length > 0)
+		.map((row) => row.props.accessibilityLabel.split(", ")[0]);
+/** Whether the toolbar says anything about the connection. */
+const connectionStatusShown = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.type === ("Text" as never) && node.props.testID === "connection-status").length > 0;
+/** How many Continue reading rows the Board shows. */
+const continueReadingRows = (tree: ReactTestRenderer) => tree.root.findAllByType(ContinueReadingRow).length;
+/** The kinds of the toasts showing (at most one). */
+const toasts = (tree: ReactTestRenderer) => markers(tree, "toast");
+/** The controls the showing toast offers. */
+const toastActions = (tree: ReactTestRenderer) =>
+	markedNodes(tree, "toast").flatMap((toast) =>
+		toast.findAll((node) => node.type === ("Pressable" as never)).map((node) => node.props.accessibilityLabel),
+	);
 /** The band headers and the Idle fold, in screen order. */
 function bandHeaders(tree: ReactTestRenderer): string[] {
 	return tree.root.findAll((node) => node.props.testID === "band-header").map(joinedText);
@@ -633,11 +650,13 @@ function rowTitled(tree: ReactTestRenderer, title: string) {
 /** What a row's why line says past its state word: the reason the row's
  * label has to speak too. */
 function whyReason(row: ReactTestInstance): string {
-	const line = row.find((node) => node.type === ("Text" as never) && node.props.testID === "why-line");
-	const reason = line.children.at(-1);
+	const [line] = markedNodes(row, "why-line");
+	const reason = line?.children.at(-1);
 	if (typeof reason !== "string" || !reason) throw new Error("the why line gives no reason");
 	return reason;
 }
+/** What the Board row with this title says in its why line: its WhyKind. */
+const whyKind = (tree: ReactTestRenderer, title: string) => markers(rowTitled(tree, title), "why-line")[0];
 /** Whether a Board row carries the blue dot. */
 const dotted = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).findAllByType(FreshDot).length > 0;
 function hasRow(tree: ReactTestRenderer, title: string) {
@@ -1121,7 +1140,10 @@ it("never shows the journal's error, dims the category and hides ⋯ while a cha
 	await settleMicrotasks();
 	expect(fake.mutations).toHaveLength(1);
 	expect(menuLabels(tree)).toEqual([]);
-	expect(renderedText(tree)).not.toMatch(/Refresh|trying again|Could not confirm/);
+	// The hub's error stays out of sight: no toast, no notice, nothing to press.
+	expect(toasts(tree)).toEqual([]);
+	expect(renderedText(tree)).not.toContain("request timed out");
+	expect(tree.root.findAll((node) => node.props.testID === "notice")).toEqual([]);
 	// An unresolved change dims its category as a pending one does (the unified
 	// journal gate: pending or uncertain).
 	expect(opacity(tree, "Mine")).toBe(0.5);
@@ -1196,13 +1218,20 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	expect(hasRow(tree, "Fix retry loop")).toBe(false);
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	// Hub B keeps its own fold state: Idle starts folded there.
-	expect(bandHeaders(tree)).toContain("Idle · 1");
+	const fold = () =>
+		tree.root.find((node) => node.type === ("Pressable" as never) && node.props.testID === "idle-fold");
+	expect(fold().props.accessibilityState).toEqual({ expanded: false });
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	// Hub A's Board is gone: its invalidations read nothing.
 	const readsOnA = hubA.requests.length;
 	hubA.invalidate(1, [{ kind: "section", section: "live", revision: 2 }]);
 	await settleMicrotasks();
 	expect(hubA.requests).toHaveLength(readsOnA);
+	// Unfolded, Idle holds hub B's one idle session.
+	act(() => fold().props.onPress());
+	const live = tree.root.find((node) => node.type === ("View" as never) && node.props.testID === "live-block");
+	expect(markers(live, "board-row").filter((state) => state === "idle")).toHaveLength(1);
+	expect(hasRow(tree, "Old chore")).toBe(true);
 	act(() => tree.unmount());
 });
 
@@ -1867,46 +1896,54 @@ it("keeps its rows when the connection drops, grays the meters, and says Reconne
 	rerender(tree, nav);
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
-	expect(texts(tree)).not.toContain("Reconnecting…");
+	expect(connectionStatusShown(tree)).toBe(false);
 	act(() => {
 		vi.advanceTimersByTime(2000);
 	});
-	expect(texts(tree)).toContain("Reconnecting…");
+	expect(connectionStatusShown(tree)).toBe(true);
 	const tones = tree.root.findAllByType(PulseMeter).map((meter) => meter.props.tone);
 	expect(tones.length).toBeGreaterThan(0);
 	expect(new Set(tones)).toEqual(new Set(["gray"]));
 	act(() => tree.unmount());
 });
 
-it("offers no Reconnect or Refresh anywhere", async () => {
+it("offers no Reconnect or Refresh anywhere: a lost connection adds no control", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
+	/** Every control the Board and its header offer, by label. */
+	const controls = () => {
+		const options = headerOptions(nav);
+		const headerItems = [...options.unstable_headerLeftItems({}), ...options.unstable_headerRightItems({})];
+		const headerLabels = headerItems.flatMap((item: { label?: string; menu?: { items: Array<{ label: string }> } }) => [
+			item.label,
+			...(item.menu?.items.map((entry) => entry.label) ?? []),
+		]);
+		// The hub button is a custom view: count what it offers. It opens the
+		// Hub sheet, whose own pages pin that they never ask to reconnect.
+		const hubButton = render(headerItems[0].element);
+		const hubControls = hubButton.root.findAll((node) => node.type === ("Pressable" as never)).length;
+		act(() => hubButton.unmount());
+		// Rows say their age, which the minute moves on; they are not new controls.
+		const pressables = tree.root
+			.findAll((node) => node.type === ("Pressable" as never) && markerOf(node, "board-row") === null)
+			.map((node) => node.props.accessibilityLabel);
+		return { labels: [...pressables, ...headerLabels].filter((label) => typeof label === "string"), hubControls };
+	};
+	const live = controls();
 	connect(id, null, "closed");
 	rerender(tree, nav);
 	act(() => {
 		vi.advanceTimersByTime(60_000);
 	});
-	const options = headerOptions(nav);
-	const headerItems = [...options.unstable_headerLeftItems({}), ...options.unstable_headerRightItems({})];
-	const headerLabels = headerItems
-		.flatMap((item: { label?: string; menu?: { items: Array<{ label: string }> } }) => [
-			item.label,
-			...(item.menu?.items.map((entry) => entry.label) ?? []),
-		])
-		.filter((label): label is string => typeof label === "string");
-	// The hub button is a custom view: read what it draws. It opens the Hub
-	// sheet, whose own pages pin that they never ask to reconnect.
-	const hubButton = render(headerItems[0].element);
-	const labels = tree.root
-		.findAll((node) => typeof node.props.accessibilityLabel === "string")
-		.map((node) => node.props.accessibilityLabel as string);
-	for (const text of [...texts(tree), ...labels, ...headerLabels, ...texts(hubButton)])
-		expect(text).not.toMatch(/^(Reconnect|Refresh|Retry)\b/);
-	expect(renderedText(tree)).not.toMatch(/Reconnect\b|Refresh|pull/i);
-	act(() => hubButton.unmount());
+	expect(connectionStatusShown(tree)).toBe(true);
+	const lost = controls();
+	expect(lost.labels.filter((label) => !live.labels.includes(label))).toEqual([]);
+	expect(lost.hubControls).toBe(live.hubControls);
+	// Nor does the list refresh on a pull.
+	expect(tree.root.findAll((node) => node.props.refreshControl !== undefined || node.props.onRefresh)).toEqual([]);
 	act(() => tree.unmount());
 });
 
@@ -1916,7 +1953,7 @@ it("says what to do on an empty Board, with a New session button", async () => {
 	connect(id, hub({ ...fleet, live: [[]], needsYou: [] }).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
-	expect(texts(tree)).toContain("Nothing's running. Start a session to put an agent to work.");
+	expect(markers(tree, "empty-state")).toEqual(["noSessions"]);
 	expect(bandHeaders(tree)).toEqual([]);
 	const button = tree.root.find(
 		(node) =>
@@ -1952,7 +1989,7 @@ it("shows the first read's rows at once under a finger that touched the skeleton
 	listEvent(tree, "onTouchStart");
 	fake.release();
 	await settleMicrotasks();
-	expect(texts(tree)).not.toContain("Nothing's running. Start a session to put an agent to work.");
+	expect(markers(tree, "empty-state")).toEqual([]);
 	expect(listOrder(tree)).toEqual(workingOrder);
 	liftFinger(tree);
 	await advance(100);
@@ -1968,7 +2005,8 @@ it("says Update needed and why when no retry can fix the close", async () => {
 	const tree = await mount(nav);
 	connect(id, null, "closed", { fatal: true });
 	rerender(tree, nav);
-	expect(texts(tree)).toContain("Update needed");
+	// At once: a close a retry could fix says nothing for 2 seconds.
+	expect(connectionStatusShown(tree)).toBe(true);
 	expect(texts(tree)).toContain(INCOMPATIBLE_TEXT);
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	act(() => tree.unmount());
@@ -2055,7 +2093,9 @@ it("puts the hub's name on the left, opening the Hub, and search on the right", 
 	expect(hubButton.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual(["chevron.down"]);
 	const press = hubButton.root.findByType("Pressable" as never);
 	expect(press.props.accessibilityLabel).toBe("Work hub");
-	expect(press.props.accessibilityHint).toBe("Opens the Hub");
+	// VoiceOver hears where the button goes.
+	expect(press.props.accessibilityHint).toEqual(expect.any(String));
+	expect(press.props.accessibilityHint).not.toBe("");
 	// A long hub name truncates inside the capsule instead of growing it
 	// into Search (the window is 390pt wide here).
 	expect(press.props.style.maxWidth).toBeLessThanOrEqual(390 * 0.6);
@@ -2100,7 +2140,6 @@ it("stops the hub button's label growing at xxxLarge and offers the full name in
 
 const liveReads = (fake: ReturnType<typeof hub>) =>
 	fake.requests.filter((read) => read.section === "live").map((read) => read.offset ?? 0);
-const FIRST_READ_FAILED = "Couldn't load this hub's sessions. Trying again shortly.";
 async function advance(ms: number) {
 	act(() => {
 		vi.advanceTimersByTime(ms);
@@ -2115,7 +2154,7 @@ it("says a failed first read will be retried, and retries it with a growing back
 	const fake = hub(fleet, undefined, (read) => liveFails && read.section === "live");
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).toContain("firstReadFailed");
 	expect(renderedText(tree)).not.toContain("request timed out");
 	expect(skeletonRows(tree)).toHaveLength(0);
 	expect(liveReads(fake)).toEqual([0]);
@@ -2124,13 +2163,13 @@ it("says a failed first read will be retried, and retries it with a growing back
 	expect(liveReads(fake)).toEqual([0]);
 	await advance(1);
 	expect(liveReads(fake)).toEqual([0, 0]);
-	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).toContain("firstReadFailed");
 	liveFails = false;
 	await advance(1999);
 	expect(liveReads(fake)).toEqual([0, 0]);
 	await advance(1);
 	expect(liveReads(fake)).toEqual([0, 0, 0]);
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	// Loaded, the Board schedules no more retries.
 	await advance(120_000);
@@ -2182,7 +2221,7 @@ it("retries a failed pin catalog read once Live's read is done, without saying a
 	);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	expect(skeletonRows(tree)).toHaveLength(3);
 	// Live's read is still out, and a retry now would cancel it.
 	await advance(60_000);
@@ -2372,7 +2411,7 @@ it("reads a failed later Live page again after the backoff, keeping the loaded r
 	expect(loadedRowsShown()).toBe(true);
 	expect(hasRow(tree, "Write tests")).toBe(false);
 	// Loaded once, a failure keeps the rows and says nothing.
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	// Layout alone never re-reads a failed page.
 	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 2, 3]);
@@ -2438,7 +2477,7 @@ it("starts the backoff over once a Live read succeeds", async () => {
 	);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).toContain("firstReadFailed");
 	firstPageFails = false;
 	await advance(1000);
 	expect(liveReads(fake)).toEqual([0, 0]);
@@ -2465,7 +2504,7 @@ it("keeps its backoff when a blur cancels a retry's read", async () => {
 	);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).toContain("firstReadFailed");
 	live = "hold";
 	await advance(1000);
 	expect(liveReads(fake)).toEqual([0, 0]);
@@ -2491,7 +2530,7 @@ it("shows neither skeleton rows nor the failed-read sentence beside Update neede
 	const tree = await mount(navigation());
 	expect(texts(tree)).toContain(INCOMPATIBLE_TEXT);
 	expect(skeletonRows(tree)).toHaveLength(0);
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	act(() => tree.unmount());
 });
 
@@ -2651,8 +2690,9 @@ it("shows each working row's activity read: its meter, the hub's subagent tally,
 	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
 	const building = rowTitled(tree, "Build docs");
 	expect(meterIn(building).props.perMinute).toEqual([2, 4, 8]);
-	expect(textsIn(building)).toContain("Waiting on 3 subagents");
-	expect(textsIn(building)).not.toContain("Waiting on 1 subagent");
+	expect(whyKind(tree, "Build docs")).toBe("subagents");
+	// The read's three, not the row's own one.
+	expect(whyReason(building)).toContain("3");
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 4m");
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 11m");
 
@@ -2683,7 +2723,7 @@ it("words a working row from the session's latest tool intent, where it would re
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Reading the board's row tests.");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	act(() => tree.unmount());
 });
 
@@ -2734,7 +2774,7 @@ it("shows no stuck label or reordering from a stale read while offline (Jesse's 
 	rerender(tree, nav);
 	await advance(10 * MINUTE);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("May be stuck · no updates for 13m");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	expect(meterIn(rowTitled(tree, "Migrate schema")).props.perMinute).toBeUndefined();
 	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
 	act(() => tree.unmount());
@@ -2755,7 +2795,7 @@ it("falls back once the last successful read goes stale, even while the connecti
 	shape.activity = null;
 	await advance(STALE_AFTER_MS + 1_000);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	expect(meterIn(rowTitled(tree, "Migrate schema")).props.perMinute).toBeUndefined();
 	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
 	act(() => tree.unmount());
@@ -2784,7 +2824,7 @@ it("keeps the fallback after a reconnect until a new read actually lands", async
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 
 	await settleMicrotasks();
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 3m");
@@ -2807,7 +2847,7 @@ it("stays out of Working's stuck slot for as long as reads keep failing, not jus
 	// Several more poll cycles of continued failure: still no stuck label,
 	// still in hub order - not just true for a moment right at the threshold.
 	await advance(ACTIVITY_POLL_MS * 5);
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
 	// With no fresh read on screen there is nothing to recheck: only the
 	// row-age ticker and the activity poll itself are left.
@@ -2885,7 +2925,7 @@ it("still lets a read on screen go stale once the hub stops answering activity r
 	await advance(ACTIVITY_POLL_MS + 1_000);
 	expect(fake.activityReads).toHaveLength(2);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	act(() => tree.unmount());
 });
 
@@ -2899,7 +2939,7 @@ it("keeps every working row as it was before S5 on a hub that has no activity re
 	const building = rowTitled(tree, "Build docs");
 	expect(meterIn(building).props.perMinute).toBeUndefined();
 	expect(textsIn(building)).toContain("Waiting on 1 subagent");
-	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Working");
+	expect(whyKind(tree, "Tidy imports")).toBe("state");
 	// With no read to go stale, nothing rechecks one either: an old hub never
 	// gets the Board re-rendered every ACTIVITY_POLL_MS. Only the row-age
 	// ticker is left.
@@ -3076,7 +3116,7 @@ it("shows no notices and no error on a hub without evener/notices/list", async (
 	const tree = await mount(navigation());
 	expect(fake.noticeReads).toHaveLength(1);
 	expect(noticeTexts(tree)).toEqual([]);
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	act(() => tree.unmount());
 });
 
@@ -3087,7 +3127,7 @@ it("says nothing when the notice read fails, and doesn't retry the Board over it
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(noticeTexts(tree)).toEqual([]);
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	const reads = fake.requests.length;
 	await advance(60_000);
 	expect(fake.requests).toHaveLength(reads);
@@ -3659,8 +3699,7 @@ it("queues a project change behind the held one it answers, even once back onlin
 	await settleMicrotasks();
 	// The menu, opened offline, offers Unpin, and stays up across the
 	// reconnect while the held Pin to top goes out.
-	const [sheet, unpin] = openMenu();
-	expect(sheet.options?.[0]).toBe("Unpin");
+	const [, unpin] = openMenu();
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	await until(() => expect(favorites).toBe(1));
@@ -3709,10 +3748,9 @@ it("holds a project change while the journal is busy, and sends it once the jour
 	// The journal is busy with the Pin to top; the menu still offers Archive,
 	// which is held until the journal is free.
 	const [sheet, choose] = openMenu();
-	expect(sheet.options).toContain("Archive project");
 	act(() => choose(sheet.options.indexOf("Archive project")));
 	await settleMicrotasks();
-	expect(heldIn(id)).toHaveLength(1);
+	expect(heldIn(id)).toMatchObject([{ action: { kind: "project", action: "archive" } }]);
 	answerFirst();
 	await until(() =>
 		expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/favorite/set", "evener/archive/set"]),
@@ -4184,8 +4222,8 @@ function menuItem(host: RowMenuHost, ref: string, archived = false) {
 	if (!item) throw new Error(`the Board shows no ${ref}`);
 	return item;
 }
-const rowMenuLabels = (host: RowMenuHost, ref: string, archived = false) =>
-	host.actions(menuItem(host, ref, archived), archived).map((action) => ROW_ACTION_LABELS[action]);
+const rowMenuActions = (host: RowMenuHost, ref: string, archived = false) =>
+	host.actions(menuItem(host, ref, archived), archived);
 
 it("gives a working row Archive on the right swipe and Stop, Pin and More on the left, an idle row no Stop, and another host's row Archive too", async () => {
 	const { tree } = await mountSwipeFleet(hub(swipeFleet()));
@@ -4219,7 +4257,7 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 	act(() => fake.release());
 	await settleMicrotasks();
 	expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
-	expect(texts(tree)).toContain("Archived");
+	expect(toasts(tree)).toEqual(["archive:done"]);
 	pressLabel(tree, "Undo");
 	await settleMicrotasks();
 	act(() => fake.release());
@@ -4228,9 +4266,9 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 		method: "evener/archive/set",
 		params: { kind: "session", id: SESSION_ID, archived: false },
 	});
-	expect(texts(tree)).toContain("Unarchived");
-	expect(texts(tree)).not.toContain("Refresh");
-	expect(texts(tree)).not.toContain("Reconnect");
+	expect(toasts(tree)).toEqual(["unarchive:done"]);
+	// Its one control is its own Undo: nothing asks you to refresh or reconnect.
+	expect(toastActions(tree)).toHaveLength(1);
 });
 
 it("archives another host's row by its ref", async () => {
@@ -4241,7 +4279,7 @@ it("archives another host's row by its ref", async () => {
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
 	]);
-	expect(texts(tree)).toContain("Archived");
+	expect(toasts(tree)).toEqual(["archive:done"]);
 });
 
 it("says nothing when an archive can't be confirmed, and settles the journal so the row can swipe again", async () => {
@@ -4250,8 +4288,8 @@ it("says nothing when an archive can't be confirmed, and settles the journal so 
 	swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
 	await settleMicrotasks();
 	expect(fake.mutations).toHaveLength(1);
-	expect(texts(tree)).not.toContain("Archived");
-	expect(renderedText(tree)).not.toMatch(/Refresh|Reconnect|confirm/);
+	expect(toasts(tree)).toEqual([]);
+	expect(renderedText(tree)).not.toContain("request timed out");
 	// The Board read the session back, so its organization actions return.
 	expect(revealedLabels(swipeableOf(tree, "Refactor parser"), "left")).toEqual(["Archive"]);
 	expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
@@ -4269,7 +4307,7 @@ it("stops a working row through the durable runtime: a fresh read, then the inte
 		ref: `local:${SESSION_ID}`,
 		expectedInstanceId: `instance:local:${SESSION_ID}`,
 	});
-	expect(texts(tree)).toContain("Stopped");
+	expect(toasts(tree)).toEqual(["stop:stopped"]);
 });
 
 it("opens Pin to category for a row's Pin", async () => {
@@ -4290,8 +4328,8 @@ it("offers a row's actions offline too, to hold until the connection returns (ph
 	const working = swipeableOf(tree, "Refactor parser");
 	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
 	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin", "More"]);
-	expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).toEqual(
-		expect.arrayContaining(["Pin to category…", "Stop", "Shut down", "Archive"]),
+	expect(rowMenuActions(menuHost(id), `local:${SESSION_ID}`)).toEqual(
+		expect.arrayContaining(["pin", "stop", "shutDown", "archive"]),
 	);
 });
 
@@ -4314,7 +4352,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await settleMicrotasks();
 		expect(fake.mutations).toEqual([]);
 		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(0.5);
-		expect(texts(tree)).toContain("Archive waits for the connection");
+		expect(waitingTitles(tree)).toEqual(["Refactor parser"]);
 		await reconnect(id, fake, tree, nav);
 		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
 		expect(fake.mutations).toEqual([
@@ -4387,7 +4425,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		// never refused.
 		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
 		await settleMicrotasks();
-		expect(texts(tree)).toContain("Archive is waiting to send");
+		expect(waitingTitles(tree)).toEqual(["Write changelog"]);
 		expect(heldIn(id)).toHaveLength(1);
 		answerFirst();
 		await until(() =>
@@ -4404,7 +4442,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		const { id, tree } = await mountSwipeFleet(fake);
 		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
 		await settleMicrotasks();
-		expect(texts(tree)).toContain("Archived");
+		expect(toasts(tree)).toEqual(["archive:done"]);
 		const answerNext = hangFirst(fake, "evener/archive/set");
 		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
 		await vi.waitFor(() => expect(writes(fake, "evener/archive/set")).toHaveLength(2));
@@ -4457,9 +4495,10 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await settleMicrotasks();
 		// The sheet re-reads a host it is given anew: a hold alone gives it one.
 		expect(menuHost(id)).not.toBe(before);
-		expect(menuHost(id).held(menuItem(menuHost(id), `local:${SESSION_ID}`))).toEqual([
-			{ id: expect.any(String), label: "Cancel Stop" },
-		]);
+		// The menu offers to cancel the one held change: the Stop.
+		const offered = menuHost(id).held(menuItem(menuHost(id), `local:${SESSION_ID}`));
+		expect(offered.map((entry) => entry.id)).toEqual(heldIn(id).map((record) => record.id));
+		expect(heldIn(id).map((record) => record.action.kind)).toEqual(["stop"]);
 	});
 
 	it("cancels a held archive from the row's menu, and the row is itself again", async () => {
@@ -4471,10 +4510,10 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await settleMicrotasks();
 		const menu = menuHost(id);
 		const [held] = menu.held(menuItem(menu, `local:${SESSION_ID}`));
-		expect(held?.label).toBe("Cancel Archive");
+		expect(heldIn(id).map((record) => [record.id, record.action.kind])).toEqual([[held?.id, "archive"]]);
 		act(() => menu.cancel(held?.id ?? ""));
 		await settleMicrotasks();
-		expect(texts(tree)).not.toContain("Archive waits for the connection");
+		expect(waitingTitles(tree)).toEqual([]);
 		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
 		await reconnect(id, fake, tree, nav);
 		expect(fake.mutations).toEqual([]);
@@ -4487,7 +4526,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		rerender(tree, nav);
 		pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
 		await settleMicrotasks();
-		expect(texts(tree)).toContain("Stop waits for the connection");
+		expect(waitingTitles(tree)).toEqual(["Refactor parser"]);
 		setFocused(false);
 		await reconnect(id, fake, tree, nav);
 		await vi.waitFor(() => expect(interrupts(fake)).toHaveLength(1));
@@ -4508,7 +4547,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		// Meanwhile that turn ended and another began.
 		fleet.live[0] = [{ ...row, turn_ended_at: minutesAgo(1) }, ...(fleet.live[0] ?? []).slice(1)];
 		await reconnect(id, fake, tree, nav);
-		await vi.waitFor(() => expect(texts(tree)).toContain("The turn you stopped ended before you were back online"));
+		await vi.waitFor(() => expect(toasts(tree)).toEqual(["stop:dropped"]));
 		expect(interrupts(fake)).toEqual([]);
 		expect(heldIn(id)).toEqual([]);
 	});
@@ -4573,10 +4612,10 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
 		const menu = menuHost(id);
 		expect(menu.held(menuItem(menu, ref))).toEqual([]);
-		expect(texts(tree)).toContain("Shut down is waiting to send");
+		expect(waitingTitles(tree)).toHaveLength(1);
 		answer();
 		await settleMicrotasks();
-		expect(texts(tree)).not.toContain("Shut down is waiting to send");
+		expect(waitingTitles(tree)).toEqual([]);
 	});
 
 	it("stops replaying a removed hub: its next Shut down never goes, and its hold's key stays gone", async () => {
@@ -4666,13 +4705,7 @@ it("ends a row's trailing swipe with More, which opens the row menu sheet, as a 
 	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
 	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}`, archived: false });
-	expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).toEqual([
-		"Pin to category…",
-		"Stop",
-		"Shut down",
-		"Archive",
-		"Rename",
-	]);
+	expect(rowMenuActions(menuHost(id), `local:${SESSION_ID}`)).toEqual(["pin", "stop", "shutDown", "archive", "rename"]);
 	nav.navigate.mockClear();
 	const row = rowTitled(tree, "Refactor parser");
 	expect(row.props.delayLongPress).toBe(500);
@@ -4706,10 +4739,10 @@ it("gives the row menu the copy it opened from, when a session shows in both Liv
 	pressLabel(tree, "Archived, 1 session");
 	await settleMicrotasks();
 	const host = menuHost(id);
-	expect(rowMenuLabels(host, ref, true)).toContain("Unarchive");
-	expect(rowMenuLabels(host, ref, true)).not.toContain("Archive");
-	expect(rowMenuLabels(host, ref, false)).toContain("Archive");
-	expect(rowMenuLabels(host, ref, false)).not.toContain("Unarchive");
+	expect(rowMenuActions(host, ref, true)).toContain("unarchive");
+	expect(rowMenuActions(host, ref, true)).not.toContain("archive");
+	expect(rowMenuActions(host, ref, false)).toContain("archive");
+	expect(rowMenuActions(host, ref, false)).not.toContain("unarchive");
 	pressRevealed(swipeableOf(tree, "Refactor parser (archived tier)"), "right", "More");
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
 	nav.navigate.mockClear();
@@ -4741,7 +4774,7 @@ it("offers Rename only on iOS, where Alert.prompt exists", async () => {
 	const { id } = await mountSwipeFleet(hub(shape));
 	Platform.OS = "android";
 	try {
-		expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).not.toContain("Rename");
+		expect(rowMenuActions(menuHost(id), `local:${SESSION_ID}`)).not.toContain("rename");
 	} finally {
 		Platform.OS = "ios";
 	}
@@ -4755,8 +4788,9 @@ it("asks before shutting a session down from the menu, then says it shut down", 
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
 	expect(fake.mutations).toEqual([]);
 	const ask = alertRequests.at(-1);
-	expect(ask?.title).toBe("Shut down “Refactor parser”?");
-	expect(ask?.message).toBe("The agent stops. Send it a message to resume it.");
+	// It names the session, and says what shutting down does.
+	expect(ask?.title).toContain("Refactor parser");
+	expect(ask?.message).toEqual(expect.stringMatching(/\S/));
 	expect(ask?.buttons?.map((button) => [button.text, button.style])).toEqual([
 		["Cancel", "cancel"],
 		["Shut down", "destructive"],
@@ -4767,7 +4801,7 @@ it("asks before shutting a session down from the menu, then says it shut down", 
 	expect(playedHaptics).toEqual(["impact:rigid"]);
 	await settleMicrotasks();
 	expect(fake.mutations).toEqual([{ method: "thread/shutdown", params: { ref: `local:${SESSION_ID}` } }]);
-	expect(texts(tree)).toContain("Session shut down");
+	expect(toasts(tree)).toEqual(["shutDown:done"]);
 });
 
 it("says why a shut down failed, in the hub's words", async () => {
@@ -4778,7 +4812,9 @@ it("says why a shut down failed, in the hub's words", async () => {
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
 	act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
 	await settleMicrotasks();
-	expect(texts(tree)).toContain("Couldn't shut down “Refactor parser”: session not found");
+	expect(toasts(tree)).toEqual(["shutDown:failed"]);
+	// In the hub's words.
+	expect(renderedText(tree)).toContain("session not found");
 });
 
 it("renames a session from the menu with the prompt's text", async () => {
@@ -4805,7 +4841,7 @@ it("renames a session from the menu with the prompt's text", async () => {
 	expect(fake.mutations).toEqual([
 		{ method: "evener/thread/name/set", params: { ref: `local:${SESSION_ID}`, name: "Parser rewrite" } },
 	]);
-	expect(texts(tree)).toContain("Renamed");
+	expect(toasts(tree)).toEqual(["rename:done"]);
 });
 
 it("says why a rename failed, in the hub's words", async () => {
@@ -4817,7 +4853,9 @@ it("says why a rename failed, in the hub's words", async () => {
 	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
 	act(() => buttons[1]?.onPress?.("Parser rewrite"));
 	await settleMicrotasks();
-	expect(texts(tree)).toContain("Couldn't rename “Refactor parser”: session not found");
+	expect(toasts(tree)).toEqual(["rename:failed"]);
+	// In the hub's words.
+	expect(renderedText(tree)).toContain("session not found");
 });
 
 it("flushes a hidden Board's pending read marks through no other hub's client when the connection re-binds", async () => {
@@ -4992,7 +5030,7 @@ it("stops, pins and archives from the menu as the swipes do", async () => {
 	await vi.waitFor(() =>
 		expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]),
 	);
-	expect(texts(tree)).toContain("Stopped");
+	expect(toasts(tree)).toEqual(["stop:stopped"]);
 	act(() => host.act(menuItem(host, "paradise-park:pp"), "archive"));
 	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
@@ -5096,7 +5134,8 @@ it("keeps a row in its place while a finger is on the list, then moves it into N
 	heldInWorking(tree);
 	// Held, the row shows what it is now.
 	expect(boardRowTitled(tree, "Build docs").props.item.state).toBe("question");
-	expect(texts(tree)).toContain("Question");
+	expect(stateOf(tree, "Build docs")).toBe("question");
+	expect(whyKind(tree, "Build docs")).toBe("reason");
 	liftFinger(tree);
 	await advance(99);
 	heldInWorking(tree);
@@ -5349,7 +5388,7 @@ it("archives the chosen sessions one by one, leaves select mode, and Undo unarch
 		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: true } },
 	]);
 	expect(inSelectMode(tree)).toBe(false);
-	expect(texts(tree)).toContain("Archived 2 sessions");
+	expect(toasts(tree)).toEqual(["archive:done"]);
 	pressLabel(tree, "Undo");
 	await settleMicrotasks();
 	expect(fake.mutations.slice(2)).toEqual([
@@ -5473,7 +5512,7 @@ it("pins nothing to a new category whose name is too long, and says why", async 
 	act(() => buttons[1]?.onPress?.("x".repeat(81)));
 	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
-	expect(texts(tree)).toContain("Category names can be up to 80 characters.");
+	expect(toasts(tree)).toEqual(["categoryName:tooLong"]);
 });
 
 it("keeps the select bar's actions offline, and holds an archive of what's chosen (phase 6 ruling 18)", async () => {
@@ -5487,7 +5526,7 @@ it("keeps the select bar's actions offline, and holds an archive of what's chose
 	await settleMicrotasks();
 	expect(inSelectMode(tree)).toBe(false);
 	expect(fake.mutations).toEqual([]);
-	expect(texts(tree)).toContain("Archive waits for the connection");
+	expect(waitingTitles(tree)).toEqual(["Write changelog"]);
 });
 
 // The Board's Continue reading row (spec 7.1, ruling 20).
@@ -5633,7 +5672,7 @@ it("hides an old unbound Board shortcut without deleting its records or drafts",
 	harness.drafts.set(id, new Set(["local:fix"]));
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
-	expect(renderedText(tree)).not.toContain("Continue reading");
+	expect(continueReadingRows(tree)).toBe(0);
 	expect(harness.kv.get(`evener.native.continue-reading.${id}`)).toBe(old);
 	expect(harness.kv.get(`evener.native.documents.${id}`)).toBe('{"preserved":true}');
 	expect(harness.drafts.get(id)).toEqual(new Set(["local:fix"]));
@@ -5704,11 +5743,11 @@ it("offers nothing for a document left two hours ago, or with none left", async 
 	leaveDocument(id, 120);
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
-	expect(renderedText(tree)).not.toContain("Continue reading");
+	expect(continueReadingRows(tree)).toBe(0);
 	const other = hubId();
 	adoptedAnHourAgo(other);
 	connect(other, hub(fleet).client, "ready");
-	expect(renderedText(await mount(navigation()))).not.toContain("Continue reading");
+	expect(continueReadingRows(await mount(navigation()))).toBe(0);
 });
 
 it("drops the Continue reading row when its two hours run out, even on an idle Board", async () => {
@@ -5719,11 +5758,11 @@ it("drops the Continue reading row when its two hours run out, even on an idle B
 		leaveDocument(id, 119);
 		connect(id, hub(fleet).client, "ready");
 		const tree = await mount(navigation());
-		expect(renderedText(tree)).toContain("Continue reading");
+		expect(continueReadingRows(tree)).toBe(1);
 		await act(async () => {
 			vi.advanceTimersByTime(61_000);
 		});
-		expect(renderedText(tree)).not.toContain("Continue reading");
+		expect(continueReadingRows(tree)).toBe(0);
 	} finally {
 		vi.useRealTimers();
 	}

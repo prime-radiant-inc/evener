@@ -382,12 +382,13 @@ function Wash() {
 /** A row's why line (spec 7.2): the state's word in its hue, when it has
  * one, then the reason. */
 export function WhyText({
-	testID = "why-line",
+	testID,
 	why,
 	numberOfLines,
 	marginTop,
 }: {
-	/** "why-line", or "row-waiting" for the line a held change puts in its place. */
+	/** `why-line:<kind>` by default; "row-waiting" for the line a held change
+	 * puts in its place. */
 	testID?: string;
 	why: WhyLine;
 	numberOfLines?: number;
@@ -397,7 +398,7 @@ export function WhyText({
 	const scale = useTextScale();
 	return (
 		<Text
-			testID={testID}
+			testID={testID ?? `why-line:${why.kind}`}
 			allowFontScaling={allowFontScaling}
 			numberOfLines={numberOfLines}
 			ellipsizeMode="tail"
