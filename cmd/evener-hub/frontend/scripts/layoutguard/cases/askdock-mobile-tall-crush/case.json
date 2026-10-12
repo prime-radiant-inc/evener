@@ -9,9 +9,9 @@
     "panes/session/composer/askDock/askdock.module.css"
   ],
   "mutation": {
-    "declaration": "askquestioncard.module.css: .option { overflow-wrap: break-word } - reverting it lets the harness's unbroken-token label escape the card horizontally (assertion B)",
-    "verified": "2026-09-03",
+    "declaration": "askquestioncard.module.css: .optionRow { overflow-wrap: break-word } - reverting it lets the harness's unbroken-token label escape the card horizontally (assertion B)",
+    "verified": "2026-10-12",
     "expect": "fail",
-    "note": "The previous mutation target (askdock.module.css's .dock containment pair) was removed with the footer-anchored design: the dock is the transcript's trailing row now, so containment comes from the transcript scroller, not the dock. The label assertions stay structural to the inline-flow .option layout; the unbroken-token label is what makes this declaration's removal observable."
+    "note": "The previous mutation target (askdock.module.css's .dock containment pair) was removed with the footer-anchored design: the dock is the transcript's trailing row now, so containment comes from the transcript scroller, not the dock. The label assertions stay structural to the inline-flow .optionRow layout; the unbroken-token label is what makes this declaration's removal observable."
   }
 }

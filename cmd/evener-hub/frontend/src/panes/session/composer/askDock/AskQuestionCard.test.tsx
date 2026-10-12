@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AskQuestionRef } from "@evener/appwire-client";
@@ -96,8 +96,8 @@ test("option labels render as bold inline text, keeping the full label available
   expect(labelEl?.textContent).toBe(label);
 
   const css = cardCss();
-  const rule = css.match(/\.optionLabel\s*\{([^}]*)\}/);
-  expect(rule, "askquestioncard.module.css must declare an .optionLabel rule").not.toBeNull();
+  const rule = css.match(/\.optionName\s*\{([^}]*)\}/);
+  expect(rule, "askquestioncard.module.css must declare an .optionName rule").not.toBeNull();
   expect(rule![1]).toMatch(/font-weight:\s*var\(--font-weight-semibold\)/);
   // The pill treatment is gone entirely - no chip wrapper class remains.
   expect(css).not.toContain(".optionChip");
@@ -321,15 +321,44 @@ test("options render inside a group whose role reflects single vs multi select",
 // own .tab rule) grows short rows the rest of the way to --tap-min on touch.
 test("every option row gets comfortable padding, and reaches the tap floor on a coarse pointer", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askquestioncard.module.css"), "utf8");
-  const desktopRule = css.match(/\.option\s*\{([^}]*)\}/);
-  expect(desktopRule, "askquestioncard.module.css must declare a base .option rule").not.toBeNull();
+  const desktopRule = css.match(/\.optionRow\s*\{([^}]*)\}/);
+  expect(desktopRule, "askquestioncard.module.css must declare a base .optionRow rule").not.toBeNull();
   expect(desktopRule![1]).toMatch(/padding:/);
 
   const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
   expect(coarse, "askquestioncard.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
-  const rule = coarse![1]!.match(/\.option\s*\{([^}]*)\}/);
-  expect(rule, "the coarse-pointer block must override .option").not.toBeNull();
+  const rule = coarse![1]!.match(/\.optionRow\s*\{([^}]*)\}/);
+  expect(rule, "the coarse-pointer block must override .optionRow").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
+});
+
+// layoutguard harnesses load module CSS unscoped, so an askDock class that
+// shares a name with a widget's (PaneScaffold's .header, RadioGroup's .option)
+// would restyle the widget, or be restyled by it, in any harness loading both.
+function moduleClassNames(path: string): Set<string> {
+  const css = readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  return new Set([...css.matchAll(/\.([A-Za-z_][\w-]*)/g)].map((match) => match[1]!));
+}
+
+test("the askDock modules share no class name with any widget module", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const widgetsDir = join(here, "../../../../widgets");
+  const widgetClasses = new Map<string, string>();
+  // Every widget's stylesheet sits in its own directory: widgets/<name>/<name>.module.css.
+  for (const widget of readdirSync(widgetsDir, { withFileTypes: true })) {
+    if (!widget.isDirectory()) continue;
+    for (const file of readdirSync(join(widgetsDir, widget.name), { withFileTypes: true })) {
+      if (!file.name.endsWith(".module.css")) continue;
+      const entry = `${widget.name}/${file.name}`;
+      for (const name of moduleClassNames(join(widgetsDir, entry))) widgetClasses.set(name, entry);
+    }
+  }
+  const collisions = ["askquestioncard.module.css", "askdock.module.css"].flatMap((file) =>
+    [...moduleClassNames(join(here, file))]
+      .filter((name) => widgetClasses.has(name))
+      .map((name) => `${file} .${name} (also ${widgetClasses.get(name)})`),
+  );
+  expect(collisions).toEqual([]);
 });
 
 // The dock is a virtualized transcript row (Session.tsx), so scrolling away

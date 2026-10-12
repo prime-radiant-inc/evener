@@ -775,7 +775,7 @@ test("a pathList field rejects a path already in the list", async () => {
 // this file's own header comment) measured 127x24, low-contrast next to the
 // 48px rows around it. Comfortable desktop padding plus a (any-pointer: coarse)
 // tap floor, same pattern as askdock.module.css's own .tab rule and
-// askquestioncard.module.css's own .option rule.
+// askquestioncard.module.css's own .optionRow rule.
 test("the Advanced options toggle gets comfortable padding and reaches the tap floor on a coarse pointer", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "advancedOptions.module.css"), "utf8");
   const desktopRule = css.match(/\.toggle\s*\{([^}]*)\}/);

@@ -91,7 +91,7 @@
         <div class="question" data-ask-question>
           <div class="head">
             <span class="num">1.</span>
-            <span class="header">Cleanup</span>
+            <span class="questionHeader">Cleanup</span>
           </div>
           <div class="questionText">
             The merge (a323417b7) is in and this change's tests pass 342/342 on the merged checkout, but another
@@ -99,35 +99,35 @@
             load avg 101). How should I finish?
           </div>
           <div class="why">Decides whether the worktree and branch are retired now or after a clean full-suite confirmation.</div>
-          <div class="options" role="radiogroup">
-            <label class="option">
+          <div class="optionGroup" role="radiogroup">
+            <label class="optionRow">
               <input type="radio" name="g" checked>
-              <span class="optionLabel">Wait for green</span>
+              <span class="optionName">Wait for green</span>
               <span class="optionRecommended">· recommended</span>
               <span class="optionDetail">The background run (reduced workers, 1h cap) is going now. I retire the worktree and delete tasklist-checklist-card only after it comes back green — the by-the-book finish.</span>
             </label>
-            <label class="option">
+            <label class="optionRow">
               <input type="radio" name="g">
-              <span class="optionLabel">Finish cleanup now</span>
+              <span class="optionName">Finish cleanup now</span>
               <span class="optionDetail">Retire the worktree and delete the branch now. Justification: identical branch content passed the full suite 5291/5291 pre-merge, the merge was conflict-free, and all 342 tests covering this change pass on the merged checkout. The merge commit stays either way.</span>
             </label>
-            <label class="option">
+            <label class="optionRow">
               <input type="radio" name="g">
-              <span class="optionLabel">I'll quiet the other session</span>
+              <span class="optionName">I'll quiet the other session</span>
               <span class="optionDetail">The kata-flake session's vitest farm (load avg 101) is the interference. If you stop it, I re-run the full suite on a quiet machine and finish normally.</span>
             </label>
-            <label class="option">
+            <label class="optionRow">
               <input type="radio" name="g">
-              <span class="optionLabel">A deliberately long valid option label that must wrap onto as many lines as it needs without escaping the card</span>
+              <span class="optionName">A deliberately long valid option label that must wrap onto as many lines as it needs without escaping the card</span>
               <span class="optionDetail">The option label is valid content, not a reason for the card or pane to overflow.</span>
             </label>
-            <label class="option">
+            <label class="optionRow">
               <input type="radio" name="g">
               <!-- An UNBROKEN over-long token (a pasted commit-range string):
-                   askquestioncard.module.css's .option { overflow-wrap:
+                   askquestioncard.module.css's .optionRow { overflow-wrap:
                    break-word } is the one declaration keeping this inside
                    the card - the case's mutation target. -->
-              <span class="optionLabel">cherry-pick-a323417b7c9d2e4f6a8b0c1d3e5f7a9b1c3d5e7f9-onto-release/1.4</span>
+              <span class="optionName">cherry-pick-a323417b7c9d2e4f6a8b0c1d3e5f7a9b1c3d5e7f9-onto-release/1.4</span>
               <span class="optionDetail">Model-provided labels can carry unbroken tokens; they must wrap too.</span>
             </label>
             <div class="alternativeRow">
@@ -184,8 +184,8 @@ window.measure = function () {
   const sendButton = document.getElementById("send-button");
   const cardRect = rectOf(card);
 
-  const options = Array.from(document.querySelectorAll(".option")).map((option) => {
-    const label = option.querySelector(".optionLabel");
+  const options = Array.from(document.querySelectorAll(".optionRow")).map((option) => {
+    const label = option.querySelector(".optionName");
     const detail = option.querySelector(".optionDetail");
     const labelBoxes = lineBoxesOf(label);
     const detailBoxes = lineBoxesOf(detail);
