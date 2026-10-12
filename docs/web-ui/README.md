@@ -7,6 +7,13 @@ Design documentation for the web hub (`cmd/evener-hub`).
 - **[Composer drafts](composer-drafts.md)** — IndexedDB draft authority, retained
   source lifetime, retry owners and guarded ordinary/recovered submission cleanup.
   This current contract supersedes the historical parity checklist's localStorage claims.
+- **[Document annotations](../../cmd/evener-hub/frontend/scripts/documentannotationguard/README.md)** —
+  the browser checks for the document reader: a genuine selection and comment
+  Send that appends the exact literal reference to the original session's
+  composer draft, saved-note access from its highlight, the clipped highlight
+  geometry, the native IndexedDB reopen with unrelated drafts preserved, and the
+  small production-component cases for resize, nested scroll, selection, Copy,
+  access and the visible comment controls.
 - **[Session activity](../product/session-activity.md)** — ownership of scoped
   delegate, shell-job and watch reads, compact navigation, pagination and shared
   recovery. Use this contract when changing activity surfaces or subscriptions.

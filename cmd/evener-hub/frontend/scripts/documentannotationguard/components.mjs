@@ -9,17 +9,13 @@
 //                           resize) reflows the text; the saved highlight's
 //                           PAINTED EXTENT must follow the browser's own text
 //                           ranges within a one-pixel tolerance, and the
-//                           SELECTED GLYPHS must remain visible. CURRENT
-//                           product paints stale geometry AND its opaque band
-//                           hides the prose, so this case is RED.
+//                           SELECTED GLYPHS must remain visible.
 //   case nested-scroll    - a genuine wheel over a pending reference nested in a
 //                           long scrollable note stack must scroll THAT
 //                           reference, leave the outer stack and document
 //                           unmoved, and not cancel the wheel. The outer stack
 //                           must also reach its independently computed maximum
-//                           through genuine wheel input. CURRENT product's
-//                           outer handler steals the nested wheel, so this case
-//                           is RED.
+//                           through genuine wheel input.
 //   case selection        - genuine forward and reverse drags across a saved band.
 //   case selection-shift  - genuine Shift+Arrow adjustment of the selection.
 //   case copy             - genuine Ctrl+C, read back at the clipboard boundary.
@@ -29,11 +25,13 @@
 //   case comment-controls - controls inside the real footer/pane/viewport clips
 //                           and a long saved note that really wraps and stays reachable.
 //
-// Product RED is expected at this checkpoint; harness/import/launch/timeout
-// failures are reported separately and are NOT product RED. See
-// ../browser-test-redesign/unit-1-report.md for scope, evidence and the
-// mutation each check answers to.
-import { mkdirSync, writeFileSync } from "node:fs";
+// Every case is expected-pass now that the pane-resize and nested-scroll
+// defects are fixed; a harness/import/launch/timeout failure is reported
+// separately and is NOT a product failure. See
+// ../browser-test-redesign/unit-1-report.md for scope and the mutation each
+// check answers to.
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -79,10 +77,13 @@ import {
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REPO = path.resolve(FRONTEND, "..", "..", "..");
-const EVIDENCE = path.join(
-  REPO,
-  ".superpowers/sdd/2026-10-05-markdown-document-annotations-browser/browser-test-redesign/unit-1-fix-2-evidence",
-);
+// Where this run's receipts go. A gate run must never write into the repository
+// or `.superpowers/`, so the default is a fresh temporary directory; set
+// DOCUMENTANNOTATIONGUARD_EVIDENCE_DIR to keep a run's receipts somewhere
+// specific.
+const EVIDENCE =
+  process.env.DOCUMENTANNOTATIONGUARD_EVIDENCE_DIR ??
+  mkdtempSync(path.join(os.tmpdir(), "documentannotationguard-components-"));
 
 const VIEWPORT = { width: 1300, height: 2600 };
 const PAINT_TOLERANCE = 10; // max per-channel difference that still counts as "same color"
@@ -431,6 +432,12 @@ async function caseNestedScroll(send, record) {
     described ? `${q(described.nodeData)} selecting ${q(described.text)}` : "missing",
   );
   const points = dragPoints(described);
+  // The reading position immediately before the reveal click, so the click's
+  // own movement is bounded without any helper repairing it.
+  const revealPositionBefore = await evaluate(
+    send,
+    `(() => { const o = document.querySelector('[data-case="${id}"] [data-pane-scaffold]'); return o ? o.scrollTop : null; })()`,
+  );
   await mouseClick(send, points.start.x, points.start.y);
 
   const revealed = await settle(
@@ -439,6 +446,17 @@ async function caseNestedScroll(send, record) {
     { label: "three overlapping notes revealed" },
   );
   check(revealed.value >= 3, "nested-scroll: hovering the touched passage reveals every overlapping note", `revealed ${revealed.value}`);
+  const revealPositionAfter = await evaluate(
+    send,
+    `(() => { const o = document.querySelector('[data-case="${id}"] [data-pane-scaffold]'); return o ? o.scrollTop : null; })()`,
+  );
+  require_(
+    findings,
+    revealPositionBefore !== null && revealPositionAfter === revealPositionBefore,
+    "reveal-position",
+    "the reveal click does not move the reading position",
+    `scrollTop ${revealPositionAfter} vs ${revealPositionBefore}`,
+  );
 
   const setup = await evaluate(
     send,
@@ -765,23 +783,25 @@ async function overlapAccessCase(send, record, ctx) {
   const findings = [];
   const evidence = {};
 
-  for (const kind of ["hover", "keyboard", "touch"]) {
-    let touchBaseline = null;
-    if (kind === "touch") {
+  for (const kind of ["hover", "keyboard", "click", "touch"]) {
+    let neutralBaseline = null;
+    if (kind === "click" || kind === "touch") {
       // Production's annotation pointer handlers only record the hit and update
       // reveal state; they do not focus or cancel default behavior. Establish
-      // the browser's ordinary focus transition with an equivalent emulated tap
-      // on unannotated prose in this same production pane, from a fresh load.
+      // the browser's ordinary focus transition with an equivalent genuine input
+      // on unannotated prose in this same production pane, from a fresh load: a
+      // real click for click, an emulated tap for touch. The annotation
+      // transition must start and end on the same actual active element.
       await ctx.reload();
       await settle(send, `document.querySelectorAll('[data-case="${id}"] [data-document-highlight]').length > 0`, {
-        label: "touch baseline: overlap bands painted",
+        label: `${kind} baseline: overlap bands painted`,
       });
       const neutral = await describeLiteral(send, id, OVERLAP_FIRST, OVERLAP_NEUTRAL_RANGE);
       require_(
         findings,
         !!neutral && neutral.clipped.length > 0,
-        "touch-baseline-surface",
-        "the equivalent neutral touch surface is rendered from the fixture range",
+        `${kind}-baseline-surface`,
+        `the equivalent neutral ${kind} surface is rendered from the fixture range`,
         neutral ? `fragments ${neutral.clipped.length}` : "missing",
       );
       if (neutral && neutral.clipped.length > 0) {
@@ -791,23 +811,27 @@ async function overlapAccessCase(send, record, ctx) {
           y: neutralPoints.start.y,
         };
         const baselineBefore = await accessState(send, id);
-        await emulatedTouchTap(send, neutralCenter);
+        if (kind === "touch") {
+          await emulatedTouchTap(send, neutralCenter);
+        } else {
+          await mouseClick(send, neutralCenter.x, neutralCenter.y);
+        }
         const baselineAfter = await accessState(send, id);
         require_(
           findings,
           baselineAfter.noteCount === 0,
-          "touch-baseline-neutral",
-          "an equivalent touch on unannotated prose reveals no annotation",
+          `${kind}-baseline-neutral`,
+          `an equivalent neutral ${kind} on unannotated prose reveals no annotation`,
           `notes ${baselineAfter.noteCount}`,
         );
         require_(
           findings,
           baselineAfter.scrollTop === baselineBefore.scrollTop,
-          "touch-baseline-position",
-          "the neutral touch does not move the reading position",
+          `${kind}-baseline-position`,
+          `the neutral ${kind} does not move the reading position`,
           `scrollTop ${baselineAfter.scrollTop} vs ${baselineBefore.scrollTop}`,
         );
-        touchBaseline = { before: baselineBefore, after: baselineAfter };
+        neutralBaseline = { before: baselineBefore, after: baselineAfter };
       }
     }
 
@@ -854,6 +878,11 @@ async function overlapAccessCase(send, record, ctx) {
         "real Tab reaches a saved-note band button inside this case",
         `focus ${q(focused && { tag: focused.activeTag, inCase: focused.activeInCase, inBand: focused.activeInBand })}`,
       );
+    } else if (kind === "click") {
+      // A genuine click at the band's coordinates: bands are pointer-events:none,
+      // so the click lands on the prose beneath and reveal is resolved from the
+      // pointer's coordinates.
+      await mouseClick(send, center.x, center.y);
     } else {
       await emulatedTouchTap(send, center);
     }
@@ -897,17 +926,17 @@ async function overlapAccessCase(send, record, ctx) {
     } else {
       require_(
         findings,
-        !!touchBaseline && before.activeKey === touchBaseline.before.activeKey,
-        "touch-focus-start",
-        "the annotation touch starts from the same active element as the neutral touch",
-        `annotation ${before.activeKey}, neutral ${touchBaseline?.before.activeKey ?? "missing"}`,
+        !!neutralBaseline && before.activeKey === neutralBaseline.before.activeKey,
+        `${kind}-focus-start`,
+        `the annotation ${kind} starts from the same active element as the neutral ${kind}`,
+        `annotation ${before.activeKey}, neutral ${neutralBaseline?.before.activeKey ?? "missing"}`,
       );
       require_(
         findings,
-        !!touchBaseline && after.activeKey === touchBaseline.after.activeKey,
-        "touch-focus-preserved",
-        "the annotation touch leaves the same actual active element as the equivalent neutral touch",
-        `annotation ${after.activeKey}, neutral ${touchBaseline?.after.activeKey ?? "missing"}`,
+        !!neutralBaseline && after.activeKey === neutralBaseline.after.activeKey,
+        `${kind}-focus-preserved`,
+        `the annotation ${kind} leaves the same actual active element as the equivalent neutral ${kind}`,
+        `annotation ${after.activeKey}, neutral ${neutralBaseline?.after.activeKey ?? "missing"}`,
       );
     }
     require_(
@@ -920,7 +949,7 @@ async function overlapAccessCase(send, record, ctx) {
     evidence[kind] = {
       before,
       after,
-      baseline: touchBaseline,
+      baseline: neutralBaseline,
       revealed: revealed.value,
       touch: kind === "touch" ? "emulated tap; not physical-phone behavior" : undefined,
     };
@@ -1006,8 +1035,8 @@ async function commentControlsCase(send, record) {
 }
 
 const CASES = [
-  { name: "pane-resize", expects: "RED", run: casePaneResize },
-  { name: "nested-scroll", expects: "RED", run: caseNestedScroll },
+  { name: "pane-resize", expects: "PASS", run: casePaneResize },
+  { name: "nested-scroll", expects: "PASS", run: caseNestedScroll },
   { name: "selection", expects: "PASS", run: selectionCase },
   { name: "selection-shift", expects: "PASS", run: selectionShiftCase },
   { name: "copy", expects: "PASS", run: copyCase },
@@ -1108,7 +1137,8 @@ async function main() {
       console.log(
         `\ndocumentannotationguard: ${results.length - red.length}/${results.length} cases passed; ` +
           `${red.length} failed (${red.map((result) => result.name).join(", ") || "none"}); ` +
-          `${unexpected.length} unexpected against the RED checkpoint.`,
+          `${unexpected.length} unexpected against the expected verdicts. ` +
+          `evidence: ${EVIDENCE}`,
       );
       process.exitCode = red.length > 0 ? 1 : 0;
     } finally {

@@ -37,16 +37,19 @@ export function noteStackContained({ paneRect, scrollRect }, stackRect, toleranc
   return rectInside(scrollRect, stackRect, tolerance);
 }
 
-// The READABLE text of a marker is visible only when the clip itself has
-// positive area and EVERY positive-area fragment of the marker's own DOM Range
-// lies fully inside that clip, within the existing 1px tolerance. Mere
-// intersection is not enough: a sliver of one fragment inside the clip, or a
-// wrapped marker with one offscreen fragment, is REJECTED, as is a zero-area or
-// inverted clip. The tall note itself is never constrained this way - only its
-// short beginning/end marker fragments must fit.
-export function markerVisible(clip, fragments, tolerance = 1) {
-  if (!rectHasArea(clip)) return false;
-  const visible = fragments.filter(rectHasArea);
-  if (visible.length === 0) return false;
-  return visible.every((fragment) => rectInside(clip, fragment, tolerance));
-}
+// The real durable-storage store list the driver reads through `readStorage`. It
+// is the collection obligation the browser journey's native IndexedDB read must
+// honor. It omits `annotationNamespaces`; adding that store is a separately
+// granted runtime change, not this unit.
+export const STORES = [
+  "composerDrafts",
+  "annotationPayloads",
+  "annotationOperations",
+  "annotationHeads",
+  "annotationEvidence",
+  "annotationSequences",
+  "outbox",
+  "optimistic",
+  "recovery",
+  "sequences",
+];
