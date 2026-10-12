@@ -20,13 +20,58 @@ func callIDFromContext(ctx context.Context) string {
 	return callID
 }
 
-func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
+// registerCommunicateTool registers the session's result tool under its
+// configured name, refusing a name this session cannot own (issue #4218:
+// `--result-tool-name` could name a native tool and leave the session with no
+// usable result tool).
+//
+// Callers register it LAST, after every other intrinsic tool, so the live
+// registry — not a hand-maintained list that drifts as tools are added — is the
+// oracle. Two collisions are possible:
+//
+//   - Another registered tool already holds the name. The profile-definition
+//     adoption below and tool.Registry.Register's silent overwrite would give
+//     the session a result tool with that tool's parameters and executor.
+//   - The name is a registered tool's provider-visible alias. rebuildToolDefsCache
+//     drops a registry tool whose wire name is already advertised, so the
+//     result tool would never be advertised at all.
+//   - The name is ask_user, whose behavior is keyed on the name string rather
+//     than the registration: tool.Registry.executeCall normalizes arguments by
+//     the call's name, and restore keys ask semantics on "ask_user" results.
+//   - The name is in the memory_ namespace while this session has no memory.
+//     filterUnavailableMemoryTools removes every memory_-prefixed name by
+//     prefix, so even a name no tool currently holds — memory_future, say —
+//     would be stripped after registration.
+//
+// The default name is exempt: adopting the profile's communicate definition,
+// which is always named tool.DefaultResultToolName, is the point.
+func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
+	resultToolName := deps.resultToolName()
+	if resultToolName != tool.DefaultResultToolName {
+		if reg.Get(resultToolName) != nil {
+			return fmt.Errorf("cannot use result tool name %q: an Evener tool of that name is already registered; choose a different --result-tool-name", resultToolName)
+		}
+		if deps.nativeWebSearch && resultToolName == "web_search" {
+			return fmt.Errorf("cannot use result tool name %q: the provider's own web search tool uses that name for this profile; choose a different --result-tool-name", resultToolName)
+		}
+		for canonical, wire := range deps.toolNameMap {
+			if wire == resultToolName && reg.Get(canonical) != nil {
+				return fmt.Errorf("cannot use result tool name %q: it is this session's provider-visible name for Evener's %q tool; choose a different --result-tool-name", resultToolName, canonical)
+			}
+		}
+		if resultToolName == askUserToolName {
+			return fmt.Errorf("cannot use result tool name %q: that name is reserved for the ask_user question tool; choose a different --result-tool-name", resultToolName)
+		}
+		if deps.memoryToolsStripped && strings.HasPrefix(resultToolName, "memory_") {
+			return fmt.Errorf("cannot use result tool name %q: this session has no memory namespace, so every memory_-prefixed tool name is removed; choose a different --result-tool-name", resultToolName)
+		}
+	}
 	// communicate is the only user-facing message channel.
 	// Use the profile's definition if available (it may have been modified by
 	// WithAllowedDecisions to add extra fields to the output schema).
 	// Fall back to the base definition otherwise.
-	resultToolDef := tool.DefCommunicateNamed(deps.resultToolName())
-	if existing := reg.Get(deps.resultToolName()); existing != nil {
+	resultToolDef := tool.DefCommunicateNamed(resultToolName)
+	if existing := reg.Get(resultToolName); existing != nil {
 		resultToolDef = existing.Definition
 	}
 	if deps.offersEndReason {
@@ -172,6 +217,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			return string(b), nil
 		},
 	})
+	return nil
 }
 
 // communicateEndState is the tool state of the turn-ending communicate call

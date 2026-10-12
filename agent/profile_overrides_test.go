@@ -130,7 +130,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 		resultToolName:         func() string { return "communicate" },
 		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
 	}
-	registerCommunicateTool(reg, deps)
+	_ = registerCommunicateTool(reg, deps)
 
 	final := reg.Get("communicate")
 	if final == nil {

@@ -1,4 +1,3 @@
-import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, InlineNotice, PropertyList, Skeleton } from "../../../widgets";
@@ -44,10 +43,7 @@ export function HubSection() {
           </Button>
         }
       >
-        {/* friendlyErrorMessage, not the raw store error - see general.tsx's
-            matching comment for why (settingsOverview.ts stores errorText(err)
-            verbatim, including AppwireClient's own internal-wiring text). */}
-        {friendlyErrorMessage(error)}
+        {error}
       </InlineNotice>
     );
   }

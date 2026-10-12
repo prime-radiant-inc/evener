@@ -229,7 +229,12 @@ The bundled `gardening-memory` skill is explicitly activated through
 contradictions, remove duplicates, split sprawling pages, fix descriptions and
 tags, merge pages that share tags, delete stale pages, and remove recorded
 approvals, plan status and progress while keeping any durable fact on the same
-page. It does not activate automatically or run background work.
+page. It does not activate automatically or run background work. It is
+advertised in a session's skill catalog, and loads, only while the session can
+save memory: a delegate, a `--disable-memory` session, or a root whose profile
+denies a save tool does not list it in its skill catalog and cannot activate
+it, and a refusal fails visibly instead of delivering instructions the session
+cannot follow.
 
 ## Generated index
 
@@ -469,8 +474,9 @@ deletion. Reopening the same project identity sees its surviving files.
 `--disable-memory` defaults to false on `evener` and `evener serve`. Disabled
 sessions expose no native memory tools, add no automatic memory guidance or
 index context, and perform no native wiki I/O. Ordinary tools, skills and
-session notes remain available. Loading `gardening-memory` does not grant a
-disabled session memory capability.
+session notes remain available; `gardening-memory` is not among them, because a
+disabled session cannot save memory and so neither sees it in its catalog nor
+loads it, exactly like a delegate or a root whose profile denies a save tool.
 
 The choice is sticky across resume and compaction. Omitting the flag on resume
 preserves it; passing the flag can additionally disable an enabled session.

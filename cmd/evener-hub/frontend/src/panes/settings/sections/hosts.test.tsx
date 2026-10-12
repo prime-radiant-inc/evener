@@ -1,4 +1,5 @@
 import {
+  friendlyErrorMessage,
   type HostPlan,
   type HostRow,
   type OperationRecord,
@@ -440,6 +441,35 @@ test("load failure shows retry", async () => {
     expect(hostsStore.getState().load.phase).toBe("error");
   });
   expect(statusReasons(document.body)).toEqual(["unavailable"]);
+});
+
+// A hub-reported failure keeps its own explanation: the store translates the
+// error while it is still a WireError, so the notice is not reduced to the
+// generic fallback.
+test("a hub-reported WireError load failure shows that error's friendly form", async () => {
+  const fake = connectFakeClient();
+  const err = new WireError("host registry is rebuilding", -32000);
+  fake.on("evener/host/list", () => {
+    throw err;
+  });
+  render(<HostsSection sectionId="hosts" />);
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  const notice = document.querySelector('[role="status"][data-reason="unavailable"]');
+  expect(notice?.textContent).toContain(friendlyErrorMessage(err));
+});
+
+// A client-unreachable rejection's own text is AppwireClient's wiring detail;
+// the store keeps only its friendly form.
+test("a client-unreachable load failure never shows the client's raw wiring message", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => {
+    throw new Error('AppwireClient: cannot call "evener/host/list" while state is "closed"');
+  });
+  render(<HostsSection sectionId="hosts" />);
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  const notice = document.querySelector('[role="status"][data-reason="unavailable"]');
+  expect(notice?.textContent).toMatch(/\S/);
+  expect(screen.queryByText(/AppwireClient/i)).toBeNull();
 });
 
 test("a server-side mid-attach row settles via the poll: in-progress -> failed re-enables Connect", async () => {

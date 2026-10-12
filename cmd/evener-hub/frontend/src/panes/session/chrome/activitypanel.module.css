@@ -19,7 +19,7 @@
   color: var(--ink-hi);
 }
 
-.panel {
+.activityPanel {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);

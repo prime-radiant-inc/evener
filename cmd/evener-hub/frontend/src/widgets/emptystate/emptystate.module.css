@@ -7,7 +7,7 @@
   text-align: center;
 }
 
-.title {
+.emptyTitle {
   margin: 0;
   color: var(--ink-hi);
   font-family: var(--font-prose);
@@ -54,7 +54,7 @@
   text-align: start;
 }
 
-.compact .title {
+.compact .emptyTitle {
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);

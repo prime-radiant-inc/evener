@@ -1,4 +1,3 @@
-import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { CodeBlock, Disclosure } from "../../../widgets";
@@ -51,9 +50,8 @@ export { MIT_LICENSE_TEXT };
  * second request - hub.version/hub.commit are the same fields General's own
  * "Hub version" row shows. Unlike General, a failed or not-yet-connected
  * fetch isn't fatal here: the credits below don't depend on the hub at all,
- * so only the identity line degrades (to a bare "evener hub", no raw error
- * text - friendlyErrorMessage only feeds the dim caption, never the store's
- * raw message).
+ * so only the identity line degrades (to a bare "evener hub", with the
+ * store's already-friendly error in the dim caption).
  */
 export function AboutSection() {
   const data = useSettingsOverviewStore((s) => s.data);
@@ -74,7 +72,7 @@ export function AboutSection() {
       </p>
       {hub?.version === undefined && data === null && error !== null && (
         <p className={CLASS.help} data-testid="about-version-unavailable">
-          Version unavailable: {friendlyErrorMessage(error)}
+          Version unavailable: {error}
         </p>
       )}
 

@@ -892,10 +892,11 @@ func TestCompleteRoutedDocumentFallsBackToADocumentCapableSessionModel(t *testin
 }
 
 // Declaring pdf input is not enough: the row's protocol must also represent a
-// user-message document. The Anthropic builder rejects the kind outright, so
-// a pdf row there stays blocked — handing it the document would fail on the
-// wire.
-func TestCompleteRoutedDocumentStaysBlockedWhenTheProtocolRejectsUserMessageDocuments(t *testing.T) {
+// user-message document. Once the row's protocol represents one — the
+// Anthropic builder writes a document content block (#4209) — a document
+// falls back to the pdf-declaring session model instead of reporting the
+// request unservable.
+func TestCompleteRoutedDocumentFallsBackToADocumentCapableAnthropicSessionModel(t *testing.T) {
 	t.Parallel()
 	adapter := servesOnly("anthropic", "claude-mythos-preview", refusal(400, "The provided model identifier is invalid."))
 	caller := cheapmodel.New(clientWith(adapter))
@@ -908,12 +909,18 @@ func TestCompleteRoutedDocumentStaysBlockedWhenTheProtocolRejectsUserMessageDocu
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4"), MediaType: "application/pdf"}},
 	}}}}
 
-	_, _, err = caller.CompleteRouted(context.Background(), profile, "anthropic", "claude-x", req)
-	if !errors.Is(err, cheapmodel.ErrSessionModelCannotTakeMedia) {
-		t.Fatalf("protocol-rejected document fallback error = %v, want ErrSessionModelCannotTakeMedia", err)
+	resp, ranSessionModel, err := caller.CompleteRouted(context.Background(), profile, "anthropic", "claude-x", req)
+	if err != nil {
+		t.Fatalf("document fallback error = %v, want success", err)
 	}
-	if got, want := adapter.Models(), []string{"claude-x"}; !slices.Equal(got, want) {
-		t.Fatalf("models = %v, want exactly the routed probe and no session call", got)
+	if !ranSessionModel {
+		t.Fatal("document fallback was not reported as a session-model run")
+	}
+	if got := resp.Text(); got != "answered" {
+		t.Fatalf("document fallback response = %q, want the session model's answer", got)
+	}
+	if got, want := adapter.Models(), []string{"claude-x", "claude-mythos-preview"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want the routed probe then the session call", got)
 	}
 }
 

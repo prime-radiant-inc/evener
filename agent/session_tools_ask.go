@@ -23,6 +23,13 @@ const (
 
 	// askUserAckText is returned on a successful ask_user call (spec §5.1).
 	askUserAckText = "questions posted; answers arrive in the user's reply after your turn ends"
+
+	// askUserToolName is the question tool's name. Ask behavior is keyed on this
+	// name string rather than on the registration — tool.Registry.executeCall
+	// normalizes arguments by the call's name, and restore derives pending
+	// questions from "ask_user" results — so the result tool must not take it
+	// even where no question tool is registered (registerCommunicateTool).
+	askUserToolName = "ask_user"
 )
 
 // askQuestion is one question posted by an ask_user call, recorded in the

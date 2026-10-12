@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/searchresult"
@@ -2511,18 +2512,26 @@ func countLines(s string) int {
 // searchSummary is a search result's one-line summary, "[head]", with the
 // notes the tool put after its entries (searchresult.Split) added inside the
 // brackets, each without brackets of its own, so a compacted search still
-// says it was cut short or left paths out. Anything the registry appended
-// after another blank line is left out; after a result with no notes of its
-// own, a registry nudge reads as its note (#4223 tracks giving notes a field
-// of their own).
+// says it was cut short or left paths out. The registry appends its breaker
+// nudge the same way, after a blank line, so the notes end where that nudge
+// begins (agent/internal/tool IsBreakerNudge): the nudge is not a note about
+// the search, and a result with no notes of its own would otherwise compact
+// with it read as one (#4223). Every block after the entries is kept, not
+// only the first: a result can carry two when the registry's character cap
+// cuts inside the tool's own note (#4460), and the marker it appends after
+// that fragment is the part a compacted search must not lose.
 func searchSummary(head, output string) string {
 	_, notes := searchresult.Split(output)
-	notes, _, _ = strings.Cut(notes, "\n\n")
 	parts := []string{head}
 	for line := range strings.SplitSeq(notes, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			parts = append(parts, strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
 		}
+		if tool.IsBreakerNudge(line) {
+			break
+		}
+		parts = append(parts, strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
 	}
 	return "[" + strings.Join(parts, "; ") + "]"
 }

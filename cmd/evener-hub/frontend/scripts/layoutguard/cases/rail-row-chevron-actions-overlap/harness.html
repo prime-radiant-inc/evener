@@ -106,7 +106,7 @@ function sessionRowHtml(id, occupant) {
 // than a session row's (two buttons instead of one), so it's the wider
 // danger zone for the shared cell.
 function projectRowHtml(id, withBadge) {
-  const badge = withBadge ? `<span class="badge attention" id="occ-${id}">3</span>` : "";
+  const badge = withBadge ? `<span class="badge badgeAttention" id="occ-${id}">3</span>` : "";
   return `
     <span class="railRow" id="row-${id}">
       <span class="textCol">
@@ -118,7 +118,7 @@ function projectRowHtml(id, withBadge) {
       <span class="rightSlot" id="slot-${id}">
         ${badge}
         <span class="actions" id="actions-${id}">
-          <button type="button" class="button quiet sm" id="plus-${id}" aria-label="New session in ${TITLE}">
+          <button type="button" class="button quiet squareSm" id="plus-${id}" aria-label="New session in ${TITLE}">
             <span class="icon" aria-hidden="true">+</span>
           </button>
           ${kebabHtml(id, TITLE)}

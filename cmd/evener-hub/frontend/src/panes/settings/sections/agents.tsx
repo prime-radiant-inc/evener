@@ -4,7 +4,6 @@
 // (parity-m7-settings.md §8). The overview hook is injectable (`useOverview`)
 // so tests can supply a fixture; it defaults to the real
 // stores/settingsOverview adapter.
-import { friendlyErrorMessage } from "@evener/appwire-client";
 import { type SettingsOverviewStoreState, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Chip, EmptyState, InlineNotice, ListRow, OpenButton, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -45,7 +44,10 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
         definition.
       </p>
       {loading && <Skeleton />}
-      {error && <InlineNotice tone="danger">Failed to load: {friendlyErrorMessage(error)}</InlineNotice>}
+      {/* The overview store already holds the friendly text (it translates
+          the error while it still has its type); converting again would turn
+          a hub-reported explanation into the generic fallback. */}
+      {error && <InlineNotice tone="danger">Failed to load: {error}</InlineNotice>}
       {!loading &&
         !error &&
         (agents.length === 0 ? (
