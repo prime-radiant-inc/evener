@@ -442,6 +442,21 @@ test("load failure shows retry", async () => {
   expect(statusReasons(document.body)).toEqual(["unavailable"]);
 });
 
+// The store keeps errorText(err) as-is, which for a client-unreachable
+// rejection is AppwireClient's own wiring detail; the section maps it through
+// friendlyErrorMessage the way general/hub/storage do.
+test("a client-unreachable load failure never shows the client's raw wiring message", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => {
+    throw new Error('AppwireClient: cannot call "evener/host/list" while state is "closed"');
+  });
+  render(<HostsSection sectionId="hosts" />);
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  const notice = document.querySelector('[role="status"][data-reason="unavailable"]');
+  expect(notice?.textContent).toMatch(/\S/);
+  expect(screen.queryByText(/AppwireClient/i)).toBeNull();
+});
+
 test("a server-side mid-attach row settles via the poll: in-progress -> failed re-enables Connect", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
