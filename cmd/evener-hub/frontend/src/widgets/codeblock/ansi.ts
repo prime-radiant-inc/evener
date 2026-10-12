@@ -529,7 +529,12 @@ export function parseAnsiByteRows(
     return false;
   };
   const flush = (endBytes: number, newline: boolean) => {
-    const line = parseAnsiLines(prefix + (newline ? presentation.slice(0, -1) : presentation))[0] ?? [];
+    // Without visible text the presentation is only SGR codes, which render
+    // no runs; skipping Anser keeps blank-line-heavy output cheap.
+    const line =
+      textByteOffsets.length === 0
+        ? []
+        : (parseAnsiLines(prefix + (newline ? presentation.slice(0, -1) : presentation))[0] ?? []);
     if (newline || line.some((run) => run.text.length !== 0))
       rows.push({ offsetBytes: fragmentStart, endBytes, line, textByteOffsets: Uint16Array.from(textByteOffsets) });
     fragmentStart = endBytes;

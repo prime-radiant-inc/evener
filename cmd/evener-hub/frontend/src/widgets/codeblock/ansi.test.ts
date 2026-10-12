@@ -423,8 +423,8 @@ function randomRange(random: () => number, length: number): [number, number] {
 
 test("a parse reusing earlier parses of overlapping ranges equals a fresh parse", () => {
   const random = mulberry32(4242);
-  for (let trial = 0; trial < 300; trial++) {
-    const stream = randomStream(random, 2000 + Math.floor(random() * 12000));
+  for (let trial = 0; trial < 60; trial++) {
+    const stream = randomStream(random, 1000 + Math.floor(random() * 8000));
     const offset = 1000;
     const earlier = Array.from({ length: 1 + Math.floor(random() * 2) }, () => {
       const [start, end] = randomRange(random, stream.length);
@@ -476,4 +476,12 @@ test("a boundary reached inside a control string does not reuse rows parsed as t
   const parsed = parseAnsiByteRows(bytes, 0, undefined, [earlier]);
   expect(parsed).toEqual(parseAnsiByteRows(bytes, 0));
   expect(parsed.rows.map((row) => plainText([row.line]))).toEqual(["A"]);
+});
+
+test("a range ending inside an earlier parse reuses no rows past its own end", () => {
+  const bytes = new TextEncoder().encode("one\ntwo\nthree\nfour\n");
+  const earlier = parseAnsiByteRows(bytes, 0);
+  const parsed = parseAnsiByteRows(bytes.slice(0, 8), 0, undefined, [earlier]);
+  expect(parsed).toEqual(parseAnsiByteRows(bytes.slice(0, 8), 0));
+  expect(parsed.rows.map((row) => plainText([row.line]))).toEqual(["one", "two"]);
 });

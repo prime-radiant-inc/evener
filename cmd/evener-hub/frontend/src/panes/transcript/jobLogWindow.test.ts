@@ -309,6 +309,8 @@ test("the joined rows of overlapping windows reuse each window's parse", () => {
   expect(joined.at(-2)).toBe(windows.live?.rows.at(-2));
 });
 
+// Each blank line is its own boundary; reuse carries far more of them than a
+// call's argument list can hold.
 test("a window of blank lines accepts another page", () => {
   const blank = new Uint8Array(524288).fill(10);
   const windows = loadBytes(blank, 0, "live", "end");
