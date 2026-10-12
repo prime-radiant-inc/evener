@@ -1681,6 +1681,12 @@ func (s *RemoteHubSource) recordRemoteBeforePage(
 // Only those two shapes are rewritten; any other failure — including a newer
 // hub's unrelated invalid-params refusal — passes through unchanged, so this
 // rewrite never masks a real error.
+//
+// Matching on message text is deliberate. Both shapes are the frozen wording of
+// remote hubs that predate the before field (#3283): the InvalidParams text from
+// appwire.ValidateThreadTurnsListParams and the JSON decoder's
+// `unknown field "before"`. A current hub understands before and never sends
+// either refusal for it, so a structured error code could not reach this path.
 func remoteCursorlessBeforeRefusal(params appwire.ThreadTurnsListParams, err error) error {
 	if params.Before == nil {
 		return err
