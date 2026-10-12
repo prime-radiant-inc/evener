@@ -20,28 +20,17 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
+import { cdpDrag, evaluate, navigateTo, nextPaint } from "../browserGuardCdp.mjs";
 import { Driver } from "../skillguard/run.mjs";
 import { noteStackContained, STORES } from "./assertions.mjs";
-import {
-  NOTE,
-  FIRST as SHORT_FIRST,
-  JOURNEY_APPENDED as SHORT_JOURNEY_APPENDED,
-  SOURCE as SHORT_SOURCE,
-  SOURCE_SHA256 as SHORT_SOURCE_SHA256,
-} from "./fixtures.mjs";
+// The literal expectations below are independent of production
+// mapping/formatter code: the short values are FIRST's own 1:19-1:22.
+import { FIRST, JOURNEY_APPENDED, NOTE, SOURCE, SOURCE_SHA256 } from "./fixtures.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
 const q = JSON.stringify;
 const artifact = (name) => path.join(fixture.artifactDir, name);
-
-// The literal expectations below are independent of production
-// mapping/formatter code: the short values are FIRST's own 1:19-1:22.
-const SOURCE = SHORT_SOURCE;
-const FIRST = SHORT_FIRST;
-const SOURCE_SHA256 = SHORT_SOURCE_SHA256;
-const JOURNEY_APPENDED = SHORT_JOURNEY_APPENDED;
 
 // The assertion names the Go test validates independently. The driver only
 // records whether it reached each one.
@@ -413,13 +402,17 @@ async function readStorage() {
   );
 }
 
+// A detached copy of the real stores: value comparisons see a stable snapshot
+// even if the page writes again mid-assertion.
+const cloneStorage = async () => JSON.parse(JSON.stringify(await readStorage()));
+
 // Wait boundedly for a storage snapshot satisfying `predicate`. Reading the
 // real storage repeatedly (never a sleep-then-assume) is how the asynchronous
 // draft/payload/receipt transitions are observed before exact equality.
 async function waitForStorage(predicate, label, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const snapshot = JSON.parse(JSON.stringify(await readStorage()));
+    const snapshot = await cloneStorage();
     if (predicate(snapshot)) return snapshot;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}; observed ${JSON.stringify(snapshot)}`);
     await new Promise((resolve) => setTimeout(resolve, 120));
@@ -534,14 +527,6 @@ async function clickDocumentSend() {
   await driver.clickAt(point.x, point.y);
 }
 
-// Resolve after two animation frames: a real browser paint boundary.
-async function nextPaint() {
-  await evaluate(
-    driver.send,
-    `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`,
-  );
-}
-
 // The real reveal surface: band count, revealed title/text and the active
 // element, read from the live document scope.
 const revealStateExpr = `(() => {
@@ -561,43 +546,19 @@ const revealStateExpr = `(() => {
 // button) precedes the press, exactly as a reader moves the pointer to the drag
 // start first; the resulting hover state is recorded rather than routed around.
 async function dragBetween(from, to, modifiers = 0, label = "drag") {
-  const steps = 10;
-  await driver.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x, y: from.y, modifiers });
-  await nextPaint();
-  const approachState = await evaluate(driver.send, revealStateExpr);
-  driver.milestone(`${label}-approach`, { from, modifiers, reveal: approachState });
-  writeFileSync(
-    artifact(`${label}-approach.json`),
-    JSON.stringify({ from, modifiers, reveal: approachState }, null, 2),
-  );
-  await driver.send("Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    x: from.x,
-    y: from.y,
-    button: "left",
-    buttons: 1,
-    clickCount: 1,
+  // The genuine shared input sequence; the hook records the hover state the
+  // approach move itself created, between approach and press.
+  await cdpDrag(driver.send, from, to, {
     modifiers,
-  });
-  for (let i = 1; i <= steps; i += 1) {
-    const t = i / steps;
-    await driver.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x: from.x + (to.x - from.x) * t,
-      y: from.y + (to.y - from.y) * t,
-      button: "left",
-      buttons: 1,
-      modifiers,
-    });
-  }
-  await driver.send("Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x: to.x,
-    y: to.y,
-    button: "left",
-    buttons: 1,
-    clickCount: 1,
-    modifiers,
+    onApproach: async () => {
+      await nextPaint(driver.send);
+      const approachState = await evaluate(driver.send, revealStateExpr);
+      driver.milestone(`${label}-approach`, { from, modifiers, reveal: approachState });
+      writeFileSync(
+        artifact(`${label}-approach.json`),
+        JSON.stringify({ from, modifiers, reveal: approachState }, null, 2),
+      );
+    },
   });
 }
 
@@ -912,7 +873,7 @@ async function assertUnchangedReopen(retained) {
 // the target session's own row may change. The single target row must route to
 // the original session ref.
 async function assertUnrelatedDraftsPreserved() {
-  const snapshot = JSON.parse(JSON.stringify(await readStorage()));
+  const snapshot = await cloneStorage();
   const rows = snapshot.composerDrafts ?? [];
   const baseline = draftBaselineRows ?? [];
   const target = rows.filter((row) => row.key?.sessionRef === fixture.rootRef);
@@ -932,7 +893,7 @@ async function assertUnrelatedDraftsPreserved() {
 // retained (not counts) so the post-journey comparison is by value, and the
 // snapshot is written as an artifact showing what was observed.
 async function captureStorageBaseline() {
-  const snapshot = JSON.parse(JSON.stringify(await readStorage()));
+  const snapshot = await cloneStorage();
   storageBaseline = {
     outbox: snapshot.outbox ?? [],
     optimistic: snapshot.optimistic ?? [],
@@ -946,7 +907,7 @@ async function captureStorageBaseline() {
 }
 
 async function assertNoQueuedMutation() {
-  const snapshot = JSON.parse(JSON.stringify(await readStorage()));
+  const snapshot = await cloneStorage();
   writeFileSync(
     artifact("storage-final.json"),
     JSON.stringify(

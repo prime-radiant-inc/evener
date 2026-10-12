@@ -47,6 +47,21 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 	}
 }
 
+// privateFrontendEnv is the hermetic browser-guard environment: a private
+// HOME and XDG tree under the guard's scratch root, no Node compile cache, and
+// the guard's own Vite dep cache (see browserGuardSpec's header).
+func privateFrontendEnv(root, vite string) []string {
+	return []string{
+		"HOME=" + filepath.Join(root, "home"),
+		"TMPDIR=" + filepath.Join(root, "tmp"),
+		"XDG_CONFIG_HOME=" + filepath.Join(root, "xdg-config"),
+		"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
+		"XDG_STATE_HOME=" + filepath.Join(root, "xdg-state"),
+		"NODE_DISABLE_COMPILE_CACHE=1",
+		vite,
+	}
+}
+
 // browserGuardSpec is guard's launch contract under root, its own scratch
 // directory. Each guard's Vite gets a dep cache of its own: two Vite processes
 // optimizing into one cache race (issue #1586), and the guards run side by
@@ -95,15 +110,7 @@ func browserGuardSpec(guard, root string) guardSpec {
 			name: guard,
 			argv: []string{"npm", "run", "--silent", "documentannotationguard"},
 			dir:  frontendDir,
-			env: []string{
-				"HOME=" + filepath.Join(root, "home"),
-				"TMPDIR=" + filepath.Join(root, "tmp"),
-				"XDG_CONFIG_HOME=" + filepath.Join(root, "xdg-config"),
-				"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
-				"XDG_STATE_HOME=" + filepath.Join(root, "xdg-state"),
-				"NODE_DISABLE_COMPILE_CACHE=1",
-				vite,
-			},
+			env:  privateFrontendEnv(root, vite),
 			// npm exits on TERM without stopping the script's children (the
 			// driver, Chrome and its Vite dev server), which an interrupt would
 			// orphan unless the whole group is signalled.
@@ -129,15 +136,7 @@ func browserGuardSpec(guard, root string) guardSpec {
 			name: guard,
 			argv: []string{"node", "scripts/" + guard + "/run.mjs"},
 			dir:  frontendDir,
-			env: []string{
-				"HOME=" + filepath.Join(root, "home"),
-				"TMPDIR=" + filepath.Join(root, "tmp"),
-				"XDG_CONFIG_HOME=" + filepath.Join(root, "xdg-config"),
-				"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
-				"XDG_STATE_HOME=" + filepath.Join(root, "xdg-state"),
-				"NODE_DISABLE_COMPILE_CACHE=1",
-				vite,
-			},
+			env:  privateFrontendEnv(root, vite),
 		}
 	}
 }
