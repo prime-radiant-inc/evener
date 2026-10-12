@@ -4,8 +4,7 @@
 # When converting a copy-oracle test (see inventory.py), the new assertion must
 # still catch a real regression. This applies one perl substitution to a
 # production file, runs the given test command, and passes only if the tests
-# FAIL. The production file is always restored with `git restore`, so the file
-# must have no uncommitted edits of its own.
+# FAIL.
 #
 # Usage:
 #   tools/copy-oracle/mutate.sh <file> <perl-subst> -- <test command...>
@@ -15,14 +14,20 @@
 #     's/hint=\{params.note\}//' -- \
 #     bash -c 'cd cmd/evener-hub/frontend && npx vitest run src/panes/welcome'
 #
-# The test command runs twice: first unmutated, where it must pass
-# (BASELINE-FAIL otherwise), then mutated. Only one mutate.sh may run per
-# worktree at a time.
+# Everything runs in a throwaway git worktree under $TMPDIR, never in yours: it
+# starts from HEAD plus your uncommitted tracked changes and untracked files,
+# with every node_modules linked from your tree. Your files are never edited,
+# so runs can overlap and a run that dies leaves nothing of yours changed. The
+# test command runs from the throwaway root: first unmutated, where it must
+# pass (BASELINE-FAIL otherwise), then mutated.
 #
 # Output: KILLED (tests failed, good; the failing tests are listed under it),
 # SURVIVED (tests passed: the conversion lost coverage), or NO-OP (the
 # substitution matched nothing). The full test log path is printed on SURVIVED
-# and kept for every run under $TMPDIR/copy-oracle-mutate.*.
+# and kept for every run under $TMPDIR/copy-oracle-mutate.*.log.
+#
+# A run killed outright (SIGKILL) leaves its $TMPDIR/copy-oracle-mutate.*
+# directory; delete it and run `git worktree prune`.
 set -euo pipefail
 
 if [[ $# -lt 4 || "$3" != "--" ]]; then
@@ -33,46 +38,21 @@ file=$1 subst=$2
 shift 3
 root=$(git rev-parse --show-toplevel)
 cd "$root"
-# One mutation at a time per worktree: a second run would mutate files under
-# the first run's tests, or restore them mid-run. The lock is an OS lock
-# (flock, taken through perl since macOS ships no flock command) on fd 9. The
-# kernel drops it only when every process holding fd 9 is gone, and the tests
-# inherit fd 9, so a run killed outright keeps the worktree locked until its
-# orphaned tests exit too. There is no stale lock to recover.
-gitdir=$(git rev-parse --absolute-git-dir)
-lockfile="$gitdir/copy-oracle-mutate.lock"
-# The record names the file being mutated and the hash of its mutated
-# contents, so a later run can tell a dead run's leftover mutation from edits.
-record="$gitdir/copy-oracle-mutate.record"
-exec 9>>"$lockfile"
-if ! perl -MFcntl=:flock -e 'open(my $fh, ">>&=", 9) or die "fd 9: $!\n"; exit(flock($fh, LOCK_EX | LOCK_NB) ? 0 : 1)'; then
-  echo "refusing: another mutate.sh, or the tests of one that died, still holds this worktree" >&2
+if ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
+  echo "refusing: $file is not tracked by git" >&2
   exit 2
 fi
 
-# Restore a dead run's target only while it still holds exactly that run's
-# mutation; anything else is someone's edit and is left alone.
-recover_dead_run() {
-  local target hash
-  [[ -f "$record" ]] || return 0
-  { read -r target && read -r hash; } <"$record" || return 0
-  if [[ -n "$target" ]] && ! git diff --quiet -- "$target"; then
-    if [[ "$(git hash-object -- "$target")" == "$hash" ]]; then
-      git restore -- "$target"
-      echo "restored $target, left mutated by a run that died" >&2
-    else
-      echo "refusing: $target was left mutated by a run that died and has been edited since;" >&2
-      echo "  review it with git diff, then delete $record" >&2
-      exit 2
-    fi
-  fi
-  rm -f "$record"
-}
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/copy-oracle-mutate.XXXXXX")
+work="$scratch/worktree"
+log="$scratch.log"
+child=""
 
 # stop_group <pgid> stops every process in a test run's process group: TERM,
-# up to 5 seconds' grace, then KILL. It keys on the group, not the leader, so
-# workers that outlive their runner are stopped too. A no-op once the group is
-# empty.
+# up to 5 seconds' grace, then KILL, then up to 5 more seconds for the kernel
+# to reap them. It keys on the group, so workers that outlive their runner are
+# stopped too, and it is bounded: a process that will not die is reported and
+# left behind in the throwaway tree.
 stop_group() {
   local pgid=$1 deadline
   kill -0 -"$pgid" 2>/dev/null || return 0
@@ -80,53 +60,49 @@ stop_group() {
   deadline=$((SECONDS + 5))
   while ((SECONDS < deadline)) && kill -0 -"$pgid" 2>/dev/null; do sleep 0.1; done
   kill -KILL -"$pgid" 2>/dev/null || true
-  while kill -0 -"$pgid" 2>/dev/null; do sleep 0.1; done
+  deadline=$((SECONDS + 5))
+  while ((SECONDS < deadline)) && kill -0 -"$pgid" 2>/dev/null; do sleep 0.1; done
+  if kill -0 -"$pgid" 2>/dev/null; then
+    echo "warning: test process group $pgid did not exit after KILL" >&2
+  fi
 }
 
-# Every exit path, including HUP/INT/TERM, stops the test process group
-# before touching the file, so no test process outlives the run and reads the
-# restored source. The file is restored only while it holds exactly our
-# mutation: an edit made during the run is kept, with the record left for
-# whoever reviews it.
-mutated=0 mutated_hash="" child=""
 cleanup() {
   if [[ -n "$child" ]]; then
     stop_group "$child"
     wait "$child" 2>/dev/null || true
   fi
-  if ((mutated)); then
-    if [[ "$(git hash-object -- "$file")" == "$mutated_hash" ]]; then
-      git restore -- "$file"
-      rm -f "$record"
-    else
-      echo "left $file as is: it was edited during the run; review it with git diff, then delete $record" >&2
-    fi
-  fi
+  git worktree remove --force "$work" 2>/dev/null || true
+  rmdir "$scratch" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Checked after taking the lock, so a dead run's leftover mutation has
-# already been restored.
-recover_dead_run
-if ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
-  echo "refusing: $file is not tracked by git, so it cannot be restored" >&2
-  exit 2
+# Build the throwaway tree: HEAD, then the caller's uncommitted tracked
+# changes and untracked (not ignored) files, so a test edited but not yet
+# committed is the one that runs.
+git worktree add -q --detach "$work" HEAD
+if ! git diff --quiet HEAD; then
+  git diff --binary HEAD | git -C "$work" apply --binary --whitespace=nowarn
 fi
-if ! git diff --quiet -- "$file"; then
-  echo "refusing: $file has uncommitted edits; mutate.sh restores it with git restore" >&2
-  exit 2
-fi
+git ls-files -z --others --exclude-standard | tar -cf - --null -T - | tar -xf - -C "$work"
+# Link each JavaScript package's installed dependencies instead of copying them.
+while IFS= read -r manifest; do
+  pkg=$(dirname "$manifest")
+  if [[ -e "$pkg/node_modules" && ! -e "$work/$pkg/node_modules" ]]; then
+    ln -s "$root/$pkg/node_modules" "$work/$pkg/node_modules"
+  fi
+done < <(git ls-files -- '*package.json' 'package.json')
 
-# Run the tests in their own process group (job control; the leader's pid is
-# the group id) and drain the whole group afterwards, so no worker from the
-# baseline runs into the mutation, or from the mutation past the restore.
+# Run the tests from the throwaway root in their own process group (job
+# control; the leader's pid is the group id), and drain the whole group
+# afterwards so no worker from the baseline runs into the mutation.
 run_tests() {
   local status=0
   set -m
-  "$@" >"$log" 2>&1 &
+  (cd "$work" && exec "$@") >"$log" 2>&1 &
   child=$!
   set +m
   wait "$child" || status=$?
@@ -135,26 +111,15 @@ run_tests() {
   return "$status"
 }
 
-# One log per run: parallel checks in other worktrees must not mix output.
-log=$(mktemp "${TMPDIR:-/tmp}/copy-oracle-mutate.XXXXXX")
 # The tests must pass unmutated, or a failure afterwards proves nothing: the
 # runner may be missing, or the test may already be broken.
 if ! run_tests "$@"; then
   echo "BASELINE-FAIL the test command fails without the mutation (log: $log)" >&2
   exit 2
 fi
-if ! git diff --quiet -- "$file"; then
-  echo "refusing: $file was edited while the baseline ran" >&2
-  exit 2
-fi
-# Record the mutated contents before writing them, so a run killed at any
-# point after this leaves a record that matches what is on disk.
-mutated_hash=$(perl -0pe "$subst" "$file" | git hash-object --stdin)
-printf '%s\n%s\n' "$file" "$mutated_hash" >"$record.tmp.$$"
-mv -f "$record.tmp.$$" "$record"
-mutated=1
-perl -0pi -e "$subst" "$file"
-if git diff --quiet -- "$file"; then
+before=$(git hash-object -- "$work/$file")
+perl -0pi -e "$subst" "$work/$file"
+if [[ "$(git hash-object -- "$work/$file")" == "$before" ]]; then
   echo "NO-OP   $file: $subst"
   exit 1
 fi
