@@ -54,7 +54,7 @@ func TestMemoryPromptAsksForWhenOnlyWhenSwitchedOn(t *testing.T) {
 		if err := systemPromptTemplate.Execute(&b, data); err != nil {
 			t.Fatal(err)
 		}
-		if got := strings.Contains(b.String(), "Before changing Total's signature"); got != on {
+		if got := strings.Contains(b.String(), "a one-line `when`"); got != on {
 			t.Fatalf("MemoryWhen=%v: prompt has when guidance = %v", on, got)
 		}
 	}
