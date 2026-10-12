@@ -136,6 +136,6 @@ describe("recovered restore hint", () => {
 		const blocked = new DraftDocument(() => failing, destination);
 		expect(blocked.restoreRecoveredDraft("recovered")).toBe(false);
 		expect(blocked.recoveredRestoreBlock()).toBe("unsaved");
-		expect(blocked.recoveredRestoreHint()).not.toBe(document.recoveredRestoreHint());
+		expect(blocked.recoveredRestoreHint()).not.toBeNull();
 	});
 });

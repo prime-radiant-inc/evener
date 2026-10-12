@@ -172,7 +172,7 @@ import { type CommandsHost, commandHosts, insertInvocation } from "./session/Com
 import { FindBar } from "./session/FindBar";
 import { historyForSession } from "./session/historyMemory";
 import { useOlderHistory } from "./session/useOlderHistory";
-import { type FindState, newFind, findMatches, matchLabel, stepMatch } from "./session/findInSession";
+import { type FindState, newFind, findMatches, matchLabel, matchPosition, stepMatch } from "./session/findInSession";
 import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
 import { outboxFlush } from "./outbox/nativeOutboxFlush";
@@ -3216,6 +3216,7 @@ export function ConversationScreen({
 										error={find.seeking && olderHistory.permanent ? errorText(olderHistory.error) : undefined}
 										settled={!find.seeking}
 										exhausted={find.exhausted}
+										matches={find.query.trim() ? matchPosition(findHits, findCurrent) : null}
 										onQuery={(query) => setFind(newFind(query))}
 										onStep={stepFind}
 										onDone={() => {

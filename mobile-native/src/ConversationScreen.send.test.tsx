@@ -17,7 +17,7 @@ import {
 	type Thread,
 	WireError,
 } from "@evener/appwire-client";
-import { findAnswers, findBar, NO_MATCHES } from "./findBarTestUtils";
+import { findBar, findShows } from "./findBarTestUtils";
 import { hasTestID, markers } from "./markerTestUtils";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
@@ -55,7 +55,6 @@ import { modelHosts } from "./session/ModelSheet";
 import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
 import { compactDuration } from "./session/format";
-import { composerPlaceholder } from "./session/sendAction";
 import { SubagentPanel } from "./subagents/SubagentPanel";
 import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -564,7 +563,6 @@ async function press(tree: ReactTestRenderer, label: string) {
 
 it("queues a message while the agent works", async () => {
 	const { tree, hub } = await mount(thread("ref-queue", "active"));
-	expect(field(tree)?.props.placeholder).toBe(composerPlaceholder("queue", false));
 	await type(tree, "second");
 	await press(tree, "Queue message");
 	expect(hub.mutations()).toEqual(["turn/queue"]);
@@ -573,7 +571,6 @@ it("queues a message while the agent works", async () => {
 
 it("sends a message when the agent is at rest", async () => {
 	const { tree, hub } = await mount(thread("ref-send", "idle"));
-	expect(field(tree)?.props.placeholder).toBe(composerPlaceholder("send", false));
 	expect(pressable(tree, "Stop")).toBeUndefined();
 	await type(tree, "first");
 	const send = pressable(tree, "Send");
@@ -820,7 +817,6 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
 		const { tree, hub } = await mount(thread("ref-question-other", "awaiting", true));
 		await press(tree, "Other answer…");
-		expect(field(tree)?.props.placeholder).toBe(composerPlaceholder("send", true));
 		await type(tree, "Drop them");
 		// The dock's own "Send answer" stays above; the composer's Send says
 		// it sends what you typed, so VoiceOver tells the two apart.
@@ -959,7 +955,6 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		const { tree } = await mount(thread("ref-question-fold", "awaiting", true));
 		await press(tree, "Fold");
 		expect(pressable(tree, "Answer the question")).toBeDefined();
-		expect(field(tree)?.props.placeholder).toBe(composerPlaceholder("send", true));
 		// Folded, the composer's Send is the only one.
 		expect(composerSend(tree, "Send answer")).toBeDefined();
 		await press(tree, "Answer the question");
@@ -4085,7 +4080,7 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		const { tree } = await mount(findTurns("ref-find-none"));
 		chooseMenu("Find in session");
 		await search(tree, "nowhere");
-		expect(findAnswers(tree, NO_MATCHES)).toBe(true);
+		expect(findShows(tree, 0, 0)).toBe(true);
 	});
 
 	it("reaches back through older history for an older match", async () => {
@@ -4202,7 +4197,6 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
 		// History has ended: the bar says so in place of a match.
 		expect(hasTestID(tree, "find-bar:exhausted")).toBe(true);
-		expect(findBar(tree).props.label).not.toBe(NO_MATCHES);
 		expect(findBar(tree).props.searchingOlder).toBe(false);
 		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
 	});

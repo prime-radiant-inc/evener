@@ -7,6 +7,7 @@ import { useEffect, useRef } from "react";
 import { AccessibilityInfo, Pressable, Text, TextInput, View } from "react-native";
 import { allowFontScaling, searchFieldStyle, useColors, useTextScale } from "../ui";
 import { headerRowFill } from "../design/systemGlass";
+import type { MatchPosition } from "./findInSession";
 import { SymbolButton } from "./SymbolButton";
 
 export function FindBar({
@@ -16,6 +17,7 @@ export function FindBar({
 	error,
 	settled,
 	exhausted = false,
+	matches = null,
 	onQuery,
 	onStep,
 	onDone,
@@ -32,6 +34,9 @@ export function FindBar({
 	settled: boolean;
 	/** Paging has reached the start of history: no older match is left. */
 	exhausted?: boolean;
+	/** Where you are among the matches, as structure: its
+	 * `find-matches:<position>:<count>` marker. Null while there is no query. */
+	matches?: MatchPosition | null;
 	onQuery(query: string): void;
 	onStep(direction: 1 | -1): void;
 	onDone(): void;
@@ -84,6 +89,7 @@ export function FindBar({
 			<Text
 				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
+				testID={matches ? `find-matches:${matches.position}:${matches.count}` : undefined}
 				style={{
 					flexShrink: 1,
 					color: palette.inkMid,
