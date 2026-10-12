@@ -54,7 +54,7 @@ try {
     });
     assert.equal(result.result.exceptionDetails, undefined);
   };
-  for (const width of [1280, 390]) {
+  for (const width of [1280, 390, 320]) {
     const tailnet = width === 1280;
     await applyViewport(send, { width, height: 960 });
     await navigateTo(page, `http://127.0.0.1:${guard.vitePort}/devicepairingguard.html`, {
@@ -107,11 +107,11 @@ try {
     const phone = pairing.createPairingClaim(phoneInvite, new Uint8Array(32).fill(0x3a));
     assert.equal(phone.publicKey, publicKey);
     assert.equal(phone.comparison, comparison);
-    const claim = () =>
+    const claim = (claimKey = publicKey, client = "Test device") =>
       fetch(`${endpoint}/api/device-pairing`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ invitation, publicKey, client: "Test device" }),
+        body: JSON.stringify({ invitation, publicKey: claimKey, client }),
       }).then((r) => r.json());
     // The receiver runs real C microphone decoding, HTTP parsing and settings
     // persistence. Its test boundary maps either device transport to this local Hub.
@@ -125,6 +125,34 @@ try {
     assert.equal(pending.state, "pending");
     assert.equal(pending.envelope, undefined);
     await wait(`Approve code ${comparison}`);
+    if (width <= 390) {
+      const longClientName = "M".repeat(48);
+      const rival = pairing.createPairingClaim(phoneInvite, new Uint8Array(32).fill(0x3b));
+      assert.equal((await claim(rival.publicKey, longClientName)).state, "pending");
+      await wait(`Approve code ${rival.comparison}`);
+      const claimFits = await evaluate(send, `(() => {
+        const claim = Array.from(document.querySelectorAll('span')).find(node => node.textContent.startsWith(${JSON.stringify(longClientName + ":")}));
+        if (!claim) throw new Error('Missing long device label');
+        const parent = claim.parentElement.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(claim);
+        return Array.from(range.getClientRects()).every(rect => rect.left >= parent.left && rect.right <= parent.right);
+      })()`);
+      assert.equal(claimFits, true, "long device label and fingerprint stay visible within the pane");
+      // Exercise the rendered destination's layout with a supported long DNS
+      // name, then restore the actual invitation before testing approval.
+      const destinationFits = await evaluate(send, `(() => {
+        const destination = Array.from(document.querySelectorAll('strong')).find(node => node.textContent === 'http://100.64.1.2:9180');
+        if (!destination) throw new Error('Missing pairing destination');
+        const original = destination.textContent;
+        destination.textContent = 'http://' + ['a'.repeat(63), 'b'.repeat(63), 'example'].join('.') + ':9180';
+        const parent = destination.parentElement.getBoundingClientRect();
+        const fits = Array.from(destination.getClientRects()).every(rect => rect.left >= parent.left && rect.right <= parent.right);
+        destination.textContent = original;
+        return fits;
+      })()`);
+      assert.equal(destinationFits, true, "long pairing destination wraps within its pane");
+    }
     assert.equal(await evaluate(send, "document.documentElement.scrollWidth<=innerWidth"), true);
     assert.equal(
       await evaluate(send, `Array.from(document.querySelectorAll('button')).every(button => {

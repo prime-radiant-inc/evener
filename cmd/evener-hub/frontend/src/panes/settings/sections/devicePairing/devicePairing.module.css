@@ -11,6 +11,12 @@
   margin: 0;
 }
 
+.root > p,
+.controls > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .controls {
   display: flex;
   align-items: center;
