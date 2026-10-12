@@ -16,11 +16,15 @@ export interface ComposerFocusRequest {
   // still be two separate events a subscriber can tell apart, not one it
   // already handled - same rationale as QuoteInsertRequest.id.
   id: number;
+  // The pane id of the seat the focus is meant for, for the same
+  // two-composers-one-ref world as QuoteInsertRequest.target; null keeps
+  // the historic any-composer routing.
+  target: string | null;
 }
 
 interface ComposerFocusState {
   requests: Map<string, ComposerFocusRequest>;
-  requestComposerFocus(ref: string): void;
+  requestComposerFocus(ref: string, target: string | null): void;
   consumeComposerFocus(ref: string): void;
 }
 
@@ -28,10 +32,10 @@ let nextId = 1;
 
 const store = createStore<ComposerFocusState>((set) => ({
   requests: new Map(),
-  requestComposerFocus: (ref) =>
+  requestComposerFocus: (ref, target) =>
     set((state) => {
       const requests = new Map(state.requests);
-      requests.set(ref, { id: nextId++ });
+      requests.set(ref, { id: nextId++, target });
       return { requests };
     }),
   consumeComposerFocus: (ref) =>
@@ -44,8 +48,8 @@ const store = createStore<ComposerFocusState>((set) => ({
 }));
 
 /** The caller's write side: asks `ref`'s Composer to focus its textarea. */
-export function requestComposerFocus(ref: string): void {
-  store.getState().requestComposerFocus(ref);
+export function requestComposerFocus(ref: string, target: string | null = null): void {
+  store.getState().requestComposerFocus(ref, target);
 }
 
 /** Composer's write side: clears a request only after a mounted textarea has
@@ -55,9 +59,15 @@ export function consumeComposerFocus(ref: string): void {
   store.getState().consumeComposerFocus(ref);
 }
 
-/** Composer's read side: the pending request for `ref`, if any. */
-export function useComposerFocusRequest(ref: string): ComposerFocusRequest | undefined {
-  return useStore(store, (s) => s.requests.get(ref));
+/** Composer's read side: the pending request for `ref` that belongs to this
+ * seat, if any - same addressing rule as useQuoteInsertRequest. */
+export function useComposerFocusRequest(ref: string, paneId?: string): ComposerFocusRequest | undefined {
+  return useStore(store, (s) => {
+    const request = s.requests.get(ref);
+    if (!request) return undefined;
+    if (paneId === undefined || request.target === null || request.target === paneId) return request;
+    return undefined;
+  });
 }
 
 /** Test-only: clears every pending request - mirrors quoteInsert.ts's own

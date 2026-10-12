@@ -25,6 +25,17 @@ export function focusedSessionRef(): string | null {
   return refParam(pane.params);
 }
 
+// The same strict reading as focusedSessionRef, for callers that address a
+// seat-scoped request (a composer focus or quote insert) and must name the
+// pane, not just the ref: the embedded cascade column means one ref can
+// have composers under more than one pane.
+export function focusedSessionPaneId(): string | null {
+  const state = workspaceStore.getState();
+  const pane = state.panes.find((p) => p.id === state.focusedPaneId);
+  if (pane?.type !== "session") return null;
+  return pane.id;
+}
+
 export function focusedActivityScopeRef(): string | null {
   return currentSessionRef(workspaceStore.getState());
 }

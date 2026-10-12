@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
@@ -57,7 +57,12 @@ import {
   flushPendingTurnsProjectionForTests,
   startFlushPastEmptyRoundForTests,
 } from "./queue/testing/flushPendingTurnsProjection";
-import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
+import {
+  consumeQuoteInsert,
+  requestQuoteInsert,
+  resetQuoteInsertStoreForTests,
+  useQuoteInsertRequest,
+} from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
@@ -1311,6 +1316,67 @@ test("a quote-insert request for a DIFFERENT ref never reaches this composer", a
   });
   await flushPendingTurnsProjectionForTests();
   expect(textarea().textContent).toBe("");
+});
+
+// The embedded cascade column put a second composer in the world for the
+// same ref, so a quote request must name the seat it is quoting into: the
+// pane id of the conversation the selection was made in. The routing
+// contract lives in quoteInsert's read side - only the addressed seat's
+// hook may see the request - because in production both composers' merge
+// effects hold the same captured request within one commit and the first
+// composer's consume cannot un-capture it. An unaddressed request keeps
+// the historic any-composer routing for callers that cannot pin a
+// destination.
+test("an addressed quote-insert request is visible only to the addressed seat", async () => {
+  const ref = "ref_addressed_seats";
+  const seatA = renderHook(() => useQuoteInsertRequest(ref, "pane_a"));
+  const seatB = renderHook(() => useQuoteInsertRequest(ref, "pane_b"));
+
+  act(() => {
+    requestQuoteInsert(ref, "> quoted line\n\n", "append", "pane_a");
+  });
+
+  expect(seatA.result.current?.text).toBe("> quoted line\n\n");
+  expect(seatB.result.current).toBeUndefined();
+  act(() => {
+    consumeQuoteInsert(ref);
+  });
+  expect(seatA.result.current).toBeUndefined();
+});
+
+test("an addressed quote-insert request reaches the addressed seat's composer", async () => {
+  const ref = "ref_two_seats";
+  const fakeA = connectFakeClient();
+  fakeA.on("thread/read", () => readResponse(ref));
+  const fakeB = connectFakeClient();
+  fakeB.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  render(
+    <ClientProvider client={fakeA}>
+      <Toast />
+      <Composer ref={ref} paneId="pane_a" source={createTestComposerSource(ref)} focused={false} />
+    </ClientProvider>,
+  );
+  render(
+    <ClientProvider client={fakeB}>
+      <Toast />
+      <Composer ref={ref} paneId="pane_b" source={createTestComposerSource(ref)} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery(ref);
+  await flushPendingTurnsProjectionForTests();
+  const editors = screen.getAllByRole("textbox", { name: /^message$/i });
+  expect(editors).toHaveLength(2);
+  const [seatA, seatB] = editors;
+  if (!seatA || !seatB) throw new Error("Missing one of the two seat composers");
+
+  act(() => {
+    requestQuoteInsert(ref, "> quoted line\n\n", "append", "pane_a");
+  });
+
+  await waitFor(() => expect(seatA.textContent).toBe("> quoted line\n\n"));
+  expect(seatB.textContent).toBe("");
+  expect(document.activeElement).toBe(seatA);
 });
 
 test("the composer persists the quote-inserted text as this ref's draft", async () => {

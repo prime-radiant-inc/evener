@@ -106,6 +106,11 @@ function ScopeConversation({
       // and readability; a collapsed or retired scope stops remounting.
       keepViewRemount: () => view.readable,
       viewFallbackId: pane.id,
+      // Keyboard scroll belongs to the drilled leaf alone: the dispatcher
+      // runs same-action handlers in registration order until one accepts,
+      // so a registration from the parent column would swallow every scroll
+      // key aimed at the leaf.
+      keyboardScrollPaneId: leaf ? pane.id : null,
       // The host pane owns focus: a mounting column conversation never
       // autofocuses its composer — the user taps in, or the pane's own
       // focus plumbing acts.
@@ -114,7 +119,7 @@ function ScopeConversation({
       // to replace. The session menu belongs to the conversation pane.
       sessionMenu: false,
     }),
-    [view, composer, pane.id],
+    [view, composer, leaf, pane.id],
   );
   const readableWidth = leaf ? 440 : 400;
   const desktopWidth = readable ? readableWidth : 52;

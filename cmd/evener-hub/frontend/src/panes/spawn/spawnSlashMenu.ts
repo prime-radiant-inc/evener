@@ -68,6 +68,7 @@ export async function runSpawnBuiltinAfterStart(
 
   const ctx: PaletteRunContext = {
     sessionRef: ref,
+    sessionPaneId: null,
     onPage: "spawn",
     toasts,
     ui: { clearToSearch: () => {}, showHelp: () => {} },

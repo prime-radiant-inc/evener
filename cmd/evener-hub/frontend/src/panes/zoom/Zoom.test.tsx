@@ -528,6 +528,44 @@ test("deeper drill retains the root view as a paused spine and pop reuses its so
   expect(screen.queryByTestId("cascade-spine")).toBeNull();
 });
 
+// The deeper drill leaves two readable columns (the leaf and its immediate
+// parent) sharing one hosting pane, and the dispatcher runs same-action
+// handlers in registration order until one accepts - so keyboard scroll
+// must belong to the leaf alone, or the parent column's registration would
+// swallow every Alt+Arrow and Alt+Home/End keypress forever.
+test("keyboard scroll drives the drilled leaf column, not the first-registered parent", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+  expect(workspaceStore.getState().focusedPaneId).toBe("cascade");
+
+  // VirtualList's markup is port > sizer > item > row, so each column's
+  // scroll port is three parents above one of its transcript rows.
+  const scrollPort = (column: HTMLElement) => {
+    const row = column.querySelector('[data-testid="transcript-row"]');
+    const port = row?.parentElement?.parentElement?.parentElement ?? null;
+    if (!port) throw new Error("Missing column scroll port");
+    return port;
+  };
+  const parentPort = scrollPort(cascadeScope("child", "cascade-column"));
+  const leafPort = scrollPort(cascadeScope("grandchild", "cascade-column"));
+  const parentBefore = parentPort.scrollTop;
+  const leafBefore = leafPort.scrollTop;
+
+  act(() => {
+    fireEvent.keyDown(document.body, { key: "ArrowDown", code: "ArrowDown", altKey: true });
+  });
+
+  expect(leafPort.scrollTop).toBeGreaterThan(leafBefore);
+  expect(parentPort.scrollTop).toBe(parentBefore);
+});
+
 // The drill reveals the leaf by scrolling the column track to its end. The
 // pane can narrow right after (on narrow desktop, a sidebar taking its width
 // mid-drill), and columns keep animating their widths, which leaves the leaf

@@ -372,12 +372,23 @@ function readPanelParams(panel: IDockviewPanel): PanePanelParams | null {
 // or the dockview panel would still render the removed transcript surface
 // while the workspace record beside it says session.
 function migrateLegacyLayout(json: unknown): unknown {
-  const layout = json as { panels?: Record<string, { params?: { paneType?: unknown; paneParams?: unknown } }> } | null;
+  const layout = json as {
+    panels?: Record<string, { params?: { paneType?: unknown; paneParams?: unknown } }>;
+    conversationParents?: Record<string, string>;
+  } | null;
   if (!layout || typeof layout !== "object" || layout.panels === null || typeof layout.panels !== "object") return json;
   let changed = false;
+  let parentsChanged = false;
   const panels: Record<string, unknown> = {};
+  // A legacy transcript panel carried its open-parent inside its params; the
+  // conversation pane records that edge out of band, so the migration lifts
+  // each converted panel's parentRef into the layout's edge map - the same
+  // key layoutJSON writes for panes saved by this build.
+  const conversationParents: Record<string, string> = { ...layout.conversationParents };
   for (const [id, panel] of Object.entries(layout.panels)) {
-    const params = panel?.params as { paneType?: unknown; paneParams?: { ref?: unknown } } | undefined;
+    const params = panel?.params as
+      | { paneType?: unknown; paneParams?: { ref?: unknown; parentRef?: unknown } }
+      | undefined;
     const ref = params?.paneParams?.ref;
     if (
       params &&
@@ -388,12 +399,19 @@ function migrateLegacyLayout(json: unknown): unknown {
     ) {
       changed = true;
       panels[id] = { ...panel, params: { paneType: "session", paneParams: { ref } } };
+      const parentRef = params.paneParams?.parentRef;
+      if (typeof parentRef === "string" && parentRef !== "" && parentRef !== ref) {
+        conversationParents[id] = parentRef;
+        parentsChanged = true;
+      }
     } else {
       panels[id] = panel;
     }
   }
   if (!changed) return json;
-  return { ...layout, panels };
+  return parentsChanged || layout.conversationParents !== undefined
+    ? { ...layout, panels, conversationParents }
+    : { ...layout, panels };
 }
 
 // Restored panel ids came from a PREVIOUS page load's own independently-
@@ -568,18 +586,37 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
 
   layoutJSON() {
     if (!dockviewApi) return null;
-    const layout = dockviewApi.toJSON();
+    const layout = dockviewApi.toJSON() as {
+      panels?: Record<string, { params?: Record<string, unknown> }>;
+      conversationParents?: Record<string, string>;
+    };
     for (const pane of get().panes) {
       const panel = layout.panels?.[pane.id];
       if (panel) panel.params = { ...panel.params, paneType: pane.type, paneParams: pane.params };
     }
+    // The conversation parent-context record is object-keyed beside this
+    // store, so a layout must carry its edges separately or a reload
+    // strands every restored child's Back walk (the legacy transcript
+    // params used to hold the same edge and serialize with the panel).
+    const conversationParents: Record<string, string> = {};
+    for (const [pane, parentRef] of conversationOpenParentRefs) {
+      if (layout.panels?.[pane.id]) conversationParents[pane.id] = parentRef;
+    }
+    if (Object.keys(conversationParents).length > 0) layout.conversationParents = conversationParents;
     return layout;
   },
 
   restoreLayout(json, opts) {
     if (!dockviewApi) return false;
     try {
-      dockviewApi.fromJSON(migrateLegacyLayout(json) as SerializedDockview);
+      // Keep the migrated layout, not just hand it to dockview: its
+      // conversationParents edge map (lifted from legacy transcript params by
+      // the migration, written by layoutJSON for this build's saves) records
+      // the open-parent edges below, after the restored records publish.
+      const migrated = migrateLegacyLayout(json) as {
+        conversationParents?: Record<string, unknown>;
+      };
+      dockviewApi.fromJSON(migrated as SerializedDockview);
       // Slots come back from dockview's OWN restored geometry, not from the
       // saved JSON: api.panels is in grid order, so the FIRST panel is the one
       // in the top-left group - the main pane. Read only `panels` (plus each
@@ -627,6 +664,11 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         panes,
         focusedPaneId: panes.find((p) => p.id === activeId)?.id ?? panes[0]?.id ?? null,
       });
+      const conversationParents = migrated.conversationParents ?? {};
+      for (const pane of panes) {
+        const parentRef = conversationParents[pane.id];
+        if (typeof parentRef === "string") recordConversationOpenParent(pane, parentRef);
+      }
       return true;
     } catch {
       // Dockview may have partially rebuilt its grid. Clear that failed grid,

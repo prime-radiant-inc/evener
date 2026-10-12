@@ -1037,7 +1037,7 @@ test("Mod+I focuses the focused session pane's composer", async () => {
 
   await user.keyboard("{Meta>}i{/Meta}");
 
-  expect(focusSpy).toHaveBeenCalledWith("local:ref_abc123");
+  expect(focusSpy).toHaveBeenCalledWith("local:ref_abc123", workspaceStore.getState().focusedPaneId);
   focusSpy.mockRestore();
 });
 

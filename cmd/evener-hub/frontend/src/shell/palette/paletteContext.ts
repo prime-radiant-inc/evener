@@ -16,6 +16,12 @@ export interface PaletteContext {
   // The focused session's ref, or null when no session pane is focused. A
   // session's commands (and the in-session search) key off this.
   sessionRef: string | null;
+  // The pane id of the seat a session-scoped composer request must name: the
+  // focused session pane itself, or the session pane for a focused panel's
+  // ref. One ref can hold composers under more than one pane (an embedded
+  // cascade column), so insert and focus requests address the seat. Null
+  // when no session pane pins the destination.
+  sessionPaneId: string | null;
   onPage: OnPage;
 }
 
@@ -38,7 +44,7 @@ function onPageForType(type: string): OnPage {
     case "welcome":
       return "home";
     default:
-      // transcript (a standalone read-only history view) and doc panes carry
+      // transcript (job logs only) and doc panes carry
       // no interactive session context, so they read as "other" - session
       // commands gate on sessionRef, which stays null for them.
       return "other";
@@ -48,12 +54,19 @@ function onPageForType(type: string): OnPage {
 export function buildPaletteContext(): PaletteContext {
   const ws = workspaceStore.getState();
   const focused = ws.panes.find((p) => p.id === ws.focusedPaneId);
-  if (!focused) return { sessionRef: null, onPage: "other" };
+  if (!focused) return { sessionRef: null, sessionPaneId: null, onPage: "other" };
   const onPage = onPageForType(focused.type);
   const sessionRef = onPage === "session" ? refFromParams(focused.params) : null;
+  const sessionPaneId =
+    focused.type === "session"
+      ? focused.id
+      : sessionRef !== null
+        ? (ws.panes.find((p) => p.type === "session" && refFromParams(p.params) === sessionRef)?.id ?? null)
+        : null;
   return {
     onPage,
     sessionRef,
+    sessionPaneId,
   };
 }
 

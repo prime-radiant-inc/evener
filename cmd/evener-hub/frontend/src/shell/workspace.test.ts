@@ -7,10 +7,12 @@ import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTe
 import {
   cancelPaneFocus,
   consumePaneFocus,
+  conversationOpenParentRef,
   currentSessionRef,
   documentPaneState,
   isPaneOpen,
   type OpenPaneRecord,
+  recordConversationOpenParent,
   registerDockviewApi,
   requestPaneFocus,
   resetWorkspaceStoreForTests,
@@ -789,6 +791,78 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     const freshId = workspaceStore.getState().openPane("doc", { ref: "fresh" });
 
     expect(freshId).toBe("pane_doc_1"); // the ordinary first-ever id, nothing to bump past
+  });
+
+  test("layoutJSON stamps each recorded conversation open-parent edge onto the layout", () => {
+    const fake = new FakeDockviewApi();
+    registerDockviewApi(asDockviewApi(fake));
+    workspaceStore.getState().openPane("session", { ref: "local:parent" });
+    const childId = workspaceStore.getState().openPane("session", { ref: "local:child" });
+    const child = workspaceStore.getState().panes.find((pane) => pane.id === childId)!;
+    recordConversationOpenParent(child, "local:parent");
+    fake.toJSONResult = { panels: { [childId]: { params: {} } } };
+
+    const json = workspaceStore.getState().layoutJSON() as {
+      conversationParents?: Record<string, string>;
+    };
+
+    expect(json.conversationParents).toEqual({ [childId]: "local:parent" });
+  });
+
+  test("restoreLayout re-records the layout's conversation open-parent edges onto the restored panes", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      fake.panels = [
+        { id: "p1", params: { paneType: "session", paneParams: { ref: "local:parent" } } },
+        { id: "p2", params: { paneType: "session", paneParams: { ref: "local:child" } } },
+      ];
+      fake.activePanel = { id: "p2" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    const ok = workspaceStore.getState().restoreLayout({
+      conversationParents: { p2: "local:parent" },
+    });
+
+    expect(ok).toBe(true);
+    const restoredChild = workspaceStore.getState().panes.find((pane) => pane.id === "p2")!;
+    expect(conversationOpenParentRef(restoredChild)).toBe("local:parent");
+    const restoredParent = workspaceStore.getState().panes.find((pane) => pane.id === "p1")!;
+    expect(conversationOpenParentRef(restoredParent)).toBeUndefined();
+  });
+
+  test("restoreLayout carries a legacy transcript panel's parentRef into the recorded conversation parent", () => {
+    const fake = new FakeDockviewApi();
+    let received: unknown;
+    fake.fromJSONBehavior = (data) => {
+      received = data;
+      // The double fakes dockview's own rebuild of the MIGRATED layout, so
+      // the panel here is already the session panel migrateLegacyLayout
+      // turned it into; what this test proves is the parentRef extraction
+      // the migration must do before dockview drops the old params.
+      fake.panels = [
+        { id: "p1", params: { paneType: "session", paneParams: { ref: "local:parent" } } },
+        { id: "p2", params: { paneType: "session", paneParams: { ref: "local:child" } } },
+      ];
+      fake.activePanel = { id: "p2" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    const ok = workspaceStore.getState().restoreLayout({
+      panels: {
+        p1: { params: { paneType: "session", paneParams: { ref: "local:parent" } } },
+        p2: { params: { paneType: "transcript", paneParams: { ref: "local:child", parentRef: "local:parent" } } },
+      },
+    });
+
+    expect(ok).toBe(true);
+    const migrated = received as {
+      panels: Record<string, { params: { paneType: string; paneParams: { ref: string; parentRef?: string } } }>;
+    };
+    expect(migrated.panels.p2!.params.paneType).toBe("session");
+    expect(migrated.panels.p2!.params.paneParams.parentRef).toBeUndefined();
+    const restoredChild = workspaceStore.getState().panes.find((pane) => pane.id === "p2")!;
+    expect(conversationOpenParentRef(restoredChild)).toBe("local:parent");
   });
 });
 

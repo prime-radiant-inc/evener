@@ -32,7 +32,7 @@ import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
 import { DockRegion } from "./DockRegion";
-import { focusedSessionRef } from "./focusedSession";
+import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
 import { StackHost } from "./mobile/StackHost";
@@ -502,7 +502,8 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       registry.registerAction(ACTIONS.paletteOpen, () => openPalette()),
       registry.registerAction(ACTIONS.composerFocus, () => {
         const ref = focusedSessionRef();
-        if (ref !== null) requestComposerFocus(ref);
+        const paneId = focusedSessionPaneId();
+        if (ref !== null) requestComposerFocus(ref, paneId);
       }),
       registry.registerAction(ACTIONS.nextNeedsYou, () => {
         const state = navigationStore.getState();

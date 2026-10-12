@@ -65,10 +65,13 @@ export interface ConversationSeat {
   // route; a cascade column lets its own reconciliation replace the scope in
   // place. The draft always carries to the resumed identity first.
   onResumedIdentity?(resumedRef: string): void;
-  // The pane registers per-pane keyboard scroll under its paneId. A column
-  // passes nothing; keyboard scroll then follows the hosting pane's focus
-  // through the last-registered conversation.
-  keyboardScrollPaneId?: string;
+  // The pane whose focus gates this seat's keyboard scroll: the pane's own
+  // id, or the host pane's id for the cascade's active leaf column. Null on
+  // every other column - the dispatcher runs same-action handlers in
+  // registration order until one accepts, so a second registration under
+  // the host pane's id would hand every scroll key to whichever column
+  // mounted first.
+  keyboardScrollPaneId: string | null;
   // The session menu belongs to the conversation pane; a cascade column's
   // chrome owns its actions.
   sessionMenu?: boolean;
@@ -223,7 +226,7 @@ export function ConversationBody({
   // Per-pane keyboard scroll registers against the shared registry and
   // declines unless the hosting pane is the focused one.
   useTranscriptScrollKeys({
-    paneId: seat.keyboardScrollPaneId ?? seat.viewFallbackId,
+    paneId: seat.keyboardScrollPaneId,
     listRef: virtualListRef,
     jumpToBottom: flow.jumpToBottom,
     markGesture: flow.markGesture,
@@ -278,7 +281,7 @@ export function ConversationBody({
             label: "Quote in reply",
             onInvoke: (selectedText) => {
               const quoted = formatQuoteBlock(selectedText);
-              if (quoted !== "") requestQuoteInsert(ref, quoted);
+              if (quoted !== "") requestQuoteInsert(ref, quoted, "append", seat.viewFallbackId);
             },
           },
         ]}
