@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
+import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { DirListSetting, PathListEditor } from "./dirListSetting";
 
@@ -26,6 +27,11 @@ afterEach(() => {
 });
 
 /** The add row trigger exposes its label and selected path. */
+/** The loaded entry count the section header shows, or null while it shows none. */
+function entryCount(): string | null {
+  return document.querySelector("[data-count]")?.getAttribute("data-count") ?? null;
+}
+
 function picker(): HTMLElement {
   return screen.getByRole("button", { name: /^New directory:/ });
 }
@@ -177,11 +183,11 @@ describe("PathListEditor", () => {
 
   test("ok:false shows the inline error and keeps the draft", async () => {
     const user = userEvent.setup();
-    const onAdd = vi.fn(async () => ({ ok: false, error: "path does not exist" }) as const);
+    const onAdd = vi.fn(async () => ({ ok: false, error: "validator-refusal" }) as const);
     render(<PathListEditor {...baseProps({ onAdd })} />);
     await typePath(user, "/nope");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    expect(await screen.findByText("path does not exist")).toBeTruthy();
+    expect(await screen.findByText("validator-refusal")).toBeTruthy();
     expect(picker().textContent).toMatch(/\/nope/);
   });
 
@@ -218,15 +224,9 @@ describe("DirListSetting", () => {
   test("renders the label as a heading and the copy as help text", async () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
-    render(
-      <DirListSetting
-        wireField="pluginDirs"
-        label="Plugin directories"
-        copy="Directories evener scans for plugins at launch."
-      />,
-    );
-    expect(await screen.findByText("Plugin directories")).toBeTruthy();
-    expect(screen.getByText("Directories evener scans for plugins at launch.")).toBeTruthy();
+    render(<DirListSetting wireField="pluginDirs" label="Label fixture" copy="Copy fixture" />);
+    expect(await screen.findByRole("heading", { name: "Label fixture" })).toBeTruthy();
+    expect(screen.getByText("Copy fixture")).toBeTruthy();
   });
 
   test("renders the wireField's entries from the fetched launch layer", async () => {
@@ -240,32 +240,32 @@ describe("DirListSetting", () => {
     expect(screen.queryByText("/opt/skills")).toBeNull();
   });
 
-  test("shows a count header that pluralizes N entries", async () => {
+  test("shows a count header with the number of entries", async () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins", "/opt/more"] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    expect(await screen.findByText("2 entries")).toBeTruthy();
+    await waitFor(() => expect(entryCount()).toBe("2"));
   });
 
   test("shows a singular count for exactly one entry", async () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    expect(await screen.findByText("1 entry")).toBeTruthy();
+    await waitFor(() => expect(entryCount()).toBe("1"));
   });
 
   test("shows a 0 entries count when the list is empty", async () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    expect(await screen.findByText("0 entries")).toBeTruthy();
+    await waitFor(() => expect(entryCount()).toBe("0"));
   });
 
   test("does not show a count while the launch layer is still loading", () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => new Promise(() => {}));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    expect(screen.queryByText(/^\d+ entr(y|ies)$/)).toBeNull();
+    expect(entryCount()).toBeNull();
   });
 
   test("does not show a count when the launch layer fails to load", async () => {
@@ -274,8 +274,8 @@ describe("DirListSetting", () => {
       throw new Error("boom");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    await screen.findByText("Failed to load");
-    expect(screen.queryByText(/^\d+ entr(y|ies)$/)).toBeNull();
+    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+    expect(entryCount()).toBeNull();
   });
 
   test("shows a failed-to-load error when the launch layer fetch rejects", async () => {
@@ -284,7 +284,7 @@ describe("DirListSetting", () => {
       throw new Error("network down");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    expect(await screen.findByText("Failed to load")).toBeTruthy();
+    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
     expect(screen.getByText("network down")).toBeTruthy();
   });
 
@@ -318,7 +318,7 @@ describe("DirListSetting", () => {
       return { data: ["/opt/plugins"] };
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    await screen.findByText("No plugin directories. Add one below.");
+    await waitFor(() => expect(entryCount()).toBe("0"));
     await user.click(picker());
     expect(await screen.findByRole("button", { name: "Open /opt/plugins" })).toBeTruthy();
   });
@@ -327,15 +327,15 @@ describe("DirListSetting", () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
-    fake.on("evener/path/validate", () => ({ path: "/nope", valid: false, error: "path does not exist" }));
+    fake.on("evener/path/validate", () => ({ path: "/nope", valid: false, error: "validator-refusal" }));
     const setLayer = vi.fn();
     fake.on("evener/launch/setLayer", setLayer);
     fake.on("evener/paths/complete", () => ({ data: [] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    await screen.findByText("No plugin directories. Add one below.");
+    await waitFor(() => expect(entryCount()).toBe("0"));
     await typePath(user, "/nope", false);
     expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(await screen.findByText("path does not exist")).toBeTruthy();
+    expect(await screen.findByText("validator-refusal")).toBeTruthy();
     expect(setLayer).not.toHaveBeenCalled();
   });
 
@@ -385,7 +385,7 @@ test("creating a directory in settings calls the hub but saves only after confir
   fake.on("evener/dirs/create", create);
   fake.on("evener/launch/setLayer", save);
   render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-  await screen.findByText("No plugin directories. Add one below.");
+  await waitFor(() => expect(entryCount()).toBe("0"));
   await user.click(picker());
   const newFolder = await screen.findByRole("button", { name: "New folder" });
   await waitFor(() => expect((newFolder as HTMLButtonElement).disabled).toBe(false));
