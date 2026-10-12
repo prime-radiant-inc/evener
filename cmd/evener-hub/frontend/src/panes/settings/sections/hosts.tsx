@@ -99,7 +99,14 @@ function stateChip(row: HostRow, connecting: boolean) {
   return <Chip tone="neutral">offline</Chip>;
 }
 
-function rowDetail(row: HostRow): string | null {
+// The last attach's failure explains why a host is detached and Connect is
+// back; on an attached or connecting host it is stale. The row and the sheet
+// both show it under this one rule.
+function shownAttachError(row: HostRow, connecting: boolean): string | undefined {
+  return !row.attached && !connecting && row.lastAttachError ? row.lastAttachError : undefined;
+}
+
+function rowDetail(row: HostRow, connecting: boolean): string | null {
   const parts: string[] = [];
   if (row.address) parts.push(row.address);
   // Version/OS/arch are the last-known facts the wire contract keeps on
@@ -112,7 +119,8 @@ function rowDetail(row: HostRow): string | null {
   // for every host (registry spec 08 §6). Render the server's own value so the
   // pane cannot drift from the wire's answer.
   if (row.origin) parts.push(row.origin);
-  if (row.lastAttachError) parts.push(row.lastAttachError);
+  const attachError = shownAttachError(row, connecting);
+  if (attachError !== undefined) parts.push(attachError);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
@@ -121,8 +129,8 @@ type HostOperationView = ReturnType<typeof hostOperationView>;
 // rowMeta: the list row's one meta line. The operation's own line leads it - a
 // failure's message, or a stopped read's notice - so the reason is on the list
 // rather than only in the sheet; the sheet still shows each in full.
-function rowMeta(row: HostRow, operationView: HostOperationView | null): string | undefined {
-  const parts = [operationView?.unavailable ?? operationView?.line ?? null, rowDetail(row)];
+function rowMeta(row: HostRow, connecting: boolean, operationView: HostOperationView | null): string | undefined {
+  const parts = [operationView?.unavailable ?? operationView?.line ?? null, rowDetail(row, connecting)];
   const meta = parts.filter((part): part is string => part !== null).join(" · ");
   return meta === "" ? undefined : meta;
 }
@@ -406,7 +414,7 @@ export function HostsSection(_props: HostsSectionProps) {
                       {remnantOpen(row) && <Chip tone="attention">teardown pending</Chip>}
                     </>
                   }
-                  meta={rowMeta(row, operationView)}
+                  meta={rowMeta(row, isConnecting(row), operationView)}
                   onSelect={() => setSelectedName(row.name)}
                 />
               </li>
@@ -563,6 +571,7 @@ function HostSheet({
   // holds an open remnant carries teardown-retry (escalating to
   // teardown-recover past the bound).
   const repairable = remnantOpen(row);
+  const attachError = shownAttachError(row, connecting);
   return (
     <Sheet open onClose={onClose} title={row.name} side={isMobile ? "bottom" : "right"}>
       <div ref={focusRoot} className={CLASS.sheetBody}>
@@ -572,9 +581,7 @@ function HostSheet({
         <PropertyList rows={hostFacts(row)} />
         {/* The last attach's own failure, so a background attach that fails
             while the sheet is open explains why Connect is back. */}
-        {!row.attached && !connecting && row.lastAttachError && (
-          <InlineNotice tone="danger">{row.lastAttachError}</InlineNotice>
-        )}
+        {attachError !== undefined && <InlineNotice tone="danger">{attachError}</InlineNotice>}
         {operationView !== null && (
           // The operation's progress/terminal state (registry spec 08 §13): the
           // chip names the state, the line is the record's own prose - a

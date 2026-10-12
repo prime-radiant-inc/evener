@@ -480,6 +480,30 @@ test("a server-side mid-attach row settles via the poll: in-progress -> failed r
   }
 });
 
+// The list row and the sheet agree on the last attach error: a detached host
+// shows it in both, and an attached host - whose stale error no longer
+// explains anything - in neither.
+test("the row and the sheet show the last attach error under the same rule", async () => {
+  const fake = connectFakeClient();
+  const staleError = "dial tcp: connection refused";
+  fake.on("evener/host/list", () => ({
+    hosts: [
+      row({ name: "alpha", attached: true, lastAttachError: staleError }),
+      row({ name: "beta", attached: false, lastAttachError: staleError }),
+    ],
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  await screen.findByText("beta");
+  expect(listRowFor("alpha").textContent).not.toContain(staleError);
+  expect(listRowFor("beta").textContent).toContain(staleError);
+
+  const alphaSheet = await openHost("alpha");
+  expect(alphaSheet.textContent).not.toContain(staleError);
+  await closeSheet("alpha");
+  const betaSheet = await openHost("beta");
+  expect(within(betaSheet).getByRole("alert").textContent).toContain(staleError);
+});
+
 // --- S14: the Deploy/Restart actions, plan confirmation, and refusals --------
 
 test("a live row offers Deploy and Restart; a tombstone row renders both disabled and they never fire", async () => {
