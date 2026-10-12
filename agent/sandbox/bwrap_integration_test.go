@@ -685,7 +685,7 @@ func TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames(t *testing.T) {
 git status --porcelain
 git check-attr --all -- tracked.txt
 printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
-		stdout, stderr, rp, _ := runUnderFixtureHome(config, script, sibling)
+		stdout, stderr, _, _ := runUnderFixtureHome(config, script, sibling)
 		if got := strings.TrimSpace(stderr); got != "" {
 			t.Errorf("git under restricted mode must stay silent; stderr:\n%s\nstdout:\n%s", got, stdout)
 		}
@@ -700,11 +700,6 @@ printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
 		}
 		if !strings.Contains(stdout, "SIBLING=denied") {
 			t.Errorf("the grant is file-exact: a sibling of the named file must stay unreadable; stdout:\n%s", stdout)
-		}
-		for _, granted := range []string{ignore, attrs} {
-			if !slices.Contains(rp.Spawned.ReadRoots, granted) {
-				t.Errorf("the restricted policy must grant the file the global config names, %q; read roots: %v", granted, rp.Spawned.ReadRoots)
-			}
 		}
 	})
 

@@ -487,12 +487,19 @@ func parseIncludePaths(text string) []string {
 	return out
 }
 
+// sectionBody returns the text between a "[...]" header's brackets, untrimmed, so
+// each caller can apply its own whitespace rule (git accepts neither a leading nor a
+// trailing space inside the brackets, and reads a subsection only in the quoted
+// form).
+func sectionBody(header string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(header), "["), "]")
+}
+
 // sectionName returns the leading section name of a "[section ...]" header: the
 // text between the brackets up to the first space, tab or quote, so
 // "[includeIf \"gitdir:x\"]" yields "includeIf". Case folding is the caller's.
 func sectionName(header string) string {
-	h := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(header), "["), "]")
-	h = strings.TrimSpace(h)
+	h := strings.TrimSpace(sectionBody(header))
 	if i := strings.IndexAny(h, " \t\""); i >= 0 {
 		h = h[:i]
 	}
@@ -505,11 +512,11 @@ func sectionName(header string) string {
 // different keys (core.x.excludesFile, core.excludesfile.*), so reading a value out
 // of one of those would follow a file a git command never opens.
 func bareSectionName(header string) string {
-	inner := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(header), "["), "]")
-	if strings.ContainsAny(inner, " \t\"") {
+	body := sectionBody(header)
+	if strings.ContainsAny(body, " \t\"") {
 		return "" // a subsection, or whitespace git does not accept inside the brackets
 	}
-	return inner
+	return body
 }
 
 // isIncludeSectionHeader reports whether a "[section ...]" header names the
@@ -583,6 +590,55 @@ func quotedConfigValue(value string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// gitCoreReferencedKeys are the core.* config keys that name a FILE git reads
+// alongside the config file itself, in the order the probe reports them.
+var gitCoreReferencedKeys = []string{"excludesFile", "attributesFile"}
+
+// parseGitCoreReferencedValues returns the LAST value assigned to each of
+// gitCoreReferencedKeys in a git config text's BARE [core] section. The
+// bare-section restriction matches git: `[core "x"]` and the legacy
+// `[core.excludesfile]` header name different keys (core.x.excludesFile,
+// core.excludesfile.*), so a value read out of one of them would follow a file no
+// git command opens.
+func parseGitCoreReferencedValues(text string) map[string]string {
+	values := map[string]string{}
+	inCore := false
+	for raw := range strings.SplitSeq(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			end := strings.Index(line, "]")
+			if end < 0 {
+				inCore = false
+				continue
+			}
+			inCore = strings.EqualFold(bareSectionName(line[:end+1]), "core")
+			if rest := strings.TrimSpace(line[end+1:]); inCore && rest != "" {
+				recordGitCoreValue(rest, values)
+			}
+			continue
+		}
+		if inCore {
+			recordGitCoreValue(line, values)
+		}
+	}
+	return values
+}
+
+// recordGitCoreValue records any gitCoreReferencedKeys assignment on one config
+// line, a later assignment overwriting an earlier one — an EMPTY assignment
+// included, since git treats it as clearing the variable and granting the earlier
+// value would grant a file git no longer reads.
+func recordGitCoreValue(line string, values map[string]string) {
+	for _, key := range gitCoreReferencedKeys {
+		if value, assigned := configValueLine(line, key); assigned {
+			values[key] = value
+		}
+	}
 }
 
 // globCouldReachWritable reports whether a glob include path might match a file

@@ -336,12 +336,11 @@ unsandboxed root's `TMPDIR` is not in the tree.
     tracked in [#4467](https://github.com/prime-radiant-inc/evener/issues/4467).
   - `GIT_CONFIG_GLOBAL` in the environment is not consulted: the probe reads the two
     files `git-config(1)` names under FILES. A session that exports it therefore
-    keeps today's behaviour for that file — tracked in
-    [#4468](https://github.com/prime-radiant-inc/evener/issues/4468) —
-    `GIT_CONFIG_GLOBAL`
-    and `GIT_CONFIG_SYSTEM` pass through the environment floor unchanged. This is
-    the one to suspect if a `restricted` session still reports an unreadable git
-    config; `GIT_CONFIG_GLOBAL=/dev/null` tells it apart from a sandbox fault.
+    keeps today's behaviour for that file, and `GIT_CONFIG_GLOBAL` and
+    `GIT_CONFIG_SYSTEM` pass through the environment floor unchanged — tracked in
+    [#4468](https://github.com/prime-radiant-inc/evener/issues/4468). This is the one
+    to suspect if a `restricted` session still reports an unreadable git config;
+    `GIT_CONFIG_GLOBAL=/dev/null` tells it apart from a sandbox fault.
   - A global config the probe cannot read — unreadable, a device, or larger than the
     probe's bounded 64 KiB read — contributes no referenced-file grant. The config
     file itself stays readable in `restricted`, so only values named by a config that

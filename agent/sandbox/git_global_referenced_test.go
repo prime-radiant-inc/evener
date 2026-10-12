@@ -36,6 +36,13 @@ func writeFixtureFile(t *testing.T, path, content string) {
 	}
 }
 
+// probeReferencedPaths runs the referenced-file probe the way probeHost does: the
+// config files are probed first and handed to it, so the test exercises the same
+// call shape as production.
+func probeReferencedPaths(system probeSystem) []string {
+	return probeGitGlobalReferencedPaths(system, probeGitGlobalConfigPaths(system))
+}
+
 // TestProbeGitGlobalReferencedPaths pins which files the probe admits from a global
 // git config's core.excludesFile and core.attributesFile: existing non-directory
 // files, `~/x` expanded against the home exactly as git expands it, the LAST
@@ -221,7 +228,7 @@ func TestProbeGitGlobalReferencedPaths(t *testing.T) {
 			t.Parallel()
 			home, ignore, attrs := referencedFilesFixture(t)
 			want := tc.setup(t, home, ignore, attrs)
-			got := probeGitGlobalReferencedPaths(fixtureHomeProbeSystem{home: home})
+			got := probeReferencedPaths(fixtureHomeProbeSystem{home: home})
 			if !slices.Equal(got, want) {
 				t.Errorf("probeGitGlobalReferencedPaths = %v, want %v", got, want)
 			}
@@ -235,10 +242,10 @@ func TestProbeGitGlobalReferencedPaths(t *testing.T) {
 func TestProbeGitGlobalReferencedPathsNeedsAHome(t *testing.T) {
 	t.Parallel()
 
-	if got := probeGitGlobalReferencedPaths(gitConfigProbeSystem{homeErr: errors.New("no home")}); got != nil {
+	if got := probeReferencedPaths(gitConfigProbeSystem{homeErr: errors.New("no home")}); got != nil {
 		t.Errorf("no home must contribute nothing, got %v", got)
 	}
-	if got := probeGitGlobalReferencedPaths(fixtureHomeProbeSystem{home: ""}); got != nil {
+	if got := probeReferencedPaths(fixtureHomeProbeSystem{home: ""}); got != nil {
 		t.Errorf("an empty home must contribute nothing, got %v", got)
 	}
 
@@ -246,7 +253,7 @@ func TestProbeGitGlobalReferencedPathsNeedsAHome(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".gitconfig", "nested"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := probeGitGlobalReferencedPaths(fixtureHomeProbeSystem{home: home}); got != nil {
+	if got := probeReferencedPaths(fixtureHomeProbeSystem{home: home}); got != nil {
 		t.Errorf("a directory named like a config file must contribute nothing, got %v", got)
 	}
 }
@@ -505,6 +512,56 @@ func TestGlobalGitReferencedSymlinkIsJudgedAtItsTarget(t *testing.T) {
 	}
 	if !slices.Contains(rp.Spawned.ReadRoots, ordinaryLink) {
 		t.Errorf("a referenced symlink whose target is ordinary must still be granted: %v", rp.Spawned.ReadRoots)
+	}
+}
+
+// TestExtraReadRootSymlinkIntoAMaskedTargetIsDropped pins the resolved-path rule
+// for a root that has nothing to do with git config, since filterMasked applies it
+// to every read root: a policy-supplied read root reached through a symlink is
+// judged at the path it really exposes, because bwrap's read-only bind of a symlink
+// follows it and materializes the target's content at the literal name.
+func TestExtraReadRootSymlinkIntoAMaskedTargetIsDropped(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	secretDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(secretDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(secretDir, "id_rsa")
+	writeFixtureFile(t, secret, "PRIVATE KEY\n")
+	maskedLink := filepath.Join(home, "link-into-mask")
+	if err := os.Symlink(secret, maskedLink); err != nil {
+		t.Fatal(err)
+	}
+	ordinary := filepath.Join(home, "ordinary")
+	writeFixtureFile(t, ordinary, "ordinary\n")
+	ordinaryLink := filepath.Join(home, "ordinary-link")
+	if err := os.Symlink(ordinary, ordinaryLink); err != nil {
+		t.Fatal(err)
+	}
+
+	host := darwinSeatbeltHost()
+	host.Home = home
+	rp, err := Resolve(SandboxPolicy{
+		Mode:           ModeRestricted,
+		ExtraReadRoots: []string{maskedLink, ordinaryLink},
+	}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, layer := range []struct {
+		name  string
+		roots []string
+	}{
+		{"spawned", rp.Spawned.ReadRoots},
+		{"file tool", rp.FileTool.ReadRoots},
+	} {
+		if slices.Contains(layer.roots, maskedLink) {
+			t.Errorf("%s read roots must drop a root whose resolved target is masked: %v", layer.name, layer.roots)
+		}
+		if !slices.Contains(layer.roots, ordinaryLink) {
+			t.Errorf("%s read roots must keep a root whose target is ordinary: %v", layer.name, layer.roots)
+		}
 	}
 }
 
