@@ -136,6 +136,13 @@ func (s *Session) skillInventorySummary(ctx context.Context) ([]schema.SkillInve
 				summary.Availability = skillAvailabilityReloadable
 			}
 		}
+		// A skill this session cannot follow is never offered as reloadable: a
+		// session that loses the memory save tools on resume must not be told to
+		// reload gardening-memory through use_skill, which now refuses it.
+		if !s.skillAvailableToSession(name) &&
+			(summary.Availability == skillAvailabilityReloadable || summary.Availability == skillAvailabilityRequiresUserActivation) {
+			summary.Availability = skillAvailabilityUnavailable
+		}
 		summaries = append(summaries, summary)
 	}
 	return summaries, diagnostics

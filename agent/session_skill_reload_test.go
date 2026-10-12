@@ -1363,6 +1363,30 @@ func TestSkillReloadReminder_CarriesDiscoveryDiagnostics(t *testing.T) {
 	}
 }
 
+// A session that cannot save memory must never be told to reload
+// gardening-memory through use_skill: its inventory summary marks the entry
+// unavailable even though the recorded source would otherwise reload.
+func TestSkillInventorySummary_UnavailableWithoutSaveTools(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, gardeningMemorySkillName, "---\nname: "+gardeningMemorySkillName+"\ndescription: fixture\n---\nopaque-gardening-body\n")
+	s := newTestSession(t)
+	s.skillLifecycle.Inventory[gardeningMemorySkillName] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{
+		Identity:     schema.SkillContentIdentity{Name: gardeningMemorySkillName, DeclaredName: gardeningMemorySkillName, Source: filepath.Join(root, "skills", gardeningMemorySkillName, "SKILL.md"), FileDigest: "f", RenderedDigest: "r"},
+		Controls:     schema.SkillInvocationControls{UserInvocable: true},
+		Route:        "model_tool",
+		InvocationID: "inv-1",
+	}}
+	summary, diagnostics := s.skillInventorySummary(context.Background())
+	if len(diagnostics) != 0 {
+		t.Fatalf("diagnostics = %+v, want none", diagnostics)
+	}
+	if len(summary) != 1 || summary[0].Name != gardeningMemorySkillName || summary[0].Availability != skillAvailabilityUnavailable {
+		t.Fatalf("summary = %+v, want the save-less %s entry unavailable", summary, gardeningMemorySkillName)
+	}
+}
+
 // TestSkillReloadReminder_ConsumesReceiptOnlyAfterDurableAdmission pins the
 // failure side of the reminder's admission contract. The reminder turn IS the
 // receipt's durable admission, so a transcript write failure must surface the
