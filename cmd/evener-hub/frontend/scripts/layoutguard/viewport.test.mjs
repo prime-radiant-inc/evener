@@ -11,6 +11,22 @@ describe("normalizeViewportSpec", () => {
     });
   });
 
+  test("carries touch emulation through, for a wide viewport too", () => {
+    expect(normalizeViewportSpec({ width: 1280, height: 800, touch: true }, "wide-touch-case")).toEqual({
+      width: 1280,
+      height: 800,
+      touch: true,
+    });
+  });
+
+  test("omits touch when the case does not ask for it", () => {
+    expect(normalizeViewportSpec({ width: 1280, height: 800 }, "wide-case")).not.toHaveProperty("touch");
+  });
+
+  test("rejects a non-boolean touch", () => {
+    expect(() => normalizeViewportSpec({ width: 1280, height: 800, touch: "yes" }, "bad-touch")).toThrow();
+  });
+
   test("leaves non-viewport cases alone", () => {
     expect(normalizeViewportSpec(null, "no-viewport-case")).toBeNull();
   });

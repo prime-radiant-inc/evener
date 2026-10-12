@@ -11,7 +11,7 @@
 //     neighbouring tile nor an ancestor's clip takes part of it
 const TAP_MIN = 44;
 
-function checkTile(prefix, t) {
+export function checkTile(prefix, t) {
   if (t.centreHit !== `${prefix}-open`) {
     return `a tap at the ${prefix} thumbnail's centre lands on ${t.centreHit}, not ${prefix}-open - tapping the image does not open the lightbox`;
   }
