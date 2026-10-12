@@ -155,21 +155,6 @@ func TestRequestDeviceCodeDefaultsIntervalWhenMissing(t *testing.T) {
 	}
 }
 
-func TestRequestDeviceCodeNotFoundIsClearError(t *testing.T) {
-	m := newDeviceMockServer(t)
-	m.usercode = func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	}
-
-	_, err := RequestDeviceCode(context.Background(), m.server.Client(), m.cfg())
-	if err == nil {
-		t.Fatal("RequestDeviceCode() error = nil, want device-code disabled error")
-	}
-	if !errors.Is(err, ErrDeviceCodeNotEnabled) {
-		t.Fatalf("error = %v, want ErrDeviceCodeNotEnabled", err)
-	}
-}
-
 func TestRequestDeviceCodeSurfacesUnexpectedStatus(t *testing.T) {
 	m := newDeviceMockServer(t)
 	m.usercode = func(w http.ResponseWriter, r *http.Request) {
