@@ -778,12 +778,13 @@ export function testIDSuffixes(tree: ReactTestRenderer | ReactTestInstance, pref
 		.map((node) => (node.props.testID as string).slice(prefix.length));
 }
 
-/** Whether any mounted button's accessibility label matches `words`: a page
+/** Whether any mounted button VoiceOver names with `words` (its accessibility
+ * label or, with none, the text inside it, as `pressable` reads it): a page
  * that reconnects on its own offers no button naming /\bReconnect\b/. */
 export function offersButton(tree: ReactTestRenderer, words: RegExp): boolean {
 	return tree.root
 		.findAllByProps({ accessibilityRole: "button" })
-		.some((node) => words.test(String(node.props.accessibilityLabel)));
+		.some((node) => words.test(node.props.accessibilityLabel ?? textOf(node)));
 }
 
 /** The first mounted Pressable VoiceOver names `label`: its accessibility
