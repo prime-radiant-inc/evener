@@ -684,7 +684,7 @@ export function FormError({ error }: { error: FormErrorReport | null }) {
 		if (error && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(error.message);
 	}, [error]);
 	return error ? (
-		<GroupFooter tone="danger" live>
+		<GroupFooter tone="danger" live testID="form-error">
 			{error.message}
 		</GroupFooter>
 	) : null;
@@ -722,6 +722,7 @@ export function GroupFooter({
 	tone = "normal",
 	machine = false,
 	live = false,
+	testID,
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
@@ -729,6 +730,8 @@ export function GroupFooter({
 	live?: boolean;
 	/** Text the machine wrote, such as an error the hub reported: Menlo. */
 	machine?: boolean;
+	/** Names what the footer reports, so a test can tell one report from another. */
+	testID?: string;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -737,6 +740,7 @@ export function GroupFooter({
 		<Text
 			allowFontScaling={allowFontScaling}
 			accessibilityLiveRegion={live ? "polite" : undefined}
+			testID={testID}
 			style={[
 				{
 					color,

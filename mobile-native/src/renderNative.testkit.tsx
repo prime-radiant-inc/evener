@@ -765,6 +765,19 @@ export function textOf(node: ReactTestInstance): string {
 	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }
 
+/** What each rendered host node whose testID starts with `prefix` says
+ * after it, in render order: `testIDSuffixes(tree, "detail-level-")` reads
+ * the reasons a page reports, such as ["conflict"]. */
+export function testIDSuffixes(tree: ReactTestRenderer | ReactTestInstance, prefix: string): string[] {
+	const root = "root" in tree ? tree.root : tree;
+	return root
+		.findAll(
+			(node) =>
+				typeof node.type === "string" && typeof node.props.testID === "string" && node.props.testID.startsWith(prefix),
+		)
+		.map((node) => (node.props.testID as string).slice(prefix.length));
+}
+
 /** The first mounted Pressable VoiceOver names `label`: its accessibility
  * label, or, with none, the text inside it, which iOS reads in its place;
  * undefined when there is none. */

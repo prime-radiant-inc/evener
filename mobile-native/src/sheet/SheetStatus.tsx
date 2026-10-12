@@ -17,6 +17,7 @@ export function SheetStatus() {
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
+			testID="sheet-status"
 			style={{
 				color: palette.inkMid,
 				...scaledType(uiType.footnote, scale),
@@ -42,6 +43,7 @@ export function FirstLoad({ hubName, label }: { hubName: string; label: string }
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
+			testID={fatal ? "first-load-fatal" : "first-load-connecting"}
 			style={{ color: palette.inkMid, ...scaledType(uiType.subheadline, scale), textAlign: "center", padding: 32 }}
 		>
 			{fatal ? INCOMPATIBLE_VERSIONS : `Connecting to ${hubName}…`}
