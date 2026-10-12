@@ -323,6 +323,52 @@ func TestSummarizeToolResult_MemorySearch(t *testing.T) {
 	}
 }
 
+// A breaker nudge the registry appended to a repeated search (appendIntervention)
+// is not a note about the search, so the summary must not show it as one. A
+// search that wrote no notes of its own is the case a positional rule (notes end
+// at the second blank line) cannot tell apart, and the case the issue named
+// (#4223).
+func TestSummarizeToolResult_SearchNudgeIsNotANote(t *testing.T) {
+	nudge := repetitionNudgeForTest
+	for _, tc := range []struct{ name, tool, output, want string }{
+		{
+			name:   "a repeated grep with no notes of its own",
+			tool:   "grep",
+			output: "a.go:1:x\nb.go:2:x\n\n" + nudge,
+			want:   `[grep: "x" → 2 matches]`,
+		},
+		{
+			name:   "a repeated grep keeps its own notes",
+			tool:   "grep",
+			output: "a.go:1:x\n\n[results truncated at 1; narrow the path or glob_filter, or raise max_results]\n\n" + nudge,
+			want:   `[grep: "x" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`,
+		},
+		{
+			name:   "a repeated memory_search with no notes of its own",
+			tool:   "memory_search",
+			output: "notes.md:1:x\n\n" + nudge,
+			want:   `[memory_search: "x" → 1 matches]`,
+		},
+		{
+			name:   "a glob keeps its own note and the registry's marker",
+			tool:   "glob",
+			output: "a.go\n\n[0 matches; 1 dotfile/gitignored path(s) were excluded]\n\n[3 total lines; showing first 1; 2 lines omitted]",
+			want:   `[glob: "x" → 1 files; 0 matches; 1 dotfile/gitignored path(s) were excluded; 3 total lines; showing first 1; 2 lines omitted]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := summarizeToolResult(tc.tool, tc.output, json.RawMessage(`{"pattern":"x"}`))
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// repetitionNudgeForTest is the repetition nudge the registry appends, as the
+// tool package renders it; pinned here so a reworded nudge fails this test too.
+const repetitionNudgeForTest = "You have now made this same call and received the identical result 2 times in a row. Repeating it will not change the answer — use the result you already have, or change your approach."
+
 func TestSummarizeToolResult_EditFile(t *testing.T) {
 	got := summarizeToolResult("edit_file", "OK", json.RawMessage(`{"file_path":"auth.go"}`))
 	want := "[edit_file: auth.go → OK]"
