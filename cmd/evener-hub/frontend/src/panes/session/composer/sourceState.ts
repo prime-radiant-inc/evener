@@ -20,6 +20,7 @@ import type {
   RecoveryWriteGuard,
 } from "../../../stores/mutationOutboxIndexedDB";
 import { trackProjectionWork } from "../../../stores/projectionWork";
+import { createSecureUUID } from "../../../stores/secureUUID";
 import type { InputAttachment } from "../../../stores/threads";
 import { durableAttachments, getComposerMutationStorage } from "../../../stores/threads";
 import { pushToast } from "../../../widgets/toast/store";
@@ -207,7 +208,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   let pendingRecoveryWrite: { id: string; version: number } | null = null;
   let refreshVersion = 0;
   let persistenceScheduled = false;
-  const sourceId = crypto.randomUUID();
+  const sourceId = createSecureUUID();
   let repository = deps?.repository;
   let draftKey = deps?.key;
   let outbox = deps?.outbox;
