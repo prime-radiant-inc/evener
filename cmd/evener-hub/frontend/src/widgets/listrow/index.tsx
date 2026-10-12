@@ -7,8 +7,7 @@ import styles from "./listrow.module.css";
 /** collection is design-system.md §10's collection row: a framed surface row
  * that opens the item's detail sheet, so an interactive one ends in the
  * drill-in chevron and its meta line is mono. plain is a row inside another
- * surface - a picker's choice, an activity-sidebar entry, a breadcrumb in the
- * hierarchy list: no frame, no chevron, a denser box and a quiet sans meta
+ * surface - a picker's choice, an activity-sidebar entry: no frame, no chevron, a denser box and a quiet sans meta
  * line. */
 export type ListRowVariant = "collection" | "plain";
 

@@ -5,7 +5,7 @@
 import { navigationSummaryFor } from "../../panes/session/threadTitle";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
-import { Button, ListRow } from "../../widgets";
+import { Button } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { refParam } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
@@ -62,21 +62,13 @@ function ScopeCrumbLabel({
   return (
     <span
       className={CLASS.crumbWrap}
-      style={hierarchy ? { paddingInlineStart: `calc(var(--space-2) * ${Math.min(depth, 3)})` } : undefined}
+      style={hierarchy ? { marginInlineStart: `calc(var(--space-2) * ${Math.min(depth, 3)})` } : undefined}
     >
       {depth > 0 && !hierarchy ? <span className={CLASS.crumbSep}>›</span> : null}
       {last ? (
         <span className={CLASS.crumbCurrent} aria-current="page" title={title}>
           {title}
         </span>
-      ) : hierarchy ? (
-        <ListRow
-          variant="plain"
-          label={title}
-          title={title}
-          data-session-navigation-ref={crumb.ref}
-          onSelect={navigate}
-        />
       ) : (
         <Button variant="link" title={title} data-session-navigation-ref={crumb.ref} onClick={navigate}>
           {title}

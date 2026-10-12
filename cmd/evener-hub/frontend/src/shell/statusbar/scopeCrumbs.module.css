@@ -39,14 +39,19 @@
   overflow-y: auto;
 }
 
+/* The hierarchy shows the whole ancestry: an ancestor's link Button inherits
+ * normal white-space and breaks even an unbroken title, so it wraps in full
+ * rather than ellipsizing. Depth indents through margin (ScopeCrumbs.tsx), so
+ * this padding insets every crumb alike. */
 .hierarchy .crumbWrap {
   display: flex;
+  padding: var(--space-1) var(--space-2);
   font-size: inherit;
   white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .hierarchy .crumbCurrent {
-  padding: var(--space-1) var(--space-2);
   font-size: var(--font-size-ui);
   font-weight: 600;
   white-space: normal;
