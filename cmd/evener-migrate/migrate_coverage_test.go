@@ -22,6 +22,9 @@ func TestRunXDGDefaults(t *testing.T) {
 	t.Setenv("HOME", tmp)
 	t.Setenv(envvars.XDGConfigHome.Name, "")
 	t.Setenv(envvars.XDGStateHome.Name, "")
+	// run scans the working directory and its ancestor git roots for project
+	// .serf directories; without this a developer's checkout would be migrated.
+	t.Chdir(tmp)
 
 	var stdout, stderr bytes.Buffer
 	code := run(nil, &stdout, &stderr)

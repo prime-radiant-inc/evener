@@ -772,15 +772,7 @@ func TestRunRespectsXDGEnvVars(t *testing.T) {
 
 	// Isolate cwd to a temp dir to prevent the project scan from finding
 	// unrelated .evener directories in ancestor git roots.
-	cwd := t.TempDir()
-	oldwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(cwd); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(oldwd)
+	t.Chdir(t.TempDir())
 
 	var stdout, stderr bytes.Buffer
 	code := run(nil, &stdout, &stderr)
