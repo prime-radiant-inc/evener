@@ -559,11 +559,11 @@ func TestMemoryRefreshDeliversIndexDeltaOncePerTurn(t *testing.T) {
 	}
 	memorySeedPage(t, root, "memory", "added.md", "opaque-added-3")
 	turn()
-	if !strings.Contains(delta, "opaque-added-3") || !strings.Contains(delta, "opaque-dropped-2") {
-		t.Fatalf("delta lacks the added or removed line: %q", delta)
+	if !strings.Contains(delta, "opaque-added-3") {
+		t.Fatalf("delta lacks the added line: %q", delta)
 	}
-	if strings.Contains(delta, "opaque-kept-1") {
-		t.Fatalf("delta repeats the unchanged line: %q", delta)
+	if strings.Contains(delta, "opaque-kept-1") || strings.Contains(delta, "opaque-dropped-2") || strings.Contains(delta, `removed "`) {
+		t.Fatalf("delta repeats the unchanged line or reports the removed one: %q", delta)
 	}
 	turn()
 	if got := memoryContextCount(s); got != 2 {
@@ -688,10 +688,10 @@ func TestMemoryRefreshIndexDeltaComparesTheFullIndex(t *testing.T) {
 	if !strings.Contains(deltas[1], `added "- [old](old.md) — opaque-old-page`) || strings.Contains(deltas[1], `removed "`) {
 		t.Fatalf("a page outside the window should arrive as one added line: %q", deltas[1])
 	}
-	if !strings.Contains(deltas[2], `removed "- [p000](p000.md) — opaque-filler-000`) || !strings.Contains(deltas[2], `added "- [p000](p000.md) — opaque-head-2`) {
-		t.Fatalf("a description change should arrive as its old and new lines: %q", deltas[2])
+	if strings.Contains(deltas[2], `removed "`) || !strings.Contains(deltas[2], `added "- [p000](p000.md) — opaque-head-2`) {
+		t.Fatalf("a description change should arrive as its new line only: %q", deltas[2])
 	}
-	if !strings.Contains(deltas[3], "opaque-new-page") || strings.Contains(deltas[3], `removed "`) || strings.Count(deltas[3], `added "`) != 1 {
+	if !strings.Contains(deltas[3], "opaque-new-page") || strings.Count(deltas[3], `added "`) != 1 {
 		t.Fatalf("a page pushed past the budget should not appear as a change: %q", deltas[3])
 	}
 }
@@ -736,10 +736,10 @@ func writeMemoryPage(t *testing.T, root, name, body string) string {
 	return path
 }
 
-// A page the session read and another session then changed or removed gets a
-// notice at the next turn, naming the page but never carrying its contents. A
-// page the session never read is never mentioned, and an unchanged turn after
-// a notice carries nothing.
+// A page the session read and another session then changed gets a notice at
+// the next turn, naming the page but never carrying its contents. A page the
+// session never read is never mentioned, a page another session removed is not
+// reported, and an unchanged turn after a notice carries nothing.
 func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -756,15 +756,24 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 			return finalResponse("observed")
 		}
 	}
-	// Removing the read page also removes its index line: that turn's one
-	// message carries the index change and the notice together.
-	changedTurn, removedTurn, unchangedTurn := noticeTurn(2), noticeTurn(3), noticeTurn(3)
+	// Removing the read page also removes its index line: neither the page nor
+	// the line is reported, so the removal turn and the one after add nothing.
+	changedTurn, removedTurn, unchangedTurn := noticeTurn(2), noticeTurn(2), noticeTurn(2)
+	var restoredSections []apptranscript.MemoryContextSection
+	restoredTurn := func(req llm.Request) llm.Response {
+		if got := memoryContextMessages(req); got != 3 {
+			t.Fatalf("turn after the page returns carries %d memory contexts, want 3", got)
+		}
+		restoredSections, _ = memoryScopeSections(latestMemoryContextMessage(req), "personal")
+		return finalResponse("observed")
+	}
+	afterRestoreTurn := noticeTurn(3)
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-read-page.md"})
 		},
 		func(llm.Request) llm.Response { return finalResponse("read") },
-		changedTurn, removedTurn, unchangedTurn,
+		changedTurn, removedTurn, unchangedTurn, restoredTurn, afterRestoreTurn,
 	))
 	turn := func() {
 		t.Helper()
@@ -781,10 +790,20 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 	}
 	turn()
 	turn()
-	for i, notice := range notices[:2] {
-		if !strings.Contains(notice, "opaque-read-page.md") {
-			t.Fatalf("notice %d does not name the read page: %q", i, notice)
-		}
+	// The removal advanced the page's record, so restoring the exact
+	// pre-deletion contents is a change, and the turn after it adds nothing.
+	writeMemoryPage(t, root, "opaque-read-page.md", describedMemoryPage("opaque-page-body-2\n"))
+	turn()
+	turn()
+	if !slices.ContainsFunc(restoredSections, func(section apptranscript.MemoryContextSection) bool {
+		return section.Kind == apptranscript.MemoryContextPages && strings.Contains(section.Text, "opaque-read-page.md")
+	}) {
+		t.Fatalf("restored page not reported as changed: %+v", restoredSections)
+	}
+	if !strings.Contains(notices[0], "opaque-read-page.md") {
+		t.Fatalf("notice does not name the read page: %q", notices[0])
+	}
+	for i, notice := range notices {
 		if strings.Contains(notice, "opaque-unread-page.md") || strings.Contains(notice, "opaque-page-body") || strings.Contains(notice, "opaque-unread-body") {
 			t.Fatalf("notice %d names an unread page or carries page contents: %q", i, notice)
 		}
@@ -1283,9 +1302,9 @@ func TestMemoryProjectionMigratesAHandWrittenIndex(t *testing.T) {
 	}
 }
 
-// A page another session deletes reaches this session as a removed line; a
-// description change as the old line removed and the new one added; the tag
-// header never appears in a change section.
+// A page another session deletes is not reported; a description change
+// arrives as the new line only; the tag header never appears in a change
+// section.
 func TestMemoryRefreshDeltaListsPageLinesOnly(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -1310,12 +1329,10 @@ func TestMemoryRefreshDeltaListsPageLinesOnly(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`removed "- [gone](gone.md) — opaque-gone`, `removed "- [changed](changed.md) — opaque-before`, `added "- [changed](changed.md) — opaque-after [newtag]`} {
-		if !strings.Contains(delta, want) {
-			t.Fatalf("delta lacks %q: %s", want, delta)
-		}
+	if want := `added "- [changed](changed.md) — opaque-after [newtag]`; !strings.Contains(delta, want) {
+		t.Fatalf("delta lacks %q: %s", want, delta)
 	}
-	if strings.Contains(delta, "opaque-kept") || strings.Contains(delta, "Tags:") {
+	if strings.Contains(delta, "opaque-kept") || strings.Contains(delta, "Tags:") || strings.Contains(delta, "opaque-gone") || strings.Contains(delta, "opaque-before") {
 		t.Fatalf("delta lists an unchanged line or the header: %s", delta)
 	}
 }
@@ -1400,12 +1417,10 @@ func TestMemoryRefreshOwnPageWriteKeepsOtherSessionsChanges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, want := range []string{`added "- [other](other.md) — opaque-other`, `removed "- [gone](gone.md) — opaque-gone`} {
-		if !strings.Contains(delta, want) {
-			t.Fatalf("delta lacks %q: %s", want, delta)
-		}
+	if want := `added "- [other](other.md) — opaque-other`; !strings.Contains(delta, want) {
+		t.Fatalf("delta lacks %q: %s", want, delta)
 	}
-	if strings.Contains(delta, "opaque-mine") || strings.Contains(delta, "opaque-kept") {
+	if strings.Contains(delta, "opaque-mine") || strings.Contains(delta, "opaque-kept") || strings.Contains(delta, "opaque-gone") {
 		t.Fatalf("delta echoes the own page or an unchanged line: %s", delta)
 	}
 }
@@ -1551,5 +1566,66 @@ func TestMemoryRefreshOwnWriteMatchesPageReadInAnotherCase(t *testing.T) {
 		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A boundary whose only change is a removed page appends nothing, yet the
+// baseline advances: a later add reports only the add, and the removed page
+// is never reported afterwards.
+func TestMemoryRefreshRemovalOnlyBoundaryEmitsNothingThenAddReportsOnlyTheAdd(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "memory", "kept.md", "opaque-kept")
+	gone := memorySeedPage(t, root, "memory", "gone.md", "opaque-gone")
+	var delta, returned string
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("first turn carries %d memory contexts, want the full index", got)
+			}
+			return finalResponse("first")
+		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 1 {
+				t.Fatalf("removal-only turn carries %d memory contexts, want none new", got)
+			}
+			return finalResponse("second")
+		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 2 {
+				t.Fatalf("turn after the add carries %d memory contexts, want one new", got)
+			}
+			delta = latestMemoryContext(req, "personal")
+			return finalResponse("third")
+		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 3 {
+				t.Fatalf("turn after the page returns carries %d memory contexts, want one new", got)
+			}
+			returned = latestMemoryContext(req, "personal")
+			return finalResponse("fourth")
+		},
+	))
+	turn := func() {
+		t.Helper()
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn()
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	turn()
+	memorySeedPage(t, root, "memory", "added.md", "opaque-added")
+	turn()
+	if !strings.Contains(delta, "opaque-added") || strings.Contains(delta, "opaque-gone") || strings.Contains(delta, "removed") {
+		t.Fatalf("delta after the add should name only the add: %q", delta)
+	}
+	// The removal advanced the baseline, so the page returning is an add.
+	memorySeedPage(t, root, "memory", "gone.md", "opaque-gone")
+	turn()
+	if !strings.Contains(returned, "opaque-gone") || strings.Contains(returned, "opaque-added") {
+		t.Fatalf("a returned page should arrive as an added line only: %q", returned)
 	}
 }
