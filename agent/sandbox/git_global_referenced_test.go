@@ -277,6 +277,31 @@ func TestBareSectionNameAndConfigValueLine(t *testing.T) {
 	}
 }
 
+// TestGitConfigReferencedPath pins the value resolution on its own: only a `~/x`
+// or absolute value names a file a grant can cover, because a relative value is one
+// git resolves against the working directory of the git command (the admission
+// check in the probe cannot pin this on its own — a relative path simply fails to
+// exist relative to the probe's own working directory).
+func TestGitConfigReferencedPath(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		value, want string
+	}{
+		{"~/ignore", "/home/u/ignore"},
+		{"/etc/ignore", "/etc/ignore"},
+		{"ignore", ""},
+		{"sub/dir/ignore", ""},
+		{"~other/ignore", ""},
+		{"~", ""},
+		{"", ""},
+	} {
+		if got := gitConfigReferencedPath(tc.value, "/home/u"); got != tc.want {
+			t.Errorf("gitConfigReferencedPath(%q, %q) = %q, want %q", tc.value, "/home/u", got, tc.want)
+		}
+	}
+}
+
 // TestRestrictedGrantsGitGlobalReferencedFilesToSpawnedOnly is the resolver half of
 // #4234: a restricted session's SPAWNED processes may read the files its global git
 // config names, while the model's file tools stay confined to the worktree — the
