@@ -446,7 +446,7 @@ func undisposedBackgroundJobsAnnouncement(jobIDs []string, shellTool string, can
 		strings.Join(jobIDs, ", "))
 	b.WriteString("- Scratch work you no longer need: stop it with job_stop.\n")
 	if canDetach {
-		fmt.Fprintf(&b, "- A process that must outlive this run (a server, a watcher): stop it with job_stop FIRST, then relaunch the same command with %s mode=\"detached\". Stop first — relaunching without stopping leaves the original running, and anything bound to a port will fail to rebind. A detached process's output is discarded (redirect to a file if you need it) and it sends no completion notification.\n", shellTool)
+		fmt.Fprintf(&b, "- A process that must outlive this run (a server, a watcher): stop it with job_stop FIRST, then relaunch the same command with %s mode=\"detached\". Stop first — relaunching without stopping leaves the original running, and anything bound to a port will fail to rebind. A detached process's output is discarded and it sends no completion notification, and it gets no session scratch ($EVENER_SCRATCH_DIR is unset there), so give its command absolute paths for its output and for any file it reads.\n", shellTool)
 	} else {
 		b.WriteString("- A process that must outlive this run: this environment cannot disown a process, so nothing can outlive it. Stop the job and say so plainly in your final answer.\n")
 	}
