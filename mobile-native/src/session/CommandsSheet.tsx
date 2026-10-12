@@ -63,8 +63,9 @@ interface CommandRow {
 
 interface CommandSection {
 	title: string;
-	/** A plugin's name, which reads as typed in Menlo. */
-	plugin: boolean;
+	/** The session's commands, a plugin's (its name reads as typed, in
+	 * Menlo), or your own. */
+	kind: "commands" | "plugin" | "yours";
 	data: CommandRow[];
 }
 
@@ -106,9 +107,9 @@ function commandSections(
 	// Plugins in name order so a plugin is where you look for it; your own last.
 	const plugins = [...groups.keys()].filter((plugin) => plugin !== "").sort();
 	const sections: CommandSection[] = [
-		{ title: "Commands", plugin: false, data: commands },
-		...plugins.map((plugin) => ({ title: plugin, plugin: true, data: groups.get(plugin) ?? [] })),
-		{ title: YOURS, plugin: false, data: groups.get("") ?? [] },
+		{ title: "Commands", kind: "commands", data: commands },
+		...plugins.map((plugin) => ({ title: plugin, kind: "plugin" as const, data: groups.get(plugin) ?? [] })),
+		{ title: YOURS, kind: "yours", data: groups.get("") ?? [] },
 	];
 	return sections
 		.map((section) => ({ ...section, data: section.data.filter(matches) }))
@@ -179,7 +180,7 @@ export function CommandsSheet({ route, navigation }: NativeStackScreenProps<Rout
 				keyExtractor={(row) => row.key}
 				renderSectionHeader={({ section }) => (
 					<Text
-						testID="commands-header"
+						testID={`commands-header:${section.kind}`}
 						accessibilityRole="header"
 						allowFontScaling={allowFontScaling}
 						style={{
@@ -187,7 +188,7 @@ export function CommandsSheet({ route, navigation }: NativeStackScreenProps<Rout
 							paddingTop: 16,
 							paddingBottom: 4,
 							color: palette.inkMid,
-							...(section.plugin
+							...(section.kind === "plugin"
 								? { fontFamily: fonts.mono, fontSize: 12 * scale, lineHeight: 16 * scale }
 								: { ...caption, fontWeight: "600" as const }),
 						}}
@@ -218,7 +219,11 @@ export function CommandsSheet({ route, navigation }: NativeStackScreenProps<Rout
 							{item.name}
 						</Text>
 						{item.line ? (
-							<Text allowFontScaling={allowFontScaling} style={{ ...caption, color: palette.inkMid }}>
+							<Text
+								testID="commands-line"
+								allowFontScaling={allowFontScaling}
+								style={{ ...caption, color: palette.inkMid }}
+							>
 								{item.line}
 							</Text>
 						) : null}
@@ -226,6 +231,7 @@ export function CommandsSheet({ route, navigation }: NativeStackScreenProps<Rout
 				)}
 				ListEmptyComponent={
 					<Text
+						testID="empty-state:noMatch"
 						allowFontScaling={allowFontScaling}
 						style={{ paddingHorizontal: 16, paddingTop: 16, color: palette.inkMid, ...caption }}
 					>

@@ -24,6 +24,16 @@ export function markers(within: ReactTestRenderer | ReactTestInstance, prefix: s
 	return markedNodes(within, prefix).map((node) => (node.props.testID as string).slice(prefix.length + 1));
 }
 
+/** The host nodes whose testID is exactly `testID`, in render order. */
+export function withTestID(within: ReactTestRenderer | ReactTestInstance, testID: string): ReactTestInstance[] {
+	return rootOf(within).findAll((node) => typeof node.type === "string" && node.props.testID === testID);
+}
+
+/** Whether a host node with exactly this testID renders here. */
+export function hasTestID(within: ReactTestRenderer | ReactTestInstance, testID: string): boolean {
+	return withTestID(within, testID).length > 0;
+}
+
 /** The node's own marker, when its testID is `<prefix>:<marker>`; null otherwise. */
 export function markerOf(node: ReactTestInstance, prefix: string): string | null {
 	const id = node.props.testID;
