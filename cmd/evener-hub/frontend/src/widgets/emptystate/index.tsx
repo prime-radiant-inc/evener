@@ -46,7 +46,7 @@ export type EmptyStateReason =
 const BASE_CLASS = {
   emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),
   compact: requireClass(styles.compact, "emptystate.module.css", "compact"),
-  title: requireClass(styles.title, "emptystate.module.css", "title"),
+  title: requireClass(styles.emptyTitle, "emptystate.module.css", "emptyTitle"),
   titleDisplay: requireClass(styles.titleDisplay, "emptystate.module.css", "titleDisplay"),
   hint: requireClass(styles.hint, "emptystate.module.css", "hint"),
   action: requireClass(styles.action, "emptystate.module.css", "action"),

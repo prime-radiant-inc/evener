@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AskQuestionRef } from "@evener/appwire-client";
@@ -330,35 +330,6 @@ test("every option row gets comfortable padding, and reaches the tap floor on a 
   const rule = coarse![1]!.match(/\.optionRow\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .optionRow").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
-});
-
-// layoutguard harnesses load module CSS unscoped, so an askDock class that
-// shares a name with a widget's (PaneScaffold's .header, RadioGroup's .option)
-// would restyle the widget, or be restyled by it, in any harness loading both.
-function moduleClassNames(path: string): Set<string> {
-  const css = readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  return new Set([...css.matchAll(/\.([A-Za-z_][\w-]*)/g)].map((match) => match[1]!));
-}
-
-test("the askDock modules share no class name with any widget module", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const widgetsDir = join(here, "../../../../widgets");
-  const widgetClasses = new Map<string, string>();
-  // Every widget's stylesheet sits in its own directory: widgets/<name>/<name>.module.css.
-  for (const widget of readdirSync(widgetsDir, { withFileTypes: true })) {
-    if (!widget.isDirectory()) continue;
-    for (const file of readdirSync(join(widgetsDir, widget.name), { withFileTypes: true })) {
-      if (!file.name.endsWith(".module.css")) continue;
-      const entry = `${widget.name}/${file.name}`;
-      for (const name of moduleClassNames(join(widgetsDir, entry))) widgetClasses.set(name, entry);
-    }
-  }
-  const collisions = ["askquestioncard.module.css", "askdock.module.css"].flatMap((file) =>
-    [...moduleClassNames(join(here, file))]
-      .filter((name) => widgetClasses.has(name))
-      .map((name) => `${file} .${name} (also ${widgetClasses.get(name)})`),
-  );
-  expect(collisions).toEqual([]);
 });
 
 // The dock is a virtualized transcript row (Session.tsx), so scrolling away

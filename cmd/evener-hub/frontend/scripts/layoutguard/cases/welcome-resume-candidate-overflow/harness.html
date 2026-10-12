@@ -41,25 +41,18 @@
 <main class="fixtures"></main>
 
 <!-- Welcome.tsx's real structure: PaneScaffold > .body > EmptyState
-     (.emptyState > .title/.action) > welcome .actions column, the resume
+     (.emptyState > .emptyTitle/.action) > .welcomeActions column, the resume
      Button with `wrap`, and the hints as a ShortcutList. The header is
-     present but display:none at this mobile width, as in production.
-     NOTE the raw-stylesheet collisions CSS Modules would normally hash apart:
-     panescaffold's .actions/.title also match welcome's .actions and
-     emptystate's .title here. welcome.module.css/emptystate.module.css load
-     LAST, so their declarations win every conflicting property; the leaked
-     extras (flex:none, margin-left:auto on a block-level or full-width box,
-     nowrap+ellipsis on the short "No session open" title) are geometrically
-     inert at these widths. -->
+     present but display:none at this mobile width, as in production. -->
 <template id="fixture-template">
   <section class="fixture">
     <div class="pane">
       <div class="header"><h2 class="title">Welcome</h2></div>
       <div class="body" data-pane-body tabindex="-1">
         <div class="emptyState" data-testid="empty-state">
-          <p class="title">No session open</p>
+          <p class="emptyTitle">No session open</p>
           <div class="action">
-            <div class="actions" data-actions>
+            <div class="welcomeActions" data-actions>
               <button class="button primary md wrap" data-resume type="button"></button>
               <button class="button secondary md" data-new-session type="button">New session</button>
               <div class="hints" data-hints>

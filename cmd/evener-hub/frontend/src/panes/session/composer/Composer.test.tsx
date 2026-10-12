@@ -1470,8 +1470,8 @@ test("every control in the composer's button row is the xs (24px) size", async (
   });
 
   // IconButton overrides Button's own xs/sm/md with its square sizing (see
-  // iconbutton.module.css), so the one icon control carries that module's xs.
-  expect(screen.getByTestId("composer-attach").className.split(" ")).toContain(iconButtonStyles.xs);
+  // iconbutton.module.css), so the one icon control carries that module's squareXs.
+  expect(screen.getByTestId("composer-attach").className.split(" ")).toContain(iconButtonStyles.squareXs);
   for (const control of [stopButton(), steerButton(), submitButton()]) {
     expect(control.className.split(" ")).toContain(buttonStyles.xs);
   }

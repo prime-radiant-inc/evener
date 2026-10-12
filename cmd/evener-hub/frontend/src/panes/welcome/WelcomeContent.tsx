@@ -6,7 +6,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./welcome.module.css";
 
 const CLASS = {
-  actions: requireClass(styles.actions, "welcome.module.css", "actions"),
+  welcomeActions: requireClass(styles.welcomeActions, "welcome.module.css", "welcomeActions"),
   hints: requireClass(styles.hints, "welcome.module.css", "hints"),
   hintFooter: requireClass(styles.hintFooter, "welcome.module.css", "hintFooter"),
 };
@@ -66,7 +66,7 @@ export function WelcomeContent({ note, showNewSession, showResume = true, showHi
   const candidate = resumeCandidate(navigation);
 
   return (
-    <div className={CLASS.actions}>
+    <div className={CLASS.welcomeActions}>
       {note && <p>{note}</p>}
       {showResume && candidate !== undefined && (
         <Button variant="primary" wrap onClick={() => goToSession(candidate.ref)}>

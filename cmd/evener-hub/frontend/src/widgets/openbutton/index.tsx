@@ -22,7 +22,7 @@ import { requireClass } from "../internal/requireClass";
 import styles from "./openbutton.module.css";
 
 const CLASS = {
-  link: requireClass(styles.link, "openbutton.module.css", "link"),
+  anchorLink: requireClass(styles.anchorLink, "openbutton.module.css", "anchorLink"),
   inline: requireClass(styles.inline, "openbutton.module.css", "inline"),
 };
 
@@ -78,7 +78,7 @@ export function OpenButton({ label, onClick, tabIndex, describedBy, href, word =
   if (href !== undefined) {
     return (
       <a
-        className={CLASS.link}
+        className={CLASS.anchorLink}
         href={href}
         target="_blank"
         rel="noopener noreferrer"

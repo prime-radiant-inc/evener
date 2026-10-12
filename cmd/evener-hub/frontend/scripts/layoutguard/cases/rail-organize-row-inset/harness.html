@@ -41,7 +41,7 @@ const TUNE_SVG = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="t
 
 function fixtureHtml(key, width) {
   const button = (id, label) =>
-    `<button type="button" class="button quiet sm" id="${id}" aria-label="${label}" tabindex="-1"><span class="icon" aria-hidden="true">${TUNE_SVG}</span></button>`;
+    `<button type="button" class="button quiet squareSm" id="${id}" aria-label="${label}" tabindex="-1"><span class="icon" aria-hidden="true">${TUNE_SVG}</span></button>`;
   return `
     <div class="fixtureLabel">${width}px</div>
     <div class="railBox" id="box-${key}" style="width: ${width}px">

@@ -93,7 +93,7 @@ test("size=compact declares a left-aligned block on the UI type step", () => {
   const block = /\.compact\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(block).toContain("align-items: flex-start");
   expect(block).toContain("text-align: start");
-  const title = /\.compact \.title\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const title = /\.compact \.emptyTitle\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(title).toContain("font-size: var(--font-size-ui)");
   expect(title).toContain("font-family: var(--font-sans)");
   const hint = /\.compact \.hint\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
