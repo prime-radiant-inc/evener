@@ -630,7 +630,10 @@ export function buildCommands(): Command[] {
       scope: "session",
       run: (ctx) => {
         if (!ctx.sessionRef) return;
-        activitySidebarStore.getState().openFor(ctx.sessionRef, "about");
+        // The owning pane rides along (the session menu's own Overview
+        // action): an embedded cascade column keeps its inspector focused
+        // even when an ordinary pane for the same conversation exists.
+        activitySidebarStore.getState().openFor(ctx.sessionRef, "about", undefined, ctx.sessionPaneId ?? undefined);
       },
     },
     {

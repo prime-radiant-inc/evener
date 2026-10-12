@@ -161,6 +161,36 @@ test("closing the sidebar retargets its preference saves to the focused scope", 
   expect(saved["remote:column"]).toMatchObject({ open: false, tab: "watches" });
 });
 
+test("closing the held column does not reopen the focused leaf's saved-open Overview", () => {
+  // The same drilled cascade as the retarget test above, but the focused
+  // leaf's Overview was open before the column inspection began, so the
+  // leaf's saved view carries open: true. Closing the sidebar is a
+  // dismissal: the retarget back onto the leaf must not replay that old
+  // preference and reopen the panel the user just closed.
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: { ref: "remote:leaf", source: { type: "session", params: { ref: "remote:root" } }, edges: [] },
+        slot: "main",
+      },
+    ],
+    focusedPaneId: "zoom",
+  });
+  activitySidebarStore.getState().openFor("remote:leaf", "jobs");
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  activitySidebarStore.getState().close();
+  expect(activitySidebarStore.getState().open).toBe(false);
+  expect(activitySidebarStore.getState().ref).toBe("remote:leaf");
+  // The dismissal records as the focused conversation's explicit close
+  // choice, so a later retarget does not reopen it either.
+  activitySidebarStore.getState().setTab("jobs");
+  const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
+  expect(saved["remote:leaf"]).toMatchObject({ open: false, tab: "jobs" });
+  expect(saved["remote:column"]).toMatchObject({ open: false, tab: "agents" });
+});
+
 test("a focus-based open request releases the held column scope and saves against its own session", () => {
   // A drilled cascade with an ordinary pane for its selected leaf: the
   // focused scope never moves, so only the request itself can release the

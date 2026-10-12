@@ -204,7 +204,14 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       // preference saves with the focused conversation.
       set({ explicitScopeRef: null });
       const focused = focusedActivityScopeRef();
-      if (get().ref !== focused) get().retarget(focused);
+      if (get().ref !== focused) {
+        get().retarget(focused);
+        // retarget restores the focused scope's saved view, which can carry
+        // open: true from an earlier inspection of the same conversation.
+        // The dismissal must survive that restoration, and records as the
+        // focused conversation's explicit close choice.
+        if (get().open) update({ open: false });
+      }
     },
     setTab: (tab) => update({ tab }),
     toggle: () => {

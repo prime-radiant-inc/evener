@@ -67,6 +67,7 @@ import {
   documentPaneState,
   getDockviewApi,
   type OpenPaneRecord,
+  recordConversationOpenParent,
   recordDocumentPaneState,
   resetWorkspaceStoreForTests,
   workspaceStore,
@@ -307,6 +308,26 @@ function installLocationForRoute(ref: string, ownerRef?: string): void {
       children: [],
     },
   });
+}
+
+// A first location read that failed outright: no retained data, so the
+// route's placement must decide from the workspace it already holds.
+function installFailedLocation(ref: string): void {
+  const key = { kind: "location", ref } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: null,
+    loadedRevision: null,
+    targetRevision: null,
+    forceToken: 0,
+    etag: null,
+    loading: false,
+    stale: false,
+    error: new Error("location read failed"),
+    generationID: "generation_test",
+  });
+  navigationStore.setState({ mode: "v3", resources });
 }
 
 function installNeedsYouRows(): void {
@@ -1754,6 +1775,41 @@ test("retained unavailable location data does not retry or lose its owner", asyn
         method === "evener/navigation/read" && (params as NavigationReadParams).resource === "location",
     ).length,
   ).toBe(0);
+});
+
+test("a failed first location read keeps the funnel-placed child, its owner, and their neighbors", async () => {
+  // The phone journey behind the funnel: the child was opened from its
+  // parent (a session pane beside the owner, the opened-from context
+  // recorded), the URL publishes /s/<child>, and the child's first location
+  // read fails with no retained data. The failed read must not collapse the
+  // workspace to a lone child pane: the recorded owner and every neighbor
+  // survive, and a later successful read settles the same nested shape
+  // without discarding work.
+  const child = "local:child";
+  const owner = "local:owner";
+  window.history.pushState({}, "", `/s/${encodeURIComponent(child)}`);
+  installFailedLocation(child);
+  act(() => {
+    workspaceStore.getState().replacePrimary("session", { ref: owner });
+    workspaceStore.getState().openPane("doc", { session: owner, path: "README.md" });
+    const childId = workspaceStore.getState().openPane("session", { ref: child }, { slot: "secondary" });
+    const childPane = workspaceStore.getState().panes.find((pane) => pane.id === childId);
+    if (childPane) recordConversationOpenParent(childPane, owner);
+  });
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: owner });
+  expect(paneFor(child)?.slot).toBe("secondary");
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "doc")).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(child)?.id);
+
+  // Recovery: the read succeeds later. The placement settles into the
+  // nested shape a successful read produces, still without discarding work.
+  act(() => installLocationForRoute(child, owner));
+  await waitFor(() => expect(paneFor(child)?.slot).toBe("secondary"));
+  expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: owner });
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "doc")).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(child)?.id);
 });
 
 // kata 9r5y: the DockHost first-mount race regression test. React fires
