@@ -476,7 +476,9 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
 
   expect(screen.getByTestId("intent-group")).toBeTruthy();
   // Announced by name: the glyph's meaning must not live in its color alone.
-  expect(accessibleName(screen.getByTestId("failure-glyph"), "img").trim()).not.toBe("");
+  const glyph = screen.getByTestId("failure-glyph");
+  expect(screen.getAllByRole("img")).toContain(glyph);
+  expect(accessibleName(glyph).trim()).not.toBe("");
   // ToolCallItem renders eagerly inside the intent group. A failed row no
   // longer force-expands: it settles collapsed, and the body opens on the
   // reader's own toggle. "Action summary unavailable" is still never shown,

@@ -140,7 +140,7 @@ test("each pill form announces a distinct, non-empty name", () => {
   ];
   const names = forms.map((form) => {
     const { unmount } = render(<NewContentPill visible count={0} {...form} onClick={() => {}} />);
-    const name = accessibleName(screen.getByTestId("new-content-pill"), "button").trim();
+    const name = accessibleName(screen.getByRole("button")).trim();
     unmount();
     return name;
   });

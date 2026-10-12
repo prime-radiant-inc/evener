@@ -169,8 +169,8 @@ const FOLD_NAME = "2 inactive";
 // non-empty computed name. Returns the name so a test can compare outcomes
 // without pinning their wording.
 function glyphName(row: HTMLElement, glyph: HTMLElement): string {
-  expect(row.contains(glyph)).toBe(true);
-  const name = accessibleName(glyph, "img").trim();
+  expect(within(row).getAllByRole("img")).toContain(glyph);
+  const name = accessibleName(glyph).trim();
   expect(name).not.toBe("");
   return name;
 }
