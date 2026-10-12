@@ -1,0 +1,18 @@
+{
+  "name": "attachment-remove-touch-wide",
+  "description": "composer attachment tile on a wide touch screen (above the 900px phone breakpoint, coarse pointer): the remove control is visible at rest and meets the 44px tap floor, and its hit box never covers the thumbnail's centre or a neighbouring tile, so a tap on the image opens the lightbox instead of removing the attachment",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/composer/composer.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css"
+  ],
+  "viewport": { "width": 1280, "height": 800, "touch": true },
+  "mutation": {
+    "declaration": "composer.module.css touch block: the (any-pointer: coarse) half of @media (max-width: 899px), (any-pointer: coarse) removed",
+    "verified": "2026-10-11",
+    "expect": "fail",
+    "note": "Fails: a tap at the first thumbnail's centre lands on first-remove, not first-open."
+  }
+}

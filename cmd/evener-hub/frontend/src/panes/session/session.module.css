@@ -115,6 +115,26 @@
   max-width: 42rem;
 }
 
+/* The pane before its transcript hydrates: the Loader, and for a local
+ * session the force-shutdown recovery, centered as one column. */
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+}
+
+.loadingHint {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
 /* Composer + status row, stacked in PaneScaffold's shrinkable footer slot. */
 .footer {
   flex: 1 1 auto;

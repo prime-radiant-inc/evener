@@ -147,8 +147,8 @@ beforeAll(async () => {
 const PANE_WARMUP_TRIPWIRE_MS = 10_000;
 
 // Waits until the stack shows a pane of `paneType` whose body has rendered
-// its empty state: welcome's "nothing open" landing, or a session panel still
-// loading its model. The pane type comes from the stack body's own marker, so
+// its empty state: welcome's "nothing open" landing. The pane type comes from
+// the stack body's own marker, so
 // this proves which pane is on screen without reading its copy.
 async function findStackedEmptyState(paneType: string, timeout?: number): Promise<HTMLElement> {
   return waitFor(

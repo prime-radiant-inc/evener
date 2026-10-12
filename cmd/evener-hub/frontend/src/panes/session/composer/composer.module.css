@@ -166,7 +166,8 @@
  * instead) and reserves half the control in its own top/right margin, so the
  * part hanging outside stays inside the attachment row's box - no ancestor
  * clips it, and the row gap keeps it off the neighbouring tile. Guarded by
- * scripts/layoutguard/cases/attachment-remove-touch-phone. */
+ * scripts/layoutguard/cases/attachment-remove-touch-phone (narrow) and
+ * attachment-remove-touch-wide (coarse pointer above the breakpoint). */
 @media (max-width: 899px), (any-pointer: coarse) {
   .imageTile {
     overflow: visible;
