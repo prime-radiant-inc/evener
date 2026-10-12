@@ -113,8 +113,8 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 
 	// Another session changed both known indexes and one project page this
 	// session read, and removed another: one message carries both scopes'
-	// changed lines and the page notice, which names the pages and carries no
-	// contents.
+	// added lines and the page notice, which names only the changed page and
+	// carries no contents. The removals are not reported.
 	s.memoryMu.Lock()
 	s.memoryReadPages = map[string]map[string]memoryPageRecord{"project": {
 		"opaque-notice-changed.md": {sum: sha256.Sum256([]byte("opaque-notice-before"))},
@@ -155,8 +155,8 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 			wantRaw: true, wantScope: "project", wantState: "current", wantContent: "Line one\nLine \"two\" \u2014 caf\u00e9\tend"},
 		{Case: "malformed-project", Note: "The producer's own message with its preamble corrupted: one item keeps the exact text and carries no raw.", Item: malformedItem},
 		{Case: "index-change-personal", Note: "Another session changed the known personal index: the first section of a message that also carries the project's changes.", Item: changedItems[0]},
-		{Case: "index-change-project", Note: "Another session changed the known project index: the section lists only the added and removed lines and carries no raw.", Item: changedItems[1]},
-		{Case: "page-notice-project", Note: "Another session changed one project page this session read and removed another: the section names both pages, carries no page contents and no raw.", Item: changedItems[2]},
+		{Case: "index-change-project", Note: "Another session changed the known project index: the section lists only the added line, not the line another session removed, and carries no raw.", Item: changedItems[1]},
+		{Case: "page-notice-project", Note: "Another session changed one project page this session read and removed another: the section names only the changed page, carries no page contents and no raw.", Item: changedItems[2]},
 	}
 
 	// Regression assertions over the producer's real output, before pinning.
