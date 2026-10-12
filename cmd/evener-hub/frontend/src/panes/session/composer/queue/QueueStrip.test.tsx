@@ -502,7 +502,8 @@ describe("durable recovery rows", () => {
     });
     renderStrip(defaultProps());
 
-    expect(await screen.findByText(/turn is not active/)).toBeTruthy();
+    const row = await findRow("refused");
+    expect(within(row).getByText(/turn is not active/)).toBeTruthy();
   });
 
   // A Stop carries no input, so its preview is empty and "Edit message" would

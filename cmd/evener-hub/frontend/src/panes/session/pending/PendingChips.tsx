@@ -52,7 +52,9 @@ export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Elemen
       {optimistic.map((entry) => (
         <li key={entry.id} className={CLASS.chip}>
           <span className={CLASS.method}>Sending</span>
-          <span className={CLASS.text}>{pendingEntryPreview(entry)}</span>
+          <span className={CLASS.text} data-testid="pending-chip-preview">
+            {pendingEntryPreview(entry)}
+          </span>
         </li>
       ))}
     </ul>
