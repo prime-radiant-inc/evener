@@ -125,8 +125,10 @@ func TestRunUpgrade_InvalidFlag(t *testing.T) {
 	if !strings.Contains(err.Error(), "-invalid-flag") {
 		t.Fatalf("error = %v, want the flag-parse error naming -invalid-flag", err)
 	}
-	if stderr.Len() == 0 {
-		t.Fatal("stderr is empty, want the flag error and usage there")
+	// The usage lists upgrade's own flags; the flag package's error line names
+	// only the flag it rejected.
+	if !strings.Contains(stderr.String(), "--prefix") {
+		t.Fatalf("stderr = %q, want the flag error and usage there", stderr.String())
 	}
 	if got := stdout.String(); got != "" {
 		t.Fatalf("stdout = %q, want empty", got)

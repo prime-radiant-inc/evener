@@ -764,7 +764,9 @@ func TestRunOpenAILogout_Errors(t *testing.T) {
 		if err == nil {
 			t.Fatal("runOpenAILogout(--invalid-flag) error = nil, want error")
 		}
-		if stderr.Len() == 0 || stdout.Len() != 0 {
+		// The usage lists the subcommand's own flags; the flag package's error
+		// line names only the flag it rejected.
+		if !strings.Contains(stderr.String(), "--state-dir") || stdout.Len() != 0 {
 			t.Fatalf("stdout = %q, stderr = %q; want the flag error and usage on stderr only", stdout.String(), stderr.String())
 		}
 	})
@@ -892,7 +894,9 @@ func TestRunOpenAILogin_Errors(t *testing.T) {
 		if err == nil {
 			t.Fatal("runOpenAILogin(--invalid) error = nil, want error")
 		}
-		if stderr.Len() == 0 || stdout.Len() != 0 {
+		// The usage lists the subcommand's own flags; the flag package's error
+		// line names only the flag it rejected.
+		if !strings.Contains(stderr.String(), "--state-dir") || stdout.Len() != 0 {
 			t.Fatalf("stdout = %q, stderr = %q; want the flag error and usage on stderr only", stdout.String(), stderr.String())
 		}
 	})
