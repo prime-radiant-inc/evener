@@ -39,17 +39,11 @@ func newTestRun(t *testing.T, modules []string, parallel int, newCmd func(string
 	}, &out, &errOut
 }
 
-// setCanonicalTmpDir points TMPDIR at a fresh temp dir by its canonical path.
-// The runner reports its scratch canonically, so paths the test builds from
-// TMPDIR match what the runner prints even under a symlinked temp root
-// (macOS /var -> /private/var).
+// setCanonicalTmpDir points TMPDIR at a fresh canonicalTempDir, so paths the
+// test builds from TMPDIR match what the runner prints.
 func setCanonicalTmpDir(t *testing.T) {
 	t.Helper()
-	tmp, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("resolving TMPDIR: %v", err)
-	}
-	t.Setenv("TMPDIR", tmp)
+	t.Setenv("TMPDIR", canonicalTempDir(t))
 }
 
 // scratchLeft lists evener-module-lint.* entries under the test's TMPDIR.

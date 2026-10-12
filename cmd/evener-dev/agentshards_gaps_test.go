@@ -206,7 +206,7 @@ func TestInterrupterInterruptWithPgids(t *testing.T) {
 // TestRunShardsScratchError covers the scratch.Acquire error path in runShards.
 func TestRunShardsScratchError(t *testing.T) {
 	// Set TMPDIR to a file (not a directory) so scratch.Acquire fails.
-	conflict := filepath.Join(t.TempDir(), "notadir")
+	conflict := filepath.Join(canonicalTempDir(t), "notadir")
 	if err := os.WriteFile(conflict, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}

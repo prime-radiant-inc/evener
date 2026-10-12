@@ -41,6 +41,19 @@ func isolateToolchainEnv(t *testing.T) {
 	t.Setenv("GOFLAGS", "")
 }
 
+// canonicalTempDir returns a fresh temp dir by its canonical path. The runners
+// report TMPDIR-derived paths canonically (scratch resolves its base), so a
+// path the test builds from this dir matches theirs even under a symlinked
+// temp root (macOS /var -> /private/var).
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolving temp dir: %v", err)
+	}
+	return dir
+}
+
 // e2eConfig is a runShards config over the fixture module with isolated
 // TMPDIR and survey cache, capture buffers attached.
 func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string) {
