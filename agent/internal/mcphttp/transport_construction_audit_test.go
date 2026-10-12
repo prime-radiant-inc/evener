@@ -53,8 +53,8 @@ func TestTransportConstructionStaysInThisPackage(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			switch name := d.Name(); {
-			case name == "testdata" || name == "node_modules" || strings.HasPrefix(name, "."):
+			name := d.Name()
+			if name == "testdata" || name == "node_modules" || strings.HasPrefix(name, ".") {
 				return fs.SkipDir
 			}
 			return nil
