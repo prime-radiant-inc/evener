@@ -577,11 +577,12 @@ func (s *Session) memoryReadPagesFor(scope string) []string {
 }
 
 // memoryPageChangesSection is the section naming each read page of scope
-// whose content changed or that was removed since the session's record; it
-// advances those records. It never carries page contents.
+// whose content changed since the session's record; it advances those
+// records, a page found removed included, so a removal is never reported
+// later. It never carries page contents.
 func (s *Session) memoryPageChangesSection(scope string, observed map[string]memoryPageRecord) memoryContextSection {
 	return func() string {
-		var changes []apptranscript.MemoryPageChange
+		var changes []string
 		for _, page := range slices.Sorted(maps.Keys(observed)) {
 			known, tracked := s.memoryReadPages[scope][page]
 			now := observed[page]
@@ -589,7 +590,9 @@ func (s *Session) memoryPageChangesSection(scope string, observed map[string]mem
 				continue
 			}
 			s.memoryReadPages[scope][page] = now
-			changes = append(changes, apptranscript.MemoryPageChange{Path: page, Removed: now.absent})
+			if !now.absent {
+				changes = append(changes, page)
+			}
 		}
 		if len(changes) == 0 {
 			return ""
@@ -735,15 +738,15 @@ func (s *Session) memoryBaselineFor(scope string) (memoryIndexBaseline, bool) {
 }
 
 // memoryIndexDeltaCap bounds the bytes of one index-change section; a larger
-// change is summarized as line counts with a route to memory_read.
+// change is summarized as a line count with a route to memory_read.
 const memoryIndexDeltaCap = 2048
 
 // knownMemoryIndexSection reports a completed read of a scope whose index
 // the session already knows. A current index delivers only the lines added
-// and removed since the baseline, which then advances; the same index
-// delivers nothing. That covers another session's edit and an index it
-// created where the session had deleted its own. A missing index the session
-// knows it deleted delivers nothing. Any other missing index, or a failed
+// since the baseline, which then advances; removed lines are never reported,
+// and an index that only lost lines delivers nothing. That covers another
+// session's edit and an index it created where the session had deleted its
+// own. A missing index the session knows it deleted delivers nothing. Any other missing index, or a failed
 // read, is projected as that state, as at any boundary. A read that missed
 // the boundary budget or went stale never reaches here.
 func (s *Session) knownMemoryIndexSection(baseline memoryIndexBaseline, p memoryProjection) memoryContextSection {
@@ -757,42 +760,38 @@ func (s *Session) knownMemoryIndexSection(baseline memoryIndexBaseline, p memory
 	}
 }
 
-// memoryIndexDeltaSection lists the lines another session added to or
-// removed from p's index since the baseline index, or is "" when no line
-// changed. A change whose section would exceed memoryIndexDeltaCap is
-// reported as line counts instead.
+// memoryIndexDeltaSection lists the lines another session added to p's index
+// since the baseline index, or is "" when no line was added. A change whose
+// section would exceed memoryIndexDeltaCap is reported as a line count
+// instead.
 func memoryIndexDeltaSection(baseline string, p memoryProjection) string {
-	added, removed := memoryIndexLineChanges(baseline, p.Index)
-	if len(added) == 0 && len(removed) == 0 {
+	added := memoryIndexAddedLines(baseline, p.Index)
+	if len(added) == 0 {
 		return ""
 	}
-	if section := apptranscript.MemoryIndexChangesSection(p.Scope, added, removed); len(section) <= memoryIndexDeltaCap {
+	if section := apptranscript.MemoryIndexChangesSection(p.Scope, added); len(section) <= memoryIndexDeltaCap {
 		return section
 	}
-	return apptranscript.MemoryIndexChangeCountsSection(p.Scope, len(added), len(removed))
+	return apptranscript.MemoryIndexChangeCountsSection(p.Scope, len(added))
 }
 
-// memoryIndexLineChanges compares two indexes line by line as multisets,
-// comparing page lines only: added holds the lines of next not matched in prior,
-// removed the lines of prior not matched in next, each in its file order.
-func memoryIndexLineChanges(prior, next string) (added, removed []string) {
-	unmatched := func(lines, against []string) []string {
-		counts := make(map[string]int)
-		for _, line := range against {
-			counts[line]++
-		}
-		var out []string
-		for _, line := range lines {
-			if counts[line] > 0 {
-				counts[line]--
-				continue
-			}
-			out = append(out, line)
-		}
-		return out
+// memoryIndexAddedLines compares two indexes line by line as multisets,
+// comparing page lines only, and returns the lines of next not matched in
+// prior, in file order.
+func memoryIndexAddedLines(prior, next string) []string {
+	counts := make(map[string]int)
+	for _, line := range memoryIndexLines(prior) {
+		counts[line]++
 	}
-	priorLines, nextLines := memoryIndexLines(prior), memoryIndexLines(next)
-	return unmatched(nextLines, priorLines), unmatched(priorLines, nextLines)
+	var added []string
+	for _, line := range memoryIndexLines(next) {
+		if counts[line] > 0 {
+			counts[line]--
+			continue
+		}
+		added = append(added, line)
+	}
+	return added
 }
 
 // memoryIndexLines returns an index's page lines; the tag header and the
