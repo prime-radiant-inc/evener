@@ -1164,7 +1164,12 @@ test("a session pane's tab title falls back to the navigation location title whe
     </ClientProvider>,
   );
 
-  await screen.findByTestId("empty-state");
+  // The pane body is up on its pre-hydration loading status.
+  await vi.waitFor(() => {
+    const body = document.querySelector('[data-pane-scaffold="session:ref_tree"]');
+    if (!(body instanceof HTMLElement)) throw new Error("session pane body not rendered");
+    within(body).getByRole("status");
+  });
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Fix the flaky CI job");
 });
 
