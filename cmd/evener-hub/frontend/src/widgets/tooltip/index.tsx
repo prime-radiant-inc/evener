@@ -4,6 +4,9 @@ import { requireClass } from "../internal/requireClass";
 import styles from "./tooltip.module.css";
 
 export interface TooltipProps {
+  /** An empty label is an inactive tooltip: no bubble, no description, just
+   * the wrapper, so a caller can keep its trigger's element tree stable while
+   * the description comes and goes (IconButton's disabledReason). */
   label: string;
   children: ReactNode;
 }
@@ -32,6 +35,7 @@ const CLASS = {
  */
 export function Tooltip({ label, children }: TooltipProps) {
   const { visible, wrapperRef, triggerProps, setBubbleRef, bubbleStyle, bubbleID, describedBy } = useFloatingBubble();
+  const active = label !== "";
 
   return (
     // Already both mouse- AND keyboard-triggered (onFocus/onBlur mirror
@@ -41,10 +45,10 @@ export function Tooltip({ label, children }: TooltipProps) {
     // role="tooltip" description already wired to the real trigger element
     // via aria-describedby (describedChild below).
     <span ref={wrapperRef} className={CLASS.wrapper} {...triggerProps}>
-      {describeChild(children, describedBy)}
+      {describeChild(children, active ? describedBy : undefined)}
       <FloatingBubblePortal
         as="span"
-        show={visible}
+        show={active && visible}
         id={bubbleID}
         className={CLASS.bubble}
         style={bubbleStyle}

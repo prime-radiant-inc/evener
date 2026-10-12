@@ -283,3 +283,18 @@ test("an aria-disabled reset icon button does not reset its form", async () => {
   await user.click(screen.getByRole("button", { name: "Clear" }));
   expect(field).toHaveProperty("value", "kept");
 });
+
+// Toggling a refusal on and off must not remount the button: a keyboard user
+// standing on it keeps focus, which is the point of refusing via aria-disabled.
+test("toggling disabled-with-a-reason keeps the focused button focused", () => {
+  const { rerender } = render(<IconButton label="Steer" icon={<span>s</span>} disabledReason="Session is busy" />);
+  const button = screen.getByRole("button", { name: "Steer" });
+  act(() => button.focus());
+  rerender(<IconButton label="Steer" icon={<span>s</span>} disabled disabledReason="Session is busy" />);
+  expect(screen.getByRole("button", { name: "Steer" })).toBe(button);
+  expect(document.activeElement).toBe(button);
+  rerender(<IconButton label="Steer" icon={<span>s</span>} disabledReason="Session is busy" />);
+  expect(screen.getByRole("button", { name: "Steer" })).toBe(button);
+  expect(document.activeElement).toBe(button);
+  expect(button.hasAttribute("aria-describedby")).toBe(false);
+});

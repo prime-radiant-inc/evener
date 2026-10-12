@@ -127,5 +127,8 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       )}
     </button>
   );
-  return explained ? <Tooltip label={reason}>{button}</Tooltip> : button;
+  // A caller that passes disabledReason always gets the Tooltip wrapper, so
+  // toggling the refusal never swaps the root element and remounts a focused
+  // button; while enabled the tooltip is inactive (empty label).
+  return disabledReason === undefined ? button : <Tooltip label={reason ?? ""}>{button}</Tooltip>;
 });
