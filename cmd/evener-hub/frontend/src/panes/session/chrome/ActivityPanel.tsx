@@ -113,10 +113,14 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
       <div className={CLASS.panel}>
         <ScopeCrumbs path={scope.path} hierarchy />
         {!scope.ancestryKnown ? <p className={CLASS.stale}>Finding session context…</p> : null}
-        {updating ? <p className={CLASS.stale}>Activity is updating…</p> : null}
+        {updating ? (
+          <p className={CLASS.stale} data-testid="activity-updating">
+            Activity is updating…
+          </p>
+        ) : null}
         {!tree || (empty && !complete) ? (
           unavailable ? (
-            <EmptyState title="Activity unavailable for this session" />
+            <EmptyState title="Activity unavailable for this session" reason="unsupported" />
           ) : (
             <Loader label="Loading activity…" />
           )
@@ -125,6 +129,7 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
           <EmptyState
             title="No retained activity yet"
             hint="No shell, delegate or watch activity has been retained for this session."
+            reason="empty"
           />
         ) : null}
         {tree && !empty ? (

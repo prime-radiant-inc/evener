@@ -505,7 +505,7 @@ function OpenWatchMeta({ watch }: { watch: SessionWatch }): ReactNode {
 function WatchGroupHeader({ armed }: { armed: number | null }): ReactNode {
   const count = armed === null ? "Armed count unknown" : `${armed} armed`;
   return (
-    <div className={CLASS.watchGroup} data-testid="watch-group">
+    <div className={CLASS.watchGroup} data-testid="watch-group" data-armed={armed ?? "unknown"}>
       <span className={CLASS.watchGroupTitle}>Watches</span>
       <span className={CLASS.watchGroupCount}>{count}</span>
     </div>

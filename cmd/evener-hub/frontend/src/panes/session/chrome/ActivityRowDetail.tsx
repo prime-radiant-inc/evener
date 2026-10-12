@@ -63,7 +63,7 @@ const CLASS = {
 // The one line a condition watch shows where a timeline would go: there is no
 // period to draw, because the firing is decided by a job's output or an event,
 // not by a clock.
-export const WATCH_NO_SCHEDULE_LINE =
+const WATCH_NO_SCHEDULE_LINE =
   "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
 
 // The now marker is taller than a delivery dot, and a dot at the rail's far end
@@ -148,10 +148,8 @@ function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: numbe
   // The marks are hidden from assistive tech, so the marker's own instant is
   // named in the label when neither end holds it.
   const floatingNow = !markerAtStart && !markerAtEnd ? `, now ${clockFromMillis(now)}` : "";
-  const caption =
-    watch.watch.deliveries <= instants.length
-      ? "Delivered"
-      : `Last ${instants.length} of ${watch.watch.deliveries} deliveries`;
+  const complete = watch.watch.deliveries <= instants.length;
+  const caption = complete ? "Delivered" : `Last ${instants.length} of ${watch.watch.deliveries} deliveries`;
   return (
     <div className={CLASS.watchTimeline} data-testid="watch-timeline">
       <div
@@ -187,7 +185,11 @@ function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: numbe
         <span data-testid="watch-timeline-start">{startLabel}</span>
         <span data-testid="watch-timeline-end">{endLabel}</span>
       </div>
-      <p className={CLASS.timelineCaption} data-testid="watch-timeline-caption">
+      <p
+        className={CLASS.timelineCaption}
+        data-testid="watch-timeline-caption"
+        data-state={complete ? "complete" : "partial"}
+      >
         {caption}
       </p>
     </div>
