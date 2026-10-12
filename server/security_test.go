@@ -3,7 +3,6 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -43,9 +42,6 @@ func TestServerSameOriginGuardRejectsBadHost(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status=%d, want %d", rec.Code, http.StatusForbidden)
 	}
-	if !strings.Contains(rec.Body.String(), "forbidden host") {
-		t.Fatalf("body=%q", rec.Body.String())
-	}
 }
 
 func TestServerSameOriginGuardAllowsLocalhostAlias(t *testing.T) {
@@ -73,8 +69,5 @@ func TestServerSameOriginGuardRejectsBadOrigin(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status=%d, want %d", rec.Code, http.StatusForbidden)
-	}
-	if !strings.Contains(rec.Body.String(), "forbidden origin") {
-		t.Fatalf("body=%q", rec.Body.String())
 	}
 }

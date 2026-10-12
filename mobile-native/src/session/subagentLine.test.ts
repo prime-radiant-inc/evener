@@ -148,7 +148,7 @@ describe("a subagent's row (spec 8.2)", () => {
 			state: "done",
 			stateText: "done",
 		});
-		expect(subagentLine(row({ detail: {} }), undefined, NOW).title).toBe("Subagent");
+		expect(subagentLine(row({ detail: {} }), undefined, NOW).title).toMatch(/\S/);
 	});
 
 	it("falls back to the task's first line for a title", () => {

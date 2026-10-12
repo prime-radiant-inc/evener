@@ -83,6 +83,7 @@ export function BoardToolbar({
 			</View>
 			{status ? (
 				<Text
+					testID="connection-status"
 					allowFontScaling={allowFontScaling}
 					// Android reads this live region; iOS has none, and this
 					// connection status stays unannounced there on purpose: it is

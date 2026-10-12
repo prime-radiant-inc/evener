@@ -426,35 +426,49 @@ describe("the Live summary line", () => {
 		});
 	});
 
-	it("says each count the spec's way", () => {
-		expect(summaryText("needsYou", 1)).toBe("1 needs you");
-		expect(summaryText("needsYou", 4)).toBe("4 need you");
-		expect(summaryText("working", 9)).toBe("9 working");
-		expect(summaryText("idle", 3)).toBe("3 idle");
+	it("says each count, agreeing in number for Needs you", () => {
+		for (const [band, count] of [
+			["needsYou", 1],
+			["needsYou", 4],
+			["working", 9],
+			["idle", 3],
+		] as const)
+			expect(summaryText(band, count)).toMatch(new RegExp(`^${count} `));
+		// One session needs you; several need you: the words around the count differ.
+		expect(summaryText("needsYou", 1).slice(1)).not.toBe(summaryText("needsYou", 4).slice(1));
+		expect(summaryText("needsYou", 4).slice(1)).toBe(summaryText("needsYou", 7).slice(1));
 	});
 });
 
 describe("a running agent's last words", () => {
 	it("reads Working until 20 seconds pass without an update, then Quiet", () => {
 		expect(AGENT_QUIET_AFTER_MS).toBe(20_000);
-		expect(quietOrWorking(19_999)).toBe("Working");
-		expect(quietOrWorking(20_000)).toBe("Quiet 20s");
+		// Under the threshold it says the same as an agent that just spoke.
+		expect(quietOrWorking(19_999)).toBe(quietOrWorking(0));
+		expect(quietOrWorking(20_000)).not.toBe(quietOrWorking(0));
+		// Quiet says for how long.
+		expect(quietOrWorking(20_000)).toContain("20s");
 	});
 });
 
 describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	it.each([
-		["failed", { word: "Failed", hue: "danger", text: "open the session to see what went wrong" }],
-		["question", { word: "Question", hue: "attention", text: "waiting for your answer" }],
-		["needsYou", { word: "Needs you", hue: "attention", text: "waiting for your reply" }],
-		["approval", { word: "Approval", hue: "attention", text: "waiting for your permission" }],
-		["warning", { word: "Warning", hue: "attention", text: "open the session to see it" }],
-		[
-			"restartNeeded",
-			{ word: "Restart needed", hue: "attention", text: "restart this session to pick up the hub's update" },
-		],
-	] as const)("%s", (state, expected) => {
-		expect(whyLine({ row: row("s"), state })).toEqual(expected);
+		["failed", "danger"],
+		["question", "attention"],
+		["needsYou", "attention"],
+		["approval", "attention"],
+		["warning", "attention"],
+		["restartNeeded", "attention"],
+	] as const)("%s", (state, hue) => {
+		const line = whyLine({ row: row("s"), state });
+		// The state's word, in its hue, then the reason.
+		expect(line).toMatchObject({ kind: "reason", hue, word: stateWord(state) });
+		expect(line?.text).not.toBe("");
+	});
+
+	it("gives each attention state its own reason", () => {
+		const states = ["failed", "question", "needsYou", "approval", "warning", "restartNeeded"] as const;
+		expect(new Set(states.map((state) => whyLine({ row: row("s"), state })?.text)).size).toBe(states.length);
 	});
 
 	it("has none for Idle", () => {
@@ -463,21 +477,27 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 
 	it("says what a working session is doing with what the row carries", () => {
 		const one = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
-		expect(workingActivity(one)).toBe("Waiting on 1 subagent");
+		expect(workingActivity(one).kind).toBe("subagents");
 		const three = row("s", { state: "active", subagents: { running: 3, failed: 0, done: 0 } });
-		expect(workingActivity(three)).toBe("Waiting on 3 subagents");
+		expect(workingActivity(three)).toMatchObject({ kind: "subagents", text: expect.stringContaining("3") });
+		expect(workingActivity(three).text).not.toBe(workingActivity(one).text);
 		const running = row("s", {
 			state: "active",
 			running_job_count: 1,
 			running_job_command: "go test ./agent/...",
 		});
-		expect(workingActivity(running)).toBe("Running go test ./agent/...");
-		// A settled tally (no running) leaves the command or Working to say it.
-		expect(workingActivity(row("s", { state: "active", subagents: { running: 0, failed: 1, done: 11 } }))).toBe(
-			"Working",
+		expect(workingActivity(running)).toMatchObject({
+			kind: "job",
+			text: expect.stringContaining("go test ./agent/..."),
+		});
+		// A settled tally (no running) leaves the command or the state's word to say it.
+		expect(workingActivity(row("s", { state: "active", subagents: { running: 0, failed: 1, done: 11 } })).kind).toBe(
+			"state",
 		);
-		expect(workingActivity(row("s", { state: "active" }))).toBe("Working");
-		expect(whyLine({ row: running, state: "working" })).toEqual({ text: "Running go test ./agent/..." });
+		// With nothing more to say, the line is the state's own word, which the
+		// row's label then speaks once (BoardRow).
+		expect(workingActivity(row("s", { state: "active" }))).toEqual({ kind: "state", text: stateWord("working") });
+		expect(whyLine({ row: running, state: "working" })).toEqual(workingActivity(running));
 	});
 
 	it("words only running subagents in the native chip", () => {
@@ -493,85 +513,99 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
 	const minutes = [0, 0, 0, 0, 0, 0, 0];
 	const working = row("s", { state: "active" });
+	const kindOf = (line: ReturnType<typeof whyLine>) => line?.kind;
 
 	it("trusts the activity read's subagent tally over the row's own tally", () => {
 		// The row's own tally is a fallback the read replaces: the read (every
 		// depth, S3) says what is really running, and activity wins.
 		const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
 		const activity = { ref: "s", minutes, runningSubagents: 3 };
-		expect(whyLine({ row: stale, state: "working" }, activity, 0)).toEqual({
-			text: "Waiting on 3 subagents",
-		});
-		expect(whyLine({ row: working, state: "working" }, { ...activity, runningSubagents: 1 }, 0)).toEqual({
-			text: "Waiting on 1 subagent",
-		});
+		expect(whyLine({ row: stale, state: "working" }, activity, 0)).toEqual(
+			workingActivity(row("s", { state: "active", subagents: { running: 3, failed: 0, done: 0 } })),
+		);
+		expect(whyLine({ row: working, state: "working" }, { ...activity, runningSubagents: 1 }, 0)).toEqual(
+			workingActivity(stale),
+		);
 	});
 
 	it("reads Quiet after three minutes and May be stuck (in the attention tone) after ten", () => {
 		const quiet = { ref: "s", minutes, runningSubagents: 0, quietForMs: QUIET_AFTER_MS };
-		expect(whyLine({ row: working, state: "working" }, quiet, 0)).toEqual({ text: "Quiet 3m" });
+		const quietLine = whyLine({ row: working, state: "working" }, quiet, 0);
+		expect(quietLine).toMatchObject({ kind: "quiet", text: expect.stringContaining("3m") });
+		expect(quietLine?.stuck).toBeUndefined();
 		const stuck = { ref: "s", minutes, runningSubagents: 0, quietForMs: STUCK_AFTER_MS };
-		expect(whyLine({ row: working, state: "working" }, stuck, 0)).toEqual({
-			text: "May be stuck · no updates for 10m",
+		expect(whyLine({ row: working, state: "working" }, stuck, 0)).toMatchObject({
+			kind: "stuck",
 			stuck: true,
+			text: expect.stringContaining("10m"),
 		});
 	});
 
 	it("counts time since the read toward the quiet duration shown", () => {
 		const activity = { ref: "s", minutes, runningSubagents: 0, quietForMs: 2 * 60_000 };
-		expect(whyLine({ row: working, state: "working" }, activity, 60_000)).toEqual({ text: "Quiet 3m" });
+		const threeMinutes = { ...activity, quietForMs: 3 * 60_000 };
+		expect(whyLine({ row: working, state: "working" }, activity, 60_000)).toEqual(
+			whyLine({ row: working, state: "working" }, threeMinutes, 0),
+		);
+		expect(kindOf(whyLine({ row: working, state: "working" }, activity, 60_000))).toBe("quiet");
 	});
 
 	it("never shows a stuck or quiet label while subagents are running (Jesse's ruling)", () => {
 		const activity = { ref: "s", minutes, runningSubagents: 1, quietForMs: 15 * 60_000 };
-		expect(whyLine({ row: working, state: "working" }, activity, 0)).toEqual({ text: "Waiting on 1 subagent" });
+		expect(kindOf(whyLine({ row: working, state: "working" }, activity, 0))).toBe("subagents");
 	});
 
 	it("falls back to the command, or Working, once activity says nothing is running and it isn't quiet yet", () => {
 		const activity = { ref: "s", minutes, runningSubagents: 0 };
-		expect(whyLine({ row: working, state: "working" }, activity, 0)).toEqual({ text: "Working" });
+		expect(whyLine({ row: working, state: "working" }, activity, 0)).toEqual(workingActivity(working));
+		expect(kindOf(whyLine({ row: working, state: "working" }, activity, 0))).toBe("state");
 		const running = row("s", {
 			state: "active",
 			running_job_count: 1,
 			running_job_command: "go test ./agent/...",
 		});
-		expect(whyLine({ row: running, state: "working" }, activity, 0)).toEqual({ text: "Running go test ./agent/..." });
+		expect(whyLine({ row: running, state: "working" }, activity, 0)).toEqual(workingActivity(running));
+		expect(kindOf(whyLine({ row: running, state: "working" }, activity, 0))).toBe("job");
 	});
 
 	it("never lets the row's own subagent tally override an activity read of zero", () => {
-		// Without S5 data, this row would read "Waiting on 1 subagent" (its own
+		// Without S5 data, this row would say it waits on its 1 subagent (its own
 		// tally) - once a real read says zero are running, that must win.
 		const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
 		const activity = { ref: "s", minutes, runningSubagents: 0 };
-		expect(whyLine({ row: stale, state: "working" }, activity, 0)).toEqual({ text: "Working" });
+		expect(kindOf(whyLine({ row: stale, state: "working" }, activity, 0))).toBe("state");
 	});
 
 	it("says what the session last set out to do, over the job it is running", () => {
 		const intent = { ref: "s", minutes, runningSubagents: 0, latestIntent: "Reading the board's row tests." };
 		expect(whyLine({ row: working, state: "working" }, intent, 0)).toEqual({
+			kind: "intent",
 			text: "Reading the board's row tests.",
 		});
 		// The session's own words lead the job it is running: they say what the
 		// job is for. A read that states none leaves the job to say itself, and
 		// a session waiting on subagents, quiet or stuck says so first.
 		const running = row("s", { state: "active", running_job_count: 1, running_job_command: "go test ./agent/..." });
-		expect(whyLine({ row: running, state: "working" }, intent, 0)).toEqual({ text: "Reading the board's row tests." });
-		expect(whyLine({ row: running, state: "working" }, { ref: "s", minutes, runningSubagents: 0 }, 0)).toEqual({
-			text: "Running go test ./agent/...",
+		expect(whyLine({ row: running, state: "working" }, intent, 0)).toEqual({
+			kind: "intent",
+			text: "Reading the board's row tests.",
 		});
-		expect(whyLine({ row: working, state: "working" }, { ...intent, runningSubagents: 1 }, 0)).toEqual({
-			text: "Waiting on 1 subagent",
-		});
-		expect(whyLine({ row: working, state: "working" }, { ...intent, quietForMs: QUIET_AFTER_MS }, 0)).toEqual({
-			text: "Quiet 3m",
-		});
+		expect(kindOf(whyLine({ row: running, state: "working" }, { ref: "s", minutes, runningSubagents: 0 }, 0))).toBe(
+			"job",
+		);
+		expect(kindOf(whyLine({ row: working, state: "working" }, { ...intent, runningSubagents: 1 }, 0))).toBe(
+			"subagents",
+		);
+		expect(kindOf(whyLine({ row: working, state: "working" }, { ...intent, quietForMs: QUIET_AFTER_MS }, 0))).toBe(
+			"quiet",
+		);
 		// No read, no intent: a row before the first poll keeps its own facts.
-		expect(whyLine({ row: working, state: "working" })).toEqual({ text: "Working" });
+		expect(kindOf(whyLine({ row: working, state: "working" }))).toBe("state");
 	});
 
 	it("keeps the pre-S5 fallback (the row's own tally and jobs) when there is no activity read at all", () => {
 		const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
-		expect(whyLine({ row: stale, state: "working" })).toEqual({ text: "Waiting on 1 subagent" });
+		expect(kindOf(whyLine({ row: stale, state: "working" }))).toBe("subagents");
 	});
 });
 

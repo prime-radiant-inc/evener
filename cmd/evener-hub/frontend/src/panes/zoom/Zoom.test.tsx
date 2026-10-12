@@ -25,12 +25,14 @@ import {
   activityThread,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
 import { holdReaderFrames, installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
 import { enterAgentCascade, popAgentCascade } from "./actions";
+import { cascadeScope } from "./cascadeTestUtils";
 import { recordCascadeOrigin } from "./inspectionOrigin";
 import type { SessionZoomParams } from "./intent";
 import Zoom from "./Zoom";
@@ -413,12 +415,8 @@ test.each(["deleted", "missing"] as const)(
     });
     mount(fake);
     await screen.findByText("root content old-root");
-    const child = screen
-      .getAllByTestId("cascade-column")
-      .find((column) => column.getAttribute("data-scope-ref") === "child");
-    if (!child) throw new Error("Missing child column");
-    await within(child).findByText(failure === "deleted" ? "This session was deleted" : "Transcript unavailable");
-    expect(within(child).queryByText("Loading transcript…")).toBeNull();
+    const child = cascadeScope("child", "cascade-column");
+    await waitFor(() => expect(emptyStateReasons(child)).toEqual([failure === "deleted" ? "deleted" : "unavailable"]));
     expect(screen.getByText("root content old-root")).toBeTruthy();
     if (failure === "deleted") expect(threadsStore.getState().deletedRefs.has("child")).toBe(true);
     act(() => fireEvent.click(within(child).getByRole("button", { name: "Open conversation" })));
@@ -458,7 +456,7 @@ test("a deleted child hides its retained transcript without hiding the parent", 
     await expect(threadsStore.getState().refreshThread("child")).rejects.toThrow("target has been deleted");
   });
   expect(threadsStore.getState().threads.get("child")).toBeDefined();
-  expect(screen.getByText("This session was deleted")).toBeTruthy();
+  expect(emptyStateReasons(cascadeScope("child", "cascade-column"))).toEqual(["deleted"]);
   expect(screen.queryByText("child content child-id")).toBeNull();
   expect(screen.getByText("root content old-root")).toBeTruthy();
 });
@@ -471,7 +469,7 @@ test("unsupported child activity does not hide its healthy transcript", async ()
   });
   mount(fake);
   await screen.findByText("child content child-id");
-  expect(screen.queryByText("Transcript unavailable")).toBeNull();
+  expect(emptyStateReasons(cascadeScope("child", "cascade-column"))).toEqual([]);
   expect(currentParams().ref).toBe("child");
   expect(columnRefs()).toEqual(["root", "child"]);
 });
@@ -496,8 +494,8 @@ test("a transient child read failure recovers through the existing owner without
   });
   mount(fake);
   await act(async () => failed.promise);
-  expect(screen.queryByText("This session was deleted")).toBeNull();
-  expect(screen.queryByText("Transcript unavailable")).toBeNull();
+  expect(emptyStateReasons(document.body)).not.toContain("deleted");
+  expect(emptyStateReasons(document.body)).not.toContain("unavailable");
   const source = currentPane();
   healed = true;
   act(() =>
@@ -728,14 +726,16 @@ test("an ancestor with pending runtime metadata stays explicitly unknown until i
   const spine = screen.getByTestId("cascade-spine");
   const branch = currentPane();
   try {
-    const runtime = within(spine).getByTitle("State unknown");
-    expect(runtime.getAttribute("data-runtime-state")).toBe("unknown");
-    expect(within(runtime).getByText("State unknown")).toBeTruthy();
+    const runtime = spine.querySelector('[data-runtime-state="unknown"]');
+    if (!(runtime instanceof HTMLElement)) throw new Error("Missing unknown runtime state");
+    const label = runtime.querySelector("[data-runtime-label]");
+    expect(label).not.toBeNull();
+    expect(label?.textContent?.trim()).not.toBe("");
     expect(within(runtime).queryByRole("img")).toBeNull();
   } finally {
     await act(async () => held.resolve(response("root")));
   }
-  await within(spine).findByTitle("Idle");
+  await waitFor(() => expect(spine.querySelector('[data-runtime-state="idle"]')).not.toBeNull());
   expect(within(spine).queryByRole("img")).toBeNull();
   expect(currentPane()).toBe(branch);
   expect(columnRefs()).toEqual(["child", "grandchild"]);
@@ -745,7 +745,7 @@ test("unknown ancestry labels the proven clicked segment without blocking child 
   const { fake } = fixture(false);
   mount(fake);
   await screen.findByText("child content child-id");
-  expect(screen.getByText("Earlier ancestry is incomplete")).toBeTruthy();
+  expect(screen.getByTestId("cascade-ancestry-incomplete")).toBeTruthy();
   expect(columnRefs()).toEqual(["root", "child"]);
 });
 
@@ -885,6 +885,45 @@ test("a replaced nested origin never renders a non-leaf column on the phone", as
   expect(chromeStore.getState().paneTitle).toBe("child");
 });
 
+test("the phone cascade keeps one title, with status and Open conversation at the column bottom", async () => {
+  const { fake } = fixture();
+  installMobileViewport();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  // The mobile top bar owns the conversation name: the column's own h3 title
+  // is desktop-only, so the phone shows no duplicate title row.
+  expect(chromeStore.getState().paneTitle).toBe("child");
+  expect(document.querySelector('[data-testid="cascade-column"] h3')).toBeNull();
+  // The pane footer's status bar is desktop-only on the cascade: the
+  // column's own controls below the transcript carry the activity, so no
+  // second chips row piles under the transcript.
+  expect(screen.queryByTestId("statusbar")).toBeNull();
+  expect(screen.getByTestId("cascade-activity-controls")).toBeTruthy();
+  // The column's runtime state and Open-conversation action sit below the
+  // transcript content, in the column's own footer bar.
+  const footerBar = screen.getByTestId("cascade-column-footer");
+  expect(within(footerBar).getByRole("button", { name: "Open conversation" })).toBeTruthy();
+  expect(
+    screen.getByTestId("cascade-column-content").compareDocumentPosition(footerBar) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+});
+
+test("the desktop cascade column keeps its own title and the pane footer status bar", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  const childColumn = document.querySelector('[data-scope-ref="child"]') as HTMLElement;
+  expect(childColumn.querySelector("h3")?.textContent).toBe("child");
+  expect(screen.queryByTestId("cascade-column-footer")).toBeNull();
+  expect(screen.getByTestId("statusbar")).toBeTruthy();
+  const inColumn = within(childColumn);
+  const headerButton = inColumn.getByRole("button", { name: "Open conversation" });
+  expect(
+    inColumn.getByTestId("cascade-column-content").compareDocumentPosition(headerButton) &
+      Node.DOCUMENT_POSITION_PRECEDING,
+  ).toBeTruthy();
+});
+
 test("a new cursor epoch for the same root preserves child branch and retained readers", async () => {
   const { fake, setEpoch } = fixture();
   mount(fake);
@@ -936,10 +975,7 @@ test("a held abandoned grandchild read cannot replace a later sibling or move fo
   });
   await screen.findByText("sibling content sibling-id");
   expect(grandchild.alive).toBe(false);
-  const siblingColumn = screen
-    .getAllByTestId("cascade-column")
-    .find((column) => column.getAttribute("data-scope-ref") === "sibling");
-  if (!siblingColumn) throw new Error("Missing sibling column");
+  const siblingColumn = cascadeScope("sibling", "cascade-column");
   const open = within(siblingColumn).getByRole("button", { name: "Open conversation" });
   open.focus();
   await act(async () => held.resolve(response("grandchild")));

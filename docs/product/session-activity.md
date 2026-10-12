@@ -489,6 +489,8 @@ Output no longer retained has a separate notice; useful cached text below the
 new floor remains readable. UTF-8 and ANSI state join only across contiguous
 bytes, with bounded decoder carry across known eviction. A gap starts an
 independent decoding range. Long lines render as bounded source-byte fragments.
+A page, a trim or a window join decodes only the bytes whose rows it changes;
+settled rows carry over, so per-page cost tracks the page rather than the window.
 
 Each open pane permits one output read at a time. A visible running pane reads
 the latest output every second while serving visible history demand between
@@ -690,7 +692,16 @@ they are excluded from layout JSON and localStorage and are not restored by a
 page reload. Phones keep the ordinary Agents transcript action. A saved cascade
 restored on desktop and shown at phone width exposes the selected read-only
 transcript and Return without desktop columns or spines. Return closes a new
-inspector and leaves its original source useful.
+inspector and leaves its original source useful. The phone's cascade chrome
+stays single-layer: the mobile top bar carries the selected conversation's
+name, the column's own title stays desktop-only, and the column's runtime
+state and Open-conversation action sit in the column's bottom bar with its
+activity controls. The pane footer's status bar and scope crumbs are
+desktop-only on the cascade: the column's own controls below the transcript
+carry the activity, so the phone never stacks a second chips row at the pane
+bottom.
+The column's own activity controls reserve the home-indicator band on the
+phone, with the same safe-area clearance the composer dock uses.
 
 The [real-stack cascade guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md)
 and [design-system geometry](../web-ui/design-system.md#agent-cascade)

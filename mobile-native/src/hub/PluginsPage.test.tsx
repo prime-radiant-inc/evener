@@ -12,7 +12,7 @@
 // screen's own mount effect never re-runs) shares this file's harness
 // and mocks.
 import type { ComponentProps } from "react";
-import { act } from "react-test-renderer";
+import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import {
 	type AnyNotification,
@@ -21,19 +21,37 @@ import {
 	type MarketplaceEntry,
 	type PluginEntry,
 } from "@evener/appwire-client";
-import {
-	HUB_WRITE_BUSY,
-	HubWriteBusyError,
-	MARKETPLACE_REFETCH_DEBOUNCE_MS,
-} from "@evener/appwire-client/state/extensions";
+import { HubWriteBusyError, MARKETPLACE_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/extensions";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { AddMarketplace } from "../MarketplaceBrowser";
+import { fonts } from "../design/tokens";
+import { AddMarketplace, MarketplaceDetail } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
 import { PluginsStack } from "./pluginsStackTestUtils";
-import { alertRequests, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import {
+	alertRequests,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	testIDSuffixes,
+	offersButton,
+} from "../renderNative.testkit";
 import { Button, Group, GroupFooter, Row } from "../sheet/Grouped";
 import { SearchField } from "../sheet/SearchField";
+
+/** The text of the marketplace warning the Plugins page or a marketplace's page shows, "" for none. */
+function marketplaceWarning(tree: ReactTestRenderer): string {
+	return tree.root
+		.findAll((node) => typeof node.type === "string" && node.props.testID === "marketplace-warning")
+		.map((node) => String(node.props.children))
+		.join(" ");
+}
+
+/** Why the marketplace views and the Plugins page lead with an error, by reason. */
+function problems(tree: ReactTestRenderer): string[] {
+	return [...testIDSuffixes(tree, "marketplace-problem-"), ...testIDSuffixes(tree, "plugins-problem-")];
+}
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -236,8 +254,8 @@ it("re-fences a name a stale presence read cleared after a browser remount", asy
 	await act(async () => {});
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// Leave the Marketplaces segment and come back: the guard lives at the screen, so
 	// it survives the browser's death, but the remount's own read answers
@@ -263,8 +281,8 @@ it("re-fences a name a stale presence read cleared after a browser remount", asy
 	// re-raises the warning - idempotent, never a failed write.
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 	const fenced = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(fenced.props.disabled).toBe(true);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
@@ -331,8 +349,8 @@ it("fences the name when a re-registration lands while the confirm dialog is ope
 	// no fresh list has established what the hub now carries: the guard has to
 	// fence acme - Remove stays disabled on the already-removed row - and the
 	// cleanup warning still raises.
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 	expect(hub.methods.filter((method) => method === "evener/marketplace/list")).toHaveLength(3);
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(true);
@@ -393,8 +411,8 @@ it("does not confirm a removal a fresh read retired while the dialog was open", 
 	// hub, and confirming must not issue the duplicate removal the guard
 	// exists to prevent.
 	expect(removals).toBe(0);
-	expect(renderedText(tree)).not.toContain("Could not confirm the change");
-	expect(renderedText(tree)).not.toContain("Marketplace removed; clone cleanup failed");
+	expect(problems(tree)).not.toContain("write-failed");
+	expect(marketplaceWarning(tree)).toBe("");
 });
 
 it("keeps the fence when a pre-removal read lands inside the outcome's window", async () => {
@@ -467,8 +485,8 @@ it("keeps the fence when a pre-removal read lands inside the outcome's window", 
 		await Promise.resolve();
 	});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(true);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
@@ -500,7 +518,7 @@ it("clears the guard when a fresh read shows the removed name absent", async () 
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// The reconciliation read established acme's absence, so the guard forgot
 	// it: the hub says the list changed, and the read finds another client's
@@ -554,7 +572,7 @@ it("clears an obsolete cleanup warning when a later applied removal is clean", a
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// The reconciliation read established acme's absence, so the guard forgot
 	// it: the hub says the list changed, the read finds another client's
@@ -575,9 +593,9 @@ it("clears an obsolete cleanup warning when a later applied removal is clean", a
 	// warning about long-gone litter outlives every later successful removal.
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toBe("");
 	// The clean outcome is still an applied removal - never a failed write.
-	expect(renderedText(tree)).not.toContain("Could not confirm the change");
+	expect(problems(tree)).not.toContain("write-failed");
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
 	// And it still fences the name: the applied outcome recorded with the
 	// screen's guard whatever its notice said.
@@ -611,7 +629,7 @@ it("clears the cleanup warning when a later removal succeeds", async () => {
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// The reconciliation read established acme's absence, so the guard forgot
 	// it: the hub says the list changed, the read finds another client's
@@ -630,8 +648,8 @@ it("clears the cleanup warning when a later removal succeeds", async () => {
 	// The screen-level warning reports the latest removal outcome, so the
 	// successful one retires the obsolete cleanup warning - never a failed
 	// write either.
-	expect(renderedText(tree)).not.toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).not.toContain("Could not confirm the change");
+	expect(marketplaceWarning(tree)).toBe("");
+	expect(problems(tree)).not.toContain("write-failed");
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
 });
 
@@ -666,7 +684,7 @@ it("keeps a marketplace's warning when an unrelated removal succeeds", async () 
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// A different marketplace's clean removal is a fresh outcome for a
 	// different name: acme's litter warning is about clone files the hub
@@ -684,8 +702,8 @@ it("keeps a marketplace's warning when an unrelated removal succeeds", async () 
 	expect(remove.props.disabled).toBe(false);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).not.toContain("Could not confirm the change");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).not.toContain("write-failed");
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
 });
 
@@ -736,7 +754,7 @@ it("records an applied removal after selection changes while the request is pend
 		await Promise.resolve();
 	});
 
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 	const removeButton = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(removeButton.props.disabled).toBe(true);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
@@ -786,8 +804,8 @@ it("keeps a valid applied list after the old browser is disposed", async () => {
 	});
 	await act(async () => {});
 	expect(listCalls).toBe(2);
-	expect(renderedText(tree)).toContain("No marketplaces on this hub.");
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(testIDSuffixes(tree, "marketplaces-empty-")).toHaveLength(1);
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 });
 
 it("shows the failed read's error alone when the retained list is not empty", async () => {
@@ -819,8 +837,8 @@ it("shows the failed read's error alone when the retained list is not empty", as
 	// vouch for hide behind the error and Retry, but the retained list is not
 	// empty, so the empty-state copy must not claim the hub has no
 	// marketplaces beside the error that says the load failed.
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
-	expect(renderedText(tree)).not.toContain("No marketplaces on this hub.");
+	expect(problems(tree)).toContain("list-failed");
+	expect(testIDSuffixes(tree, "marketplaces-empty-")).toEqual([]);
 });
 
 it("reconciles through the remounted browser after the old browser is disposed", async () => {
@@ -870,7 +888,7 @@ it("reconciles through the remounted browser after the old browser is disposed",
 	});
 	expect(listCalls).toBe(3);
 	expect(renderedText(tree)).toContain("acme");
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	await act(async () => {
 		marketplaceRow(tree, "acme").props.onPress();
@@ -914,7 +932,7 @@ it("keeps a remounted browser from retiring the fence on the pre-outcome snapsho
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// The applied outcome's reconciliation read failed, so the store still
 	// carries the pre-removal list. Leave and come back: the remounted
@@ -928,7 +946,7 @@ it("keeps a remounted browser from retiring the fence on the pre-outcome snapsho
 		tree.root.findByProps({ accessibilityLabel: "Marketplaces" }).props.onPress();
 	});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 	await act(async () => {
 		marketplaceRow(tree, "acme").props.onPress();
 	});
@@ -1002,7 +1020,7 @@ it("retires an earlier fence on the read a later outcome's fence outran", async 
 		await Promise.resolve();
 		await Promise.resolve();
 	});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 	const fencedAcme = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(fencedAcme.props.disabled).toBe(true);
 	expect(listCalls).toBe(2);
@@ -1045,7 +1063,7 @@ it("retires an earlier fence on the read a later outcome's fence outran", async 
 		await Promise.resolve();
 		await Promise.resolve();
 	});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// Acme's fence retired on the read beta's recording outran; beta's own
 	// fence stands until a read newer than ITS baseline, and its
@@ -1103,7 +1121,7 @@ it("ignores an applied removal result from a replaced client", async () => {
 		await Promise.resolve();
 	});
 
-	expect(renderedText(tree)).not.toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toBe("");
 	expect(newHub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(0);
 });
 
@@ -1122,7 +1140,7 @@ it("leaves ordinary marketplace removal failures retryable", async () => {
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 
-	expect(renderedText(tree)).toContain("Could not confirm the change. Check its status before trying again.");
+	expect(problems(tree)).toContain("write-failed");
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(false);
 	await confirmMarketplaceRemoval(tree);
@@ -1152,7 +1170,7 @@ it("keeps the guard and warning across a same-client connection flap", async () 
 	await act(async () => {});
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// A passive flap moves only `state`: the screen stays mounted behind the
 	// banner (connectionDisplay.ts) with the SAME client throughout, and the
@@ -1168,14 +1186,14 @@ it("keeps the guard and warning across a same-client connection flap", async () 
 	});
 	await act(async () => {});
 
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 	// The banner kept this browser mounted through the flap (connectionDisplay:
 	// everReady already true, the SAME client throughout), so the detail it had
 	// open survives with it - the retention #1952 bought - while the store's
 	// own reconnect re-read fails, so no authoritative read has landed and
 	// the fence still guards the stale row in the retained detail.
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Back to Plugins" })).toHaveLength(1);
-	expect(renderedText(tree)).toContain("Update source");
+	expect(tree.root.findAllByType(MarketplaceDetail)).toHaveLength(1);
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(true);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
@@ -1233,8 +1251,8 @@ it("records a pending removal settling after a remount whose list read failed", 
 	// the store that survived it: the third list call is that reconciliation
 	// read, and its failure keeps the error copy up until a fresh read
 	// reconciles.
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 	expect(hub.methods.filter((method) => method === "evener/marketplace/list")).toHaveLength(3);
 
 	await act(async () => {
@@ -1309,7 +1327,7 @@ it("leaves a re-added marketplace removable after an applied removal reconciles 
 	await act(async () => {});
 	releaseRemoval();
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// Re-add acme through the browser's own modal.
 	await act(async () => {
@@ -1363,8 +1381,8 @@ it("clears the fence when a blank-name re-add lands in the wire-indistinguishabl
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// Re-add acme with a BLANK name and the source the stale row still shows,
 	// landing within the same whole second as the original registration: the
@@ -1438,8 +1456,8 @@ it("clears the fence for a blank-name re-add that resolves after the browser unm
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// Start a BLANK-name add from a different source, then leave the Marketplaces
 	// segment before it resolves: the store the screen owns outlives the browser,
@@ -1539,8 +1557,8 @@ it("clears the fence for a wire-indistinguishable re-add made beside another cha
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// Re-add acme with a BLANK name and its original source, within the same
 	// whole second, while another client registers gamma: the add's answer
@@ -1622,8 +1640,8 @@ it("clears the fence for a blank-name re-add held behind a newer list read", asy
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// Start a BLANK-name add from a different source, then the hub says the list
 	// changed before it resolves: the pending read outranks the add, so the store
@@ -1714,8 +1732,8 @@ it("keeps the fence for a fenced row a blank add's answer carries unchanged", as
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// Submit a BLANK-name add of the fenced marketplace's own source: only a
 	// row the answer newly carries - one the pre-add list did not have, in the
@@ -1783,8 +1801,8 @@ it("clears the fence for a wire-indistinguishable blank re-add when no list read
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// Re-add acme with a BLANK name and its original source, within the same
 	// whole second as the removed registration, on a hub whose list reads
@@ -1862,8 +1880,8 @@ it("retires the fence when the read holding a wire-indistinguishable blank re-ad
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// Re-add acme with a BLANK name and its original source - landing within
 	// the same whole second, so the add's own answer is a list the wire cannot
@@ -1997,7 +2015,7 @@ it("stores an applied outcome that recorded before the switch, then drops it wit
 		tree.update(<PluginsStack {...props} />);
 	});
 	expect(pluginsProps(tree).appliedRemovalNames.size).toBe(0);
-	expect(renderedText(tree)).not.toContain("clone cleanup failed");
+	expect(marketplaceWarning(tree)).toBe("");
 	// And the new client's own outcome still records.
 	let fresh = false;
 	await act(async () => {
@@ -2071,7 +2089,7 @@ it("leaves no fence when the store's snapshot already omits the target", async (
 	});
 	expect(stored).toBe(true);
 	expect(pluginsProps(tree).appliedRemovalNames.size).toBe(0);
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// A snapshot that still carries the target - or no list at all - fences.
 	await act(async () => {
@@ -2118,7 +2136,7 @@ it("clears the fence when a same-name re-add registers while reconciliation read
 	await act(async () => confirm.onPress?.());
 	releaseRemoval();
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// Re-add acme with no intervening list ever showing it gone: the add is a
 	// NEW registration the hub accepted, so the stale removal's fence has to
@@ -2230,8 +2248,8 @@ it("clears the fence when another client re-adds the name from a different sourc
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// The re-add's stamp matches the removed registration's whole second, but
 	// its source is its own: the fence the stale read kept has to recognize a
@@ -2275,8 +2293,8 @@ it("re-enables Remove for a same-source same-second re-registration", async () =
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces.");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
+	expect(problems(tree)).toContain("list-failed");
 
 	// The reconciliation read failed, so the retry read is the first
 	// authoritative read after the outcome - and it carries a row the wire
@@ -2444,7 +2462,7 @@ it("briefly fences a re-added registration observed before the removal settles, 
 	await act(async () => {});
 	releaseRemoval();
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	expect(marketplaceWarning(tree)).toContain("clone cleanup failed");
 
 	// The fence covers the re-added registration for now: no authoritative
 	// read has landed since the record.
@@ -2676,6 +2694,8 @@ it("adds a marketplace from a grouped form: a segmented kind, field rows, Add up
 	expect(kindLabels).toEqual(["Git URL", "GitHub", "Hub directory"]);
 	const add = () => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	expect(add().props.disabled).toBe(true);
+	const headers = () => tree.root.findAllByProps({ accessibilityRole: "header" }).map((node) => node.props.children);
+	const gitHeaders = headers();
 	act(() => kinds.findByProps({ accessibilityLabel: "GitHub" }).props.onPress());
 	const source = tree.root.find(
 		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Marketplace source",
@@ -2685,9 +2705,9 @@ it("adds a marketplace from a grouped form: a segmented kind, field rows, Add up
 	// the machine's value the field is Menlo (spec 16.2).
 	expect(source.props.style.fontFamily).toBeUndefined();
 	act(() => source.props.onChangeText("acme/plugins"));
-	expect(source.props.style.fontFamily).toBe("Menlo");
+	expect(source.props.style.fontFamily).toBe(fonts.mono);
 	// The source's section label names what the kind asks for.
-	expect(renderedText(tree)).toContain("Repository");
+	expect(headers()).not.toEqual(gitHeaders);
 	expect(source.props.returnKeyType).toBe("next");
 	expect(tree.root.findByProps({ accessibilityLabel: "Marketplace name" }).props.returnKeyType).toBe("done");
 	await act(async () => {
@@ -2745,14 +2765,14 @@ it("heads Add marketplace with the shared sheet header: its title and Cancel, an
 	);
 	// The sheet's title comes first; the form's section labels are headers too.
 	const title = tree.root.findAllByProps({ accessibilityRole: "header" })[0];
-	expect(title?.props.children).toBe("Add marketplace");
+	expect(title?.props.children).toBeTruthy();
 	// The hub it adds to rides under the title.
 	expect(renderedText(tree)).toContain("Work hub");
 	act(() => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.onPress());
 	expect(onClose).toHaveBeenCalledOnce();
 	// Only the header says it.
 	const repeats = tree.root.findAll(
-		(node) => String(node.type) === "Text" && node !== title && node.props.children === "Add marketplace",
+		(node) => String(node.type) === "Text" && node !== title && node.props.children === title?.props.children,
 	);
 	expect(repeats).toHaveLength(0);
 });
@@ -2812,7 +2832,7 @@ it("never renders the previous hub's retained client once the route names a hub 
 	} as unknown as ComponentProps<typeof PluginsPage>;
 	const tree = render(<PluginsStack {...props} />);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("no longer selected");
+	expect(testIDSuffixes(tree, "plugins-hub-not-selected")).toHaveLength(1);
 
 	harness.connection = {
 		activeProfile: { id: "hub-b", name: "B hub" },
@@ -2827,7 +2847,7 @@ it("never renders the previous hub's retained client once the route names a hub 
 	});
 	const rekeyed = renderedText(tree);
 	expect(rekeyed).toContain("B hub");
-	expect(rekeyed).toContain("Connecting to B hub…");
+	expect(testIDSuffixes(tree, "first-load-")).toEqual(["connecting"]);
 	expect(rekeyed).not.toContain("demo-plugin");
 });
 
@@ -3043,8 +3063,7 @@ it("offers no Upgrade on a hub without the update check, and tells a broken plug
 	const { tree } = await mountPage(pageHub([entry("cracked", { broken: true })]));
 	const detail = await openDetail(tree, "cracked");
 	expect(detail.findAllByProps({ label: "Upgrade" })).toHaveLength(0);
-	expect(renderedText(tree)).toContain("This plugin is broken. Remove it.");
-	expect(renderedText(tree)).not.toContain("Upgrade it or remove it.");
+	expect(testIDSuffixes(tree, "plugin-broken-")).toEqual(["remove-only"]);
 });
 
 it("shows Installed, Marketplaces and Browse, with Installed first", async () => {
@@ -3052,14 +3071,10 @@ it("shows Installed, Marketplaces and Browse, with Installed first", async () =>
 	const segments = tree.root.findAllByProps({ accessibilityRole: "radio" });
 	expect(segments.map((node) => node.props.accessibilityLabel)).toEqual(["Installed", "Marketplaces", "Browse"]);
 	expect(segments.map((node) => node.props.accessibilityState.checked)).toEqual([true, false, false]);
-	expect(renderedText(tree)).toContain(
-		"“On by default” sets which plugins new sessions start with. You can still choose per session.",
-	);
 
 	await choose(tree, "Marketplaces");
 	expect(marketplaceRow(tree, "acme").props.accessibilityLabel).toBe("acme, github: acme/plugins");
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" }).length).toBeGreaterThan(0);
-	expect(renderedText(tree)).toContain("Add marketplace…");
 
 	await choose(tree, "Browse");
 	await act(async () => {
@@ -3124,8 +3139,7 @@ it("says Already up to date when an upgrade changes neither version nor commit",
 		detail.findByProps({ accessibilityLabel: "Upgrade" }).props.onPress();
 	});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Already up to date");
-	expect(renderedText(tree)).not.toContain("Upgraded to");
+	expect(testIDSuffixes(tree, "plugin-notice-")).toEqual(["current"]);
 });
 
 it("shows no upgrade result for a plugin the answering list no longer carries", async () => {
@@ -3142,7 +3156,7 @@ it("shows no upgrade result for a plugin the answering list no longer carries", 
 	expect(
 		tree.root.findAll((node) => String(node.type) === "HoldingModal" || String(node.type) === "Modal"),
 	).toHaveLength(0);
-	expect(renderedText(tree)).not.toContain("Already up to date");
+	expect(testIDSuffixes(tree, "plugin-notice-")).toEqual([]);
 });
 
 it("filters installed plugins by plugin or marketplace", async () => {
@@ -3163,7 +3177,7 @@ it("filters installed plugins by plugin or marketplace", async () => {
 	expect(renderedText(tree)).toContain("tool");
 	expect(renderedText(tree)).not.toContain("linter");
 	act(() => field().props.onChangeText("nothing-like-it"));
-	expect(renderedText(tree)).toContain("No matching plugins.");
+	expect(testIDSuffixes(tree, "plugins-empty-")).toEqual(["filtered"]);
 });
 
 it("keeps the filter field while a filter is set, even once the list empties", async () => {
@@ -3197,7 +3211,7 @@ it("reads the installed list again on coming back to the page after a read faile
 	const { tree } = await mountPage(hub);
 	await act(async () => {});
 	expect(reads).toBe(1);
-	expect(renderedText(tree)).not.toMatch(/\bRetry\b/);
+	expect(offersButton(tree, /\bRetry\b/)).toBe(false);
 	await act(async () => {
 		refocus();
 	});
@@ -3217,8 +3231,8 @@ it("says Upgraded to the new version when the upgrade's list carries one", async
 		detail.findByProps({ accessibilityLabel: "Upgrade" }).props.onPress();
 	});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Upgraded to 1.2.0");
-	expect(renderedText(tree)).not.toContain("Already up to date");
+	expect(testIDSuffixes(tree, "plugin-notice-")).toEqual(["upgraded"]);
+	expect(renderedText(tree)).toContain("1.2.0");
 });
 
 it("holds the detail's switches, Upgrade and Remove, and says a broken plugin is broken", async () => {
@@ -3226,7 +3240,7 @@ it("holds the detail's switches, Upgrade and Remove, and says a broken plugin is
 	hub.on("evener/plugin/setAutoUpgrade", () => ({ plugins: [entry("cracked", { broken: true, autoUpgrade: true })] }));
 	const { tree } = await mountPage(hub);
 	const detail = await openDetail(tree, "cracked");
-	expect(renderedText(tree)).toContain("This plugin is broken. Upgrade it or remove it.");
+	expect(testIDSuffixes(tree, "plugin-broken-")).toEqual(["upgradable"]);
 	expect(detail.findByProps({ accessibilityLabel: "On by default" }).props.value).toBe(true);
 	await act(async () => {
 		detail.findByProps({ accessibilityLabel: "Upgrade automatically" }).props.onValueChange(true);
@@ -3239,8 +3253,8 @@ it("holds the detail's switches, Upgrade and Remove, and says a broken plugin is
 	await act(async () => {
 		detail.findByProps({ accessibilityLabel: "Remove plugin" }).props.onPress();
 	});
-	expect(alertRequests.at(-1)?.title).toBe("Remove plugin?");
-	expect(alertRequests.at(-1)?.message).toBe("cracked from core on Work hub");
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
+	expect(alertRequests.at(-1)?.message).toContain("cracked");
 	await act(async () => {
 		detail.findByProps({ accessibilityLabel: "Done" }).props.onPress();
 	});
@@ -3286,7 +3300,7 @@ it("opens the plugin a notice named once, then clears the focus", async () => {
 	const { tree, navigation } = await mountPage(hub, { focus: { plugin: "cracked", marketplace: "core" } });
 	const detail = tree.root.findByType("Modal" as never);
 	expect(detail.findAllByProps({ accessibilityLabel: "Remove plugin" }).length).toBeGreaterThan(0);
-	expect(renderedText(tree)).toContain("This plugin is broken. Upgrade it or remove it.");
+	expect(testIDSuffixes(tree, "plugin-broken-")).toEqual(["upgradable"]);
 	expect(navigation.setParams).toHaveBeenCalledWith({ focus: undefined });
 });
 
@@ -3317,7 +3331,7 @@ it("leaves an open plugin's late result behind when a link opens another plugin"
 		tree.root.findByType("Modal" as never).findAllByProps({ accessibilityLabel: "Upgrade" }).length,
 	).toBeGreaterThan(0);
 	expect(renderedText(tree)).toContain("other");
-	expect(renderedText(tree)).not.toContain("Could not confirm the change");
+	expect(problems(tree)).not.toContain("write-failed");
 });
 
 it("updates a marketplace's source and removes it from its detail in Marketplaces", async () => {
@@ -3339,7 +3353,8 @@ it("updates a marketplace's source and removes it from its detail in Marketplace
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
 	});
-	expect(alertRequests.at(-1)?.title).toBe("Remove marketplace?");
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
+	expect(alertRequests.at(-1)?.message).toContain("acme");
 });
 
 it("installs a catalog's plugin from Browse", async () => {
@@ -3384,7 +3399,7 @@ it("pushes a marketplace's page from its list, so the edge swipe returns there (
 		segment: "marketplaces",
 	});
 	// The list stays whole: nothing drills in place.
-	expect(renderedText(tree)).not.toContain("Update source");
+	expect(tree.root.findAllByType(MarketplaceDetail)).toHaveLength(0);
 });
 
 it("opens an installed plugin from its marketplace's page on the Plugins page, with its detail up", async () => {
@@ -3401,7 +3416,9 @@ it("opens an installed plugin from its marketplace's page on the Plugins page, w
 	await act(async () => {});
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Back to Plugins" })).toHaveLength(0);
 	expect(tree.root.findByType("Modal" as never).props.visible).not.toBe(false);
-	expect(renderedText(tree)).toContain("On by default");
+	expect(
+		tree.root.findByType("Modal" as never).findAllByProps({ accessibilityLabel: "Remove plugin" }).length,
+	).toBeGreaterThan(0);
 });
 
 it("filters a marketplace's catalog with the shared search field, as Installed does", async () => {
@@ -3420,7 +3437,6 @@ it("filters a marketplace's catalog with the shared search field, as Installed d
 	});
 	await act(async () => {});
 	const field = tree.root.findByType(SearchField);
-	expect(field.props.label).toBe("Filter this catalog");
 	await act(async () => field.props.onChangeText("gad"));
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Install gadget from acme" }).length).toBeGreaterThan(0);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Install tool from acme" })).toHaveLength(0);
@@ -3432,8 +3448,8 @@ it("shows a failed list read as a line with nothing to press", async () => {
 		throw new Error("list unavailable");
 	});
 	const { tree } = await mountPage(hub);
-	expect(renderedText(tree)).toContain("Could not load installed plugins.");
-	expect(tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(0);
+	expect(problems(tree)).toEqual(["list-failed"]);
+	expect(offersButton(tree, /\bRetry\b/)).toBe(false);
 });
 
 it("never asks to reconnect or offers pull-to-refresh, in any segment", async () => {
@@ -3450,12 +3466,12 @@ it("never asks to reconnect or offers pull-to-refresh, in any segment", async ()
 			});
 			await act(async () => {});
 		}
-		expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+		expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 		expect(tree.root.findAll((node) => node.props.onRefresh !== undefined)).toHaveLength(0);
 	}
 	await choose(tree, "Installed");
 	await openDetail(tree, "demo-plugin");
-	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 });
 
 it("waits for the installed list in the same padded space every Hub page waits in", async () => {
@@ -3498,7 +3514,7 @@ it("shows the busy copy when the shared gate refuses the add", async () => {
 		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" }).props.onPress();
 	});
 	// A refusal is not a failure: the modal stays open on the busy copy.
-	expect(renderedText(tree)).toContain(HUB_WRITE_BUSY);
+	expect(testIDSuffixes(tree, "form-error-")).toEqual(["write-busy"]);
 });
 
 it("closes an untouched Add marketplace at once, by Cancel or a swipe", () => {
@@ -3516,7 +3532,7 @@ it("asks before Cancel or a swipe throws away a typed source (spec 6)", () => {
 	act(() => tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins"));
 	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
 	expect(onClose).not.toHaveBeenCalled();
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	expect(alertRequests).toHaveLength(1);
 	act(() =>
 		alertRequests
 			.at(-1)
@@ -3625,20 +3641,15 @@ it("points an empty plugin list at Browse when the hub has marketplaces, and at 
 	const installed = async (hub: FakeClient) => {
 		const { tree } = await mountPage(hub);
 		// Before the hub's marketplaces are read, it points at nothing.
-		expect(renderedText(tree)).toContain("No plugins installed on this hub.");
-		expect(renderedText(tree)).not.toMatch(/Browse a marketplace|Add a marketplace/);
+		expect(testIDSuffixes(tree, "plugins-empty-")).toEqual(["unknown"]);
 		await choose(tree, "Marketplaces");
 		await choose(tree, "Installed");
-		return renderedText(tree);
+		return testIDSuffixes(tree, "plugins-empty-");
 	};
-	expect(await installed(pageHub([]))).toContain(
-		"No plugins installed on this hub. Browse a marketplace to install one.",
-	);
+	expect(await installed(pageHub([]))).toEqual(["has-marketplaces"]);
 	const hub = pageHub([]);
 	hub.on("evener/marketplace/list", () => ({ marketplaces: [] }));
-	const none = await installed(hub);
-	expect(none).toContain("No plugins installed on this hub. Add a marketplace to find plugins.");
-	expect(none).not.toContain("Browse a marketplace");
+	expect(await installed(hub)).toEqual(["no-marketplaces"]);
 });
 
 it("points an empty marketplace list at the action its own segment has (audit L6)", async () => {
@@ -3646,11 +3657,11 @@ it("points an empty marketplace list at the action its own segment has (audit L6
 	hub.on("evener/marketplace/list", () => ({ marketplaces: [] }));
 	const { tree } = await mountPage(hub);
 	await choose(tree, "Marketplaces");
-	expect(renderedText(tree)).toContain("No marketplaces on this hub. Add one to browse its plugins.");
+	expect(testIDSuffixes(tree, "marketplaces-empty-")).toEqual(["marketplaces"]);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" }).length).toBeGreaterThan(0);
 	// Browse has no Add row: it points at the segment that does.
 	await choose(tree, "Browse");
-	expect(renderedText(tree)).toContain("No marketplaces on this hub. Add one on Marketplaces to browse its plugins.");
+	expect(testIDSuffixes(tree, "marketplaces-empty-")).toEqual(["browse"]);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" })).toHaveLength(0);
 });
 

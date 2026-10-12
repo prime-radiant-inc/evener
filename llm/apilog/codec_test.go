@@ -169,8 +169,8 @@ func TestAPIAttemptDecoderEnforcesMaximumLineBytes(t *testing.T) {
 	decoder := NewDecoder(bytes.NewReader(append(append([]byte{}, line...), '\n')), len(line)-1)
 	if _, err := decoder.Next(); err == nil {
 		t.Fatal("Next() accepted an oversized record")
-	} else if errors.Is(err, ErrPartialTail) || !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "offset 0") {
-		t.Fatalf("oversized-line error = %v", err)
+	} else if errors.Is(err, ErrPartialTail) || decoder.RecordLine() != 1 || decoder.RecordOffset() != 0 {
+		t.Fatalf("oversized-line error = %v at record line %d offset %d, want a non-partial failure at line 1 offset 0", err, decoder.RecordLine(), decoder.RecordOffset())
 	}
 
 	decoder = NewDecoder(bytes.NewReader(append(append([]byte{}, line...), '\n')), len(line))

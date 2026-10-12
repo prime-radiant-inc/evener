@@ -359,8 +359,8 @@ func TestInstall_BareNPMRepo_UnbuiltBin_NotePersisted(t *testing.T) {
 		"package.json": `{"name":"journal-mcp","version":"1.0.0","bin":{"journal-mcp":"./dist/index.js"}}`,
 		"src/index.ts": "// unbuilt",
 	})
-	if !strings.Contains(entry.Note, "not wiring") {
-		t.Errorf("Note = %q, want the not-wiring explanation", entry.Note)
+	if !strings.Contains(entry.Note, "./dist/index.js") {
+		t.Errorf("Note = %q, want it to name the unbuilt bin target", entry.Note)
 	}
 	inst, err := agentplugin.Load(entry.InstallPath)
 	if err != nil {

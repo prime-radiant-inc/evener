@@ -42,6 +42,34 @@ const (
 	catEnvironment = "environment"
 )
 
+// Doctor checks: each finding names the check that produced it, so a reader of
+// the report (or a test) can tell findings apart without parsing Message.
+const (
+	checkStoreUnusable                = "store_unusable"
+	checkInstallPathInaccessible      = "install_path_inaccessible"
+	checkInstallPathNotDir            = "install_path_not_directory"
+	checkVersionMismatch              = "version_mismatch"
+	checkComponentInvalid             = "component_invalid"
+	checkComponentLoads               = "component_loads"
+	checkAutoUpgradeInPlace           = "auto_upgrade_in_place"
+	checkOrphanScanSkipped            = "orphan_scan_skipped"
+	checkOrphanScanRegistryUnreadable = "orphan_scan_registry_unreadable"
+	checkCacheUnreadable              = "cache_unreadable"
+	checkOrphanCacheDir               = "orphan_cache_dir"
+	checkMarketplacePendingRename     = "marketplace_pending_rename"
+	checkMarketplaceUnfetched         = "marketplace_unfetched"
+	checkMarketplaceMissing           = "marketplace_missing"
+	checkMarketplaceNotGitRepo        = "marketplace_not_git_repo"
+	checkMarketplaceCatalogInvalid    = "marketplace_catalog_invalid"
+	checkMarketplaceStale             = "marketplace_stale"
+	checkMarketplaceHealthy           = "marketplace_healthy"
+	checkGitAvailable                 = "git_available"
+	checkGitMissing                   = "git_missing"
+	checkStoreRootNotWritable         = "store_root_not_writable"
+	checkStoreRootAbsent              = "store_root_absent"
+	checkStoreRootWritable            = "store_root_writable"
+)
+
 // marketplaceStaleAfter is how long since a git-backed marketplace's last
 // fetch/pull before doctor flags it as stale. Directory sources have no
 // "pull" and are never flagged for staleness.
@@ -55,10 +83,11 @@ const marketplaceStaleAfter = 30 * 24 * time.Hour
 const doctorOrphanLockWait = time.Second
 
 // DoctorFinding is one read-only plugin-store health check result. Level is
-// one of LevelOK, LevelWarn, LevelFail.
+// one of LevelOK, LevelWarn, LevelFail; Check names the check that produced it.
 type DoctorFinding struct {
 	Level       string `json:"level"`
 	Category    string `json:"category"`
+	Check       string `json:"check"`
 	Message     string `json:"message"`
 	Remediation string `json:"remediation,omitempty"`
 }
@@ -88,6 +117,7 @@ func (m *Manager) Doctor() ([]DoctorFinding, error) {
 		return []DoctorFinding{doctorGitFinding(), {
 			Level:       LevelFail,
 			Category:    catEnvironment,
+			Check:       checkStoreUnusable,
 			Message:     fmt.Sprintf("plugin store is unusable: %v", err),
 			Remediation: "point the store at an absolute path: set XDG_CONFIG_HOME or HOME to an absolute directory, or pass an absolute --store-root to evener-doctor (--plugin-root to evener serve)",
 		}}, nil
@@ -143,14 +173,14 @@ func (m *Manager) doctorEntry(key string, e InstallEntry, inPlace bool) []Doctor
 	info, err := doctorStat(e.InstallPath)
 	if err != nil {
 		return []DoctorFinding{{
-			Level: LevelFail, Category: catRegistry,
+			Level: LevelFail, Category: catRegistry, Check: checkInstallPathInaccessible,
 			Message:     fmt.Sprintf("%s: install path %s is inaccessible: %v", key, e.InstallPath, err),
 			Remediation: fmt.Sprintf("run `evener plugin remove %s` to drop the orphaned entry, or `evener plugin upgrade %s` to re-materialize it", key, key),
 		}}
 	}
 	if !info.IsDir() {
 		return []DoctorFinding{{
-			Level: LevelFail, Category: catRegistry,
+			Level: LevelFail, Category: catRegistry, Check: checkInstallPathNotDir,
 			Message:     fmt.Sprintf("%s: install path %s is not a directory", key, e.InstallPath),
 			Remediation: fmt.Sprintf("run `evener plugin remove %s` to drop the orphaned entry", key),
 		}}
@@ -168,7 +198,7 @@ func (m *Manager) doctorEntry(key string, e InstallEntry, inPlace bool) []Doctor
 			remediation = fmt.Sprintf("%s's plugin.json was edited in place, which is expected for a plugin used in place from a directory; run `evener plugin remove %s` then `evener plugin install %s` to resync the recorded version", key, key, key)
 		}
 		findings = append(findings, DoctorFinding{
-			Level: LevelWarn, Category: catRegistry,
+			Level: LevelWarn, Category: catRegistry, Check: checkVersionMismatch,
 			Message:     fmt.Sprintf("%s: registry version %q does not match on-disk plugin.json version %q", key, e.Version, diskVer),
 			Remediation: remediation,
 		})
@@ -177,13 +207,13 @@ func (m *Manager) doctorEntry(key string, e InstallEntry, inPlace bool) []Doctor
 	if e.Enabled {
 		if err := validatePluginDir(e.InstallPath); err != nil {
 			findings = append(findings, DoctorFinding{
-				Level: LevelFail, Category: catComponent,
+				Level: LevelFail, Category: catComponent, Check: checkComponentInvalid,
 				Message:     fmt.Sprintf("%s: %v", key, err),
 				Remediation: fmt.Sprintf("fix the plugin's manifest/components, or run `evener plugin disable %s`", key),
 			})
 		} else {
 			findings = append(findings, DoctorFinding{
-				Level: LevelOK, Category: catComponent,
+				Level: LevelOK, Category: catComponent, Check: checkComponentLoads,
 				Message: key + ": loads cleanly",
 			})
 		}
@@ -191,7 +221,7 @@ func (m *Manager) doctorEntry(key string, e InstallEntry, inPlace bool) []Doctor
 
 	if e.AutoUpgrade && inPlace {
 		findings = append(findings, DoctorFinding{
-			Level: LevelWarn, Category: catAutoUpgrade,
+			Level: LevelWarn, Category: catAutoUpgrade, Check: checkAutoUpgradeInPlace,
 			Message:     key + ": auto-upgrade is on but the plugin is used in place from a directory, which can never produce a new version",
 			Remediation: fmt.Sprintf("turn off auto-upgrade for %s; it has no effect on a plugin used in place", key),
 		})
@@ -239,7 +269,7 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 	release, err := m.acquireStoreLock(context.Background(), doctorAcquireLock, m.lockPath(), doctorOrphanLockWait)
 	if err != nil {
 		return []DoctorFinding{{
-			Level: LevelWarn, Category: catRegistry,
+			Level: LevelWarn, Category: catRegistry, Check: checkOrphanScanSkipped,
 			Message:     fmt.Sprintf("skipped the check for unreferenced cache directories: %v", err),
 			Remediation: "re-run the check once the plugin operation holding the store lock has finished",
 		}}
@@ -249,7 +279,7 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 	reg, err := m.loadRegistry()
 	if err != nil {
 		return []DoctorFinding{{
-			Level: LevelFail, Category: catRegistry,
+			Level: LevelFail, Category: catRegistry, Check: checkOrphanScanRegistryUnreadable,
 			Message: fmt.Sprintf("reading the registry for the unreferenced cache directory check: %v", err),
 		}}
 	}
@@ -261,7 +291,7 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 			return nil
 		}
 		return []DoctorFinding{{
-			Level: LevelFail, Category: catRegistry,
+			Level: LevelFail, Category: catRegistry, Check: checkCacheUnreadable,
 			Message: fmt.Sprintf("reading cache directory %s: %v", m.cacheDir(), err),
 		}}
 	}
@@ -294,7 +324,7 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 					continue
 				}
 				findings = append(findings, DoctorFinding{
-					Level: LevelWarn, Category: catRegistry,
+					Level: LevelWarn, Category: catRegistry, Check: checkOrphanCacheDir,
 					Message:     fmt.Sprintf("orphaned cache directory %s has no registry entry", shaPath),
 					Remediation: "run `evener plugin gc` to reclaim disk space",
 				})
@@ -317,13 +347,13 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 	// cannot call a name healthy that the next lock holder would rename.
 	if pendingMigration(name) {
 		return DoctorFinding{
-			Level: LevelWarn, Category: catMarketplace,
+			Level: LevelWarn, Category: catMarketplace, Check: checkMarketplacePendingRename,
 			Message:     name + ": recorded under a name the store no longer accepts; the next plugin operation renames it",
 			Remediation: "run `evener plugin marketplace list` to rename it now; the new name is printed",
 		}
 	}
 	if ref.InstallLocation == "" {
-		return DoctorFinding{Level: LevelOK, Category: catMarketplace, Message: name + ": seeded, not yet fetched"}
+		return DoctorFinding{Level: LevelOK, Category: catMarketplace, Check: checkMarketplaceUnfetched, Message: name + ": seeded, not yet fetched"}
 	}
 
 	// A directory source has nothing to fetch — RefreshMarketplace only bumps
@@ -337,7 +367,7 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 	info, err := doctorStat(ref.InstallLocation)
 	if err != nil || !info.IsDir() {
 		return DoctorFinding{
-			Level: LevelFail, Category: catMarketplace,
+			Level: LevelFail, Category: catMarketplace, Check: checkMarketplaceMissing,
 			Message:     fmt.Sprintf("%s: install location %s is missing or not a directory", name, ref.InstallLocation),
 			Remediation: fixIt,
 		}
@@ -346,7 +376,7 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 	if ref.Source.Kind != SourceDirectory && doctorGitAvailable() {
 		if _, err := git(context.Background(), ref.InstallLocation, "rev-parse", "--git-dir"); err != nil {
 			return DoctorFinding{
-				Level: LevelFail, Category: catMarketplace,
+				Level: LevelFail, Category: catMarketplace, Check: checkMarketplaceNotGitRepo,
 				Message:     fmt.Sprintf("%s: %s is not a valid git repository", name, ref.InstallLocation),
 				Remediation: fixIt,
 			}
@@ -355,7 +385,7 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 
 	if _, err := ParseCatalog(m.catalogRoot(ref)); err != nil {
 		return DoctorFinding{
-			Level: LevelFail, Category: catMarketplace,
+			Level: LevelFail, Category: catMarketplace, Check: checkMarketplaceCatalogInvalid,
 			Message:     fmt.Sprintf("%s: marketplace.json invalid: %v", name, err),
 			Remediation: fixIt,
 		}
@@ -364,14 +394,14 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 	if ref.Source.Kind != SourceDirectory {
 		if age := m.now().Sub(ref.LastUpdated); age > marketplaceStaleAfter {
 			return DoctorFinding{
-				Level: LevelWarn, Category: catMarketplace,
+				Level: LevelWarn, Category: catMarketplace, Check: checkMarketplaceStale,
 				Message:     fmt.Sprintf("%s: last updated %s ago", name, age.Round(time.Hour)),
 				Remediation: fmt.Sprintf("run `evener plugin marketplace refresh %s`", name),
 			}
 		}
 	}
 
-	return DoctorFinding{Level: LevelOK, Category: catMarketplace, Message: name + ": healthy"}
+	return DoctorFinding{Level: LevelOK, Category: catMarketplace, Check: checkMarketplaceHealthy, Message: name + ": healthy"}
 }
 
 // doctorGitFinding reports whether git is on PATH. It is the one check that
@@ -379,10 +409,10 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 // the store root is unusable.
 func doctorGitFinding() DoctorFinding {
 	if doctorGitAvailable() {
-		return DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: "git is available on PATH"}
+		return DoctorFinding{Level: LevelOK, Category: catEnvironment, Check: checkGitAvailable, Message: "git is available on PATH"}
 	}
 	return DoctorFinding{
-		Level: LevelWarn, Category: catEnvironment,
+		Level: LevelWarn, Category: catEnvironment, Check: checkGitMissing,
 		Message:     "git not found on PATH",
 		Remediation: "install git; marketplace/plugin fetch, clone, and upgrade all shell out to it",
 	}
@@ -396,17 +426,17 @@ func (m *Manager) doctorEnvironment() []DoctorFinding {
 	switch exists, err := m.checkStoreWritable(); {
 	case err != nil:
 		findings = append(findings, DoctorFinding{
-			Level: LevelFail, Category: catEnvironment,
+			Level: LevelFail, Category: catEnvironment, Check: checkStoreRootNotWritable,
 			Message:     fmt.Sprintf("store root %s is not writable: %v", m.Root, err),
 			Remediation: "check ownership and permissions on " + m.Root,
 		})
 	case !exists:
 		findings = append(findings, DoctorFinding{
-			Level: LevelOK, Category: catEnvironment,
+			Level: LevelOK, Category: catEnvironment, Check: checkStoreRootAbsent,
 			Message: fmt.Sprintf("store root %s does not exist yet (created on first plugin or marketplace operation)", m.Root),
 		})
 	default:
-		findings = append(findings, DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: fmt.Sprintf("store root %s is writable", m.Root)})
+		findings = append(findings, DoctorFinding{Level: LevelOK, Category: catEnvironment, Check: checkStoreRootWritable, Message: fmt.Sprintf("store root %s is writable", m.Root)})
 	}
 	return findings
 }

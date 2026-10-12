@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,9 +33,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	if testing.Short() {
 		t.Skip("browser guard requires Chrome and real daemons")
 	}
-	if _, err := fs.ReadFile(distFS(), "index.html"); err != nil {
-		t.Fatalf("production frontend required, run make build-web: %v", err)
-	}
+	requireFreshDist(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute) // TRIPWIRE, never releases a producer barrier.
 	defer cancel()
 	provider, err := fakellm.New()

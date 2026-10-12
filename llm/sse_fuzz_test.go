@@ -127,7 +127,7 @@ func FuzzParseSSE(f *testing.F) {
 		release = make(chan struct{})
 		err = ParseSSE(context.Background(), sseBlockingReader{release}, func(SSEEvent) error { return nil }, WithStreamReadTimeout(time.Nanosecond))
 		close(release)
-		if err == nil || !strings.Contains(err.Error(), "stream read timeout") {
+		if !errors.Is(err, ErrSSEReadTimeout) {
 			t.Fatalf("timeout error = %v", err)
 		}
 	})

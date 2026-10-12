@@ -2,7 +2,7 @@
 
 import { parseJobOutputPage } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { JobLogWindows } from "./jobLogWindow";
+import type { JobLogRow, JobLogWindows } from "./jobLogWindow";
 import {
   applyJobLogPage,
   emptyJobLogWindows,
@@ -268,4 +268,53 @@ test("live eviction never mutates the retained older reading copy", () => {
   expect(windows.older?.rows[0]).toBe(firstRow);
   expect(firstRow?.line.map((run) => run.text).join("")).toBe("MARKER");
   expect(windows.live?.offsetBytes).toBeGreaterThan(65536);
+});
+
+function lines(count: number, first = 0): Uint8Array {
+  return new TextEncoder().encode(Array.from({ length: count }, (_, index) => `line ${first + index}\n`).join(""));
+}
+
+test("an appended page keeps the window's settled rows instead of reparsing them", () => {
+  const first = lines(100);
+  const before = applyJobLogPage(emptyJobLogWindows(), rawPage(0, first, first.length), "live", "end");
+  const next = lines(100, 100);
+  const after = applyJobLogPage(before, rawPage(first.length, next, first.length + next.length), "live", "end");
+  expect(after.live?.rows).toHaveLength(200);
+  expect(after.live?.rows.slice(0, 99).every((row, index) => row === before.live?.rows[index])).toBe(true);
+});
+
+test("evicting the front keeps the surviving rows instead of reparsing them", () => {
+  const source = lines(60000);
+  const before = loadBytes(source.slice(0, 524288), 0, "live", "end");
+  const after = applyJobLogPage(
+    before,
+    rawPage(524288, source.slice(524288, 524288 + 65536), 524288 + 65536),
+    "live",
+    "end",
+  );
+  const survivor = after.live?.rows[0];
+  expect(after.live?.offsetBytes).toBeGreaterThan(0);
+  expect(before.live?.rows.includes(survivor as JobLogRow)).toBe(true);
+});
+
+test("the joined rows of overlapping windows reuse each window's parse", () => {
+  const source = lines(200);
+  let windows = applyJobLogPage(emptyJobLogWindows(), rawPage(0, source.slice(0, 1000), source.length), "older", "end");
+  windows = applyJobLogPage(windows, rawPage(900, source.slice(900), source.length), "live", "end");
+  const joined = jobLogRows(windows);
+  expect(joined.map((row) => row.line.map((run) => run.text).join(""))).toEqual(
+    Array.from({ length: 200 }, (_, index) => `line ${index}`),
+  );
+  expect(joined[0]).toBe(windows.older?.rows[0]);
+  expect(joined.at(-2)).toBe(windows.live?.rows.at(-2));
+});
+
+// Each blank line is its own boundary; reuse carries far more of them than a
+// call's argument list can hold.
+test("a window of blank lines accepts another page", () => {
+  const blank = new Uint8Array(524288).fill(10);
+  const windows = loadBytes(blank, 0, "live", "end");
+  const after = applyJobLogPage(windows, rawPage(524288, new Uint8Array(65536).fill(10), 589824), "live", "end");
+  expect(after.live?.rows).toHaveLength(524288);
+  expect(after.live?.offsetBytes).toBe(65536);
 });

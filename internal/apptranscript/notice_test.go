@@ -7,95 +7,48 @@ import (
 	"primeradiant.com/evener/agent/schema"
 )
 
-// TestRepairChangePhraseAliasNoDetail covers the alias branch where
-// strings.Cut fails (no → separator in detail), hitting the "renamed a
-// field to %q" fallback.
-func TestRepairChangePhraseAliasNoDetail(t *testing.T) {
-	got := repairChangePhrase("alias:fieldname")
-	if !strings.Contains(got, "renamed a field to") {
-		t.Fatalf("alias without detail should fall back, got %q", got)
-	}
-	if !strings.Contains(got, "fieldname") {
-		t.Fatalf("should mention field name, got %q", got)
-	}
-}
-
-// TestRepairChangePhraseCoerceType covers the coerce_type branch.
-func TestRepairChangePhraseCoerceType(t *testing.T) {
-	got := repairChangePhrase("coerce_type:count")
-	if !strings.Contains(got, "adjusted the") || !strings.Contains(got, "type") {
-		t.Fatalf("coerce_type should mention type adjustment, got %q", got)
-	}
-}
-
-// TestRepairChangePhraseDropUnknown covers the drop_unknown branch.
-func TestRepairChangePhraseDropUnknown(t *testing.T) {
-	got := repairChangePhrase("drop_unknown:artifacts")
-	if !strings.Contains(got, "removed the unrecognized") {
-		t.Fatalf("drop_unknown should mention removal, got %q", got)
-	}
-}
-
-// TestRepairChangePhraseUnicodeRepair covers the unicode_repair branch.
-func TestRepairChangePhraseUnicodeRepair(t *testing.T) {
-	got := repairChangePhrase("unicode_repair:")
-	if !strings.Contains(got, "fixed an invalid character") {
-		t.Fatalf("unicode_repair should mention invalid character, got %q", got)
-	}
-}
-
-// TestRepairChangePhraseUnknownKindNoField covers the default branch
-// with an empty field, hitting the "adjusted the arguments" return.
-func TestRepairChangePhraseUnknownKindNoField(t *testing.T) {
-	got := repairChangePhrase("unknown_kind")
-	if !strings.Contains(got, "adjusted the arguments") {
-		t.Fatalf("unknown kind with no field should say 'adjusted the arguments', got %q", got)
-	}
-}
-
-// TestRepairChangePhraseUnknownKindWithField covers the default branch
-// with a field, hitting the "adjusted the %q field" return.
-func TestRepairChangePhraseUnknownKindWithField(t *testing.T) {
-	got := repairChangePhrase("unknown_kind:myfield")
-	if !strings.Contains(got, "adjusted the") || !strings.Contains(got, "myfield") {
-		t.Fatalf("unknown kind with field should name the field, got %q", got)
-	}
-}
-
-// TestRepairChangePhraseAliasWithDetail covers the alias branch with a
-// → separator in the detail, hitting the "renamed %q to %q" path.
-func TestRepairChangePhraseAliasWithDetail(t *testing.T) {
-	got := repairChangePhrase("alias:newfield:oldfield→newfield")
-	if !strings.Contains(got, "renamed") {
-		t.Fatalf("alias with detail should mention rename, got %q", got)
-	}
-	if !strings.Contains(got, "oldfield") || !strings.Contains(got, "newfield") {
-		t.Fatalf("should mention old and new names, got %q", got)
-	}
-}
-
-func TestRepairChangePhraseDefaultCommunicateEnvelopeRepairs(t *testing.T) {
+// Each repair kind reads as its own plain phrase that names the argument
+// involved, and none leaks the repair engine's "kind:field:detail" encoding
+// into the reader's transcript (kata k4v8).
+func TestRepairChangePhraseNamesTheFieldWithoutLeakingTheEncoding(t *testing.T) {
+	seen := map[string]string{}
 	for _, tc := range []struct {
-		raw  string
-		want string
+		raw   string
+		names []string
 	}{
-		{
-			raw:  "synthesize:output:synthesized default envelope",
-			want: "created the required output object",
-		},
-		{
-			raw:  "copy:message:copied output.message",
-			want: "copied nested output.message to the required message",
-		},
-		{
-			raw:  "promote_json_object:output:promoted JSON object string",
-			want: "converted the output JSON string to an object",
-		},
+		{raw: "alias:fieldname", names: []string{"fieldname"}},
+		{raw: "alias:newfield:oldfield→newfield", names: []string{"oldfield", "newfield"}},
+		{raw: "coerce_type:count", names: []string{"count"}},
+		{raw: "drop_unknown:artifacts", names: []string{"artifacts"}},
+		{raw: "unicode_repair:"},
+		{raw: "unknown_kind"},
+		{raw: "unknown_kind:myfield", names: []string{"myfield"}},
+		{raw: "synthesize:output:synthesized default envelope"},
+		{raw: "copy:message:copied output.message"},
+		{raw: "promote_json_object:output:promoted JSON object string"},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
-			if got := repairChangePhrase(tc.raw); got != tc.want {
-				t.Fatalf("repairChangePhrase(%q) = %q, want %q", tc.raw, got, tc.want)
+			got := repairChangePhrase(tc.raw)
+			if got == "" {
+				t.Fatal("repair phrase is empty")
 			}
+			for _, name := range tc.names {
+				if !strings.Contains(got, name) {
+					t.Errorf("repairChangePhrase(%q) = %q, want it to name %q", tc.raw, got, name)
+				}
+			}
+			kind, rest, _ := strings.Cut(tc.raw, ":")
+			if strings.Contains(got, kind) || strings.ContainsAny(got, ":→") {
+				t.Errorf("repairChangePhrase(%q) = %q leaks the repair encoding", tc.raw, got)
+			}
+			field, _, _ := strings.Cut(rest, ":")
+			if fallback := repairChangePhrase("unknown_kind:" + field); kind != "unknown_kind" && got == fallback {
+				t.Errorf("repairChangePhrase(%q) = %q, the phrase for a kind this build does not know", tc.raw, got)
+			}
+			if other, dup := seen[got]; dup {
+				t.Errorf("repairChangePhrase(%q) and (%q) both read %q", tc.raw, other, got)
+			}
+			seen[got] = tc.raw
 		})
 	}
 }
@@ -114,20 +67,20 @@ func TestFieldDetailFullParts(t *testing.T) {
 	}
 }
 
-// TestToolCallRepairedAnnouncementNoChanges covers the "Repaired %s" path
-// with no changes.
+// TestToolCallRepairedAnnouncementNoChanges covers the path with no changes:
+// the announcement still names the repaired tool.
 func TestToolCallRepairedAnnouncementNoChanges(t *testing.T) {
 	got := ToolRepairAnnouncement(schema.ToolRepairNotice{ToolName: "shell"}).Text
-	if !strings.Contains(got, "Repaired shell") {
-		t.Fatalf("no changes should say 'Repaired shell', got %q", got)
+	if !strings.Contains(got, "shell") {
+		t.Fatalf("no changes should still name the tool, got %q", got)
 	}
 }
 
 // TestToolCallRepairedAnnouncementNoName covers the fallback name path
-// with an empty tool name.
+// with an empty tool name: the sentence has no gap where the name goes.
 func TestToolCallRepairedAnnouncementNoName(t *testing.T) {
 	got := ToolRepairAnnouncement(schema.ToolRepairNotice{}).Text
-	if !strings.Contains(got, "Repaired tool call") {
-		t.Fatalf("empty name should use fallback 'tool call', got %q", got)
+	if got == "" || strings.TrimSpace(got) != got || strings.Contains(got, "  ") {
+		t.Fatalf("empty name should fall back to a stand-in name, got %q", got)
 	}
 }

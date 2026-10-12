@@ -5,7 +5,7 @@
 // per render, so this pins the harness's output as clean (#2433).
 import { createElement, useEffect } from "react";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { answered, render, renderHook, unmountMountedTrees } from "./renderNative.testkit";
+import { answered, offersButton, render, renderHook, unmountMountedTrees } from "./renderNative.testkit";
 
 const DEPRECATION = "react-test-renderer is deprecated";
 
@@ -115,5 +115,27 @@ describe("renderNative.testkit's answered native reads", () => {
 		};
 		const followed = answered(1).then(() => thenable);
 		await expect(followed).resolves.toBe("thenable");
+	});
+});
+
+// A button VoiceOver names by its text, with no explicit label, is still a
+// button the page offers (as `pressable` reads it).
+describe("renderNative.testkit's offersButton", () => {
+	const button = (props: Record<string, unknown>, text: string) =>
+		createElement("Pressable", { accessibilityRole: "button", ...props }, createElement("Text", null, text));
+
+	it("finds a button by its accessibility label", () => {
+		const tree = render(button({ accessibilityLabel: "Reconnect" }, "ignored"));
+		expect(offersButton(tree, /\bReconnect\b/)).toBe(true);
+	});
+
+	it("finds a button with no label by the text inside it", () => {
+		const tree = render(button({}, "Reconnect"));
+		expect(offersButton(tree, /\bReconnect\b/)).toBe(true);
+	});
+
+	it("reads a label over the text inside it", () => {
+		const tree = render(button({ accessibilityLabel: "Open" }, "Reconnect"));
+		expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 	});
 });

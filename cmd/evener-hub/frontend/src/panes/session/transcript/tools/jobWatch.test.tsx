@@ -16,6 +16,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { readModuleCss, topRuleBlock } from "../../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { toolRendererFor } from "../toolRenderers";
 import "../tools";
@@ -77,18 +78,33 @@ test("create timer body renders the full note as prose with no disclosure at thi
   expect(screen.queryByText("Show full note")).toBeNull();
 });
 
-test("a note over ~20 lines clamps behind an honest disclosure", () => {
-  const longNote = Array.from({ length: 25 }, (_, i) => `note line ${i + 1}`).join("\n");
+// renderCreateNoteBody mounts the create-timer body with the given note - the
+// one render setup the clamp tests share instead of a copy per test.
+function renderCreateNoteBody(note: string) {
   const d = toolRendererFor("job_watch");
   const Body = d.body!;
-  render(
-    <Body
-      item={watchItem({ operation: "create" }, { ...TIMER_RAW, note: longNote, after_seconds: 60 })}
-      live={false}
-    />,
-  );
+  render(<Body item={watchItem({ operation: "create" }, { ...TIMER_RAW, note, after_seconds: 60 })} live={false} />);
+}
+
+test("a note over 100 lines clamps behind an honest disclosure", () => {
+  renderCreateNoteBody(Array.from({ length: 101 }, (_, i) => `note line ${i + 1}`).join("\n"));
   expect(screen.getByText("Show full note")).toBeTruthy();
-  expect(screen.getByTestId("job-watch-note").textContent).toContain("note line 25");
+  expect(screen.getByTestId("job-watch-note").textContent).toContain("note line 101");
+});
+
+test("a note at exactly 100 lines renders in full with no disclosure", () => {
+  renderCreateNoteBody(Array.from({ length: 100 }, (_, i) => `note line ${i + 1}`).join("\n"));
+  expect(screen.queryByText("Show full note")).toBeNull();
+  expect(screen.getByTestId("job-watch-note").textContent).toContain("note line 100");
+});
+
+test("the clamped view's CSS window matches the note policy's 100 lines", () => {
+  // jsdom cannot apply -webkit-line-clamp, so the CSS half of the clamp is
+  // pinned by the stylesheet's own text (styles/cssBlock's readModuleCss +
+  // topRuleBlock), with comments stripped - a grep test a comment can
+  // satisfy passes while asserting nothing.
+  const css = readModuleCss(import.meta.url, "jobWatch.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(topRuleBlock(css, ".noteClamped")).toMatch(/-webkit-line-clamp:\s*100\s*;/);
 });
 
 test("the single-watch body never shows the watch id", () => {

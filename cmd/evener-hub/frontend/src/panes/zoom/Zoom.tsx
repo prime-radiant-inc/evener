@@ -117,7 +117,7 @@ function ScopeConversation({
           {admitted ? (
             <ReadOnlyThreadContent ref={scope.requestedRef} view={view} availability={snapshot?.summaryState} />
           ) : (
-            <EmptyState title="Loading transcript…" />
+            <EmptyState title="Loading transcript…" reason="loading" />
           )}
         </CascadeColumn>
       ) : (
@@ -245,16 +245,18 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       bodyScroll={false}
       actions={mobile ? undefined : returnAction}
       edgeFooter={
-        <StatusBar
-          sessionRef={params.ref}
-          paneId={paneId}
-          leading={
-            <ScopeCrumbs
-              path={renderedPath.map((scope) => ({ ref: scope.requestedRef, title: scope.title }))}
-              onNavigate={(ref) => popAgentCascade(paneId, ref)}
-            />
-          }
-        />
+        mobile ? undefined : (
+          <StatusBar
+            sessionRef={params.ref}
+            paneId={paneId}
+            leading={
+              <ScopeCrumbs
+                path={renderedPath.map((scope) => ({ ref: scope.requestedRef, title: scope.title }))}
+                onNavigate={(ref) => popAgentCascade(paneId, ref)}
+              />
+            }
+          />
+        )
       }
     >
       {originRef !== null && (
@@ -266,7 +268,11 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       )}
       <div className={CLASS.body}>
         {mobile && <div className={CLASS.returnRow}>{returnAction}</div>}
-        {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}
+        {!path.ancestryKnown && (
+          <p className={CLASS.hint} data-testid="cascade-ancestry-incomplete">
+            Earlier ancestry is incomplete
+          </p>
+        )}
         <div ref={track} className={CLASS.track}>
           {scopes.map((scope, index) => (
             <ScopeConversation

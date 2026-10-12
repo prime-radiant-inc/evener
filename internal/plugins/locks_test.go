@@ -390,7 +390,7 @@ func TestLockClone_AWaiterOutlivesTheLockFilesRemoval(t *testing.T) {
 		release()
 		t.Fatal("a third taker got the clone lock while the waiter held it on the removed file")
 	}
-	if !strings.Contains(stderr.String(), "taking the lock on marketplace clone") {
+	if !strings.Contains(stderr.String(), dir) {
 		t.Fatalf("the third taker's wait was not logged: %q", stderr.String())
 	}
 }

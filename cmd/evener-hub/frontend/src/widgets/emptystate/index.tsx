@@ -18,7 +18,12 @@ export interface EmptyStateProps {
   /** "display" sets the title at --font-size-display: for the one pane
    * whose empty state IS the page (Welcome). Default keeps pane-title. */
   size?: "default" | "display";
+  /** Why the surface is empty, rendered as `data-reason` so callers and
+   * tests can tell one empty state from another without reading its copy. */
+  reason?: EmptyStateReason;
 }
+
+export type EmptyStateReason = "loading" | "deleted" | "unavailable" | "no-turns";
 
 const BASE_CLASS = {
   emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),
@@ -38,13 +43,17 @@ const BASE_CLASS = {
  * remounted). Those assertions previously matched the session pane's own
  * empty-state copy, which coupled a shared shell test to wording that panes
  * are free to change; the testid says what they actually mean. */
-export function EmptyState({ title, hint, action, size = "default" }: EmptyStateProps) {
+export function EmptyState({ title, hint, action, size = "default", reason }: EmptyStateProps) {
   return (
-    <div className={BASE_CLASS.emptyState} data-testid="empty-state">
+    <div className={BASE_CLASS.emptyState} data-testid="empty-state" data-reason={reason}>
       <p className={size === "display" ? `${BASE_CLASS.title} ${BASE_CLASS.titleDisplay}` : BASE_CLASS.title}>
         {title}
       </p>
-      {hint !== undefined && <p className={BASE_CLASS.hint}>{hint}</p>}
+      {hint !== undefined && (
+        <p className={BASE_CLASS.hint} data-slot="hint">
+          {hint}
+        </p>
+      )}
       {action !== undefined && <div className={BASE_CLASS.action}>{action}</div>}
     </div>
   );

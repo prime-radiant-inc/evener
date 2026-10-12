@@ -87,7 +87,11 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
         )}
         <div className={CLASS.list}>
           <TranscriptSourcePaneContext.Provider value={paneId}>
-            {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
+            {view ? (
+              <ReadOnlyThreadContent ref={ref} view={view} />
+            ) : (
+              <EmptyState title="Loading transcript…" reason="loading" />
+            )}
           </TranscriptSourcePaneContext.Provider>
         </div>
       </div>

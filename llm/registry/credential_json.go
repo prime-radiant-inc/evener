@@ -35,6 +35,30 @@ var requiredCredentialJSONFields = map[string][]string{
 	"authorized_user": {"client_id", "client_secret", "refresh_token"},
 }
 
+// The reasons CheckCredentialJSON refuses a credential JSON; match them with
+// errors.Is. Each refusal keeps its own wording, so a reason whose message
+// names the refused value travels in a credentialRefusalError.
+var (
+	ErrCredentialJSONInvalid        = errors.New("not valid JSON")
+	ErrCredentialJSONUntyped        = errors.New(`credential JSON has no "type" field`)
+	ErrCredentialTypeUnsupported    = errors.New("credential type is not supported")
+	ErrCredentialFieldsMissing      = errors.New("credential JSON is missing required fields")
+	ErrCredentialClientConfig       = errors.New("credential JSON carries an OAuth client configuration (installed/web), not a credential")
+	ErrCredentialTokenEndpoint      = errors.New("token_uri is not Google's OAuth token endpoint")
+	ErrCredentialJSONMalformed      = errors.New("credential JSON")
+	ErrCredentialPrivateKeyUnusable = errors.New("service_account credential JSON has an unusable private_key")
+)
+
+// credentialRefusalError is a refusal whose message names what it refused; Is
+// matches its reason sentinel.
+type credentialRefusalError struct {
+	reason  error
+	message string
+}
+
+func (e *credentialRefusalError) Error() string        { return e.message }
+func (e *credentialRefusalError) Is(target error) bool { return target == e.reason }
+
 // CredentialJSONType returns a Google credential JSON's "type", or "" when
 // raw is not a JSON object carrying a string type.
 func CredentialJSONType(raw []byte) string {
@@ -83,14 +107,14 @@ func clipEcho(s string) string {
 // the message.
 func CheckCredentialJSON(raw []byte) error {
 	if !json.Valid(raw) {
-		return errors.New("not valid JSON")
+		return ErrCredentialJSONInvalid
 	}
 	t := CredentialJSONType(raw)
 	if t == "" {
-		return errors.New(`credential JSON has no "type" field`)
+		return ErrCredentialJSONUntyped
 	}
 	if !AllowedCredentialJSONTypes[t] {
-		return fmt.Errorf("credential type %q is not supported: paste a service-account key or an authorized_user file", clipEcho(t))
+		return &credentialRefusalError{ErrCredentialTypeUnsupported, fmt.Sprintf("credential type %q is not supported: paste a service-account key or an authorized_user file", clipEcho(t))}
 	}
 	// Every field the gate reads is decoded through a tagged field, the way
 	// Google's library reads it: key names match case-insensitively and the
@@ -108,7 +132,7 @@ func CheckCredentialJSON(raw []byte) error {
 		Web          json.RawMessage `json:"web"`
 	}
 	if err := json.Unmarshal(raw, &cred); err != nil {
-		return fmt.Errorf("credential JSON: %w", err)
+		return fmt.Errorf("%w: %w", ErrCredentialJSONMalformed, err)
 	}
 	fields := map[string]json.RawMessage{
 		"client_email": cred.ClientEmail, "private_key": cred.PrivateKey,
@@ -125,7 +149,7 @@ func CheckCredentialJSON(raw []byte) error {
 		values[name] = s
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("%s credential JSON is missing %s", t, strings.Join(missing, ", "))
+		return &credentialRefusalError{ErrCredentialFieldsMissing, fmt.Sprintf("%s credential JSON is missing %s", t, strings.Join(missing, ", "))}
 	}
 	// A top-level installed or web block makes the library return an OAuth
 	// client configuration with no token source instead of a credential;
@@ -133,12 +157,12 @@ func CheckCredentialJSON(raw []byte) error {
 	// so only Google's own endpoints are accepted (absent or null is fine,
 	// the library defaults to the first).
 	if isJSONValue(cred.Installed) || isJSONValue(cred.Web) {
-		return errors.New("credential JSON carries an OAuth client configuration (installed/web), not a credential")
+		return ErrCredentialClientConfig
 	}
 	if isJSONValue(cred.TokenURL) {
 		var s string
 		if json.Unmarshal(cred.TokenURL, &s) != nil || !googleTokenEndpoints[s] {
-			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", clipEcho(string(cred.TokenURL)))
+			return &credentialRefusalError{ErrCredentialTokenEndpoint, fmt.Sprintf("token_uri %s is not Google's OAuth token endpoint", clipEcho(string(cred.TokenURL)))}
 		}
 	}
 	// Google's parser decodes its whole credential file, every type's fields
@@ -148,11 +172,11 @@ func CheckCredentialJSON(raw []byte) error {
 	// after the checks above so a field they cover gets their message.
 	var typed credentialFileShape
 	if err := json.Unmarshal(raw, &typed); err != nil {
-		return fmt.Errorf("credential JSON: %w", err)
+		return fmt.Errorf("%w: %w", ErrCredentialJSONMalformed, err)
 	}
 	if t == "service_account" {
 		if err := checkServiceAccountKey(values["private_key"]); err != nil {
-			return fmt.Errorf("service_account credential JSON has an unusable private_key: %w", err)
+			return fmt.Errorf("%w: %w", ErrCredentialPrivateKeyUnusable, err)
 		}
 	}
 	return nil

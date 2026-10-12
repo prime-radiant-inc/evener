@@ -560,8 +560,11 @@ func TestBrowserGateReplaysAFailedGuardSetup(t *testing.T) {
 	if !strings.Contains(tg.stdout.String(), "No space left on device") {
 		t.Errorf("the setup's output was not replayed; stdout = %s", tg.stdout.String())
 	}
-	if !strings.Contains(tg.stderr.String(), "FAIL  web-retirementguard (exit 1)") || strings.Contains(tg.stderr.String(), "no such file") {
-		t.Errorf("stderr = %s", tg.stderr.String())
+	// The replay reads the setup's log; a guard that never started has no log
+	// of its own, and stderr must not complain that one is missing.
+	stderr := tg.stderr.String()
+	if !strings.Contains(stderr, "FAIL  web-retirementguard (exit 1)\n") || strings.Contains(stderr, retirementGuard+".log") {
+		t.Errorf("stderr = %s", stderr)
 	}
 }
 

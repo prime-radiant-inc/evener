@@ -20,6 +20,10 @@ func checkEnvRefs(value, what string) error {
 	return nil
 }
 
+// errCommandExpressionReserved refuses a command expression in a field that
+// is not a credential field.
+var errCommandExpressionReserved = errors.New("command expressions are reserved for credential fields (api_key, credential_headers); this field's value is not treated as a secret")
+
 // checkNoCommands holds the other half of the command-expression rule: a
 // command's output is credential material, so only the credential fields
 // (api_key, credential_headers) may run one. A display header or a transport
@@ -32,7 +36,7 @@ func checkNoCommands(value, what string) error {
 	// and Expand executes command pieces as it walks, so a value like
 	// "$(evil) ${unterminated" would run evil before its own error surfaces.
 	if scan, _ := valueexpr.Scan(value); len(scan.Commands) > 0 {
-		return fmt.Errorf("%s: command expressions are reserved for credential fields (api_key, credential_headers); this field's value is not treated as a secret", what)
+		return fmt.Errorf("%s: %w", what, errCommandExpressionReserved)
 	}
 	return nil
 }

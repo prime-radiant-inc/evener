@@ -83,7 +83,7 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return runPluginDoctor(args[1:], stdout, stderr)
 	default:
 		printPluginUsage(stderr)
-		return fmt.Errorf("unknown plugin command %q", args[0])
+		return &unknownSubcommandError{group: "plugin", name: args[0]}
 	}
 }
 
@@ -185,7 +185,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		}
 		return renderCatalog(stdout, cat, *asJSON)
 	default:
-		return fmt.Errorf("unknown marketplace command %q", args[0])
+		return &unknownSubcommandError{group: "marketplace", name: args[0]}
 	}
 }
 
@@ -588,7 +588,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		return nil
 
 	default:
-		return fmt.Errorf("unknown plugin lifecycle command %q", verb)
+		return &unknownSubcommandError{group: "plugin lifecycle", name: verb}
 	}
 }
 

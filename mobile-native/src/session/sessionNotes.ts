@@ -66,14 +66,19 @@ export function canWriteHumanNote(session: Pick<ThreadModel, "status" | "resumeR
 
 export type NotePhase = "clean" | "editing" | "scheduled" | "saving" | "saved" | "failed";
 
-export function noteStatusLine(phase: NotePhase, working: boolean): string {
-	if (phase === "scheduled") return "Saves in 10 seconds, or when you close this.";
-	if (phase === "saving") return "Saving…";
-	if (phase === "saved") return "Saved";
-	if (phase === "failed") return "Couldn't save your note yet. It's kept on this phone.";
+/** What the line under the editor is about: a save on its way or done, or,
+ * with nothing to save, what saving will do to the agent (wake it, or tell a
+ * working one). */
+export type NoteStatusKind = "scheduled" | "saving" | "saved" | "failed" | "wakesAgent" | "tellsAgent";
+
+export function noteStatusLine(phase: NotePhase, working: boolean): { kind: NoteStatusKind; text: string } {
+	if (phase === "scheduled") return { kind: phase, text: "Saves in 10 seconds, or when you close this." };
+	if (phase === "saving") return { kind: phase, text: "Saving…" };
+	if (phase === "saved") return { kind: phase, text: "Saved" };
+	if (phase === "failed") return { kind: phase, text: "Couldn't save your note yet. It's kept on this phone." };
 	return working
-		? "Your note stays on this session. The agent is told when it changes."
-		: "Your note stays on this session. Saving it will wake the agent.";
+		? { kind: "tellsAgent", text: "Your note stays on this session. The agent is told when it changes." }
+		: { kind: "wakesAgent", text: "Your note stays on this session. Saving it will wake the agent." };
 }
 
 const draftKey = (hubId: string) => `evener.native.note-draft.${hubId}`;

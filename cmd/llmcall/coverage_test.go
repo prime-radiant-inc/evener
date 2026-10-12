@@ -36,11 +36,11 @@ func TestLLMCallMainParserBranches(t *testing.T) {
 	t.Setenv(envvars.LLMModel.Name, "")
 	t.Setenv(envvars.EVENERModel.Name, "")
 	// The model is required whatever the provider is.
-	if err := llmcallMain([]string{"p"}, &out, &errOut); err == nil || !strings.Contains(err.Error(), "model") {
+	if err := llmcallMain([]string{"p"}, &out, &errOut); !errors.Is(err, errNoModel) {
 		t.Fatalf("model=%v", err)
 	}
 	t.Setenv(envvars.LLMProvider.Name, "fake")
-	if err := llmcallMain([]string{"p"}, &out, &errOut); err == nil || !strings.Contains(err.Error(), "model") {
+	if err := llmcallMain([]string{"p"}, &out, &errOut); !errors.Is(err, errNoModel) {
 		t.Fatalf("model=%v", err)
 	}
 	// A pipe exercises the no-argument stdin path deterministically.
@@ -60,7 +60,7 @@ func TestLLMCallMainParserBranches(t *testing.T) {
 	r2, w2, _ := os.Pipe()
 	_ = w2.Close()
 	os.Stdin = r2
-	if err := llmcallMain(nil, &out, &errOut); err == nil || !strings.Contains(err.Error(), "no prompt") {
+	if err := llmcallMain(nil, &out, &errOut); !errors.Is(err, errNoPrompt) {
 		t.Fatalf("prompt=%v", err)
 	}
 }
@@ -130,7 +130,7 @@ func TestRunLLMCallRemainingErrorsAndOptions(t *testing.T) {
 	}
 	toolResp := llm.Response{Model: "m", Provider: "fake", Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: `{"ok":true}`}, {Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "x"}}}}}
 	bad.client = clientWith(toolResp, nil)
-	if err := runLLMCall(context.Background(), bad); err == nil || !strings.Contains(err.Error(), "tool calls") {
+	if err := runLLMCall(context.Background(), bad); !errors.Is(err, errToolCallsForbidden) {
 		t.Fatalf("object tools=%v", err)
 	}
 	bad = base
@@ -158,7 +158,7 @@ func TestRunLLMCallRemainingErrorsAndOptions(t *testing.T) {
 	var out, errOut bytes.Buffer
 	good.stdout = &out
 	good.stderr = &errOut
-	if err := runLLMCall(context.Background(), good); err != nil || !strings.Contains(errOut.String(), "[model]") {
+	if err := runLLMCall(context.Background(), good); err != nil || errOut.Len() == 0 {
 		t.Fatalf("options=%v %q", err, errOut.String())
 	}
 }

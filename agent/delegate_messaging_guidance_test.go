@@ -68,10 +68,10 @@ func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 		t.Fatal("request offers no communicate tool")
 		return ""
 	}
-	if got, want := communicateDescription(delegateRequest), toolpkg.WithCommunicateDelegateUpdates(toolpkg.DefCommunicate()).Description; got != want {
+	if got, want := communicateDescription(delegateRequest), toolpkg.WithCommunicateDelegatePointer(toolpkg.WithCommunicateDelegateUpdates(toolpkg.DefCommunicate())).Description; got != want {
 		t.Fatalf("delegate communicate is not worded for its parent:\n got %s\nwant %s", got, want)
 	}
-	if got, want := communicateDescription(rootRequest), toolpkg.DefCommunicate().Description; got != want {
+	if got, want := communicateDescription(rootRequest), toolpkg.WithCommunicateDelegatePointer(toolpkg.DefCommunicate()).Description; got != want {
 		t.Fatalf("root communicate wording changed:\n got %s\nwant %s", got, want)
 	}
 

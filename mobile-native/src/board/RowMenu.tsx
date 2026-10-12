@@ -66,7 +66,7 @@ export function RowPreviewCard({
 	const scale = useTextScale();
 	const { row, state } = item;
 	// Idle and Shut down have no reason: the word says it.
-	const why = whyLine(item) ?? { text: stateWord(state) };
+	const why = whyLine(item) ?? { kind: "state" as const, text: stateWord(state) };
 	return (
 		<Pressable
 			accessibilityRole="button"

@@ -1,10 +1,17 @@
 import type { AuthStatusResponse, InstanceEntry, UpdateCheckResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { act } from "react-test-renderer";
+import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { uiType } from "../design/tokens";
-import { alertRequests, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import {
+	alertRequests,
+	render,
+	renderedText,
+	testIDSuffixes,
+	unmountMountedTrees,
+	offersButton,
+} from "../renderNative.testkit";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { Tag } from "../sheet/Grouped";
@@ -225,9 +232,15 @@ it("shows Hosts without a count or tag before the hub has listed its hosts", asy
 	expect(find("Hosts")).not.toBeNull();
 });
 
+/** The hub's connection as the status line reports it. */
+const connectionState = (tree: ReactTestRenderer) => testIDSuffixes(tree, "hub-connection-");
+
+/** The update's progress as the page's footers report it. */
+const updateReports = (tree: ReactTestRenderer) => testIDSuffixes(tree, "hub-update-");
+
 it("says the hub is connected and lists its pages", async () => {
 	const { tree, find } = await mount();
-	expect(renderedText(tree)).toContain("Connected");
+	expect(connectionState(tree)).toEqual(["connected"]);
 	for (const label of ROWS) expect(find(label)).not.toBeNull();
 });
 
@@ -312,8 +325,9 @@ it("opens In-app alerts inside the sheet, between Display and Hubs", async () =>
 it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", async () => {
 	status.line = "Reconnecting…";
 	const { tree, sheet, find, press } = await mount();
+	expect(connectionState(tree)).toEqual(["line"]);
 	expect(renderedText(tree)).toContain("Reconnecting…");
-	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(tree, /\bReconnect\b|\bRetry\b/)).toBe(false);
 	for (const label of ROWS) expect(find(label)?.props.disabled).toBe(false);
 	// A row opening today's screen still works while the connection is down.
 	press("Hub settings");
@@ -322,8 +336,7 @@ it("keeps every row, pressable, while the connection is down, and never asks to 
 
 it("says Connecting… rather than Connected while the hub isn't ready and the line is still quiet", async () => {
 	const { tree } = await mount({ ready: false });
-	expect(renderedText(tree)).toContain("Connecting…");
-	expect(renderedText(tree)).not.toContain("Connected");
+	expect(connectionState(tree)).toEqual(["connecting"]);
 });
 
 it("names this app's version in About", async () => {
@@ -335,7 +348,7 @@ it("names this app's version in About", async () => {
 it("sets its status line as the prototype does: 14pt, 20pt in from the edge (audit L1)", async () => {
 	const { tree } = await mount({ check: UP_TO_DATE });
 	const line = tree.root.find(
-		(node) => String(node.type) === "Text" && node.props.children === "Connected · evener 0.9.412 · up to date",
+		(node) => String(node.type) === "Text" && String(node.props.testID).startsWith("hub-connection-"),
 	);
 	expect(line.props.style).toMatchObject({ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 6 });
 	expect(line.props.style).toMatchObject(uiType.statusLine);
@@ -343,25 +356,26 @@ it("sets its status line as the prototype does: 14pt, 20pt in from the edge (aud
 
 it("says the hub is up to date, and offers no update", async () => {
 	const { tree, find } = await mount({ check: UP_TO_DATE });
-	expect(renderedText(tree)).toContain("Connected · evener 0.9.412 · up to date");
+	expect(connectionState(tree)).toEqual(["connected"]);
+	expect(renderedText(tree)).toContain("0.9.412");
 	expect(find("Update hub")).toBeNull();
 });
 
 it("offers a waiting update, confirms it, installs it, and says the hub is restarting", async () => {
 	const { tree, find, press, calls } = await mount({ check: WAITING });
-	expect(renderedText(tree)).toContain("Connected · evener 0.9.412 · Update available");
+	expect(find("Update hub")).not.toBeNull();
 	press("Update hub");
 	expect(alertRequests).toHaveLength(1);
-	expect(alertRequests[0]?.title).toBe("Update Work hub?");
-	expect(alertRequests[0]?.message).toBe(
-		"Install evener v0.9.413 on Work hub. The hub restarts, and the app reconnects on its own.",
-	);
+	expect(alertRequests[0]?.title).toContain("Work hub");
+	expect(alertRequests[0]?.message).toContain("v0.9.413");
+	expect(calls).not.toContain("evener/update/apply");
 	await act(async () => {
 		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
 	});
 	expect(calls).toContain("evener/update/apply");
 	expect(find("Update hub")).toBeNull();
-	expect(renderedText(tree)).toContain("Restarting into v0.9.413…");
+	expect(updateReports(tree)).toEqual(["restarting"]);
+	expect(renderedText(tree)).toContain("v0.9.413");
 });
 
 it("holds the update while the hub isn't ready", async () => {
@@ -371,10 +385,8 @@ it("holds the update while the hub isn't ready", async () => {
 
 it("shows a failed check as a line, with nothing to press", async () => {
 	const { tree } = await mount({ check: new Error("socket hung up") });
-	const texts = tree.root.findAllByType("Text" as never).map((node) => node.props.children);
 	expect(renderedText(tree)).toMatch(/\S/);
-	expect(texts).not.toContain("Retry");
-	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(tree, /\bReconnect\b|\bRetry\b/)).toBe(false);
 	expect(updates.controller.getState().checkError).not.toBeNull();
 	expect(renderedText(tree)).toContain(updates.controller.getState().checkError ?? "");
 });
@@ -401,7 +413,7 @@ it("says so when the hub restarts without the update", async () => {
 		readiness.set(true);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
-	expect(renderedText(tree)).toContain("The hub restarted without the update. Check its logs.");
+	expect(updateReports(tree)).toEqual(["not-taken"]);
 });
 
 it("opens Display inside the sheet, valued with this phone's appearance", async () => {
@@ -423,6 +435,5 @@ it("says the update couldn't be confirmed when the hub's first answer after the 
 		readiness.set(true);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
-	expect(renderedText(tree)).toContain("Couldn't confirm the update. Check the hub's version.");
-	expect(renderedText(tree)).not.toContain("The hub restarted without the update.");
+	expect(updateReports(tree)).toEqual(["unconfirmed"]);
 });
