@@ -72,7 +72,7 @@
 import type { AskBatch, AskResolution } from "@evener/appwire-client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import { Button, useToasts } from "../../../../widgets";
+import { Button, useToasts, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { requestComposerFocus } from "../composerFocus";
 import { AskQuestionCard } from "./AskQuestionCard";
@@ -88,7 +88,6 @@ const CLASS = {
   tabCheck: requireClass(styles.tabCheck, "askdock.module.css", "tabCheck"),
   footer: requireClass(styles.footer, "askdock.module.css", "footer"),
   count: requireClass(styles.count, "askdock.module.css", "count"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "askdock.module.css", "visuallyHidden"),
 };
 
 export interface AskDockProps {
@@ -442,8 +441,8 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   }, [sessionRef, pending, count, epoch, announce]);
 
   return (
-    <div className={CLASS.visuallyHidden} role="status" aria-live="polite" data-testid="ask-dock-announcements">
-      <span key={announcement.key}>{announcement.text}</span>
+    <div role="status" aria-live="polite" data-testid="ask-dock-announcements">
+      <VisuallyHidden key={announcement.key}>{announcement.text}</VisuallyHidden>
     </div>
   );
 }

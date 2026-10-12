@@ -9,7 +9,7 @@ import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import type { MarketplaceCatalogEntry } from "../../../../stores/extensions";
-import { Button, Chevron, ConfirmDialog, Input, Loader, useToasts } from "../../../../widgets";
+import { Button, Chip, ConfirmDialog, Disclosure, Input, Loader, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
@@ -19,8 +19,6 @@ const CLASS = {
   filterRow: requireClass(styles.filterRow, "marketplacesPlugins.module.css", "filterRow"),
   tree: requireClass(styles.tree, "marketplacesPlugins.module.css", "tree"),
   treeNode: requireClass(styles.treeNode, "marketplacesPlugins.module.css", "treeNode"),
-  treeToggle: requireClass(styles.treeToggle, "marketplacesPlugins.module.css", "treeToggle"),
-  treeChevron: requireClass(styles.treeChevron, "marketplacesPlugins.module.css", "treeChevron"),
   treeCount: requireClass(styles.treeCount, "marketplacesPlugins.module.css", "treeCount"),
   treeChildren: requireClass(styles.treeChildren, "marketplacesPlugins.module.css", "treeChildren"),
   row: requireClass(styles.row, "marketplacesPlugins.module.css", "row"),
@@ -28,7 +26,6 @@ const CLASS = {
   rowText: requireClass(styles.rowText, "marketplacesPlugins.module.css", "rowText"),
   rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
   rowActions: requireClass(styles.rowActions, "marketplacesPlugins.module.css", "rowActions"),
-  installedBadge: requireClass(styles.installedBadge, "marketplacesPlugins.module.css", "installedBadge"),
   empty: requireClass(styles.empty, "marketplacesPlugins.module.css", "empty"),
 };
 
@@ -185,7 +182,9 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
         {marketplaces.length === 0 ? (
           <li className={CLASS.empty}>No marketplaces registered. Add one from the Marketplaces tab.</li>
         ) : trimmedQuery !== "" && filterLoading ? (
-          <li className={CLASS.empty}>Loading marketplaces…</li>
+          <li>
+            <Loader label="Loading marketplaces" />
+          </li>
         ) : trimmedQuery !== "" && visibleMarketplaces.length === 0 ? (
           <li className={CLASS.empty}>{`No plugins match "${trimmedQuery}".`}</li>
         ) : (
@@ -267,17 +266,19 @@ function MarketplaceNode({
 
   return (
     <li className={CLASS.treeNode}>
-      <button type="button" className={CLASS.treeToggle} aria-expanded={expanded} onClick={onToggle}>
-        <span className={CLASS.treeChevron} aria-hidden="true">
-          <Chevron direction="right" />
-        </span>
-        {marketplace.name}
-        {cache?.status === "loaded" && <span className={CLASS.treeCount}> ({cache.plugins.length})</span>}
-      </button>
-      {expanded && (
+      <Disclosure
+        open={expanded}
+        onOpenChange={onToggle}
+        summary={
+          <>
+            {marketplace.name}
+            {cache?.status === "loaded" && <span className={CLASS.treeCount}> ({cache.plugins.length})</span>}
+          </>
+        }
+      >
         <ul aria-label={`${marketplace.name} plugins`} className={CLASS.treeChildren}>
           {!cache || cache.status === "loading" ? (
-            <li className={CLASS.empty}>
+            <li>
               <Loader label="Loading" />
             </li>
           ) : cache.status === "error" ? (
@@ -296,7 +297,7 @@ function MarketplaceNode({
                 </div>
                 <div className={CLASS.rowActions}>
                   {isInstalled(p.name, marketplace.name) ? (
-                    <span className={CLASS.installedBadge}>Installed</span>
+                    <Chip>Installed</Chip>
                   ) : (
                     <Button size="sm" disabled={installDisabled} onClick={() => onInstall(p.name, marketplace.name)}>
                       Install
@@ -307,7 +308,7 @@ function MarketplaceNode({
             ))
           )}
         </ul>
-      )}
+      </Disclosure>
     </li>
   );
 }

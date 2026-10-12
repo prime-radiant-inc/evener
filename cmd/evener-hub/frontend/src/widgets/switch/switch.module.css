@@ -60,7 +60,7 @@
   transform: translateX(14px);
 }
 
-@media (max-width: 899px) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .control {
     width: var(--tap-min);
     min-width: var(--tap-min);
@@ -87,9 +87,9 @@
 }
 
 /* The label is an intentional click target as well as the switch button. Keep
- * that mouse-only convenience, but give the span the same coarse-pointer hit
- * floor as the native control. */
-@media (pointer: coarse) {
+ * that mouse-only convenience, but give the span the same tap floor as the
+ * native control. */
+@media (max-width: 899px), (any-pointer: coarse) {
   .label {
     display: inline-flex;
     align-items: center;

@@ -10,9 +10,8 @@ import {
   transcriptDisplayStore,
   useTranscriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
-import { Button } from "../../../widgets/button";
+import { Button, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { useToasts } from "../../../widgets/toast";
 import { TranscriptDisplayCard } from "./TranscriptDisplayCard";
 import styles from "./transcript.module.css";
 

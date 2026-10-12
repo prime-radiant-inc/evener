@@ -16,13 +16,20 @@ import {
 	timeInState,
 } from "./subagentModel";
 
+/** Words that replace a row's why line, and what they report: a stop
+ * request on its way (sent through the coordinator or directly) or settled. */
+export interface SubagentNote {
+	kind: "stop-requested" | "stop-requested-direct" | "stop-settled";
+	text: string;
+}
+
 export interface SubagentRowViewProps {
 	row: SubagentRow;
 	now: number;
 	coordinatorModel: string | null;
 	modelName(model: string): string;
 	/** Replaces the why line: PR 3 passes the stop request's words. */
-	note?: string;
+	note?: SubagentNote;
 	onOpen(row: SubagentRow): void;
 }
 
@@ -41,7 +48,7 @@ export const SubagentRowView = memo(function SubagentRowView({
 	const last = subagentLastLine(row, coordinatorModel, modelName);
 	// Preserve the outcome and cause; a note replaces the why line.
 	const failure = note === undefined && why.word === "Failed";
-	const whyLine = note ?? why.text;
+	const whyLine = note?.text ?? why.text;
 	const label = [row.title, subagentStateWord(row.state), whyLine, time === null ? null : spokenDuration(time)]
 		.filter((part) => part)
 		.join(", ");
@@ -88,6 +95,7 @@ export const SubagentRowView = memo(function SubagentRowView({
 				</View>
 				{failure || whyLine ? (
 					<Text
+						testID={`subagent-why:${note?.kind ?? why.kind}`}
 						allowFontScaling={allowFontScaling}
 						numberOfLines={failure ? 2 : 1}
 						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}

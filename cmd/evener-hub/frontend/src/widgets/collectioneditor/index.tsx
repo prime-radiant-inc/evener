@@ -3,6 +3,7 @@ import { Button } from "../button";
 import { IconButton } from "../iconbutton";
 import { Input } from "../input";
 import { requireClass } from "../internal/requireClass";
+import { VisuallyHidden } from "../visuallyhidden";
 import styles from "./collectioneditor.module.css";
 
 export type CollectionAddResult = { ok: true } | { ok: false; error: string };
@@ -74,7 +75,6 @@ const CLASS = {
   inheritedTag: requireClass(styles.inheritedTag, "collectioneditor.module.css", "inheritedTag"),
   addForm: requireClass(styles.addForm, "collectioneditor.module.css", "addForm"),
   addField: requireClass(styles.addField, "collectioneditor.module.css", "addField"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "collectioneditor.module.css", "visuallyHidden"),
   error: requireClass(styles.error, "collectioneditor.module.css", "error"),
 };
 
@@ -98,6 +98,19 @@ function RemoveIcon() {
  * arrow-key list navigation isn't part of this widget's contract (unlike
  * RadioGroup/Tree/Menu, nothing here cycles a fixed set of peer actions).
  */
+// Persisted lists can hold identical entries, so a row's key is its item key
+// plus which occurrence of that key it is: removing one duplicate then leaves
+// the remaining rows matched to the remaining items.
+function rowKeys<T>(items: readonly T[], getKey: (item: T) => string): [T, string][] {
+  const seen = new Map<string, number>();
+  return items.map((item) => {
+    const key = getKey(item);
+    const occurrence = seen.get(key) ?? 0;
+    seen.set(key, occurrence + 1);
+    return [item, JSON.stringify([key, occurrence])];
+  });
+}
+
 export function CollectionEditor<T>({
   label,
   items,
@@ -139,8 +152,8 @@ export function CollectionEditor<T>({
           <li className={CLASS.empty}>{emptyMessage}</li>
         ) : (
           <>
-            {items.map((item) => (
-              <li key={getKey(item)} className={CLASS.row}>
+            {rowKeys(items, getKey).map(([item, key]) => (
+              <li key={key} className={CLASS.row}>
                 <div className={CLASS.content}>{renderItem(item)}</div>
                 <IconButton
                   label={removeLabel(item)}
@@ -166,7 +179,7 @@ export function CollectionEditor<T>({
         ) : (
           <>
             <label className={CLASS.addField}>
-              <span className={CLASS.visuallyHidden}>{label}</span>
+              <VisuallyHidden>{label}</VisuallyHidden>
               <Input
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}

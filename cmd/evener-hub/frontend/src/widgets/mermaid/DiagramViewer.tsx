@@ -1,4 +1,5 @@
 import { type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react";
+import { Button } from "../button";
 import { CopyButton } from "../copybutton";
 import dialogStyles from "../dialog/dialog.module.css";
 import { OverlayPanel } from "../dialog/OverlayPanel";
@@ -118,12 +119,12 @@ export function DiagramViewer({ open, svg, source, onClose }: DiagramViewerProps
       bodyClassName={CLASS.viewerBody}
       footer={
         <>
-          <button type="button" onClick={() => setShowSource((value) => !value)}>
+          <Button variant="quiet" size="sm" onClick={() => setShowSource((value) => !value)}>
             {showSource ? "Show diagram" : "Show source"}
-          </button>
-          <button type="button" onClick={() => setView({ scale: 1, x: 0, y: 0 })}>
+          </Button>
+          <Button variant="quiet" size="sm" onClick={() => setView({ scale: 1, x: 0, y: 0 })}>
             Reset zoom
-          </button>
+          </Button>
           <CopyButton text={source} label="Copy source" />
         </>
       }

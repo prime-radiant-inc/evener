@@ -12,7 +12,7 @@ import { type OpenPaneRecord, workspaceStore } from "../../shell/workspace";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
-import { Button, EmptyState, PaneScaffold } from "../../widgets";
+import { Button, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { ReadOnlyThreadContent } from "../transcript/ReadOnlyThreadContent";
@@ -117,7 +117,7 @@ function ScopeConversation({
           {admitted ? (
             <ReadOnlyThreadContent ref={scope.requestedRef} view={view} availability={snapshot?.summaryState} />
           ) : (
-            <EmptyState title="Loading transcript…" reason="loading" />
+            <Skeleton />
           )}
         </CascadeColumn>
       ) : (

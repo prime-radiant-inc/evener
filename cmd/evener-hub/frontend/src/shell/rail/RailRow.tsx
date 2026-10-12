@@ -48,15 +48,25 @@ import {
   selectSources,
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { Badge, Chevron, IconButton } from "../../widgets";
-import { HoverCard } from "../../widgets/hovercard";
+import {
+  Badge,
+  Button,
+  Chevron,
+  HoverCard,
+  IconButton,
+  Menu,
+  type MenuItem,
+  Skeleton,
+  STATUS_LABEL,
+  StatusDot,
+  type TreeRowInfo,
+  VisuallyHidden,
+} from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { Menu, type MenuItem } from "../../widgets/menu";
-import type { TreeRowInfo } from "../../widgets/tree";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
-import { CADENCE_LABEL, cadenceStateFor, SessionStatusIndicator, SIGNAL_STATES } from "../SessionStatusIndicator";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
+import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
 import styles from "./RailRow.module.css";
 import {
   activeWatchCount,
@@ -104,7 +114,6 @@ const CLASS = {
   star: requireClass(styles.star, "RailRow.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
-  srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
 };
 
 // RowGutter is the wrapper the row's signal dot renders inside. The dot is
@@ -132,7 +141,7 @@ function Signal({ wireState }: { wireState: string }) {
   if (!SIGNAL_STATES.has(state)) return null;
   return (
     <RowGutter className={CLASS.signal} testId="rail-row-signal">
-      <SessionStatusIndicator state={state} testIdPrefix="rail" />
+      <StatusDot state={state} />
     </RowGutter>
   );
 }
@@ -232,7 +241,7 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
       trigger={
         <>
           <span aria-hidden="true">{"⋯"}</span>
-          <span className={CLASS.srOnly}>{`Actions for ${label}`}</span>
+          <VisuallyHidden>{`Actions for ${label}`}</VisuallyHidden>
         </>
       }
       items={items}
@@ -455,8 +464,8 @@ function effectiveSessionState(session: RailSession): string {
 function sessionStatusLabel(session: RailSession, effectiveState: string, notStarted: boolean): string {
   const state = cadenceStateFor(effectiveState);
   if (notStarted) return "Not started";
-  if (state === "failed") return CADENCE_LABEL.failed;
-  if (state === "working") return CADENCE_LABEL.working;
+  if (state === "failed") return STATUS_LABEL.failed;
+  if (state === "working") return STATUS_LABEL.working;
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
@@ -685,15 +694,16 @@ function ProjectRow({
             {node.displayName ?? project.name}
           </span>
           {resourceError && retry && (
-            <button
-              type="button"
+            <Button
+              variant="quiet"
+              size="xs"
               onClick={(event) => {
                 event.stopPropagation();
                 retry();
               }}
             >
               Retry
-            </button>
+            </Button>
           )}
           <TrailingChevron info={info} />
         </span>
@@ -829,13 +839,10 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
 }
 
 function LoadingRow(): ReactNode {
-  // role="status" so this is announced the same way the top-level Skeleton
-  // (widgets/skeleton) is - the visible "Loading…" text is its own
-  // accessible name via name-from-content, no separate aria-label needed.
   return (
-    <span role="status" className={CLASS.loadingRow}>
-      Loading…
-    </span>
+    <div className={CLASS.loadingRow}>
+      <Skeleton lines={1} />
+    </div>
   );
 }
 

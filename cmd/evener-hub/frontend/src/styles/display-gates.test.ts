@@ -99,10 +99,54 @@ test("the compact density default leaves the base grid unscaled (multiplier 1)",
   expect(baseDensityScale(media![1]!)).toBe("1");
 });
 
-test("the 44px touch-target floor is declared inside the phone media query (2026-07-30-mobile-session-layout-design.md, decision 4)", () => {
-  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
-  expect(media, "tokens.css must have a max-width:899px media block").not.toBeNull();
-  expect(media![1]).toMatch(/--tap-min:\s*44px/);
+// The tap floor reaches every coarse pointer (touch laptops, iPad landscape),
+// not only the phone width (Jesse 2026-10-11); the font-size and density
+// rules above stay phone-only.
+const TAP_FLOOR_QUERY = "(max-width: 899px), (any-pointer: coarse)";
+
+// Each top-level @media block's prelude and body, comments stripped.
+function mediaBlocks(source: string): { prelude: string; body: string }[] {
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, " ");
+  const blocks: { prelude: string; body: string }[] = [];
+  const at = /@media\s*([^{]*)\{/g;
+  for (let match = at.exec(css); match; match = at.exec(css)) {
+    let depth = 1;
+    let end = at.lastIndex;
+    while (depth > 0 && end < css.length) {
+      if (css[end] === "{") depth++;
+      else if (css[end] === "}") depth--;
+      end++;
+    }
+    blocks.push({ prelude: match[1]!.trim(), body: css.slice(at.lastIndex, end - 1) });
+    at.lastIndex = end;
+  }
+  return blocks;
+}
+
+test("the 44px touch-target floor is declared for phones and coarse pointers (2026-07-30-mobile-session-layout-design.md, decision 4)", () => {
+  const blocks = mediaBlocks(CSS);
+  const tapFloor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
+  expect(tapFloor, `tokens.css must have a ${TAP_FLOOR_QUERY} media block`).toBeDefined();
+  expect(tapFloor!.body).toMatch(/--tap-min:\s*44px/);
+  for (const block of blocks.filter((b) => b.prelude !== TAP_FLOOR_QUERY)) {
+    expect(block.body, `--tap-min declared under ${block.prelude}`).not.toMatch(/--tap-min:/);
+  }
+});
+
+test("every widget tap floor applies on phones and on coarse pointers", () => {
+  const widgetsDir = join(dirname(STYLES_DIR), "widgets");
+  const consumers = walkCss(widgetsDir).filter((file) => /var\(--tap-min/.test(readFileSync(file, "utf8")));
+  expect(consumers.length).toBeGreaterThan(0);
+  for (const file of consumers) {
+    const source = readFileSync(file, "utf8");
+    const total = source.replace(/\/\*[\s\S]*?\*\//g, " ").match(/var\(--tap-min/g)!.length;
+    const gated = mediaBlocks(source)
+      .filter((block) => block.prelude === TAP_FLOOR_QUERY)
+      .reduce((sum, block) => sum + (block.body.match(/var\(--tap-min/g)?.length ?? 0), 0);
+    expect(gated, `${file.slice(widgetsDir.length + 1)}: every var(--tap-min) sits in @media ${TAP_FLOOR_QUERY}`).toBe(
+      total,
+    );
+  }
 });
 
 // --- editable controls are 16px on phones -------------------------------

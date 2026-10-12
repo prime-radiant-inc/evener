@@ -13,9 +13,8 @@ import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Button, Chip, Dialog, EmptyState, PaneScaffold, Skeleton } from "../../widgets";
+import { Button, Chip, CodeBlock, Dialog, EmptyState, Markdown, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { Markdown } from "../../widgets/markdown";
 import { browserDocPort } from "./browserDocPort";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
 import styles from "./docpane.module.css";
@@ -24,7 +23,6 @@ import { useDocumentRead } from "./useDocumentRead";
 
 const CLASS = {
   markdown: requireClass(styles.markdown, "docpane.module.css", "markdown"),
-  pre: requireClass(styles.pre, "docpane.module.css", "pre"),
   imageButton: requireClass(styles.imageButton, "docpane.module.css", "imageButton"),
   image: requireClass(styles.image, "docpane.module.css", "image"),
   lightboxImg: requireClass(styles.lightboxImg, "docpane.module.css", "lightboxImg"),
@@ -65,7 +63,7 @@ function DocFileView({ content, path }: { content: DocFileContent; path: string 
           <Markdown source={content.text} />
         </div>
       ) : (
-        <pre className={CLASS.pre}>{content.text}</pre>
+        <CodeBlock text={content.text} fold={false} />
       )}
     </>
   );
@@ -80,7 +78,7 @@ function DocImageView({ src, path }: { src: string; path: string }) {
         <img data-testid="doc-image" className={CLASS.image} src={src} alt={name} />
       </button>
       {zoomed && (
-        <Dialog open onClose={() => setZoomed(false)} title={name}>
+        <Dialog open onClose={() => setZoomed(false)} title={name} size="large">
           <img data-testid="doc-lightbox-img" className={CLASS.lightboxImg} src={src} alt={name} />
         </Dialog>
       )}

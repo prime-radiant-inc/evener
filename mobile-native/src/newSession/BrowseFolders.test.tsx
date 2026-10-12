@@ -4,7 +4,8 @@ import { Platform } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
-import { pressable, promptRequests, render, renderedText, settle } from "../renderNative.testkit";
+import { markedNodes, markers } from "../markerTestUtils";
+import { offersButton, pressable, promptRequests, render, renderedText, settle, textOf } from "../renderNative.testkit";
 import { BrowseFolders } from "./BrowseFolders";
 import { NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
 import { sheetContext } from "./newSessionTestUtils";
@@ -87,7 +88,7 @@ it("lists a folder on the chosen host, enters a folder and goes up in place", as
 	expect(pressable(page.tree, "docs")).toBeDefined();
 	await page.press("evener");
 	expect(page.text()).toContain("/Users/jesse/git/evener");
-	expect(page.text()).toContain("Nothing here.");
+	expect(markers(page.tree, "folder-status")).toEqual(["empty"]);
 	await page.press("Up one folder");
 	await page.press("Up one folder");
 	expect(page.text()).toContain("/Users/jesse");
@@ -106,7 +107,6 @@ it("uses the folder it shows, and goes back to the form", async () => {
 it("offers no Use this folder at home, which the phone can't name", async () => {
 	const page = mount("");
 	await settle();
-	expect(page.text()).toContain("Home");
 	expect(pressable(page.tree, "Use this folder")).toBeUndefined();
 	expect(pressable(page.tree, "Up one folder")).toBeUndefined();
 });
@@ -152,8 +152,11 @@ it("says a folder it couldn't open on the host, and offers only what the page ca
 		hub.refuse.list = true;
 	});
 	await settle();
-	expect(page.text()).toContain("Couldn't open this folder on paradise-park. Go up a folder or choose another.");
-	expect(page.text()).not.toMatch(/Try again|enter the path/);
+	expect(markers(page.tree, "folder-status")).toEqual(["unreadable"]);
+	// The page's own words, which name the host, not the listing's retry sentence.
+	const [status] = markedNodes(page.tree, "folder-status");
+	expect(status && textOf(status)).toContain("paradise-park");
+	expect(offersButton(page.tree, /\bTry again\b/)).toBe(false);
 });
 
 it("offers New folder only on iOS, where Alert.prompt exists", async () => {

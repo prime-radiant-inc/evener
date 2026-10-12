@@ -10,7 +10,8 @@
     "panes/session/chrome/sessionchrome.module.css",
     "panes/session/chrome/statusrow.module.css",
     "panes/session/chrome/modelswitch.module.css",
-    "widgets/meter/meter.module.css"
+    "widgets/meter/meter.module.css",
+    "widgets/visuallyhidden/visuallyhidden.module.css"
   ],
   "viewport": {
     "width": 1200,

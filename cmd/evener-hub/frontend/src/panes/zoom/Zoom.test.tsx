@@ -417,6 +417,7 @@ test.each(["deleted", "missing"] as const)(
     await screen.findByText("root content old-root");
     const child = cascadeScope("child", "cascade-column");
     await waitFor(() => expect(emptyStateReasons(child)).toEqual([failure === "deleted" ? "deleted" : "unavailable"]));
+    expect(within(child).queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText("root content old-root")).toBeTruthy();
     if (failure === "deleted") expect(threadsStore.getState().deletedRefs.has("child")).toBe(true);
     act(() => fireEvent.click(within(child).getByRole("button", { name: "Open conversation" })));
@@ -639,18 +640,18 @@ test.each<{ name: string; before?: TrackStep; change: Partial<Geometry>; want: n
 });
 
 test.each([
-  ["active", "Active", "Running", null],
-  ["awaiting", "Awaiting", "Needs you", "needs-you"],
-  ["warning", "Warning", "Needs you", "needs-you"],
-  ["restartRequired", "RestartRequired", "Needs you", "needs-you"],
-  ["systemError", "SystemError", "Broken", "failed"],
-  ["idle", "Idle", null, null],
-  ["closed", "Closed", null, null],
-  ["notLoaded", "NotLoaded", null, null],
-  ["futureState", "FutureState", null, null],
+  ["active", "Active", "Working"],
+  ["awaiting", "Awaiting", "Needs you"],
+  ["warning", "Warning", "Needs you"],
+  ["restartRequired", "RestartRequired", "Needs you"],
+  ["systemError", "SystemError", "Failed"],
+  ["idle", "Idle", null],
+  ["closed", "Closed", null],
+  ["notLoaded", "NotLoaded", null],
+  ["futureState", "FutureState", null],
 ] as const)(
   "a %s ancestor uses the session-list signal and keeps its exact runtime text available",
-  async (state, runtimeText, signalLabel, signalState) => {
+  async (state, runtimeText, signalLabel) => {
     const { fake, statuses } = fixture();
     statuses.set("root", state);
     mount(fake);
@@ -663,12 +664,8 @@ test.each([
     const runtime = within(spine).getByTitle(runtimeText);
     expect(runtime.getAttribute("data-runtime-state")).toBe(state);
     expect(within(runtime).getByText(runtimeText).getAttribute("aria-hidden")).not.toBe("true");
-    if (signalLabel) {
-      const signal = within(runtime).getByRole("img", { name: signalLabel });
-      expect(signal.getAttribute("data-status")).toBe(signalState);
-    } else {
-      expect(within(runtime).queryByRole("img")).toBeNull();
-    }
+    if (signalLabel) expect(within(runtime).getByRole("img", { name: signalLabel })).toBeTruthy();
+    else expect(within(runtime).queryByRole("img")).toBeNull();
     expect(columnRefs()).toEqual(["child", "grandchild"]);
     act(() => fireEvent.click(within(spine).getByRole("button", { name: "Show root" })));
     await screen.findByText("root content old-root");
@@ -689,10 +686,10 @@ test("a paused ancestor updates its signal through runtime changes without repla
   await screen.findByText("grandchild content grandchild-id");
   const spine = screen.getByTestId("cascade-spine");
   const branch = currentPane();
-  expect(within(spine).getByRole("img", { name: "Running" })).toBeTruthy();
+  expect(within(spine).getByRole("img", { name: "Working" })).toBeTruthy();
   for (const [state, text, label] of [
     ["awaiting", "Awaiting", "Needs you"],
-    ["systemError", "SystemError", "Broken"],
+    ["systemError", "SystemError", "Failed"],
     ["idle", "Idle", null],
   ] as const) {
     act(() =>

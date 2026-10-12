@@ -28,10 +28,8 @@
 
 import { pendingTextJoined } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
+import { SpeakerAvatar } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-// Direct widget path, NOT the controller-owned widgets barrel: this pane
-// must not take a dependency on the barrel's ownership boundary.
-import { SpeakerAvatar } from "../../../../widgets/speakeravatar";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import { AgentMarkdown } from "./AgentMarkdown";
 import styles from "./agentmessageitem.module.css";

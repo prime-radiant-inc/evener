@@ -32,7 +32,7 @@ import {
 } from "react";
 import { WatchGlyph } from "../../../shell/rail/RailRow";
 import { armedWatchCount } from "../../../shell/rail/railNodes";
-import { Chevron } from "../../../widgets";
+import { Chevron, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
@@ -80,7 +80,6 @@ const CLASS = {
   rowToggle: requireClass(styles.rowToggle, "activitypanel.module.css", "rowToggle"),
   indentGuide: requireClass(styles.indentGuide, "activitypanel.module.css", "indentGuide"),
   watchGlyph: requireClass(styles.watchGlyph, "activitypanel.module.css", "watchGlyph"),
-  srOnly: requireClass(styles.srOnly, "activitypanel.module.css", "srOnly"),
   watchGroup: requireClass(styles.watchGroup, "activitypanel.module.css", "watchGroup"),
   watchGroupTitle: requireClass(styles.watchGroupTitle, "activitypanel.module.css", "watchGroupTitle"),
   watchGroupCount: requireClass(styles.watchGroupCount, "activitypanel.module.css", "watchGroupCount"),
@@ -473,7 +472,7 @@ const WatchRowView = memo(function WatchRowView({
         registerRowRef={registerRowRef}
       >
         <WatchGlyph className={CLASS.watchGlyph} testId="watch-glyph" />
-        <span className={CLASS.srOnly}>Watch:</span>
+        <VisuallyHidden>Watch:</VisuallyHidden>
         <span className={CLASS.denseName}>{watchName(row.watch)}</span>
         {detailOpen ? (
           <OpenWatchMeta watch={row.watch} />

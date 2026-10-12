@@ -121,7 +121,7 @@ test("About clears A immediately while B's model read is pending", async () => {
   await screen.findByText("identity-A");
   act(() => installFocusedScope("remote:b"));
   expect(screen.queryByText("identity-A")).toBeNull();
-  expect(screen.getByRole("status").textContent).toContain("Loading session details");
+  expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   await act(async () => pendingB.resolve(activityDetailsThread("remote:b", { id: "identity-B" })));
   await screen.findByText("identity-B");
   expect(screen.queryByText("identity-A")).toBeNull();

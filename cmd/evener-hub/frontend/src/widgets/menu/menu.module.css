@@ -128,7 +128,9 @@
   .popup {
     animation-name: menuFade;
   }
+}
 
+@media (max-width: 899px), (any-pointer: coarse) {
   .trigger {
     min-height: var(--tap-min);
   }

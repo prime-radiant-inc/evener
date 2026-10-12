@@ -47,7 +47,7 @@ import {
   taskSettledCount,
 } from "@evener/appwire-client";
 import { requestPaneFocus, workspaceStore } from "../../../../shell/workspace";
-import { Meter, OpenButton } from "../../../../widgets";
+import { Meter, OpenButton, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer, toolCallFailed } from "../toolRenderers";
@@ -67,7 +67,6 @@ const CLASS = {
   note: requireClass(styles.note, "taskcard.module.css", "note"),
   progress: requireClass(styles.progress, "taskcard.module.css", "progress"),
   spined: requireClass(styles.spined, "taskcard.module.css", "spined"),
-  srOnly: requireClass(styles.srOnly, "taskcard.module.css", "srOnly"),
 };
 
 export interface Progress {
@@ -206,7 +205,7 @@ function TaskWindowRow({ task, kind, note }: { task: TaskRow; kind: SlotKind; no
     <div className={`${CLASS.row} ${CLASS.spined}`} data-testid="task-card-row" data-kind={kind}>
       <TaskCheck touch={touch} />
       <div className={CLASS.rowText}>
-        <span className={CLASS.srOnly}>{TOUCH_WORD[touch]}</span>
+        <VisuallyHidden>{TOUCH_WORD[touch]}</VisuallyHidden>
         <span className={SLOT_DESC_CLASS[kind]}>{task.description}</span>
         {note && <span className={CLASS.note}>{note}</span>}
       </div>
@@ -222,7 +221,7 @@ function TaskFallbackRow({ row }: { row: TouchedRow }) {
     <div className={CLASS.row} data-testid="task-card-row" data-touch={row.touch}>
       <TaskCheck touch={row.touch} />
       <div className={CLASS.rowText}>
-        <span className={CLASS.srOnly}>{TOUCH_WORD[row.touch]}</span>
+        <VisuallyHidden>{TOUCH_WORD[row.touch]}</VisuallyHidden>
         <span className={struck ? CLASS.descStruck : CLASS.desc}>{row.label}</span>
         {row.note && <span className={CLASS.note}>{row.note}</span>}
       </div>

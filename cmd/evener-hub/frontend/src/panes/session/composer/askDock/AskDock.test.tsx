@@ -142,8 +142,8 @@ test("the batch envelope strengthens the amber mix locally, past the token defau
 // coarse) media feature since this is a plain <button>, not that widget.
 test("the tab strip buttons reach the tap floor on a coarse pointer", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
-  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(coarse, "askdock.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "askdock.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
   const rule = coarse![1]!.match(/\.tab\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .tab").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");

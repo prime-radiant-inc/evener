@@ -3,7 +3,7 @@ import { AppwireClient, type ConnectionState, rpcURLFromLocation } from "@evener
 import { useEffect, useState } from "react";
 import { checkAuthStatus, SIGN_IN_PROMPT_MESSAGE } from "../auth";
 import { connectionStore, useConnectionStore } from "../stores/connection";
-import { Banner } from "../widgets/banner";
+import { Banner } from "../widgets";
 import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 import { reloadPage } from "./pageReload";
 
