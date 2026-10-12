@@ -418,7 +418,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
     setPendingGoalReplacement(null);
-    requestComposerFocus(ref);
+    // The request carries this seat's pane: with an ordinary pane and an
+    // embedded column sharing the ref, only the composer the goal row was
+    // clicked in takes focus, so typing lands in its editor alone.
+    requestComposerFocus(ref, paneId ?? null);
   };
 
   const editGoal = (objective: string): void => {

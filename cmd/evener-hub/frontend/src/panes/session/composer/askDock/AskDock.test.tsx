@@ -1335,6 +1335,44 @@ test("a send that empties the dock requests composer focus", async () => {
   await waitFor(() => expect(screen.getByText("requested")).toBeTruthy());
 });
 
+test("a send that empties the dock requests focus only at the dock's own seat", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+  }));
+  // Two seats share the ref, like an ordinary pane and an embedded column:
+  // the completed ask's focus request belongs to the dock's own seat alone.
+  function SeatProbe(props: { paneId: string }) {
+    return (
+      <span data-testid={`focus-probe-${props.paneId}`}>
+        {useComposerFocusRequest("ref_a", props.paneId) ? "requested" : "none"}
+      </span>
+    );
+  }
+  render(
+    <>
+      <AskDock ref="ref_a" paneId="pane_b" />
+      <SeatProbe paneId="pane_a" />
+      <SeatProbe paneId="pane_b" />
+    </>,
+  );
+
+  const persisted = nextMutationPersistence("ref_a");
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await persisted;
+
+  await waitFor(() => expect(screen.getByTestId("focus-probe-pane_b").textContent).toBe("requested"));
+  expect(screen.getByTestId("focus-probe-pane_a").textContent).toBe("none");
+});
+
 test("post-send focus lands on the first NON-sending remaining batch when several sends are in flight", async () => {
   // Two batches mid-send with an open batch behind them: batch 1's send
   // resolving must move focus to batch 3 (editable), not batch 2 (disabled

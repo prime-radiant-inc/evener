@@ -1812,6 +1812,47 @@ test("a failed first location read keeps the funnel-placed child, its owner, and
   expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(child)?.id);
 });
 
+test("a failed first location read keeps a nested chain's workspace until recovery confirms ownership", async () => {
+  // The grandchild journey: root in main, child and grandchild beside it
+  // (each opened from its parent, contexts recorded), the URL publishing
+  // /s/<grandchild>, and the grandchild's first location read failing. The
+  // recorded parent is itself nested, so promoting it through placement
+  // would discard the root and every neighbor; the failed read must keep
+  // the workspace until a successful read confirms the owner.
+  const grandchild = "local:grandchild";
+  const child = "local:child";
+  const owner = "local:owner";
+  window.history.pushState({}, "", `/s/${encodeURIComponent(grandchild)}`);
+  installFailedLocation(grandchild);
+  act(() => {
+    workspaceStore.getState().replacePrimary("session", { ref: owner });
+    workspaceStore.getState().openPane("doc", { session: owner, path: "README.md" });
+    const childId = workspaceStore.getState().openPane("session", { ref: child }, { slot: "secondary" });
+    const childPane = workspaceStore.getState().panes.find((pane) => pane.id === childId);
+    if (childPane) recordConversationOpenParent(childPane, owner);
+    const grandchildId = workspaceStore.getState().openPane("session", { ref: grandchild }, { slot: "secondary" });
+    const grandchildPane = workspaceStore.getState().panes.find((pane) => pane.id === grandchildId);
+    if (grandchildPane) recordConversationOpenParent(grandchildPane, child);
+  });
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: owner });
+  expect(paneFor(child)?.slot).toBe("secondary");
+  expect(paneFor(grandchild)?.slot).toBe("secondary");
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "doc")).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(grandchild)?.id);
+
+  // Recovery: the read confirms the top-level owner. The placement settles
+  // into the nested shape a successful read produces, keeping the chain's
+  // surviving panes.
+  act(() => installLocationForRoute(grandchild, owner));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: owner }));
+  expect(paneFor(child)?.slot).toBe("secondary");
+  expect(paneFor(grandchild)?.slot).toBe("secondary");
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "doc")).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(grandchild)?.id);
+});
+
 // kata 9r5y: the DockHost first-mount race regression test. React fires
 // child effects before parent effects within a commit, so DockHost's
 // handleReady (called from DockviewReact's own mount effect, a descendant

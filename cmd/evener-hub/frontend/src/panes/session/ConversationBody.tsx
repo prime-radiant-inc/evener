@@ -171,7 +171,7 @@ export function ConversationBody({
           id: "live-edge",
           content: (
             <>
-              {askPending && <AskDock ref={ref} />}
+              {askPending && <AskDock ref={ref} paneId={seat.viewFallbackId} />}
               {heldVisible && <HeldSteerStack ref={ref} />}
             </>
           ),

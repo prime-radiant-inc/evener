@@ -92,6 +92,10 @@ const CLASS = {
 
 export interface AskDockProps {
   ref: string;
+  // The conversation seat the dock lives in: the focus request a completed
+  // ask issues is addressed to this pane's composer, so an ordinary pane and
+  // an embedded column sharing the ref never both take focus.
+  paneId?: string;
 }
 
 const NO_BATCHES: AskBatch[] = [];
@@ -472,7 +476,7 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   );
 }
 
-export function AskDock({ ref: sessionRef }: AskDockProps) {
+export function AskDock({ ref: sessionRef, paneId }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
   const pendingGreeted = useAskDockStore((s) => s.byRef.get(sessionRef)?.pendingGreeted ?? false);
@@ -564,7 +568,9 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
     // #884 round 13).
     const nextBatch = remaining.find((b) => !b.sending) ?? remaining[0];
     if (nextBatch === undefined) {
-      requestComposerFocus(sessionRef);
+      // Addressed to the dock's own seat, so a composer in another pane for
+      // the same conversation never steals the focus this handoff grants.
+      requestComposerFocus(sessionRef, paneId ?? null);
       return;
     }
     const nextEl = dockRef.current?.querySelector<HTMLElement>(`[data-ask-batch="${nextBatch.id}"]`);

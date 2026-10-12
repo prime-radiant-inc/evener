@@ -220,24 +220,17 @@ function routePlacementIsApplied(
   if (location === null) {
     if (locationGone) return main.type === "welcome";
     if (!locationTerminal) return false;
-    // A terminal read: the placement a recorded parent context already
-    // satisfies is applied exactly like a location naming that owner - main
-    // holds the recorded owner and the child sits beside it - so the failed
-    // read does not unseat it (openRouteAsPane's terminal arm preserves the
-    // same context).
+    // A terminal read cannot confirm top-level ownership - the recorded
+    // parent may itself be nested - so it must not restructure anything
+    // (openRouteAsPane's terminal arm only focuses). The placement is
+    // applied when the routed conversation is already held beside its
+    // recorded context, whatever main currently shows: the retained
+    // context, not the missing location, owns the placement until a
+    // successful read confirms ownership.
     if (main.type === "session" && sessionRefOf(main) === ref) return true;
-    const childPanes = panes.filter(
-      (pane) => pane.type === "session" && pane.slot === "secondary" && sessionRefOf(pane) === ref,
-    );
-    const [heldChild] = childPanes;
-    const owner = heldChild === undefined ? undefined : conversationOpenParentRef(heldChild);
-    return (
-      owner !== undefined &&
-      owner !== ref &&
-      main.type === "session" &&
-      sessionRefOf(main) === owner &&
-      childPanes.length === 1
-    );
+    const held = panes.find((pane) => pane.type === "session" && sessionRefOf(pane) === ref);
+    const heldParent = held === undefined ? undefined : conversationOpenParentRef(held);
+    return heldParent !== undefined && heldParent !== ref;
   }
   const ancestorRef = location.top_level ? ref : location.top_level_ref;
   const focusedPane = panes.find((pane) => pane.id === workspace.focusedPaneId);
@@ -379,18 +372,21 @@ function openRouteAsPane(
 
     pendingSessionRef.current = null;
     if (location === null) {
-      // A terminal read failed with no retained data. A child the workspace
-      // already holds beside its recorded owner must not collapse to a lone
-      // top-level pane: that would discard the healthy owner, every
-      // unrelated pane, and their staged attachments. Re-place through the
-      // nested seam a successful read uses, so recovery settles the same
-      // shape.
+      // A terminal read failed with no retained data, so top-level
+      // ownership is unconfirmed: the recorded parent may itself be nested,
+      // and placing through it would promote an intermediate pane by
+      // discarding the workspace (openNestedSessionWithOwner places its
+      // owner through replacePrimary, whose cold arm drops every pane
+      // whenever that owner is not already main). A conversation the
+      // workspace already holds beside its recorded context keeps every
+      // pane instead: focus that conversation, and let a later successful
+      // read place by confirmed ownership.
       const held = workspaceStore
         .getState()
         .panes.find((pane) => pane.type === "session" && refParam(pane.params) === ref);
       const heldParent = held === undefined ? undefined : conversationOpenParentRef(held);
-      if (heldParent !== undefined && heldParent !== ref) {
-        openNestedSessionWithOwner(ref, heldParent);
+      if (held !== undefined && heldParent !== undefined && heldParent !== ref) {
+        workspaceStore.getState().focusPane(held.id);
         return;
       }
     }

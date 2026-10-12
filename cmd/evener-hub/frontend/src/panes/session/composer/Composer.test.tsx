@@ -1386,6 +1386,42 @@ test("an addressed quote-insert request reaches the addressed seat's composer", 
   expect(document.activeElement).toBe(seatA);
 });
 
+test("goal editing focuses only the requesting seat's composer when two share a ref", async () => {
+  const user = userEvent.setup();
+  const overrides = { evener: currentWorkEvener({ goal: true }) };
+  // Both seats live in ONE tree, like an ordinary pane and its embedded
+  // column do in production: effects run in mount order, so an unaddressed
+  // request deterministically reaches every seat.
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", overrides));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="ref_a" paneId="pane_a" source={createTestComposerSource("ref_a")} focused={false} />
+      <Composer ref="ref_a" paneId="pane_b" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  const editors = screen.getAllByRole("textbox", { name: /^message$/i });
+  expect(editors).toHaveLength(2);
+  const [seatA, seatB] = editors;
+  if (!seatA || !seatB) throw new Error("Missing one of the two seat composers");
+  const seatAFocused = vi.fn();
+  seatA.addEventListener("focus", seatAFocused);
+
+  const editButtons = screen.getAllByRole("button", { name: /Edit goal: Keep the session focused/ });
+  expect(editButtons).toHaveLength(2);
+  await user.click(editButtons[1] ?? seatB);
+
+  await waitFor(() => expect(document.activeElement).toBe(seatB));
+  expect(seatB.textContent).toBe("/goal Keep the session focused");
+  // The request must be addressed: the other seat never takes focus, so
+  // typing lands in the requesting seat's editor alone.
+  expect(seatAFocused).not.toHaveBeenCalled();
+});
+
 test("the composer persists the quote-inserted text as this ref's draft", async () => {
   await mountComposer("ref_a");
   act(() => {
