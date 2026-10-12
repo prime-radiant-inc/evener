@@ -163,18 +163,23 @@ func indentedCode(line string) bool {
 
 // framingBesideHeading takes the framing markers off a line's edges, in however
 // many copies sit there, and reports whether what is left is a section heading:
-// the heading the model wrote beside an echoed marker is the summary's own, and
-// the markers around it are no part of it. What matters is the line without
-// them: a marker between two pieces of text is that text's own word, so a line
-// the markers do not leave as a heading is left whole.
+// the heading a model wrote beside an echoed marker is the summary's own. A
+// marker at the start of a line cannot be part of a heading's text, so those
+// come off once the rest of the line is a heading, inline prose included. A
+// marker at the end could be the tail of that prose, so it comes off only when
+// the heading it leaves holds nothing but its name. A line the markers do not
+// leave as a heading is that text's own word and is left whole.
 func framingBesideHeading(line string) (rest string, cut bool) {
 	bare := line
-	for {
-		without, found := cutEdgeMarker(bare)
-		if !found {
-			break
+	for _, marker := range []string{summaryMarkerStart, summaryMarkerEnd} {
+		for strings.HasPrefix(bare, marker) {
+			bare, cut = strings.TrimSpace(strings.TrimPrefix(bare, marker)), true
 		}
-		bare, cut = without, true
+	}
+	if without, found := strings.CutSuffix(bare, summaryMarkerEnd); found {
+		if _, inline, ok := summarySectionHeading(strings.TrimSpace(without)); ok && inline == "" {
+			bare, cut = strings.TrimSpace(without), true
+		}
 	}
 	if !cut {
 		return line, false
@@ -183,31 +188,6 @@ func framingBesideHeading(line string) (rest string, cut bool) {
 		return line, false
 	}
 	return bare, true
-}
-
-// cutEdgeMarker takes one framing marker off a line's edge, if one is there.
-func cutEdgeMarker(line string) (string, bool) {
-	for _, edge := range []struct {
-		marker string
-		atEnd  bool
-	}{
-		{summaryMarkerStart, false},
-		{summaryMarkerEnd, false},
-		{summaryMarkerEnd, true},
-		{summaryMarkerStart, true},
-	} {
-		var remainder string
-		var found bool
-		if edge.atEnd {
-			remainder, found = strings.CutSuffix(line, edge.marker)
-		} else {
-			remainder, found = strings.CutPrefix(line, edge.marker)
-		}
-		if found {
-			return strings.TrimSpace(remainder), true
-		}
-	}
-	return line, false
 }
 
 // summaryPointerLead begins the compaction pointer line a summary turn opens

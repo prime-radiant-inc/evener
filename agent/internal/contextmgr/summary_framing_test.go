@@ -9,28 +9,29 @@ import (
 // line's end, or a line that holds nothing else.
 func TestStripSummaryFraming(t *testing.T) {
 	for name, tc := range map[string]struct{ in, want string }{
-		"empty":              {"", ""},
-		"whitespace":         {" \n\t", ""},
-		"framing alone":      {summaryMarkerStart + "\n" + summaryMarkerEnd, ""},
-		"markers on a line":  {"## Progress\n" + summaryMarkerEnd + summaryMarkerStart, "## Progress"},
-		"marker line alone":  {"## Progress\n" + summaryMarkerEnd + "\nFixed the auth bug.", "## Progress\nFixed the auth bug."},
-		"no framing":         {"## Progress\nFixed the auth bug.", "## Progress\nFixed the auth bug."},
-		"framed reply":       {summaryMarkerStart + "\n## Progress\nFixed it.\n" + summaryMarkerEnd, "## Progress\nFixed it."},
-		"marker then text":   {summaryMarkerStart + " ## Progress\nFixed it.", "## Progress\nFixed it."},
-		"text then marker":   {"## Progress: " + summaryMarkerEnd, "## Progress:"},
-		"framing both ends":  {summaryMarkerStart + " ## Progress: " + summaryMarkerEnd, "## Progress:"},
-		"framing no colon":   {summaryMarkerStart + " ## Progress " + summaryMarkerEnd, "## Progress"},
-		"framing repeated":   {summaryMarkerStart + summaryMarkerStart + " ## Progress", "## Progress"},
-		"indented delimiter": {"## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~", "## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~"},
-		"marker in a line":   {"See the framing " + summaryMarkerEnd + " for the format.", "See the framing " + summaryMarkerEnd + " for the format."},
-		"named in prose":     {"## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing.", "## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing."},
-		"prose then marker":  {"## Progress\n- Renamed " + summaryMarkerStart, "## Progress\n- Renamed " + summaryMarkerStart},
-		"marker then prose":  {summaryMarkerStart + " is the framing we write.", summaryMarkerStart + " is the framing we write."},
-		"indented marker":    {"## Progress\n    " + summaryMarkerEnd + "\nFixed it.", "## Progress\n    " + summaryMarkerEnd + "\nFixed it."},
-		"tabbed marker":      {"## Progress\n \t" + summaryMarkerEnd + "\nFixed it.", "## Progress\n \t" + summaryMarkerEnd + "\nFixed it."},
-		"indented block":     {"    ~~~\n    example\n    ~~~\n\n## Progress\nSTATE", "    ~~~\n    example\n    ~~~\n\n## Progress\nSTATE"},
-		"quoted in a fence":  {"## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```", "## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```"},
-		"framing and blanks": {summaryMarkerStart + "\n\n## Progress\nFixed it.\n\n" + summaryMarkerEnd, "\n## Progress\nFixed it."},
+		"empty":               {"", ""},
+		"whitespace":          {" \n\t", ""},
+		"framing alone":       {summaryMarkerStart + "\n" + summaryMarkerEnd, ""},
+		"markers on a line":   {"## Progress\n" + summaryMarkerEnd + summaryMarkerStart, "## Progress"},
+		"marker line alone":   {"## Progress\n" + summaryMarkerEnd + "\nFixed the auth bug.", "## Progress\nFixed the auth bug."},
+		"no framing":          {"## Progress\nFixed the auth bug.", "## Progress\nFixed the auth bug."},
+		"framed reply":        {summaryMarkerStart + "\n## Progress\nFixed it.\n" + summaryMarkerEnd, "## Progress\nFixed it."},
+		"marker then text":    {summaryMarkerStart + " ## Progress\nFixed it.", "## Progress\nFixed it."},
+		"text then marker":    {"## Progress: " + summaryMarkerEnd, "## Progress:"},
+		"framing both ends":   {summaryMarkerStart + " ## Progress: " + summaryMarkerEnd, "## Progress:"},
+		"framing no colon":    {summaryMarkerStart + " ## Progress " + summaryMarkerEnd, "## Progress"},
+		"framing repeated":    {summaryMarkerStart + summaryMarkerStart + " ## Progress", "## Progress"},
+		"indented delimiter":  {"## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~", "## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~"},
+		"marker in a line":    {"See the framing " + summaryMarkerEnd + " for the format.", "See the framing " + summaryMarkerEnd + " for the format."},
+		"named in prose":      {"## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing.", "## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing."},
+		"prose after heading": {"## Critical Context: The closing delimiter is " + summaryMarkerEnd, "## Critical Context: The closing delimiter is " + summaryMarkerEnd},
+		"prose then marker":   {"## Progress\n- Renamed " + summaryMarkerStart, "## Progress\n- Renamed " + summaryMarkerStart},
+		"marker then prose":   {summaryMarkerStart + " is the framing we write.", summaryMarkerStart + " is the framing we write."},
+		"indented marker":     {"## Progress\n    " + summaryMarkerEnd + "\nFixed it.", "## Progress\n    " + summaryMarkerEnd + "\nFixed it."},
+		"tabbed marker":       {"## Progress\n \t" + summaryMarkerEnd + "\nFixed it.", "## Progress\n \t" + summaryMarkerEnd + "\nFixed it."},
+		"indented block":      {"    ~~~\n    example\n    ~~~\n\n## Progress\nSTATE", "    ~~~\n    example\n    ~~~\n\n## Progress\nSTATE"},
+		"quoted in a fence":   {"## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```", "## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```"},
+		"framing and blanks":  {summaryMarkerStart + "\n\n## Progress\nFixed it.\n\n" + summaryMarkerEnd, "\n## Progress\nFixed it."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := stripSummaryFraming(tc.in); got != tc.want {
@@ -145,6 +146,43 @@ func TestSummarizeWithLLM_AcceptsAnIndentedBlockBeforeASection(t *testing.T) {
 	}
 	if stored := result[0].Message.Text(); !strings.Contains(stored, "## Progress\nFixed the auth bug.") {
 		t.Fatalf("the section after the indented block was not read:\n%s", stored)
+	}
+}
+
+// An indented line is code, not a section: a reply that is nothing but an
+// indented example, heading included, has summarized nothing.
+func TestSummarizeWithLLM_RejectsAnIndentedExample(t *testing.T) {
+	reply := "    ~~~\n    ## Progress\n    ~~~"
+	if result, err := summarizeReplying(t, reply, ""); err == nil {
+		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+	}
+}
+
+// The strip removes the framing and nothing else: whatever a reply says around
+// the markers is still there afterwards. Over-stripping — taking a marker that
+// was a line's own last word, or the tail of a heading's prose — shows up here
+// as text the strip did not have the right to remove.
+func TestStripSummaryFramingRemovesOnlyTheFraming(t *testing.T) {
+	withoutMarkers := func(text string) string {
+		text = strings.ReplaceAll(text, summaryMarkerStart, "")
+		text = strings.ReplaceAll(text, summaryMarkerEnd, "")
+		return strings.Join(strings.Fields(text), " ")
+	}
+	for name, reply := range map[string]string{
+		"named in prose":      "## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing.",
+		"prose then marker":   "## Progress\n- Renamed " + summaryMarkerStart,
+		"marker then prose":   summaryMarkerStart + " is the framing we write.",
+		"prose after heading": "## Critical Context: The closing delimiter is " + summaryMarkerEnd,
+		"framed reply":        summaryMarkerStart + "\n## Progress\nFixed it.\n" + summaryMarkerEnd,
+		"indented marker":     "## Progress\n    " + summaryMarkerEnd + "\nFixed it.",
+		"quoted in a fence":   "## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := stripSummaryFraming(reply)
+			if withoutMarkers(got) != withoutMarkers(reply) {
+				t.Fatalf("stripSummaryFraming(%q) = %q, which lost text the framing did not own", reply, got)
+			}
+		})
 	}
 }
 

@@ -2023,7 +2023,8 @@ func checkSummaryReply(reply, instructions string) error {
 		if fence.step(raw) {
 			continue
 		}
-		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() {
+		// An indented line is code: it is content under a section, never one.
+		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() && !indentedCode(raw) {
 			inSection = !strings.EqualFold(section, permissionsSection)
 			if inSection && rest != "" && !markerOnly(rest) {
 				return nil
