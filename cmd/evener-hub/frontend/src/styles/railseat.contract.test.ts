@@ -134,20 +134,12 @@ test("the live thought's kind glyph stays the deliberate variant, not a seat", (
   expect(iconRule).toMatch(/margin-right:\s*var\(--speaker-gap\)/);
 });
 
-test("the steer diamond stays the deliberate variant, not a seat", () => {
-  // The same stance as ThinkBlock's .icon (a centered, single-line row whose
-  // pull rides the container): .railIcon keeps the shared SUBSET by hand -
-  // the avatar-size width, the gap-netting margin-right, the ambient 50% -
-  // but composes nothing, so the values are pinned HERE too, where drift
-  // from the seat's own declarations would fail a test instead of passing
-  // silently (roborev).
+test("the steer diamond is not a seat: a Disclosure summary glyph in the content column", () => {
+  // SteeringDivider is a Disclosure, and a Disclosure summary sits in the
+  // content column like every other one, so the diamond composes nothing
+  // from the rail seat and nothing in the stylesheet pulls into the gutter.
   const diamondRule = steeringitem.match(/\.railIcon\s*\{([^}]*)\}/)?.[1] ?? "";
   expect(diamondRule).not.toMatch(/composes:/);
-  expect(diamondRule).toMatch(/align-self:\s*center/);
-  expect(diamondRule).toMatch(/width:\s*var\(--speaker-avatar-size\)/);
-  expect(diamondRule).toMatch(/margin-right:\s*calc\(var\(--speaker-gap\) - var\(--space-2\)\)/);
   expect(diamondRule).toMatch(/opacity:\s*0\.5/);
-  // The pull rides the .summary container, never the diamond.
-  const gated = steeringitem.match(/@media\s*\(min-width:\s*700px\)\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
-  expect(gated).toMatch(/\.summary\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
+  expect(steeringitem).not.toMatch(/margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
 });

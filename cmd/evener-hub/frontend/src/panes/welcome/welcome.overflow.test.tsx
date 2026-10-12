@@ -6,6 +6,7 @@ import { keyID } from "@evener/appwire-client/state/navigation";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { Button } from "../../widgets";
 import Welcome from "./Welcome";
 
 // A stylesheet-grep assertion must not be satisfiable by a comment - this repo
@@ -77,44 +78,23 @@ test("the full long resume-candidate title is present in the DOM, not truncated 
   expect(button.textContent).toContain(LONG_TITLE);
 });
 
-// Issue #197 root cause: button.module.css sets `white-space: nowrap` on every
-// button (correct for most, catastrophic here - it makes the 200-rune title
-// unbreakable and inflates the flex column past the viewport). The fix must
-// override that nowrap LOCALLY in the welcome screen for the resume button,
-// not globally in button.module.css. The resume button is the one PRIMARY
-// button rendered inside .actions (the "Jump back in" candidate); the example
-// buttons are variant="quiet" and already have their own .examples button
-// override. This assertion specifically requires an override that applies to
-// the resume button's context, not merely the pre-existing .examples one.
-test("welcome.module.css overrides white-space: nowrap for the resume-candidate button", () => {
-  const css = welcomeCss();
-  // The resume button is a primary Button rendered as a direct child of
-  // .actions. An override scoped to .actions (covering its button children)
-  // is what reaches the resume button; .examples button does NOT, because
-  // the resume button is a sibling of .examples, not a descendant of it.
-  // Require a wrapping white-space value to appear in a rule that can reach
-  // the resume button - i.e. scoped under .actions, not only under .examples.
-  const actionsBlock = css.match(/\.actions\s*\{([^}]*)\}/);
-  expect(actionsBlock, "welcome.module.css must define an .actions rule").toBeTruthy();
-  // Either .actions itself carries the override, or a descendant rule like
-  // ".actions button" / ".actions .primary" does. Collect every rule whose
-  // selector can match a primary button that is a direct child of .actions.
-  const actionsScoped = css
-    .split(/(?<=\})/)
-    .filter(
-      (rule) =>
-        /\.actions\s+button\b/.test(rule) ||
-        /\.actions\s+\.primary\b/.test(rule) ||
-        /\.actions\b[^{]*\{[^}]*white-space/.test(rule),
-    )
-    .join("\n");
-  const candidate = actionsScoped || actionsBlock?.[1] || "";
-  expect(candidate, "welcome.module.css must override white-space for the resume button under .actions").toMatch(
-    /white-space:\s*(normal|break-spaces|pre-wrap)/,
+// Issue #197 root cause: Button keeps its label on one line, which made the
+// 200-rune title unbreakable and inflated the flex column past the viewport.
+// The resume button opts into Button's own `wrap` (the layoutguard case
+// welcome-resume-candidate-overflow measures the geometry); the welcome
+// stylesheet must not reach into Button to do it locally.
+test("the resume-candidate button is a wrapping Button, with no local override of Button's look", () => {
+  setLive([node({ ref: "local:long1", title: LONG_TITLE })]);
+  render(<Welcome params={{}} paneId="welcome" focused={true} />);
+  const resumeClass = screen.getByRole("button", { name: /Jump back in/ }).className;
+  cleanup();
+  render(
+    <Button variant="primary" wrap>
+      reference
+    </Button>,
   );
-  // And this file must not carry a `white-space: nowrap` of its own that would
-  // re-apply to the resume button.
-  expect(css).not.toMatch(/white-space:\s*nowrap/);
+  expect(resumeClass).toBe(screen.getByRole("button").className);
+  expect(welcomeCss()).not.toMatch(/\bbutton\b[^{}]*\{/);
 });
 
 // Issue #197 symptom: the inflated resume button cascades into .hints, whose

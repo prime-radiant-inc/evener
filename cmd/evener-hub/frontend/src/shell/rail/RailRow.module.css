@@ -21,11 +21,6 @@
   gap: var(--space-2);
   width: 100%;
   min-width: 0;
-  /* Keep the actions menu's visually-hidden accessible name inside its row.
-   * Without a containing block here, its position:absolute rule resolves
-   * against the rail, bypasses the body's scroll clipping, and grows the page
-   * to the full expanded tree height. */
-  position: relative;
   /* The leading padding is the status indicator's home: .signal outdents into
    * it, so the indicator hangs left of the text and every title starts at the
    * same x. The 8px spinner uses 2px edge breathing + 8px ring + 4px gap. */
@@ -51,32 +46,6 @@
     min-height: var(--tap-min);
   }
 
-  /* UX fix, real-phone measurement: the row's "..."/"+" actions buttons
-   * (ActionsMenu's trigger, ProjectRow's IconButton - both plain <button>
-   * descendants of `.actions`) measured ~47x32, under the tap floor even
-   * though `.railRow` itself already reaches it. min-height, not height, so
-   * each button's own desktop sizing (owned by widgets/menu /
-   * widgets/iconbutton, not this file) stays untouched everywhere else.
-   *
-   * min-width joins min-height (shellguard tap-target measurement, 390px
-   * mobile viewport): the "..." trigger's own height was already floored by
-   * menu.module.css's 899px block, but NOTHING floored its width - with the
-   * flush-right padding override below it rendered 23px wide on a phone. */
-  .actions button {
-    min-width: var(--tap-min);
-    min-height: var(--tap-min);
-  }
-
-  /* The wider box would leave the "..." glyph flush LEFT (the desktop
-   * flush-right override below zeroes the trigger's right padding): a 44px
-   * target with its glyph at one edge reads as misaligned and moves the
-   * visual affordance away from the row's trailing edge. Under touch the
-   * glyph centres in the tap box instead. Scoped to the menu trigger so a
-   * project row's "+" IconButton keeps its own centering. */
-  .actions button[aria-haspopup="menu"] {
-    padding: 0;
-    justify-content: center;
-  }
 }
 
 /* The right slot: ONE grid cell shared by the slot's occupant (the relative
@@ -148,19 +117,6 @@
   opacity: 1;
   visibility: visible;
   transition-delay: 0s;
-}
-
-/* Right-justify the menu trigger's glyph inside the shared cell: the Menu
- * widget's trigger is padded for a standalone button (--space-4 on both
- * sides), which sat the "..." glyph ~16px in from the slot's right edge -
- * the x where the timestamp's own text ends, so the revealed menu read as
- * leftward of what it replaced. Hugging the glyph flush right (padding only
- * on the leading side) puts it at the timestamp's own right edge and
- * shrinks the trigger - and with it the shared cell - to the glyph's real
- * width. Scoped by attribute so a project row's "+" IconButton keeps its
- * own square geometry. */
-.actions button[aria-haspopup="menu"] {
-  padding: 0 0 0 var(--space-2);
 }
 
 /* The reveal's other half: the occupant yields the shared cell to the menu
@@ -316,14 +272,6 @@
   gap: var(--space-2);
 }
 
-.contextKind {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
-}
-
 .contextStatus {
   color: var(--ink-mid);
 }
@@ -339,33 +287,6 @@
 .contextSummary {
   color: var(--ink-hi);
   overflow-wrap: anywhere;
-}
-
-.contextRows {
-  display: flex;
-  margin: 0;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.contextRow {
-  display: grid;
-  grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
-  gap: var(--space-2);
-}
-
-.contextKey {
-  color: var(--ink-mid);
-}
-
-.contextValue {
-  margin: 0;
-  color: var(--ink-hi);
-  overflow-wrap: anywhere;
-}
-
-.contextMono {
-  font-family: var(--font-mono);
 }
 
 /* The drawn host glyph a host group row leads with (RailRow's HostGlyph):

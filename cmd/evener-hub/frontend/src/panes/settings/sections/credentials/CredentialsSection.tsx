@@ -43,12 +43,14 @@ import {
   ConfirmDialog,
   Dialog,
   EmptyState,
+  InlineNotice,
   Loader,
   Skeleton,
   useFocusRehome,
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { Diagnostics } from "../diagnostics";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./ConnectProviderDialogBoundary";
 import styles from "./CredentialsSection.module.css";
@@ -62,10 +64,6 @@ import { confirmListingState, refreshListingAfterMutation } from "./reconcileLis
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
   headerRow: requireClass(styles.headerRow, "CredentialsSection.module.css", "headerRow"),
-  error: requireClass(styles.error, "CredentialsSection.module.css", "error"),
-  diagnostics: requireClass(styles.diagnostics, "CredentialsSection.module.css", "diagnostics"),
-  diagnosticsHeading: requireClass(styles.diagnosticsHeading, "CredentialsSection.module.css", "diagnosticsHeading"),
-  diagnosticsList: requireClass(styles.diagnosticsList, "CredentialsSection.module.css", "diagnosticsList"),
 };
 
 type OpenEditor =
@@ -97,26 +95,6 @@ type CredentialTestState = { version: number; pending: boolean; result?: AuthTes
 // where only cross-client messages live.
 const ENDPOINT_CHANGED_CONFIRM_ERROR =
   "This instance changed to a different endpoint since this confirmation was opened, so nothing was changed. The provider list was refreshed; review its destination and try again.";
-
-// Diagnostics: the providers.toml load-error pointer, the user-layer note,
-// stray OAuth record notices, and registry warnings (InstanceListResponse.
-// diagnostics, spec §11.3) - mirrors launchServer.tsx's own Diagnostics
-// component (this pane's sibling settings section), a flat unordered list
-// with no stable per-entry identity of its own.
-export function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
-  if (diagnostics.length === 0) return null;
-  return (
-    <div className={CLASS.diagnostics} role="status" aria-live="polite">
-      <p className={CLASS.diagnosticsHeading}>Warnings</p>
-      <ul className={CLASS.diagnosticsList}>
-        {diagnostics.map((d, index) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: diagnostics are a flat, unordered warning list with no stable identity of their own
-          <li key={index}>{d}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
 
 export interface CredentialsSectionProps {
   /** Unused - kept so this component's signature matches every other
@@ -580,7 +558,7 @@ export function CredentialsSection({
           same reason). A failed read keeps the listing it already had
           (readListing), so those rows stay too, with the banner above them. */}
       {loading && instances.length === 0 && <Skeleton />}
-      {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
+      {error && <InlineNotice tone="danger">Failed to load: {friendlyErrorMessage(error)}</InlineNotice>}
       {!loading && !error && instances.length === 0 && <EmptyState title="No provider instances configured." />}
       {/* The provider-grouped listing is shared with the host-scoped view of a
           remote host's own listing (ProviderInstanceGroups); this surface's

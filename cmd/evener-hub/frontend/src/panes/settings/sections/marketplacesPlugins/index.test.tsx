@@ -105,7 +105,7 @@ test("a view whose plugin list failed to load asks the hub for no updates", asyn
     throw new Error("boom");
   });
   render(<MarketplacesPluginsSection />);
-  expect(await screen.findByText("Failed to load")).toBeTruthy();
+  expect(await screen.findByRole("alert")).toBeTruthy();
   expect(fake.calls.some((c) => c.method === "evener/plugin/checkUpdates")).toBe(false);
 });
 
@@ -116,11 +116,9 @@ test("shows one failed-to-load message replacing everything when the marketplace
   });
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
   render(<MarketplacesPluginsSection />);
-  expect(await screen.findByText("Failed to load")).toBeTruthy();
-  // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-  expect(screen.getByText("Something went wrong.")).toBeTruthy();
-  // Assert the raw string no longer appears
-  expect(screen.queryByText("network down")).toBeNull();
+  const alert = await screen.findByRole("alert");
+  // friendlyErrorMessage keeps a raw JS error's message off the screen.
+  expect(alert.textContent).not.toContain("network down");
   expect(screen.queryByRole("radiogroup", { name: "View" })).toBeNull();
 });
 
@@ -131,10 +129,8 @@ test("shows one failed-to-load message when the plugin list fails to load", asyn
     throw new Error("boom");
   });
   render(<MarketplacesPluginsSection />);
-  expect(await screen.findByText("Failed to load")).toBeTruthy();
-  // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-  expect(screen.getByText("Something went wrong.")).toBeTruthy();
-  // Assert the raw string no longer appears
+  await screen.findByRole("alert");
+  expect(screen.getAllByRole("alert")).toHaveLength(1);
   expect(screen.queryByText("boom")).toBeNull();
 });
 
@@ -225,7 +221,7 @@ test("keeps an applied removal guard across failed reconciliation and sheet remo
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
 
-  await waitFor(() => expect(screen.getByText("Failed to load")).toBeTruthy());
+  expect(await screen.findByRole("alert")).toBeTruthy();
   act(() => extensionsStore.setState({ marketplacesError: null }));
   expect(await screen.findByRole("dialog", { name: "acme-plugins" })).toBeTruthy();
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
@@ -257,7 +253,7 @@ test("a later accepted notification publication clears a same-name applied remov
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
 
-  await waitFor(() => expect(screen.getByText("Failed to load")).toBeTruthy());
+  expect(await screen.findByRole("alert")).toBeTruthy();
   fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
   await waitFor(() => expect(listCalls).toBe(3), { timeout: 1000 });
   await waitFor(() => expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy());
@@ -329,7 +325,7 @@ test("clears an applied removal guard when the connection client changes", async
   await user.click(
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
-  await waitFor(() => expect(screen.getByText("Failed to load")).toBeTruthy());
+  expect(await screen.findByRole("alert")).toBeTruthy();
 
   const second = new FakeClient("ready");
   second.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
@@ -457,7 +453,7 @@ test("clears an applied removal guard when the selected host changes (same conne
   await user.click(
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
-  await waitFor(() => expect(screen.getByText("Failed to load")).toBeTruthy());
+  expect(await screen.findByRole("alert")).toBeTruthy();
 
   // Same connection, different host: the guard belongs to beta's catalog and
   // must not suppress the reminder for gamma's marketplace of the same name.

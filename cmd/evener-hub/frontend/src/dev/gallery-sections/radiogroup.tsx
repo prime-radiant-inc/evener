@@ -32,6 +32,16 @@ export default function RadioGroupGallerySection() {
             onChange={() => {}}
             options={LOUD_SCOPE_OPTIONS}
           />
+          <RadioGroup
+            label="Transcript width"
+            value="reading"
+            onChange={() => {}}
+            options={[
+              { value: "reading", label: "Reading" },
+              { value: "wide", label: "Wide" },
+            ]}
+            description="Reading keeps lines near 90 characters. Wide uses more of the window."
+          />
         </div>
       </ThemeFlip>
     </section>

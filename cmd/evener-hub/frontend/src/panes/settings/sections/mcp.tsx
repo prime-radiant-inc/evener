@@ -22,7 +22,9 @@ import {
   type CollectionAddResult,
   CollectionEditor,
   ConfirmDialog,
+  EmptyState,
   InlineNotice,
+  ListRow,
   Skeleton,
   useToasts,
 } from "../../../widgets";
@@ -46,10 +48,6 @@ const CLASS = {
   sectionTitle: requireClass(styles.sectionTitle, "mcp.module.css", "sectionTitle"),
   sectionHelp: requireClass(styles.sectionHelp, "mcp.module.css", "sectionHelp"),
   list: requireClass(styles.list, "mcp.module.css", "list"),
-  row: requireClass(styles.row, "mcp.module.css", "row"),
-  rowText: requireClass(styles.rowText, "mcp.module.css", "rowText"),
-  rowMeta: requireClass(styles.rowMeta, "mcp.module.css", "rowMeta"),
-  empty: requireClass(styles.empty, "mcp.module.css", "empty"),
 };
 
 /**
@@ -213,17 +211,17 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
           ) : (
             <ul aria-label="Discovered MCP servers" className={CLASS.list}>
               {(discovered?.servers ?? []).length === 0 ? (
-                <li className={CLASS.empty}>No MCP servers configured.</li>
+                <li>
+                  <EmptyState size="compact" title="No MCP servers configured." />
+                </li>
               ) : (
                 (discovered?.servers ?? []).map((s) => (
-                  <li key={s.name} className={CLASS.row}>
-                    <div>
-                      <div className={CLASS.rowText}>
-                        {s.name} — {s.transport}{" "}
-                        <Chip tone={s.status === "available" ? "alive" : "danger"}>{s.status}</Chip>
-                      </div>
-                      {s.error !== undefined && <div className={CLASS.rowMeta}>{s.error}</div>}
-                    </div>
+                  <li key={s.name}>
+                    <ListRow
+                      label={`${s.name} — ${s.transport}`}
+                      chips={<Chip tone={s.status === "available" ? "alive" : "danger"}>{s.status}</Chip>}
+                      meta={s.error}
+                    />
                   </li>
                 ))
               )}

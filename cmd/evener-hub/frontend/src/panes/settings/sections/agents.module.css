@@ -11,12 +11,6 @@
   font-size: var(--font-size-ui);
 }
 
-.error {
-  margin: 0;
-  color: var(--ink-hi);
-  font-size: var(--font-size-ui);
-}
-
 .list {
   display: flex;
   flex-direction: column;
@@ -26,22 +20,3 @@
   list-style: none;
 }
 
-.row {
-  display: flex;
-  align-items: center;
-  /* No space-between: the open anchor belongs beside the agent name it
-   * opens; only the "built-in" status keeps the far edge. */
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-}
-
-.name {
-  color: var(--ink-hi);
-  font-size: var(--font-size-ui);
-}
-
-.trailing {
-  margin-left: auto;
-}

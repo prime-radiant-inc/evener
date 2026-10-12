@@ -23,10 +23,10 @@
 </head>
 <body data-font-size="m">
 <!-- Reproduces Rail.tsx's own markup against the REAL classes from
-     Rail.module.css: a section heading that carries a trailing action
-     (SectionHeading's optional `action` - the pinned-section shape, whose
-     .sectionHeadingAction right inset is the family the organize row claims
-     to match), and the organize-by switcher row the rail renders between
+     Rail.module.css and widgets/disclosureheading: a section heading that
+     carries a trailing action (DisclosureHeading's optional `action` - the
+     pinned-section shape, whose .headingAction right inset is the family the
+     organize row claims to match), and the organize-by switcher row the rail renders between
      the Live section and the Hosts/Projects tier. The switcher is
      OrganizeByControl minus the Tooltip and Popover (both are overlays with
      no rest-state geometry): the quiet sm IconButton (button.module.css's
@@ -46,18 +46,18 @@ function fixtureHtml(key, width) {
     <div class="fixtureLabel">${width}px</div>
     <div class="railBox" id="box-${key}" style="width: ${width}px">
       <div class="section">
-        <div class="sectionHeadingRow">
-          <h3 class="sectionTitle">
-            <button type="button" class="sectionDisclosure" aria-expanded="true" tabindex="-1">Hosts</button>
+        <div class="disclosureHeading">
+          <h3 class="headingTitle">
+            <button type="button" class="headingToggle" aria-expanded="true" tabindex="-1">Hosts</button>
           </h3>
-          <div class="sectionHeadingAction">${button(`heading-${key}`, "Section actions")}</div>
+          <div class="headingAction">${button(`heading-${key}`, "Section actions")}</div>
         </div>
       </div>
       <div class="organizeRow">${button(`organize-${key}`, "Organize by")}</div>
       <div class="section">
-        <div class="sectionHeadingRow">
-          <h3 class="sectionTitle">
-            <button type="button" class="sectionDisclosure" aria-expanded="true" tabindex="-1">Projects</button>
+        <div class="disclosureHeading">
+          <h3 class="headingTitle">
+            <button type="button" class="headingToggle" aria-expanded="true" tabindex="-1"><span class="eyebrow">Projects</span></button>
           </h3>
         </div>
       </div>

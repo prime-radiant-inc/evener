@@ -1,16 +1,15 @@
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Button, EmptyState, Skeleton } from "../../../widgets";
+import { Button, EmptyState, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { SessionCacheRow } from "./sessionCacheRow";
-import { Code, FieldDim, SettingsField } from "./settingsField";
+import { SESSION_CACHE_HELP, SESSION_CACHE_LABEL, SessionCacheStatus } from "./sessionCacheRow";
+import { Code, FieldDim } from "./settingsField";
 import styles from "./storage.module.css";
 
 const CLASS = {
   root: requireClass(styles.root, "storage.module.css", "root"),
   help: requireClass(styles.help, "storage.module.css", "help"),
-  list: requireClass(styles.list, "storage.module.css", "list"),
 };
 
 // pastCountCopy mirrors storage.html's own Go template conditional exactly
@@ -65,43 +64,50 @@ export function StorageSection() {
   return (
     <div className={CLASS.root}>
       <p className={CLASS.help}>Paths and file locations used by the hub at runtime.</p>
-      <dl className={CLASS.list}>
-        <SettingsField
-          label="State dir"
-          value={data.storage?.stateDir ?? ""}
-          help="Root directory for hub state: auth token, credentials, and project sub-directories."
-        />
-        <SettingsField
-          label="Run dir"
-          value={hub?.runDir ?? ""}
-          help="Per-PID rendezvous files; the hub watches this directory to discover live daemons."
-        />
-        <SettingsField
-          label="Hub config"
-          value={<Code>~/.config/evener/hub.toml</Code>}
-          help="Main configuration file. Edit it to change addresses, providers, and spawn defaults."
-        />
-        {pastIndex !== undefined && (
-          <SettingsField
-            label="Past index"
-            value={
-              <>
-                {pastIndex.path} {pastIndex.size !== undefined && <FieldDim>{pastIndex.size}</FieldDim>}
-              </>
-            }
-            help={
-              <>
-                SQLite database of past session metadata. Search results in <Code>⌘K</Code> come from here.{" "}
-                {pastCountCopy(pastIndex.count ?? 0)}
-              </>
-            }
-          />
-        )}
-        {/* The session-history cache row (spec, "The clear-cached-sessions
-            setting"): its own component because its state is its own store
-            with a per-render count, unlike the overview-fed rows above. */}
-        <SessionCacheRow />
-      </dl>
+      <PropertyList
+        layout="stacked"
+        rows={
+          [
+            {
+              label: "State dir",
+              value: data.storage?.stateDir ?? "",
+              help: "Root directory for hub state: auth token, credentials, and project sub-directories.",
+            },
+            {
+              label: "Run dir",
+              value: hub?.runDir ?? "",
+              help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
+            },
+            {
+              label: "Hub config",
+              value: <Code>~/.config/evener/hub.toml</Code>,
+              help: "Main configuration file. Edit it to change addresses, providers, and spawn defaults.",
+            },
+            ...(pastIndex !== undefined
+              ? [
+                  {
+                    label: "Past index",
+                    value: (
+                      <>
+                        {pastIndex.path} {pastIndex.size !== undefined && <FieldDim>{pastIndex.size}</FieldDim>}
+                      </>
+                    ),
+                    help: (
+                      <>
+                        SQLite database of past session metadata. Search results in <Code>⌘K</Code> come from here.{" "}
+                        {pastCountCopy(pastIndex.count ?? 0)}
+                      </>
+                    ),
+                  },
+                ]
+              : []),
+            // The session-history cache row (spec, "The clear-cached-sessions
+            // setting"): its value is its own component because its state is its
+            // own store with a per-render count, unlike the overview-fed rows above.
+            { label: SESSION_CACHE_LABEL, value: <SessionCacheStatus />, help: SESSION_CACHE_HELP },
+          ] satisfies StackedPropertyListRow[]
+        }
+      />
     </div>
   );
 }

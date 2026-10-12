@@ -1,25 +1,23 @@
 import { navigate, paneToURL } from "../../shell/routing";
 import { selectLiveRows, selectNeedsYouRows } from "../../stores/navigation/selectors";
 import { type NavigationStoreState, useNavigationStore } from "../../stores/navigation/store";
-import { Button, KeyHint } from "../../widgets";
+import { Button, KeyHint, ShortcutList, type ShortcutListItem } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./welcome.module.css";
 
 const CLASS = {
   actions: requireClass(styles.actions, "welcome.module.css", "actions"),
   hints: requireClass(styles.hints, "welcome.module.css", "hints"),
-  hintList: requireClass(styles.hintList, "welcome.module.css", "hintList"),
-  hintRow: requireClass(styles.hintRow, "welcome.module.css", "hintRow"),
   hintFooter: requireClass(styles.hintFooter, "welcome.module.css", "hintFooter"),
 };
 
 // T6: the chords a new person has no other way to discover from this cold
 // pane - CommandPalette.tsx's own HELP_ROWS is the source of truth for all
 // three (Mod+K/Mod+I/Mod+J); order matches HELP_ROWS' own listing.
-const CHORD_HINTS: { keys: string[]; desc: string }[] = [
-  { keys: ["Mod", "K"], desc: "command palette" },
-  { keys: ["Mod", "I"], desc: "focus the composer" },
-  { keys: ["Mod", "J"], desc: "next session needing you" },
+const CHORD_HINTS: ShortcutListItem[] = [
+  { keys: ["Mod", "K"], label: "command palette" },
+  { keys: ["Mod", "I"], label: "focus the composer" },
+  { keys: ["Mod", "J"], label: "next session needing you" },
 ];
 
 export interface WelcomeContentProps {
@@ -71,7 +69,7 @@ export function WelcomeContent({ note, showNewSession, showResume = true, showHi
     <div className={CLASS.actions}>
       {note && <p>{note}</p>}
       {showResume && candidate !== undefined && (
-        <Button variant="primary" onClick={() => goToSession(candidate.ref)}>
+        <Button variant="primary" wrap onClick={() => goToSession(candidate.ref)}>
           Jump back in: {candidate.title}
         </Button>
       )}
@@ -82,16 +80,7 @@ export function WelcomeContent({ note, showNewSession, showResume = true, showHi
       )}
       {showHints && (
         <div className={CLASS.hints}>
-          <dl className={CLASS.hintList}>
-            {CHORD_HINTS.map((hint) => (
-              <div className={CLASS.hintRow} key={hint.desc}>
-                <dt>
-                  <KeyHint keys={hint.keys} />
-                </dt>
-                <dd>{hint.desc}</dd>
-              </div>
-            ))}
-          </dl>
+          <ShortcutList items={CHORD_HINTS} />
           <p className={CLASS.hintFooter}>
             <KeyHint keys={["?"]} /> inside the command palette shows all shortcuts.
           </p>

@@ -385,13 +385,6 @@ function sandboxEscalationCss(): string {
   return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-test("the card's container carries the amber attention envelope, not a neutral surface (declaration-level)", () => {
-  const rule = /\.card\s*\{([^}]*)\}/.exec(sandboxEscalationCss());
-  expect(rule).not.toBeNull();
-  expect(rule![1]).toContain("border: 1px solid var(--attention-edge)");
-  expect(rule![1]).toContain("background: var(--attention-bg)");
-});
-
 test("the rail caps its own height and scrolls internally, so several pending escalations can't squeeze the transcript out (declaration-level)", () => {
   const rule = /\.rail\s*\{([^}]*)\}/.exec(sandboxEscalationCss());
   expect(rule).not.toBeNull();

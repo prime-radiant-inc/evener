@@ -21,11 +21,6 @@
 .clusterHeader {
   margin-top: var(--space-3);
   padding: 0 var(--space-2);
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }
 
 .link {

@@ -8,7 +8,7 @@ import {
 } from "@evener/appwire-client";
 import { useState } from "react";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
-import { Button, Card } from "../../../widgets";
+import { Button, Card, InlineNotice } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptBody } from "../../session/transcript/TranscriptBody";
 import { TranscriptDetailEditor } from "../../session/transcript/TranscriptDetailEditor";
@@ -37,7 +37,6 @@ const CLASS = {
   inventoryRow: requireClass(styles.inventoryRow, "transcriptDisplayCard.module.css", "inventoryRow"),
   scope: requireClass(styles.scope, "transcriptDisplayCard.module.css", "scope"),
   status: requireClass(styles.status, "transcriptDisplayCard.module.css", "status"),
-  error: requireClass(styles.error, "transcriptDisplayCard.module.css", "error"),
 };
 
 const CATEGORY_LABELS: Readonly<Record<TranscriptDisplayCategory, string>> = {
@@ -120,12 +119,16 @@ export function TranscriptDisplayCard({
             </p>
           )}
           {saveState === "error" && (
-            <div className={CLASS.error} role="alert">
-              <span>{error ?? "Could not save this hub default."}</span>
-              <Button size="sm" variant="secondary" onClick={onRetry} disabled={disabled}>
-                Retry
-              </Button>
-            </div>
+            <InlineNotice
+              tone="danger"
+              action={
+                <Button size="sm" variant="secondary" onClick={onRetry} disabled={disabled}>
+                  Retry
+                </Button>
+              }
+            >
+              {error ?? "Could not save this hub default."}
+            </InlineNotice>
           )}
 
           <section className={CLASS.preview} aria-labelledby={`${cardId}-example-heading`}>

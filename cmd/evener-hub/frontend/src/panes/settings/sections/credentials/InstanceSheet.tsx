@@ -46,7 +46,19 @@ import {
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, Switch, useToasts } from "../../../../widgets";
+import {
+  Button,
+  Chip,
+  FormRow,
+  InlineNotice,
+  Input,
+  PropertyList,
+  Select,
+  Sheet,
+  StatusDot,
+  Switch,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./InstanceSheet.module.css";
 import {
@@ -70,17 +82,12 @@ import { confirmListingState } from "./reconcileListing";
 const CLASS = {
   headingRow: requireClass(styles.headingRow, "InstanceSheet.module.css", "headingRow"),
   form: requireClass(styles.form, "InstanceSheet.module.css", "form"),
-  formError: requireClass(styles.formError, "InstanceSheet.module.css", "formError"),
   layers: requireClass(styles.layers, "InstanceSheet.module.css", "layers"),
   layer: requireClass(styles.layer, "InstanceSheet.module.css", "layer"),
   unconfigured: requireClass(styles.unconfigured, "InstanceSheet.module.css", "unconfigured"),
-  metaRow: requireClass(styles.metaRow, "InstanceSheet.module.css", "metaRow"),
-  metaLabel: requireClass(styles.metaLabel, "InstanceSheet.module.css", "metaLabel"),
-  metaValue: requireClass(styles.metaValue, "InstanceSheet.module.css", "metaValue"),
   actionRows: requireClass(styles.actionRows, "InstanceSheet.module.css", "actionRows"),
   fullRow: requireClass(styles.fullRow, "InstanceSheet.module.css", "fullRow"),
   divider: requireClass(styles.divider, "InstanceSheet.module.css", "divider"),
-  testResult: requireClass(styles.testResult, "InstanceSheet.module.css", "testResult"),
   modelNote: requireClass(styles.modelNote, "InstanceSheet.module.css", "modelNote"),
 };
 
@@ -765,10 +772,7 @@ export function InstanceSheet({
                   disabled={busy}
                 />
               </FormRow>
-              <div className={CLASS.metaRow}>
-                <span className={CLASS.metaLabel}>Base provider</span>
-                <span className={CLASS.metaValue}>{instance.providerId}</span>
-              </div>
+              <PropertyList rows={[{ label: "Base provider", value: instance.providerId }]} />
               <FormRow
                 label="Base URL"
                 htmlFor={`${ids}-baseurl`}
@@ -832,20 +836,16 @@ export function InstanceSheet({
                   disabled={busy}
                 />
               </FormRow>
-              {formError !== null && (
-                <p className={CLASS.formError} role="alert">
-                  {formError}
-                </p>
-              )}
+              {formError !== null && <InlineNotice tone="danger">{formError}</InlineNotice>}
             </form>
           )}
           {/* A standing status of the credential, not a message about an
               action just taken: a named status, which assistive tech reads
               when the sheet is read rather than announcing it on open. */}
           {authError ? (
-            <p className={CLASS.formError} role="status" aria-label="Credential error">
+            <InlineNotice tone="danger" live="status" aria-label="Credential error">
               {authError}
-            </p>
+            </InlineNotice>
           ) : null}
           {unconfigured !== null ? (
             <p className={CLASS.unconfigured}>{unconfigured}</p>
@@ -929,9 +929,9 @@ export function InstanceSheet({
               </Button>
             </div>
             {safeTestResult && (
-              <p className={CLASS.testResult} role="status">
+              <InlineNotice>
                 {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
-              </p>
+              </InlineNotice>
             )}
             {supportsApiKey && (
               <div className={CLASS.fullRow}>

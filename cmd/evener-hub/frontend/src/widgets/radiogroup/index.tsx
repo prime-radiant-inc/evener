@@ -1,4 +1,4 @@
-import { type KeyboardEvent, useId, useRef } from "react";
+import { type KeyboardEvent, type ReactNode, useId, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./radiogroup.module.css";
 
@@ -19,6 +19,9 @@ export interface RadioGroupProps {
   options: RadioGroupOption[];
   /** Disables every option regardless of its own `disabled` field. */
   disabled?: boolean;
+  /** Help text set under the options, wired to the group via
+   * aria-describedby. */
+  description?: ReactNode;
 }
 
 const CLASS = {
@@ -29,6 +32,7 @@ const CLASS = {
   dot: requireClass(styles.dot, "radiogroup.module.css", "dot"),
   dotInner: requireClass(styles.dotInner, "radiogroup.module.css", "dotInner"),
   optionLabel: requireClass(styles.optionLabel, "radiogroup.module.css", "optionLabel"),
+  description: requireClass(styles.description, "radiogroup.module.css", "description"),
 };
 
 function indexOfValue(options: RadioGroupOption[], value: string): number {
@@ -79,8 +83,9 @@ function stepEnabledIndex(options: RadioGroupOption[], from: number, delta: 1 | 
  * browser's native activation already fires onClick for both keys, exactly
  * like Switch's own track button.
  */
-export function RadioGroup({ label, value, onChange, options, disabled = false }: RadioGroupProps) {
+export function RadioGroup({ label, value, onChange, options, disabled = false, description }: RadioGroupProps) {
   const legendId = useId();
+  const descriptionId = useId();
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   const checkedIndex = indexOfValue(options, value);
@@ -129,7 +134,12 @@ export function RadioGroup({ label, value, onChange, options, disabled = false }
       <div id={legendId} className={CLASS.legend}>
         {label}
       </div>
-      <div role="radiogroup" aria-labelledby={legendId} className={CLASS.options}>
+      <div
+        role="radiogroup"
+        aria-labelledby={legendId}
+        aria-describedby={description !== undefined ? descriptionId : undefined}
+        className={CLASS.options}
+      >
         {options.map((option, index) => (
           // biome-ignore lint/a11y/useSemanticElements: custom button-based radio, not native <input type="radio"> - see this widget's own top comment for why (matches Switch's precedent)
           <button
@@ -154,6 +164,11 @@ export function RadioGroup({ label, value, onChange, options, disabled = false }
           </button>
         ))}
       </div>
+      {description !== undefined && (
+        <p id={descriptionId} className={CLASS.description}>
+          {description}
+        </p>
+      )}
     </div>
   );
 }

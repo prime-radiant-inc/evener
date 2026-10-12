@@ -13,12 +13,13 @@
     "widgets/panescaffold/panescaffold.module.css",
     "widgets/emptystate/emptystate.module.css",
     "widgets/button/button.module.css",
+    "widgets/shortcutlist/shortcutlist.module.css",
     "panes/welcome/welcome.module.css"
   ],
   "widthMatrix": [{ "width": 320 }, { "width": 360 }, { "width": 390 }],
   "mutation": {
-    "declaration": "panes/welcome/welcome.module.css: .actions button { white-space: normal } (deleted - fails with the full #197 shape: resume button 1163px wide, symmetric double-ended clip, column stretched past viewport); .actions button { height: auto } (deleted - fails with the wrapped label spilling 19-27px out of its fixed-height box)",
-    "verified": "2026-08-19",
+    "declaration": "widgets/button/button.module.css: .wrap { white-space: normal } (deleted - fails with the full #197 shape: resume button 1163px wide, symmetric double-ended clip, .actions and .hints columns stretched past viewport). The resume button carries Button's wrap; welcome.module.css no longer overrides Button.",
+    "verified": "2026-10-11",
     "expect": "fail"
   }
 }

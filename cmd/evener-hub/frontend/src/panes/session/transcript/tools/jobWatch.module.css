@@ -136,31 +136,3 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.disclosureSummary {
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  list-style: none;
-}
-
-@media (any-pointer: coarse) {
-  .disclosureSummary {
-    min-height: var(--tap-min);
-  }
-}
-
-.disclosureSummary::-webkit-details-marker {
-  display: none;
-}
-
-.disclosureSummary:hover {
-  color: var(--ink-hi);
-}
-
-.disclosureSummary:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}

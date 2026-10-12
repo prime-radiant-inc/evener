@@ -1,6 +1,6 @@
 /* The activity sidebar and its tabs: a right shell region scoped to the
- * session being read. Tokens only; the rows carry the state hues on their
- * glyphs (the one place color means something here). */
+ * session being read. Tokens only; the rows' state hues come from ToolIcon's
+ * tone, so nothing here reaches for a semantic hue. */
 
 .sidebar {
   width: 320px;
@@ -102,45 +102,12 @@
   text-align: left;
 }
 
-.row {
-  composes: rowContent;
-  padding: var(--space-1) var(--space-2);
-}
-
-.rowBtn {
-  width: 100%;
-  border: none;
-  background: none;
-  cursor: pointer;
-  border-radius: var(--radius-pane);
-}
-
-.rowBtn:hover {
-  background: var(--hover-1);
-}
-
 .rowGlyph {
   flex: none;
   width: 14px;
   display: flex;
   justify-content: center;
   line-height: 18px;
-  color: var(--ink-low);
-}
-
-.glyphAlive {
-  color: var(--alive);
-}
-
-.glyphAttention {
-  color: var(--attention);
-}
-
-.glyphDanger {
-  color: var(--danger);
-}
-
-.glyphQuiet {
   color: var(--ink-low);
 }
 
@@ -180,18 +147,6 @@
 
 .foldButton {
   padding-top: var(--space-1);
-}
-
-.passiveMore {
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  padding: 2px var(--space-1);
-}
-
-.emptyNote {
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  padding: var(--space-2) var(--space-1);
 }
 
 .scope {

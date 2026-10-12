@@ -274,7 +274,7 @@ describe("DirListSetting", () => {
       throw new Error("boom");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    await screen.findByText("Failed to load");
+    await screen.findByRole("alert");
     expect(screen.queryByText(/^\d+ entr(y|ies)$/)).toBeNull();
   });
 
@@ -284,8 +284,7 @@ describe("DirListSetting", () => {
       throw new Error("network down");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    expect(await screen.findByText("Failed to load")).toBeTruthy();
-    expect(screen.getByText("network down")).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toContain("network down");
   });
 
   test("adding a valid path validates then saves the layer with the new entry appended", async () => {

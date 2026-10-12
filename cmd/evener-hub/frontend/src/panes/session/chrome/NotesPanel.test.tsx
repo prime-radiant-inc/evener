@@ -588,7 +588,7 @@ test("multi-line whiteboards render with their line structure", () => {
 test("ended-empty session shows inert text with no editor", () => {
   openPanel(testModel({ status: { type: "notLoaded" } }));
   expect(screen.getByTestId("shared-notes-section")).toBeTruthy();
-  expect(screen.getByTestId("shared-notes-empty")).toBeTruthy();
+  expect(screen.getAllByTestId("empty-state")).toHaveLength(1);
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
 });
 
@@ -598,7 +598,7 @@ test("a whitespace-only note reads as empty in the read-only body, matching the 
   // must agree, or expanding an "Add a note…" bar shows blank paragraphs.
   expect(screen.queryByTestId("shared-notes-human")).toBeNull();
   expect(screen.queryByTestId("shared-notes-agent")).toBeNull();
-  expect(screen.getByTestId("shared-notes-empty")).toBeTruthy();
+  expect(screen.getAllByTestId("empty-state")).toHaveLength(1);
 });
 
 // --- rule 3: live shows the always-visible editor -----------------------------
@@ -674,9 +674,9 @@ test("file links out of scope keep text but offer no affordance", () => {
 test("live-empty session shows an empty editor with placeholder", () => {
   openPanel(testModel());
   expect(editor().value).toBe("");
-  expect(editor().placeholder).toMatch(/Make a note/);
-  expect(screen.getByTestId("shared-notes-agent-empty")).toBeTruthy();
-  expect(screen.getByTestId("shared-notes-urls-empty")).toBeTruthy();
+  expect(editor().placeholder).not.toBe("");
+  // The agent and links sections each stand empty.
+  expect(screen.getAllByTestId("empty-state")).toHaveLength(2);
 });
 
 // --- blur saves through the threads store -------------------------------------

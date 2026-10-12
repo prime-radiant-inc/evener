@@ -20,7 +20,7 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Chip, type ChipTone, CopyButton, Disclosure, Markdown } from "../../../../widgets";
+import { Chip, type ChipTone, CopyButton, Disclosure, Eyebrow, InlineNotice, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
@@ -40,11 +40,8 @@ const CLASS = {
   metaK: requireClass(styles.metaK, "delegateStatus.module.css", "metaK"),
   metaV: requireClass(styles.metaV, "delegateStatus.module.css", "metaV"),
   mandate: requireClass(styles.mandate, "delegateStatus.module.css", "mandate"),
-  eyebrow: requireClass(styles.eyebrow, "delegateStatus.module.css", "eyebrow"),
   mandateBody: requireClass(styles.mandateBody, "delegateStatus.module.css", "mandateBody"),
   diagnostic: requireClass(styles.diagnostic, "delegateStatus.module.css", "diagnostic"),
-  diagnosticBody: requireClass(styles.diagnosticBody, "delegateStatus.module.css", "diagnosticBody"),
-  dangerText: requireClass(styles.dangerText, "delegateStatus.module.css", "dangerText"),
   env: requireClass(styles.env, "delegateStatus.module.css", "env"),
   envRows: requireClass(styles.envRows, "delegateStatus.module.css", "envRows"),
   envRow: requireClass(styles.envRow, "delegateStatus.module.css", "envRow"),
@@ -267,7 +264,7 @@ function EnvTable({ rows }: { rows: EnvRow[] }) {
   if (rows.length === 0) return null;
   return (
     <div className={CLASS.env}>
-      <div className={CLASS.eyebrow}>Environment</div>
+      <Eyebrow>Environment</Eyebrow>
       <div className={CLASS.envRows}>
         {rows.map((row) => (
           <div key={row.key} className={CLASS.envRow}>
@@ -339,7 +336,7 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
       {/* Mandate: task as markdown, first paragraph visible, rest in disclosure */}
       {mandate && (
         <div className={CLASS.mandate}>
-          <div className={CLASS.eyebrow}>Mandate</div>
+          <Eyebrow>Mandate</Eyebrow>
           <div className={CLASS.mandateBody}>
             <Markdown source={mandate.first} />
           </div>
@@ -362,33 +359,37 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
           exhausted/cancelled/stopped→neutral (soft stops, not errors). */}
       {notResumable && (
         <div className={CLASS.diagnostic} data-testid="delegate-not-resumable">
-          <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>Not resumable: {notResumable}</div>
+          <InlineNotice tone="danger" live="off">
+            Not resumable: {notResumable}
+          </InlineNotice>
         </div>
       )}
       {state.last_outcome?.reason && isExhausted(state.last_outcome.status) && (
         <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
-          <div className={CLASS.diagnosticBody}>Last run exhausted: {lastEnding}</div>
+          <InlineNotice live="off">Last run exhausted: {lastEnding}</InlineNotice>
         </div>
       )}
       {state.last_outcome?.reason &&
         !isExhausted(state.last_outcome.status) &&
         classifyJobStatus(state.last_outcome.status) === "failed" && (
           <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
-            <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>Last run failed: {lastEnding}</div>
+            <InlineNotice tone="danger" live="off">
+              Last run failed: {lastEnding}
+            </InlineNotice>
           </div>
         )}
       {state.last_outcome?.reason && classifyJobStatus(state.last_outcome.status) === "stopped" && (
         <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
-          <div className={CLASS.diagnosticBody}>
+          <InlineNotice live="off">
             Last run {state.last_outcome.status === "cancelled" ? "cancelled" : "stopped"}: {lastEnding}
-          </div>
+          </InlineNotice>
         </div>
       )}
 
       {/* Available tools */}
       {tools.length > 0 && (
         <div className={CLASS.tools}>
-          <div className={CLASS.eyebrow}>{`Available tools (${tools.length})`}</div>
+          <Eyebrow>{`Available tools (${tools.length})`}</Eyebrow>
           <div className={CLASS.toolsChips}>
             {tools.map((tool) => (
               <span key={tool} className={CLASS.toolChip}>

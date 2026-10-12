@@ -8,37 +8,71 @@
   min-width: 0;
 }
 
-.disclosure {
-  padding: var(--space-1) 0;
-}
-
-.head {
+/* A collapsible card: the Disclosure, with the Open control (when the card
+ * has one) right after it on the summary's line rather than inside the
+ * summary - a summary is one control and must not nest another. */
+.collapsible {
+  /* The expanded card below sizes itself against this row (100cqi). */
+  container-type: inline-size;
   display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
+  align-items: flex-start;
   gap: var(--space-2);
-  cursor: pointer;
-  list-style: none;
+  padding: var(--space-1) 0;
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
 }
 
-.head::-webkit-details-marker {
-  display: none;
+/* Content-sized, so the Open control after it follows the head text instead
+ * of parking at the row's far edge. A closed <details> renders nothing but its
+ * summary, so a control outside it can only follow the text this way. */
+.disclosure {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The expanded card spans the whole row while contributing no width to the
+ * Disclosure's own sizing: width 100cqi is the row's inline size, and the
+ * equal negative margin zeroes its intrinsic contribution. The Disclosure
+ * therefore stays as wide as its summary line in both states, and the Open
+ * control after it stays beside the head text; the card overflows to the
+ * row's right edge below the summary line, where the Open control (one line
+ * tall) never reaches. */
+.expanded {
+  width: 100cqi;
+  margin-right: -100cqi;
+}
+
+/* Level with the summary's first line: the summary's own block padding, then
+ * .openTrailing's one-line-box slot. */
+.besideOpen {
+  flex: none;
+  display: inline-flex;
+  padding-block: var(--space-1);
+}
+
+/* The delegate's name at the top of the expanded card: the keyboard path to
+ * the entity card the head's hover-only name shows a pointer. */
+.delegateRef {
+  margin-bottom: var(--space-1);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
 }
 
 /* A delegate row whose head carries everything (a machinery stop, a failure
  * whose whole error is its ending - mockups 24-delegate-complete §C): the
- * same head grammar with no disclosure to open, so it renders as a static
- * line. Composing .head keeps the two seats from drifting; the cursor is the
- * one declaration a summary owns that a static row must not. */
+ * head grammar with no disclosure to open, so it renders as a static line. */
 .staticHead {
-  composes: head;
-  cursor: default;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
 }
 
-/* The status glyph in the rail beside the head's first line - the same seat
+/* The static head's status glyph in the rail beside its first line - the same seat
  * ToolRow's .rowIcon gives the tool-kind glyph, composed from the shared
  * icon-rail seat (styles/railseat.module.css): .seat is the avatar-column
  * slot geometry (its margin-right net of this head's own --space-2 gap
@@ -64,6 +98,21 @@
   opacity: 1;
 }
 
+/* The same glyph leading a Disclosure summary, which sits in the content
+ * column like every Disclosure: the glyph's own box at the rail's ambient
+ * 50%, and the failure variant at full strength. */
+.summaryIcon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.5;
+}
+
+.summaryIconError {
+  composes: summaryIcon;
+  opacity: 1;
+}
+
 .headingText {
   flex: 0 1 auto;
   min-width: 0;
@@ -81,22 +130,6 @@
   color: var(--ink-mid);
 }
 
-/* The final word and Open are one atomic inline flex unit, so the unit may move
- * to the next line but Open can never move there alone. A no-whitespace decoded
- * secondary still fits: its text child may shrink and wrap inside the unit,
- * with Open aligned to its final line. */
-.secondaryTail {
-  display: inline-flex;
-  align-items: flex-end;
-  max-width: 100%;
-  vertical-align: middle;
-}
-
-.secondaryTailText {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
 .openTrailing {
   display: inline-flex;
   flex: none;
@@ -104,48 +137,11 @@
   vertical-align: middle;
   /* One full line box tall, with the slot centered in it. The shell inside
    * (openbutton.module.css's .inline) is the 28/44px hit target handing
-   * exactly 1em back to layout via symmetric negative margin-block, and the
-   * tail's flex-end cross alignment pins whatever it receives against the
-   * container's BOTTOM - the line box's bottom, not the text's. Seating the
-   * bare 1em slot there parked the glyph half-leading ((line-height - 1em)/2,
-   * ~3.7px at caption size) below the words, and its box poked below the line.
-   * A 1lh wrapper centers the 1em slot on the final text line at every font
-   * and width, and the hit target paints symmetrically over it. */
+   * exactly 1em back to layout via symmetric negative margin-block, so a 1lh
+   * wrapper centers the 1em slot on its text line and the hit target paints
+   * symmetrically over it. */
   height: 1lh;
   align-items: center;
-}
-
-/* The head's one expand affordance (the native marker is suppressed above):
- * the same trailing widgets/chevron idiom ThinkBlock's summary uses, a step
- * firmer than the ink-mid words it opens. Inline after plain text the 14px
- * glyph rides vertical-align: middle; inside the atomic tail unit it is a
- * flex item under flex-end cross alignment, so it needs the same one-line-box
- * wrapper as .openTrailing to center on the final text line. */
-.chevron {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  margin-left: var(--space-2);
-  vertical-align: middle;
-  color: var(--ink-mid);
-}
-
-.secondaryTail .chevron {
-  height: 1lh;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .chevron > svg {
-    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
-  }
-}
-
-/* Down here, not inside the media block above: this selector outranks the
- * transition selector, and biome's noDescendingSpecificity wants the lower-
- * specificity rule first in source order (the same note ThinkBlock's own
- * chevron rules carry). */
-.chevron[data-open="true"] > svg {
-  transform: rotate(90deg);
 }
 
 .metadata {

@@ -27,6 +27,21 @@
   padding: 0;
 }
 
+/* badge: the count overhangs the button's top-right corner, so it reads as
+ * attached to the icon without widening the square. pointer-events: none
+ * keeps the overhang from catching clicks outside the button's own box. */
+.badgedButton {
+  position: relative;
+}
+
+.cornerBadge {
+  position: absolute;
+  top: calc(-1 * var(--space-1));
+  right: calc(-1 * var(--space-1));
+  display: inline-flex;
+  pointer-events: none;
+}
+
 /* Tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
  * min-*, not width/height - the desktop squares above stay the desktop rule.
  * The top bar's Back/drawer and the composer's attach are the controls this

@@ -84,6 +84,9 @@
          row: it sizes to its content and the transcript scrolls it. -->
     <div class="dock" data-ask-response-dock>
       <div class="anchor" role="status">Answer the agent’s questions.</div>
+      <!-- The batch's Card tone="attention" envelope (widgets/card), with
+           the batch's layout div inside it, as AskDock.tsx renders it. -->
+      <div class="card attention" data-ask-batch>
       <div class="batch">
         <div class="card" data-ask-question>
           <div class="head">
@@ -140,6 +143,7 @@
           <button type="button" class="sendButton" id="send-button">Send answers</button>
         </div>
       </div>
+      </div>
     </div>
   </div>
   <footer class="paneFooter" id="pane-footer">
@@ -174,7 +178,7 @@ window.measure = function () {
   const transcript = document.getElementById("transcript");
   const footer = document.getElementById("pane-footer");
   const dock = document.querySelector(".dock");
-  const card = document.querySelector(".card");
+  const card = document.querySelector("[data-ask-question]");
   const sendButton = document.getElementById("send-button");
   const cardRect = rectOf(card);
 

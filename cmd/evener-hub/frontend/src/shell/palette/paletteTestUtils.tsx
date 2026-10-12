@@ -26,8 +26,9 @@ export function scriptSearchFailure(): void {
 
 // The palette's results carry structured markers so tests can read what the
 // palette shows without reading its copy: section headers carry data-section,
-// rows carry data-kind, the no-rows placeholder carries data-reason, and
-// each keyboard-shortcut legend row carries data-help-row.
+// rows carry data-kind, and the keyboard-shortcut legend is a ShortcutList
+// whose chords are its terms. A failed search is an alert and loading
+// options a status, so those placeholders are found by role.
 
 export function paletteSection(section: string): Element | null {
   return document.querySelector(`[data-section="${section}"]`);
@@ -37,13 +38,9 @@ export function paletteRowsOfKind(kind: string): HTMLElement[] {
   return screen.queryAllByRole("option").filter((option) => option.getAttribute("data-kind") === kind);
 }
 
-export function paletteEmptyReason(): string | null {
-  return document.querySelector("[data-reason]")?.getAttribute("data-reason") ?? null;
-}
-
 // Each legend row's chord as KeyHint renders it, e.g. "Ctrl+K".
 export function helpChords(): string[] {
-  return [...document.querySelectorAll("[data-help-row]")].map((row) =>
-    [...row.querySelectorAll("kbd")].map((kbd) => kbd.textContent).join("+"),
-  );
+  return screen
+    .queryAllByRole("term")
+    .map((term) => [...term.querySelectorAll("kbd")].map((kbd) => kbd.textContent).join("+"));
 }
