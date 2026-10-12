@@ -251,13 +251,14 @@ func emptyMeansAbsent(schema map[string]any, raw any) bool {
 	return hasListEntries(schema["enum"]) && !listHasValue(schema["enum"], raw)
 }
 
-// schemaAcceptsNull reports whether schema admits null: its own keywords, then
-// its combinators — some anyOf or oneOf branch (oneOf's "exactly one" can't
-// turn a null-accepting branch into a refusal worth repairing), and every
-// allOf branch. The package resolves no $ref, so a property behind one counts
-// as accepting null and its null stays for validation to judge.
+// schemaAcceptsNull reports whether schema admits null: its own keywords
+// (schemaOwnKeywordsMatch, which reads them without applying a combinator),
+// then its combinators — some anyOf or oneOf branch (oneOf's "exactly one"
+// can't turn a null-accepting branch into a refusal worth repairing), and
+// every allOf branch. The package resolves no $ref, so a property behind one
+// counts as accepting null and its null stays for validation to judge.
 func schemaAcceptsNull(schema map[string]any) bool {
-	if !candidateMatchesSchema(nil, schema) {
+	if !schemaOwnKeywordsMatch(nil, schema) {
 		return false
 	}
 	for _, keyword := range []string{"anyOf", "oneOf"} {
@@ -307,7 +308,7 @@ func definitelyAcceptsNull(negated any) bool {
 				return false
 			}
 		}
-		return candidateMatchesSchema(nil, schema)
+		return schemaOwnKeywordsMatch(nil, schema)
 	}
 	return false
 }
