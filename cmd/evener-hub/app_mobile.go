@@ -32,7 +32,8 @@ func mobilePairing(cfg hubcore.WebConfig, params appwire.MobilePairingParams) (a
 
 // safeMobileOrigin accepts HTTP(S) destinations supported by the mobile app.
 // Loopback refers to the phone after scanning rather than the Hub, and an
-// unspecified listener address does not identify a destination.
+// unspecified listener address does not identify a destination. Scoped IPv6
+// addresses cannot be represented in browser URLs or shared across devices.
 func safeMobileOrigin(raw string) (string, bool) {
 	if err := validateMobileBaseURL(raw); err != nil {
 		return "", false
@@ -60,6 +61,9 @@ func safeMobileOrigin(raw string) (string, bool) {
 		return "", false
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
+		if addr.Zone() != "" {
+			return "", false
+		}
 		addr = addr.Unmap()
 		if addr.IsLoopback() || addr.IsUnspecified() {
 			return "", false

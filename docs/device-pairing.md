@@ -62,9 +62,10 @@ The Hub supplies the pairing destination automatically. An optional
 `mobile_base_url` supplies the default; otherwise the Hub uses the browser's
 usable origin, a concrete network listener address, or an interface
 address when listening on all interfaces. Interface selection prefers Tailscale
-IPv4, then other private IPv4, then private IPv6, then public IPv4/IPv6,
-respecting an IPv4-only
-listener. Loopback and interface-scoped link-local addresses are not advertised
+IPv4, then the OS's outbound IPv4/IPv6 addresses ahead of container bridges,
+then other private and public addresses, respecting an IPv4-only listener.
+The Hub queries outbound routes with UDP sockets without sending packets or
+depending on a remote service. Loopback and link-local addresses are not advertised
 by discovery. A loopback-only listener still works behind a reachable reverse
 proxy when the browser supplies that proxy's origin.
 
@@ -82,7 +83,8 @@ reported before an invitation is issued; ordinary Hub authentication is unchange
 `tailnet` marks a destination reached through Tailscale. A tailnet locator may
 use MagicDNS. Both direct HTTP and HTTPS accept a reachable DNS or IP origin,
 including IPv6; the Hub does not require DNS resolution during creation.
-Loopback and unspecified listener addresses cannot be pairing destinations.
+Loopback, unspecified listener addresses, and interface-scoped IPv6 addresses
+cannot be pairing destinations.
 Origins contain no credentials, path, query or
 fragment. IPv4 uses canonical dotted-decimal spelling; malformed numeric hosts
 and legacy numeric spellings are rejected before an invitation is created.

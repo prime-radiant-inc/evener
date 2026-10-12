@@ -3,6 +3,7 @@ package hubcore
 import (
 	"context"
 	"net"
+	"net/netip"
 	"os"
 	"time"
 
@@ -281,6 +282,9 @@ type WebConfig struct {
 	// MobileInterfaceAddrs supplies the Hub interfaces for automatic pairing.
 	// nil uses net.InterfaceAddrs.
 	MobileInterfaceAddrs func() ([]net.Addr, error)
+	// MobileRouteAddrs supplies the local addresses used by outbound routes.
+	// nil asks the OS through UDP sockets without sending packets.
+	MobileRouteAddrs func() []netip.Addr
 }
 
 // Spawner forks a evener serve subprocess and waits for its rendezvous file to appear.

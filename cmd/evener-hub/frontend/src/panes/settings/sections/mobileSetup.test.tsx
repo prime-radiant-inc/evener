@@ -34,6 +34,14 @@ test("keeps in-app destination selection available when automatic discovery cann
   expect(await screen.findByRole("textbox", { name: "Hub address" })).toBeTruthy();
 });
 
+test("keeps destination selection usable when the discovered URL is not supported by the browser", async () => {
+  client.on("evener/mobile/pairing", () => ({ authUrl: "http://[fe80::1%25en0]:9180/auth/mobile-secret" }));
+  renderMobileSection();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  fireEvent.click(screen.getByRole("button", { name: "Pair a device" }));
+  expect(await screen.findByRole("textbox", { name: "Hub address" })).toBeTruthy();
+});
+
 test("seeds device setup from the discovered destination and submits an edited address", async () => {
   const origin = "http://100.87.98.83:9180";
   const edited = "https://hub.example.test";

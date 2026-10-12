@@ -43,7 +43,7 @@ class QRChunkBoundary extends Component<{ children: ReactNode; fallback?: ReactN
 
 type PairingState =
   | { kind: "loading" }
-  | { kind: "ready"; authURL: string }
+  | { kind: "ready"; authURL: string; origin: string }
   | { kind: "unreachable" }
   | { kind: "error" };
 
@@ -68,7 +68,7 @@ export function MobileSection() {
 
   if (state.kind === "loading") return <Skeleton lines={4} />;
 
-  const origin = state.kind === "ready" ? new URL(state.authURL).origin : window.location.origin;
+  const origin = state.kind === "ready" ? state.origin : window.location.origin;
   return (
     <>
       {setup ? (
@@ -144,7 +144,7 @@ async function loadPairingURL(client: AppwireClientLike): Promise<PairingState> 
   try {
     const response = await client.request("evener/mobile/pairing", { origin: window.location.origin });
     if (response.authUrl === "") return { kind: "error" };
-    return { kind: "ready", authURL: response.authUrl };
+    return { kind: "ready", authURL: response.authUrl, origin: new URL(response.authUrl).origin };
   } catch (error) {
     if (error instanceof WireError && error.evenerErrorInfo === "conflict") {
       return { kind: "unreachable" };

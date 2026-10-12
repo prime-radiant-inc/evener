@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -64,6 +65,7 @@ func TestHubMobilePairingDiscoversListenerOrigin(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := hubcore.WebConfig{AuthToken: "mobile-secret", HubAddr: tt.bind,
+				MobileRouteAddrs: func() []netip.Addr { return nil },
 				MobileInterfaceAddrs: func() ([]net.Addr, error) {
 					var addresses []net.Addr
 					for _, raw := range tt.addresses {
@@ -93,6 +95,39 @@ func TestHubMobilePairingDiscoversListenerOrigin(t *testing.T) {
 			}
 			if response.AuthURL != tt.want+"/auth/mobile-secret" {
 				t.Fatalf("auth URL = %q, want origin %q", response.AuthURL, tt.want)
+			}
+		})
+	}
+}
+
+func TestHubMobilePairingPrefersRoutedInterfaceOverContainerBridge(t *testing.T) {
+	for _, route := range []string{"192.168.1.20", "203.0.113.20", "fd00::20"} {
+		t.Run(route, func(t *testing.T) {
+			for _, tailnet := range []bool{false, true} {
+				cfg := hubcore.WebConfig{AuthToken: "mobile-secret", HubAddr: "[::]:9180",
+					MobileRouteAddrs: func() []netip.Addr { return []netip.Addr{netip.MustParseAddr(route)} },
+					MobileInterfaceAddrs: func() ([]net.Addr, error) {
+						addresses := []net.Addr{
+							&net.IPNet{IP: net.ParseIP("172.17.0.1"), Mask: net.CIDRMask(16, 32)},
+							&net.IPNet{IP: net.ParseIP(route), Mask: net.CIDRMask(128, 128)},
+						}
+						if tailnet {
+							addresses = append(addresses, &net.IPNet{IP: net.ParseIP("100.87.98.83"), Mask: net.CIDRMask(32, 32)})
+						}
+						return addresses, nil
+					},
+				}
+				response, err := dispatchMobilePairing(t, NewWebServer(cfg), appwire.MobilePairingParams{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := route
+				if tailnet {
+					want = "100.87.98.83"
+				}
+				if response.AuthURL != "http://"+net.JoinHostPort(want, "9180")+"/auth/mobile-secret" {
+					t.Fatalf("auth URL = %q; want interface %s (tailnet %t)", response.AuthURL, want, tailnet)
+				}
 			}
 		})
 	}
@@ -171,8 +206,11 @@ func TestSafeMobileOriginAllowsHTTPDestinations(t *testing.T) {
 	}
 }
 
-func TestSafeMobileOriginRejectsUnspecifiedDestinations(t *testing.T) {
-	for _, origin := range []string{"http://0.0.0.0:9180", "https://0.0.0.0", "http://[::]:9180", "https://[::]"} {
+func TestSafeMobileOriginRejectsNonPortableAddresses(t *testing.T) {
+	for _, origin := range []string{
+		"http://0.0.0.0:9180", "https://0.0.0.0", "http://[::]:9180", "https://[::]",
+		"http://[fe80::1%25en0]:9180", "https://[fd00::20%25en0]:9180",
+	} {
 		t.Run(origin, func(t *testing.T) {
 			if got, ok := safeMobileOrigin(origin); ok {
 				t.Fatalf("safeMobileOrigin(%q) = %q, true; want rejection", origin, got)
