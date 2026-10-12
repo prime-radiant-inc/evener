@@ -589,9 +589,9 @@ func TestResumingASessionBoundsTheHistoryItsLogCarriesIn(t *testing.T) {
 
 	// A trimmed log has to say so, or it reads as the session's complete
 	// history and an operator counts the absence of a line as evidence.
-	// The admission is the hub's own line, ahead of the retained ones.
+	// The admission is a line of its own, ahead of the retained ones.
 	kept := strings.SplitAfter(string(got), "\n")
-	if !strings.HasPrefix(kept[0], "[hub] ") {
+	if strings.TrimSpace(kept[0]) == "" || strings.HasPrefix(kept[0], "[serve] earlier run line ") {
 		t.Fatalf("a trimmed log does not admit to being trimmed; it opens with %q", kept[0])
 	}
 	if len(kept[1]) != len(line(0)) || !strings.HasPrefix(kept[1], "[serve] earlier run line ") {

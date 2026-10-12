@@ -996,7 +996,7 @@ func TestHubArchiveSetAppWireRejectsUnknownSource(t *testing.T) {
 		Archived: true,
 	})
 	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || !errors.Is(err, errUnknownDecisionSource) {
 		t.Fatalf("error = %v, want InvalidParams for an unknown source", err)
 	}
 
@@ -1050,7 +1050,7 @@ func TestHubArchiveSetRejectsConfiguredHostWithoutRemoteClient(t *testing.T) {
 	})
 	_, err := dispatchArchiveSet(t, unwired, params)
 	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || !errors.Is(err, errUnknownDecisionSource) {
 		t.Fatalf("error = %v, want InvalidParams for an unregistered source", err)
 	}
 

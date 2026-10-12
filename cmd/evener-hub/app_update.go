@@ -87,9 +87,13 @@ func validateUpdateChannel(requested string) (string, error) {
 	case "release", "snapshot":
 		return ch, nil
 	default:
-		return "", fmt.Errorf("unknown update channel %q", ch)
+		return "", fmt.Errorf("%w %q", errUnknownUpdateChannel, ch)
 	}
 }
+
+// errUnknownUpdateChannel refuses an update channel other than release or
+// snapshot.
+var errUnknownUpdateChannel = errors.New("unknown update channel")
 
 // hubUpdateCheck answers evener/update/check: compare the running build to
 // the channel's current commit. Dev builds answer locally.

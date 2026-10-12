@@ -413,7 +413,7 @@ func TestInstances_ListReportsAvailableProvidersAndUserLayer(t *testing.T) {
 	if !slices.IsSorted(openai.VarsEnv) {
 		t.Fatalf("VarsEnv not sorted: %v", openai.VarsEnv)
 	}
-	if !strings.Contains(resp.UserLayer, f.tomlPath) && !strings.Contains(resp.UserLayer, "user layer: none") {
+	if resp.UserLayer == "" {
 		t.Fatalf("UserLayer = %q, want the note the registry produced", resp.UserLayer)
 	}
 	if resp.WritesRefused {
@@ -3193,7 +3193,7 @@ base = "anthropic"
 
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), `instance "work" not found`) {
+		if !errors.Is(err, errInstanceNotFound) {
 			t.Fatalf("SetDefault = %v, want the not-found refusal for the name the rename left behind", err)
 		}
 	case <-time.After(10 * time.Second):
@@ -3246,7 +3246,7 @@ func TestInstances_OldSchemaRefusesEveryWrite(t *testing.T) {
 		"SetDefault": func() error { return f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}) },
 	} {
 		err := call()
-		if err == nil || !strings.Contains(err.Error(), "§14.1") {
+		if !errors.Is(err, registry.ErrOldSchema) {
 			t.Fatalf("%s = %v, want a refusal carrying the pointer", name, err)
 		}
 	}

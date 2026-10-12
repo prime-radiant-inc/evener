@@ -1129,6 +1129,10 @@ func runLaunchCheck(cmd *exec.Cmd) ([]byte, error) {
 // as a misleading spawn timeout.
 const requiredLaunchFlag = "api-log"
 
+// errLaunchFlagUnadvertised refuses a child binary whose launch-check does not
+// advertise requiredLaunchFlag.
+var errLaunchFlagUnadvertised = errors.New("did not advertise the")
+
 func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
 	if evenerBinary == "" {
 		evenerBinary = "evener"
@@ -1163,7 +1167,7 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
 	}
 	if !slices.Contains(resp.LaunchFlags, requiredLaunchFlag) {
-		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check did not advertise the --%s flag: upgrade the evener binary the hub spawns", requiredLaunchFlag))
+		return launchRefusal(fmt.Errorf("evener launch-check %w --%s flag: upgrade the evener binary the hub spawns", errLaunchFlagUnadvertised, requiredLaunchFlag))
 	}
 	return nil
 }

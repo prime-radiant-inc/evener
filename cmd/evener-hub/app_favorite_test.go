@@ -143,7 +143,7 @@ func TestHubFavoriteSetRejectsUnknownSource(t *testing.T) {
 		Favorited: true,
 	})
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams || !errors.Is(err, errUnknownDecisionSource) {
 		t.Fatalf("error = %v, want InvalidParams for an unknown source", err)
 	}
 	decisions, err := favorites.Favorites()
