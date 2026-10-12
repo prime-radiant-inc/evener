@@ -79,7 +79,12 @@ export function MoreOptions() {
 							}
 							disabled={submitting}
 						/>
-						<GroupFooter>{footer(value, defaults?.[setting.field], offered)}</GroupFooter>
+						<GroupFooter
+							// Whether the hub has said its default for this setting yet.
+							testID={`default-${setting.field}:${defaults?.[setting.field] === undefined ? "unknown" : "known"}`}
+						>
+							{footer(value, defaults?.[setting.field], offered)}
+						</GroupFooter>
 					</View>
 				);
 			})}
