@@ -302,7 +302,7 @@ export function HubResidents() {
           rows are retained. Uses role="status" so screen readers announce it. */}
       {error !== null && (
         <InlineNotice tone="danger" live="status">
-          Unable to refresh resident list (showing last known data): {friendlyErrorMessage(error)}
+          Unable to refresh resident list (showing last known data): {error}
         </InlineNotice>
       )}
 

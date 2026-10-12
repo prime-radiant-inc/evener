@@ -13,7 +13,6 @@
 // selectedMarketplace.
 
 import type { AppwireClientLike } from "@evener/appwire-client";
-import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { LOCAL_HOST } from "../../../../stores/hostRouting";
@@ -141,7 +140,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
     return (
       <section className={CLASS.page}>
         <InlineNotice tone="danger" live="status" data-reason="unavailable">
-          Failed to load: {friendlyErrorMessage(loadError)}
+          Failed to load: {loadError}
         </InlineNotice>
       </section>
     );

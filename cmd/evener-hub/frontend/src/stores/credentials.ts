@@ -13,7 +13,7 @@ import type {
   InstanceEntry,
   ProviderDescriptor,
 } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import {
   type CredentialInstancesState,
   createCredentialInstancesStore,
@@ -94,6 +94,10 @@ export interface HostInstanceState {
   diagnostics: string[];
   writesRefused: boolean;
   loading: boolean;
+  /** The failed read's friendlyErrorMessage, translated while the error still
+   * has its type so the host's own WireError explanation survives; render it
+   * as-is. The registry-failed fallback hands over hostsStore's message, which
+   * is already in that form. */
   error: string | null;
   /** hostsStore's revision when this partition's most recent read was issued, or
    * null before any read. It is the ONE tie between a partition and the registry:
@@ -383,7 +387,12 @@ export async function fetchHost(host: string): Promise<void> {
     }));
   } catch (err) {
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
-    setHostPartition(host, (previous) => ({ ...previous, loading: false, error: errorText(err), read: false }));
+    setHostPartition(host, (previous) => ({
+      ...previous,
+      loading: false,
+      error: friendlyErrorMessage(err),
+      read: false,
+    }));
   }
 }
 

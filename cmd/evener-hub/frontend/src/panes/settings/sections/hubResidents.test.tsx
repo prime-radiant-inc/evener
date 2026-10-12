@@ -10,6 +10,7 @@
 // the widget tests.
 
 import type { DaemonIdentity, DaemonListResponse, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -573,6 +574,29 @@ test("failed refresh retains old rows and shows a stale-data indicator", async (
   expect(screen.getByRole("row", { name: /Kept resident/ })).toBeTruthy();
   // A stale/error indicator must be shown
   expect(screen.getByRole("status")).toBeTruthy();
+});
+
+// The residents store translates a failed refresh while it still has its type,
+// so the stale-data notice renders the stored text as-is: a hub-reported
+// explanation or a client-side diagnosis survives instead of collapsing to the
+// generic one.
+test.each([
+  ["a hub-reported WireError", new WireError("daemon inventory is rebuilding", -32000)],
+  ["a client-side failure", new Error("AppwireClient internal detail")],
+])("a failed refresh from %s shows that error's friendly form", async (_name, err) => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+  render(<HubResidents />);
+  await waitFor(() => expect(daemonResidentsStore.getState().data).not.toBeNull());
+
+  fake.on("evener/daemon/list", () => {
+    throw err;
+  });
+  await act(async () => {
+    await daemonResidentsStore.getState().refresh();
+  });
+
+  expect(screen.getByRole("status").textContent).toContain(friendlyErrorMessage(err));
 });
 
 // ─── Force-stop dialog ────────────────────────────────────────────────────────

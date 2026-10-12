@@ -15,7 +15,7 @@
 //     is updated. This matches the "retain stale rows" requirement.
 
 import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { connectedClientPort } from "./connection";
@@ -24,7 +24,9 @@ export interface DaemonResidentsStoreState {
   /** Latest successful list response; null until first successful load. */
   data: DaemonListResponse | null;
   loading: boolean;
-  /** Non-null when the most-recent refresh failed. Stale data is kept. */
+  /** Non-null when the most-recent refresh failed: its friendlyErrorMessage,
+   * translated while the error still has its type so a hub's own WireError
+   * explanation survives; render it as-is. Stale data is kept. */
   error: string | null;
   /**
    * Row keys (see residentRowKey) of the identity rows with an action currently
@@ -74,7 +76,7 @@ async function runRefresh(): Promise<void> {
     // Keep existing data (do not blank) — a transient network blip must not
     // wipe an already-populated table back to empty.
     if (generation === latestGeneration) {
-      daemonResidentsStore.setState({ loading: false, error: errorText(err) });
+      daemonResidentsStore.setState({ loading: false, error: friendlyErrorMessage(err) });
     }
   }
 }
