@@ -420,6 +420,7 @@ const DenseRowView = memo(function DenseRowView({
         <span
           role="img"
           aria-label={KIND_STATE_LABEL[kindState] ?? kindState}
+          data-state={kindState}
           className={kindClass ? `${CLASS.denseKind} ${kindClass}` : CLASS.denseKind}
         >
           {row.kind === "delegate" ? "⌘" : "$"}
