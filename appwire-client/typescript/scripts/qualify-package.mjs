@@ -688,7 +688,8 @@ const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;
 const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void pluginsState;
 const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void layerState;`,
       // Stores built over a client that rejects everything: each list fetch
-      // records the rejection as state and resolves, a mutation rejects, and
+      // records the rejection as state (the list errors in their friendly
+      // form) and resolves, a mutation rejects, and
       // a browse caches the failure - the two conventions the layer keeps. A
       // promise chain rather than await: the CommonJS consumer has no
       // top-level await, and a failure inside exits the consumer non-zero.
@@ -718,7 +719,10 @@ marketplacesStore
   .getState()
   .fetchMarketplaces()
   .then(() => {
-    assert.equal(marketplacesStore.getState().marketplacesError, "offline");
+    // The list error is stored in its friendly form: recorded, but never the
+    // rejection's raw text.
+    assert.equal(typeof marketplacesStore.getState().marketplacesError, "string");
+    assert.notEqual(marketplacesStore.getState().marketplacesError, "offline");
     return assert.rejects(marketplacesStore.getState().removeMarketplace("acme"), /offline/);
   })
   .then(() => marketplacesStore.getState().browseMarketplace("acme"))
@@ -728,7 +732,10 @@ marketplacesStore
     return pluginsStore.getState().fetchPlugins();
   })
   .then(() => {
-    assert.equal(pluginsStore.getState().pluginsError, "offline");
+    // The list error is stored in its friendly form: recorded, but never the
+    // rejection's raw text.
+    assert.equal(typeof pluginsStore.getState().pluginsError, "string");
+    assert.notEqual(pluginsStore.getState().pluginsError, "offline");
     return assert.rejects(pluginsStore.getState().installPlugin("linter", "acme"), /offline/);
   })
   .then(() => {
