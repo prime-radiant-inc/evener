@@ -48,6 +48,7 @@ import {
   Textarea,
   useFocusRehome,
   useToasts,
+  VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hosts.module.css";
@@ -113,6 +114,42 @@ function rowDetail(row: HostRow): string | null {
   if (row.origin) parts.push(row.origin);
   if (row.lastAttachError) parts.push(row.lastAttachError);
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+type HostOperationView = ReturnType<typeof hostOperationView>;
+
+// rowMeta: the list row's one meta line. The operation's own line leads it - a
+// failure's message, or a stopped read's notice - so the reason is on the list
+// rather than only in the sheet; the sheet still shows each in full.
+function rowMeta(row: HostRow, operationView: HostOperationView | null): string | undefined {
+  const parts = [operationView?.unavailable ?? operationView?.line ?? null, rowDetail(row)];
+  const meta = parts.filter((part): part is string => part !== null).join(" · ");
+  return meta === "" ? undefined : meta;
+}
+
+function remnantOpen(row: HostRow): boolean {
+  return (row.openRemnantId ?? "") !== "";
+}
+
+// hostTrouble: what the list announces about one host without its sheet open -
+// a failed operation, a stopped operation read, an open remnant blocking
+// Deploy. Each entry's reason is its data-reason hook.
+function hostTrouble(
+  row: HostRow,
+  operationView: HostOperationView | null,
+): { reason: "operation-failed" | "operation-unavailable" | "remnant-open"; text: string }[] {
+  const trouble: { reason: "operation-failed" | "operation-unavailable" | "remnant-open"; text: string }[] = [];
+  if (operationView?.tone === "danger") {
+    const line = operationView.line === null ? "" : `: ${operationView.line}`;
+    trouble.push({ reason: "operation-failed", text: `${row.name}: ${operationView.label}${line}` });
+  }
+  if (operationView !== null && operationView.unavailable !== null) {
+    trouble.push({ reason: "operation-unavailable", text: `${row.name}: ${operationView.unavailable}` });
+  }
+  if (remnantOpen(row)) {
+    trouble.push({ reason: "remnant-open", text: `${row.name}: teardown pending, open the host to repair it` });
+  }
+  return trouble;
 }
 
 /**
@@ -310,6 +347,14 @@ export function HostsSection(_props: HostsSectionProps) {
     !operationShownOnHost(selectedOperation, selectedRow)
       ? null
       : hostOperationView(selectedOperation);
+  const listOperationViews = load.hosts.map((row) => {
+    const operation = operations[row.name];
+    return {
+      row,
+      operationView:
+        operation === undefined || !operationShownOnHost(operation, row) ? null : hostOperationView(operation),
+    };
+  });
 
   return (
     <div className={CLASS.root}>
@@ -328,14 +373,25 @@ export function HostsSection(_props: HostsSectionProps) {
           Add host
         </Button>
       </div>
+      {/* The list's own polite live region: a host's trouble is announced
+          whether or not its sheet is open. Visually hidden - each row shows
+          the same state in its chips and meta line. */}
+      <VisuallyHidden>
+        <span role="status">
+          {listOperationViews.flatMap(({ row, operationView }) =>
+            hostTrouble(row, operationView).map((entry) => (
+              <span key={`${row.name}:${entry.reason}`} data-host={row.name} data-reason={entry.reason}>
+                {`${entry.text}. `}
+              </span>
+            )),
+          )}
+        </span>
+      </VisuallyHidden>
       {load.hosts.length === 0 ? (
         <EmptyState title="No hosts yet" hint="Add a host to attach this controller to a remote hub." />
       ) : (
         <ul className={CLASS.list}>
-          {load.hosts.map((row) => {
-            const operation = operations[row.name];
-            const operationView =
-              operation === undefined || !operationShownOnHost(operation, row) ? null : hostOperationView(operation);
+          {listOperationViews.map(({ row, operationView }) => {
             // design-system §10: the row carries identity and status only - its
             // state, its operation's state, one meta line - and opens the
             // host's sheet, where every action lives.
@@ -347,9 +403,10 @@ export function HostsSection(_props: HostsSectionProps) {
                     <>
                       {stateChip(row, isConnecting(row))}
                       {operationView !== null && <Chip tone={operationView.tone}>{operationView.label}</Chip>}
+                      {remnantOpen(row) && <Chip tone="attention">teardown pending</Chip>}
                     </>
                   }
-                  meta={rowDetail(row) ?? undefined}
+                  meta={rowMeta(row, operationView)}
                   onSelect={() => setSelectedName(row.name)}
                 />
               </li>
@@ -442,8 +499,6 @@ export function HostsSection(_props: HostsSectionProps) {
   );
 }
 
-type HostOperationView = ReturnType<typeof hostOperationView>;
-
 interface HostSheetProps {
   row: HostRow;
   connecting: boolean;
@@ -507,7 +562,7 @@ function HostSheet({
   // The remnant repair affordance (registry spec 08 §13): a host whose name
   // holds an open remnant carries teardown-retry (escalating to
   // teardown-recover past the bound).
-  const remnantOpen = (row.openRemnantId ?? "") !== "";
+  const repairable = remnantOpen(row);
   return (
     <Sheet open onClose={onClose} title={row.name} side={isMobile ? "bottom" : "right"}>
       <div ref={focusRoot} className={CLASS.sheetBody}>
@@ -562,12 +617,12 @@ function HostSheet({
               Edit
             </Button>
           )}
-          {remnantOpen && (
+          {repairable && (
             <Button variant="quiet" onClick={() => onRepair("retry")}>
               Teardown retry
             </Button>
           )}
-          {remnantOpen && row.escalationAgeSec !== undefined && (
+          {repairable && row.escalationAgeSec !== undefined && (
             <Button variant="quiet" onClick={() => onRepair("recover")}>
               Recover remnant
             </Button>

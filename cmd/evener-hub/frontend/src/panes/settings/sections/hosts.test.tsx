@@ -1050,6 +1050,82 @@ function operationState(hostRow: HTMLElement): string | null {
 const operationReads = (fake: FakeClient): number =>
   fake.calls.filter((call) => call.method === "evener/host/operations").length;
 
+/** What the host list's own polite status region announces, as "host:reason"
+ * pairs: the list states a host's trouble without the sheet being open. */
+function listAnnouncements(): string[] {
+  return [...document.querySelectorAll("[role='status'] [data-host][data-reason]")].map(
+    (entry) => `${entry.getAttribute("data-host")}:${entry.getAttribute("data-reason")}`,
+  );
+}
+
+/** The host's row in the list (not its sheet), found by the host's name. */
+function listRowFor(name: string): HTMLElement {
+  const item = screen.getAllByRole("listitem").find((candidate) => within(candidate).queryByText(name) !== null);
+  if (item === undefined) throw new Error(`no list row for ${name}`);
+  return item;
+}
+
+async function closeSheet(name: string): Promise<void> {
+  fireEvent.click(within(screen.getByRole("dialog", { name })).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name })).toBeNull());
+}
+
+test("a failed deploy states its reason on the list row and announces it, sheet closed", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    let record = operationRecord({ state: "running", progress: [{ ts: "t", message: "installing" }] });
+    fake.on("evener/host/operations", () => ({ operations: [record] }));
+    await startDeploy(fake);
+    await closeSheet("beta");
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    expect(listAnnouncements()).toEqual([]);
+
+    const verbatim = "deploy failed: the remote evener service exited with status 1 after the swap";
+    record = operationRecord({ state: "failed", result: { ok: false, message: verbatim } });
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(listAnnouncements()).toEqual(["beta:operation-failed"]));
+    expect(listRowFor("beta").textContent).toContain(verbatim);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a stopped operation read is announced at the list level, sheet closed", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    fake.on("evener/host/operations", () => ({
+      operations: [operationRecord({ state: "running", progress: [{ ts: "t", message: "installing" }] })],
+    }));
+    await startDeploy(fake);
+    await closeSheet("beta");
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(listRowFor("beta").textContent).toContain("installing"));
+
+    connectionStore.setState({ client: null });
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(listAnnouncements()).toEqual(["beta:operation-unavailable"]));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// An open remnant blocks Deploy, so the list has to say so before anyone opens
+// the host: the row carries a state the remnant-free twin does not, and the
+// list announces it.
+test("an open remnant shows on its list row and is announced, without opening the sheet", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "alpha" }), row({ name: "beta", openRemnantId: "remnant-7" })],
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  await screen.findByText("beta");
+  await waitFor(() => expect(listAnnouncements()).toEqual(["beta:remnant-open"]));
+  const rowState = (name: string) => listRowFor(name).textContent?.replace(name, "");
+  expect(rowState("beta")).not.toBe(rowState("alpha"));
+});
+
 test("an operation's progress renders on its host row, then its failure renders verbatim", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
