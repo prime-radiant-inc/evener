@@ -20,7 +20,7 @@ func TestRenderMemoryIndex(t *testing.T) {
 	// Pages with unreadable frontmatter come last, by path, however fresh
 	// their files are.
 	want := "Tags: formatting (1), money (1), vitest (1)\n" +
-		"- [Integer cents](cents.md) — Money is integer cents, never floats (when: Formatting or storing a price) [money, formatting] (updated 2026-10-08)\n" +
+		"- [Integer cents](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)\n" +
 		"- [a](a.md) — unstamped, same day as loader\n" +
 		"- [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)\n" +
 		"- [b](b.md) — unstamped, older mtime\n" +

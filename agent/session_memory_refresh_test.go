@@ -696,8 +696,9 @@ func TestMemoryRefreshIndexDeltaComparesTheFullIndex(t *testing.T) {
 	}
 }
 
-// A page whose only change is its when line delivers its new index line.
-func TestMemoryRefreshIndexDeltaReportsAChangedWhen(t *testing.T) {
+// A page's when line is its index line: changing it delivers the new line,
+// and changing the description of a page that has one changes no line.
+func TestMemoryRefreshIndexDeltaFollowsTheWhenLine(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	memorySeedPage(t, root, "memory", "a.md", "opaque-when-page", memorySeedWhen("opaque-when-1"))
@@ -711,7 +712,7 @@ func TestMemoryRefreshIndexDeltaReportsAChangedWhen(t *testing.T) {
 			return finalResponse("observed")
 		}
 	}
-	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(deltaTurn(1), deltaTurn(2)))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(deltaTurn(1), deltaTurn(2), deltaTurn(2)))
 	turn := func() {
 		t.Helper()
 		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -721,8 +722,13 @@ func TestMemoryRefreshIndexDeltaReportsAChangedWhen(t *testing.T) {
 	turn()
 	memorySeedPage(t, root, "memory", "a.md", "opaque-when-page", memorySeedWhen("opaque-when-2"))
 	turn()
-	if !strings.Contains(deltas[1], `added "- [a](a.md) — opaque-when-page (when: opaque-when-2)`) || strings.Contains(deltas[1], "opaque-when-1") {
+	if !strings.Contains(deltas[1], `added "- [a](a.md) — opaque-when-2`) || strings.Contains(deltas[1], "opaque-when-1") || strings.Contains(deltas[1], "opaque-when-page") {
 		t.Fatalf("a changed when should arrive as its new line: %q", deltas[1])
+	}
+	memorySeedPage(t, root, "memory", "a.md", "opaque-when-page-edited", memorySeedWhen("opaque-when-2"))
+	turn()
+	if deltas[2] != deltas[1] {
+		t.Fatalf("a changed description under a when changed the index: %q", deltas[2])
 	}
 }
 

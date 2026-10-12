@@ -17,7 +17,7 @@
 - Default tests are deterministic: scripted provider, no network or credentials.
 - Gofmt with `$(go env GOROOT)/bin/gofmt`; `golangci-lint run --allow-serial-runners ./...` in `agent`; `go vet ./...` and `go vet -tags evenerfuzz ./...` in `agent`.
 - No backward-compatibility shims; a page without `when` simply renders as today.
-- Index line form for a page with `when`: `- [Title](path) — <description> (when: <when>) [tags] (updated YYYY-MM-DD)`.
+- Index line form for a page with `when` (decided after the eval; the spec's Eval results explain why): `- [Title](path) — <when> [tags] (updated YYYY-MM-DD)`. The `(when: …)` form in Task 1 below was the first cut and was replaced by showing `when` instead of the description.
 
 ## Review Focus
 

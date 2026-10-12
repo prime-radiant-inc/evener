@@ -118,7 +118,8 @@ save reminder. Pages that
 contradict what the agent observes are corrected in the same turn. Saving
 sessions are also told the shape of a useful page (one durable fact with its reason and
 when it bears on work, with a frontmatter description that says what the page
-holds and topic tags that reuse the index's) and to keep run details that go
+holds, a `when` line naming the topic and situation (the line the index shows),
+and topic tags that reuse the index's) and to keep run details that go
 stale within days (commit SHAs, branch names, ids, scratch paths, test counts)
 out of memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
@@ -151,7 +152,8 @@ scope instead of the full index: the quoted page lines added since the
 baseline (the tag header and the not-shown line are never listed). A change
 whose section would pass 2 KiB is reported as a count of added lines. Removed
 lines are never reported, so a page another session deleted adds nothing, and a
-changed description arrives as its new line only. The new index becomes the
+changed `when` arrives as its new line only. A changed description on a page
+with a `when` changes no line and reports nothing. The new index becomes the
 baseline even when nothing is reported, so an unchanged turn or a removal-only
 change appends nothing and a removal is never reported later.
 
@@ -268,16 +270,18 @@ Prices are stored and computed as integer cents...
 
 `description` is one line; newlines collapse to spaces when it is rendered, and
 a value that is not a YAML string counts as missing. `when` is one line saying
-when a future session needs the page, written like a skill's trigger; it is
-rendered after the description as `(when: …)`. A non-string or empty value
-counts as missing and renders nothing. `tags` is a YAML list (a
+when a future session needs the page, written like a skill's trigger, and names
+the topic and the situation. The index line shows it instead of the description;
+the description stays on the page for whoever opens it. A non-string or empty
+value counts as missing, and the line shows the description. `tags` is a YAML list (a
 single string is one tag); each tag is trimmed and lowercased, runs of
 whitespace become `-`, and empty and duplicate tags are dropped. Tags are plain:
 there is no primary tag, reserved tag or type field. `evidence` is free-form and
 never rendered in the index; it is for whoever reads the page. Unknown keys are
 kept untouched and ignored.
 
-**Fallback description.** When `description` is missing or empty, the line
+**Fallback description.** When `when` is present the line shows it and the
+description is not needed. Otherwise, when `description` is missing or empty, the line
 uses the page's first Markdown heading, else its first non-blank body line, cut
 to 120 characters and followed by `(no description)`. Whitespace runs in the
 heading or line collapse to one space. A page whose frontmatter
@@ -288,7 +292,7 @@ does not parse is still a page; it renders as
 
 ```text
 Tags: formatting (3), money (2), vitest (6)
-- [Integer cents](cents.md) — Money is integer cents, never floats (when: Formatting or storing a price) [money, formatting] (updated 2026-10-08)
+- [Integer cents](cents.md) — Money is integer cents, Formatting or storing a price [money, formatting] (updated 2026-10-08)
 - [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
 ```
 

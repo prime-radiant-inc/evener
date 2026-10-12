@@ -1,7 +1,7 @@
 # Memory pages say when to recall them
 
 Date: 2026-10-11
-Status: proposed
+Status: decided; index shows `when` instead of the description
 Builds on: `docs/superpowers/specs/2026-10-08-generated-memory-index-design.md`
 
 ## Problem
@@ -19,9 +19,10 @@ line.
 ## Decision
 
 Pages get an optional `when` frontmatter field next to `description`. `description` keeps saying
-what the page tells you (it often carries the fact itself, so the index delivers it with no read).
-`when` says when a future session needs the page, written like a skill's trigger. The generated
-index shows both.
+what the page tells you; it stays on the page and is read when the page is opened.
+`when` says when a future session needs the page, written like a skill's trigger, naming the topic
+and the situation. The generated index shows `when` in place of the description; a page without
+one shows its description, with today's fallback chain.
 
 ```markdown
 ---
@@ -40,20 +41,20 @@ No tool-call pattern matching, no keyword ranking and no librarian are part of t
 string, whitespace runs collapsed to one space; any other type or an empty value counts as
 missing. `memoryPage` gains `When string`. No fallback text when it is missing.
 
-**Index line.** `memoryIndexLine` (agent/memory_index_render.go) renders a present `when` after
-the description:
+**Index line.** `memoryIndexLine` (agent/memory_index_render.go) renders a present `when` in place
+of the description:
 
 ```text
-- [Shop commit prefix](git/commit-prefix.md) — Commit messages in this repo start with the "shop:" prefix (when: writing a commit message in this repo) [git] (updated 2026-10-11)
+- [Shop commit prefix](git/commit-prefix.md) — Writing a commit message in this repo [git] (updated 2026-10-11)
 ```
 
-A page without `when` renders exactly as today. The exact wording around the field (`(when: …)`)
-is settled by the eval below; whatever it is, it is one fixed form. Index-line parsing
-(`memoryIndexLineFor`) matches only the line's leading link, so it is unaffected. A changed `when`
-changes the line, so the index delta reports it as an added line, like a changed description.
+A page without `when` renders exactly as today, including the "(no description)" fallback.
+Index-line parsing (`memoryIndexLineFor`) matches only the line's leading link, so it is
+unaffected. A changed `when` changes the line, so the index delta reports it as an added line; a
+changed description on a page that has a `when` changes no line.
 
-**Index budget.** `when` has no separate length cap, matching `description`. Lines get longer, so
-the 8 KiB projection holds fewer pages; the eval reports bytes per page so we can see the cost.
+**Index budget.** `when` has no separate length cap, matching `description`. Showing it instead of
+the description keeps the 8 KiB projection as full as today.
 
 **Writing.** `memory_write` already takes the whole page, frontmatter included, so the tool
 schema doesn't change. `repairMemoryFrontmatter` (agent/memory_migrate.go) quotes an unparseable
@@ -63,15 +64,17 @@ is as easy to get wrong). The write result adds a note when a page has a descrip
 session needs the page.
 
 **Prompt.** The `## Memory` section of agent/prompts/system.md.tmpl adds `when` to the frontmatter
-sentence: a one-line `when` saying when a future session will need the page, written the way a
-skill says when to use it, with two short examples ("Before changing Total's signature", "When
-writing a commit message in this repo"). The wording is tuned in the eval.
+sentence: a one-line `when`, the line the index shows for the page, naming the topic and the
+situation specifically enough that a future session recognizes it should open the page, with two
+short examples ("Before changing Total's signature", "When writing a commit message in this
+repo"). The description sentence stays: it is what the page tells you.
 
 **Existing pages.** Nothing migrates. Pages without `when` keep today's line. An agent rewriting a
 page adds one, following the prompt; nothing backfills them.
 
 **Clients.** The web, phone and TUI render memory-context section text as recorded and don't
-parse index-line internals, so no wire or client change.
+parse index-line internals, so no wire or client change. `agent.MemoryScopePage`, which the memory
+lab reads, gains `When`.
 
 ## Docs
 
@@ -81,25 +84,27 @@ frontmatter repair note) in the same change.
 ## Testing
 
 - Scripted-provider and unit tests: parsing (present, missing, non-string, multi-line collapsed),
-  index line with and without `when`, a changed `when` producing an index delta, frontmatter
+  index line with and without `when`, a changed `when` producing an index delta and a changed
+  description under a `when` producing none, frontmatter
   repair of a colon-bearing `when`, the missing-`when` write note.
 - Goldens: the system prompt golden and `agent/testdata/memorycontextwire` regenerate with their
   update flags.
 
-## Eval (running in parallel on spike/memory-when)
+## Eval results
 
-The decision to ship rests on the memory lab, comparing today's index (description only) with
-description plus `when`, main agent writing memory, no librarian:
+The memory lab (spike/memory-when) compared description-only indexes with `when` indexes over three
+rounds, main agent writing memory, no librarian.
 
-1. **Authoring:** on lunarouter deepseek-4.1-flash and glm-5.3-flash, how often pages get a
-   `when`, and whether each names a real future situation, restates the fact, or is vague.
-2. **Recall:** the same hand-written pages in stores where recall is hard (the facts among ~110
-   distractor pages so the index sits at its cap; and a long task where a fact matters only near
-   the end). Scored on the produced code and commits, plus memory_read/memory_search call counts.
+- With good descriptions, description-only and `when`-only tie (description-only passed 10/10 to
+  15/15 in pilots).
+- With uninformative descriptions, `when`-only won: deepseek 16/30 to 29/30, glm 2/30 to 30/30.
+- A mediocre `when` that names the topic did about as well as a careful one.
+- `when`-only costs 1.5 to 5 times the memory_read calls.
+- Describing pages near the 8 KiB cap, showing both fields cut the visible pages from about 51 to
+  about 35, so showing both was rejected.
+- Ranking the index (BM25 on the human message) didn't earn its place.
 
-Ship if recall improves and agents write useful `when` lines. If recall doesn't move, drop the
-field. If recall improves but authored lines are poor, ship with prompt changes and re-run
-authoring.
+The decision: show `when` instead of the description, falling back to the description.
 
 ## Out of scope
 
