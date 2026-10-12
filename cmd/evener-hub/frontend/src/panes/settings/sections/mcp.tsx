@@ -203,7 +203,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
           remote host. Under a remote selection the block is omitted rather than
           presenting this hub's probe as the selected host's own. */}
       {isLocalHost(host) && (
-        <section className={CLASS.section}>
+        <section className={CLASS.section} data-section="mcp-discovered">
           <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
           <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
           {discovered?.error !== undefined ? (
@@ -213,7 +213,9 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
           ) : (
             <ul aria-label="Discovered MCP servers" className={CLASS.list}>
               {(discovered?.servers ?? []).length === 0 ? (
-                <li className={CLASS.empty}>No MCP servers configured.</li>
+                <li className={CLASS.empty} data-testid="mcp-discovered-empty">
+                  No MCP servers configured.
+                </li>
               ) : (
                 (discovered?.servers ?? []).map((s) => (
                   <li key={s.name} className={CLASS.row}>

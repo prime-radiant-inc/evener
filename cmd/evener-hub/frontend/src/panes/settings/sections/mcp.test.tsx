@@ -14,6 +14,15 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+// Both launch-layer editors mount together once the layer has loaded.
+async function launchLayerLoaded(): Promise<void> {
+  await screen.findByRole("textbox", { name: "Inline MCP servers" });
+}
+
+function discoveredBlock(): Element | null {
+  return document.querySelector("[data-section='mcp-discovered']");
+}
+
 function overviewHook(overrides: Partial<SettingsOverviewLike> = {}): () => SettingsOverviewLike {
   const state: SettingsOverviewLike = {
     data: null,
@@ -53,7 +62,7 @@ test("renders discovered servers from the injected overview data with a status p
     mcpDiscovered: {
       servers: [
         { name: "local-tool", transport: "stdio", status: "available" },
-        { name: "remote-api", transport: "http", status: "unreachable", error: "connection refused" },
+        { name: "remote-api", transport: "http", status: "unreachable", error: "probe-error-from-hub" },
       ],
     },
   };
@@ -63,7 +72,7 @@ test("renders discovered servers from the injected overview data with a status p
   expect(screen.getByText("available")).toBeTruthy();
   expect(screen.getByText(/remote-api/)).toBeTruthy();
   expect(screen.getByText("unreachable")).toBeTruthy();
-  expect(screen.getByText("connection refused")).toBeTruthy();
+  expect(screen.getByText("probe-error-from-hub")).toBeTruthy();
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
@@ -73,7 +82,7 @@ test("shows the discovered-servers empty state", async () => {
   connectFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { servers: [] } } })} />);
-  expect(screen.getByText("No MCP servers configured.")).toBeTruthy();
+  expect(screen.getByTestId("mcp-discovered-empty")).toBeTruthy();
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
@@ -121,7 +130,7 @@ test("adding a config file validates as kind:file and saves mcpConfigs", async (
   });
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No MCP config files. Add one below.");
+  await launchLayerLoaded();
   await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await screen.findByRole("combobox", { name: "Path" });
   await user.keyboard("/etc/mcp.json");
@@ -142,7 +151,7 @@ test("the config-file add row browses files, and picking one fills the add field
     return { data: ["/etc/mcp/", "/etc/mcp.json"] };
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No MCP config files. Add one below.");
+  await launchLayerLoaded();
   await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.click(await screen.findByRole("option", { name: /mcp\.json/ }));
   await waitFor(() =>
@@ -183,7 +192,7 @@ test("an inline server entry without a command is refused before validating", as
   const validateSpy = vi.fn();
   fake.on("evener/path/validate", validateSpy);
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No inline MCP servers. Add one below.");
+  await launchLayerLoaded();
   await addInlineServer(user, "search");
   expect(await screen.findByRole("alert")).toBeTruthy();
   expect(validateSpy).not.toHaveBeenCalled();
@@ -216,7 +225,7 @@ test("adding an inline server validates the command as kind:command and saves mc
     return { effective: {}, layers: {}, provenance: {} };
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No inline MCP servers. Add one below.");
+  await launchLayerLoaded();
   await addInlineServer(user, "search /usr/bin/search-mcp --port 9000");
   expect(await screen.findByText("search → /usr/bin/search-mcp --port 9000")).toBeTruthy();
 });
@@ -225,13 +234,13 @@ test("an invalid command shows the inline error and does not save", async () => 
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
-  fake.on("evener/path/validate", () => ({ path: "nope", valid: false, error: "command not found" }));
+  fake.on("evener/path/validate", () => ({ path: "nope", valid: false, error: "validator-refusal" }));
   const setLayerSpy = vi.fn();
   fake.on("evener/launch/setLayer", setLayerSpy);
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No inline MCP servers. Add one below.");
+  await launchLayerLoaded();
   await addInlineServer(user, "search nope");
-  expect(await screen.findByText("command not found")).toBeTruthy();
+  expect(await screen.findByText("validator-refusal")).toBeTruthy();
   expect(setLayerSpy).not.toHaveBeenCalled();
 });
 
@@ -293,18 +302,18 @@ test("adding a config file with invalid path shows error without saving", async 
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
-  fake.on("evener/path/validate", () => ({ path: "", valid: false, error: "path does not exist" }));
+  fake.on("evener/path/validate", () => ({ path: "", valid: false, error: "validator-refusal" }));
   const setLayerSpy = vi.fn();
   fake.on("evener/launch/setLayer", setLayerSpy);
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No MCP config files. Add one below.");
+  await launchLayerLoaded();
   await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.keyboard("/bad/path");
   await user.keyboard("{Enter}");
   const addButtons = screen.getAllByRole("button", { name: "Add" });
   await user.click(addButtons[0]!);
-  expect(await screen.findByText("path does not exist")).toBeTruthy();
+  expect(await screen.findByText("validator-refusal")).toBeTruthy();
   expect(setLayerSpy).not.toHaveBeenCalled();
 });
 
@@ -314,18 +323,18 @@ test("adding a config file when setLayer fails returns error to PathListEditor",
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   fake.on("evener/path/validate", () => ({ path: "/etc/mcp.json", valid: true }));
   fake.on("evener/launch/setLayer", () => {
-    throw new WireError("server error", -1);
+    throw new WireError("set-layer-failure", -1);
   });
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No MCP config files. Add one below.");
+  await launchLayerLoaded();
   await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.keyboard("/etc/mcp.json");
   await user.keyboard("{Enter}");
   const addButtons = screen.getAllByRole("button", { name: "Add" });
   await user.click(addButtons[0]!);
   // The add fails — the error text should appear (friendlyErrorMessage converts WireError)
-  await screen.findByText("server error");
+  await screen.findByText("set-layer-failure");
 });
 
 test("adding an inline server when setLayer fails shows error message", async () => {
@@ -337,7 +346,7 @@ test("adding an inline server when setLayer fails shows error message", async ()
     throw new WireError("persist failed", -1);
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No inline MCP servers. Add one below.");
+  await launchLayerLoaded();
   await addInlineServer(user, "srv /usr/bin/srv");
   expect(await screen.findByText("persist failed")).toBeTruthy();
 });
@@ -395,7 +404,7 @@ test("under a remote host the discovered-servers block is not shown, and this hu
   render(<McpSection host="beta" useOverviewStore={overviewHook({ data, fetch: fetchFn })} />);
   await screen.findByRole("textbox", { name: "Inline MCP servers" });
 
-  expect(screen.queryByText("Discovered servers")).toBeNull();
+  expect(discoveredBlock()).toBeNull();
   expect(screen.queryByText(/controller-tool/)).toBeNull();
   expect(fetchFn).not.toHaveBeenCalled();
 });
@@ -408,10 +417,10 @@ test("the local hub still renders the discovered-servers block", async () => {
   };
   render(<McpSection useOverviewStore={overviewHook({ data })} />);
 
-  expect(screen.getByText("Discovered servers")).toBeTruthy();
+  expect(discoveredBlock()).not.toBeNull();
   expect(screen.getByText(/local-tool/)).toBeTruthy();
   // The mount's launch-layer read lands before the test ends, not in the next.
-  await screen.findByText("No inline MCP servers. Add one below.");
+  await launchLayerLoaded();
 });
 
 test("an unsaved inline-server entry survives a failed refresh and the recovery after it", async () => {

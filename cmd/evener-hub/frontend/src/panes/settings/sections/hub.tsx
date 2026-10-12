@@ -58,6 +58,7 @@ export function HubSection() {
     <div className={CLASS.root}>
       <dl className={CLASS.list}>
         <SettingsField
+          field="listen-address"
           label="Listen address"
           value={hub?.listenAddr ?? ""}
           help={
@@ -68,11 +69,13 @@ export function HubSection() {
           }
         />
         <SettingsField
+          field="run-dir"
           label="Run dir"
           value={hub?.runDir ?? ""}
           help="Per-PID rendezvous files; the hub watches this directory to discover live daemons."
         />
         <SettingsField
+          field="spawn-timeout"
           label="Spawn timeout"
           value={hub?.spawnTimeout ?? ""}
           help="How long the hub waits for a daemon to report ready after spawn before treating it as failed."
