@@ -12,8 +12,8 @@ package hub
 // instance, one answer.
 
 import (
+	"errors"
 	"reflect"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -157,7 +157,7 @@ func TestAuthNoneInstance_ApiKeySetRefusesAKeyNothingReads(t *testing.T) {
 	auth, instances := newAuthNoneControllers(t, nil)
 
 	_, err := auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "ollama", Value: "sk-nothing-reads-this"})
-	if err == nil || !strings.Contains(err.Error(), "reads no API key") {
+	if !errors.Is(err, errAPIKeyForKeylessInstance) {
 		t.Fatalf("ApiKeySet(ollama) = %v, want the refusal for an instance that authenticates without a credential", err)
 	}
 	if v, ok := auth.creds.Get("ollama"); ok || v != "" {

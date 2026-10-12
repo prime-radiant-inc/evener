@@ -2,11 +2,11 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"syscall"
 	"testing"
 
@@ -60,7 +60,7 @@ func TestHostManageAddSaveFailureAfterRenameCommitsNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("Add over a failing directory sync succeeded, want refusal")
 	}
-	if !strings.Contains(err.Error(), "hub.toml directory sync") {
+	if !errors.Is(err, syscall.EIO) {
 		t.Fatalf("Add error = %q, want the save's refusal", err)
 	}
 	// The live set committed nothing...
@@ -161,7 +161,7 @@ func TestHostManageHubTOMLRollbackLandsWhenItsOwnSyncFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("Remove over a failing directory sync succeeded, want refusal")
 	}
-	if !strings.Contains(err.Error(), "rollback landed") {
+	if !errors.Is(err, errHubTOMLRollbackUnsynced) || errors.Is(err, errHubTOMLRollbackFailed) {
 		t.Fatalf("Remove error = %q, want the rollback-landed report beside the cause", err)
 	}
 	// Both sides still hold the host: the live set because the removal

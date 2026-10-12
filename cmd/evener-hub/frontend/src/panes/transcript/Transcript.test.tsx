@@ -15,7 +15,7 @@ import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
-import { installJobLogGeometry, jobLogOutputText } from "./JobLogTestUtils";
+import { installJobLogGeometry, jobLogCommandText, jobLogOutputText } from "./JobLogTestUtils";
 import Transcript from "./testing/CommittedTranscript";
 
 // A minimal, test-only "session" pane registration - mirrors
@@ -468,7 +468,9 @@ test("a job log shows the job's full command above its output", async () => {
   );
 
   // The command rides its own read, against the same owning session.
-  await waitFor(() => expect(screen.getByTestId("joblog-command").textContent).toBe("go test ./... -run Foo -count=1"));
+  await waitFor(() =>
+    expect(jobLogCommandText(screen.getByTestId("joblog-command"))).toBe("go test ./... -run Foo -count=1"),
+  );
   expect(screen.getByTestId("joblog-content").textContent).toContain("ok");
   const commandCalls = fake.calls.filter((call) => call.method === "evener/jobs/get");
   expect(commandCalls).toHaveLength(1);
@@ -519,7 +521,7 @@ test.each([
   const result = screen.getByTestId("joblog-status");
   expect(result.textContent).toContain(label);
   expect(result.textContent).toContain(`Exit code ${exitCode}`);
-  expect(screen.getByTestId("joblog-command").textContent).toBe("make verify-release");
+  expect(jobLogCommandText(screen.getByTestId("joblog-command"))).toBe("make verify-release");
   expect(await screen.findByText("finished")).toBeTruthy();
 });
 
@@ -556,7 +558,7 @@ test("a job log does not borrow metadata from another owner's equal job id", asy
     </ClientProvider>
   );
   const { rerender } = render(view("first-owner"));
-  expect((await screen.findByTestId("joblog-command")).textContent).toBe("echo first-owner");
+  expect(jobLogCommandText(await screen.findByTestId("joblog-command"))).toBe("echo first-owner");
 
   await act(async () => rerender(view("second-owner")));
   expect(screen.queryByTestId("joblog-command")).toBeNull();
@@ -564,7 +566,7 @@ test("a job log does not borrow metadata from another owner's equal job id", asy
   expect(screen.queryByRole("heading", { name: "First owner's job" })).toBeNull();
   await act(async () => finishSecond(metadata("second-owner", "Second owner's job")));
   expect(await screen.findByRole("heading", { name: "Second owner's job" })).toBeTruthy();
-  expect(screen.getByTestId("joblog-command").textContent).toBe("echo second-owner");
+  expect(jobLogCommandText(screen.getByTestId("joblog-command"))).toBe("echo second-owner");
 });
 
 test("a job log whose metadata read fails still renders the output", async () => {

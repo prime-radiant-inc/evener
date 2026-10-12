@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -140,7 +139,7 @@ func TestInstanceEditEndpointConflictRefusalRefreshesTheList(t *testing.T) {
 
 	updated, refresh := m.handleInstanceMutateResult(result)
 	after := updated.(hubModel)
-	if after.err == nil || !strings.Contains(after.err.Error(), "no longer resolves to the endpoint") {
+	if !instanceEndpointConflict(after.err) {
 		t.Fatalf("endpoint-conflict refusal err = %v, want the hub's clear account on the error line", after.err)
 	}
 	if refresh == nil {

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -226,7 +227,7 @@ exit 2
 	if err == nil {
 		t.Fatal("expected rejection for a child without the api-log flag, got nil")
 	}
-	if !strings.Contains(err.Error(), "did not advertise the --api-log flag") {
+	if !errors.Is(err, errLaunchFlagUnadvertised) {
 		t.Fatalf("error = %v, want the capability rejection naming --api-log", err)
 	}
 }

@@ -15,7 +15,7 @@ import {
 } from "@evener/appwire-client";
 import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
-import { Disclosure } from "../../widgets/disclosure";
+import { Disclosure } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 

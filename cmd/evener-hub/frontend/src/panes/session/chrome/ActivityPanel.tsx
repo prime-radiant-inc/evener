@@ -15,7 +15,7 @@ import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore }
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
-import { Button, EmptyState, Sheet } from "../../../widgets";
+import { Button, EmptyState, Loader, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityTree } from "./ActivityTree";
 import { activityActionLabel } from "./activityFormat";
@@ -115,7 +115,11 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
         {!scope.ancestryKnown ? <p className={CLASS.stale}>Finding session context…</p> : null}
         {updating ? <p className={CLASS.stale}>Activity is updating…</p> : null}
         {!tree || (empty && !complete) ? (
-          <EmptyState title={unavailable ? "Activity unavailable for this session" : "Loading activity…"} />
+          unavailable ? (
+            <EmptyState title="Activity unavailable for this session" />
+          ) : (
+            <Loader label="Loading activity…" />
+          )
         ) : null}
         {empty && complete ? (
           <EmptyState

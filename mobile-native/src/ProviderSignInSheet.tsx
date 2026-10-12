@@ -15,8 +15,13 @@ import { SheetStatus } from "./sheet/SheetStatus";
 import { Spinner } from "./sheet/Spinner";
 import { allowFontScaling, useColors, useTextScale } from "./ui";
 
-const COPY_FAILED = "Could not copy the code. Select it to copy manually.";
-const OPEN_FAILED = "Could not open the sign-in page.";
+/** What went wrong on the phone's side of the sheet. */
+type LocalProblem = "copyFailed" | "openFailed";
+
+const LOCAL_PROBLEMS: Record<LocalProblem, string> = {
+	copyFailed: "Could not copy the code. Select it to copy manually.",
+	openFailed: "Could not open the sign-in page.",
+};
 
 export function ProviderSignInSheet({
 	flow,
@@ -33,7 +38,7 @@ export function ProviderSignInSheet({
 	const scale = useTextScale();
 	const state = useSyncExternalStore(flow.subscribe, flow.getSnapshot);
 	const [redirect, setRedirect] = useState("");
-	const [localError, setLocalError] = useState<string | null>(null);
+	const [localProblem, setLocalProblem] = useState<LocalProblem | null>(null);
 	// Both name the device flow they happened in, so a flow started again
 	// begins uncopied and unopened without resetting them.
 	const [copiedFlow, setCopiedFlow] = useState<string | null>(null);
@@ -50,7 +55,7 @@ export function ProviderSignInSheet({
 		if (!authorized) return;
 		WebBrowser.dismissBrowser().catch(() => {});
 		// A copy or open that failed earlier doesn't matter once signed in.
-		setLocalError(null);
+		setLocalProblem(null);
 	}, [authorized]);
 	async function copy(flowId: string, code: string) {
 		let copied = false;
@@ -59,7 +64,7 @@ export function ProviderSignInSheet({
 		} catch {}
 		// A failed copy takes back an earlier "Code copied".
 		setCopiedFlow(copied ? flowId : null);
-		if (!copied) setLocalError(COPY_FAILED);
+		if (!copied) setLocalProblem("copyFailed");
 	}
 	// openBrowserAsync resolves only when the page closes, so the waiting state
 	// starts as it opens and is taken back if it couldn't.
@@ -79,24 +84,24 @@ export function ProviderSignInSheet({
 			await WebBrowser.openBrowserAsync(url);
 		} catch {
 			onOpening?.(false);
-			setLocalError(OPEN_FAILED);
+			setLocalProblem("openFailed");
 		}
 	}
 	const device = state.phase === "device" ? state.device : undefined;
 	const waiting = !!device && openedFlow === device.flowId;
 	const openDevicePage = async () => {
 		if (!device) return;
-		setLocalError(null);
+		setLocalProblem(null);
 		// Nothing is copied for a page that won't open.
 		if (!openable(device.verificationUrl)) {
-			setLocalError(OPEN_FAILED);
+			setLocalProblem("openFailed");
 			return;
 		}
 		await copy(device.flowId, device.userCode);
 		await open(device.verificationUrl, (opening) => setOpenedFlow(opening ? device.flowId : null));
 	};
 	const startAgain = () => {
-		setLocalError(null);
+		setLocalProblem(null);
 		setRedirect("");
 		void flow.start();
 	};
@@ -108,14 +113,17 @@ export function ProviderSignInSheet({
 			{text}
 		</Text>
 	);
-	const statement = (text: string) => (
+	const statement = (text: string, testID?: string) => (
 		<Text
 			allowFontScaling={allowFontScaling}
+			testID={testID}
 			style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600" }}
 		>
 			{text}
 		</Text>
 	);
+	const flowProblem = state.problem ? `sign-in-problem:${state.problem}` : undefined;
+	const copyState = (flowId: string) => `copy-code:${copiedFlow === flowId ? "copied" : "uncopied"}`;
 	return (
 		<ModalSheet
 			title={`Sign in to ${name}`}
@@ -131,11 +139,12 @@ export function ProviderSignInSheet({
 					// code beside it, the page's one call to action, and how long the
 					// code lasts. A poll's error or a failed copy or open lands in a
 					// footer right under it.
-					<Section followedBy={state.error || localError ? "footer" : undefined}>
+					<Section kind="device" followedBy={state.error || localProblem ? "footer" : undefined}>
 						{body(
 							"The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.",
 						)}
 						<View
+							testID={copyState(device.flowId)}
 							style={{
 								flexDirection: "row",
 								// At the largest text sizes Copy code moves under the code.
@@ -166,7 +175,7 @@ export function ProviderSignInSheet({
 							<Button
 								label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
 								onPress={() => {
-									setLocalError(null);
+									setLocalProblem(null);
 									void copy(device.flowId, device.userCode);
 								}}
 							/>
@@ -182,6 +191,7 @@ export function ProviderSignInSheet({
 						    (app_auth.go); the provider's code expires in about that time. */}
 						<Text
 							allowFontScaling={allowFontScaling}
+							testID="sign-in-code-expiry"
 							style={{ color: palette.inkLow, ...scaledType(uiType.footnote, scale) }}
 						>
 							The code expires in 15 minutes.
@@ -190,10 +200,10 @@ export function ProviderSignInSheet({
 				) : null}
 				{device && waiting ? (
 					<>
-						<Section centered followedBy="group">
+						<Section kind="code" centered followedBy="group">
 							{/* After a failed poll nothing is being waited on: the next
 							    check is the person's (Check again, below). */}
-							{state.error ? null : statement("Waiting for you to finish signing in…")}
+							{state.error ? null : statement("Waiting for you to finish signing in…", "sign-in-waiting")}
 							{/* The code stays selectable, and copyable, in case the
 							    automatic copy failed. */}
 							{body(
@@ -216,9 +226,10 @@ export function ProviderSignInSheet({
 							/>
 							<Row
 								label={copiedFlow === device.flowId ? "Code copied" : "Copy code"}
+								testID={copyState(device.flowId)}
 								tone="accent"
 								onPress={() => {
-									setLocalError(null);
+									setLocalProblem(null);
 									void copy(device.flowId, device.userCode);
 								}}
 							/>
@@ -227,7 +238,9 @@ export function ProviderSignInSheet({
 				) : null}
 				{device && state.error ? (
 					<>
-						<GroupFooter tone="danger">{state.error}</GroupFooter>
+						<GroupFooter tone="danger" testID={flowProblem}>
+							{state.error}
+						</GroupFooter>
 						<Group>
 							<Row
 								label="Check again"
@@ -242,7 +255,7 @@ export function ProviderSignInSheet({
 				) : null}
 				{state.phase === "browser" && state.browser ? (
 					<>
-						<Section followedBy="group">
+						<Section kind="redirect" followedBy="group">
 							{body("Open the sign-in page and sign in, then paste the full redirect URL here.")}
 						</Section>
 						<Group>
@@ -250,7 +263,7 @@ export function ProviderSignInSheet({
 								label="Open sign-in page"
 								tone="accent"
 								onPress={() => {
-									setLocalError(null);
+									setLocalProblem(null);
 									if (state.browser) void open(state.browser.url);
 								}}
 							/>
@@ -285,7 +298,11 @@ export function ProviderSignInSheet({
 								}}
 							/>
 						</Group>
-						{state.error ? <GroupFooter tone="danger">{state.error}</GroupFooter> : null}
+						{state.error ? (
+							<GroupFooter tone="danger" testID={flowProblem}>
+								{state.error}
+							</GroupFooter>
+						) : null}
 					</>
 				) : null}
 				{state.phase === "expired" || state.phase === "error" ? (
@@ -293,9 +310,13 @@ export function ProviderSignInSheet({
 						{/* An expired code's flow error sends you to check the status by
 						 * hand, a step the sheet no longer has, so it says what happened. */}
 						{state.phase === "expired" ? (
-							<Section followedBy="group">{statement("The code expired.")}</Section>
+							<Section kind="expired" followedBy="group">
+								{statement("The code expired.")}
+							</Section>
 						) : state.error ? (
-							<Section followedBy="group">{statement(state.error)}</Section>
+							<Section kind="failed" followedBy="group">
+								{statement(state.error, flowProblem)}
+							</Section>
 						) : null}
 						<Group>
 							<Row label="Start again" tone="accent" disabled={!connected || state.busy} onPress={startAgain} />
@@ -303,13 +324,17 @@ export function ProviderSignInSheet({
 					</>
 				) : null}
 				{authorized ? (
-					<Section centered>
+					<Section kind="signed-in" centered>
 						<SymbolView name="checkmark" tintColor={palette.aliveInk} size={34} />
 						{statement(`Signed in to ${name}`)}
 						{body("Sessions using it can continue.")}
 					</Section>
 				) : null}
-				{localError ? <GroupFooter tone="danger">{localError}</GroupFooter> : null}
+				{localProblem ? (
+					<GroupFooter tone="danger" testID={`sign-in-problem:${localProblem}`}>
+						{LOCAL_PROBLEMS[localProblem]}
+					</GroupFooter>
+				) : null}
 			</GroupedPage>
 		</ModalSheet>
 	);
@@ -318,12 +343,15 @@ export function ProviderSignInSheet({
 /** A stretch of the sheet outside any group: its prose, the code, a button.
  * What follows it may bring its own space: a group its 16pt, so over one the
  * bottom padding is only what's left; a footer its own top padding, so over
- * one the stretch adds none. */
+ * one the stretch adds none. Its `kind` names which stretch it is, as its
+ * `sign-in-stretch:<kind>` testID. */
 function Section({
+	kind,
 	children,
 	centered = false,
 	followedBy,
 }: {
+	kind: "device" | "code" | "redirect" | "expired" | "failed" | "signed-in";
 	children: ReactNode;
 	centered?: boolean;
 	followedBy?: "group" | "footer";
@@ -331,7 +359,7 @@ function Section({
 	const edge = centered ? 28 : 16;
 	return (
 		<View
-			testID="sign-in-stretch"
+			testID={`sign-in-stretch:${kind}`}
 			style={{
 				paddingHorizontal: 20,
 				paddingTop: edge,

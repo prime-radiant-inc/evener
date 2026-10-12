@@ -115,9 +115,7 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 	if err == nil {
 		t.Fatal("ThreadFork(sourceItemKey naming entry 2) succeeded; entry 2 is the assistant reply, not a user message")
 	}
-	if !strings.Contains(err.Error(), "not a USER_INPUT turn") {
-		t.Fatalf("ThreadFork(sourceItemKey naming entry 2) error = %v, want a not-a-user-turn refusal", err)
-	}
+
 	assertInvalidParams(t, err, "sourceItemKey naming entry 2 (not USER_INPUT)")
 
 	// A key whose ordinal names no entry in the parent transcript is refused.

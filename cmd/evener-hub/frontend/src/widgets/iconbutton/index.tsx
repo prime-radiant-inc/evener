@@ -1,8 +1,12 @@
 import { type ButtonHTMLAttributes, forwardRef, type MouseEvent, type ReactNode } from "react";
-import type { ButtonSize, ButtonVariant } from "../button";
+import { type ButtonSize, type ButtonVariant, isAriaRefusal, refuseClick } from "../button";
 import buttonStyles from "../button/button.module.css";
 import { requireClass } from "../internal/requireClass";
 import styles from "./iconbutton.module.css";
+
+/** Button's variants minus link: link is underlined text, and an icon-only
+ * control has no text to underline. */
+export type IconButtonVariant = Exclude<ButtonVariant, "link">;
 
 export interface IconButtonProps
   extends Omit<
@@ -11,7 +15,7 @@ export interface IconButtonProps
   > {
   label: string;
   icon: ReactNode;
-  variant?: ButtonVariant;
+  variant?: IconButtonVariant;
   size?: ButtonSize;
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
@@ -32,7 +36,7 @@ const BASE_CLASS = {
   icon: requireClass(buttonStyles.icon, "button.module.css", "icon"),
 };
 
-const VARIANT_CLASS: Record<ButtonVariant, string> = {
+const VARIANT_CLASS: Record<IconButtonVariant, string> = {
   primary: requireClass(buttonStyles.primary, "button.module.css", "primary"),
   secondary: requireClass(buttonStyles.secondary, "button.module.css", "secondary"),
   quiet: requireClass(buttonStyles.quiet, "button.module.css", "quiet"),
@@ -68,6 +72,9 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   { label, icon, variant = "primary", size = "md", onClick, disabled = false, type = "button", ...rest },
   ref,
 ) {
+  // The same refusal Button makes: aria-disabled keeps the control focusable,
+  // so the browser still delivers the click and the widget swallows it here.
+  const refused = isAriaRefusal(rest["aria-disabled"]);
   return (
     <button
       ref={ref}
@@ -75,7 +82,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       type={type}
       aria-label={label}
       className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
-      onClick={onClick}
+      onClick={refused ? refuseClick : onClick}
       disabled={disabled}
     >
       <span className={BASE_CLASS.icon}>{icon}</span>

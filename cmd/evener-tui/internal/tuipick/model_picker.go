@@ -301,6 +301,12 @@ func (m ModelPicker) Selected() string { return m.selected }
 // Cancelled reports whether the picker was dismissed without selecting an item.
 func (m ModelPicker) Cancelled() bool { return m.cancelled }
 
+// Items returns every item the picker offers, ignoring the filter.
+func (m ModelPicker) Items() []ModelPickerItem { return m.items }
+
+// Active returns the ID the picker marks as currently active.
+func (m ModelPicker) Active() string { return m.active }
+
 func (m ModelPicker) View() string {
 	title := m.title
 	if title == "" {

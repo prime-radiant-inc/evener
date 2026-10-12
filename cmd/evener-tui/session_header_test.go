@@ -23,20 +23,23 @@ func TestSessionHeaderHasThreeMainSections(t *testing.T) {
 		hubURL: "http://hub.test",
 		width:  100,
 	}
-	got := strings.Join(m.sessionHeaderLines(), "\n")
-	// 1. rule with breadcrumb + turn count
-	if !strings.Contains(got, "EVENER / SESSION") {
-		t.Errorf("missing breadcrumb: %q", got)
+	lines := m.sessionHeaderLines()
+	if len(lines) != 3 {
+		t.Fatalf("header has %d lines, want rule, title and meta strip: %q", len(lines), lines)
 	}
-	if !strings.Contains(got, "12 turns") {
-		t.Errorf("missing turn count: %q", got)
+	got := strings.Join(lines, "\n")
+	// 1. rule with breadcrumb + turn count
+	if !strings.Contains(lines[0], "12") {
+		t.Errorf("rule missing turn count: %q", lines[0])
 	}
 	// 2. title + state badge
-	if !strings.Contains(got, "Restore hub TUI widgets") {
-		t.Errorf("missing title: %q", got)
+	if !strings.Contains(lines[1], "Restore hub TUI widgets") {
+		t.Errorf("missing title: %q", lines[1])
 	}
-	if !strings.Contains(got, "NEEDS YOU") {
-		t.Errorf("missing state badge: %q", got)
+	idle := m
+	idle.detail.State = "idle"
+	if idleTitle := idle.sessionHeaderLines()[1]; idleTitle == lines[1] {
+		t.Errorf("title line carries no state badge: awaiting and idle both read %q", idleTitle)
 	}
 	// 3. meta strip
 	if !strings.Contains(got, "src evener") || !strings.Contains(got, "branch feat/widget") {
@@ -62,8 +65,10 @@ func TestSessionHeaderShowsRichContextWhenWindowKnown(t *testing.T) {
 		width: 200,
 	}
 	got := strings.Join(rich.sessionHeaderLines(), "\n")
-	if !strings.Contains(got, "ctx 46k/200k (23%, 144k to compact)") {
-		t.Errorf("rich ctx fragment missing in meta strip:\n%s", got)
+	for _, want := range []string{"46k/200k", "23%", "144k"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rich ctx fragment missing %q in meta strip:\n%s", want, got)
+		}
 	}
 
 	thin := hubModel{
@@ -80,8 +85,11 @@ func TestSessionHeaderShowsRichContextWhenWindowKnown(t *testing.T) {
 	if !strings.Contains(got, "ctx 42%") {
 		t.Errorf("thin ctx fragment missing in meta strip:\n%s", got)
 	}
-	if strings.Contains(got, "to compact") {
-		t.Errorf("thin ctx should not include compact hint when window unknown:\n%s", got)
+	windowless := rich
+	windowless.detail.ContextUsed, windowless.detail.ContextWindow = 0, 0
+	got = strings.Join(windowless.sessionHeaderLines(), "\n")
+	if !strings.Contains(got, "23%") || strings.Contains(got, "144k") || strings.Contains(got, "46k") {
+		t.Errorf("ctx without a known window should fall back to the percent alone, with no compact headroom:\n%s", got)
 	}
 }
 

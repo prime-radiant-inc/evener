@@ -1,6 +1,7 @@
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { fonts } from "./design/tokens";
+import { hasTestID } from "./markerTestUtils";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { render, renderedText, textOf } from "./renderNative.testkit";
 
@@ -105,7 +106,7 @@ it("falls back to a code view on an error message", () => {
 	});
 	expect(tree.root.findAllByType("WebView" as never)).toHaveLength(0);
 	expect(renderedText(tree)).toContain("graph TD; A-->B");
-	expect(renderedText(tree)).toContain("Couldn't render this diagram.");
+	expect(hasTestID(tree, "mermaid-fallback")).toBe(true);
 });
 
 it("ignores malformed page messages", () => {
@@ -425,7 +426,7 @@ it("does not fail on an error reply from a superseded source", () => {
 		});
 	});
 	expect(tree.root.findAllByType("WebView" as never)).toHaveLength(1);
-	expect(renderedText(tree)).not.toContain("Couldn't render this diagram.");
+	expect(hasTestID(tree, "mermaid-fallback")).toBe(false);
 });
 
 it("caps the height cache so a long session's distinct diagrams cannot grow it without bound", () => {

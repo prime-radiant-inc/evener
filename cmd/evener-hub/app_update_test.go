@@ -232,7 +232,7 @@ func TestHubUpdateApplyDevBuildRefused(t *testing.T) {
 	})
 	restarts := stubScheduleRestart(t)
 	_, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{})
-	if err == nil || !strings.Contains(err.Error(), "dev build") {
+	if !errors.Is(err, errDevBuildUpdate) {
 		t.Fatalf("err = %v", err)
 	}
 	if *upgrades != 0 || len(*restarts) != 0 {
@@ -367,7 +367,7 @@ func TestHubUpdateApplyRejectsUnknownChannel(t *testing.T) {
 	})
 	restarts := stubScheduleRestart(t)
 	_, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{Channel: "v0.0.1"})
-	if err == nil || !strings.Contains(err.Error(), `unknown update channel "v0.0.1"`) {
+	if !errors.Is(err, errUnknownUpdateChannel) {
 		t.Fatalf("err = %v", err)
 	}
 	if *upgrades != 0 || len(*restarts) != 0 {
@@ -382,7 +382,7 @@ func TestHubUpdateApplyRejectsNightlyChannel(t *testing.T) {
 		return selfupdate.Result{}, nil
 	})
 	_, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{Channel: "nightly"})
-	if err == nil || !strings.Contains(err.Error(), `unknown update channel "nightly"`) {
+	if !errors.Is(err, errUnknownUpdateChannel) {
 		t.Fatalf("err = %v", err)
 	}
 	if *upgrades != 0 {
@@ -397,7 +397,7 @@ func TestHubUpdateCheckRejectsUnknownChannel(t *testing.T) {
 		return selfupdate.CheckResult{}, nil
 	})
 	_, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{Channel: "v0.0.1"})
-	if err == nil || !strings.Contains(err.Error(), `unknown update channel "v0.0.1"`) {
+	if !errors.Is(err, errUnknownUpdateChannel) {
 		t.Fatalf("err = %v", err)
 	}
 	if *calls != 0 {
@@ -425,7 +425,7 @@ func TestHubUpdateApplySerializesConcurrentCalls(t *testing.T) {
 	<-entered
 
 	_, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{})
-	if err == nil || !strings.Contains(err.Error(), "already in progress") {
+	if !errors.Is(err, errHubUpdateInProgress) {
 		t.Fatalf("second apply err = %v", err)
 	}
 

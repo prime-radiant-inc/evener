@@ -3,9 +3,9 @@
 // evener/settings/overview interface, injected - see McpSectionProps below)
 // above two editable lists on the global launch layer - "MCP config files"
 // (mcpConfigs: string[], reusing dirListSetting.tsx's PathListEditor) and
-// "Inline MCP servers" (mcps: MCPServerSpec[], hand-rolled: a 3-field name/
-// command/args row the path-list PathListEditor genuinely can't represent,
-// matching the legacy's own "no picker assistance" for this list).
+// "Inline MCP servers" (mcps: MCPServerSpec[], a CollectionEditor taking
+// "name command [args...]" entries, the same syntax the launch-config form's
+// McpServerListField uses, with no picker assistance, matching the legacy).
 //
 // Config files browse as kind="file", so the picker lists the JSON files
 // themselves and clicking one fills the field - beyond parity, where the
@@ -14,24 +14,27 @@
 
 import type { MCPServerSpec, SettingsOverviewResponse } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
-import { type FormEvent, useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
 import { isLocalHost, LOCAL_HOST } from "../../../stores/hostRouting";
 import {
-  Button,
   Chip,
   type CollectionAddResult,
+  CollectionEditor,
   ConfirmDialog,
-  EmptyState,
-  FormRow,
-  IconButton,
-  Input,
+  InlineNotice,
   Skeleton,
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { PathListEditor } from "./dirListSetting";
 import { HostScopedSurface } from "./hostScopedSurface";
+import {
+  MCP_SERVER_ENTRY_USAGE,
+  mcpServerKey,
+  mcpServerLabel,
+  parseMcpServerEntry,
+} from "./launchShared/collectionFields";
 import styles from "./mcp.module.css";
 import { useHostScopedLoad } from "./useConnectedEffect";
 
@@ -47,8 +50,6 @@ const CLASS = {
   rowText: requireClass(styles.rowText, "mcp.module.css", "rowText"),
   rowMeta: requireClass(styles.rowMeta, "mcp.module.css", "rowMeta"),
   empty: requireClass(styles.empty, "mcp.module.css", "empty"),
-  addRow: requireClass(styles.addRow, "mcp.module.css", "addRow"),
-  addField: requireClass(styles.addField, "mcp.module.css", "addField"),
 };
 
 /**
@@ -74,11 +75,6 @@ export interface McpSectionProps {
   host?: string;
 }
 
-function inlineServerLabel(server: MCPServerSpec): string {
-  const parts = [server.command, ...(server.args ?? [])].filter(Boolean);
-  return `${server.name} → ${parts.join(" ")}`;
-}
-
 export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionProps) {
   // The extensions instance for the selected host: the controller's own store
   // for the local hub, a per-host instance (over evener/host/request) for a
@@ -88,18 +84,11 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   const store = extensionsStoreForHost(host);
   const overview = useOverviewStore();
   const layer = useExtensionsStoreForHost(host, (s) => s.launchLayer);
-  const launchLayerLoading = useExtensionsStoreForHost(host, (s) => s.launchLayerLoading);
   const launchLayerError = useExtensionsStoreForHost(host, (s) => s.launchLayerError);
   const toasts = useToasts();
 
-  const [serverName, setServerName] = useState("");
-  const [serverCommand, setServerCommand] = useState("");
-  const [serverArgs, setServerArgs] = useState("");
-  const [serverAddError, setServerAddError] = useState<string | null>(null);
-  const [serverAddBusy, setServerAddBusy] = useState(false);
   const [pendingRemoveServerIndex, setPendingRemoveServerIndex] = useState<number | null>(null);
   const [removeServerBusy, setRemoveServerBusy] = useState(false);
-  const serverCommandId = useId();
 
   // evener/settings/overview is this hub's own read (stores/settingsOverview.ts
   // is built on the controller's client) and is NOT on the proxy allow-list, so
@@ -120,10 +109,29 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   // leaving this one's on screen (or its own failure standing).
   useHostScopedLoad(host, () => store.getState().fetchLaunchLayer(), [store]);
 
+  // The layer on screen may be stale after a failed refresh, and stays stale
+  // until a recovery refresh actually lands (fetchLaunchLayer clears the error
+  // the moment it starts). The editors stay mounted so typing survives, but
+  // nothing saves unless a layer is loaded, the last read succeeded, and no
+  // read is in flight: a write from a stale snapshot could overwrite edits
+  // made to the file elsewhere. Returns the layer to write from, or null.
+  function writableLayer() {
+    const { launchLayer, launchLayerError, launchLayerLoading } = store.getState();
+    return launchLayer !== null && launchLayerError === null && !launchLayerLoading ? launchLayer : null;
+  }
+
+  function refusal(): string {
+    const { launchLayerError } = store.getState();
+    return launchLayerError !== null
+      ? `Can't save while the launch settings fail to load: ${launchLayerError}`
+      : "Can't save while the launch settings are loading. Try again in a moment.";
+  }
+
   async function handleAddConfig(path: string): Promise<CollectionAddResult> {
     const validated = await store.getState().validatePath(path, "file");
     if (!validated.valid) return { ok: false, error: validated.error || "path does not exist" };
-    const current = store.getState().launchLayer ?? {};
+    const current = writableLayer();
+    if (current === null) return { ok: false, error: refusal() };
     const canonical = validated.path || path;
     const nextList = [...(current.mcpConfigs ?? []), canonical];
     try {
@@ -135,7 +143,11 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   }
 
   async function handleRemoveConfig(path: string): Promise<void> {
-    const current = store.getState().launchLayer ?? {};
+    const current = writableLayer();
+    if (current === null) {
+      toasts.push("error", refusal());
+      return;
+    }
     const nextList = (current.mcpConfigs ?? []).filter((p) => p !== path);
     try {
       await store.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
@@ -144,33 +156,19 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
     }
   }
 
-  async function handleAddServer(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const name = serverName.trim();
-    const command = serverCommand.trim();
-    if (name === "" || command === "" || serverAddBusy) return;
-    const args = serverArgs
-      .trim()
-      .split(/\s+/)
-      .filter((a) => a !== "");
-    setServerAddBusy(true);
+  async function handleAddServer(value: string): Promise<CollectionAddResult> {
+    const entry = parseMcpServerEntry(value);
+    if (entry === null) return { ok: false, error: MCP_SERVER_ENTRY_USAGE };
     try {
-      const validated = await store.getState().validatePath(command, "command");
-      if (!validated.valid) {
-        setServerAddError(validated.error || "command not found");
-        return;
-      }
-      const current = store.getState().launchLayer ?? {};
-      const nextList = [...(current.mcps ?? []), { name, command, args }];
+      const validated = await store.getState().validatePath(entry.command, "command");
+      if (!validated.valid) return { ok: false, error: validated.error || "command not found" };
+      const current = writableLayer();
+      if (current === null) return { ok: false, error: refusal() };
+      const nextList = [...(current.mcps ?? []), entry];
       await store.getState().setLaunchLayer({ ...current, mcps: nextList });
-      setServerAddError(null);
-      setServerName("");
-      setServerCommand("");
-      setServerArgs("");
+      return { ok: true };
     } catch (err) {
-      setServerAddError(friendlyErrorMessage(err));
-    } finally {
-      setServerAddBusy(false);
+      return { ok: false, error: friendlyErrorMessage(err) };
     }
   }
 
@@ -178,9 +176,10 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
     const index = pendingRemoveServerIndex;
     if (index === null) return;
     setRemoveServerBusy(true);
-    const current = store.getState().launchLayer ?? {};
-    const nextList = (current.mcps ?? []).filter((_, i) => i !== index);
     try {
+      const current = writableLayer();
+      if (current === null) throw new Error(refusal());
+      const nextList = (current.mcps ?? []).filter((_, i) => i !== index);
       await store.getState().setLaunchLayer({ ...current, mcps: nextList });
     } catch (err) {
       toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
@@ -208,7 +207,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
           <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
           <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
           {discovered?.error !== undefined ? (
-            <EmptyState title="Failed to load" hint={discovered.error} />
+            <InlineNotice tone="danger">{discovered.error}</InlineNotice>
           ) : overview.loading && overview.data === null ? (
             <Skeleton />
           ) : (
@@ -233,10 +232,13 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
         </section>
       )}
 
-      {launchLayerError !== null ? (
-        <EmptyState title="Failed to load" hint={launchLayerError} />
-      ) : launchLayerLoading && layer === null ? (
-        <Skeleton />
+      {/* The editors need a loaded layer: adding to one that never loaded
+          would save a layer holding only the new entry. Once loaded, a failed
+          refresh keeps them mounted, so an entry the reader is typing survives
+          the error and the recovery after it. */}
+      {launchLayerError !== null && <InlineNotice tone="danger">{launchLayerError}</InlineNotice>}
+      {layer === null ? (
+        launchLayerError === null && <Skeleton />
       ) : (
         <>
           <section className={CLASS.section}>
@@ -262,64 +264,20 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
 
           <section className={CLASS.section}>
             <h3 className={CLASS.sectionTitle}>Inline MCP servers</h3>
-            <ul aria-label="Inline MCP servers" className={CLASS.list}>
-              {mcps.length === 0 ? (
-                <li className={CLASS.empty}>No inline MCP servers. Add one below.</li>
-              ) : (
-                mcps.map((m, index) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: MCPServerSpec has no stable id of its own; removal is index-keyed too (mirrors the legacy's own mcps.splice(i,1)), so index is the correct identity here, not just a fallback.
-                  <li key={index} className={CLASS.row}>
-                    <div className={CLASS.rowText}>{inlineServerLabel(m)}</div>
-                    <IconButton
-                      label={`Remove ${m.name}`}
-                      icon={<RemoveIcon />}
-                      variant="quiet"
-                      size="sm"
-                      onClick={() => setPendingRemoveServerIndex(index)}
-                    />
-                  </li>
-                ))
-              )}
-            </ul>
-            {/* FormRow (not a hand-rolled error paragraph) for the same
-                reason dirListSetting.tsx's PathListEditor uses it - see
-                that file's own comment. htmlFor targets the command field
-                specifically since that's what evener/path/validate actually
-                validates; name/args get placeholder-only hints, matching
-                the legacy's own zero-real-labels baseline for this form
-                (not a regression this task introduces). */}
-            <FormRow label="New MCP server" htmlFor={serverCommandId} error={serverAddError ?? undefined}>
-              <form className={CLASS.addRow} onSubmit={(event) => void handleAddServer(event)}>
-                <span className={CLASS.addField}>
-                  <Input
-                    value={serverName}
-                    onChange={(event) => setServerName(event.target.value)}
-                    placeholder="name"
-                  />
-                </span>
-                <span className={CLASS.addField}>
-                  <Input
-                    id={serverCommandId}
-                    value={serverCommand}
-                    onChange={(event) => setServerCommand(event.target.value)}
-                    placeholder="command"
-                  />
-                </span>
-                <span className={CLASS.addField}>
-                  <Input
-                    value={serverArgs}
-                    onChange={(event) => setServerArgs(event.target.value)}
-                    placeholder="args (space-separated)"
-                  />
-                </span>
-                <Button
-                  type="submit"
-                  disabled={serverName.trim() === "" || serverCommand.trim() === "" || serverAddBusy}
-                >
-                  Add
-                </Button>
-              </form>
-            </FormRow>
+            {/* Removal is index-keyed (MCPServerSpec has no id of its own; the
+                legacy spliced by index too), so the confirm resolves the row's
+                own position rather than filtering every identical spec. */}
+            <CollectionEditor<MCPServerSpec>
+              label="Inline MCP servers"
+              items={mcps}
+              getKey={mcpServerKey}
+              renderItem={mcpServerLabel}
+              removeLabel={(server) => `Remove ${server.name}`}
+              onRemove={(server) => setPendingRemoveServerIndex(mcps.indexOf(server))}
+              emptyMessage="No inline MCP servers. Add one below."
+              addPlaceholder="name command args..."
+              onAdd={handleAddServer}
+            />
           </section>
         </>
       )}
@@ -335,14 +293,6 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
         {pendingServer !== undefined ? `Remove "${pendingServer.name}"?` : ""}
       </ConfirmDialog>
     </section>
-  );
-}
-
-function RemoveIcon() {
-  return (
-    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-      <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
   );
 }
 

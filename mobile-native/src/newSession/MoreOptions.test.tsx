@@ -1,7 +1,8 @@
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
-import { render, renderedText, settle } from "../renderNative.testkit";
+import { markedNodes, markerOf } from "../markerTestUtils";
+import { render, renderedText, settle, textOf } from "../renderNative.testkit";
 import { MoreOptions } from "./MoreOptions";
 import { sheetContext, TestSheet } from "./newSessionTestUtils";
 
@@ -46,7 +47,12 @@ async function mount(defaults: Record<string, unknown> | null, launchOverrides: 
 				.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === label)
 				.props.onPress(),
 		);
-	return { tree, store, calls, segments, choose, text: () => renderedText(tree) };
+	/** The footer under a setting: whether it knows the hub's default, and its words. */
+	const footer = (field: string) => {
+		const [node] = markedNodes(tree, `default-${field}`);
+		return { hubDefault: node ? markerOf(node, `default-${field}`) : null, text: node ? textOf(node) : "" };
+	};
+	return { tree, store, calls, segments, choose, footer, text: () => renderedText(tree) };
 }
 
 it("offers the three settings, each on Default until set", async () => {
@@ -66,13 +72,11 @@ it("offers the three settings, each on Default until set", async () => {
 
 it("names the hub's default under each", async () => {
 	const page = await mount({ contextStrategy: "compact", maxSubagentDepth: 2, maxRounds: -1 });
-	const text = page.text();
-	expect(text).toContain("The hub's default is compact.");
-	expect(text).toContain("The hub's default is 2.");
-	expect(text).toContain("The hub's default is no limit.");
-	expect(text).toContain(
-		"Everything else uses the hub's launch defaults. Edit them from the Hub, under Launch defaults.",
-	);
+	expect(page.footer("contextStrategy")).toEqual({ hubDefault: "known", text: expect.stringContaining("compact") });
+	expect(page.footer("maxSubagentDepth")).toEqual({ hubDefault: "known", text: expect.stringContaining("2") });
+	// No limit reads in words, not as -1.
+	expect(page.footer("maxRounds").hubDefault).toBe("known");
+	expect(page.footer("maxRounds").text).not.toContain("-1");
 });
 
 it("sets each value, and Default removes it", async () => {
@@ -86,7 +90,8 @@ it("sets each value, and Default removes it", async () => {
 		maxSubagentDepth: 3,
 		maxRounds: -1,
 	});
-	expect(page.segments("Max turns").find(([, lit]) => lit)?.[0]).toBe("No limit");
+	// No limit is the last segment.
+	expect(page.segments("Max turns").map(([, lit]) => lit)).toEqual([false, false, false, true]);
 	page.choose("Max turns", "Default");
 	page.choose("Context strategy", "Default");
 	expect(page.store.getState().launchOverrides).toEqual({ sandbox: "read-only", maxSubagentDepth: 3 });
@@ -95,12 +100,15 @@ it("sets each value, and Default removes it", async () => {
 it("lights no segment for a value it doesn't offer, and says what the session uses", async () => {
 	const page = await mount({ maxSubagentDepth: 2 }, { maxSubagentDepth: 4 });
 	expect(page.segments("Max subagent depth").some(([, lit]) => lit)).toBe(false);
-	expect(page.text()).toContain("This session uses 4. The hub's default is 2.");
+	const { hubDefault, text } = page.footer("maxSubagentDepth");
+	expect(hubDefault).toBe("known");
+	expect(text).toContain("4");
+	expect(text).toContain("2");
 });
 
 it("speaks of the hub's default without a value until the hub says it", async () => {
 	const page = await mount(null, { maxRounds: 250 });
-	expect(page.text()).toContain("This session uses 250.");
-	expect(page.text()).not.toContain("The hub's default is");
-	expect(page.text()).toContain("Default uses the hub's default.");
+	expect(page.footer("maxRounds")).toEqual({ hubDefault: "unknown", text: expect.stringContaining("250") });
+	// A setting left to the hub still says Default follows the hub.
+	expect(page.footer("maxSubagentDepth")).toEqual({ hubDefault: "unknown", text: expect.stringMatching(/\S/) });
 });

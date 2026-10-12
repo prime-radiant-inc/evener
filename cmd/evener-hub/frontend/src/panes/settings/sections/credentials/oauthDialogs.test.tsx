@@ -134,6 +134,7 @@ describe("OAuthRedirectDialog", () => {
     const link = screen.getByRole("link", { name: /re-open authorize url/i }) as HTMLAnchorElement;
     expect(link.href).toBe("https://auth.example.com/start");
     expect(link.target).toBe("_blank");
+    expect(link.rel).toBe(NEW_TAB_POLICY);
   });
 
   test("empty (trimmed) submit silently cancels with no RPC call", async () => {

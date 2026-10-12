@@ -28,6 +28,16 @@ export interface PinAssignmentEditorProps {
 	unpin(): void;
 	close(): void;
 }
+
+/** Why the editor can't change the assignment right now, as its
+ * `pin-status:<reason>` line says it. */
+const BLOCKED = {
+	"previous-change": "Check the previous pin change before editing it.",
+	unread: "Check this session's pins before editing.",
+	checking: "Checking the pin assignment…",
+	offline: "You can change pin assignments once the hub is back.",
+};
+
 function validName(name: string) {
 	const length = Array.from(name.trim()).length;
 	return length >= 1 && length <= 80;
@@ -59,14 +69,14 @@ export function PinAssignmentEditor({
 	const valid =
 		(selection?.kind === "existing" && sections.some((section) => section.id === selection.sectionId)) ||
 		(selection?.kind === "new" && validName(selection.name));
-	const reason = uncertain
+	const reason: keyof typeof BLOCKED | null = uncertain
 		? previousChange
-			? "Check the previous pin change before editing it."
-			: "Check this session's pins before editing."
+			? "previous-change"
+			: "unread"
 		: pending
-			? "Checking the pin assignment…"
+			? "checking"
 			: !connected
-				? "You can change pin assignments once the hub is back."
+				? "offline"
 				: null;
 	return (
 		<View style={[styles.fill, { backgroundColor: colors.background }]}>
@@ -90,7 +100,11 @@ export function PinAssignmentEditor({
 					<Copy muted>{hubName}</Copy>
 				</View>
 				<ErrorMessage message={error} />
-				{reason ? <Copy muted>{reason}</Copy> : null}
+				{reason ? (
+					<View testID={`pin-status:${reason}`}>
+						<Copy muted>{BLOCKED[reason]}</Copy>
+					</View>
+				) : null}
 				<View accessibilityRole="radiogroup" accessibilityLabel="Pinned section" style={{ gap: 4 }}>
 					{sections.map((section) => (
 						<Choice

@@ -92,7 +92,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 		},
 	};
 	const bubble = (
-		<View style={{ alignItems: "flex-end", gap: 2 }}>
+		<View testID={`ghost:${ghost.state}`} style={{ alignItems: "flex-end", gap: 2 }}>
 			<Pressable
 				accessibilityLabel={`${ghost.text}. ${ghost.caption}`}
 				{...(opensMenu ? { accessibilityRole: "button" as const } : {})}
@@ -128,7 +128,11 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 			</Pressable>
 			<Text {...caption}>{ghost.caption}</Text>
 			{ghost.note ? <Text {...caption}>{ghost.note}</Text> : null}
-			{offersEdit && editBlocked && editHint ? <Text {...caption}>{editHint}</Text> : null}
+			{offersEdit && editBlocked && editHint ? (
+				<Text testID="ghost-edit-hint" {...caption}>
+					{editHint}
+				</Text>
+			) : null}
 			{ghost.buttons.length > 0 ? (
 				<View style={{ flexDirection: "row", gap: 4 }}>
 					{ghost.buttons.map((action) => (

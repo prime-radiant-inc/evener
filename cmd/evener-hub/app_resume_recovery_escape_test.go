@@ -92,7 +92,7 @@ func TestResumeConfirmsExitWhenRecoveryHasNoClaim(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), sentinel.Error()) {
 		t.Fatalf("resume did not reach the spawner: %v", err)
 	}
-	if strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
+	if errors.Is(err, errResumeOwnerExitUnconfirmed) {
 		t.Fatalf("claimless recovery still refused: %v", err)
 	}
 	if !cfg.ResumeLocks.RecoveryState(sessionID).ExitConfirmed {
@@ -128,7 +128,7 @@ func TestResumeStillRefusesUnconfirmedExitWithLiveClaim(t *testing.T) {
 	if spawned {
 		t.Fatal("resume launched a replacement while a live claim held the session")
 	}
-	if err == nil || !strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
+	if !errors.Is(err, errResumeOwnerExitUnconfirmed) {
 		t.Fatalf("live-claimed recovery did not refuse: %v", err)
 	}
 	if cfg.ResumeLocks.RecoveryState(sessionID).ExitConfirmed {
@@ -174,7 +174,7 @@ func TestResumeStillRefusesUnconfirmedExitWithUnverifiedClaim(t *testing.T) {
 	if spawned {
 		t.Fatal("resume launched a replacement while an unverified process claimed the session group")
 	}
-	if err == nil || !strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
+	if !errors.Is(err, errResumeOwnerExitUnconfirmed) {
 		t.Fatalf("unverified-claim recovery did not refuse: %v", err)
 	}
 	if cfg.ResumeLocks.RecoveryState(sessionID).ExitConfirmed {
@@ -206,7 +206,7 @@ func TestResumeRefusesClaimlessRecoveryWhileOwnerProcessLives(t *testing.T) {
 	if spawned {
 		t.Fatal("resume launched a replacement while the persisted owner process still lives")
 	}
-	if err == nil || !strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
+	if !errors.Is(err, errResumeOwnerExitUnconfirmed) {
 		t.Fatalf("live markerless owner did not refuse: %v", err)
 	}
 	if cfg.ResumeLocks.RecoveryState(sessionID).ExitConfirmed {
@@ -244,7 +244,7 @@ func TestResumeRefusesClaimlessRecoveryWithoutOwnerProof(t *testing.T) {
 	if spawned {
 		t.Fatal("resume launched a replacement with no owner exit proof on record")
 	}
-	if err == nil || !strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
+	if !errors.Is(err, errResumeOwnerExitUnconfirmed) {
 		t.Fatalf("proofless recovery did not refuse: %v", err)
 	}
 }
@@ -283,7 +283,7 @@ func TestResumeRefusalClosesTheOpenedOwnerProcess(t *testing.T) {
 		}},
 	}
 	_, err := hubThreadResume(context.Background(), cfg, nil, appwire.ThreadResumeParams{Session: sessionID})
-	if err == nil || !strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
+	if !errors.Is(err, errResumeOwnerExitUnconfirmed) {
 		t.Fatalf("live owner did not refuse: %v", err)
 	}
 	if !closed.Load() {

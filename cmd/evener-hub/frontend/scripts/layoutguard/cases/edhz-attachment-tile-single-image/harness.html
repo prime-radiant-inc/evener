@@ -31,16 +31,16 @@
       <img class="imageThumbnail" id="settled-thumb" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAIAAAA8r+mnAAAAFUlEQVR4nGP4z/AfK2LAKYFDHLcEAGSoP8FHDbrlAAAAAElFTkSuQmCC" alt="">
     </button>
     <div class="dimensionsOverlay" id="settled-dims">8×4</div>
-    <button type="button" class="removeImageButton" id="settled-remove" aria-label="Remove shot.png">
-      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-    </button>
+    <span class="removeSlot" id="settled-slot">
+      <button type="button" class="button secondary sm" id="settled-remove" aria-label="Remove shot.png"><span class="icon"><svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span></button>
+    </span>
   </div>
 
   <div class="imageTile" id="pending-tile">
     <div class="imagePending" id="pending-slot" role="img" aria-label="shot.png (still processing)"></div>
-    <button type="button" class="removeImageButton" id="pending-remove" aria-label="Remove shot.png">
-      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-    </button>
+    <span class="removeSlot" id="pending-slot">
+      <button type="button" class="button secondary sm" id="pending-remove" aria-label="Remove shot.png"><span class="icon"><svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span></button>
+    </span>
   </div>
 </div>
 <script>

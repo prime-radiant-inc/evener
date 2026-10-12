@@ -13,7 +13,7 @@ import { createContext, type ReactNode, useContext } from "react";
 import { useStore } from "zustand";
 import type { StoreApi } from "zustand/vanilla";
 import { type ExtensionsStoreState, extensionsStore, extensionsStoreForHost } from "../../../../stores/extensions";
-import type { DirectoryActions } from "../../../../widgets/pathfield";
+import type { DirectoryActions } from "../../../../widgets";
 
 const ExtensionsStoreContext = createContext<StoreApi<ExtensionsStoreState>>(extensionsStore);
 

@@ -135,13 +135,14 @@ export function Copy({
 	);
 }
 
-export function ErrorMessage({ message }: { message: string | null }) {
+export function ErrorMessage({ message, testID }: { message: string | null; testID?: string }) {
 	const colors = useColors();
 	const textScale = useTextScale();
 	return message ? (
 		<Text
 			accessibilityRole="alert"
 			allowFontScaling={allowFontScaling}
+			testID={testID}
 			style={{ color: colors.error, padding: 12, fontSize: 16 * textScale }}
 		>
 			{message}

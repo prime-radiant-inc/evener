@@ -35,6 +35,36 @@ function VariantRow({ variant }: { variant: ButtonVariant }) {
   );
 }
 
+function LinkRow() {
+  return (
+    <div className={styles.row}>
+      <p className={styles.rowLabel}>link</p>
+      <p>
+        Couldn't load older turns. <Button variant="link">Retry</Button>
+      </p>
+      <p>
+        <Button variant="link" disabled>
+          Retry
+        </Button>
+      </p>
+    </div>
+  );
+}
+
+function WrapRow() {
+  return (
+    <div className={styles.row}>
+      <p className={styles.rowLabel}>wrap</p>
+      <div className={styles.narrowColumn}>
+        <Button wrap>Jump back in: Move the settings host picker onto the shared Select</Button>
+        <Button variant="secondary" size="sm" wrap>
+          New session in a much longer project directory name
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function ButtonGallerySection() {
   return (
     <section>
@@ -43,6 +73,8 @@ export default function ButtonGallerySection() {
         {VARIANTS.map((variant) => (
           <VariantRow key={variant} variant={variant} />
         ))}
+        <WrapRow />
+        <LinkRow />
       </ThemeFlip>
     </section>
   );

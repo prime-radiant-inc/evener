@@ -152,7 +152,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
        faviconAmber: /fill='#e0af68'/.test(href),
        captured: window.__asked,
        railRowPresent: !!row,
-       railRowSignal: row?.querySelector('[data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
+       railRowSignal: row?.querySelector('[data-testid="rail-row-signal"] [role="img"]')?.getAttribute("aria-label"),
        railRowContext: contextID ? document.getElementById(contextID)?.textContent : null,
      };
    })()

@@ -6,6 +6,7 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 import { buildWatchRows } from "@evener/appwire-client";
 import { useNowTick } from "../../panes/session/liveness";
 import { useSessionActivity } from "../../stores/sessionActivity";
+import { Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ActivityScope } from "../statusbar/statusScope";
 import { useActivityScrollProgress } from "./ActivityViewport";
@@ -30,8 +31,7 @@ export function WatchesTab({ scope }: { scope: ActivityScope }) {
   );
   if (collection?.permanent && collection.rows.length === 0)
     return <span className={CLASS.emptyNote}>Watches unavailable for this session.</span>;
-  if (!collection || (collection.rows.length === 0 && !collection.complete))
-    return <span className={CLASS.emptyNote}>Loading watches…</span>;
+  if (!collection || (collection.rows.length === 0 && !collection.complete)) return <Skeleton lines={2} />;
   const watches = collection.rows;
   if (watches.length === 0 && collection.complete)
     return <span className={CLASS.emptyNote}>No watches at this level.</span>;

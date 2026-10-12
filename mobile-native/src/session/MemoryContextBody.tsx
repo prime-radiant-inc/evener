@@ -60,7 +60,10 @@ export function MemoryContextBody({
 	const hasContent = observation.content.trim() !== "";
 	return (
 		<View testID="memory-context-body" style={{ gap: 6 }}>
-			<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+			<View
+				testID={`memory-context:${observation.scope}:${observation.state}`}
+				style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+			>
 				<Text allowFontScaling={allowFontScaling} style={quiet} testID="memory-context-scope-state">
 					{meta}
 				</Text>

@@ -148,6 +148,52 @@ test("the size ladder declares 24/28/32px heights, xs being the densest", () => 
   expect(/\.md\s*\{([^}]*)\}/.exec(css)?.[1] ?? "").toMatch(/height:\s*32px/);
 });
 
+// wrap is for a label that can be the widest thing in its column (the welcome
+// pane's "Jump back in: <session title>"): it adds a class on top of the
+// variant and size, and an inline link already wraps with its prose.
+test("wrap adds a modifier on top of the variant and size, and leaves a link alone", () => {
+  const { rerender } = render(<Button size="sm">Jump back in</Button>);
+  const plain = screen.getByRole("button").className.split(" ");
+  rerender(
+    <Button size="sm" wrap>
+      Jump back in
+    </Button>,
+  );
+  const wrapped = screen.getByRole("button").className.split(" ");
+  expect(wrapped).toEqual(expect.arrayContaining(plain));
+  expect(wrapped.length).toBe(plain.length + 1);
+
+  rerender(<Button variant="link">Retry</Button>);
+  const link = screen.getByRole("button").className;
+  rerender(
+    <Button variant="link" wrap>
+      Retry
+    </Button>,
+  );
+  expect(screen.getByRole("button").className).toBe(link);
+});
+
+// jsdom has no layout, so the declarations are the checkable truth: a wrapped
+// label lets the box grow past the size's fixed height, keeps that height as
+// its floor, and keeps the 44px tap floor on the phone.
+test("wrap lets the label break across lines while keeping each size's height and the tap floor as floors", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const wrap = /\n\.wrap\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(wrap).toContain("white-space: normal");
+  expect(wrap).toContain("height: auto");
+  expect(css).toMatch(/\.wrap:where\(\.xs\)\s*\{[^}]*min-height: 24px/);
+  expect(css).toMatch(/\.wrap:where\(\.sm\)\s*\{[^}]*min-height: 28px/);
+  expect(css).toMatch(/\.wrap:where\(\.md\)\s*\{[^}]*min-height: 32px/);
+  // The floors above are one class of specificity, like the phone block's
+  // .xs/.sm/.md, and come before it, so the tap floor still wins on a phone.
+  expect(css.indexOf(".wrap:where(.md)")).toBeLessThan(css.indexOf("@media (max-width: 899px)"));
+  // .wrap has to come after the size rules it relaxes.
+  expect(css.indexOf("\n.wrap {")).toBeGreaterThan(css.indexOf("\n.md {"));
+});
+
 test("renders the icon before the label when provided", () => {
   render(<Button icon={<span data-testid="my-icon" />}>Go</Button>);
   const button = screen.getByRole("button");
@@ -257,11 +303,72 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
 // CSS source, same as the focus-ring tests above.
 test("mobile: all button sizes meet the 44px tap floor", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8");
-  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
   expect(mobile, "button.module.css must have a max-width:899px media block").not.toBeNull();
   for (const size of ["xs", "sm", "md"]) {
     const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));
     expect(rule, `mobile media block must override .${size}`).not.toBeNull();
     expect(rule![1]).toContain("min-height: var(--tap-min)");
   }
+});
+
+// variant="link" is the inline text action (a task title in the composer's
+// current-work line, a Retry beside an error): still a real <button>, but it
+// sits in running text, so it takes its font from the text around it and no
+// size step's height or padding applies.
+test("variant=link is a real button that runs its action", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  render(
+    <Button variant="link" onClick={onClick}>
+      Retry
+    </Button>,
+  );
+  const button = screen.getByRole("button", { name: "Retry" });
+  expect(button.getAttribute("type")).toBe("button");
+  await user.click(button);
+  expect(onClick).toHaveBeenCalledOnce();
+});
+
+test("variant=link ignores the size ladder", () => {
+  const { rerender } = render(
+    <Button variant="link" size="xs">
+      Retry
+    </Button>,
+  );
+  const xsClass = screen.getByRole("button").className;
+  rerender(
+    <Button variant="link" size="md">
+      Retry
+    </Button>,
+  );
+  expect(screen.getByRole("button").className).toBe(xsClass);
+});
+
+test("variant=link declares accent-ink underlined text that inherits its font and keeps the focus ring", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const rule = /\.link\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("color: var(--accent-ink)");
+  expect(rule).toContain("text-decoration: underline");
+  expect(rule).toContain("font: inherit");
+  expect(rule).toContain("padding: 0");
+  expect(rule).toContain("height: auto");
+  expect(rule).toContain("background: transparent");
+  expect(rule).not.toMatch(/outline/);
+});
+
+test("an aria-disabled submit button does not submit its form", async () => {
+  const onSubmit = vi.fn((event: SubmitEvent) => event.preventDefault());
+  render(
+    <form onSubmit={(event) => onSubmit(event.nativeEvent as SubmitEvent)}>
+      <Button type="submit" aria-disabled="true">
+        Save
+      </Button>
+    </form>,
+  );
+  await userEvent.setup().click(screen.getByRole("button", { name: "Save" }));
+  expect(onSubmit).not.toHaveBeenCalled();
 });

@@ -502,6 +502,13 @@ func (p CredentialsPanel) credentialBadge(inst appwire.InstanceEntry) string {
 // Done reports whether the panel has been dismissed.
 func (p CredentialsPanel) Done() bool { return p.done }
 
+// TestResult is the latest credential test result the panel shows for the
+// named instance.
+func (p CredentialsPanel) TestResult(name string) (appwire.AuthTestResponse, bool) {
+	result, ok := p.testResults[name]
+	return result, ok
+}
+
 func (p CredentialsPanel) View() string {
 	th := tuitheme.ActiveTheme()
 	var body string

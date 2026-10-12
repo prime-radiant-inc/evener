@@ -12,6 +12,10 @@ export interface InputProps {
   type?: "text" | "password" | "email" | "search" | "number" | "tel" | "url";
   id?: string;
   name?: string;
+  /** Accessible name for a field with no visible `<label>` (a filter whose
+   * placeholder is its only visual cue). Prefer a `<label htmlFor>` where the
+   * layout has room for one. */
+  "aria-label"?: string;
   "aria-describedby"?: string;
 }
 
@@ -33,6 +37,7 @@ export function Input({
   type = "text",
   id,
   name,
+  "aria-label": ariaLabel,
   "aria-describedby": ariaDescribedBy,
 }: InputProps) {
   return (
@@ -47,6 +52,7 @@ export function Input({
       disabled={disabled}
       required={required}
       autoComplete={autoComplete}
+      aria-label={ariaLabel}
       aria-describedby={ariaDescribedBy}
     />
   );

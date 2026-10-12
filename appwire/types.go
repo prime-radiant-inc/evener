@@ -556,6 +556,9 @@ type ProjectDeleteParams struct {
 type ProjectDeleteSkip struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
+	// Kind classifies the skip structurally: SkipKindLive, or empty for any
+	// other reason, which Reason then explains.
+	Kind string `json:"kind,omitempty"`
 }
 
 // ProjectDeleteResponse reports exactly which project sessions were removed or
@@ -584,7 +587,15 @@ type SessionDeleteParams struct {
 type DeletionSkip struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
+	// Kind classifies the skip structurally: SkipKindLive, or empty for any
+	// other reason, which Reason then explains.
+	Kind string `json:"kind,omitempty"`
 }
+
+// SkipKindLive is the Kind of a ProjectDeleteSkip or DeletionSkip whose
+// session a live daemon owns, or whose API log another process holds: the
+// session was left in place and its owner keeps running.
+const SkipKindLive = "live"
 
 // SessionDeleteResponse reports the committed single-session deletion outcome
 // and the navigation mutation clients must converge before clearing overlays.
