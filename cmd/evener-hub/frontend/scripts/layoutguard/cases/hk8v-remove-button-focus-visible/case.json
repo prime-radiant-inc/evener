@@ -8,6 +8,7 @@
     "widgets/button/button.module.css",
     "widgets/iconbutton/iconbutton.module.css"
   ],
+  "viewport": { "width": 1280, "height": 800 },
   "forcePseudoStates": [
     { "selector": "#hovered-tile", "pseudoClasses": ["hover"] },
     { "selector": "#focused-remove", "pseudoClasses": ["focus-visible"] }

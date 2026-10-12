@@ -131,10 +131,11 @@
 }
 
 /* Positions and reveals the remove IconButton; the button's own look and
- * focus ring are the widget's. Inside the tile, not straddling its corner:
- * the tile clips its own overflow, so a button hung at top/right -8px lost
- * its outer corner to that clip - measured at 21x21 of a 28x28 control
- * actually painted. */
+ * focus ring are the widget's. With a fine pointer it sits inside the tile,
+ * not straddling its corner: the tile clips its own overflow, so a button
+ * hung at top/right -8px lost its outer corner to that clip - measured at
+ * 21x21 of a 28x28 control actually painted. Touch straddles the corner
+ * instead, with the clip lifted - see the touch block below. */
 .removeSlot {
   position: absolute;
   top: var(--space-1);
@@ -155,6 +156,42 @@
  * layoutguard case (scripts/layoutguard/cases/hk8v-remove-button-focus-visible). */
 .removeSlot:has(:focus-visible) {
   opacity: 1;
+}
+
+/* Touch: there is no hover to reveal the control, and the IconButton grows to
+ * the 44px tap floor, which inside an 80px tile would cover the thumbnail's
+ * centre - an invisible control taking the tap meant for the lightbox. So it
+ * shows at rest and straddles the tile's top-right corner, its hit box mostly
+ * outside the image. The tile stops clipping (each child rounds itself
+ * instead) and reserves half the control in its own top/right margin, so the
+ * part hanging outside stays inside the attachment row's box - no ancestor
+ * clips it, and the row gap keeps it off the neighbouring tile. Guarded by
+ * scripts/layoutguard/cases/attachment-remove-touch-phone. */
+@media (max-width: 899px), (pointer: coarse) {
+  .imageTile {
+    overflow: visible;
+    margin-top: calc(var(--tap-min) / 2);
+    margin-right: calc(var(--tap-min) / 2);
+  }
+
+  .imageOpenButton,
+  .imagePending {
+    border-radius: inherit;
+    overflow: hidden;
+  }
+
+  .dimensionsOverlay {
+    border-bottom-left-radius: inherit;
+    border-bottom-right-radius: inherit;
+  }
+
+  .removeSlot {
+    top: 0;
+    right: 0;
+    transform: translate(50%, -50%);
+    z-index: var(--z-raised);
+    opacity: 1;
+  }
 }
 
 /* Button intentionally owns no caller className API, so select the one
