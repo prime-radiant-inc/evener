@@ -71,6 +71,7 @@ export function NewContentPill({
   // primary case (the `visible` prop), not an edge: the reader needs the
   // jump-to-latest offer even when no items ever arrived while away.
   if (!visible && count <= 0 && !error) return null;
+  const kind = error ? "failed-turn" : needsYou ? "needs-you" : count > 0 ? "count" : "latest";
 
   return (
     <Button
@@ -78,13 +79,14 @@ export function NewContentPill({
       size="sm"
       icon={<Chevron direction={pillArrowDirection} />}
       data-testid="new-content-pill"
+      data-kind={kind}
       onClick={onClick}
     >
-      {error ? (
+      {kind === "failed-turn" ? (
         <Chip tone="danger">Failed turn</Chip>
-      ) : needsYou ? (
+      ) : kind === "needs-you" ? (
         <Chip tone="attention">needs you</Chip>
-      ) : count > 0 ? (
+      ) : kind === "count" ? (
         <>
           <Badge count={count} tone="neutral" />
           <span>new</span>
