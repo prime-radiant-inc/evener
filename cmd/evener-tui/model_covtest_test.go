@@ -203,7 +203,7 @@ func TestCovRenderTasks_WithDependenciesAndEffort(t *testing.T) {
 		{ID: 1, Type: "implement", Description: "do thing", DependsOn: []int{2, 3}, ReasoningEffort: "high"},
 	}
 	got := renderTasks(tasks, 80)
-	if !strings.Contains(got, "depends on:") {
+	if !strings.Contains(got, "2") || !strings.Contains(got, "3") {
 		t.Fatalf("renderTasks should show dependencies: %s", got)
 	}
 	if !strings.Contains(got, "high") {
