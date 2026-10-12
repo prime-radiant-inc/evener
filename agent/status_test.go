@@ -422,6 +422,55 @@ description: A test skill
 	}
 }
 
+// The user-advertised completion view (DetailedStatus.Skills) is what a live
+// session offers to select. It must not offer the bundled gardening-memory
+// skill to a session that cannot save memory, while inspection still retains
+// every winner in SkillCatalog.
+func TestSession_DetailedStatus_CompletionOmitsUnfollowableSkill(t *testing.T) {
+	t.Parallel()
+	hasDescriptor := func(list []skill.Descriptor) bool {
+		for _, descriptor := range list {
+			if descriptor.CatalogName == gardeningMemorySkillName {
+				return true
+			}
+		}
+		return false
+	}
+	hasMeta := func(list []skill.SkillMeta) bool {
+		for _, meta := range list {
+			if meta.Name == gardeningMemorySkillName {
+				return true
+			}
+		}
+		return false
+	}
+	for _, tc := range []struct {
+		name    string
+		cfg     SessionConfig
+		revoke  string
+		offered bool
+	}{
+		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true},
+		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", false},
+		{"memory-disabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project", DisableMemory: true}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSession(t, withConfig(tc.cfg))
+			if tc.revoke != "" {
+				s.reg.Remove(tc.revoke)
+			}
+			ds := s.DetailedStatus()
+			if !hasDescriptor(ds.SkillCatalog) {
+				t.Fatalf("inspection dropped %s: %+v", gardeningMemorySkillName, ds.SkillCatalog)
+			}
+			if got := hasMeta(ds.Skills); got != tc.offered {
+				t.Errorf("completion offers %s = %t, want %t: %+v", gardeningMemorySkillName, got, tc.offered, ds.Skills)
+			}
+		})
+	}
+}
+
 func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

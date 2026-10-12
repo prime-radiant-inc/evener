@@ -253,10 +253,12 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		ds.Tools = append(ds.Tools, ToolInfo{Name: name, Source: source})
 	}
 
-	// Inspection retains every winner; completion uses only the user view.
+	// Inspection retains every winner; completion uses only the user view, and
+	// only for skills this session can actually load (a session without the
+	// memory save tools does not offer the gardening-memory completion).
 	ds.SkillCatalog = s.skills.InspectionEntries()
 	for _, descriptor := range ds.SkillCatalog {
-		if descriptor.Unavailable || !descriptor.Controls.UserInvocable {
+		if descriptor.Unavailable || !descriptor.Controls.UserInvocable || !s.skillAvailableToSession(descriptor.CatalogName) {
 			continue
 		}
 		meta := descriptor.Meta
