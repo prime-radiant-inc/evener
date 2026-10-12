@@ -49,7 +49,11 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
         definition.
       </p>
       {loading && <Skeleton />}
-      {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
+      {error && (
+        <p className={CLASS.error} role="alert">
+          Failed to load: {friendlyErrorMessage(error)}
+        </p>
+      )}
       {!loading &&
         !error &&
         (agents.length === 0 ? (

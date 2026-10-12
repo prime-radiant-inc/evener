@@ -322,6 +322,11 @@ async function runOutputPagingJourney(fixture) {
       following:scroller.scrollHeight-scroller.clientHeight-scroller.scrollTop<=4};
   })()`;
   const state = () => read(stateExpr);
+  // A history response lands on the wire before the virtual list has rendered
+  // it and restored the reader's anchor; until then the viewport can hold only
+  // the unloaded marker or blank space. Wait for the rendered visible row
+  // instead of reading the state once.
+  const visibleState = label => wait(`(() => { const value=${stateExpr}; return value?.first ? value : null; })()`, label);
   const outputCalls = (after = 0) => sent(after).filter(f => f.method === 'evener/jobs/output' && f.params.ref === fixture.outputOwnerRef && f.params.jobId === fixture.outputJobId);
   const page = request => response(request)?.result?.data;
   const bytes = page => page.encoding === 'base64' ? Buffer.from(page.data, 'base64') : Buffer.from(page.data, 'utf8');
@@ -476,8 +481,7 @@ async function runOutputPagingJourney(fixture) {
   // reach history through the owner RPC, not merely move a bounded tail.
   await backward();
   for (let index = 0; index < 3; index++) await backward();
-  let baseline = (await state()).first;
-  assert.ok(baseline, 'later loaded page has a visible source-byte row');
+  let baseline = (await visibleState('later loaded page has a visible source-byte row')).first;
   const historyAfter = frames.length;
   await control('middle');
   await latest('MIDDLE_MARKER', historyAfter);
@@ -486,7 +490,8 @@ async function runOutputPagingJourney(fixture) {
 
   const remembered = baseline.start;
   for (let index = 0; index < 10; index++) await backward();
-  assert.ok((await bounded()).older > 400*1024, 'older window crossed its raw trim threshold');
+  await wait(`${stateExpr}?.older > ${400*1024}`, 'older window crossed its raw trim threshold');
+  await bounded();
   const beforeRefetch = frames.length;
   const refetched = () => outputCalls(beforeRefetch).some(request => page(request) && page(request).offsetBytes <= remembered && page(request).offsetBytes+page(request).bytesReturned > remembered);
   const forwardHistory = () => outputCalls(beforeRefetch).filter(request => request.params.beforeBytes !== undefined && page(request));
@@ -518,9 +523,8 @@ async function runOutputPagingJourney(fixture) {
   }), 'actual controls-only page advances across the unloaded interval');
   await captureOutput('paging-gap');
   for (let index = 0; index < 80; index++) {
-    const before = await state();
+    const before = await visibleState('loaded long-line history has a visible byte row');
     if (before.rows.some(row => row.kind === 'output' && row.visible && row.start <= longStart && row.end > longStart)) break;
-    assert.ok(before.first, 'loaded long-line history has a visible byte row');
     await wheel(before.first.start > longStart ? -before.height : before.height);
     await wait(`(() => { const value=${stateExpr}; return value && (value.top!==${before.top} || value.first?.start!==${before.first?.start} || value.first?.top!==${before.first?.top}); })()`, 'trusted wheel advances within loaded long-line history');
   }
@@ -528,8 +532,7 @@ async function runOutputPagingJourney(fixture) {
   assert.ok((await state()).rows.filter(row=>row.kind==='output').every(row=>row.end-row.start<=4096), 'long-line fragments remain bounded');
   await captureOutput('paging-text');
 
-  baseline = (await state()).first;
-  assert.ok(baseline);
+  baseline = (await visibleState('long-line history has a visible baseline row')).first;
   const liveBefore = checkPages().at(-1).page.totalBytes;
   for (let index = 0; index < 17; index++) {
     const after = frames.length;

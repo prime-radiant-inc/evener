@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { InRepoSection } from "./inrepo";
+import { shownReasons } from "./reasonTestUtils";
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -23,13 +24,16 @@ function resolvedWithRepo(repo: LaunchConfigResolved["repo"]): LaunchConfigResol
   return { effective: {}, layers: {}, provenance: {}, repo };
 }
 
-// The "No .evener/launch.toml in {cwd}." note is split across text + <code> +
-// text + <code> + text nodes (see inrepo.tsx's ResolvedStatus) - a single
-// regex/string getByText can't match text broken across sibling elements,
-// so this matches on the containing <p>'s full textContent instead.
-function findsNoFileMessage(cwd: string) {
-  return (_: string, element: Element | null) =>
-    element?.tagName === "P" && element.textContent === `No .evener/launch.toml in ${cwd}.`;
+/** What the status area shows: empty, loading, error, or the resolved
+ * file's trust state (absent when there is no in-repo file). */
+function inRepoState(): string | null {
+  return screen.getByTestId("inrepo-status").getAttribute("data-state");
+}
+
+/** Waits for the "no in-repo file" state for `cwd`. */
+async function noFileFound(cwd: string): Promise<void> {
+  await waitFor(() => expect(inRepoState()).toBe("absent"));
+  expect(screen.getByTestId("inrepo-status").textContent).toContain(cwd);
 }
 
 beforeEach(() => {
@@ -52,7 +56,7 @@ describe("initial load", () => {
     });
     render(<InRepoSection sectionId="inrepo" />);
     expect(screen.getByRole("button", { name: "Working dir: /repo — browse" })).toBeTruthy();
-    await screen.findByText(findsNoFileMessage("/repo"));
+    await noFileFound("/repo");
   });
 
   // FIX 2b: the loading phase gets the Loader widget instead of a static
@@ -70,10 +74,10 @@ describe("initial load", () => {
     });
     render(<InRepoSection sectionId="inrepo" />);
     expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
-    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(inRepoState()).toBe("loading");
 
     release();
-    await screen.findByText(findsNoFileMessage("/repo"));
+    await noFileFound("/repo");
   });
 
   test("no lastCwd in storage and an empty field: shows 'Enter a working directory.' with no RPC call", () => {
@@ -84,7 +88,7 @@ describe("initial load", () => {
       return resolvedWithRepo(undefined);
     });
     render(<InRepoSection sectionId="inrepo" />);
-    expect(screen.getByText("Enter a working directory.")).toBeTruthy();
+    expect(inRepoState()).toBe("empty");
     expect(called).toBe(false);
   });
 
@@ -157,7 +161,7 @@ describe("trust states", () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/resolve", () => resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" }));
     render(<InRepoSection sectionId="inrepo" />);
-    await screen.findByText(findsNoFileMessage("/repo"));
+    await noFileFound("/repo");
     expect(screen.queryByRole("button", { name: /trust this file/i })).toBeNull();
   });
 
@@ -168,23 +172,19 @@ describe("trust states", () => {
       resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash: "abc123", preview: "model = 'x'" }),
     );
     render(<InRepoSection sectionId="inrepo" />);
-    await screen.findByText(/Trusted/);
+    await waitFor(() => expect(inRepoState()).toBe("trusted"));
     expect(screen.getByText("abc123")).toBeTruthy();
     expect(screen.getByText("model = 'x'")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /trust this file/i })).toBeNull();
   });
 
-  test.each([
-    ["untrusted", /Untrusted/],
-    ["changed", /file has changed/],
-    ["rejected", /Previously rejected/],
-  ])("%s: shows the trust button", async (trust, copyPattern) => {
+  test.each(["untrusted", "changed", "rejected"])("%s: shows the trust button", async (trust) => {
     localStorage.setItem("lastCwd", "/repo");
     const fake = connectFakeClient();
     fake.on("evener/launch/resolve", () => resolvedWithRepo({ path: ".evener/launch.toml", trust, hash: "abc123" }));
     render(<InRepoSection sectionId="inrepo" />);
-    await screen.findByText(copyPattern);
+    await waitFor(() => expect(inRepoState()).toBe(trust));
     expect(screen.getByRole("button", { name: /trust this file/i })).toBeTruthy();
   });
 });
@@ -207,7 +207,7 @@ describe("trust action", () => {
     render(<InRepoSection sectionId="inrepo" />);
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: /trust this file/i }));
-    await screen.findByText(/Trusted/);
+    await waitFor(() => expect(inRepoState()).toBe("trusted"));
     expect(resolveCalls).toBe(2);
   });
 
@@ -224,16 +224,16 @@ describe("trust action", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: /trust this file/i }));
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    await screen.findByText(/Trust failed: Something went wrong/);
+    await waitFor(() => expect(shownReasons()).toContain("trust-failed"));
     // Assert the raw string no longer appears
     expect(screen.queryByText(/file changed since review/)).toBeNull();
     expect(screen.getByText("model = 'x'")).toBeTruthy();
-    expect(screen.getByText(/Untrusted/)).toBeTruthy();
+    expect(inRepoState()).toBe("untrusted");
   });
 });
 
 describe("resolve failure", () => {
-  test("shows 'Failed to load: {message}'", async () => {
+  test("shows the load-failed state without the raw error", async () => {
     localStorage.setItem("lastCwd", "/repo");
     const fake = connectFakeClient();
     fake.on("evener/launch/resolve", () => {
@@ -241,7 +241,7 @@ describe("resolve failure", () => {
     });
     render(<InRepoSection sectionId="inrepo" />);
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    await screen.findByText("Failed to load: Something went wrong.");
+    await waitFor(() => expect(inRepoState()).toBe("error"));
     // Assert the raw string no longer appears
     expect(screen.queryByText(/boom/)).toBeNull();
   });

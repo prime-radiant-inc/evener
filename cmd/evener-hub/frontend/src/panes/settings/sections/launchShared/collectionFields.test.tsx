@@ -270,12 +270,12 @@ describe("PathListField", () => {
   test("an invalid path shows an inline error and does not add the row", async () => {
     const user = userEvent.setup();
     connectPathLister({});
-    const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "path does not exist" });
+    const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "validator-refusal" });
     const onChange = vi.fn();
     render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
     await typePath(user, "/nope");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    await waitFor(() => expect(screen.getByText("path does not exist")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("validator-refusal")).toBeTruthy());
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -307,7 +307,7 @@ describe("PathListField", () => {
     );
     await typePath(user, "/opt/skills");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    expect(await screen.findByText("Already added.")).toBeTruthy();
+    expect(await screen.findByRole("alert")).toBeTruthy();
     expect(validatePath).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
   });
@@ -369,7 +369,7 @@ describe("PathListField", () => {
     expect(within(localRow).getByRole("button", { name: "Remove /opt/local-skills" })).toBeTruthy();
     // Ghost row has no remove button and is tagged (default).
     expect(ghost.textContent).toContain("/etc/defaults/skills");
-    expect(ghost.textContent).toContain("(default)");
+    expect(ghost.getAttribute("data-kind")).toBe("inherited");
     expect(within(ghost).queryByRole("button")).toBeNull();
   });
 
@@ -516,7 +516,7 @@ describe("ModelListField", () => {
     const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
     expect(within(localRow).getByRole("button", { name: "Remove openai/gpt-5-mini" })).toBeTruthy();
     expect(ghost.textContent).toContain("anthropic/claude-haiku-4-5");
-    expect(ghost.textContent).toContain("(default)");
+    expect(ghost.getAttribute("data-kind")).toBe("inherited");
     expect(within(ghost).queryByRole("button")).toBeNull();
   });
 
@@ -622,7 +622,7 @@ describe("EnvMapField", () => {
     const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
     expect(within(localRow).getByRole("button", { name: "Remove LOCAL=1" })).toBeTruthy();
     expect(ghost.textContent).toContain("EDITOR=vim");
-    expect(ghost.textContent).toContain("(default)");
+    expect(ghost.getAttribute("data-kind")).toBe("inherited");
     expect(within(ghost).queryByRole("button")).toBeNull();
   });
 
@@ -638,7 +638,7 @@ describe("EnvMapField", () => {
 
     const list = screen.getByRole("list", { name: "Environment variables" });
     expect(within(list).getByText("EDITOR=vim")).toBeTruthy();
-    expect(within(list).queryByText(/No environment variables configured/i)).toBeNull();
+    expect(list.querySelector("[data-reason='empty']")).toBeNull();
   });
 });
 
@@ -679,12 +679,12 @@ describe("McpServerListField", () => {
 
   test("an invalid command is rejected inline and not added", async () => {
     const user = userEvent.setup();
-    const validateCommand = vi.fn().mockResolvedValue({ path: "", valid: false, error: "invalid command" });
+    const validateCommand = vi.fn().mockResolvedValue({ path: "", valid: false, error: "validator-refusal" });
     const onChange = vi.fn();
     render(<McpServerListField option={mcpOption} items={[]} onChange={onChange} validateCommand={validateCommand} />);
     await user.type(screen.getByPlaceholderText("name command args..."), "fs not-a-real-binary");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    await waitFor(() => expect(screen.getByText("invalid command")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("validator-refusal")).toBeTruthy());
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -735,7 +735,7 @@ describe("McpServerListField", () => {
     const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
     expect(within(localRow).getByRole("button", { name: /Remove fs → mcp-fs/i })).toBeTruthy();
     expect(ghost.textContent).toContain("docs → npx docs-mcp");
-    expect(ghost.textContent).toContain("(default)");
+    expect(ghost.getAttribute("data-kind")).toBe("inherited");
     expect(within(ghost).queryByRole("button")).toBeNull();
   });
 
@@ -752,7 +752,7 @@ describe("McpServerListField", () => {
 
     const list = screen.getByRole("list", { name: "MCP servers" });
     expect(within(list).getByText("docs → npx docs-mcp")).toBeTruthy();
-    expect(within(list).queryByText(/No MCP servers configured/i)).toBeNull();
+    expect(list.querySelector("[data-reason='empty']")).toBeNull();
   });
 });
 

@@ -95,6 +95,13 @@ export interface LaunchConfigFormProps {
   onSaved?: (resolved: LaunchConfigResolved) => void;
 }
 
+/** The save status line: `kind` is rendered as `data-state`; a saved status
+ * self-clears, an error stays until the next save. */
+interface SaveStatus {
+  kind: "saved" | "error";
+  text: string;
+}
+
 function formatSavedAt(): string {
   return `Saved at ${new Date().toLocaleTimeString()}`;
 }
@@ -169,7 +176,7 @@ export function LaunchConfigForm({
   // unchanged across a re-registration - so a caller that has the instance hands
   // it over, and one that does not keeps today's name-keyed behavior.
   const owner: object | string | undefined = draftOwner ?? host;
-  const [status, setStatusText] = useState("");
+  const [status, setSaveStatus] = useState<SaveStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
@@ -178,7 +185,7 @@ export function LaunchConfigForm({
     setSeed({ owner, current, baseline });
     setState(baseline);
     setFieldErrors({});
-    setStatusText("");
+    setSaveStatus(null);
     setConflict(false);
   } else if (seed.current !== current) {
     // A same-owner re-read: the pane refreshed this host's layer while the form
@@ -220,12 +227,12 @@ export function LaunchConfigForm({
   // biome-ignore lint/correctness/useExhaustiveDependencies: owner is the trigger, not a read - the cleanup it gates clears a timer armed by the owner before it
   useEffect(() => () => clearTimeout(clearTimerRef.current), [owner]);
 
-  function setStatus(text: string): void {
+  function setStatus(next: SaveStatus): void {
     clearTimeout(clearTimerRef.current);
-    setStatusText(text);
-    if (text && !text.startsWith("Error:")) {
+    setSaveStatus(next);
+    if (next.kind === "saved") {
       clearTimerRef.current = setTimeout(() => {
-        setStatusText((prev) => (prev === text ? "" : prev));
+        setSaveStatus((prev) => (prev === next ? null : prev));
       }, STATUS_CLEAR_MS);
     }
   }
@@ -277,7 +284,7 @@ export function LaunchConfigForm({
     setBusy(true);
     try {
       const resolved = await onSave(collectConfig(supportedOptions, state));
-      setStatus(formatSavedAt());
+      setStatus({ kind: "saved", text: formatSavedAt() });
       toast.push("success", successToast);
       onSaved?.(resolved);
     } catch (err) {
@@ -285,7 +292,7 @@ export function LaunchConfigForm({
       if (matchesEnvCredentialError(message) && supportedOptions.some((o) => o.wireField === "env")) {
         setFieldErrors((e) => ({ ...e, env: message }));
       }
-      setStatus(`Error: ${message}`);
+      setStatus({ kind: "error", text: `Error: ${message}` });
       toast.push("error", "Save failed");
     } finally {
       setBusy(false);
@@ -414,7 +421,7 @@ export function LaunchConfigForm({
         </div>
       ))}
       {conflict && (
-        <p className={CLASS.conflict} role="status">
+        <p className={CLASS.conflict} role="status" data-reason="host-changed">
           These settings changed on the host while you were editing. Saving will overwrite the newer values.{" "}
           <Button type="button" onClick={() => adoptHostValues()}>
             Use the host's values
@@ -425,8 +432,8 @@ export function LaunchConfigForm({
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>
           Save launch defaults
         </Button>
-        <p className={CLASS.status} aria-live="polite">
-          {status}
+        <p className={CLASS.status} aria-live="polite" data-testid="launch-config-status" data-state={status?.kind}>
+          {status?.text}
         </p>
       </div>
     </div>

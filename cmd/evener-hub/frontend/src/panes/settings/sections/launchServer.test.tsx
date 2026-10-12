@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
 import { LaunchServerSection } from "./launchServer";
+import { shownReasons } from "./reasonTestUtils";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -66,10 +67,8 @@ describe("load sequence", () => {
       throw new Error("network down");
     });
     render(<LaunchServerSection sectionId="launch-evener" />);
-    await screen.findByText(/Failed to load launch settings/i);
-    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    expect(screen.getByText(/Something went wrong/)).toBeTruthy();
-    // Assert the raw string no longer appears
+    await waitFor(() => expect(shownReasons()).toContain("load-failed"));
+    // error is converted via friendlyErrorMessage: the raw string never appears
     expect(screen.queryByText(/network down/)).toBeNull();
   });
 
@@ -83,7 +82,7 @@ describe("load sequence", () => {
     render(<LaunchServerSection sectionId="launch-evener" />);
     await screen.findByLabelText("Agent");
     // The form is fully usable even though resolve() failed - "non-fatal".
-    expect(screen.queryByText(/Warnings/)).toBeNull();
+    expect(screen.queryByTestId("launch-diagnostics")).toBeNull();
   });
 
   test("renders warnings from the initial resolve()'s diagnostics", async () => {
@@ -95,7 +94,7 @@ describe("load sequence", () => {
       diagnostics: [{ layer: "global", field: "sandbox", message: "sandbox_net has no effect without a sandbox mode" }],
     }));
     render(<LaunchServerSection sectionId="launch-evener" />);
-    await screen.findByText("Warnings");
+    await screen.findByTestId("launch-diagnostics");
     expect(screen.getByText("sandbox: sandbox_net has no effect without a sandbox mode")).toBeTruthy();
   });
 });

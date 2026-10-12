@@ -29,6 +29,8 @@ export type EmptyStateReason =
   | "deleted"
   | "unavailable"
   | "no-turns"
+  | "not-built"
+  | "needs-configuration"
   | "unverifiable"
   | "no-instances"
   /** A list that loaded and has nothing in it. */

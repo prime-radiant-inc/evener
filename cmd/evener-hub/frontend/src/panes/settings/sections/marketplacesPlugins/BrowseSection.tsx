@@ -180,7 +180,9 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       </div>
       <ul aria-label="Marketplace browse tree" className={CLASS.tree}>
         {marketplaces.length === 0 ? (
-          <li className={CLASS.empty}>No marketplaces registered. Add one from the Marketplaces tab.</li>
+          <li className={CLASS.empty} data-reason="empty">
+            No marketplaces registered. Add one from the Marketplaces tab.
+          </li>
         ) : trimmedQuery !== "" && filterLoading ? (
           <li>
             <Loader label="Loading marketplaces" />
@@ -284,7 +286,9 @@ function MarketplaceNode({
           ) : cache.status === "error" ? (
             <li className={CLASS.empty}>{`Failed to browse: ${cache.error}`}</li>
           ) : rows.length === 0 ? (
-            <li className={CLASS.empty}>This marketplace has no plugins.</li>
+            <li className={CLASS.empty} data-reason="empty">
+              This marketplace has no plugins.
+            </li>
           ) : (
             rows.map((p) => (
               <li key={p.name} className={CLASS.row}>
@@ -297,7 +301,7 @@ function MarketplaceNode({
                 </div>
                 <div className={CLASS.rowActions}>
                   {isInstalled(p.name, marketplace.name) ? (
-                    <Chip>Installed</Chip>
+                    <Chip kind="installed">Installed</Chip>
                   ) : (
                     <Button size="sm" disabled={installDisabled} onClick={() => onInstall(p.name, marketplace.name)}>
                       Install

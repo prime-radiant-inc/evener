@@ -80,7 +80,9 @@ export function SettingsNav({ activeId, onNavigate }: SettingsNavProps) {
         if (sections.length === 0) return null;
         return (
           <div key={cluster.id}>
-            <div className={CLASS.clusterHeader}>{cluster.label}</div>
+            <div className={CLASS.clusterHeader} data-section={cluster.id}>
+              {cluster.label}
+            </div>
             {sections.map((section) => (
               <NavLink key={section.id} section={section} active={section.id === activeId} onNavigate={onNavigate} />
             ))}

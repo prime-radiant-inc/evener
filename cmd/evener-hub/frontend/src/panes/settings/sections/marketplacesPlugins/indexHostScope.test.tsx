@@ -220,6 +220,6 @@ test("a marketplace draft does not carry across a host switch", async () => {
   const gammaDialog = await screen.findByRole("dialog", { name: "acme-plugins" });
   expect((within(gammaDialog).getByLabelText("Name") as HTMLInputElement).value).toBe("acme-plugins");
   expect((within(gammaDialog).getByPlaceholderText("owner/repo") as HTMLInputElement).value).toBe("gamma/plugins");
-  expect(screen.queryByText(/Saving re-fetches/)).toBeNull();
+  expect(screen.queryByTestId("marketplace-refetch-note")).toBeNull();
   expect(proxyEdits(fake)).toEqual([]);
 });

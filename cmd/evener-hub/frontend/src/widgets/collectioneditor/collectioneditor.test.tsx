@@ -211,6 +211,17 @@ describe("inheritedItems", () => {
     render(<CollectionEditor<DirItem> {...baseProps({ items: [], inheritedItems: [] })} />);
     expect(screen.getByText("No plugin directories. Add one below.")).toBeTruthy();
   });
+
+  test("rows expose their kind as data-kind, and an empty list's row says why", () => {
+    const { rerender } = render(
+      <CollectionEditor<DirItem> {...baseProps({ inheritedItems: [{ path: "/etc/defaults/plugins" }] })} />,
+    );
+    const rows = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["local", "local", "inherited"]);
+    rerender(<CollectionEditor<DirItem> {...baseProps({ items: [], inheritedItems: [] })} />);
+    const [empty] = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(empty?.getAttribute("data-reason")).toBe("empty");
+  });
 });
 
 describe("renderAddField", () => {
