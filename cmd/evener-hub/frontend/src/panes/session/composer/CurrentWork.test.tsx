@@ -21,7 +21,6 @@ const states = [
     name: "task plus goal",
     task: "Inspect the current working directory",
     goal: "Keep the session focused",
-    label: "Task: Inspect the current working directory. Goal: Keep the session focused",
     hasTask: true,
     hasGoal: true,
     hasDivider: true,
@@ -30,7 +29,6 @@ const states = [
     name: "task only",
     task: "Inspect the current working directory",
     goal: undefined,
-    label: "Task: Inspect the current working directory",
     hasTask: true,
     hasGoal: false,
     hasDivider: false,
@@ -39,7 +37,6 @@ const states = [
     name: "goal only",
     task: undefined,
     goal: "Keep the session focused",
-    label: "Goal: Keep the session focused",
     hasTask: false,
     hasGoal: true,
     hasDivider: false,
@@ -48,25 +45,40 @@ const states = [
     name: "empty",
     task: "   ",
     goal: "\n\t",
-    label: "",
     hasTask: false,
     hasGoal: false,
     hasDivider: false,
   },
 ] as const;
 
-test.each(states)("renders the $name state", ({ task, goal, label, hasTask, hasGoal, hasDivider }) => {
+// The live region's text, checked for what it announces rather than how it
+// words it: each present value, in task-then-goal order, and nothing at all
+// when neither is present.
+function expectAnnounces(status: HTMLElement, values: string[]): void {
+  const text = status.textContent ?? "";
+  if (values.length === 0) {
+    expect(text).toBe("");
+    return;
+  }
+  const positions = values.map((value) => text.indexOf(value));
+  for (const position of positions) expect(position).toBeGreaterThanOrEqual(0);
+  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+}
+
+function goalStatusWord(): HTMLElement {
+  return screen.getByTestId("current-work-goal-status");
+}
+
+test.each(states)("renders the $name state", ({ task, goal, hasTask, hasGoal, hasDivider }) => {
   render(<CurrentWork task={task} goal={goal} onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
 
   const status = screen.getByRole("status");
   expect(status.getAttribute("aria-atomic")).toBe("true");
-  expect(status.textContent).toBe(label);
+  expectAnnounces(status, [...(hasTask && task ? [task] : []), ...(hasGoal && goal ? [goal] : [])]);
   expect(screen.queryByTestId("current-work") !== null).toBe(hasTask || hasGoal);
   expect(screen.queryByTestId("current-work-task") !== null).toBe(hasTask);
   expect(screen.queryByTestId("current-work-goal") !== null).toBe(hasGoal);
   expect(screen.queryByTestId("current-work-divider") !== null).toBe(hasDivider);
-  if (hasTask) expect(screen.getByText("Task")).toBeTruthy();
-  if (hasGoal) expect(screen.getByText("Goal")).toBeTruthy();
 });
 
 test("keeps one text-content live region while task and goal change", () => {
@@ -74,20 +86,22 @@ test("keeps one text-content live region while task and goal change", () => {
     <CurrentWork task="Inspect the diff" goal="Keep focus" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />,
   );
   const status = screen.getByRole("status");
-  expect(status.textContent).toBe("Task: Inspect the diff. Goal: Keep focus");
+  expectAnnounces(status, ["Inspect the diff", "Keep focus"]);
 
   view.rerender(<CurrentWork task="Ship it" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
   expect(screen.getByRole("status")).toBe(status);
-  expect(status.textContent).toBe("Task: Ship it");
+  expectAnnounces(status, ["Ship it"]);
+  expect(status.textContent).not.toContain("Keep focus");
 
   view.rerender(<CurrentWork task=" " goal={"\n"} onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
   expect(screen.getByRole("status")).toBe(status);
-  expect(status.textContent).toBe("");
+  expectAnnounces(status, []);
   expect(screen.queryByTestId("current-work")).toBeNull();
 
   view.rerender(<CurrentWork goal="Finish safely" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
   expect(screen.getByRole("status")).toBe(status);
-  expect(status.textContent).toBe("Goal: Finish safely");
+  expectAnnounces(status, ["Finish safely"]);
+  expect(status.textContent).not.toContain("Ship it");
 });
 
 test("renders the goal's status beside the objective, in the row and the live region", () => {
@@ -95,8 +109,10 @@ test("renders the goal's status beside the objective, in the row and the live re
     <CurrentWork goal="Keep the session focused" goalStatus="active" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />,
   );
 
-  expect(screen.getByTestId("current-work-goal-status").textContent).toBe("Active");
-  expect(screen.getByRole("status").textContent).toBe("Goal: Keep the session focused (Active)");
+  const word = goalStatusWord();
+  expect(word.dataset.state).toBe("active");
+  expect(word.textContent).not.toBe("");
+  expectAnnounces(screen.getByRole("status"), ["Keep the session focused", word.textContent ?? ""]);
 });
 
 test("renders a blocked goal's status word in the attention ink", () => {
@@ -104,10 +120,11 @@ test("renders a blocked goal's status word in the attention ink", () => {
     <CurrentWork goal="Keep the session focused" goalStatus="blocked" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />,
   );
 
-  const status = screen.getByTestId("current-work-goal-status");
-  expect(status.textContent).toBe("Blocked");
-  expect(status.className).toContain(styles.statusBlocked);
-  expect(screen.getByRole("status").textContent).toBe("Goal: Keep the session focused (Blocked)");
+  const word = goalStatusWord();
+  expect(word.dataset.state).toBe("blocked");
+  expect(word.textContent).not.toBe("");
+  expect(word.className).toContain(styles.statusBlocked);
+  expectAnnounces(screen.getByRole("status"), ["Keep the session focused", word.textContent ?? ""]);
 });
 
 test("renders an unknown status as written", () => {
@@ -115,8 +132,8 @@ test("renders an unknown status as written", () => {
     <CurrentWork goal="Keep the session focused" goalStatus="in review" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />,
   );
 
-  expect(screen.getByTestId("current-work-goal-status").textContent).toBe("in review");
-  expect(screen.getByRole("status").textContent).toBe("Goal: Keep the session focused (in review)");
+  expect(goalStatusWord().textContent).toBe("in review");
+  expectAnnounces(screen.getByRole("status"), ["Keep the session focused", "in review"]);
 });
 
 test("renders prototype-named statuses as written, not inherited Object.prototype values", () => {
@@ -130,8 +147,8 @@ test("renders prototype-named statuses as written, not inherited Object.prototyp
       />,
     );
 
-    expect(screen.getByTestId("current-work-goal-status").textContent).toBe(goalStatus);
-    expect(screen.getByRole("status").textContent).toBe(`Goal: Keep the session focused (${goalStatus})`);
+    expect(goalStatusWord().textContent).toBe(goalStatus);
+    expectAnnounces(screen.getByRole("status"), ["Keep the session focused", goalStatus]);
     unmount();
   }
 });
@@ -145,7 +162,8 @@ test.each([
   );
 
   expect(screen.queryByTestId("current-work-goal-status")).toBeNull();
-  expect(screen.getByRole("status").textContent).toBe("Goal: Keep the session focused");
+  // The goal is the last thing announced: no status follows it.
+  expect(screen.getByRole("status").textContent?.endsWith("Keep the session focused")).toBe(true);
 });
 
 test("gives the status word the row's containment contract", () => {

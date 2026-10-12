@@ -129,8 +129,7 @@ test("a rejected dialog chunk shows the failure message with a Retry", async () 
   await openConnectDialog(user);
   await chunk.reject(chunkError);
 
-  expect(screen.getByText("Couldn't load the connect dialog")).toBeTruthy();
-  expect(screen.getByText(CHUNK_ERROR)).toBeTruthy();
+  expect(screen.getByTestId("connect-dialog-load-failure").textContent).toBe(CHUNK_ERROR);
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   expect(onCaughtError).toHaveBeenCalledTimes(1);
   expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
@@ -158,7 +157,7 @@ test("Retry fetches the chunk again and mounts the dialog on the second attempt"
   // network stack - it replays the cached failure.
   expect(screen.getByText("connect dialog mounted")).toBeTruthy();
   expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
-  expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
+  expect(screen.queryByTestId("connect-dialog-load-failure")).toBeNull();
   expect(onCaughtError).toHaveBeenCalledTimes(1);
   expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
 });
@@ -178,7 +177,7 @@ test("a retry that fails again offers a page reload instead of stranding the pro
 
   await openConnectDialog(user);
   await firstChunk.reject(chunkError);
-  expect(screen.getByText("Couldn't load the connect dialog")).toBeTruthy();
+  expect(screen.getByTestId("connect-dialog-load-failure")).toBeTruthy();
   // The first failure offers only the cache-busted retry: a deploy that
   // removed the hashed chunk is still only one hypothesis among transient
   // ones, so the reload is the second-strike path, not the first.
@@ -222,7 +221,7 @@ test("an ordinary retry failure does not prescribe a page reload", async () => {
   await chunk.reject(chunkError);
 
   expect(screen.getByText("outer boundary caught: ConnectProviderDialog chunk request failed with 500")).toBeTruthy();
-  expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
+  expect(screen.queryByTestId("connect-dialog-load-failure")).toBeNull();
   expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
   expect(onCaughtError).toHaveBeenCalledTimes(1);
   expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
@@ -275,7 +274,7 @@ test("a logic bug in the resolved dialog keeps unwinding past the dialog boundar
 
   expect(screen.getByText("outer boundary caught: ConnectProviderDialog render logic bug")).toBeTruthy();
   expect(caughtErrors).toEqual([renderError]);
-  expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
+  expect(screen.queryByTestId("connect-dialog-load-failure")).toBeNull();
   expect(onCaughtError).toHaveBeenCalledTimes(1);
   expect(onCaughtError.mock.calls[0]?.[0]).toBe(renderError);
   expect(onCaughtError.mock.calls[0]?.[1].errorBoundary).toBeInstanceOf(DialogTestOuterBoundary);

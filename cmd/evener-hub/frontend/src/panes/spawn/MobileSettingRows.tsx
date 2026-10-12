@@ -66,9 +66,12 @@ interface MobileSettingRowProps {
   onClick?: () => void;
   expanded?: boolean;
   disabled?: boolean;
+  /** The state behind `value`, for a row whose value reads differently while
+   * loading or failed (the plugin preview's status). */
+  state?: string;
 }
 
-function MobileSettingRow({ label, value, onClick, expanded = false, disabled = false }: MobileSettingRowProps) {
+function MobileSettingRow({ label, value, onClick, expanded = false, disabled = false, state }: MobileSettingRowProps) {
   const interactive = onClick !== undefined && !disabled;
   const content = (
     <>
@@ -89,6 +92,7 @@ function MobileSettingRow({ label, value, onClick, expanded = false, disabled = 
       className={`${CLASS.row} ${interactive ? "" : CLASS.readOnly}`}
       data-testid="mobile-spawn-row"
       data-label={label}
+      data-state={state}
     >
       {!interactive ? (
         content
@@ -238,6 +242,7 @@ export function MobileSettingRows({
           <MobileSettingRow
             label="Plugins"
             value={pluginSummary}
+            state={pluginPreview.status}
             onClick={() => {
               if (pluginResponse) setPluginDraft(pluginSelection);
               open("Plugins");

@@ -995,6 +995,15 @@ function SpawnForm({
     model === "" &&
     advancedModel === "" &&
     (noDefaultModel || providerChoiceScopes.current.has(`${harness}\0${cwd}`));
+  // What the card's model trigger stands for, in the same order its label is
+  // chosen below.
+  const modelTriggerState = modelRequired
+    ? "required"
+    : model
+      ? "chosen"
+      : resolvedDefaultModel !== ""
+        ? "resolved-default"
+        : "default";
   // The model half of the host gate (component 07b review, round five): a
   // non-empty model belongs to the host whose catalog offered it, so it cannot
   // be submitted until the SELECTED host's model list has settled - see
@@ -2478,6 +2487,7 @@ function SpawnForm({
             type="button"
             id="spawn-cwd"
             className={CLASS.directoryButton}
+            data-state={cwd ? "chosen" : "unset"}
             aria-label={`Working directory: ${cwd || "Choose a folder"}`}
             aria-haspopup="dialog"
             aria-expanded={directoryOpen}
@@ -2614,7 +2624,7 @@ function SpawnForm({
                       no default (kata xgk8), otherwise the chosen model, the
                       resolved default model's own "<model> (default)", or
                       plain "(default)" until the resolve lands. */}
-                  <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
+                  <span className={CLASS.modelTrigger} data-testid="spawn-model-slot" data-state={modelTriggerState}>
                     <ModelSwitchTrigger
                       label={
                         modelRequired
@@ -2784,7 +2794,7 @@ function SpawnForm({
             below: it explains why Start is disabled, so it sits beside the
             control it names rather than in a form row that no longer exists. */}
         {modelRequired && (
-          <InlineNotice live="alert">
+          <InlineNotice live="alert" data-reason={noDefaultModel ? "no-default-model" : "provider-model"}>
             {noDefaultModel
               ? "This hub has no default model configured — choose one to start."
               : "Choose one of the connected provider's models to start."}
@@ -2808,7 +2818,12 @@ function SpawnForm({
         {pluginSelectionSupported && (
           <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
             {previewResponse === null && (
-              <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary" role="status">
+              <div
+                className={CLASS.pluginSummary}
+                data-testid="spawn-plugin-summary"
+                data-state={pluginPreview.state.status}
+                role="status"
+              >
                 <strong>Plugins for this session</strong>
                 {pluginPreview.state.status === "loading" && <span>Inspecting plugins…</span>}
                 {pluginPreview.state.status === "error" && (
@@ -2830,7 +2845,11 @@ function SpawnForm({
                 id="spawn-plugin-selection"
                 data-testid="spawn-plugin-disclosure"
                 summary={
-                  <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary">
+                  <div
+                    className={CLASS.pluginSummary}
+                    data-testid="spawn-plugin-summary"
+                    data-state={pluginPreview.state.status}
+                  >
                     <strong>Plugins for this session</strong>
                     <span>
                       {configuredPluginNames.length > 0
