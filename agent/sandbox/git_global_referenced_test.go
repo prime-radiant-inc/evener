@@ -189,6 +189,22 @@ func TestProbeGitGlobalReferencedPaths(t *testing.T) {
 			},
 		},
 		{
+			name: "an empty last assignment clears an earlier value",
+			setup: func(t *testing.T, home, ignore, attrs string) []string {
+				writeFixtureFile(t, filepath.Join(home, ".gitconfig"),
+					"[core]\n\texcludesFile = ~/ignore\n\texcludesFile =\n")
+				return nil
+			},
+		},
+		{
+			name: "a quoted empty last assignment clears an earlier value",
+			setup: func(t *testing.T, home, ignore, attrs string) []string {
+				writeFixtureFile(t, filepath.Join(home, ".gitconfig"),
+					"[core]\n\texcludesFile = ~/ignore\n\texcludesFile = \"\"\n")
+				return nil
+			},
+		},
+		{
 			name: "a config larger than the bounded read names nothing",
 			setup: func(t *testing.T, home, ignore, attrs string) []string {
 				var config strings.Builder
@@ -262,17 +278,20 @@ func TestBareSectionNameAndConfigValueLine(t *testing.T) {
 
 	for _, tc := range []struct {
 		line, key, want string
+		assigned        bool
 	}{
-		{"excludesFile = ~/ignore", "excludesFile", "~/ignore"},
-		{"EXCLUDESFILE = ~/ignore", "excludesFile", "~/ignore"},
-		{"attributesFile = ~/attrs # comment", "attributesFile", "~/attrs"},
-		{"attributesFile = \"~/attrs\"", "attributesFile", "~/attrs"},
-		{"path = ../*.cfg", "excludesFile", ""},
-		{"not-a-key = x", "excludesFile", ""},
-		{"excludesFile =", "excludesFile", ""},
+		{"excludesFile = ~/ignore", "excludesFile", "~/ignore", true},
+		{"EXCLUDESFILE = ~/ignore", "excludesFile", "~/ignore", true},
+		{"attributesFile = ~/attrs # comment", "attributesFile", "~/attrs", true},
+		{"attributesFile = \"~/attrs\"", "attributesFile", "~/attrs", true},
+		{"excludesFile =", "excludesFile", "", true},
+		{"excludesFile = \"\"", "excludesFile", "", true},
+		{"path = ../*.cfg", "excludesFile", "", false},
+		{"not-a-key = x", "excludesFile", "", false},
 	} {
-		if got := configValueLine(tc.line, tc.key); got != tc.want {
-			t.Errorf("configValueLine(%q, %q) = %q, want %q", tc.line, tc.key, got, tc.want)
+		got, assigned := configValueLine(tc.line, tc.key)
+		if got != tc.want || assigned != tc.assigned {
+			t.Errorf("configValueLine(%q, %q) = (%q, %v), want (%q, %v)", tc.line, tc.key, got, assigned, tc.want, tc.assigned)
 		}
 	}
 }

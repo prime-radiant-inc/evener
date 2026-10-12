@@ -311,6 +311,11 @@ unsandboxed root's `TMPDIR` is not in the tree.
     target's content at the literal name, so a config naming `~/link` →
     `~/.ssh/id_rsa` would otherwise expose the key at `~/link` (verified against the
     live kernel).
+    Residual: a HARD link resolves to no other path, so a config naming a hard link
+    to a masked file is granted and the mask does not catch it. Creating one is a
+    deliberate act by the same user the session runs as, which is why it is recorded
+    rather than closed, and it is tracked in
+    [#4473](https://github.com/prime-radiant-inc/evener/issues/4473).
   - **Read-only, spawned-layer only**, and it changes no write surface — the same
     anti-hook-planting argument as the config-file grant.
 
@@ -328,17 +333,21 @@ unsandboxed root's `TMPDIR` is not in the tree.
     includes is an unbounded, recursive widening (a config can include any file),
     which is a policy decision of its own; an unreadable home-anchored include makes
     git *fatal* rather than warn, which is the sharper edge of the same issue and is
-    tracked separately.
+    tracked in [#4467](https://github.com/prime-radiant-inc/evener/issues/4467).
   - `GIT_CONFIG_GLOBAL` in the environment is not consulted: the probe reads the two
     files `git-config(1)` names under FILES. A session that exports it therefore
-    keeps today's behaviour for that file — tracked separately, `GIT_CONFIG_GLOBAL`
+    keeps today's behaviour for that file — tracked in
+    [#4468](https://github.com/prime-radiant-inc/evener/issues/4468) —
+    `GIT_CONFIG_GLOBAL`
     and `GIT_CONFIG_SYSTEM` pass through the environment floor unchanged. This is
     the one to suspect if a `restricted` session still reports an unreadable git
     config; `GIT_CONFIG_GLOBAL=/dev/null` tells it apart from a sandbox fault.
   - A global config the probe cannot read — unreadable, a device, or larger than the
     probe's bounded 64 KiB read — contributes no referenced-file grant. The config
     file itself stays readable in `restricted`, so only values named by a config that
-    large are missed.
+    large are missed. The value reader is the small one the include protection uses,
+    so a value git splits across lines with a trailing backslash, and text after a
+    closing quote, are read differently from git (see the probe's own comment).
 
   Because the config becomes readable, settings in it now take effect inside the
   sandbox — `rerere.enabled=true`, for instance, makes `git commit` create

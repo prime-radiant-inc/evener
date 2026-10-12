@@ -402,6 +402,14 @@ var gitCoreReferencedKeys = []string{"excludesFile", "attributesFile"}
 // order — so the values are accumulated in that order. A config the probe cannot
 // read (unreadable, a device, or larger than the bounded read admits) contributes
 // nothing rather than failing session start.
+//
+// Two residual parser limits, deliberately shared with the git-config include
+// reader (gitdir.go's configValueLine): a value git SPLITS across lines with a
+// trailing backslash is read here as its unterminated first line (at worst a
+// missing grant), and text after a closing quote (`excludesFile = "~/x" y`, which
+// git reads as the path `~/x y`) is read here as the quoted part alone (at worst a
+// read-only grant of the quoted file the config names — still subject to the
+// shared-tree guard and the denylist).
 func probeGitGlobalReferencedPaths(system probeSystem) []string {
 	home, err := system.userHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
@@ -460,10 +468,12 @@ func parseGitCoreReferencedValues(text string) map[string]string {
 }
 
 // recordGitCoreValue records any gitCoreReferencedKeys assignment on one config
-// line, a later assignment overwriting an earlier one.
+// line, a later assignment overwriting an earlier one — an EMPTY assignment
+// included, since git treats it as clearing the variable and granting the earlier
+// value would grant a file git no longer reads.
 func recordGitCoreValue(line string, values map[string]string) {
 	for _, key := range gitCoreReferencedKeys {
-		if value := configValueLine(line, key); value != "" {
+		if value, assigned := configValueLine(line, key); assigned {
 			values[key] = value
 		}
 	}

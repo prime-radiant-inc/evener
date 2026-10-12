@@ -521,30 +521,33 @@ func isIncludeSectionHeader(header string) bool {
 
 // includePathValue returns the path value of a "path = <value>" config line
 // (empty if the line is not a path key).
-func includePathValue(line string) string { return configValueLine(line, "path") }
+func includePathValue(line string) string {
+	value, _ := configValueLine(line, "path")
+	return value
+}
 
 // configValueLine returns the value of a "<key> = <value>" git-config line when
-// its key matches name (case-insensitively, matching git), else "". It strips
-// surrounding double quotes and, for an unquoted value, an inline # or ; comment.
-func configValueLine(line, name string) string {
-	key, value, found := strings.Cut(line, "=")
-	if !found {
-		return ""
+// its key matches name (case-insensitively, matching git), and whether the line
+// assigns that key AT ALL — an assignment with an empty value is still an
+// assignment, which matters to a caller applying git's last-assignment-wins rule.
+// It strips surrounding double quotes and, for an unquoted value, an inline # or ;
+// comment.
+func configValueLine(line, name string) (value string, assigned bool) {
+	key, raw, found := strings.Cut(line, "=")
+	if !found || !strings.EqualFold(strings.TrimSpace(key), name) {
+		return "", false
 	}
-	if !strings.EqualFold(strings.TrimSpace(key), name) {
-		return ""
-	}
-	val := strings.TrimSpace(value)
+	val := strings.TrimSpace(raw)
 	if len(val) >= 2 && val[0] == '"' {
 		if parsed, ok := quotedConfigValue(val); ok {
-			return parsed
+			return parsed, true
 		}
-		return ""
+		return "", true
 	}
 	if c := strings.IndexAny(val, "#;"); c >= 0 {
 		val = strings.TrimSpace(val[:c])
 	}
-	return val
+	return val, true
 }
 
 // quotedConfigValue returns the first complete double-quoted git-config value.
