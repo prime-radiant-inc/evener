@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { UpdateCheckResponse } from "@evener/appwire-client";
-import { appVersionText, hubStatusLine } from "./hubHeader";
+import { appVersionText, hubConnectionState, hubStatusLine } from "./hubHeader";
 
 const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => ({
 	channel: "release",
@@ -30,6 +30,16 @@ it.each([
 	[false, null, check(), "Connecting… · evener 0.9.412 · up to date"],
 ] as const)("ready %s, connection %s, check %o → %s", (ready, connection, answer, expected) => {
 	expect(hubStatusLine(ready, connection, answer)).toBe(expected);
+});
+
+it.each([
+	[true, null, "connected"],
+	[false, null, "connecting"],
+	[false, "Reconnecting…", "line"],
+	// Connected but too old for this app: the line speaks while the connection reads as ready.
+	[true, "Update needed", "line"],
+] as const)("ready %s, connection %s → state %s", (ready, connection, expected) => {
+	expect(hubConnectionState(ready, connection)).toBe(expected);
 });
 
 it.each([

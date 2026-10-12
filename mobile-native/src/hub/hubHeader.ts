@@ -21,6 +21,13 @@ export function hubConnectionWord(ready: boolean, connection: string | null): st
 	return connection ?? (ready ? "Connected" : "Connecting…");
 }
 
+/** Which of hubConnectionWord's cases applies: the shared connection line
+ * speaking ("line"), else connected or connecting. */
+export function hubConnectionState(ready: boolean, connection: string | null): "line" | "connected" | "connecting" {
+	if (connection) return "line";
+	return ready ? "connected" : "connecting";
+}
+
 /** This app's version for About (spec 12): "0.1.0 (5)", the version with its
  * build. With one missing it shows the other, and with both, "Unknown". */
 export function appVersionText(version: string | null, build: string | null): string {
