@@ -1,21 +1,6 @@
 import type { AnyNotification } from "@evener/appwire-client";
-import {
-  type CurrentTranscriptAdmission,
-  currentTranscriptState,
-  type ThreadModel,
-  threadModelFromCurrentState,
-} from "@evener/appwire-client";
 import type { BackgroundTranscriptOptions } from "./backgroundTranscriptOptions";
-import { createSecureUUID } from "./secureUUID";
-import type { CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { encodedPayloadBytes, TranscriptPayloadBudget } from "./transcriptPayloadBudget";
-
-export interface TranscriptOwners {
-  foreground: number;
-  history: number;
-  mutationPinned: boolean;
-  background: number;
-}
+import { TranscriptPayloadBudget } from "./transcriptPayloadBudget";
 
 export interface ReceivedTranscriptUpdate {
   sequence: number;
@@ -24,23 +9,12 @@ export interface ReceivedTranscriptUpdate {
   bytes: number;
 }
 
+// The reduced residency port. The 6d removal deleted the legacy recorded
+// fold/rewrite coordinator; what survives is hydration scheduling and the
+// lifecycle (connection, Clear, disposal). A caller may supply its own run; the
+// port's `hydrate` is the default when it does not.
 export interface TranscriptResidencyPort {
-  cache: SessionCacheIndexedDB;
-  resident(ref: string): ThreadModel | undefined;
-  publish(ref: string, model: ThreadModel): void;
-  unload(ref: string): void | Promise<void>;
-  admission(ref: string): CurrentTranscriptAdmission | undefined;
-  fold(ref: string, model: ThreadModel, update: ReceivedTranscriptUpdate): ThreadModel;
-  hydrate(ref: string, intent: "background" | "foreground" | "final", signal: AbortSignal): Promise<void>;
-  writeTimers?(): { debounceMs: number; maxWaitMs: number };
-  /** The shared paced-retry scheduler. When absent, repair runs immediately
-   * (the reducer-level tests' behavior); the store wires it so real repairs use
-   * one coalesced bounded-backoff timer per ref. */
-  retryScheduler?(): ((attempt: number, retry: () => void) => () => void) | undefined;
-  /** One guarded observation of a newer durable clear epoch. The store advances
-   * its shared clear-lifetime authority (tab epoch + recorded-history
-   * suppression) before the residency reconciles, so both record classes agree. */
-  observedClearEpoch?(epoch: number): void;
+  hydrate?(ref: string, intent: "background" | "foreground" | "final", signal: AbortSignal): Promise<void>;
 }
 
 interface HydrationTask {
@@ -59,24 +33,19 @@ interface HydrationTask {
 }
 
 export interface TranscriptResidency {
-  owners(ref: string, owners: TranscriptOwners): void;
   removed(ref: string): void;
   connection(generation: number, ready: boolean): void;
-  accept(ref: string, update: ReceivedTranscriptUpdate): boolean;
-  published(ref: string, model: ThreadModel, appliedSequence: number, authoritative?: boolean): boolean;
   reservePending(ref: string, bytes: number): boolean;
   releasePending(ref: string, bytes: number): void;
-  promote(ref: string): Promise<ThreadModel | undefined>;
   scheduleHydration(
     ref: string,
     intent: "background" | "foreground",
     run?: (signal: AbortSignal) => Promise<void>,
   ): Promise<void>;
-  drain(ref: string): Promise<void>;
   revoke(ref: string, reason: "gap" | "storage" | "alias" | "deleted"): void;
-  /** Synchronously retire in-flight hydration/promotion publication claims for
-   * a same-tab clear before its transaction resolves. Issued reads keep their
-   * capacity slot; only the logical claim to publish is retired. */
+  /** Synchronously retire in-flight hydration publication claims for a same-tab
+   * clear before its transaction resolves. Issued requests keep their capacity
+   * slot; only the logical claim to publish is retired. */
   retireClaims(): void;
   /** Release the synchronous claim fence after an aborted clear. */
   releaseClearClaim(): void;
@@ -109,360 +78,23 @@ export interface TranscriptResidencySnapshot {
   >;
 }
 
-type Persistence = "enabled" | "repairing" | "clear-suppressed";
-
-// The exact bodies a worker is about to hand to the cache, sampled
-// synchronously immediately before putCurrent: the starting resident body it
-// read, the folded worker model, the record it is writing, and the captured
-// in-flight batch. This is a restorable test-only seam for proving worker
-// checkpoint coverage without a global spare charge; production retains no
-// history and reads nothing from it.
-export interface WorkerCheckpointObservation {
-  ref: string;
-  resident: ThreadModel | undefined;
-  model: ThreadModel;
-  record: CurrentSessionRecord;
-  batch: readonly ReceivedTranscriptUpdate[];
-}
-
-let workerCheckpointObserverForTests: ((observation: WorkerCheckpointObservation) => void) | undefined;
-
-export function observeWorkerCheckpointsForTests(
-  observer: ((observation: WorkerCheckpointObservation) => void) | undefined,
-): () => void {
-  const previous = workerCheckpointObserverForTests;
-  workerCheckpointObserverForTests = observer;
-  return () => {
-    workerCheckpointObserverForTests = previous;
-  };
-}
-
-interface Entry {
-  owners: TranscriptOwners;
-  ownershipGeneration: number;
-  checkpointOwnershipGeneration: number;
-  // Bumped by every authoritative publish. A worker that started before a
-  // replacement cannot rebase the resident charge to its own captured pre-fold
-  // body: the body it captured is no longer the current resident.
-  authoritativeVersion: number;
-  appliedSequence: number;
-  checkpointSequence: number;
-  residentBytes: number;
-  residentPostCutBytes: number;
-  handoffBytes: number;
-  pending: ReceivedTranscriptUpdate[];
-  current: boolean;
-  needsRecovery: boolean;
-  evictAfterCommit: boolean;
-  persistence: Persistence;
-  // Clear suppression is lifted only by a qualifying explicit foreground
-  // acquisition. `clearSuppressionHoldsPreClearHolders` stays true while any
-  // foreground/history/pin holder that existed when clear committed remains:
-  // no acquisition may capture a new lifetime until those holders release.
-  // `freshForegroundLifetime` then marks the acquisition that began after they
-  // did, whose authoritative hydration may restore persistence.
-  clearSuppressionHoldsPreClearHolders: boolean;
-  freshForegroundLifetime: boolean;
-  lastForegroundUse: number;
-  promoting: boolean;
-  workSequence: number;
-  inFlight: ReceivedTranscriptUpdate[];
-  // One coalesced storage/overload repair timer per ref. An expired callback or
-  // a superseded repair owns nothing: it acts only while it is still this
-  // entry's current record.
-  repair?: { cancel: () => void; attempt: number };
-  repairAttempt: number;
-  flushTimer?: ReturnType<typeof setTimeout>;
-  maxWaitTimer?: ReturnType<typeof setTimeout>;
-  work?: Promise<boolean>;
-  waiters: Array<() => void>;
-}
-
 export function createTranscriptResidency(
   port: TranscriptResidencyPort,
   options: Readonly<BackgroundTranscriptOptions>,
 ): TranscriptResidency {
-  const ownerToken = createSecureUUID();
-  const entries = new Map<string, Entry>();
   const pendingBudget = new TranscriptPayloadBudget(options.pendingBytes);
-  const residentBudget = new TranscriptPayloadBudget(options.residentBytes);
-  const workQueue: string[] = [];
-  const urgentQueue: string[] = [];
   const hydrationQueue: HydrationTask[] = [];
   const hydrationByRef = new Map<string, HydrationTask>();
   const hydrationTasks = new Set<HydrationTask>();
   let connectionGeneration = 0;
   let ready = false;
-  let clearEpoch = 0;
-  let workerBytes = 0;
-  let diskWorkers = 0;
   let networkHydrations = 0;
-  let committedWrites = 0;
   let disposed = false;
   let retiringHydrations = false;
-  let clearArmed = false;
-  // A monotonic edge, not just the clearArmed level: every suspended claim
-  // captures it at issue and rechecks it at its completion boundary, so a claim
-  // already past its entry check stays retired even after an abort clears the
-  // boolean. `clearClaimRetiredRefs` records the hydrations the arm retired so
-  // an abort can re-issue recovery for the demand they were carrying.
-  let clearClaimGeneration = 0;
-  const clearClaimRetiredRefs = new Set<string>();
-  let drainPromise: Promise<void> | undefined;
-  // Post-promotion durable-epoch rechecks: each is tracked asynchronous work
-  // of the promotion that scheduled it, not a global lock. settled() joins
-  // them so a test (or a caller) can observe the fenced recovery they trigger.
-  const epochRechecks = new Set<Promise<void>>();
-
-  const entryFor = (ref: string): Entry => {
-    const entry = entries.get(ref);
-    if (entry) return entry;
-    const created: Entry = {
-      owners: { foreground: 0, history: 0, mutationPinned: false, background: 0 },
-      ownershipGeneration: 0,
-      checkpointOwnershipGeneration: -1,
-      authoritativeVersion: 0,
-      appliedSequence: 0,
-      checkpointSequence: 0,
-      residentBytes: 0,
-      residentPostCutBytes: 0,
-      handoffBytes: 0,
-      pending: [],
-      current: false,
-      needsRecovery: false,
-      evictAfterCommit: false,
-      persistence: "enabled",
-      clearSuppressionHoldsPreClearHolders: false,
-      freshForegroundLifetime: false,
-      lastForegroundUse: 0,
-      promoting: false,
-      workSequence: 0,
-      inFlight: [],
-      repairAttempt: 0,
-      waiters: [],
-    };
-    entries.set(ref, created);
-    return created;
-  };
-
-  const held = (entry: Entry): boolean =>
-    entry.owners.foreground > 0 || entry.owners.history > 0 || entry.owners.mutationPinned;
-  const owned = (entry: Entry): boolean => held(entry) || entry.owners.background > 0;
-
-  function releaseEntryPending(entry: Entry): void {
-    const bytes = entry.pending.reduce((sum, update) => sum + update.bytes, 0);
-    if (bytes > 0) pendingBudget.release(bytes);
-    entry.pending = [];
-  }
-
-  // A function boundary keeps TypeScript from narrowing `persistence` across
-  // the awaits below: a concurrent clear can move it to clear-suppressed while a
-  // persist is suspended at a cache lookup or an unload.
-  const isClearSuppressed = (entry: Entry): boolean => entry.persistence === "clear-suppressed";
-
-  // Clear suppression is intentional and never writes. On a suppressed ref,
-  // release the excess background payload instead of holding an unwritable
-  // model; the entry's metadata stays (unverified) so an explicit open recovers
-  // through the ordinary cache-seeded authoritative path.
-  async function releaseSuppressedPayload(ref: string, entry: Entry): Promise<void> {
-    releaseEntryPending(entry);
-    if (!held(entry) && entry.owners.background > 0 && port.resident(ref)) {
-      await port.unload(ref);
-      if (!port.resident(ref)) {
-        if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
-        if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
-        entry.residentBytes = 0;
-        entry.handoffBytes = 0;
-      }
-    }
-  }
-
-  function enqueue(ref: string, urgent = false): void {
-    const entry = entries.get(ref);
-    if (entry?.flushTimer) {
-      clearTimeout(entry.flushTimer);
-      entry.flushTimer = undefined;
-    }
-    if (entry?.maxWaitTimer) {
-      clearTimeout(entry.maxWaitTimer);
-      entry.maxWaitTimer = undefined;
-    }
-    if (entry?.work) return;
-    if (urgent) {
-      const normalIndex = workQueue.indexOf(ref);
-      if (normalIndex >= 0) workQueue.splice(normalIndex, 1);
-      if (!urgentQueue.includes(ref)) urgentQueue.push(ref);
-      void runWorker();
-      return;
-    }
-    if (urgentQueue.includes(ref)) return;
-    if (!workQueue.includes(ref)) workQueue.push(ref);
-    void runWorker();
-  }
-
-  function scheduleResidentWrite(ref: string, entry: Entry): void {
-    if (entry.work) return;
-    const timers = port.writeTimers?.() ?? { debounceMs: 1_000, maxWaitMs: 5_000 };
-    if (entry.flushTimer) clearTimeout(entry.flushTimer);
-    else entry.maxWaitTimer = setTimeout(() => fireResidentWrite(ref, entry), timers.maxWaitMs);
-    entry.flushTimer = setTimeout(() => {
-      fireResidentWrite(ref, entry);
-    }, timers.debounceMs);
-  }
-
-  function fireResidentWrite(ref: string, entry: Entry): void {
-    if (entry.flushTimer) clearTimeout(entry.flushTimer);
-    if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
-    entry.flushTimer = undefined;
-    entry.maxWaitTimer = undefined;
-    enqueue(ref);
-  }
-
-  async function waitForEntryCut(ref: string, entry: Entry, sequence: number): Promise<boolean> {
-    while (entry.checkpointSequence < sequence) {
-      if (entry.persistence !== "enabled") return false;
-      if (!entry.work && (!urgentQueue.includes(ref) || workQueue.includes(ref))) enqueue(ref, true);
-      if (entry.work) {
-        await entry.work.catch(() => false);
-      } else {
-        await new Promise<void>((resolve) => entry.waiters.push(resolve));
-      }
-    }
-    return entry.persistence === "enabled" && entry.checkpointSequence >= sequence;
-  }
-
-  function enqueueLeastRecentlyUsedVictims(exceptRef: string, incomingBytes: number): void {
-    let bytesToFree = residentBudget.used + incomingBytes - residentBudget.limit;
-    if (bytesToFree <= 0) return;
-    const candidates = [...entries]
-      .filter(
-        ([ref, entry]) =>
-          ref !== exceptRef &&
-          entry.residentBytes > 0 &&
-          !held(entry) &&
-          entry.owners.background > 0 &&
-          entry.persistence === "enabled" &&
-          !entry.work,
-      )
-      .sort((a, b) => a[1].lastForegroundUse - b[1].lastForegroundUse);
-    for (const [ref, entry] of candidates) {
-      entry.evictAfterCommit = true;
-      bytesToFree -= entry.residentBytes;
-      enqueue(ref);
-      if (bytesToFree <= 0) break;
-    }
-  }
-
-  // Move least-recently-foreground-used background residents' charges out of the
-  // resident budget and into the pending budget so an incoming body that fits
-  // the resident limit can be admitted directly. Each moved model is now a
-  // model awaiting disk handoff (spec "Memory and disk policy": the same
-  // budgets cover models awaiting disk handoff); its own worker commits and
-  // unloads it, releasing the pending charge.
-  //
-  // The FULL selected victim total is reserved in pending as one unit before
-  // any victim's resident charge is released, so a partially staged or leaking
-  // transfer is impossible. No victim is scheduled here: the caller commits the
-  // incoming reservation first, then enqueues the returned victims, because
-  // enqueue() runs the worker synchronously and must never observe a
-  // half-transferred entry. Returns undefined (and leaves every entry
-  // untouched) when the deficit cannot be covered in full.
-  function reserveLruVictimHandoff(exceptRef: string, needed: number): Array<[string, Entry]> | undefined {
-    if (needed <= 0) return [];
-    const candidates = [...entries]
-      .filter(
-        ([ref, entry]) =>
-          ref !== exceptRef &&
-          entry.residentBytes > 0 &&
-          !held(entry) &&
-          entry.owners.background > 0 &&
-          entry.persistence === "enabled" &&
-          !entry.work,
-      )
-      .sort((a, b) => a[1].lastForegroundUse - b[1].lastForegroundUse);
-    const selected: Array<[string, Entry]> = [];
-    let available = 0;
-    for (const candidate of candidates) {
-      selected.push(candidate);
-      available += candidate[1].residentBytes;
-      if (available >= needed) break;
-    }
-    if (available < needed) return undefined;
-    // The pending budget must hold every selected body, not only the deficit.
-    if (pendingBudget.used + available > pendingBudget.limit) return undefined;
-    if (!pendingBudget.reserve(available)) return undefined;
-    for (const [, entry] of selected) {
-      const charge = entry.residentBytes;
-      residentBudget.release(charge);
-      entry.handoffBytes = charge;
-      entry.residentBytes = 0;
-      entry.evictAfterCommit = true;
-    }
-    return selected;
-  }
-
-  // Undo a reserveLruVictimHandoff whose admission could not be completed. The
-  // pending charge is released and restored to the resident budget, which is
-  // always possible because this function has just released exactly that much.
-  function rollbackLruVictimHandoff(victims: ReadonlyArray<[string, Entry]>): void {
-    for (const [, entry] of victims) {
-      const charge = entry.handoffBytes;
-      pendingBudget.release(charge);
-      residentBudget.reserve(charge);
-      entry.residentBytes = charge;
-      entry.handoffBytes = 0;
-      entry.evictAfterCommit = false;
-    }
-  }
-
-  function resolveWaiters(entry: Entry): void {
-    for (const resolve of entry.waiters.splice(0)) resolve();
-  }
-
-  // Cancelling a pending callback is not storage recovery. `reset` is true only
-  // at a committed checkpoint or a terminal owner/connection retirement; a mere
-  // authoritative network read cancels the callback without resetting the
-  // failure streak, so repeated storage aborts still advance the backoff.
-  function cancelRepair(entry: Entry, reset = true): void {
-    const record = entry.repair;
-    entry.repair = undefined;
-    if (reset) entry.repairAttempt = 0;
-    record?.cancel();
-  }
-
-  // Storage failures and overload enter a bounded, coalesced recovery: one
-  // timer per ref, paced by the shared scheduler, that schedules the ordinary
-  // authoritative hydration. clear-suppressed refs never reach here (clear()
-  // cancels repair and revoke is not the clear path), so suppression never
-  // arms a repair loop. Without a scheduler (reducer-level tests) the same
-  // recovery runs immediately.
-  function armRepair(ref: string, entry: Entry): void {
-    if (disposed || !ready || entry.owners.background <= 0) return;
-    if (entry.repair) return; // coalesced: one outstanding repair per ref
-    entry.repairAttempt += 1;
-    const attempt = entry.repairAttempt;
-    const run = () => {
-      if (disposed || !ready || entry.owners.background <= 0) return;
-      void hydrate(ref, held(entry) ? "foreground" : "background");
-    };
-    const record = {
-      attempt,
-      cancel: () => {},
-    } as { cancel: () => void; attempt: number };
-    const fire = () => {
-      if (entry.repair !== record) return; // superseded or cancelled
-      entry.repair = undefined;
-      run();
-    };
-    entry.repair = record;
-    const scheduler = port.retryScheduler?.();
-    if (scheduler) {
-      record.cancel = scheduler(attempt, fire);
-    } else {
-      entry.repair = undefined;
-      run();
-    }
-  }
+  const clearClaimRetiredRefs = new Map<
+    string,
+    { intent: "background" | "foreground"; run?: (signal: AbortSignal) => Promise<void> }
+  >();
 
   function settleHydration(task: HydrationTask, error?: unknown): void {
     if (task.settled) return;
@@ -491,6 +123,21 @@ export function createTranscriptResidency(
       const next = hydrationQueue.shift();
       if (next && !next.settled && !next.retired && hydrationByRef.get(next.ref) === next) startHydration(next);
     }
+  }
+
+  function startHydration(task: HydrationTask): void {
+    if (task.settled) return;
+    if (task.retired || task.controller.signal.aborted || disposed || !ready) {
+      settleHydration(task);
+      return;
+    }
+    task.queued = false;
+    task.started = true;
+    networkHydrations += 1;
+    void task.run(task.controller.signal).then(
+      () => settleHydration(task),
+      (error: unknown) => settleHydration(task, error),
+    );
   }
 
   function retireHydration(task: HydrationTask): void {
@@ -523,510 +170,67 @@ export function createTranscriptResidency(
     }
   }
 
-  async function persist(ref: string, entry: Entry): Promise<boolean> {
-    if (entry.needsRecovery) {
-      releaseEntryPending(entry);
-      return false;
-    }
-    // Suppression survives every recovery entry: an ordinary background update
-    // must not turn clear-suppressed into repairing or start a hydration that
-    // would re-enable persistence without a fresh explicit foreground lifetime.
-    if (isClearSuppressed(entry)) {
-      entry.current = false;
-      await releaseSuppressedPayload(ref, entry);
-      return false;
-    }
-    const writeGeneration = connectionGeneration;
-    const ownerGeneration = entry.ownershipGeneration;
-    const writeEpoch = clearEpoch;
-    const clearClaimAtStart = clearClaimGeneration;
-    const authoritativeVersionAtStart = entry.authoritativeVersion;
-    const resident = port.resident(ref);
-    entry.residentPostCutBytes = 0;
-    let model = resident;
-    let loadedSequence = 0;
-    let batchBytes = 0;
-    const batch: ReceivedTranscriptUpdate[] = [];
-    while (entry.pending[0] && (batch.length === 0 || batchBytes + entry.pending[0].bytes <= 256 * 1024)) {
-      const update = entry.pending.shift();
-      if (!update) break;
-      batch.push(update);
-      batchBytes += update.bytes;
-    }
-    entry.inFlight = batch;
-    entry.workSequence = Math.max(entry.workSequence, batch.at(-1)?.sequence ?? entry.checkpointSequence);
-    if (!model) {
-      const found = await port.cache.getCurrent([ownerToken, ref], Date.now());
-      if (clearClaimAtStart !== clearClaimGeneration) {
-        // A same-tab Clear armed while this worker was suspended at the lookup:
-        // the claim to recover/republish is retired. Never enter repairing, arm
-        // a repair or schedule a hydration from the obsolete completion, and
-        // never let an aborted Clear's cleared boolean revive it.
-        entry.current = false;
-        releaseEntryPending(entry);
-        if (entry.inFlight === batch) entry.inFlight = [];
-        if (batchBytes > 0) pendingBudget.release(batchBytes);
-        if (isClearSuppressed(entry)) await releaseSuppressedPayload(ref, entry);
-        // The batch and cut are discarded, so this ref has no other drain; if it
-        // is still desired, give it fresh recovery authority (deferred while the
-        // Clear is armed, issued now after an abort).
-        recoverRetiredClaim(ref);
-        return false;
-      }
-      if (!found?.record || found.epoch !== found.record.clearEpoch) {
-        entry.persistence = "repairing";
-        releaseEntryPending(entry);
-        if (entry.inFlight === batch) entry.inFlight = [];
-        if (batchBytes > 0) pendingBudget.release(batchBytes);
-        void hydrate(ref, held(entry) ? "foreground" : "background");
-        return false;
-      }
-      model = threadModelFromCurrentState(found.record.state, port.admission(ref));
-      // A write can commit before an ownership change rejects its completion.
-      // The retry still needs a fresh certificate, but must not replay updates
-      // already represented by the checkpoint it actually loaded.
-      if (found.record.connectionGeneration === writeGeneration && found.record.clearEpoch === writeEpoch) {
-        loadedSequence = found.record.appliedSequence;
-      }
-    }
-    const bytes = encodedPayloadBytes(currentTranscriptState(model));
-    if (!Number.isFinite(bytes) || bytes > 32 * 1024 * 1024) {
-      entry.persistence = "repairing";
-      releaseEntryPending(entry);
-      if (entry.inFlight === batch) entry.inFlight = [];
-      if (batchBytes > 0) pendingBudget.release(batchBytes);
-      // An oversized base (older history or live state) is rebuilt by an
-      // authoritative latest window through the paced repair timer, never an
-      // immediate hydrate: a fresh state that still cannot fit must not spin.
-      armRepair(ref, entry);
-      return false;
-    }
-    workerBytes = bytes;
-    let committed = false;
-    try {
-      for (const update of batch) {
-        if (update.sequence > loadedSequence) model = port.fold(ref, model, update);
-      }
-      const state = currentTranscriptState(model);
-      if (!state) {
-        entry.persistence = "repairing";
-        return false;
-      }
-      const record: CurrentSessionRecord = {
-        ownerToken,
-        ref,
-        connectionGeneration,
-        ownershipGeneration: entry.ownershipGeneration,
-        clearEpoch,
-        appliedSequence: Math.max(loadedSequence, batch.at(-1)?.sequence ?? entry.appliedSequence),
-        savedAt: Date.now(),
-        state,
-      };
-      const recordBytes = encodedPayloadBytes(record);
-      if (!Number.isFinite(recordBytes) || recordBytes > 32 * 1024 * 1024) {
-        entry.persistence = "repairing";
-        return false;
-      }
-      workerBytes = recordBytes;
-      if (
-        !ready ||
-        entry.needsRecovery ||
-        writeGeneration !== connectionGeneration ||
-        ownerGeneration !== entry.ownershipGeneration ||
-        writeEpoch !== clearEpoch ||
-        clearClaimAtStart !== clearClaimGeneration ||
-        !owned(entry) ||
-        isClearSuppressed(entry)
-      ) {
-        entry.current = false;
-        if (isClearSuppressed(entry)) await releaseSuppressedPayload(ref, entry);
-        return false;
-      }
-      workerCheckpointObserverForTests?.({ ref, resident, model, record, batch });
-      const outcome = await port.cache.putCurrent(record, Date.now());
-      if (outcome.outcome !== "written") {
-        residency.revoke(ref, "storage");
-        return false;
-      }
-      committedWrites += 1;
-      if (
-        !ready ||
-        entry.needsRecovery ||
-        writeGeneration !== connectionGeneration ||
-        ownerGeneration !== entry.ownershipGeneration ||
-        writeEpoch !== clearEpoch ||
-        clearClaimAtStart !== clearClaimGeneration ||
-        !owned(entry)
-      ) {
-        entry.current = false;
-        return false;
-      }
-      // Rebase the resident charge to this write's captured body plus later
-      // deltas only while that captured body is still the current resident. An
-      // authoritative publish during the write replaced the body and already
-      // charged it exactly; rebasing to the stale captured size here would
-      // undercharge the larger retained body.
-      if (entry.residentBytes > 0 && port.resident(ref) && entry.authoritativeVersion === authoritativeVersionAtStart) {
-        const exactWithLaterDeltas = bytes + entry.residentPostCutBytes;
-        residentBudget.release(entry.residentBytes);
-        if (residentBudget.reserve(exactWithLaterDeltas)) entry.residentBytes = exactWithLaterDeltas;
-        else residentBudget.reserve(entry.residentBytes);
-      }
-      entry.residentPostCutBytes = 0;
-      entry.checkpointSequence = record.appliedSequence;
-      entry.current = !entry.needsRecovery && record.appliedSequence >= entry.appliedSequence;
-      entry.checkpointOwnershipGeneration = ownerGeneration;
-      if (!entry.needsRecovery) entry.persistence = "enabled";
-      if (
-        entry.current &&
-        (entry.evictAfterCommit || (entry.residentBytes === 0 && entry.handoffBytes > 0)) &&
-        !held(entry) &&
-        entry.owners.background > 0
-      ) {
-        await port.unload(ref);
-        if (!port.resident(ref) && entry.residentBytes > 0) {
-          residentBudget.release(entry.residentBytes);
-          entry.residentBytes = 0;
-        }
-        if (!port.resident(ref) && entry.handoffBytes > 0) {
-          pendingBudget.release(entry.handoffBytes);
-          entry.handoffBytes = 0;
-        }
-        if (!port.resident(ref)) entry.evictAfterCommit = false;
-      }
-      committed = true;
-      cancelRepair(entry);
-      return true;
-    } finally {
-      workerBytes = 0;
-      if (entry.inFlight === batch) entry.inFlight = [];
-      const retryForOwnerChange =
-        !committed &&
-        ready &&
-        writeGeneration === connectionGeneration &&
-        writeEpoch === clearEpoch &&
-        owned(entry) &&
-        ownerGeneration !== entry.ownershipGeneration;
-      if (retryForOwnerChange) entry.pending.unshift(...batch);
-      else if (batchBytes > 0) pendingBudget.release(batchBytes);
-    }
+  function retireHydrationForRef(ref: string): void {
+    const task = hydrationByRef.get(ref);
+    if (task) retireHydration(task);
   }
 
-  async function runWorker(): Promise<void> {
-    if (drainPromise || disposed) return drainPromise;
-    drainPromise = (async () => {
-      while (!disposed && (urgentQueue.length > 0 || workQueue.length > 0)) {
-        const ref = urgentQueue.shift() ?? workQueue.shift();
-        if (!ref) continue;
-        const entry = entries.get(ref);
-        if (!entry) continue;
-        // An evicting victim's handoff charge is awaiting disk unload, not
-        // resident room; never promote it back to resident.
-        if (
-          !entry.evictAfterCommit &&
-          entry.handoffBytes > 0 &&
-          port.resident(ref) &&
-          residentBudget.reserve(entry.handoffBytes)
-        ) {
-          pendingBudget.release(entry.handoffBytes);
-          entry.residentBytes = entry.handoffBytes;
-          entry.handoffBytes = 0;
-        }
-        diskWorkers = 1;
-        const work = persist(ref, entry);
-        entry.work = work;
-        try {
-          await work;
-        } catch {
-          residency.revoke(ref, "storage");
-        } finally {
-          if (entry.work === work) entry.work = undefined;
-          entry.workSequence = entry.checkpointSequence;
-          diskWorkers = 0;
-          resolveWaiters(entry);
-        }
-        if (entry.pending.length > 0 && entry.persistence === "enabled") enqueue(ref);
-        else if (entry.appliedSequence > entry.checkpointSequence && entry.persistence === "enabled")
-          scheduleResidentWrite(ref, entry);
-      }
-    })().finally(() => {
-      drainPromise = undefined;
-      if (!disposed && (urgentQueue.length > 0 || workQueue.length > 0)) void runWorker();
-    });
-    return drainPromise;
-  }
-
-  function startHydration(task: HydrationTask): void {
-    if (task.settled) return;
-    if (task.retired || task.controller.signal.aborted || disposed || !ready) {
-      settleHydration(task);
-      return;
-    }
-    task.queued = false;
-    task.started = true;
-    networkHydrations += 1;
-    void task.run(task.controller.signal).then(
-      () => settleHydration(task),
-      (error: unknown) => settleHydration(task, error),
-    );
-  }
-
-  function hydrate(ref: string, intent: "background" | "foreground"): Promise<void> {
-    return residency.scheduleHydration(ref, intent);
-  }
-
-  // A claim the Clear arm retired — an in-flight hydration task or a suspended
-  // disk worker. While the Clear is still armed, recovery is deferred to
-  // releaseClearClaim; once it has aborted, recovery is issued here. A committed
-  // Clear's suppression stands, so a suppressed ref never recovers writes.
-  function recoverRetiredClaim(ref: string): void {
-    if (disposed || !ready) return;
-    if (clearArmed) {
-      clearClaimRetiredRefs.add(ref);
-      return;
-    }
-    const entry = entries.get(ref);
-    if (!entry || entry.owners.background <= 0 || isClearSuppressed(entry)) return;
-    if (entry.current && !entry.needsRecovery) return;
-    void hydrate(ref, held(entry) ? "foreground" : "background");
-  }
-
-  // After a successful disk promotion, recheck the durable epoch the lookup
-  // transaction captured. A delayed or lost sibling-clear broadcast cannot
-  // leave this read/publication race undetected: on a newer epoch, suppress
-  // persistence (the publication stays as stale display state) and reconcile
-  // owned refs through the ordinary paced hydration path. A failed epoch
-  // lookup is a storage fault, not proof of a clear.
-  function schedulePromotionEpochRecheck(
+  function scheduleHydration(
     ref: string,
-    entry: Entry,
-    promotionEpoch: number,
-    guardGeneration: number,
-    guardClearEpoch: number,
-    guardOwnershipGeneration: number,
-  ): void {
-    const task = (async () => {
-      const observed = await port.cache.readEpoch();
-      if (disposed) return;
-      // The same client/owner/claim generation guards completion, so an older
-      // promotion cannot invalidate a newer lifetime.
-      if (
-        guardGeneration !== connectionGeneration ||
-        guardClearEpoch !== clearEpoch ||
-        entry.ownershipGeneration !== guardOwnershipGeneration ||
-        !owned(entry)
-      )
-        return;
-      if (observed === promotionEpoch) return;
-      if (observed === undefined) {
-        residency.revoke(ref, "storage");
-        return;
+    intent: "background" | "foreground",
+    run?: (signal: AbortSignal) => Promise<void>,
+  ): Promise<void> {
+    if (!ready || disposed) return Promise.resolve();
+    const existing = hydrationByRef.get(ref);
+    if (existing) {
+      if (existing.queued && intent === "foreground") {
+        existing.intent = "foreground";
+        hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
       }
-      // One shared authority: advance the store's tab epoch and recorded-history
-      // suppression before the residency reconciles, so both record classes see
-      // the same observed clear.
-      port.observedClearEpoch?.(observed);
-      residency.clear(observed);
-      for (const [ownedRef, ownedEntry] of entries) {
-        if (!owned(ownedEntry) || !ready || disposed) continue;
-        void hydrate(ownedRef, held(ownedEntry) ? "foreground" : "background");
-      }
-    })().catch(() => {});
-    epochRechecks.add(task);
-    void task.then(() => {
-      epochRechecks.delete(task);
+      return existing.promise;
+    }
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<void>((complete, fail) => {
+      resolve = complete;
+      reject = fail;
     });
+    const controller = new AbortController();
+    const task: HydrationTask = {
+      ref,
+      intent,
+      controller,
+      run: run ?? ((signal) => port.hydrate?.(ref, intent, signal) ?? Promise.resolve()),
+      promise,
+      resolve,
+      reject,
+      queued: false,
+      started: false,
+      settled: false,
+      ownerSettled: false,
+      retired: false,
+    };
+    hydrationTasks.add(task);
+    hydrationByRef.set(ref, task);
+    if (networkHydrations < options.networkHydrations) startHydration(task);
+    else {
+      task.queued = true;
+      hydrationQueue.push(task);
+      hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
+    }
+    return promise;
   }
 
   const residency: TranscriptResidency = {
-    owners(ref, owners) {
-      const entry = entryFor(ref);
-      const previouslyOwned = owned(entry);
-      const previouslyHeld = held(entry);
-      const ownershipChanged =
-        entry.owners.foreground !== owners.foreground ||
-        entry.owners.history !== owners.history ||
-        entry.owners.mutationPinned !== owners.mutationPinned ||
-        entry.owners.background !== owners.background;
-      entry.owners = { ...owners };
-      if (ownershipChanged) {
-        entry.ownershipGeneration += 1;
-        if (!owned(entry)) entry.current = false;
-        else if (!previouslyOwned) entry.current = false;
-      }
-      if (entry.persistence === "clear-suppressed") {
-        const nowHeld = held(entry);
-        if (previouslyHeld && !nowHeld) {
-          // The last pre-clear foreground/history/pin holder released: a later
-          // acquisition may now capture a new lifetime.
-          entry.clearSuppressionHoldsPreClearHolders = false;
-        } else if (!previouslyHeld && nowHeld && !entry.clearSuppressionHoldsPreClearHolders) {
-          // An explicit foreground acquisition begun only after the pre-clear
-          // holders finished. Its authoritative hydration may restore writes.
-          entry.freshForegroundLifetime = true;
-        }
-      }
-      if (previouslyOwned && !owned(entry)) {
-        const task = hydrationByRef.get(ref);
-        if (task) retireHydration(task);
-      }
-      if (!owned(entry) || entry.owners.background <= 0) cancelRepair(entry);
-      if (held(entry)) {
-        if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
-        if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
-        entry.residentBytes = 0;
-        entry.handoffBytes = 0;
-      }
-      if (owners.foreground > 0) entry.lastForegroundUse = Date.now();
-      if (previouslyHeld && !held(entry) && owners.background > 0) {
-        const model = port.resident(ref);
-        if (model) residency.published(ref, model, entry.appliedSequence);
-      } else if (!held(entry) && owners.background > 0 && port.resident(ref)) enqueue(ref);
-    },
     removed(ref) {
-      const task = hydrationByRef.get(ref);
-      if (task) retireHydration(task);
-      const entry = entries.get(ref);
-      if (!entry) return;
-      cancelRepair(entry);
-      if (entry.residentBytes > 0) residentBudget.release(entry.residentBytes);
-      if (entry.handoffBytes > 0) pendingBudget.release(entry.handoffBytes);
-      entry.residentBytes = 0;
-      entry.handoffBytes = 0;
-      entry.current = false;
+      retireHydrationForRef(ref);
     },
     connection(generation, connected) {
       if (generation !== connectionGeneration || connected !== ready) {
         connectionGeneration = generation;
         ready = connected;
-        if (!connected) {
-          retireHydrations();
-          for (const entry of entries.values()) {
-            entry.current = false;
-            cancelRepair(entry);
-          }
-        }
+        if (!connected) retireHydrations();
       }
-    },
-    accept(ref, update) {
-      const entry = entryFor(ref);
-      if (entry.owners.background <= 0) return false;
-      if (entry.needsRecovery) return true;
-      if (!pendingBudget.reserve(update.bytes)) {
-        residency.revoke(ref, "gap");
-        return true;
-      }
-      entry.pending.push(update);
-      if (!port.resident(ref) && !entry.promoting) enqueue(ref);
-      return !port.resident(ref);
-    },
-    published(ref, model, appliedSequence, authoritative = false) {
-      const entry = entryFor(ref);
-      // Record that a wholesale replacement happened, so any worker suspended
-      // with an older captured body does not later rebase the resident charge
-      // back to that stale size.
-      if (authoritative) entry.authoritativeVersion += 1;
-      if (authoritative) {
-        // A successful read is not a successful checkpoint: keep the storage
-        // failure streak so a still-unwritable disk keeps backing off.
-        cancelRepair(entry, false);
-        entry.needsRecovery = false;
-        if (entry.persistence !== "clear-suppressed") {
-          entry.persistence = "enabled";
-        } else if (entry.freshForegroundLifetime && held(entry)) {
-          // A qualifying explicit foreground acquisition hydrated
-          // authoritatively: capture the current epoch and resume writes.
-          entry.persistence = "enabled";
-          entry.freshForegroundLifetime = false;
-        }
-        // Otherwise clear suppression stands: background release/reacquire and
-        // reconnect alone never re-enable caching, and a pane that predates the
-        // clear keeps its suppressed lifetime until its holders release.
-      }
-      const previouslyApplied = entry.appliedSequence;
-      const consumed = entry.pending.filter((update) => update.sequence <= appliedSequence);
-      const incrementalBytes = consumed.reduce((sum, update) => sum + update.bytes, 0);
-      if (entry.work && appliedSequence > entry.checkpointSequence) entry.residentPostCutBytes += incrementalBytes;
-      const handoffOwnsModel = entry.residentBytes === 0 && entry.handoffBytes > 0;
-      entry.appliedSequence = Math.max(entry.appliedSequence, appliedSequence);
-      if (entry.appliedSequence > entry.checkpointSequence) entry.current = false;
-      if (consumed.length > 0) {
-        if (!handoffOwnsModel) pendingBudget.release(incrementalBytes);
-        entry.pending = entry.pending.filter((update) => update.sequence > appliedSequence);
-      }
-      if (held(entry) || entry.owners.background <= 0) return true;
-      // An authoritative publish is a whole fresh snapshot (the one approved
-      // decoded read), not the previously charged body folded with the consumed
-      // pending wire bytes. Its retained size is the exact encoded state;
-      // charging residentBytes + incrementalBytes would leave the replacement
-      // body undercharged whenever the published content did not arrive through
-      // `entry.pending` (a held re-read buffers its deltas through
-      // reservePending instead). A live fold still uses the cheap incremental
-      // formula and never serializes the whole transcript per chunk.
-      const size =
-        !authoritative && (entry.residentBytes > 0 || handoffOwnsModel) && appliedSequence > previouslyApplied
-          ? entry.residentBytes + entry.handoffBytes + incrementalBytes
-          : encodedPayloadBytes(currentTranscriptState(model));
-      if (!Number.isFinite(size)) {
-        residency.revoke(ref, "storage");
-        return false;
-      }
-      const old = entry.residentBytes;
-      if (old > 0) residentBudget.release(old);
-      if (!residentBudget.reserve(size)) {
-        entry.residentBytes = 0;
-        if (!held(entry) && entry.owners.background > 0) {
-          if (handoffOwnsModel) {
-            // entry.handoffBytes was already reserved, and any consumed
-            // deltas remain reserved in incrementalBytes. Reconcile that
-            // reserved total to the replaced body's actual size instead of
-            // leaving the stale charge counted; a size-only counter reset
-            // would hide a still-retained body, so adjust only the
-            // difference.
-            const reconciledBytes = size - entry.handoffBytes - incrementalBytes;
-            if (reconciledBytes > 0 && !pendingBudget.reserve(reconciledBytes)) {
-              // The grown body cannot be charged: keep the previous body's
-              // ownership intact and let the paced storage recovery
-              // reconcile it.
-              residency.revoke(ref, "storage");
-              return false;
-            }
-            if (reconciledBytes < 0) pendingBudget.release(-reconciledBytes);
-            entry.handoffBytes = size;
-          } else if (pendingBudget.reserve(size)) entry.handoffBytes = size;
-          if (entry.handoffBytes === 0 && size <= residentBudget.limit) {
-            // The candidate individually fits the resident limit but the
-            // aggregate is full. Move LRU victims' charges into the handoff
-            // budget (feasibility checked first, no partial transfer) and admit
-            // the candidate resident instead of refusing it.
-            const victims = reserveLruVictimHandoff(ref, residentBudget.used + size - residentBudget.limit);
-            if (victims !== undefined) {
-              if (residentBudget.reserve(size)) {
-                // Commit the incoming reservation before scheduling any victim:
-                // enqueue() runs the worker synchronously, so every transferred
-                // entry must already be in its final state.
-                entry.residentBytes = size;
-                for (const [victimRef] of victims) enqueue(victimRef);
-                if (!entry.needsRecovery) scheduleResidentWrite(ref, entry);
-                return true;
-              }
-              rollbackLruVictimHandoff(victims);
-            }
-          }
-          if (entry.handoffBytes > 0) {
-            enqueueLeastRecentlyUsedVictims(ref, size);
-            queueMicrotask(() => enqueue(ref));
-          } else {
-            if (old > 0 && residentBudget.reserve(old)) entry.residentBytes = old;
-            residency.revoke(ref, "storage");
-            return false;
-          }
-        } else return false;
-        return true;
-      }
-      entry.residentBytes = size;
-      if (!entry.needsRecovery && !held(entry) && entry.owners.background > 0) scheduleResidentWrite(ref, entry);
-      return true;
     },
     reservePending(_ref, bytes) {
       return pendingBudget.reserve(bytes);
@@ -1034,226 +238,48 @@ export function createTranscriptResidency(
     releasePending(_ref, bytes) {
       pendingBudget.release(bytes);
     },
-    async promote(ref) {
-      const entry = entryFor(ref);
-      if (clearArmed) return undefined;
-      const clearClaimAtStart = clearClaimGeneration;
-      const resident = port.resident(ref);
-      // A clear-suppressed resident is a stale display seed: adoption must not
-      // skip the authoritative hydration a fresh foreground lifetime requires.
-      if (resident && entry.persistence !== "clear-suppressed") return resident;
-      if (!entry.current && entry.pending.length === 0 && !entry.work) return undefined;
-      entry.promoting = true;
-      try {
-        const promotionCut = Math.max(entry.pending.at(-1)?.sequence ?? 0, entry.workSequence, entry.appliedSequence);
-        if (!(await waitForEntryCut(ref, entry, promotionCut))) return undefined;
-        const activeGeneration = connectionGeneration;
-        const ownershipGeneration = entry.ownershipGeneration;
-        const activeClearEpoch = clearEpoch;
-        const found = await port.cache.getCurrent([ownerToken, ref], Date.now());
-        const record = found?.record;
-        if (
-          record &&
-          found.epoch === activeClearEpoch &&
-          record.clearEpoch === activeClearEpoch &&
-          record.connectionGeneration === activeGeneration &&
-          record.ownershipGeneration === entry.checkpointOwnershipGeneration &&
-          ready &&
-          activeGeneration === connectionGeneration &&
-          activeClearEpoch === clearEpoch &&
-          entry.current &&
-          !entry.needsRecovery &&
-          entry.persistence === "enabled" &&
-          clearClaimAtStart === clearClaimGeneration &&
-          owned(entry)
-        ) {
-          let model = threadModelFromCurrentState(record.state, port.admission(ref));
-          const uncheckpointed = [...entry.inFlight, ...entry.pending]
-            .filter((update) => update.sequence > record.appliedSequence)
-            .sort((left, right) => left.sequence - right.sequence);
-          for (const update of uncheckpointed) model = port.fold(ref, model, update);
-          if (
-            !ready ||
-            activeGeneration !== connectionGeneration ||
-            activeClearEpoch !== clearEpoch ||
-            entry.ownershipGeneration !== ownershipGeneration ||
-            !entry.current ||
-            entry.needsRecovery ||
-            entry.persistence !== "enabled" ||
-            clearClaimAtStart !== clearClaimGeneration ||
-            !owned(entry)
-          )
-            return undefined;
-          port.publish(ref, model);
-          entry.appliedSequence = uncheckpointed.at(-1)?.sequence ?? record.appliedSequence;
-          releaseEntryPending(entry);
-          entry.current = true;
-          schedulePromotionEpochRecheck(
-            ref,
-            entry,
-            found.epoch,
-            activeGeneration,
-            activeClearEpoch,
-            ownershipGeneration,
-          );
-          return model;
-        }
-        return undefined;
-      } finally {
-        entry.promoting = false;
-        if (entry.pending.length > 0 && entry.persistence === "enabled") enqueue(ref, held(entry));
-      }
-    },
-    scheduleHydration(ref, intent, run) {
-      if (!ready || disposed) return Promise.resolve();
-      const existing = hydrationByRef.get(ref);
-      if (existing) {
-        if (existing.queued && intent === "foreground") {
-          existing.intent = "foreground";
-          hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
-        }
-        return existing.promise;
-      }
-      let resolve!: () => void;
-      let reject!: (error: unknown) => void;
-      const promise = new Promise<void>((complete, fail) => {
-        resolve = complete;
-        reject = fail;
-      });
-      const controller = new AbortController();
-      const task: HydrationTask = {
-        ref,
-        intent,
-        controller,
-        run: run ?? ((signal) => port.hydrate(ref, intent, signal)),
-        promise,
-        resolve,
-        reject,
-        queued: false,
-        started: false,
-        settled: false,
-        ownerSettled: false,
-        retired: false,
-      };
-      hydrationTasks.add(task);
-      hydrationByRef.set(ref, task);
-      if (networkHydrations < options.networkHydrations) startHydration(task);
-      else {
-        task.queued = true;
-        hydrationQueue.push(task);
-        hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
-      }
-      return promise;
-    },
-    async drain(ref) {
-      const entry = entries.get(ref);
-      if (!entry) return;
-      enqueue(ref, held(entry));
-      await new Promise<void>((resolve) => entry.waiters.push(resolve));
-    },
+    scheduleHydration,
     revoke(ref, _reason) {
-      const entry = entryFor(ref);
-      const wasClearSuppressed = entry.persistence === "clear-suppressed";
-      releaseEntryPending(entry);
-      entry.current = false;
-      entry.needsRecovery = _reason !== "deleted";
-      // revoke must not erase Clear's lifetime: a suppressed ref stays
-      // suppressed until a qualifying fresh foreground lifetime hydrates.
-      if (!wasClearSuppressed) entry.persistence = "repairing";
-      if (_reason === "deleted" || wasClearSuppressed) cancelRepair(entry);
-      else armRepair(ref, entry);
+      retireHydrationForRef(ref);
     },
     retireClaims() {
-      clearArmed = true;
-      clearClaimGeneration += 1;
-      for (const task of hydrationTasks) clearClaimRetiredRefs.add(task.ref);
+      for (const task of [...hydrationTasks]) {
+        clearClaimRetiredRefs.set(task.ref, { intent: task.intent, run: task.run });
+      }
       retireHydrations();
     },
     releaseClearClaim() {
-      clearArmed = false;
-      // An aborted Clear must not strand the demand whose claim it retired — a
-      // hydration task or a suspended disk worker. Drain through the shared
-      // helper: a previously committed Clear's suppression stands.
       const refs = [...clearClaimRetiredRefs];
       clearClaimRetiredRefs.clear();
-      for (const ref of refs) recoverRetiredClaim(ref);
-    },
-    clear(epoch) {
-      clearArmed = false;
-      clearClaimRetiredRefs.clear();
-      clearEpoch = epoch;
-      for (const entry of entries.values()) {
-        cancelRepair(entry);
-        entry.current = false;
-        entry.persistence = "clear-suppressed";
-        entry.clearSuppressionHoldsPreClearHolders = held(entry);
-        entry.freshForegroundLifetime = false;
-        if (entry.flushTimer) clearTimeout(entry.flushTimer);
-        if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
-        entry.flushTimer = undefined;
-        entry.maxWaitTimer = undefined;
-        releaseEntryPending(entry);
+      for (const [ref, retired] of refs) {
+        if (!ready || disposed) continue;
+        void residency.scheduleHydration(ref, retired.intent, retired.run);
       }
+    },
+    clear(_epoch) {
+      clearClaimRetiredRefs.clear();
       retireHydrations();
     },
     dispose() {
       disposed = true;
       clearClaimRetiredRefs.clear();
       retireHydrations();
-      epochRechecks.clear();
-      for (const entry of entries.values()) {
-        cancelRepair(entry);
-        if (entry.flushTimer) clearTimeout(entry.flushTimer);
-        if (entry.maxWaitTimer) clearTimeout(entry.maxWaitTimer);
-        releaseEntryPending(entry);
-      }
-      entries.clear();
-      workQueue.length = 0;
-      urgentQueue.length = 0;
     },
     async settled() {
-      while (true) {
-        for (const [ref, entry] of entries) {
-          if (entry.flushTimer) enqueue(ref);
-        }
-        await runWorker();
-        if (epochRechecks.size > 0) {
-          await Promise.allSettled([...epochRechecks]);
-          continue;
-        }
-        if (
-          !drainPromise &&
-          workQueue.length === 0 &&
-          urgentQueue.length === 0 &&
-          [...entries.values()].every((entry) => !entry.work && !entry.flushTimer)
-        )
-          return;
+      while (hydrationTasks.size > 0) {
+        await Promise.allSettled([...hydrationTasks].map((task) => task.promise));
       }
     },
     snapshot() {
       return {
-        residentBytes: residentBudget.used,
+        residentBytes: 0,
         pendingBytes: pendingBudget.used,
-        workerBytes,
-        diskWorkers,
+        workerBytes: 0,
+        diskWorkers: 0,
         networkHydrations,
         queuedHydrationRefs: hydrationQueue.map((task) => task.ref),
-        committedWrites,
-        refs: new Map(
-          [...entries].map(([ref, entry]) => [
-            ref,
-            {
-              resident: port.resident(ref) !== undefined,
-              residentBytes: entry.residentBytes,
-              handoffBytes: entry.handoffBytes,
-              current: entry.current,
-              appliedSequence: entry.appliedSequence,
-              persistence: entry.persistence,
-              pending: entry.pending,
-              inFlight: entry.inFlight,
-            },
-          ]),
-        ),
+        committedWrites: 0,
+        refs: new Map(),
       };
     },
   };

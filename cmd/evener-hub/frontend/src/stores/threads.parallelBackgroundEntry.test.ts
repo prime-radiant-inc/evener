@@ -359,8 +359,13 @@ describe("background thread claims", () => {
         const encoded = originalStringify(value);
         return encoded === undefined ? Number.POSITIVE_INFINITY : new TextEncoder().encode(encoded).byteLength;
       });
-      expect(serializedSizes).toHaveLength(8);
-      expect(Math.max(...serializedSizes)).toBeLessThan(retainedStateBytes / 2);
+      // The guarantee: live deltas never serialize the whole retained
+      // transcript. Before 6d the store constructed one sized update per delta
+      // to feed the legacy residency; that construction is retired, so the
+      // entry route may serialize each delta's own item (or nothing). What must
+      // still hold is that no call reaches the whole-transcript size.
+      expect(serializedSizes.every((size) => size < retainedStateBytes / 2)).toBe(true);
+      expect(Math.max(0, ...serializedSizes)).toBeLessThan(retainedStateBytes / 2);
       expect(threadsStore.getState().threads.get("local:one")).not.toBe(model);
       expect(
         threadsStore

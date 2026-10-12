@@ -15,10 +15,14 @@ import { deleteSession } from "../shell/rail/actions";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
-import { requestResult, transactionCompletion } from "./idbConnection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
-import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME, type TranscriptItemRow } from "./sessionCacheSchema";
+import {
+  entryHistoryKey,
+  SESSION_CACHE_DATABASE_NAME,
+  SESSION_CACHE_DATABASE_VERSION,
+  type TranscriptItemRow,
+} from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
@@ -535,7 +539,9 @@ it("production cache writes and reopens keyed entries on the real database", asy
   ).toMatchObject({ outcome: "committed" });
   first.close();
   expect((await cache().getLatest(historyKey, 1))[0]?.item).toMatchObject({ text: "disk-row" });
-  expect(await factory.databases()).toEqual([{ name: SESSION_CACHE_DATABASE_NAME, version: 3 }]);
+  expect(await factory.databases()).toEqual([
+    { name: SESSION_CACHE_DATABASE_NAME, version: SESSION_CACHE_DATABASE_VERSION },
+  ]);
 });
 
 it("entry store repairs aggregate overflow through an automatic authoritative read", async () => {
@@ -671,25 +677,20 @@ it("ordinary browser routes reads notifications paging reopen reconnect and fina
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
   expect(await factory.databases()).toEqual([
     { name: "evener-mutation-outbox", version: 3 },
-    { name: SESSION_CACHE_DATABASE_NAME, version: 3 },
+    { name: SESSION_CACHE_DATABASE_NAME, version: SESSION_CACHE_DATABASE_VERSION },
   ]);
 });
 
-async function legacyCounts(): Promise<number[]> {
+// The 6d removal dropped the legacy stores, so the entry stores are the only
+// object stores the cache database holds.
+async function cacheStoreNames(): Promise<string[]> {
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = factory.open(SESSION_CACHE_DATABASE_NAME);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
   try {
-    const transaction = database.transaction(["records", "current"], "readonly");
-    const done = transactionCompletion(transaction);
-    const result = await Promise.all([
-      requestResult(transaction.objectStore("records").count()),
-      requestResult(transaction.objectStore("current").count()),
-    ]);
-    await done;
-    return result;
+    return Array.from(database.objectStoreNames);
   } finally {
     database.close();
   }
@@ -706,9 +707,13 @@ it("ordinary settings count and write notifications describe entries without leg
     expect(await countCachedSessions()).toBe(1);
     expect(counts.length).toBeGreaterThan(0);
     expect(await Promise.all(counts)).toEqual(counts.map(() => 1));
-    expect(await legacyCounts()).toEqual([0, 0]);
+    expect((await cacheStoreNames()).sort()).toEqual(
+      ["transcriptCoverage", "transcriptItems", "transcriptMeta", "transcriptTurns"].sort(),
+    );
     expect(await lease.release()).toEqual({ kind: "saved" });
-    expect(await legacyCounts()).toEqual([0, 0]);
+    expect((await cacheStoreNames()).sort()).toEqual(
+      ["transcriptCoverage", "transcriptItems", "transcriptMeta", "transcriptTurns"].sort(),
+    );
   } finally {
     unsubscribe();
   }
@@ -917,7 +922,9 @@ it("ordinary recorded notifications persist during busy input without a whole-mo
     "busy-6",
     "busy-7",
   ]);
-  expect(await legacyCounts()).toEqual([0, 0]);
+  expect((await cacheStoreNames()).sort()).toEqual(
+    ["transcriptCoverage", "transcriptItems", "transcriptMeta", "transcriptTurns"].sort(),
+  );
 });
 
 it("ordinary final pane release saves its fresh finite read before dropping the model", async () => {

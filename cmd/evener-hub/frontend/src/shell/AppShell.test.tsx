@@ -867,16 +867,7 @@ function armReleaseWriteHold(cache: SessionEntryCache, lifetime: ReturnType<type
     // teardown cannot leave an unreleased gate behind.
     if (!disarmed && !consumed && lifetime.releaseEntered()) {
       consumed = true;
-      held = holdNextWriteTransaction([
-        "transcriptItems",
-        "transcriptTurns",
-        "transcriptCoverage",
-        "transcriptMeta",
-        "records",
-        "meta",
-        "current",
-        "currentMeta",
-      ]);
+      held = holdNextWriteTransaction(["transcriptItems", "transcriptTurns", "transcriptCoverage", "transcriptMeta"]);
       writeEntered.resolve();
       if (cleanupBegan) signalArmedDuringCleanup?.();
     }

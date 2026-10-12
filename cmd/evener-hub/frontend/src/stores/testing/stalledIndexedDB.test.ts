@@ -2,6 +2,12 @@
 
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
+import {
+  CLEAR_EPOCH_KEY,
+  ENTRY_META_STORE,
+  SESSION_CACHE_DATABASE_VERSION,
+  upgradeSessionCache,
+} from "../sessionCacheSchema";
 import { bumpCacheEpochRow, holdIndexedDBEvent, holdNextWriteTransaction } from "./stalledIndexedDB";
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -136,30 +142,19 @@ test("holdNextWriteTransaction holds the exact scope, not an earlier narrower wr
   expect(target.isDone()).toBe(true);
 });
 
-test("bumpCacheEpochRow updates a v2 cache without requesting a downgrade", async () => {
+test("bumpCacheEpochRow updates the entry cache epoch without requesting a downgrade", async () => {
   const indexedDB = new IDBFactory();
-  const open = indexedDB.open("evener-session-cache", 2);
-  open.addEventListener(
-    "upgradeneeded",
-    () => {
-      const database = open.result;
-      database.createObjectStore("records", { keyPath: "ref" });
-      database.createObjectStore("meta", { keyPath: "ref" }).put({ ref: "__clearEpoch", epoch: 0 });
-      database.createObjectStore("current", { keyPath: ["ownerToken", "ref"] }).createIndex("ref", "ref", {
-        unique: false,
-      });
-      const currentMeta = database.createObjectStore("currentMeta", { keyPath: ["ownerToken", "ref"] });
-      currentMeta.createIndex("ref", "ref", { unique: false });
-    },
-    { once: true },
-  );
+  const open = indexedDB.open("evener-session-cache", SESSION_CACHE_DATABASE_VERSION);
+  open.addEventListener("upgradeneeded", () => upgradeSessionCache(open.result), { once: true });
   const database = await requestResult(open);
   database.close();
 
   await bumpCacheEpochRow(indexedDB, 7);
 
   const reopened = await requestResult(indexedDB.open("evener-session-cache"));
-  const epoch = await requestResult(reopened.transaction("meta").objectStore("meta").get("__clearEpoch"));
-  expect(epoch).toEqual({ ref: "__clearEpoch", epoch: 7 });
+  const epoch = await requestResult(
+    reopened.transaction(ENTRY_META_STORE).objectStore(ENTRY_META_STORE).get(CLEAR_EPOCH_KEY),
+  );
+  expect(epoch).toEqual({ historyKey: CLEAR_EPOCH_KEY, epoch: 7 });
   reopened.close();
 });

@@ -1,17 +1,25 @@
 import type { CachedSessionRecord, ThreadItemPosition, TurnModel } from "@evener/appwire-client";
 
 export const SESSION_CACHE_DATABASE_NAME = "evener-session-cache";
-export const SESSION_CACHE_DATABASE_VERSION = 3;
+// Bumped to 4 with the 6d legacy-store removal: the entry cache is the only
+// route, so the four legacy stores (records/meta/current/currentMeta) are
+// dropped on upgrade and the durable Clear epoch moves into ENTRY_META_STORE.
+export const SESSION_CACHE_DATABASE_VERSION = 4;
 export const ENTRY_ITEM_STORE = "transcriptItems";
 export const ENTRY_TURN_STORE = "transcriptTurns";
 export const ENTRY_COVERAGE_STORE = "transcriptCoverage";
 export const ENTRY_META_STORE = "transcriptMeta";
 export const ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX = "historyKey_boundary_snapshot";
-export const LEGACY_RECORDS_STORE = "records";
-export const LEGACY_META_STORE = "meta";
-export const CURRENT_STORE = "current";
-export const CURRENT_META_STORE = "currentMeta";
-const CLEAR_EPOCH_KEY = "__clearEpoch";
+// The reserved key of the single durable Clear epoch row, which is entry-owned:
+// it lives in ENTRY_META_STORE keyed by this historyKey. It is not a history row
+// and every enumeration skips it by key comparison.
+export const CLEAR_EPOCH_KEY = "__clearEpoch";
+// The lookup's own short deadline (the spec's load seam), far below the
+// outbox's 10-second storage timeout: no pane ever waits on storage longer.
+export const SESSION_CACHE_LOOKUP_DEADLINE_MS = 250;
+// The legacy stores dropped at the 6d schema bump. Named here only so the
+// upgrade can discard them.
+const LEGACY_STORE_NAMES = ["records", "meta", "current", "currentMeta"] as const;
 
 export interface TranscriptItemRow<T = unknown> {
   historyKey: string;
@@ -104,8 +112,10 @@ export interface TranscriptAggregateMetaRow {
   encodedBytes: number;
 }
 
+// The durable Clear epoch row. Entry-owned: it lives in ENTRY_META_STORE keyed
+// by CLEAR_EPOCH_KEY.
 export interface EntryClearEpochRow {
-  ref: typeof CLEAR_EPOCH_KEY;
+  historyKey: typeof CLEAR_EPOCH_KEY;
   epoch: number;
 }
 
@@ -118,23 +128,13 @@ export function entryHistoryKey(identity: {
   return JSON.stringify([identity.clientId, identity.hostId, identity.sessionId, identity.incarnation]);
 }
 
-export function upgradeSessionCache(database: IDBDatabase, includeEntryStores = false): void {
-  if (!database.objectStoreNames.contains(LEGACY_RECORDS_STORE)) {
-    database.createObjectStore(LEGACY_RECORDS_STORE, { keyPath: "ref" });
+export function upgradeSessionCache(database: IDBDatabase): void {
+  // The legacy stores are discarded on upgrade (Ruling 37): the cache is
+  // rebuilt from the server, never migrated. IndexedDB keeps any store not
+  // explicitly deleted, so remove them here.
+  for (const name of LEGACY_STORE_NAMES) {
+    if (database.objectStoreNames.contains(name)) database.deleteObjectStore(name);
   }
-  if (!database.objectStoreNames.contains(LEGACY_META_STORE)) {
-    const meta = database.createObjectStore(LEGACY_META_STORE, { keyPath: "ref" });
-    meta.put({ ref: CLEAR_EPOCH_KEY, epoch: 0 });
-  }
-  if (!database.objectStoreNames.contains(CURRENT_STORE)) {
-    const current = database.createObjectStore(CURRENT_STORE, { keyPath: ["ownerToken", "ref"] });
-    current.createIndex("ref", "ref", { unique: false });
-  }
-  if (!database.objectStoreNames.contains(CURRENT_META_STORE)) {
-    const currentMeta = database.createObjectStore(CURRENT_META_STORE, { keyPath: ["ownerToken", "ref"] });
-    currentMeta.createIndex("ref", "ref", { unique: false });
-  }
-  if (!includeEntryStores) return;
   if (!database.objectStoreNames.contains(ENTRY_ITEM_STORE)) {
     const items = database.createObjectStore(ENTRY_ITEM_STORE, { keyPath: ["historyKey", "transcriptKey"] });
     items.createIndex("historyKey_position", ["historyKey", "position.entry", "position.item", "positionSub"], {

@@ -11,7 +11,6 @@ import type { ComposerMention } from "@evener/appwire-client";
 import type {
   AnyNotification,
   AppwireClientLike,
-  CachedSessionRecord,
   CurrentTranscriptAdmission,
   GoalSetResponse,
   JobActivityJob,
@@ -36,7 +35,6 @@ import {
   buildComposerInput,
   buildInput,
   ClientNotReadyError,
-  cachedSessionRecord,
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
   comparePositions,
@@ -84,8 +82,12 @@ import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutation
 import { trackProjectionWork } from "./projectionWork";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
-import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import {
+  entryHistoryKey,
+  SESSION_CACHE_DATABASE_NAME,
+  SESSION_CACHE_LOOKUP_DEADLINE_MS,
+  type TranscriptResolvedIdentity,
+} from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
@@ -419,7 +421,6 @@ const canonicalThreadOwnerGenerations = new Map<string, number>();
 // is in flight. Receipt/pin cleanup may still reconcile mutations, but cannot
 // remove the model out from under that awaited drain.
 const finalReleaseOwners = new Map<string, number>();
-const finalReleaseCuts = new Map<string, number>();
 const backgroundLeaseSequences = new Map<string, number>();
 // Per-ref "was a foreground/history/pin holder present" across owner changes,
 // so a clear's suppression can tell a pre-clear holder's release from a fresh
@@ -481,10 +482,6 @@ function beginCanonicalThreadClaim(ref: string, supersedePinnedOnly = false): vo
     fixture.retirement = undefined;
     fixture.retirementEpoch = undefined;
     finalReleaseOwners.delete(ref);
-  }
-  if (finalReleaseCuts.delete(ref)) {
-    const model = threadsStore.getState().threads.get(ref);
-    if (model) scheduleCacheWrite(ref);
   }
   const pinnedOnly =
     (refCounts.get(ref) ?? 0) === 0 && (backgroundRefCounts.get(ref) ?? 0) === 0 && pinnedMutationRefs.has(ref);
@@ -555,17 +552,9 @@ const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
 
-// The session-history cache's singleton storage adapter (web session-history
-// cache spec, "The load seam"). One per tab: the lookup, the write seam
-// (Task 6) and the clear (Task 10) all ride currentSessionCache() so tests
-// can swap the whole storage for a wedged or gated instance.
-const sessionCacheAdapter = new SessionCacheIndexedDB();
-let sessionCacheAdapterOverride: SessionCacheIndexedDB | undefined;
-function currentSessionCache(): SessionCacheIndexedDB {
-  return sessionCacheAdapterOverride ?? sessionCacheAdapter;
-}
-// Lazy so the ordinary browser captures its actual storage environment on first
-// use. Both adapters open the same schema version and database, never a new tier.
+// The entry cache is the tab's only transcript cache (6d removed the legacy
+// adapter). Lazy so the ordinary browser captures its actual storage
+// environment on first use.
 let productionEntryCache: SessionEntryCache | undefined;
 function currentEntryCache(): SessionEntryCache {
   productionEntryCache ??= new SessionEntryCache({ databaseName: SESSION_CACHE_DATABASE_NAME });
@@ -614,11 +603,6 @@ function setCurrentThreadId(ref: string, threadId: string): void {
   }
   refs.add(ref);
 }
-/** Tests swap the singleton for a wedged or gated instance; production never calls this. */
-export function setSessionCacheAdapterForTests(adapter: SessionCacheIndexedDB | undefined): void {
-  sessionCacheAdapterOverride = adapter;
-}
-
 export interface EntryTranscriptFixtureOptionsForTests {
   ref: string;
   cache: SessionEntryCache;
@@ -702,16 +686,11 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
 
 const productionEntryRoutes = new Map<string, EntryTranscriptRoute>();
 
-// The only legacy selection left is the explicit old-adapter test seam. An
-// ordinary browser always selects entry ingestion, even before its first read.
-function usesEntryTranscripts(ref: string): boolean {
-  if (entryTranscriptFixtureForTests) return entryTranscriptFixtureForTests.ref === ref;
-  return sessionCacheAdapterOverride === undefined;
-}
-
 function entryTranscriptRoute(ref: string): EntryTranscriptRoute | undefined {
   if (entryTranscriptFixtureForTests?.ref === ref) return entryTranscriptFixtureForTests;
-  if (!usesEntryTranscripts(ref)) return undefined;
+  // While an isolated fixture is installed, no production route is created for
+  // other refs: the fixture is the one entry-backed route under test.
+  if (entryTranscriptFixtureForTests) return undefined;
   let route = productionEntryRoutes.get(ref);
   if (!route) {
     route = {
@@ -735,7 +714,7 @@ function entryTranscriptRoutes(): EntryTranscriptRoute[] {
 }
 
 function isEntryTranscriptBackgroundOnly(ref: string): boolean {
-  return usesEntryTranscripts(ref) && (backgroundRefCounts.get(ref) ?? 0) > 0 && !heldCountsAtStore(ref);
+  return (backgroundRefCounts.get(ref) ?? 0) > 0 && !heldCountsAtStore(ref);
 }
 
 // Opening tokens, monotonic across the tab. The pane paints the
@@ -1256,56 +1235,12 @@ async function readEntryRouteAuthorities(
     if (timer !== undefined) clearTimeout(timer);
   }
 }
-type CacheLookup = { record?: CachedSessionRecord; epoch: number };
-const inflightCacheLookups = new Map<string, Promise<CacheLookup | undefined>>();
 let residencyIfCreated: TranscriptResidency | undefined;
 const currentAdmissions = new Map<string, CurrentTranscriptAdmission>();
 // The tab's in-memory view of the durable clear epoch: undefined until the
 // first lookup observes it. Only durable observations advance it, monotonically.
 // Optimistic same-tab clear arming lives separately in clearInFlight.
 let tabCacheEpoch: number | undefined;
-
-// One shared bounded lookup per ref. The deadline is the lookup's own
-// Promise.race against SESSION_CACHE_LOOKUP_DEADLINE_MS — never the storage
-// timeout — and a lost race resolves the join as a miss, discarding whatever
-// the adapter answers later.
-function joinCacheLookup(ref: string): Promise<CacheLookup | undefined> {
-  const existing = inflightCacheLookups.get(ref);
-  if (existing) return existing;
-  const race = (async () => {
-    // The deadline's timer is cleared the moment the race settles: the losing
-    // timer's resolve was a no-op by then, so this only keeps an armed timer
-    // from outliving the lookup.
-    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        (async (): Promise<CacheLookup | undefined> => {
-          const adapter = currentSessionCache();
-          const found = await adapter.get(ref, Date.now());
-          const epoch = found?.epoch ?? adapter.observedEpoch;
-          return epoch === undefined ? undefined : { record: found?.record, epoch };
-        })(),
-        new Promise<undefined>((resolve) => {
-          deadlineTimer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
-        }),
-      ]);
-    } catch {
-      return undefined; // every failure is a miss
-    } finally {
-      clearTimeout(deadlineTimer);
-    }
-  })();
-  // The cleanup is a reaction registered here — before any awaiter's — so it
-  // still runs ahead of every joiner the settlement wakes, exactly as an
-  // inline finally would. (It cannot be an inline finally: the IIFE's own
-  // body would reference its promise before the assignment completes.)
-  const forget = () => {
-    if (inflightCacheLookups.get(ref) === race) inflightCacheLookups.delete(ref);
-  };
-  void race.then(forget, forget);
-  inflightCacheLookups.set(ref, race);
-  return race;
-}
 
 // The gap rule's anchor: the newest item position the record holds, fixed at
 // shell-build from pure record data before any live merge, ordered by
@@ -1636,10 +1571,6 @@ function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId
 }
 
 function removeThreadModel(ref: string): void {
-  // The memo never outlives the model (spec, "Eviction, cap, and cross-tab"):
-  // a memo that survived the release would skip an eligible session
-  // indefinitely.
-  clearOversizeMemo(ref);
   cacheLifetimeHeld.delete(ref);
   const removed = threadsStore.getState().threads.get(ref);
   if (removed) removeThreadModelIndex(threadsIndex, removed);
@@ -1920,15 +1851,10 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   await discardCanceledMutations(targetRef);
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
-  // A clear replaces the history outright — the one mid-lifetime shrink that
-  // clears the oversize memo (spec: "replacement is the only mid-lifetime
-  // shrink"; a merge only adds items).
-  clearOversizeMemo(targetRef);
   // The session-content clear's cache hook: the cleared model is a bare
   // hydrate with no history, so it would never match the write gates;
   // deleting the record in the same step is what keeps a cleared session's
   // next reload from painting pre-clear content from the shell.
-  cancelCacheWrite(targetRef);
   noteEntryRouteRetirement(targetRef);
   deleteCachedRefs([targetRef]);
   // A clear response is a newer authoritative cut than any thread/read that
@@ -2025,12 +1951,6 @@ function dropUnpinnedModel(ref: string, flush = true): void {
   // pane/background last release does. The retirement callback drops with
   // flush=false, so this cannot start a second retirement.
   if (flush && retireEntryTranscriptIfUnowned(ref)) return;
-  // The pinned drain is the path a pinned ref's model finally leaves through
-  // (releaseThread returns early while pinned), so the flush runs here too —
-  // ordered before the model leaves the map, on the pre-removal snapshot —
-  // and the memo dies with the model.
-  if (flush) flushCacheWrite(ref);
-  clearOversizeMemo(ref);
   cacheLifetimeHeld.delete(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
@@ -2913,7 +2833,6 @@ async function hydrateAndSubscribe(
     if (lease !== ownerLease) lease.release();
   }
   if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
-  if (discardHeldHistory) clearOversizeMemo(ref); // the stale-snapshot retry's replacement is a mid-lifetime shrink
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
   // merge it (same incarnation/epoch, length >= held's), leaving every held
@@ -2932,7 +2851,7 @@ async function hydrateAndSubscribe(
   // and a higher queue revision can supersede its queue. Missing overlay slots
   // can be enriched under recorded coverage, never replacing response-owned
   // overlay slots or replaying their already-represented deltas.
-  const fixtureNotifications = usesEntryTranscripts(ref) ? pending.notifications.slice() : [];
+  const fixtureNotifications = pending.notifications.slice();
   applyHydrationResponseCut(pending, ref, model);
   return { model, response, fixtureNotifications, ...(discardHeldHistory ? { discardHeldHistory: true } : {}) };
 }
@@ -4251,15 +4170,10 @@ function bufferPendingNotification(
   };
   if ((backgroundRefCounts.get(ref) ?? 0) > 0) {
     if (!transcriptResidency().reservePending(ref, update.bytes)) {
-      if (usesEntryTranscripts(ref)) {
-        // Entry input already reached its repository. Retire this read's
-        // replay copy so its incomplete tail cannot overwrite that owner.
-        // The scheduler retains the request slot until its actual settlement.
-        retirePendingHydration(ref, pending, pendingHydrations);
-        return;
-      }
-      pending.backgroundInvalidated = true;
-      transcriptResidency().revoke(ref, "gap");
+      // Entry input already reached its repository. Retire this read's
+      // replay copy so its incomplete tail cannot overwrite that owner.
+      // The scheduler retains the request slot until its actual settlement.
+      retirePendingHydration(ref, pending, pendingHydrations);
       return;
     }
     pending.backgroundBytes += update.bytes;
@@ -4337,12 +4251,6 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     resumeOnlyFoldable: hydrated.resumeOnlyFoldable,
   });
   currentAppliedSequences.set(ref, currentAppliedSequences.get(ref) ?? 0);
-  if (
-    !usesEntryTranscripts(ref) &&
-    residencyIfCreated &&
-    !residencyIfCreated.published(ref, hydrated, currentAppliedSequences.get(ref) ?? 0, true)
-  )
-    return null;
   putThreadModel(ref, backgroundModel);
   setCurrentThreadId(ref, backgroundModel.threadId);
   // The first authoritative publish ends the cached-shell window: the flag
@@ -4377,7 +4285,7 @@ async function publishAndReconcileThreadHydration(
   reopenOnlyClientMutationId?: string,
   intent: HydrationIntent = "foreground",
 ): Promise<ThreadModel | null> {
-  const productionEntry = usesEntryTranscripts(ref) && entryTranscriptFixtureForTests?.ref !== ref;
+  const productionEntry = entryTranscriptFixtureForTests?.ref !== ref;
   if (productionEntry) {
     if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
     await acceptEntryTranscriptHydration(ref, pending, hydration);
@@ -4769,15 +4677,12 @@ function handleNotification(n: AnyNotification): void {
     }
   }
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
-  const residencySkipped = new Set<string>();
   if (route) {
     const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
     for (const ref of refs) {
       const pending = pendingThreadHydrations.get(ref);
       if (pending && targetsPendingHydration(n, pending)) continue;
       const sequence = (currentAppliedSequences.get(ref) ?? 0) + 1;
-      const update = { sequence, now, notification: n, bytes: encodedPayloadBytes(n) };
-      if (!usesEntryTranscripts(ref) && transcriptResidency().accept(ref, update)) residencySkipped.add(ref);
       currentAppliedSequences.set(ref, sequence);
     }
   }
@@ -4823,25 +4728,14 @@ function handleNotification(n: AnyNotification): void {
   // overlay semantics, and status/session metadata keep their ordinary fold.
   const fixtureRecordedRefs: ReadonlySet<string> =
     route && (n.method === "history/updated" || n.method.startsWith("overlay/"))
-      ? new Set(
-          ("ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])]).filter((ref) =>
-            usesEntryTranscripts(ref),
-          ),
-        )
+      ? new Set("ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])])
       : EMPTY_PENDING_REFS;
   const {
     next: reducedThreads,
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
     endedResumeOnlyRefs: endedThreadsResumeOnly,
-  } = applyToMap(
-    threads,
-    threadsIndex,
-    n,
-    now,
-    new Set([...pendingRefs, ...residencySkipped, ...fixtureRecordedRefs]),
-    previousThreads,
-  );
+  } = applyToMap(threads, threadsIndex, n, now, new Set([...pendingRefs, ...fixtureRecordedRefs]), previousThreads);
   const {
     next: reducedWatchedThreads,
     changedRefs: changedWatchedThreads,
@@ -4864,38 +4758,15 @@ function handleNotification(n: AnyNotification): void {
     let projected: Map<string, ThreadModel> | undefined;
     for (const ref of changedWatchedThreads) {
       const model = nextWatchedThreads.get(ref);
-      if (!model || !usesEntryTranscripts(ref)) continue;
+      if (!model) continue;
       projected ??= new Map(nextWatchedThreads);
       projected.set(ref, pruneBackgroundHistoryBodies(model));
     }
     if (projected) nextWatchedThreads = projected;
   }
-  let publishableThreads = nextThreads;
-  let publishableChangedThreads = changedThreads;
-  let publishableEndedResumeOnly = endedThreadsResumeOnly;
-  if (nextThreads && residencyIfCreated) {
-    const refused = new Set<string>();
-    for (const ref of acceptedThreads) {
-      const model = nextThreads.get(ref);
-      if (
-        model &&
-        !usesEntryTranscripts(ref) &&
-        !residencyIfCreated.published(ref, model, currentAppliedSequences.get(ref) ?? 0)
-      ) {
-        refused.add(ref);
-      }
-    }
-    if (refused.size > 0) {
-      publishableThreads = new Map(nextThreads);
-      for (const ref of refused) {
-        const previous = threads.get(ref);
-        if (previous) publishableThreads.set(ref, previous);
-        else publishableThreads.delete(ref);
-      }
-      publishableChangedThreads = changedThreads.filter((ref) => !refused.has(ref));
-      publishableEndedResumeOnly = endedThreadsResumeOnly.filter((ref) => !refused.has(ref));
-    }
-  }
+  const publishableThreads = nextThreads;
+  const publishableChangedThreads = changedThreads;
+  const publishableEndedResumeOnly = endedThreadsResumeOnly;
   if (n.method === "evener/goal/updated") {
     for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
     for (const ref of acceptedWatchedThreads) acceptedGoalRefs.add(ref);
@@ -5005,7 +4876,7 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
   invalidateGoalResponseFallback(ref);
   invalidateNotesResponseFallback(ref);
-  putWatchedThreadModel(ref, usesEntryTranscripts(ref) ? pruneBackgroundHistoryBodies(model) : model);
+  putWatchedThreadModel(ref, pruneBackgroundHistoryBodies(model));
 }
 
 function ownedHydrationsFor(kind: HydrationOwnerKind): Map<string, OwnedHydration> {
@@ -5760,13 +5631,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
-      if (usesEntryTranscripts(ref)) await openEntryTranscript(ref);
+      await openEntryTranscript(ref);
       return;
     }
 
     const claimEpoch = readyEpoch;
-    const promoted = usesEntryTranscripts(ref) ? false : await transcriptResidency().promote(ref);
-    if (promoted) return;
 
     // The claim's hydration epoch, observed when the pane claimed the ref —
     // BEFORE the serial cache lookup, because the lookup widens the
@@ -5788,7 +5657,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // bounded by its own 250 ms deadline. The creator alone publishes and
     // arms; a joiner sees the shell (threads.has) or the hydration
     // (inflightHydrates) and joins that instead.
-    if (usesEntryTranscripts(ref) && !threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
+    if (!threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
       await openCachedEntryTranscript(ref, generation);
       if (
         (refCounts.get(ref) ?? 0) === 0 ||
@@ -5797,50 +5666,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       )
         return;
     }
-    let cachedBase: ThreadModel | undefined = usesEntryTranscripts(ref)
-      ? threadsStore.getState().threads.get(ref)
-      : undefined;
-    if (!usesEntryTranscripts(ref) && !threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
-      const found = await joinCacheLookup(ref);
-      const state = threadsStore.getState();
-      // The creator rechecks after the await: a pane that released while the
-      // lookup was in flight, or a ref the deletion fence durably rejected,
-      // publishes nothing and arms nothing — a closed pane must not send a
-      // cold read in its own name. (A concurrent holder that published while
-      // we looked keeps its model; the guard below just declines to arm the
-      // shell over it.)
-      if ((refCounts.get(ref) ?? 0) === 0 || ensureGenerations.get(ref) !== generation || state.deletedRefs.has(ref))
-        return;
-      if (found !== undefined) {
-        const captured = found.epoch;
-        // The first durable observation establishes this still-unpublished
-        // claim's epoch. Already-published deadline fallbacks keep their old
-        // lease, and later observations suppress rather than rebind them.
-        if (tabCacheEpoch === undefined && state.clearInFlight === undefined && !state.threads.has(ref)) {
-          threadsStore.setState((s) => ({
-            cacheLifetimes: new Map(s.cacheLifetimes).set(ref, {
-              ...s.cacheLifetimes.get(ref),
-              leaseEpoch: captured,
-            }),
-          }));
-        }
-        onCacheEpochObserved(captured);
-        const epochMatch =
-          captured === tabCacheEpoch && (state.clearInFlight === undefined || captured >= state.clearInFlight);
-        if (epochMatch && found.record !== undefined && !state.threads.has(ref)) {
-          const shell = threadModelFromCache(found.record, Date.now());
-          const anchor = newestItemPosition(found.record.history.turns);
-          threadsStore.setState((s) => ({
-            cacheLifetimes: new Map(s.cacheLifetimes).set(ref, {
-              ...s.cacheLifetimes.get(ref),
-              shell: true,
-              ...(anchor === undefined ? {} : { anchor }),
-            }),
-          }));
-          cachedBase = shell;
-        }
-      }
-    }
+    let cachedBase: ThreadModel | undefined = threadsStore.getState().threads.get(ref);
 
     const startHydration = (
       hydrationClient: AppwireClientLike,
@@ -5895,7 +5721,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         try {
           const model = await inflight;
           if (model) {
-            if (usesEntryTranscripts(ref)) await openEntryTranscript(ref);
+            await openEntryTranscript(ref);
             return;
           }
         } catch (err) {
@@ -6018,7 +5844,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // frameTimes is dropped in lockstep — an untracked ref has no business
     // holding onto a liveness trace a future ensureThread() of the same ref
     // should start fresh, the same way it re-reads a fresh model.
-    flushCacheWrite(ref); // the tail commits before the model leaves the map
     removeThreadModel(ref);
   },
 
@@ -6752,126 +6577,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 }));
 
-// The write seam (spec, "The write seam"): a subscription to the threads map,
-// not a funnel. Publications flow through putThreadModel(s) and the
-// notification handler's own setState; a subscription sees them all.
-// The debounce and starvation bounds (spec, "The write seam"): a burst's
-// trailing write fires 1 s after its last publication, and a streaming burst
-// never starves past 5 s.
-const DEFAULT_CACHE_WRITE_TIMERS = { debounceMs: 1_000, maxWaitMs: 5_000 };
-let cacheWriteTimers = DEFAULT_CACHE_WRITE_TIMERS;
-
-/** Tests inject cadence before arming writes; existing schedules keep their timers. */
-export function setCacheWriteTimersForTests(timers: typeof DEFAULT_CACHE_WRITE_TIMERS): void {
-  cacheWriteTimers = timers;
-}
-
-interface CacheWriteSchedule {
-  trailing: ReturnType<typeof setTimeout>;
-  maxWait: ReturnType<typeof setTimeout>;
-}
-const cacheWriteSchedules = new Map<string, CacheWriteSchedule>();
-const oversizeMemo = new Set<string>();
-const cacheHistoryLifetimes = new Map<string, symbol>();
-
-function clearOversizeMemo(ref: string): void {
-  oversizeMemo.delete(ref);
-  cacheHistoryLifetimes.delete(ref);
-}
-
-// cancelCacheWrite ends the ref's schedule: both of the CURRENT entry's
-// timers cleared and the entry removed, so no live timer for the ref ever
-// survives outside the map and resetThreadsStoreForTests' walk always names
-// every armed timer. The entry resolves AT CALL TIME, never through a
-// closure's captured schedule object: the max-wait handle is inherited
-// across reschedules, so a firing timer's closure can name an older object
-// than the entry that now owns the handle — and the map's current entry is
-// always the owner of every live timer for the ref, so ending it is the one
-// correct fire action for either timer. (An identity-guarded retire was the
-// round-1 shape: a stale-closure max-wait wrote at its boundary but left the
-// newer entry holding its dead handle, inherited by every later reschedule —
-// a stream of sub-trailing publications then never wrote again.)
-function cancelCacheWrite(ref: string): void {
-  const current = cacheWriteSchedules.get(ref);
-  if (current === undefined) return;
-  clearTimeout(current.trailing);
-  clearTimeout(current.maxWait);
-  cacheWriteSchedules.delete(ref);
-}
-
-function scheduleCacheWrite(ref: string): void {
-  if (usesEntryTranscripts(ref)) return;
-  if (finalReleaseCuts.has(ref)) return;
-  const existing = cacheWriteSchedules.get(ref);
-  if (existing) clearTimeout(existing.trailing); // trailing debounce: reschedule
-  // Whichever timer fires, it ends the burst by cancelling the schedule the
-  // map holds at fire time and writing once. The next publication then arms a
-  // FRESH max-wait, so a burst of sub-trailing publications keeps its
-  // once-per-max-wait write even after a max-wait has fired once.
-  const fire = () => {
-    cancelCacheWrite(ref);
-    const model = threadsStore.getState().threads.get(ref);
-    if (model !== undefined) writeCacheRecord(ref, model);
-  };
-  const schedule: CacheWriteSchedule = {
-    trailing: setTimeout(fire, cacheWriteTimers.debounceMs),
-    maxWait: existing?.maxWait ?? setTimeout(fire, cacheWriteTimers.maxWaitMs), // max-wait: a streaming session never starves
-  };
-  cacheWriteSchedules.set(ref, schedule);
-}
-
-/** The flush: fires a pending write NOW, its gates evaluated on the current
- * (pre-removal) model. Ordered before the model leaves the map (spec, "The
- * flush is load-bearing"): a flush after removal would read an empty map and
- * drop the tail on every graceful close. */
-function flushCacheWrite(ref: string): Promise<void> {
-  cancelCacheWrite(ref);
-  const model = threadsStore.getState().threads.get(ref);
-  return model !== undefined ? writeCacheRecord(ref, model) : Promise.resolve();
-}
-
-function cacheWriteGatesPass(ref: string, model: ThreadModel): boolean {
-  const state = threadsStore.getState();
-  const lifetime = state.cacheLifetimes.get(ref);
-  // The in-flight clear's arm (clearInFlight): every open lease captured
-  // below the armed epoch predates the clear, so its writes wait for the
-  // outcome — the same lifetimes the commit suppresses.
-  const inFlight = state.clearInFlight;
-  if (inFlight !== undefined) {
-    const captured = lifetime?.leaseEpoch;
-    if (captured !== undefined && captured < inFlight) return false;
-  }
-  return (
-    model.history?.incarnation !== undefined && // a completed v6 content-bearing read
-    !lifetime?.shell && // the shell skip: lineage state, not object identity
-    !state.deletedRefs.has(ref) && // the deletion fence, re-checked at fire time
-    !lifetime?.suppressed && // the clear suppression, re-checked at fire time
-    model.history.invalidatedAtGeneration === undefined && // the one liveness marker
-    model.history.failed === undefined &&
-    currentSessionCache().isOpen() // a still-opening connection skips; the next publication retries
-  );
-}
-
-function writeCacheRecord(ref: string, model: ThreadModel): Promise<void> {
-  if (usesEntryTranscripts(ref)) return Promise.resolve();
-  if (!cacheWriteGatesPass(ref, model)) return Promise.resolve();
-  if (oversizeMemo.has(ref)) return Promise.resolve(); // memoized per ref, scoped to the model's lifetime
-  const record = cachedSessionRecord(model, Date.now()); // the synchronous snapshot
-  if (record === undefined) return Promise.resolve();
-  const lifetime = cacheHistoryLifetimes.get(ref) ?? Symbol();
-  cacheHistoryLifetimes.set(ref, lifetime);
-  const scheduledEpoch = tabCacheEpoch ?? 0; // the epoch this write was scheduled under
-  return currentSessionCache()
-    .put(record, scheduledEpoch, Date.now())
-    .then((result) => {
-      if (result.outcome === "oversize" && cacheHistoryLifetimes.get(ref) === lifetime) oversizeMemo.add(ref);
-      if (result.outcome === "aborted") onCacheEpochObserved(result.observedEpoch);
-    })
-    .catch(() => {}); // every failure is a classified stale/drop; the next debounced window retries
-}
-
 // The missed-message backstop (spec, "Eviction, cap, and cross-tab"): the
-// aborted write is itself the tab's proof that a clear happened.
+// aborted write, a sibling's clear broadcast, or a durable observation is the
+// tab's proof that a clear happened.
 function onCacheEpochObserved(observed: number): void {
   if (tabCacheEpoch !== undefined && observed <= tabCacheEpoch) return;
   tabCacheEpoch = observed;
@@ -6978,7 +6686,6 @@ export function markCacheSessionsDeleted(refs: string[]): void {
     return { deletedRefs };
   });
   for (const ref of refs) {
-    cancelCacheWrite(ref);
     residencyIfCreated?.revoke(ref, "deleted");
     noteEntryRouteRetirement(ref);
   }
@@ -7000,21 +6707,17 @@ function deleteCachedRefs(refs: string[]): void {
     clearEntryTranscriptLocalOpening(route.ref);
     retireEntryTranscriptRoute(route);
   }
-  const production = sessionCacheAdapterOverride === undefined && !entryTranscriptFixtureForTests;
-  if (production && !byCache.has(currentEntryCache())) byCache.set(currentEntryCache(), new Set());
-  // Source healing must be issued now, not after metadata discovery: a read
-  // queued by the deletion caller must follow this delete, not race ahead of it.
-  const legacy = production ? new SessionCacheIndexedDB() : currentSessionCache();
-  const sources = legacy.deleteRecords(refs).finally(() => {
-    if (production) legacy.close();
-  });
+  // The legacy stores are gone (6d), so there is nothing left to source-heal;
+  // entry histories are deleted durably through the cache's own per-history
+  // fence below.
+  if (!entryTranscriptFixtureForTests && !byCache.has(currentEntryCache())) byCache.set(currentEntryCache(), new Set());
   const histories = (async () => {
     for (const [cache, captured] of byCache) {
       for (const historyKey of await cache.historyKeysForRequestedRefs(refs)) captured.add(historyKey);
       for (const historyKey of captured) await cache.deleteHistory(historyKey);
     }
   })();
-  void trackProjectionWork(Promise.all([sources, histories])).catch(() => {
+  void trackProjectionWork(histories).catch(() => {
     // Durable storage is best-effort, but retired claims never resume writes.
   });
 }
@@ -7034,10 +6737,8 @@ function deleteCachedRefs(refs: string[]): void {
  * suppression stands — so open refs resume caching at their next
  * publication. */
 export async function clearCachedSessions(): Promise<{ committed: boolean }> {
-  const productionRoute = sessionCacheAdapterOverride === undefined && !entryTranscriptFixtureForTests;
   const armed = Math.max(tabCacheEpoch ?? 0, threadsStore.getState().clearInFlight ?? 0) + 1;
   threadsStore.setState({ clearInFlight: armed });
-  for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
   // The separately installed entry route retires its publication/persistence
   // claims NOW, synchronously, before either clear transaction resolves: an
   // already-installed reader, subscription or repository must not publish or
@@ -7063,9 +6764,8 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     retirePendingHydration(ref, pending, pendingWatchedHydrations);
   }
   residencyIfCreated?.retireClaims();
-  // Production has one durable Clear boundary. The entry cache clears both
-  // entry and legacy stores atomically on the real database.
-  const result = await (productionRoute ? currentEntryCache().clear() : currentSessionCache().clear());
+  // The entry cache is the tab's only durable Clear boundary.
+  const result = await currentEntryCache().clear();
   if (!result.committed) {
     // The abort drops only its own marker — lifetime suppression is never touched,
     // so another source's mid-flight arming stands. Durable observations
@@ -7081,10 +6781,9 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     }
     return { committed: false };
   }
-  // The entry cache is a separate store from the legacy/residency cache; clear
-  // it too. If its transaction aborts, its rows remain: report the incomplete
-  // clear honestly rather than claiming success from the legacy result alone.
-  // The already-committed legacy clear is never rolled back.
+  // An isolated fixture keeps its own cache; clear it too. If its transaction
+  // aborts, its rows remain: report the incomplete clear honestly rather than
+  // claiming success from the production result alone.
   let entryIncomplete = false;
   if (entryFixture) {
     const entryResult = await entryFixture.cache.clear();
@@ -7097,7 +6796,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // A held production route keeps displaying live input. Its captured old
   // epoch is unchanged, so all subsequent writes are durably refused until a
   // fresh explicit acquisition after the pre-Clear holders have released.
-  if (productionRoute) for (const route of entryRoutes) route.clearInert = false;
+  for (const route of entryRoutes) route.clearInert = false;
   onCacheEpochObserved(result.epoch);
   residencyIfCreated?.clear(result.epoch);
   // Every open lease whose captured epoch predates the committed epoch: the
@@ -7113,20 +6812,17 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
 }
 
 /** The settings row's reader (spec, "The clear-cached-sessions setting"):
- * the records store's row count through the same singleton seam the lookup,
- * the write and the clear ride. The adapter's failure discipline holds:
- * undefined means unavailable (a failed open or transaction), never a throw
- * and never a zero that would let the row claim a remedy ran. */
+ * the entry cache's session count. The failure discipline holds: undefined
+ * means unavailable (a failed open or transaction), never a throw and never a
+ * zero that would let the row claim a remedy ran. */
 export async function countCachedSessions(): Promise<number | undefined> {
-  if (sessionCacheAdapterOverride === undefined) return currentEntryCache().count();
-  return currentSessionCache().count();
+  return currentEntryCache().count();
 }
 
 /** Same-tab committed writes invalidate a mounted settings row immediately.
  * Sibling writes still use its existing per-render count. */
 export function subscribeCacheWrites(listener: () => void): () => void {
-  if (sessionCacheAdapterOverride === undefined) return currentEntryCache().subscribeWrites(listener);
-  return currentSessionCache().subscribeWrites(listener);
+  return currentEntryCache().subscribeWrites(listener);
 }
 
 // The live gap rule (spec, "The two serving paths, the live gap, and its
@@ -7138,7 +6834,6 @@ export function subscribeCacheWrites(listener: () => void): () => void {
 // identity rules already answer (replace/discard are theirs).
 function applyCacheGapRule(ref: string, base: ThreadModel, response: ThreadReadResponse, now: number): ThreadModel {
   const ordinary = () => {
-    if (base.history !== undefined && readDisposition(base.history, response) === "replace") clearOversizeMemo(ref);
     return applyReadResponse(base, response, now);
   };
   const state = threadsStore.getState();
@@ -7157,7 +6852,6 @@ function applyCacheGapRule(ref: string, base: ThreadModel, response: ThreadReadR
   const current = state.threads.get(ref) ?? base;
   const newest = newestItemPosition(current.history?.turns ?? held.turns);
   const replaced = hydrateThread(response, ref, now);
-  clearOversizeMemo(ref); // a replacement is the one mid-lifetime shrink
   if (newest === undefined || bounds.end === undefined || comparePositions(newest, bounds.end) <= 0) {
     return replaced; // the response covers everything folded so far
   }
@@ -7174,51 +6868,10 @@ function applyCacheGapRule(ref: string, base: ThreadModel, response: ThreadReadR
   return mergeTailTurns(replaced, tail);
 }
 
-threadsStore.subscribe((state, previous) => {
-  if (state.threads === previous.threads) return; // watched-only publications never touch this map
-  for (const ref of state.threads.keys()) {
-    if (state.threads.get(ref) === previous.threads.get(ref)) continue;
-    if (state.threads.get(ref)?.history?.incarnation === undefined) continue; // a model with no recorded history can never produce a cache record, so the seam arms nothing for it — a pointless pending timer is the whole cost, but a test suite's fake clock pays it in shifted delivery; the publication that first gives the model a recorded history schedules it, and every write gate still applies at fire time
-    scheduleCacheWrite(ref);
-  }
-});
-
 function transcriptResidency(): TranscriptResidency {
   if (residencyIfCreated) return residencyIfCreated;
   residencyIfCreated = createTranscriptResidency(
     {
-      cache: currentSessionCache(),
-      resident: (ref) => threadsStore.getState().threads.get(ref),
-      publish: (ref, model) => {
-        putThreadModel(ref, model);
-        setCurrentThreadId(ref, model.threadId);
-      },
-      unload: async (ref) => {
-        const model = threadsStore.getState().threads.get(ref);
-        if (!model || refCounts.get(ref) || historyHoldCounts.get(ref) || pinnedMutationRefs.has(ref)) return;
-        await flushCacheWrite(ref).catch(() => undefined);
-        if (
-          threadsStore.getState().threads.get(ref) !== model ||
-          refCounts.get(ref) ||
-          historyHoldCounts.get(ref) ||
-          pinnedMutationRefs.has(ref)
-        )
-          return;
-        removeThreadModelIndex(threadsIndex, model);
-        threadsStore.setState((state) => {
-          if (state.threads.get(ref) !== model) return state;
-          const threads = new Map(state.threads);
-          threads.delete(ref);
-          const frameTimes = new Map(state.frameTimes);
-          frameTimes.delete(ref);
-          return { threads, frameTimes };
-        });
-      },
-      admission: (ref) => currentAdmissions.get(ref),
-      fold: (_ref, model, update) => foldCanonicalNotification(model, update.notification, update.now).model,
-      writeTimers: () => cacheWriteTimers,
-      retryScheduler: () => hydrationRetryScheduler,
-      observedClearEpoch: (epoch) => onCacheEpochObserved(epoch),
       hydrate: async (ref, intent, signal) => {
         if (signal.aborted) return;
         const client = await requireReadyClient();
@@ -7233,19 +6886,7 @@ function transcriptResidency(): TranscriptResidency {
 }
 
 function syncTranscriptResidencyOwners(ref: string): void {
-  const fixtureRoute = usesEntryTranscripts(ref);
-  if (!fixtureRoute) {
-    const residency = residencyIfCreated ?? transcriptResidency();
-    residency.connection(readyEpoch, wiredClient?.state === "ready");
-    residency.owners(ref, {
-      foreground: refCounts.get(ref) ?? 0,
-      history: historyHoldCounts.get(ref) ?? 0,
-      mutationPinned: pinnedMutationRefs.has(ref),
-      background: backgroundRefCounts.get(ref) ?? 0,
-    });
-  } else {
-    residencyIfCreated?.connection(readyEpoch, wiredClient?.state === "ready");
-  }
+  residencyIfCreated?.connection(readyEpoch, wiredClient?.state === "ready");
   syncCacheLifetimeForeground(ref);
 }
 
@@ -7363,28 +7004,13 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         trackedHydrationCompletions.delete(ref);
       }
       releasePromise = (async () => {
-        try {
-          const firstModel = threadsStore.getState().threads.get(ref);
-          if (firstModel) await flushCacheWrite(ref);
-          if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
-          const acceptedThroughFirstWrite = threadsStore.getState().threads.get(ref);
-          if (firstModel && acceptedThroughFirstWrite && acceptedThroughFirstWrite !== firstModel) {
-            // Updates routed while the first bounded write was pending are on
-            // the far side of that write and belong to this final cut. This
-            // second write is the cut: later publications cannot make release
-            // chase a quiet interval, and writeCacheRecord snapshots exactly
-            // this model rather than whatever a later update produces.
-            finalReleaseCuts.set(ref, releaseGeneration);
-            await flushCacheWrite(ref);
-          }
-          if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
-          if (finalReleaseOwners.get(ref) === releaseGeneration) finalReleaseOwners.delete(ref);
-          dropUnpinnedModel(ref, false);
-          syncThreadSubscription(ref);
-        } finally {
-          if (finalReleaseCuts.get(ref) === releaseGeneration) finalReleaseCuts.delete(ref);
-          if (finalReleaseOwners.get(ref) === releaseGeneration) finalReleaseOwners.delete(ref);
-        }
+        // Yield once so a publication routed in the same turn is observed
+        // before the owner census decides whether to drop the model.
+        await Promise.resolve();
+        if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
+        if (finalReleaseOwners.get(ref) === releaseGeneration) finalReleaseOwners.delete(ref);
+        dropUnpinnedModel(ref, false);
+        syncThreadSubscription(ref);
       })();
       return releasePromise;
     },
@@ -7454,7 +7080,6 @@ export function resetThreadsStoreForTests(): void {
   historyHoldCounts.clear();
   cacheLifetimeHeld.clear();
   finalReleaseOwners.clear();
-  finalReleaseCuts.clear();
   canonicalThreadOwnerGenerations.clear();
   backgroundLeaseSequences.clear();
   ensureGenerations.clear();
@@ -7465,27 +7090,9 @@ export function resetThreadsStoreForTests(): void {
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();
-  // The session cache's module state: a lookup still in flight must not
-  // publish a shell into the fresh state (the map is dropped, not awaited —
-  // its race's own guards recheck everything), the epoch view returns to
-  // unobserved, and the singleton adapter drops its connection so the next
-  // test opens afresh against a database its beforeEach just deleted. An
-  // override a test installed goes with it; tests close their own adapters.
-  inflightCacheLookups.clear();
+  // The session cache's module state: the epoch view returns to unobserved so
+  // the next test observes the fresh database it just deleted.
   tabCacheEpoch = undefined;
-  setSessionCacheAdapterForTests(undefined);
-  sessionCacheAdapter.close();
-  // The write seam's module state: a pending debounced write must not fire
-  // into the fresh state, and the oversize memo dies with the models it
-  // memoized.
-  for (const schedule of cacheWriteSchedules.values()) {
-    clearTimeout(schedule.trailing);
-    clearTimeout(schedule.maxWait);
-  }
-  cacheWriteSchedules.clear();
-  cacheWriteTimers = DEFAULT_CACHE_WRITE_TIMERS;
-  oversizeMemo.clear();
-  cacheHistoryLifetimes.clear();
   // The cache channel's module state: a test's installed factory and its
   // channel go with the reset, so the next test attaches a fresh channel
   // under the default factory (the seam's own close-and-reattach).

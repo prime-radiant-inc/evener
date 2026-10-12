@@ -10,16 +10,13 @@ import {
 } from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import {
-  CURRENT_META_STORE,
-  CURRENT_STORE,
+  CLEAR_EPOCH_KEY,
   ENTRY_COVERAGE_BOUNDARY_SNAPSHOT_INDEX,
   ENTRY_COVERAGE_STORE,
   ENTRY_ITEM_STORE,
   ENTRY_META_STORE,
   ENTRY_TURN_STORE,
   entryHistoryKey,
-  LEGACY_META_STORE,
-  LEGACY_RECORDS_STORE,
   SESSION_CACHE_DATABASE_VERSION,
   type TranscriptAggregateMetaRow,
   type TranscriptCoverageRow,
@@ -48,10 +45,9 @@ export interface SessionEntryCacheOptions {
   isPreferred?: (unit: RetentionUnit) => boolean;
 }
 
-export type RetentionUnit =
-  | { kind: "entry"; historyKey: string }
-  | { kind: "records"; ref: string }
-  | { kind: "current"; ownerToken: string; ref: string };
+export type RetentionUnit = { kind: "entry"; historyKey: string };
+// RetentionUnit used to also name legacy records/current units. With the
+// 6d legacy-store removal the entry history is the only retained unit.
 
 export interface EntryPolicyResult {
   aggregateBytes: number;
@@ -129,30 +125,11 @@ export interface EntryWindow {
   serverCursor?: string;
 }
 
-const CLEAR_EPOCH_KEY = "__clearEpoch";
 const AGGREGATE_META_KEY = "__aggregate";
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 const DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-const WRITE_STORES = [
-  ENTRY_ITEM_STORE,
-  ENTRY_TURN_STORE,
-  ENTRY_COVERAGE_STORE,
-  ENTRY_META_STORE,
-  LEGACY_RECORDS_STORE,
-  LEGACY_META_STORE,
-  CURRENT_STORE,
-  CURRENT_META_STORE,
-] as const;
-const CLEAR_STORES = [
-  ENTRY_ITEM_STORE,
-  ENTRY_TURN_STORE,
-  ENTRY_COVERAGE_STORE,
-  ENTRY_META_STORE,
-  LEGACY_RECORDS_STORE,
-  LEGACY_META_STORE,
-  CURRENT_STORE,
-  CURRENT_META_STORE,
-] as const;
+const WRITE_STORES = [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE] as const;
+const CLEAR_STORES = [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE] as const;
 
 function encodedBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
@@ -207,18 +184,11 @@ function compareNullablePosition(left: ThreadItemPosition | null, right: ThreadI
 }
 
 function isProtectedUnit(unit: RetentionUnit, protect: RetentionUnit): boolean {
-  if (unit.kind !== protect.kind) return false;
-  if (unit.kind === "entry" && protect.kind === "entry") return unit.historyKey === protect.historyKey;
-  if (unit.kind === "records" && protect.kind === "records") return unit.ref === protect.ref;
-  if (unit.kind === "current" && protect.kind === "current")
-    return unit.ownerToken === protect.ownerToken && unit.ref === protect.ref;
-  return false;
+  return unit.historyKey === protect.historyKey;
 }
 
 function unitSortKey(unit: RetentionUnit): string {
-  if (unit.kind === "entry") return `entry\u0000${unit.historyKey}`;
-  if (unit.kind === "records") return `records\u0000${unit.ref}`;
-  return `current\u0000${unit.ownerToken}\u0000${unit.ref}`;
+  return `entry\u0000${unit.historyKey}`;
 }
 
 function positionCoveredBy(position: ThreadItemPosition, cert: TranscriptCoverageRow): boolean {
@@ -590,7 +560,7 @@ export class SessionEntryCache {
       databaseName: options.databaseName,
       databaseVersion: SESSION_CACHE_DATABASE_VERSION,
       waitMs: 10_000,
-      upgrade: (database) => upgradeSessionCache(database, true),
+      upgrade: (database) => upgradeSessionCache(database),
       errors: {
         open: "session entry cache open failed",
         superseded: "session entry cache open was superseded",
@@ -624,38 +594,26 @@ export class SessionEntryCache {
     }
   }
 
-  /** Count logical cached sessions from item-free metadata, including unmigrated legacy sources. */
+  /** Count logical cached sessions from item-free entry metadata. */
   async count(): Promise<number | undefined> {
     try {
       const database = await this.#connection.open();
-      const transaction = database.transaction([ENTRY_META_STORE, LEGACY_META_STORE, CURRENT_META_STORE], "readonly");
+      const transaction = database.transaction(ENTRY_META_STORE, "readonly");
       const complete = transactionCompletion(transaction);
-      const [entries, legacy, current] = await Promise.all([
-        requestResult(transaction.objectStore(ENTRY_META_STORE).getAll() as IDBRequest<TranscriptHistoryMetaRow[]>),
-        requestResult(
-          transaction.objectStore(LEGACY_META_STORE).getAll() as IDBRequest<Array<{ ref: string; savedAt?: number }>>,
-        ),
-        requestResult(
-          transaction.objectStore(CURRENT_META_STORE).getAll() as IDBRequest<Array<{ ref: string; savedAt?: number }>>,
-        ),
-      ]);
+      const entries = await requestResult(
+        transaction.objectStore(ENTRY_META_STORE).getAll() as IDBRequest<TranscriptHistoryMetaRow[]>,
+      );
       await complete;
       const cutoff = this.#now() - this.#ttlMs;
       const sessions = new Set<string>();
-      const entryRefs = new Set<string>();
       for (const entry of entries) {
+        if (entry.historyKey === CLEAR_EPOCH_KEY) continue;
         const identity = entry.resolvedIdentity;
         if (!identity || entry.savedAt === undefined || Math.max(entry.savedAt, entry.accessedAt ?? 0) < cutoff)
           continue;
         sessions.add(JSON.stringify([identity.clientId, identity.hostId, identity.sessionId]));
-        for (const requested of entry.requestedRefs ?? []) entryRefs.add(requested.ref);
       }
-      const legacyRefs = new Set(
-        [...legacy, ...current]
-          .filter((row) => row.savedAt !== undefined && row.savedAt >= cutoff && !entryRefs.has(row.ref))
-          .map((row) => row.ref),
-      );
-      return sessions.size + legacyRefs.size;
+      return sessions.size;
     } catch {
       return undefined;
     }
@@ -711,13 +669,7 @@ export class SessionEntryCache {
       const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
       const metaStore = transaction.objectStore(ENTRY_META_STORE);
       const durableEpoch =
-        (
-          await requestResult(
-            transaction.objectStore(LEGACY_META_STORE).get(CLEAR_EPOCH_KEY) as IDBRequest<
-              { epoch?: number } | undefined
-            >,
-          )
-        )?.epoch ?? 0;
+        (await requestResult(metaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))?.epoch ?? 0;
       if (durableEpoch !== batch.clearEpoch) {
         transaction.abort();
         await complete.catch(() => {});
@@ -851,11 +803,11 @@ export class SessionEntryCache {
   /** The durable Clear epoch a caller must carry to write any history. */
   async getClearEpoch(): Promise<number> {
     const database = await this.#connection.open();
-    const transaction = database.transaction(LEGACY_META_STORE, "readonly");
+    const transaction = database.transaction(ENTRY_META_STORE, "readonly");
     const complete = transactionCompletion(transaction);
     try {
       const row = await requestResult(
-        transaction.objectStore(LEGACY_META_STORE).get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>,
+        transaction.objectStore(ENTRY_META_STORE).get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>,
       );
       await complete;
       return row?.epoch ?? 0;
@@ -866,11 +818,10 @@ export class SessionEntryCache {
   }
 
   /**
-   * Atomically remove every history record - entry stores, legacy records and
-   * current checkpoints - and advance the shared durable Clear epoch by one in
-   * the same transaction. The reserved epoch row in the legacy meta store is
-   * the existing cross-tab fence. Abort leaves every store, generation tombstone
-   * and the epoch unchanged.
+   * Atomically remove every entry history record and advance the shared durable
+   * Clear epoch by one in the same transaction. The reserved epoch row in
+   * ENTRY_META_STORE is the cross-tab fence. Abort leaves every store,
+   * generation tombstone and the epoch unchanged.
    */
   async clear(): Promise<{ committed: boolean; epoch: number }> {
     let observed = 0;
@@ -884,22 +835,19 @@ export class SessionEntryCache {
       void complete.catch(() => {});
       const work = (async () => {
         try {
-          const legacyMetaStore = tx.objectStore(LEGACY_META_STORE);
+          const metaStore = tx.objectStore(ENTRY_META_STORE);
           observed =
-            (await requestResult(legacyMetaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))
+            (await requestResult(metaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))
               ?.epoch ?? 0;
           tx.objectStore(ENTRY_ITEM_STORE).clear();
           tx.objectStore(ENTRY_TURN_STORE).clear();
           tx.objectStore(ENTRY_COVERAGE_STORE).clear();
-          tx.objectStore(ENTRY_META_STORE).clear();
-          tx.objectStore(LEGACY_RECORDS_STORE).clear();
-          tx.objectStore(CURRENT_STORE).clear();
-          tx.objectStore(CURRENT_META_STORE).clear();
-          const metaKeys = await requestResult(legacyMetaStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
+          metaStore.clear();
+          const metaKeys = await requestResult(metaStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
           for (const key of metaKeys) {
-            if (key !== CLEAR_EPOCH_KEY) legacyMetaStore.delete(key);
+            if (key !== CLEAR_EPOCH_KEY) metaStore.delete(key);
           }
-          legacyMetaStore.put({ ref: CLEAR_EPOCH_KEY, epoch: observed + 1 });
+          metaStore.put({ historyKey: CLEAR_EPOCH_KEY, epoch: observed + 1 });
           await complete;
           return { committed: true, epoch: observed + 1 };
         } catch {
@@ -957,12 +905,11 @@ export class SessionEntryCache {
     return meta?.encodedBytes ?? 0;
   }
 
-  // One coherent disk policy over every history population: entry histories,
-  // legacy records and current checkpoints. TTL reclaims expired units of every
-  // kind first, regardless of preference. Then eviction orders unpresferred
-  // units before preferred ones and oldest first; the just-written identity is
-  // never a victim and is refused instead if it cannot fit. Deleting a unit
-  // removes its rows and coverage together inside this transaction; a reader's
+  // One coherent disk policy over entry histories. TTL reclaims expired units
+  // first, regardless of preference. Then eviction orders unpresferred units
+  // before preferred ones and oldest first; the just-written identity is never
+  // a victim and is refused instead if it cannot fit. Deleting a unit removes
+  // its rows and coverage together inside this transaction; a reader's
   // in-memory pages are never touched, and a generation tombstone has no bytes
   // or timestamps so it can never be reclaimed.
   async #enforcePolicy(transaction: IDBTransaction, protect: RetentionUnit): Promise<EntryPolicyResult> {
@@ -973,29 +920,14 @@ export class SessionEntryCache {
           Array<{ historyKey: string; encodedBytes?: number; savedAt?: number; accessedAt?: number }>
         >,
       )
-    ).filter((row) => row.historyKey !== AGGREGATE_META_KEY);
-    const legacyRows = (
-      await requestResult(
-        transaction.objectStore(LEGACY_META_STORE).getAll() as IDBRequest<
-          Array<{ ref?: string; bytes?: number; savedAt?: number }>
-        >,
-      )
-    ).filter((row) => row.ref !== CLEAR_EPOCH_KEY && typeof row.ref === "string");
-    const currentRows = await requestResult(
-      transaction.objectStore(CURRENT_META_STORE).getAll() as IDBRequest<
-        Array<{ ownerToken?: string; ref?: string; bytes?: number; savedAt?: number }>
-      >,
-    );
+    ).filter((row) => row.historyKey !== AGGREGATE_META_KEY && row.historyKey !== CLEAR_EPOCH_KEY);
     const now = this.#now();
     const stamp = (accessedAt: number | undefined, savedAt: number | undefined): number =>
       Number.isFinite(accessedAt) ? (accessedAt as number) : Number.isFinite(savedAt) ? (savedAt as number) : 0;
     const expired = (age: number): boolean => age > 0 && age + this.#ttlMs <= now;
 
     let entryTotal = entryRows.reduce((sum, row) => sum + (row.encodedBytes ?? 0), 0);
-    let combined =
-      entryTotal +
-      legacyRows.reduce((sum, row) => sum + (row.bytes ?? 0), 0) +
-      currentRows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
+    let combined = entryTotal;
 
     for (const row of entryRows) {
       if ((row.encodedBytes ?? 0) === 0 || !expired(stamp(row.accessedAt, row.savedAt))) continue;
@@ -1003,22 +935,6 @@ export class SessionEntryCache {
       entryTotal -= removed;
       combined -= removed;
       row.encodedBytes = 0;
-    }
-    for (const row of legacyRows) {
-      if ((row.bytes ?? 0) === 0 || typeof row.ref !== "string" || !expired(stamp(undefined, row.savedAt))) continue;
-      combined -= await this.#deleteLegacyRecordRows(transaction, row.ref);
-      row.bytes = 0;
-    }
-    for (const row of currentRows) {
-      if (
-        (row.bytes ?? 0) === 0 ||
-        typeof row.ownerToken !== "string" ||
-        typeof row.ref !== "string" ||
-        !expired(stamp(undefined, row.savedAt))
-      )
-        continue;
-      combined -= await this.#deleteCurrentRows(transaction, [row.ownerToken, row.ref]);
-      row.bytes = 0;
     }
 
     if (combined > this.#maxBytes) {
@@ -1028,28 +944,12 @@ export class SessionEntryCache {
           unit,
           bytes,
           stamp: age,
-          preferred:
-            this.#isPreferred?.(unit) ??
-            (unit.kind === "entry" ? (this.#preferredHistories.get(unit.historyKey)?.() ?? false) : false),
+          preferred: this.#isPreferred?.(unit) ?? this.#preferredHistories.get(unit.historyKey)?.() ?? false,
         });
       };
       for (const row of entryRows) {
         if ((row.encodedBytes ?? 0) > 0) {
           add({ kind: "entry", historyKey: row.historyKey }, row.encodedBytes ?? 0, stamp(row.accessedAt, row.savedAt));
-        }
-      }
-      for (const row of legacyRows) {
-        if ((row.bytes ?? 0) > 0 && typeof row.ref === "string") {
-          add({ kind: "records", ref: row.ref }, row.bytes ?? 0, stamp(undefined, row.savedAt));
-        }
-      }
-      for (const row of currentRows) {
-        if ((row.bytes ?? 0) > 0 && typeof row.ownerToken === "string" && typeof row.ref === "string") {
-          add(
-            { kind: "current", ownerToken: row.ownerToken, ref: row.ref },
-            row.bytes ?? 0,
-            stamp(undefined, row.savedAt),
-          );
         }
       }
       const eligible = victims
@@ -1062,54 +962,22 @@ export class SessionEntryCache {
         );
       for (const victim of eligible) {
         if (combined <= this.#maxBytes) break;
-        const removed =
-          victim.unit.kind === "entry"
-            ? await this.#deleteHistoryRows(transaction, victim.unit.historyKey)
-            : victim.unit.kind === "records"
-              ? await this.#deleteLegacyRecordRows(transaction, victim.unit.ref)
-              : await this.#deleteCurrentRows(transaction, [victim.unit.ownerToken, victim.unit.ref]);
+        const removed = await this.#deleteHistoryRows(transaction, victim.unit.historyKey);
         combined -= removed;
-        if (victim.unit.kind === "entry") {
-          entryTotal -= removed;
-          const row = entryRows.find(
-            (candidate) => candidate.historyKey === (victim.unit as { historyKey: string }).historyKey,
-          );
-          if (row) row.encodedBytes = 0;
-        }
+        entryTotal -= removed;
+        const row = entryRows.find((candidate) => candidate.historyKey === victim.unit.historyKey);
+        if (row) row.encodedBytes = 0;
       }
     }
 
     metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: Math.max(0, entryTotal) });
-    const protectRow =
-      protect.kind === "entry" ? entryRows.find((row) => row.historyKey === protect.historyKey) : undefined;
+    const protectRow = entryRows.find((row) => row.historyKey === protect.historyKey);
     const protectedBytes = protectRow?.encodedBytes ?? 0;
     return {
       aggregateBytes: Math.max(0, entryTotal),
       protectedSurvived: protectRow !== undefined && protectedBytes > 0,
       overCapacity: protectRow !== undefined && protectedBytes > this.#maxBytes,
     };
-  }
-
-  // Delete one legacy record body and its meta accounting, returning the meta
-  // bytes. The reserved epoch row is never a history row.
-  async #deleteLegacyRecordRows(transaction: IDBTransaction, ref: string): Promise<number> {
-    const meta = await requestResult(
-      transaction.objectStore(LEGACY_META_STORE).get(ref) as IDBRequest<{ bytes?: number } | undefined>,
-    );
-    transaction.objectStore(LEGACY_RECORDS_STORE).delete(ref);
-    transaction.objectStore(LEGACY_META_STORE).delete(ref);
-    return Number.isFinite(meta?.bytes) ? (meta?.bytes as number) : 0;
-  }
-
-  // Delete one current checkpoint and its meta accounting, returning the meta
-  // bytes.
-  async #deleteCurrentRows(transaction: IDBTransaction, key: [string, string]): Promise<number> {
-    const meta = await requestResult(
-      transaction.objectStore(CURRENT_META_STORE).get(key) as IDBRequest<{ bytes?: number } | undefined>,
-    );
-    transaction.objectStore(CURRENT_STORE).delete(key);
-    transaction.objectStore(CURRENT_META_STORE).delete(key);
-    return Number.isFinite(meta?.bytes) ? (meta?.bytes as number) : 0;
   }
 
   async #applyCoverage(

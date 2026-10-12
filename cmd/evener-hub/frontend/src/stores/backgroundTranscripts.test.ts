@@ -264,16 +264,7 @@ function holdFirstWrite(cache: SessionEntryCache) {
       batch.historyKey === threads.productionEntryTranscriptForTests("local:a").historyKey
     ) {
       consumed = true;
-      held = holdNextWriteTransaction([
-        "transcriptItems",
-        "transcriptTurns",
-        "transcriptCoverage",
-        "transcriptMeta",
-        "records",
-        "meta",
-        "current",
-        "currentMeta",
-      ]);
+      held = holdNextWriteTransaction(["transcriptItems", "transcriptTurns", "transcriptCoverage", "transcriptMeta"]);
       signalWriteEntered?.();
       if (cleanupBegan) signalArmedDuringCleanup?.();
     }
