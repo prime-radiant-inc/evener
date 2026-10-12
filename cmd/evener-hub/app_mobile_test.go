@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -42,11 +44,100 @@ func TestHubMobilePairingConfiguredBaseURLTakesPrecedence(t *testing.T) {
 	}
 }
 
+func TestHubMobilePairingDiscoversListenerOrigin(t *testing.T) {
+	for _, tt := range []struct {
+		name, bind, origin, want string
+		addresses                []string
+	}{
+		{"bound LAN", "192.168.1.20:9180", "http://localhost:19181", "http://192.168.1.20:9180", nil},
+		{"bound IPv6", "[fd00::20]:9180", "http://[::1]:19181", "http://[fd00::20]:9180", nil},
+		{"MagicDNS browser", "0.0.0.0:9180", "http://magic-kingdom:9180", "http://magic-kingdom:9180", []string{"192.168.1.20/24", "100.87.98.83/32"}},
+		{"bound public", "203.0.113.20:9180", "", "http://203.0.113.20:9180", nil},
+		{"wildcard from localhost", "[::]:9180", "http://localhost:19181", "http://100.87.98.83:9180", []string{"fd00::20/64", "100.87.98.83/32", "192.168.1.20/24"}},
+		{"LAN without Tailscale", ":9180", "", "http://192.168.1.20:9180", []string{"127.0.0.1/8", "fe80::1/64", "192.168.1.20/24"}},
+		{"IPv4 listener skips IPv6", "0.0.0.0:9180", "", "http://192.168.1.20:9180", []string{"fd00::20/64", "192.168.1.20/24"}},
+		{"public interface", "0.0.0.0:9180", "", "http://203.0.113.20:9180", []string{"203.0.113.20/24"}},
+		{"private before public", "[::]:9180", "", "http://[fd00::20]:9180", []string{"203.0.113.20/24", "fd00::20/64"}},
+		{"loopback stays local", "127.0.0.1:9180", "http://localhost:9180", "", []string{"100.87.98.83/32"}},
+		{"no usable interface", "[::]:9180", "http://localhost:9180", "", []string{"127.0.0.1/8", "fe80::1/64"}},
+		{"reachable browser wins", "0.0.0.0:9180", "https://hub.example.test", "https://hub.example.test", []string{"100.87.98.83/32"}},
+		{"proxy to loopback", "127.0.0.1:9180", "https://hub.example.test", "https://hub.example.test", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := hubcore.WebConfig{AuthToken: "mobile-secret", HubAddr: tt.bind,
+				MobileRouteAddrs: func() []netip.Addr { return nil },
+				MobileInterfaceAddrs: func() ([]net.Addr, error) {
+					var addresses []net.Addr
+					for _, raw := range tt.addresses {
+						ip, network, err := net.ParseCIDR(raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						network.IP = ip
+						addresses = append(addresses, network)
+					}
+					return addresses, nil
+				},
+			}
+			response, err := dispatchMobilePairing(t, NewWebServer(cfg), appwire.MobilePairingParams{Origin: tt.origin})
+			if tt.want == "" {
+				var wireErr appwire.WireError
+				if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeConflict {
+					t.Fatalf("error = %v, want conflict", err)
+				}
+				if response.AuthURL != "" {
+					t.Fatal("unreachable listener issued a pairing URL")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.AuthURL != tt.want+"/auth/mobile-secret" {
+				t.Fatalf("auth URL = %q, want origin %q", response.AuthURL, tt.want)
+			}
+		})
+	}
+}
+
+func TestHubMobilePairingPrefersRoutedInterfaceOverContainerBridge(t *testing.T) {
+	for _, route := range []string{"192.168.1.20", "203.0.113.20", "fd00::20"} {
+		t.Run(route, func(t *testing.T) {
+			for _, tailnet := range []bool{false, true} {
+				cfg := hubcore.WebConfig{AuthToken: "mobile-secret", HubAddr: "[::]:9180",
+					MobileRouteAddrs: func() []netip.Addr { return []netip.Addr{netip.MustParseAddr(route)} },
+					MobileInterfaceAddrs: func() ([]net.Addr, error) {
+						addresses := []net.Addr{
+							&net.IPNet{IP: net.ParseIP("172.17.0.1"), Mask: net.CIDRMask(16, 32)},
+							&net.IPNet{IP: net.ParseIP(route), Mask: net.CIDRMask(128, 128)},
+						}
+						if tailnet {
+							addresses = append(addresses, &net.IPNet{IP: net.ParseIP("100.87.98.83"), Mask: net.CIDRMask(32, 32)})
+						}
+						return addresses, nil
+					},
+				}
+				response, err := dispatchMobilePairing(t, NewWebServer(cfg), appwire.MobilePairingParams{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := route
+				if tailnet {
+					want = "100.87.98.83"
+				}
+				if response.AuthURL != "http://"+net.JoinHostPort(want, "9180")+"/auth/mobile-secret" {
+					t.Fatalf("auth URL = %q; want interface %s (tailnet %t)", response.AuthURL, want, tailnet)
+				}
+			}
+		})
+	}
+}
+
 func TestHubMobilePairingRejectsUnsafeOriginWithoutLeakingToken(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{AuthToken: "mobile-secret"})
 
 	_, err := dispatchMobilePairing(t, web, appwire.MobilePairingParams{
-		Origin: "http://93.184.216.34:9180",
+		Origin: "http://127.0.0.1:9180",
 	})
 	var wireErr appwire.WireError
 	if !errors.As(err, &wireErr) {
@@ -54,10 +145,6 @@ func TestHubMobilePairingRejectsUnsafeOriginWithoutLeakingToken(t *testing.T) {
 	}
 	if wireErr.Code != appwire.CodeConflict {
 		t.Fatalf("error code = %d, want %d (%v)", wireErr.Code, appwire.CodeConflict, wireErr)
-	}
-	const want = "mobile pairing requires a reachable non-loopback Hub origin"
-	if wireErr.Message != want {
-		t.Fatalf("error message = %q, want %q", wireErr.Message, want)
 	}
 	if strings.Contains(wireErr.Message, "mobile-secret") {
 		t.Fatalf("unreachable response leaked token: %q", wireErr.Message)
@@ -97,6 +184,32 @@ func TestSafeMobileOriginRejectsLoopbackAlternateSpellings(t *testing.T) {
 		"https://１２７．１",
 		"https://０ｘ７ｆ０００００１",
 		"https://²¹³⁰⁷⁰⁶⁴³³",
+	} {
+		t.Run(origin, func(t *testing.T) {
+			if got, ok := safeMobileOrigin(origin); ok {
+				t.Fatalf("safeMobileOrigin(%q) = %q, true; want rejection", origin, got)
+			}
+		})
+	}
+}
+
+func TestSafeMobileOriginAllowsHTTPDestinations(t *testing.T) {
+	for _, origin := range []string{
+		"http://magic-kingdom:9180", "http://hub.example.test:9180",
+		"http://203.0.113.20:9180", "http://[2001:db8::20]:9180",
+	} {
+		t.Run(origin, func(t *testing.T) {
+			if got, ok := safeMobileOrigin(origin); !ok || got != origin {
+				t.Fatalf("safeMobileOrigin(%q) = %q, %v; want unchanged origin", origin, got, ok)
+			}
+		})
+	}
+}
+
+func TestSafeMobileOriginRejectsNonPortableAddresses(t *testing.T) {
+	for _, origin := range []string{
+		"http://0.0.0.0:9180", "https://0.0.0.0", "http://[::]:9180", "https://[::]",
+		"http://[fe80::1%25en0]:9180", "https://[fd00::20%25en0]:9180",
 	} {
 		t.Run(origin, func(t *testing.T) {
 			if got, ok := safeMobileOrigin(origin); ok {

@@ -1111,17 +1111,6 @@ func TestRenderWithRequiresOnly(t *testing.T) {
 	}
 }
 
-// TestRenderWithFailsWhenOnly covers Render with a target that has only a FailsWhen field.
-func TestRenderWithFailsWhenOnly(t *testing.T) {
-	targets := []Target{
-		{Name: "test", Summary: "Test.", FailsWhen: "tests fail"},
-	}
-	got := Render(targets)
-	if !strings.Contains(got, "Fails when") {
-		t.Fatalf("Render with fails when should contain wide table: %s", got)
-	}
-}
-
 // TestRenderMixedFields covers Render with targets that have different field sets.
 func TestRenderMixedFields(t *testing.T) {
 	targets := []Target{

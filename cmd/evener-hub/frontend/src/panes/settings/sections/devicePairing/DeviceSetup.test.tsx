@@ -32,7 +32,7 @@ test("keeps observing invitation expiry after a stale pending read follows appro
   client.on("evener/devicePairing/cancel", () => ({ state: "expired", claims: [] }));
   render(
     <ClientProvider client={client}>
-      <DeviceSetup onClose={() => {}} />
+      <DeviceSetup initialOrigin="http://hub.local:9180" />
     </ClientProvider>,
   );
   await act(async () => {

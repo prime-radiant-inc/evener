@@ -56,17 +56,36 @@ characters. `expiresAt` is Unix milliseconds. Invitations expire ten minutes
 after creation, including approved invitations. There are at most 16 live
 invitations per Hub and eight distinct keys per invitation. Expired entries
 are pruned on access. A Hub restart discards all pending invitations. Existing
-saved client credentials remain valid. `mobile_base_url`, when configured,
-takes precedence over the browser's proposed origin.
+saved client credentials remain valid.
+
+The Hub supplies the pairing destination automatically. An optional
+`mobile_base_url` supplies the default; otherwise the Hub uses the browser's
+usable origin, a concrete network listener address, or an interface
+address when listening on all interfaces. Interface selection prefers Tailscale
+IPv4, then the OS's outbound IPv4/IPv6 addresses ahead of container bridges,
+then other private and public addresses, respecting an IPv4-only listener.
+The Hub queries outbound routes with UDP sockets without sending packets or
+depending on a remote service. Loopback and link-local addresses are not advertised
+by discovery. A loopback-only listener still works behind a reachable reverse
+proxy when the browser supplies that proxy's origin.
+
+The Web UI uses the discovered origin for both the direct credential QR and
+the invitation form. The operator can edit the Hub address in **Pair a device**;
+that explicit destination takes precedence when creating an invitation. An
+empty creation origin uses the configured or discovered default. Ordinary
+LAN/tailnet setup needs no configuration-file edit. Discovery is repeated when
+the settings section connects; it does not change saved client destinations.
 
 Creating an invitation requires a Hub credential of 1–511 non-space printable
 ASCII bytes, matching the envelope receivers. Unsupported credentials are
 reported before an invitation is issued; ordinary Hub authentication is unchanged.
 
 `tailnet` marks a destination reached through Tailscale. A tailnet locator may
-use MagicDNS. Direct HTTP retains the
-mobile pairing private-network origin rules; direct HTTPS accepts a reachable
-DNS or IP origin, including IPv6. Origins contain no credentials, path, query or
+use MagicDNS. Both direct HTTP and HTTPS accept a reachable DNS or IP origin,
+including IPv6; the Hub does not require DNS resolution during creation.
+Loopback, unspecified listener addresses, and interface-scoped IPv6 addresses
+cannot be pairing destinations.
+Origins contain no credentials, path, query or
 fragment. IPv4 uses canonical dotted-decimal spelling; malformed numeric hosts
 and legacy numeric spellings are rejected before an invitation is created.
 Port range is 1–65535. Clients report unsupported

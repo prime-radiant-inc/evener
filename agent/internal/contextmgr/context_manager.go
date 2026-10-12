@@ -1536,9 +1536,9 @@ func middleTrim(text string, edge int) string {
 // whitespace, which cleanCheckpointConversation trims and the checkpoint's
 // own extraction (parseMarkdownBlocks) trims again on every round trip.
 // Fitting follows the checkpoint's rule (fitCheckpointConversation): no
-// partner message is ever dropped; past maxCheckpointChars the longest are
-// middle-trimmed with a pointer to the transcript, and short ones are never
-// touched.
+// partner message is ever dropped; past the tighter of maxCheckpointChars and
+// the ceiling the longest are middle-trimmed with a pointer to the transcript,
+// and short ones are never touched.
 //
 // Only the partner's messages are carried. An earlier summary a folded
 // checkpoint holds is input to the new summary, which supersedes it; carrying
@@ -1552,7 +1552,9 @@ func middleTrim(text string, edge int) string {
 // summarizer is given each of them to summarize, quoting any permission or
 // hold per the summary prompt, and the turn reminds the model where to read
 // them verbatim. The newest message is held to the ceiling too: when it alone
-// exceeds it, its middle is trimmed (transcript permitting).
+// exceeds it, its middle is trimmed (transcript permitting), from the message
+// as written, so the note counts what it lost rather than what an earlier trim
+// had already taken.
 // The ceiling applies with or without a kept transcript: it keeps the session
 // inside the model's window, and the left-out messages are still summarized,
 // every one (condensePartnerMessages), as the #4309 ruling chose. Without a
@@ -1586,15 +1588,33 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 		summarized = partner[:len(partner)-n]
 		kept = partner[len(partner)-n:]
 	}
-	partner = fitCheckpointConversation(kept, maxCheckpointChars, recoverable)
+	// The carry is fitted to the tighter of the checkpoint's cap and the
+	// ceiling, so a message both bounds would cut is trimmed once, by the bound
+	// that binds, and the note it gets counts what the message as written lost.
+	budget := maxCheckpointChars
+	if ceiling > 0 {
+		budget = min(budget, ceiling)
+	}
+	// The newest message as written, for the ceiling's trim below.
+	newestAsWritten := ""
+	if len(kept) > 0 {
+		newestAsWritten = kept[len(kept)-1].Text
+	}
+	partner = fitCheckpointConversation(kept, budget, recoverable)
 	if len(partner) == 0 {
 		return "", summarized
 	}
 	if size := len(renderCheckpointConversation(partner)); ceiling > 0 && size > ceiling {
-		// Only the newest can overflow: trim its middle to fit, note included.
+		// Only the newest can be over, and only when the fit stopped at its
+		// floor for a message's kept edges rather than at the ceiling: trim its
+		// middle to fit, note included. The cut comes from the message as
+		// written, never from what the fit left of it, and the note's length is
+		// the one that count has: cutting an already-cut text would cut the
+		// middle of the note it wrote and leave a count that understates what
+		// was removed.
 		newest := &partner[len(partner)-1]
-		edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newest.Text)))) / 2
-		if trimmed := middleTrim(newest.Text, max(edge, 1)); len(trimmed) < len(newest.Text) {
+		edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newestAsWritten)))) / 2
+		if trimmed := middleTrim(newestAsWritten, max(edge, 1)); len(trimmed) < len(newest.Text) {
 			newest.Text = trimmed
 		}
 	}

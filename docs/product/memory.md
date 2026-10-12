@@ -118,7 +118,8 @@ save reminder. Pages that
 contradict what the agent observes are corrected in the same turn. Saving
 sessions are also told the shape of a useful page (one durable fact with its reason and
 when it bears on work, with a frontmatter description that says what the page
-holds and topic tags that reuse the index's) and to keep run details that go
+holds, a `when` line naming the topic and situation (the line the index shows),
+and topic tags that reuse the index's) and to keep run details that go
 stale within days (commit SHAs, branch names, ids, scratch paths, test counts)
 out of memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
@@ -151,7 +152,8 @@ scope instead of the full index: the quoted page lines added since the
 baseline (the tag header and the not-shown line are never listed). A change
 whose section would pass 2 KiB is reported as a count of added lines. Removed
 lines are never reported, so a page another session deleted adds nothing, and a
-changed description arrives as its new line only. The new index becomes the
+changed `when` arrives as its new line only. A changed description on a page
+with a `when` changes no line and reports nothing. The new index becomes the
 baseline even when nothing is reported, so an unchanged turn or a removal-only
 change appends nothing and a removal is never reported later.
 
@@ -216,7 +218,7 @@ memory updates can join a Responses continuation delta after a valid active
 anchor. Compaction without a new valid anchor still requires full history;
 unsafe content and the other continuation eligibility checks remain unchanged.
 
-Pages carry frontmatter (`description`, optional `tags` and `evidence`; Evener
+Pages carry frontmatter (`description`, optional `when`, `tags` and `evidence`; Evener
 adds `updated` and `by`). A page without a description still appears, under its
 fallback description. Other content has no required schema, extension or link
 rule. An optional `log.md` is ordinary model-authored content, not a
@@ -256,6 +258,7 @@ saved with CRLF line endings keeps its frontmatter:
 ```markdown
 ---
 description: Money is integer cents, never floats
+when: Formatting or storing a price
 tags: [money, formatting]
 evidence: file:shop/price.go:Format
 updated: 2026-10-08
@@ -266,7 +269,11 @@ Prices are stored and computed as integer cents...
 ```
 
 `description` is one line; newlines collapse to spaces when it is rendered, and
-a value that is not a YAML string counts as missing. `tags` is a YAML list (a
+a value that is not a YAML string counts as missing. `when` is one line saying
+when a future session needs the page, written like a skill's trigger, and names
+the topic and the situation. The index line shows it instead of the description;
+the description stays on the page for whoever opens it. A non-string or empty
+value counts as missing, and the line shows the description. `tags` is a YAML list (a
 single string is one tag); each tag is trimmed and lowercased, runs of
 whitespace become `-`, and empty and duplicate tags are dropped. Tags are plain:
 there is no primary tag, reserved tag or type field. `evidence` is free-form and
@@ -284,7 +291,7 @@ does not parse is still a page; it renders as
 
 ```text
 Tags: formatting (3), money (2), vitest (6)
-- [Integer cents](cents.md) — Money is integer cents, never floats [money, formatting] (updated 2026-10-08)
+- [Integer cents](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)
 - [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
 ```
 
@@ -351,12 +358,13 @@ keeping every other byte, except that a stamped page's line endings become
 unstamped. The stamps land in the tool's one write, never a second
 read-modify-write, so a stamp cannot undo another session's later write or
 delete of the page. A failed write writes nothing. Before stamping, a
-top-level `description` or `evidence` value YAML can't read as written, such
+top-level `description`, `when` or `evidence` value YAML can't read as written, such
 as an unquoted scalar holding `: ` or ending in `:`
 (``description: like `shop: add Count` ``), is written as a quoted
 YAML string, when that makes the frontmatter parse, so the model needs no
 second call to fix it. A written page with no description gets a note asking
-for one, and a page whose frontmatter still does not parse is left as written
+for one, a page with a readable description and no `when` gets a note asking
+for a `when`, and a page whose frontmatter still does not parse is left as written
 and gets its own note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and

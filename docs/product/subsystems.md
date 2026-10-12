@@ -63,7 +63,13 @@ review drafts and persisted mutation identity. Its native Tailscale transport
 owns DERP, WireGuard, TCP, native enrollment, authenticated control maps and
 device identity recovery. The Hub owns generic short-lived device invitations and browser approvals;
 [device pairing](../device-pairing.md) defines the shared QR/acoustic wire format
-and encrypted credential delivery. The browser sends invitations and confirms
+and encrypted credential delivery. The Hub also owns automatic destination
+discovery from the browser origin, listener and network interfaces;
+the browser presents that default and lets the operator edit it before creating
+an invitation. Ordinary LAN/tailnet setup requires no configuration-file edit.
+The parent settings view owns setup dismissal, keeping the loaded pairing link
+accessible while setup loads or fails.
+The browser sends invitations and confirms
 matching codes. Clients own durable settings and saved work scoped by destination
 and authenticated Tailscale peer. S05 AppWire
 and S06 Hub routing own its session protocol;

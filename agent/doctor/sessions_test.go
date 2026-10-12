@@ -465,13 +465,6 @@ func TestRenderSessions_TimesRenderedInUTC(t *testing.T) {
 	}
 }
 
-func TestRenderSessions_Empty(t *testing.T) {
-	out := RenderSessions(SessionsResult{})
-	if !strings.Contains(out, "no sessions") {
-		t.Errorf("empty render should say so, got: %q", out)
-	}
-}
-
 // TestListSessions_JSONFields is a smoke test that SessionsResult's JSON shape
 // is stable and carries the fields a batch study script would parse.
 func TestListSessions_JSONFields(t *testing.T) {

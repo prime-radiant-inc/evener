@@ -62,8 +62,10 @@ try {
       bootLabel: "Device pairing fixture",
     });
     await wait("Pair a device");
+    await wait("Copy pairing link");
     await click("Pair a device");
     await wait("Create invitation");
+    assert.equal(await evaluate(send, "document.querySelector('input').value"), "http://100.64.1.2:9180");
     if (!tailnet)
       await evaluate(
         send,
