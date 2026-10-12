@@ -95,7 +95,7 @@ export function PairingApproval({
 				<Row label={invitation.origin} />
 			</Group>
 			<Group label="Compare code">
-				<Row label={comparison || "Connecting…"} />
+				<Row label={comparison || "Connecting…"} machineLabel />
 			</Group>
 			<GroupFooter>{status}</GroupFooter>
 			<Group>

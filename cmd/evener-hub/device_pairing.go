@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/hex"
-	"fmt"
 	"net"
 	"net/netip"
 	"net/url"
@@ -144,15 +143,20 @@ func (p *devicePairings) approve(params appwire.DevicePairingApproveParams) (app
 	if entry.approvedKey != "" {
 		return pairingStatus(entry), nil
 	}
-	found := false
+	comparison := ""
 	for _, claim := range entry.claims {
 		if claim.PublicKey == params.PublicKey {
-			found = true
+			comparison = claim.Comparison
 			break
 		}
 	}
-	if !found {
+	if comparison == "" {
 		return pairingStatus(entry), appwire.InvalidParams("unknown device claim")
+	}
+	for _, claim := range entry.claims {
+		if claim.PublicKey != params.PublicKey && claim.Comparison == comparison {
+			return pairingStatus(entry), appwire.Conflict("ambiguous device fingerprints; create a new invitation")
+		}
 	}
 	envelope, err := sealDeviceCredential(entry.invitation, params.PublicKey, p.cfg.AuthToken)
 	if err != nil {
@@ -211,7 +215,11 @@ func (p *devicePairings) claim(params appwire.DevicePairingClaimParams) (appwire
 	// Domain separation and the full invitation bind the displayed fingerprint to
 	// exactly one device key. Clients calculate it independently before approval.
 	digest := sha512.Sum512(append(append([]byte("evener-pairing-v1"), invitation...), public...))
-	comparison := fmt.Sprintf("%06d", (uint32(digest[0])<<16|uint32(digest[1])<<8|uint32(digest[2]))%1000000)
+	var groups [8]string
+	for i := range groups {
+		groups[i] = hex.EncodeToString(digest[i*2 : i*2+2])
+	}
+	comparison := strings.Join(groups[:], "-")
 	entry.claims = append(entry.claims, appwire.DevicePairingClaim{PublicKey: params.PublicKey, Client: params.Client, Comparison: comparison})
 	return appwire.DevicePairingClaimResponse{State: "pending", Comparison: comparison}, 200
 }

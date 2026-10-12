@@ -152,8 +152,13 @@ export function DeviceSetup({ onClose }: { onClose(): void }) {
                     <span>
                       {claim.client}: <strong>{claim.comparison}</strong>
                     </span>
-                    <Button size="sm" disabled={busy} onClick={() => void approve(claim.publicKey)}>
-                      Approve code {claim.comparison}
+                    <Button
+                      size="sm"
+                      aria-label={`Approve code ${claim.comparison}`}
+                      disabled={busy}
+                      onClick={() => void approve(claim.publicKey)}
+                    >
+                      Approve this device
                     </Button>
                   </div>
                 ))

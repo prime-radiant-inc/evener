@@ -78,7 +78,9 @@ window.devicePairingGuard = {
     await Promise.all(Array.from(inFlight.values(), (request) => request.received));
   },
   click(label: string) {
-    const button = Array.from(document.querySelectorAll("button")).find((node) => node.textContent.trim() === label);
+    const button = Array.from(document.querySelectorAll("button")).find(
+      (node) => (node.getAttribute("aria-label") ?? node.textContent).trim() === label,
+    );
     if (!button || button.disabled) throw new Error("Button unavailable");
     flushSync(() => button.click());
   },
@@ -104,7 +106,10 @@ window.devicePairingGuard = {
         reject(new Error(`Missing UI state: ${text}`));
       }, 10000);
       const check = () => {
-        if (!document.body.textContent?.includes(text)) return;
+        const labelled = Array.from(document.querySelectorAll("button")).some(
+          (button) => button.getAttribute("aria-label") === text,
+        );
+        if (!labelled && !document.body.textContent?.includes(text)) return;
         clearTimeout(timeout);
         observer.disconnect();
         resolve();

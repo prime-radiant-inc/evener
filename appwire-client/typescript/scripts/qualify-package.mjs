@@ -23,9 +23,32 @@ async function qualify() {
   const packageManifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
   const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", consumerDir], packageDir))[0];
   const tarball = join(consumerDir, packed.filename);
+  // Use the installed runtime dependencies so qualification needs neither
+  // registry access nor metadata left in a developer's npm cache.
+  const runtimeTarballs = Object.keys(packageManifest.dependencies ?? {}).map((name) => {
+    const dependency = JSON.parse(
+      run(
+        "npm",
+        ["pack", "--ignore-scripts", "--json", "--pack-destination", consumerDir],
+        join(packageDir, "node_modules", name),
+      ),
+    )[0];
+    return join(consumerDir, dependency.filename);
+  });
   run(
     "npm",
-    ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
+    [
+      "install",
+      "--offline",
+      "--cache",
+      join(consumerDir, ".npm-cache"),
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      tarball,
+      ...runtimeTarballs,
+    ],
     consumerDir,
   );
   // Every module the package ships, read off the build's own file list rather

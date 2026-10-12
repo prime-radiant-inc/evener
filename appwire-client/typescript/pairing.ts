@@ -107,9 +107,7 @@ export function createPairingClaim(invitation: DevicePairingInvitation, secret: 
   const hash = nacl.hash(
     new Uint8Array([...ascii("evener-pairing-v1"), ...fromHex(invitation.invitation, 24), ...keys.publicKey]),
   );
-  const comparison = (((hash[0] ?? 0) * 65536 + (hash[1] ?? 0) * 256 + (hash[2] ?? 0)) % 1000000)
-    .toString()
-    .padStart(6, "0");
+  const comparison = Array.from({ length: 8 }, (_, index) => toHex(hash.slice(index * 2, index * 2 + 2))).join("-");
   return {
     invitation,
     publicKey: toHex(keys.publicKey),

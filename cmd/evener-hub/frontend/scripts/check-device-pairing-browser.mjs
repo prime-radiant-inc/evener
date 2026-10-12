@@ -124,6 +124,17 @@ try {
     assert.equal(pending.state, "pending");
     assert.equal(pending.envelope, undefined);
     await wait(`Approve code ${comparison}`);
+    assert.equal(await evaluate(send, "document.documentElement.scrollWidth<=innerWidth"), true);
+    assert.equal(
+      await evaluate(send, `Array.from(document.querySelectorAll('button')).every(button => {
+        const rect = button.getBoundingClientRect();
+        return rect.left >= 0 && rect.right <= innerWidth;
+      })`),
+      true,
+      "pairing controls fit the viewport",
+    );
+    const pendingShot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
+    writeFileSync(path.join(output, `device-pairing-pending-${width}.png`), Buffer.from(pendingShot.result.data, "base64"));
     await click(`Approve code ${comparison}`);
     await wait("Approved. Your device can now save this Hub.");
     const approved = await claim();

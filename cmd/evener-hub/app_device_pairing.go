@@ -34,19 +34,19 @@ func (p *devicePairings) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
-		http.Error(w, "POST required", 405)
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
 	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if media != "application/json" || r.Header.Get("Origin") != "" {
-		http.Error(w, "native JSON request required", 400)
+		http.Error(w, "native JSON request required", http.StatusBadRequest)
 		return
 	}
 	var params appwire.DevicePairingClaimParams
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&params) != nil || decoder.Decode(new(any)) != io.EOF {
-		http.Error(w, "invalid claim", 400)
+		http.Error(w, "invalid claim", http.StatusBadRequest)
 		return
 	}
 	response, status := p.claim(params)

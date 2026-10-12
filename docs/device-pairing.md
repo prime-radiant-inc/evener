@@ -28,7 +28,7 @@ approval, closing the browser leaves the invitation retrievable until expiry:
 an acknowledgement lost on the way back must not revoke a committed approval.
 The explicit cancel method still revokes the named invitation.
 
-The six digits authenticate the operator's choice; they are not an encryption
+The fingerprint authenticates the operator's choice; it is not an encryption
 key. The encrypted response is bound to the selected X25519 key. HTTP over
 Tailscale relies on the tailnet for transport authentication/encryption; a
 phone uses its installed Tailscale connection and Playdate uses its native
@@ -40,6 +40,9 @@ on the receiving device and the code before approving.
 ## Hub authority
 
 Authenticated AppWire methods:
+
+These methods act on the connected Hub's own invitations and credential. They
+are not forwarded through the host administration proxy.
 
 | Method | Parameters | Result |
 | --- | --- | --- |
@@ -114,9 +117,14 @@ The code is SHA-512 over these concatenated bytes:
 2. The 24 raw invitation bytes.
 3. The client's 32 raw X25519 public key bytes.
 
-Interpret the first three digest bytes as an unsigned big-endian integer,
-reduce modulo 1,000,000, and display as six zero-padded decimal digits. Clients
-must not substitute a code supplied by a network response for their own result.
+Encode the first 16 digest bytes as 32 lowercase hexadecimal digits, grouped in
+eight groups of four separated by hyphens, for example
+`2be9-271d-6222-d455-d2d1-c217-62b2-3b82`. Display and compare every group. The
+128-bit fingerprint resists offline searches for a key matching an observed
+claim; a short decimal reduction does not. The Hub refuses approval when two
+distinct claims have the same fingerprint, and the operator starts a new
+invitation. Clients must not substitute a fingerprint supplied by a network
+response for their own result.
 
 ## Invitation bytes (EVI1)
 

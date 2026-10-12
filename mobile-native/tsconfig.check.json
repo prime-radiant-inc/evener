@@ -20,6 +20,7 @@
       "anser": ["./node_modules/anser"],
       "react": ["./node_modules/@types/react"],
       "tinykeys": ["./node_modules/tinykeys"],
+      "tweetnacl": ["./node_modules/tweetnacl"],
       "vitest": ["./node_modules/vitest"],
       "zustand": ["./node_modules/zustand"],
       "zustand/*": ["./node_modules/zustand/*"]

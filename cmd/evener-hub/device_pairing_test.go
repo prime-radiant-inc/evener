@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,52 @@ func pairingClaimHTTP(t *testing.T, web *WebServer, invitation, publicKey string
 	}
 	return out, w.Code
 }
+func TestDevicePairingStrongFingerprint(t *testing.T) {
+	t.Parallel()
+	p := newDevicePairings(hubcore.WebConfig{AuthToken: "synthetic-credential"})
+	invite := appwire.DevicePairingInvitation{Invitation: strings.Repeat("01", 24), Origin: "http://magic-kingdom:9180", Tailnet: true, ExpiresAt: p.now().Add(time.Minute).UnixMilli()}
+	p.entries[invite.Invitation] = &devicePairingEntry{invitation: invite}
+	// Both public keys reduce to the same six-digit value, 877735.
+	for _, tc := range []struct{ public, comparison string }{
+		{"9bd266e486eedd293ba03546df3a37b7666c2cc62e5d5063944d50eea04cb749", "2be9-271d-6222-d455-d2d1-c217-62b2-3b82"},
+		{"6721d39d41d5b7af37fb001fe6c206f5ba0014588d9453b354efc12b98708054", "1ca6-e724-b024-83d3-5bba-fbcb-6c57-d342"},
+	} {
+		reply, status := p.claim(appwire.DevicePairingClaimParams{Invitation: invite.Invitation, PublicKey: tc.public, Client: "Phone"})
+		if status != http.StatusOK || reply.Comparison != tc.comparison {
+			t.Fatalf("fingerprint: %+v, status %d; want %s", reply, status, tc.comparison)
+		}
+	}
+}
+
+func TestDevicePairingAmbiguousFingerprintCannotReleaseCredential(t *testing.T) {
+	t.Parallel()
+	p := newDevicePairings(hubcore.WebConfig{AuthToken: "synthetic-credential"})
+	invite, err := p.create(appwire.DevicePairingCreateParams{Origin: "http://magic-kingdom:9180", Tailnet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		public, _, err := box.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, status := p.claim(appwire.DevicePairingClaimParams{Invitation: invite.Invitation, PublicKey: hex.EncodeToString(public[:]), Client: "Phone"}); status != http.StatusOK {
+			t.Fatal(status)
+		}
+	}
+	entry := p.entries[invite.Invitation]
+	// Represent a hash collision directly rather than searching a 128-bit space.
+	entry.claims[1].Comparison = entry.claims[0].Comparison
+	for _, claim := range entry.claims {
+		if _, err := p.approve(appwire.DevicePairingApproveParams{Invitation: invite.Invitation, PublicKey: claim.PublicKey}); err == nil {
+			t.Fatal("ambiguous approval succeeded")
+		}
+		if entry.approvedKey != "" || entry.envelope != "" {
+			t.Fatal("ambiguous approval released a credential")
+		}
+	}
+}
+
 func TestDevicePairingApprovalBindsOneKeyAndRetries(t *testing.T) {
 	t.Parallel()
 	web := NewWebServer(hubcore.WebConfig{AuthToken: "private-hub-credential"})
@@ -130,7 +177,7 @@ func TestDevicePairingExpiryCancelAndBounds(t *testing.T) {
 	if _, status := pairingClaimHTTP(t, web, invite.Invitation, string(bytes.Repeat([]byte("0"), 64))); status != 400 {
 		t.Fatalf("low order key status %d", status)
 	}
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		pub, _, _ := box.GenerateKey(rand.Reader)
 		if _, status := pairingClaimHTTP(t, web, invite.Invitation, hex.EncodeToString(pub[:])); status != 200 {
 			t.Fatal(status)
@@ -156,12 +203,12 @@ func TestDevicePairingExpiryCancelAndBounds(t *testing.T) {
 	}
 	// The bootstrap exception must not make the authenticated RPC transport public.
 	w := httptest.NewRecorder()
-	web.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/rpc", nil))
+	web.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/rpc", nil))
 	if w.Code != 401 {
 		t.Fatalf("RPC lost auth: %d", w.Code)
 	}
 	w = httptest.NewRecorder()
-	web.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/device-pairing", nil))
+	web.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/device-pairing", nil))
 	if w.Code != 405 {
 		t.Fatalf("bootstrap GET: %d", w.Code)
 	}
