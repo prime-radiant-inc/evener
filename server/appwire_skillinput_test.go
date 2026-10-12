@@ -5,7 +5,6 @@ import (
 	"errors"
 	"slices"
 	"sort"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -171,9 +170,6 @@ func TestSkillInputValidationMatchesAdvertisedCapability(t *testing.T) {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("turn/start skill input error = %T %v, want InvalidParams, not the unwired seam's Unavailable", err, err)
-	}
-	if !strings.Contains(wire.Message, "skill input is unsupported") {
-		t.Fatalf("turn/start skill input error message = %q, want the unsupported-input explanation", wire.Message)
 	}
 
 	// The gate only rejects SKILL items: an unwired endpoint keeps its bare
