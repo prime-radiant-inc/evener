@@ -21,10 +21,12 @@
 # test command runs from the throwaway root: first unmutated, where it must
 # pass (BASELINE-FAIL otherwise), then mutated.
 #
-# Output: KILLED (tests failed, good; the failing tests are listed under it),
-# SURVIVED (tests passed: the conversion lost coverage), or NO-OP (the
-# substitution matched nothing). The full test log path is printed on SURVIVED
-# and kept for every run under $TMPDIR/copy-oracle-mutate.*.log.
+# Output: KILLED (a test assertion failed, good; the failing tests are listed
+# under it, exit 0), SURVIVED (tests passed: the conversion lost coverage,
+# exit 1), NO-OP (the substitution matched nothing, exit 1), or BROKEN (the
+# mutated code did not build or no test ran, so it proves nothing; exit 3).
+# The full test log path is printed on SURVIVED and BROKEN, and kept for every
+# run under $TMPDIR/copy-oracle-mutate.*.log.
 #
 # A run killed outright (SIGKILL) leaves its $TMPDIR/copy-oracle-mutate.*
 # directory; delete it and run `git worktree prune`.
@@ -103,15 +105,15 @@ while IFS= read -r manifest; do
   fi
 done < <(git ls-files -- '*package.json' 'package.json')
 
-# Run the tests from the throwaway root in their own process group (job
-# control; the leader's pid is the group id), and drain the whole group
-# afterwards so no worker from the baseline runs into the mutation.
+# Run the tests from the throwaway root in their own process group, and drain
+# the whole group afterwards so no worker from the baseline runs into the
+# mutation. perl makes the process its own group leader (setpgrp) and then
+# execs the command in place, so the group id is the pid in $!; bash job
+# control (set -m) races the subshell's exec and can leave it in ours.
 run_tests() {
   local status=0
-  set -m
-  (cd "$work" && exec "$@") >"$log" 2>&1 &
+  (cd "$work" && exec perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@") >"$log" 2>&1 &
   child=$!
-  set +m
   wait "$child" || status=$?
   stop_group "$child"
   child=""
@@ -134,7 +136,16 @@ if run_tests "$@"; then
   echo "SURVIVED $file: $subst (log: $log)"
   exit 1
 fi
+# A failing run counts as KILLED only when a test assertion failed: a vitest
+# failed-test line (`×`, or `FAIL file > test`) or Go's `--- FAIL:`. A compile,
+# transform or setup error also fails the run, but no converted assertion ran,
+# so it proves nothing about coverage.
+failed_tests=$(grep -E '^[[:space:]]*(×|--- FAIL:)|FAIL[[:space:]].* > ' "$log" || true)
+if [[ -z "$failed_tests" ]]; then
+  echo "BROKEN  $file: $subst (the mutated code did not build or no test ran; log: $log)"
+  tail -n 15 "$log" | sed 's/^/    /'
+  exit 3
+fi
 echo "KILLED  $file: $subst"
-# Show which tests caught it, so a kill for the wrong reason (a crash, a
-# syntax error) is visible.
-grep -E '^\s*(×|FAIL|--- FAIL)' "$log" | sed 's/^/    /' | head -5 || true
+# Show which tests caught it.
+printf '%s\n' "$failed_tests" | sed 's/^/    /' | head -5
