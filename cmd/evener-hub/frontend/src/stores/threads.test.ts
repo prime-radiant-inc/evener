@@ -28,6 +28,7 @@ import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { cleanup, waitFor } from "@testing-library/react";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
@@ -36,11 +37,13 @@ import { connectionStore } from "./connection";
 import "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionCacheIndexedDB, type SessionCacheWriteOutcome } from "./sessionCacheIndexedDB";
+import { SessionEntryCache } from "./sessionEntryCache";
 import {
   appendFrameTime,
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
+  setProductionEntryCacheForTests,
   setSessionCacheAdapterForTests,
   threadRoutingIndexesForTests,
   threadsStore,
@@ -60,7 +63,7 @@ async function establishMembership(fake: FakeClient, ref = "ref_a"): Promise<voi
 // Same contract/name as protocol/client.test.ts's helper; duplicated here
 // because the two test files share no test-utils module.
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
-  for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
+  for (let i = 0; i < maxTurns && !done(); i += 1) await nextMacrotask();
 }
 
 function nextHandledRequest<M extends MethodName>(
@@ -233,22 +236,21 @@ async function deleteMutationDatabase(): Promise<void> {
   });
 }
 
-// The load seam's lookup runs before a cold read is armed, and this suite's
-// deferred-read fixtures flush microtasks only — a real IndexedDB lookup
-// settles on macrotasks, which would shift every fixture's read past its
-// flush window. This suite never tests the cache (threads.sessionCache
-// .test.ts does), so its beforeEach swaps in an adapter whose lookups miss
-// synchronously: the cold path keeps today's microtask arming timing exactly.
+// This suite exercises the ordinary entry route (the route production takes
+// when no fixture or adapter override is installed). Its storage boundary is a
+// fresh real SessionEntryCache over a private fake-IDB database, so no fixture
+// can write into a shared database.
+let entryCache: SessionEntryCache;
+
+// A residual set of cases still observes legacy-route behaviour (the
+// synchronous legacy hydration/retirement timing and identity semantics that
+// the entry route settles asynchronously). Those cases install this
+// legacy-adapter override explicitly and are recorded as conditional
+// retirements for unit 6d; see W/task-6c-dispositions.json (Finding A).
 class MissCacheAdapter extends SessionCacheIndexedDB {
   override get(_ref: string, _now: number): Promise<undefined> {
     return Promise.resolve(undefined);
   }
-  // The write seam (Task 6) fires debounced writes through this same adapter
-  // whenever a publication passes its fire-time gates. The connection gate
-  // already refuses them here — the sync-miss get above never opens the
-  // adapter — but the shim says "no storage" outright rather than relying on
-  // that, so no fixture in this suite can ever write a record or leave one
-  // behind in the shared fake database.
   override put(_record: CachedSessionRecord, _scheduledEpoch: number, _now: number): Promise<SessionCacheWriteOutcome> {
     return Promise.resolve({ outcome: "failed" });
   }
@@ -312,7 +314,11 @@ beforeEach(async () => {
     };
   });
   await deleteMutationDatabase();
-  setSessionCacheAdapterForTests(new MissCacheAdapter());
+  entryCache = new SessionEntryCache({
+    indexedDB: new IDBFactory(),
+    databaseName: `ordinary-threads-${crypto.randomUUID()}`,
+  });
+  setProductionEntryCacheForTests(entryCache);
 });
 
 afterEach(() => {
@@ -320,6 +326,7 @@ afterEach(() => {
   cleanup();
   restoreHydrationRetryScheduler?.();
   restoreHydrationRetryScheduler = null;
+  entryCache.close();
   vi.restoreAllMocks();
 });
 
@@ -552,6 +559,7 @@ describe("useThreadsStore.ensureThread", () => {
   });
 
   test("re-hydrates an initial same-client epoch from its authoritative response cut", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     const fake = connectFakeClient();
     const reads: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
@@ -584,6 +592,7 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.turns[0]?.items).toHaveLength(1);
     expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
     threadsStore.getState().releaseThread("ref_a");
+    await flushUntil(() => !threadsStore.getState().threads.has("ref_a"));
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
@@ -687,6 +696,7 @@ describe("wire subscription tracking", () => {
     expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
 
     threadsStore.getState().releaseWatchedThread("ref_a"); // watcher leaves too
+    await flushUntil(() => fake.calls.filter((call) => call.method === "thread/unsubscribe").length === 1);
     expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
   });
 
@@ -824,6 +834,7 @@ describe("notification routing differential (randomized: index vs scan reference
   }
 
   test("folding random catalog notifications through the store matches the scan reference exactly", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     // Deterministic PRNG so a failure is reproducible from the seed printed
     // in the assertion message (mulberry32, shared with the token-flood
     // harness).
@@ -1027,6 +1038,7 @@ describe("notification routing differential (randomized: index vs scan reference
 
 describe("reconnect resubscribe", () => {
   test("a reconnect publishes the completion represented by its authoritative response cut", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     const fake = connectFakeClient();
     const initialSnapshot = readResponse("ref_a", {
       status: { type: "active" },
@@ -1112,6 +1124,7 @@ describe("reconnect resubscribe", () => {
   });
 
   test("a reconnect snapshot supersedes a pre-response ref-targeted turn lifecycle", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     const fake = connectFakeClient();
     const initialSnapshot = readResponse("ref_a");
     const authoritativeSnapshot = readResponse("ref_a", {
@@ -1215,6 +1228,7 @@ describe("reconnect resubscribe", () => {
   });
 
   test("a late old-client hydration cannot overwrite the newest client's authoritative completion", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     const a = connectFakeClient();
     const staleSnapshot = readResponse("ref_a", {
       status: { type: "active" },
@@ -1313,11 +1327,13 @@ describe("reconnect resubscribe", () => {
   });
 
   test("a released ref is not re-subscribed on the next onReady", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     const fake = connectFakeClient();
     fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().ensureThread("ref_b");
     threadsStore.getState().releaseThread("ref_a"); // only ref_b remains tracked
+    await flushUntil(() => !threadsStore.getState().threads.has("ref_a"));
 
     fake.emitStateChange("reconnecting");
     fake.emitReady(); // simulated reconnect — must still re-subscribe ref_b for this test to mean anything
@@ -1347,6 +1363,7 @@ test.each([false, true])(
     await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("storage full");
     expect(await storage.listOutbox()).toHaveLength(existingMutation ? 1 : 0);
     threadsStore.getState().releaseThread("ref_a");
+    await flushUntil(() => threadsStore.getState().threads.has("ref_a") === existingMutation);
     expect(threadsStore.getState().threads.has("ref_a")).toBe(existingMutation);
     await unsubscribed;
   },
@@ -1366,6 +1383,7 @@ describe("frameTimes tracking (threads store)", () => {
 
     threadsStore.getState().releaseThread("ref_a");
 
+    await flushUntil(() => !threadsStore.getState().frameTimes.has("ref_a"));
     expect(threadsStore.getState().frameTimes.has("ref_a")).toBe(false);
   });
 });
@@ -1476,6 +1494,7 @@ describe("useThreadsStore.loadOlderTurns", () => {
   });
 
   test("a stale cursor rejection from a replaced client leaves reconnect hydration authoritative", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     const oldClient = connectFakeClient();
     let oldReads = 0;
     oldClient.on("thread/read", () => {
@@ -1795,6 +1814,7 @@ describe("useThreadsStore.loadOlderTurns", () => {
   });
 
   test("a reconnect hydration rejects a pre-cut older-page completion", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     const fake = connectFakeClient();
     let readCount = 0;
     fake.on("thread/read", (params) => {
@@ -2320,6 +2340,7 @@ describe("retry-safe mutation outbox integration", () => {
   // yet. Opening one anyway would arm a retry for a ref nothing owns - a timer
   // and a map entry that outlive everything that could ever consume them.
   test("a rejoin read that fails after its record settles arms no retry", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     await seedPinnedIntent("ref_a", "mutation-a");
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
@@ -2421,6 +2442,7 @@ describe("retry-safe mutation outbox integration", () => {
   // which puts the attempt-identity and ownership checks either side of the
   // epoch fence back into the permissive state.
   test("a rejoin adopted across a reconnect publishes the live snapshot, not its own", async () => {
+    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
     await seedPinnedIntent("ref_a", "mutation-a");
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
@@ -2666,6 +2688,7 @@ describe("retry-safe mutation outbox integration", () => {
 });
 
 test("explicit refresh captures the replacement client with its ready epoch", async () => {
+  setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
   const oldClient = connectFakeClient();
   oldClient.on("thread/read", () => ({ thread: testThread("ref_a", { status: { type: "restartRequired" } }) }));
   await threadsStore.getState().ensureThread("ref_a");
@@ -2770,6 +2793,7 @@ test("reload after a failed restart write reconciles persisted uncertainty with 
 });
 
 test("saved snapshots retain restart protection for subsequently discovered outbox records", async () => {
+  setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "late-upgrade-record" });
   setMutationStorageForTests(storage);
   const fake = connectFakeClient("connecting");
