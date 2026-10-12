@@ -220,8 +220,15 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
                     <ListRow
                       label={`${s.name} — ${s.transport}`}
                       chips={<Chip tone={s.status === "available" ? "alive" : "danger"}>{s.status}</Chip>}
-                      meta={s.error}
                     />
+                    {/* A probe error wraps in full under its row: the row's meta
+                        is one truncated line, and this read-only row has no
+                        detail view to reveal the rest. */}
+                    {s.error !== undefined && (
+                      <InlineNotice tone="danger" live="off" data-reason="probe-failed">
+                        {s.error}
+                      </InlineNotice>
+                    )}
                   </li>
                 ))
               )}
