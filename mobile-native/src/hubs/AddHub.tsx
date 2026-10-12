@@ -74,7 +74,7 @@ export function AddHub({
 	if (review)
 		return (
 			<GroupedPage>
-				<Group label="Pair with">
+				<Group label="Pair with" section="pair-with">
 					<MachineRow text={review.target.origin} />
 				</Group>
 				<Group label="Name">
@@ -94,7 +94,7 @@ export function AddHub({
 					/>
 				</Group>
 				{refused ? (
-					<GroupFooter tone="danger">
+					<GroupFooter tone="danger" testID={`hub-save-refused:${how === "address" ? "address" : "link"}`}>
 						{`Couldn't save this hub. Check the name and the ${how === "address" ? "address" : "link"}, and try again.`}
 					</GroupFooter>
 				) : null}
@@ -150,13 +150,13 @@ function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget):
 	if (permission === null || (canAsk && !answered))
 		return (
 			<GroupedPage>
-				<GroupFooter>Waiting for camera access…</GroupFooter>
+				<GroupFooter testID="pairing-status:waiting">Waiting for camera access…</GroupFooter>
 			</GroupedPage>
 		);
 	if (!permission.granted)
 		return (
 			<GroupedPage>
-				<GroupFooter>Camera access is off for Evener.</GroupFooter>
+				<GroupFooter testID="pairing-status:camera-off">Camera access is off for Evener.</GroupFooter>
 				<Group>
 					<Row label="Open Settings" tone="accent" onPress={() => void Linking.openSettings()} />
 					<Row label="Paste the link instead" tone="accent" onPress={onPasteInstead} />
@@ -178,9 +178,11 @@ function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget):
 				/>
 			</View>
 			{notPairing ? (
-				<GroupFooter tone="danger">That isn't an Evener pairing code.</GroupFooter>
+				<GroupFooter tone="danger" testID="pairing-status:not-pairing">
+					That isn't an Evener pairing code.
+				</GroupFooter>
 			) : (
-				<GroupFooter>Point the camera at the pairing code.</GroupFooter>
+				<GroupFooter testID="pairing-status:aim">Point the camera at the pairing code.</GroupFooter>
 			)}
 		</GroupedPage>
 	);
@@ -225,7 +227,7 @@ function Paste({ onPairing }: { onPairing(target: PairingTarget): void }) {
 				<Row label="Paste" tone="accent" onPress={() => void paste()} />
 			</Group>
 			{notPairing ? (
-				<GroupFooter tone="danger">
+				<GroupFooter tone="danger" testID="pairing-status:not-pairing">
 					That isn't an Evener pairing link. Copy it again from Settings, then Mobile app, in Evener on your computer.
 				</GroupFooter>
 			) : null}

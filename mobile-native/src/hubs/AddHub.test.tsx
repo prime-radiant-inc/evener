@@ -1,6 +1,7 @@
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import { render, renderedText } from "../renderNative.testkit";
+import { hasTestID, markers, withTestID } from "../markerTestUtils";
+import { offersButton, render, renderedText, textOf } from "../renderNative.testkit";
 import { AddHub } from "./AddHub";
 
 type Permission = { granted: boolean; canAskAgain: boolean; status: string };
@@ -79,6 +80,12 @@ function camera(tree: ReactTestRenderer) {
 	return tree.root.find((node) => String(node.type) === "CameraView");
 }
 
+/** The origin the review step pairs with; undefined before review. */
+function pairingWith(tree: ReactTestRenderer): string | undefined {
+	const [group] = withTestID(tree, "group:pair-with");
+	return group ? textOf(group) : undefined;
+}
+
 function scan(tree: ReactTestRenderer, handler: (event: { type: string; data: string }) => void, data: string) {
 	act(() => {
 		handler({ type: "qr", data });
@@ -89,9 +96,9 @@ it("scans a pairing code into review and connects with the suggested name", asyn
 	mocks.saveHub.mockResolvedValue(true);
 	const { tree, onConnected } = mount("scan");
 	expect(camera(tree).props.barcodeScannerSettings.barcodeTypes).toEqual(["qr"]);
-	expect(renderedText(tree)).toContain("Point the camera at the pairing code.");
+	expect(markers(tree, "pairing-status")).toEqual(["aim"]);
 	scan(tree, camera(tree).props.onBarcodeScanned, LINK);
-	expect(renderedText(tree)).toContain("Pair with https://magic-kingdom:9180");
+	expect(pairingWith(tree)).toBe("https://magic-kingdom:9180");
 	expect(field(tree, "Name").props.value).toBe("magic-kingdom");
 	expect(tree.root.findAll((node) => String(node.type) === "CameraView")).toHaveLength(0);
 	await press(tree, "Connect");
@@ -118,7 +125,7 @@ it("ignores a second scan while reviewing the first", () => {
 	scan(tree, onScanned, LINK);
 	type(tree, "Name", "Work");
 	scan(tree, onScanned, OTHER_LINK);
-	expect(renderedText(tree)).toContain("Pair with https://magic-kingdom:9180");
+	expect(pairingWith(tree)).toBe("https://magic-kingdom:9180");
 	expect(renderedText(tree)).not.toContain("paradise-park");
 	expect(field(tree, "Name").props.value).toBe("Work");
 });
@@ -126,11 +133,10 @@ it("ignores a second scan while reviewing the first", () => {
 it("says an invalid code isn't a pairing code and keeps the camera", () => {
 	const { tree } = mount("scan");
 	scan(tree, camera(tree).props.onBarcodeScanned, "WDJB-MJHT");
-	expect(renderedText(tree)).toContain("That isn't an Evener pairing code.");
-	expect(renderedText(tree)).not.toContain("Point the camera at the pairing code.");
+	expect(markers(tree, "pairing-status")).toEqual(["not-pairing"]);
 	expect(camera(tree)).toBeDefined();
 	scan(tree, camera(tree).props.onBarcodeScanned, LINK);
-	expect(renderedText(tree)).toContain("Pair with https://magic-kingdom:9180");
+	expect(pairingWith(tree)).toBe("https://magic-kingdom:9180");
 });
 
 it("asks for the camera once on mount when it hasn't asked yet", async () => {
@@ -149,7 +155,7 @@ it("says it's waiting for camera access while the request is out", () => {
 	mocks.permission.value = { granted: false, canAskAgain: true, status: "undetermined" };
 	mocks.request.mockReturnValue(new Promise(() => {}));
 	const { tree } = mount("scan");
-	expect(renderedText(tree)).toContain("Waiting for camera access…");
+	expect(markers(tree, "pairing-status")).toEqual(["waiting"]);
 });
 
 it("doesn't ask for a camera it already has", () => {
@@ -161,7 +167,7 @@ it("offers Settings or pasting when camera access is off", async () => {
 	mocks.permission.value = { granted: false, canAskAgain: false, status: "denied" };
 	const { tree } = mount("scan");
 	expect(mocks.request).not.toHaveBeenCalled();
-	expect(renderedText(tree)).toContain("Camera access is off for Evener.");
+	expect(markers(tree, "pairing-status")).toEqual(["camera-off"]);
 	expect(tree.root.findAll((node) => String(node.type) === "CameraView")).toHaveLength(0);
 	await press(tree, "Open Settings");
 	expect(mocks.openSettings).toHaveBeenCalledTimes(1);
@@ -180,7 +186,7 @@ it("offers Settings or pasting once a camera request comes back refused, though 
 		tree.update(<AddHub how="scan" onConnected={() => {}} />);
 	});
 	expect(mocks.request).toHaveBeenCalledTimes(1);
-	expect(renderedText(tree)).toContain("Camera access is off for Evener.");
+	expect(markers(tree, "pairing-status")).toEqual(["camera-off"]);
 	expect(button(tree, "Paste the link instead")).toBeTruthy();
 });
 
@@ -204,7 +210,7 @@ it("pastes a pairing link from the clipboard into review", async () => {
 	const { tree } = mount("paste");
 	expect(field(tree, "Pairing link").props.secureTextEntry).toBe(true);
 	await press(tree, "Paste");
-	expect(renderedText(tree)).toContain("Pair with https://magic-kingdom:9180");
+	expect(pairingWith(tree)).toBe("https://magic-kingdom:9180");
 	expect(field(tree, "Name").props.value).toBe("magic-kingdom");
 });
 
@@ -212,9 +218,7 @@ it("says a pasted link isn't a pairing link and keeps it for editing", async () 
 	mocks.getStringAsync.mockResolvedValue("https://magic-kingdom:9180/");
 	const { tree } = mount("paste");
 	await press(tree, "Paste");
-	expect(renderedText(tree)).toContain(
-		"That isn't an Evener pairing link. Copy it again from Settings, then Mobile app, in Evener on your computer.",
-	);
+	expect(markers(tree, "pairing-status")).toEqual(["not-pairing"]);
 	expect(field(tree, "Pairing link").props.value).toBe("https://magic-kingdom:9180/");
 });
 
@@ -224,7 +228,7 @@ it("reviews a pairing link typed into the field when it's submitted", () => {
 	act(() => {
 		field(tree, "Pairing link").props.onSubmitEditing();
 	});
-	expect(renderedText(tree)).toContain("Pair with https://magic-kingdom:9180");
+	expect(pairingWith(tree)).toBe("https://magic-kingdom:9180");
 });
 
 it("reviews an address and token typed by hand", async () => {
@@ -237,7 +241,7 @@ it("reviews an address and token typed by hand", async () => {
 	type(tree, "Address", "https://magic-kingdom:9180");
 	type(tree, "Token (optional)", TOKEN);
 	await press(tree, "Continue");
-	expect(renderedText(tree)).toContain("Pair with https://magic-kingdom:9180");
+	expect(pairingWith(tree)).toBe("https://magic-kingdom:9180");
 	expect(field(tree, "Name").props.value).toBe("magic-kingdom");
 	await press(tree, "Connect");
 	expect(mocks.saveHub).toHaveBeenCalledWith({
@@ -293,9 +297,9 @@ it("stays on review and says what to change when the hub can't be saved", async 
 	await press(tree, "Continue");
 	await press(tree, "Connect");
 	expect(onConnected).not.toHaveBeenCalled();
-	expect(renderedText(tree)).toContain("Pair with ftp://magic-kingdom");
+	expect(pairingWith(tree)).toBe("ftp://magic-kingdom");
 	// A typed address has no link to check.
-	expect(renderedText(tree)).toContain("Couldn't save this hub. Check the name and the address, and try again.");
+	expect(markers(tree, "hub-save-refused")).toEqual(["address"]);
 	expect(button(tree, "Connect").props.disabled).toBe(false);
 });
 
@@ -330,8 +334,8 @@ it("never shows the token or offers to retry or reconnect", async () => {
 			await press(tree, "Continue");
 		}
 		await press(tree, "Connect");
-		const text = renderedText(tree);
-		expect(text).not.toContain(TOKEN);
-		expect(text).not.toMatch(/Retry|Reconnect/);
+		expect(renderedText(tree)).not.toContain(TOKEN);
+		expect(hasTestID(tree, `hub-save-refused:${how === "address" ? "address" : "link"}`)).toBe(true);
+		expect(offersButton(tree, /\b(Retry|Reconnect)\b/)).toBe(false);
 	}
 });

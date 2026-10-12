@@ -3,7 +3,8 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { HubProfile } from "../connection";
 import { palettes } from "../design/tokens";
-import { render, renderedText } from "../renderNative.testkit";
+import { hasTestID } from "../markerTestUtils";
+import { offersButton, render, renderedText } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { FirstRunScreen } from "./FirstRunScreen";
 
@@ -64,29 +65,35 @@ async function press(tree: ReactTestRenderer, label: string) {
 	});
 }
 
-function text(tree: ReactTestRenderer, content: string) {
-	return tree.root.find((node) => String(node.type) === "Text" && node.props.children === content);
+/** The choices page's title and the line under it; [] off that page. */
+function intro(tree: ReactTestRenderer) {
+	const [page] = tree.root.findAll((node) => typeof node.type === "string" && node.props.testID === "first-run-intro");
+	return page ? page.findAll((node) => String(node.type) === "Text") : [];
 }
+
+const onChoices = (tree: ReactTestRenderer) => intro(tree).length > 0;
+const listsSavedHubs = (tree: ReactTestRenderer) => hasTestID(tree, "group:saved-hubs");
 
 it("asks to connect to your hub, and says where the pairing code lives", () => {
 	const { tree } = mount();
-	const title = text(tree, "Connect to your hub");
-	expect(title.props.style).toMatchObject({ fontSize: 28, lineHeight: 34, fontWeight: "600" });
-	const where = text(tree, "In Evener on your computer, open Settings, then Mobile app.");
-	expect(where.props.style.color).toBe(palettes.light.inkMid);
+	const [title, where, ...others] = intro(tree);
+	expect(others).toHaveLength(0);
+	expect(title?.props.accessibilityRole).toBe("header");
+	expect(title?.props.style).toMatchObject({ fontSize: 28, lineHeight: 34, fontWeight: "600" });
+	expect(where?.props.style.color).toBe(palettes.light.inkMid);
 	for (const label of ["Scan pairing code", "Paste pairing link", "Enter the address"])
 		expect(button(tree, label)).toBeDefined();
-	expect(renderedText(tree)).not.toContain("Saved hubs");
+	expect(listsSavedHubs(tree)).toBe(false);
 });
 
 it("scans a pairing code in place, and Back returns to the choices", async () => {
 	const { tree } = mount();
 	await press(tree, "Scan pairing code");
 	expect(tree.root.findAll((node) => String(node.type) === "CameraView")).toHaveLength(1);
-	expect(renderedText(tree)).not.toContain("Connect to your hub");
+	expect(onChoices(tree)).toBe(false);
 	await press(tree, "Back");
 	expect(tree.root.findAll((node) => String(node.type) === "CameraView")).toHaveLength(0);
-	expect(renderedText(tree)).toContain("Connect to your hub");
+	expect(onChoices(tree)).toBe(true);
 });
 
 it("types an address in place", async () => {
@@ -110,7 +117,7 @@ it("pastes a pairing link, connects, and opens the Board", async () => {
 		token: "s3cret",
 	});
 	expect(navigation.navigate).toHaveBeenCalledWith("Sessions");
-	expect(renderedText(tree)).toContain("Connect to your hub");
+	expect(onChoices(tree)).toBe(true);
 });
 
 it("stays where Back left it when a save it started finishes afterwards", async () => {
@@ -130,13 +137,13 @@ it("stays where Back left it when a save it started finishes afterwards", async 
 		finish(true);
 	});
 	expect(navigation.navigate).not.toHaveBeenCalled();
-	expect(renderedText(tree)).toContain("Connect to your hub");
+	expect(onChoices(tree)).toBe(true);
 });
 
 it("lists saved hubs when none is selected, and opens the one chosen", async () => {
 	mocks.connection.profiles = [MAGIC, PARADISE];
 	const { tree, navigation } = mount();
-	expect(renderedText(tree)).toContain("Saved hubs");
+	expect(listsSavedHubs(tree)).toBe(true);
 	expect(renderedText(tree)).toContain("http://100.113.28.18:9180");
 	await press(tree, "paradise-park, http://100.113.28.18:9180");
 	expect(mocks.connection.selectHub).toHaveBeenCalledWith("hub-2");
@@ -146,15 +153,15 @@ it("lists saved hubs when none is selected, and opens the one chosen", async () 
 it("never asks to reconnect", async () => {
 	mocks.connection.profiles = [MAGIC];
 	const { tree } = mount();
-	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 	await press(tree, "Scan pairing code");
-	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 });
 
 it("still lists saved hubs with one selected, since the Board can be swiped back to this screen", () => {
 	mocks.connection.profiles = [MAGIC, PARADISE];
 	mocks.connection.activeProfile = MAGIC;
 	const { tree } = mount();
-	expect(renderedText(tree)).toContain("Saved hubs");
+	expect(listsSavedHubs(tree)).toBe(true);
 	expect(button(tree, "magic-kingdom, https://magic-kingdom:9180")).toBeDefined();
 });
