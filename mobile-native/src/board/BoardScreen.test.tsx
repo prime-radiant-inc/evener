@@ -47,7 +47,7 @@ import {
 	until,
 	untilRendered,
 } from "../renderNative.testkit";
-import { markedNodes, markerOf, markers } from "../markerTestUtils";
+import { hasTestID, markedNodes, markerOf, markers, withTestID } from "../markerTestUtils";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
@@ -620,11 +620,10 @@ function joinedText(node: ReactTestInstance): string {
 /** The titles of the rows whose second line says a held change waits on them. */
 const waitingTitles = (tree: ReactTestRenderer) =>
 	markedNodes(tree, "board-row")
-		.filter((row) => row.findAll((node) => node.props.testID === "row-waiting").length > 0)
+		.filter((row) => hasTestID(row, "row-waiting"))
 		.map((row) => row.props.accessibilityLabel.split(", ")[0]);
 /** Whether the toolbar says anything about the connection. */
-const connectionStatusShown = (tree: ReactTestRenderer) =>
-	tree.root.findAll((node) => node.type === ("Text" as never) && node.props.testID === "connection-status").length > 0;
+const connectionStatusShown = (tree: ReactTestRenderer) => hasTestID(tree, "connection-status");
 /** How many Continue reading rows the Board shows. */
 const continueReadingRows = (tree: ReactTestRenderer) => tree.root.findAllByType(ContinueReadingRow).length;
 /** The kinds of the toasts showing (at most one). */
@@ -1218,9 +1217,8 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	expect(hasRow(tree, "Fix retry loop")).toBe(false);
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	// Hub B keeps its own fold state: Idle starts folded there.
-	const fold = () =>
-		tree.root.find((node) => node.type === ("Pressable" as never) && node.props.testID === "idle-fold");
-	expect(fold().props.accessibilityState).toEqual({ expanded: false });
+	const fold = () => withTestID(tree, "idle-fold")[0];
+	expect(fold()?.props.accessibilityState).toEqual({ expanded: false });
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	// Hub A's Board is gone: its invalidations read nothing.
 	const readsOnA = hubA.requests.length;
@@ -1228,9 +1226,9 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	await settleMicrotasks();
 	expect(hubA.requests).toHaveLength(readsOnA);
 	// Unfolded, Idle holds hub B's one idle session.
-	act(() => fold().props.onPress());
-	const live = tree.root.find((node) => node.type === ("View" as never) && node.props.testID === "live-block");
-	expect(markers(live, "board-row").filter((state) => state === "idle")).toHaveLength(1);
+	act(() => fold()?.props.onPress());
+	const [live] = withTestID(tree, "live-block");
+	expect(live && markers(live, "board-row").filter((state) => state === "idle")).toHaveLength(1);
 	expect(hasRow(tree, "Old chore")).toBe(true);
 	act(() => tree.unmount());
 });
