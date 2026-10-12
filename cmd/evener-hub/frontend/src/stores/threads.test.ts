@@ -65,7 +65,7 @@ import {
   blockedUpgradeRequest,
   holdIndexedDBEvent,
   holdNextWriteTransaction,
-  neverSettlingRequest,
+  wedgeDatabaseOpens,
 } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
@@ -14155,12 +14155,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // Retire the connection, then make the factory's next open never answer:
     // storage is wedged for every call the send makes.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "sent while storage is wedged");
@@ -14295,12 +14290,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // Retire the connection, then make the factory's next open never answer:
     // storage is wedged for every call the send makes.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "retried while storage is wedged");
@@ -14339,12 +14329,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     });
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "refused while storage is wedged");
@@ -14381,12 +14366,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // fail a reconciliation through it: its outbox read meets the same
     // never-answering open the send's capture will.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       void threadsStore
@@ -14556,12 +14536,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }));
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       // The send goes out first: its capture read parks on the wedge, and the
@@ -14627,12 +14602,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     });
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "refused while storage is wedged");
@@ -14662,12 +14632,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     });
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "stuck reconnecting while storage is wedged");
@@ -14699,12 +14664,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     });
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "failed twice while storage is wedged");
@@ -14743,12 +14703,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     });
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "reconnecting while storage is wedged");
@@ -14797,12 +14752,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }));
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "rewired while storage is wedged");
@@ -14847,12 +14797,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }));
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "replaced while storage is wedged");
@@ -14904,12 +14849,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
     // Storage wedges for B's enqueue.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const sendB = threadsStore.getState().send("ref_a", "B");
@@ -14998,12 +14938,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
     // Storage wedges; the send must still reach the daemon.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "after the stop");
@@ -15182,12 +15117,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }));
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "blocked");
@@ -15215,12 +15145,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const queue = threadsStore.getState().queue("ref_a", "queued while wedged");
@@ -15248,12 +15173,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const drain = threadsStore.getState().drainAsSteer("ref_a", "drain while wedged");
@@ -15280,12 +15200,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     await ensureActiveMutationTarget(fake, "ref_a");
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const promote = threadsStore
@@ -15347,12 +15262,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
     // Storage wedges; the next send must still take the fallback.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "B");
@@ -15457,12 +15367,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // Storage wedges; B is still undelivered, so C must fail closed rather
     // than reach the daemon ahead of it.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const sendC = threadsStore.getState().send("ref_a", "C");
@@ -15523,12 +15428,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // Storage wedges; the next send must fail closed rather than reach the
     // daemon ahead of A.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "B");
@@ -15575,12 +15475,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect((await probe.listOutbox("ref_a")).some((record) => record.method === "turn/queue")).toBe(true);
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "B");
@@ -15650,12 +15545,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
     // Storage wedges; the delivered row must not refuse the fallback.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "B");
@@ -15753,12 +15643,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // Every later read fails from here, so only the parked read's snapshot can
     // decide the guard - and it must not reinstate the row the change resolved.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "after the settle");
@@ -15813,12 +15698,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // Every later read fails from here, so only the parked read's snapshot can
     // decide the guard - and it must not reinstate the row the change resolved.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "after the stop");
@@ -15874,12 +15754,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // Storage wedges. Nothing undelivered is left, so the send must dispatch
     // rather than fail closed behind a row that never reached the daemon.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "after the stop");
@@ -15927,12 +15802,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
     // Storage wedges; the row's id must not refuse the fallback.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "after the discard");
@@ -15973,12 +15843,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
     // Storage wedges; the row the read seeded still refuses the fallback.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "after the reload");
@@ -16037,12 +15902,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // Storage wedges; with the id resolved by the settle, B may take the
     // fallback even though no read ever succeeded after the settle.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "B");
@@ -16099,12 +15959,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect(attempted).toBe(true);
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "after the reload");
@@ -16143,12 +15998,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }));
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const send = threadsStore.getState().send("ref_a", "hello");
@@ -16272,12 +16122,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
     // Retire the connection, then make the factory's next open never answer.
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const stop = threadsStore.getState().interrupt("ref_a");
@@ -16313,12 +16158,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a")));
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const clear = threadsStore.getState().clearThread("ref_a");
@@ -16349,12 +16189,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     fake.on("notes/human/set", (params) => ({ note: "a note", receipt: mutationReceipt(params.clientMutationId) }));
 
     storage.close();
-    const open = indexedDB.open.bind(indexedDB);
-    const openSpy = vi
-      .spyOn(indexedDB, "open")
-      .mockImplementation((name: string, version?: number) =>
-        name === databaseName ? neverSettlingRequest() : open(name, version),
-      );
+    const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       const save = threadsStore.getState().setHumanNote("ref_a", "a note");

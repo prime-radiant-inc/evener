@@ -292,11 +292,11 @@ func memoryPageSizeNote(size int, withSkill bool) string {
 // with the save tools, which no delegate has), use_skill is callable and the
 // skill is advertised to the model.
 func (s *Session) memoryGardeningSkillAvailable() bool {
-	if !s.memorySaveInstructionsEnabled() || !s.canInstructTool("use_skill") {
+	if !s.skillAvailableToSession(gardeningMemorySkillName) || !s.canInstructTool("use_skill") {
 		return false
 	}
 	for _, descriptor := range s.skills.ModelEntries() {
-		if descriptor.CatalogName == "gardening-memory" {
+		if descriptor.CatalogName == gardeningMemorySkillName {
 			return true
 		}
 	}

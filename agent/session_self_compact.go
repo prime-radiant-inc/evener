@@ -58,7 +58,7 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	// acceptance can reject a response that raced a note change.
 	_, capturedNoteGen := s.pinnedNoteSnapshot()
 
-	inventory := s.skillInventorySnapshot()
+	inventory := s.advertisedSkillInventory()
 	var raw string
 	var err error
 	if fn := s.elicitNoteFn; fn != nil {
@@ -193,7 +193,7 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	s.mu.Lock()
 	s.nudgedSinceCompact = true
 	s.mu.Unlock()
-	if err := s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context"), skillInventorySummaries(s.skillInventorySnapshot())), events.SteeringKindCompactNudge); err != nil {
+	if err := s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context"), skillInventorySummaries(s.advertisedSkillInventory())), events.SteeringKindCompactNudge); err != nil {
 		s.mu.Lock()
 		s.nudgedSinceCompact = false
 		s.mu.Unlock()
