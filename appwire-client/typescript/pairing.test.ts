@@ -1,3 +1,4 @@
+// @vitest-environment node
 import nacl from "tweetnacl";
 import { describe, expect, it } from "vitest";
 import {
@@ -7,6 +8,7 @@ import {
   invitationText,
   openPairingEnvelope,
   parseInvitation,
+  requestPairingClaim,
   toHex,
 } from "./pairing";
 
@@ -77,5 +79,76 @@ describe("device pairing invitations", () => {
     envelope[envelope.length - 1] = (envelope[envelope.length - 1] ?? 0) ^ 1;
     expect(() => openPairingEnvelope(claim, toHex(envelope))).toThrow();
     expect(claim.comparison).toMatch(/^[0-9a-f]{4}(?:-[0-9a-f]{4}){7}$/);
+  });
+});
+
+describe("pairing claim responses", () => {
+  const claim = createPairingClaim(invitation, new Uint8Array(32).fill(7));
+  it("reads a reply split across network chunks", async () => {
+    const reply = { state: "pending", comparison: claim.comparison };
+    const bytes = new TextEncoder().encode(JSON.stringify(reply));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, 11));
+        controller.enqueue(bytes.slice(11));
+        controller.close();
+      },
+    });
+    expect(
+      await requestPairingClaim(claim, "mobile", new AbortController().signal, async () => new Response(stream)),
+    ).toEqual(reply);
+  });
+  it("cancels an oversized stream before consuming the rest", async () => {
+    let reads = 0,
+      cancelled = false;
+    let transportSignal: AbortSignal | null | undefined;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          reads++;
+          controller.enqueue(new Uint8Array(1024).fill(32));
+          if (reads === 100) controller.close();
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    await expect(
+      requestPairingClaim(claim, "mobile", new AbortController().signal, async (_url, init) => {
+        transportSignal = init?.signal;
+        return new Response(stream);
+      }),
+    ).rejects.toThrow();
+    expect(cancelled).toBe(true);
+    expect(reads).toBe(5);
+    expect(transportSignal?.aborted).toBe(true);
+  });
+  it("cancels an unsuccessful response without reading its body", async () => {
+    let reads = 0,
+      cancelled = false;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          reads++;
+          controller.enqueue(new Uint8Array(1024));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    await expect(
+      requestPairingClaim(
+        claim,
+        "mobile",
+        new AbortController().signal,
+        async () => new Response(stream, { status: 429 }),
+      ),
+    ).rejects.toThrow();
+    expect(cancelled).toBe(true);
+    expect(reads).toBe(0);
   });
 });

@@ -160,35 +160,64 @@ export async function requestPairingClaim(
   signal: AbortSignal,
   fetcher: typeof fetch = fetch,
 ): Promise<PairingReply> {
-  const response = await fetcher(`${claim.invitation.origin}/api/device-pairing`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    redirect: "error",
-    credentials: "omit",
-    signal,
-    body: JSON.stringify({ invitation: claim.invitation.invitation, publicKey: claim.publicKey, client }),
-  });
-  if (!response.ok)
-    throw new Error(
-      response.status === 429
-        ? "Too many devices tried this invitation. Create a new one."
-        : "Could not reach the pairing service. Retrying…",
-    );
-  const raw = await response.text();
-  if (raw.length > 4096) throw new Error("Invalid pairing response.");
-  const result: unknown = JSON.parse(raw);
-  if (
-    !result ||
-    typeof result !== "object" ||
-    !("state" in result) ||
-    !["pending", "approved", "rejected", "expired"].includes(String(result.state))
-  )
-    throw new Error("Invalid pairing response.");
-  const reply = result as PairingReply;
-  if ((reply.state === "approved" || reply.state === "pending") && reply.comparison !== claim.comparison)
-    throw new Error("The pairing code did not match. Start pairing again.");
-  if (reply.state === "approved" && typeof reply.envelope !== "string") throw new Error("Missing pairing approval.");
-  return reply;
+  const request = new AbortController();
+  const abort = () => request.abort(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
+  try {
+    const response = await fetcher(`${claim.invitation.origin}/api/device-pairing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      redirect: "error",
+      credentials: "omit",
+      signal: request.signal,
+      body: JSON.stringify({ invitation: claim.invitation.invitation, publicKey: claim.publicKey, client }),
+    });
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => {});
+      throw new Error(
+        response.status === 429
+          ? "Too many devices tried this invitation. Create a new one."
+          : "Could not reach the pairing service. Retrying…",
+      );
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Invalid pairing response.");
+    const bytes = new Uint8Array(4096);
+    let length = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (length + value.byteLength > bytes.length) throw new Error("Invalid pairing response.");
+        bytes.set(value, length);
+        length += value.byteLength;
+      }
+    } catch (error) {
+      void reader.cancel().catch(() => {});
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+    const raw = new TextDecoder().decode(bytes.subarray(0, length));
+    const result: unknown = JSON.parse(raw);
+    if (
+      !result ||
+      typeof result !== "object" ||
+      !("state" in result) ||
+      !["pending", "approved", "rejected", "expired"].includes(String(result.state))
+    )
+      throw new Error("Invalid pairing response.");
+    const reply = result as PairingReply;
+    if ((reply.state === "approved" || reply.state === "pending") && reply.comparison !== claim.comparison)
+      throw new Error("The pairing code did not match. Start pairing again.");
+    if (reply.state === "approved" && typeof reply.envelope !== "string") throw new Error("Missing pairing approval.");
+    return reply;
+  } finally {
+    // Cancel the native transport too: cancelling a stream may only stop its JS events.
+    request.abort();
+    signal.removeEventListener("abort", abort);
+  }
 }
 
 export const MAX_TRANSFER_BYTES = 1152;

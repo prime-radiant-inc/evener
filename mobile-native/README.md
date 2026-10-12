@@ -289,8 +289,9 @@ evidence.
 
 In the Hub Web UI, open **Settings → Mobile app → Pair a device** and create an
 invitation. **Scan pairing code** in the native app reads its QR and displays a
-six-digit code. Compare that code with the claim shown in the Web UI and approve
-it there. The app then opens its existing name/review step; **Connect** commits
+fingerprint in eight groups of four hexadecimal digits. Compare every group
+with the claim shown in the Web UI and approve it there. The app then opens its
+existing name/review step; **Connect** commits
 the Hub to secure storage. Scanning a second code cannot replace a pending
 invitation. Cancellation, backgrounding and navigation stop polling, and late
 responses cannot select or save a Hub. Foregrounding resumes with the same key.

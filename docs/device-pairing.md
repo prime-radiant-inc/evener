@@ -86,8 +86,9 @@ Content-Type: application/json
 {"invitation":"<48 lowercase hex>","publicKey":"<64 lowercase hex>","client":"My device"}
 ```
 
-This route accepts at most 1024 request bytes, rejects unknown fields or trailing
-JSON, requires JSON content type, rejects browser Origin headers, allows only
+This route accepts at most 1024 request bytes within five seconds. An unfinished
+body times out with HTTP 408 and closes the connection. It rejects unknown fields
+or trailing JSON, requires JSON content type, rejects browser Origin headers, allows only
 POST, and does not enable CORS. It is excluded from optional inbound request
 recording so invitation capabilities cannot enter HTTP recordings. Other Hub
 routes retain their authentication guard.
@@ -107,7 +108,8 @@ clients can retry an already registered key even at capacity. Repeated claims
 with the same key recover the same comparison and, after approval, the exact
 same ciphertext until expiry. Reading the result does not consume it: a lost
 HTTP reply must not strand an approved client. Responses use `Cache-Control:
-no-store`. Devices poll no faster than once per second and bound request time;
+no-store`. Devices accept at most 4096 response bytes, cancel oversized replies
+while reading, poll no faster than once per second, and bound request time;
 network failures preserve the pending key for retry. Cancellation stops polling
 and clears the ephemeral key; it never deletes a saved Hub or draft.
 

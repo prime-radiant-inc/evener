@@ -1,11 +1,15 @@
 package hub
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +21,54 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
+
+func TestDevicePairingIncompleteBodyTimesOut(t *testing.T) {
+	requestBody := `{"invitation":"` + strings.Repeat("01", 24) + `","publicKey":"9bd266e486eedd293ba03546df3a37b7666c2cc62e5d5063944d50eea04cb749","client":"mobile"}`
+	for _, tc := range []struct{ name, body string }{{"partial JSON", `{"invitation":`}, {"missing body EOF", requestBody}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			web := NewWebServer(hubcore.WebConfig{AuthToken: "synthetic-credential"})
+			server := httptest.NewServer(web.Handler())
+			defer server.Close()
+			conn, err := net.Dial("tcp", server.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			// Leave the declared body unfinished, including after a complete JSON value.
+			if _, err := fmt.Fprintf(conn, "POST /api/device-pairing HTTP/1.1\r\nHost: hub\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(tc.body)+1, tc.body); err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusRequestTimeout || !response.Close {
+				t.Fatalf("incomplete request: status=%d close=%t", response.StatusCode, response.Close)
+			}
+			if _, err := io.Copy(io.Discard, response.Body); err != nil {
+				t.Fatal(err)
+			}
+			// A timed-out sender must not strand subsequent pairing requests.
+			retry, err := server.Client().Post(server.URL+"/api/device-pairing", "application/json", strings.NewReader(requestBody))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer retry.Body.Close()
+			var reply appwire.DevicePairingClaimResponse
+			if err := json.NewDecoder(retry.Body).Decode(&reply); err != nil {
+				t.Fatal(err)
+			}
+			if retry.StatusCode != http.StatusOK || reply.State != "expired" {
+				t.Fatalf("retry: status=%d reply=%+v", retry.StatusCode, reply)
+			}
+		})
+	}
+}
 
 func pairingRPC[T any](t *testing.T, web *WebServer, method string, params any) (T, error) {
 	t.Helper()
