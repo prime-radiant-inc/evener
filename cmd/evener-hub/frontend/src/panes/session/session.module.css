@@ -46,8 +46,9 @@
   min-width: 0;
 }
 
-/* Projected intent-only actions use the same quiet disclosure treatment on
- * every TranscriptBody surface, including read-only and preview. */
+/* Projected intent-only actions fold under the same rule Disclosure (a caption
+ * centred between hairlines) on every TranscriptBody surface, including
+ * read-only and preview. */
 .intentGroup {
   width: 100%;
   /* A trailing or cross-turn intent run is promoted to its own virtual-list
@@ -67,14 +68,13 @@
   gap: 0;
 }
 
-/* Above the breakpoint the group takes the same --speaker-gutter padding
- * .runContent gives regular tool-call rows (turnblock.module.css), so its
- * Disclosure summary starts in the content column like every other folded
- * row, and each item's .rowIcon (margin-left: calc(-1 * var(--speaker-gutter)))
- * pulls back into the gutter rather than out of the container. The row box
- * itself still spans the turn's column. */
+/* Above the breakpoint the group's members take the same --speaker-gutter
+ * padding .runContent gives regular tool-call rows (turnblock.module.css), so
+ * each item's .rowIcon (margin-left: calc(-1 * var(--speaker-gutter))) pulls
+ * back into the gutter rather than out of the container. The summary's rule
+ * is not indented: it spans the turn's whole column. */
 @media (min-width: 700px) {
-  .intentGroup {
+  .intentGroupItems {
     padding-left: var(--speaker-gutter);
   }
 }

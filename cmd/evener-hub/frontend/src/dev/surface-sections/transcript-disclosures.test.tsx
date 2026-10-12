@@ -19,17 +19,19 @@ test("renders every folded transcript row, collapsed and expanded, in both theme
   expect(screen.getAllByTestId("system-notice-group")).toHaveLength(4);
 });
 
-test("every folded transcript row is a quiet Disclosure", () => {
+test("every folded transcript row is a quiet Disclosure, and every intent group a rule one", () => {
   const { container } = render(<TranscriptDisclosuresSurfaceSection />);
+  const intentGroups = screen.getAllByTestId("intent-group");
+  expect(intentGroups).toHaveLength(4);
+  for (const group of intentGroups) expect(group.getAttribute("data-variant")).toBe("rule");
   const rows = [
-    ...screen.getAllByTestId("intent-group"),
     ...screen.getAllByTestId("steering-item"),
     ...screen.getAllByTestId("system-notice-scaffold"),
     ...screen.getAllByTestId("system-notice-group"),
     ...screen.getAllByTestId("think-block").map((block) => block.querySelector("details")),
     ...screen.getAllByTestId("notification-card").map((card) => card.querySelector("details")),
   ];
-  expect(rows.length).toBe(28);
+  expect(rows.length).toBe(24);
   for (const row of rows) expect(row?.getAttribute("data-variant")).toBe("quiet");
   // Nested disclosures (the raw notification payload) are not transcript rows.
   expect(container.querySelectorAll('details[data-variant="default"]')).toHaveLength(0);
