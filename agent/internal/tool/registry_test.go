@@ -296,7 +296,7 @@ func TestToolRegistry_DefinitionsOrderIsStable(t *testing.T) {
 	// Ranging a map re-randomizes per call. Five calls is enough: a single
 	// unsorted call already fails with probability 719/720, so five passes
 	// would need (1/720)^5 by chance.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		got := make([]string, 0, len(want))
 		for _, d := range r.Definitions() {
 			got = append(got, d.Name)

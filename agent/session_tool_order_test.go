@@ -36,7 +36,7 @@ func TestSessionToolDefinitionsStayOrderedAcrossRebuilds(t *testing.T) {
 	first := toolNamesFromDefinitions(s.cachedToolDefs)
 	// Each rebuild re-ranges the registry map, so five comparisons make an
 	// accidental match between two random orders negligible.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		s.rebuildToolDefsCache()
 		if got := toolNamesFromDefinitions(s.cachedToolDefs); !slices.Equal(got, first) {
 			t.Fatalf("rebuild %d advertised a different tool order:\nfirst = %v\n  got = %v", i, first, got)
