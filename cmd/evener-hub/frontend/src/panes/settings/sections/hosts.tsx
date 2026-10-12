@@ -339,10 +339,7 @@ export function HostsSection(_props: HostsSectionProps) {
           </Button>
         }
       >
-        {/* friendlyErrorMessage, not the raw store error - see general.tsx's
-            matching comment for why (stores/hosts.ts stores errorText(err)
-            as-is too). */}
-        {friendlyErrorMessage(load.message)}
+        {load.message}
       </InlineNotice>
     );
   }

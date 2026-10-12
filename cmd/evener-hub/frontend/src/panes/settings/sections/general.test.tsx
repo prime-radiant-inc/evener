@@ -1,4 +1,4 @@
-import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage, type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
@@ -127,6 +127,22 @@ test("shows an inline error state with retry on load failure, not a toast", asyn
   expect(within(loadFailureNotice()).getByRole("button", { name: "Retry" })).toBeTruthy();
   expect(screen.queryByTestId("empty-state")).toBeNull();
   expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
+});
+
+// A hub-reported failure keeps its own explanation: the store translates the
+// error while it is still a WireError, so the notice is not reduced to the
+// generic fallback.
+test("a hub-reported WireError shows that error's friendly form", async () => {
+  const fake = connectFakeClient();
+  const err = new WireError("overview index is rebuilding", -32000);
+  fake.on("evener/settings/overview", () => {
+    throw err;
+  });
+
+  render(<GeneralSection />);
+
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(loadFailureNotice().textContent).toContain(friendlyErrorMessage(err));
 });
 
 // The verbatim bug report (user testing): this section showed "AppwireClient:

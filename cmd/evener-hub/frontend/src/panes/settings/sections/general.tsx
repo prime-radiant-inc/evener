@@ -1,4 +1,3 @@
-import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, InlineNotice, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
@@ -50,11 +49,7 @@ export function GeneralSection() {
           </Button>
         }
       >
-        {/* friendlyErrorMessage, not the raw store error: settingsOverview.ts
-            stores errorText(err) as-is, which is AppwireClient's own message
-            verbatim for a client-unreachable rejection - internal wiring
-            detail, never something to show here. */}
-        {friendlyErrorMessage(error)}
+        {error}
       </InlineNotice>
     );
   }

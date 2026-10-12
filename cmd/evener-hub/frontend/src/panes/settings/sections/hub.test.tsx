@@ -1,4 +1,4 @@
-import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage, type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -99,5 +99,19 @@ describe("on load failure", () => {
 
     expect(await screen.findByText("127.0.0.1:9180")).toBeTruthy();
     await waitFor(() => expect(fake.calls).toHaveLength(3));
+  });
+
+  test("a hub-reported WireError shows that error's friendly form", async () => {
+    const fake = connectFakeClient();
+    const err = new WireError("overview index is rebuilding", -32000);
+    fake.on("evener/settings/overview", () => {
+      throw err;
+    });
+
+    render(<HubSection />);
+
+    await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+    const notice = document.querySelector('[role="status"][data-reason="unavailable"]');
+    expect(notice?.textContent).toContain(friendlyErrorMessage(err));
   });
 });
