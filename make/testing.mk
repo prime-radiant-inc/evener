@@ -32,9 +32,7 @@ test-web: web-preflight build-dev
 ##   `browserguard` tag) that jsdom cannot evaluate.
 ## proves: Headless Chrome evaluates real CSS geometry, the real Session
 ##   reducer/tree, the real Spawn staging/breakpoint path, the real transcript
-##   scroll/jump-to-latest path, session-cache deletion healing, clear-epoch
-##   suppression and envelope filtering across two real tabs with native
-##   BroadcastChannel and IndexedDB, and the real selected-thread recovery contract
+##   scroll/jump-to-latest path, and the real selected-thread recovery contract
 ##   when its daemon retires and is replaced; the skill guard additionally
 ##   drives the production composer through a REAL hub and two REAL
 ##   `evener serve` daemons with only the LLM provider scripted.
