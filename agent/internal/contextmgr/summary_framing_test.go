@@ -5,78 +5,6 @@ import (
 	"testing"
 )
 
-// The stripper takes the framing off only where it frames: a line's start, a
-// line's end, or a line that holds nothing else.
-func TestStripSummaryFraming(t *testing.T) {
-	for name, tc := range map[string]struct{ in, want string }{
-		"empty":               {"", ""},
-		"whitespace":          {" \n\t", ""},
-		"framing alone":       {summaryMarkerStart + "\n" + summaryMarkerEnd, ""},
-		"markers on a line":   {"## Progress\n" + summaryMarkerEnd + summaryMarkerStart, "## Progress"},
-		"marker line alone":   {"## Progress\n" + summaryMarkerEnd + "\nFixed the auth bug.", "## Progress\nFixed the auth bug."},
-		"no framing":          {"## Progress\nFixed the auth bug.", "## Progress\nFixed the auth bug."},
-		"framed reply":        {summaryMarkerStart + "\n## Progress\nFixed it.\n" + summaryMarkerEnd, "## Progress\nFixed it."},
-		"marker then text":    {summaryMarkerStart + " ## Progress\nFixed it.", "## Progress\nFixed it."},
-		"text then marker":    {"## Progress: " + summaryMarkerEnd, "## Progress:"},
-		"framing both ends":   {summaryMarkerStart + " ## Progress: " + summaryMarkerEnd, "## Progress:"},
-		"framing no colon":    {summaryMarkerStart + " ## Progress " + summaryMarkerEnd, "## Progress"},
-		"framing repeated":    {summaryMarkerStart + summaryMarkerStart + " ## Progress", "## Progress"},
-		"framing alternating": {summaryMarkerEnd + summaryMarkerStart + " ## Progress", "## Progress"},
-		"repeated suffix":     {summaryMarkerStart + " ## Progress " + summaryMarkerEnd + summaryMarkerEnd, "## Progress"},
-
-		"indented delimiter":  {"## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~", "## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~"},
-		"marker in a line":    {"See the framing " + summaryMarkerEnd + " for the format.", "See the framing " + summaryMarkerEnd + " for the format."},
-		"named in prose":      {"## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing.", "## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing."},
-		"prose after heading": {"## Critical Context: The closing delimiter is " + summaryMarkerEnd, "## Critical Context: The closing delimiter is " + summaryMarkerEnd},
-		"prose then marker":   {"## Progress\n- Renamed " + summaryMarkerStart, "## Progress\n- Renamed " + summaryMarkerStart},
-		"marker then prose":   {summaryMarkerStart + " is the framing we write.", summaryMarkerStart + " is the framing we write."},
-		"indented marker":     {"## Progress\n    " + summaryMarkerEnd + "\nFixed it.", "## Progress\n    " + summaryMarkerEnd + "\nFixed it."},
-		"tabbed marker":       {"## Progress\n \t" + summaryMarkerEnd + "\nFixed it.", "## Progress\n \t" + summaryMarkerEnd + "\nFixed it."},
-		"indented block":      {"    ~~~\n    example\n    ~~~\n\n## Progress\nSTATE", "    ~~~\n    example\n    ~~~\n\n## Progress\nSTATE"},
-		"quoted in a fence":   {"## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```", "## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```"},
-		"framing and blanks":  {summaryMarkerStart + "\n\n## Progress\nFixed it.\n\n" + summaryMarkerEnd, "\n## Progress\nFixed it."},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := stripSummaryFraming(tc.in); got != tc.want {
-				t.Fatalf("stripSummaryFraming(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-// A reply that echoes the framing is stored with the framing once: the turn's
-// own wrap writes it, and the reply's copy is stripped before the reply is
-// validated and stored. A substring assertion would not see the difference
-// between one wrap and two, so this counts the markers.
-func TestSummarizeWithLLM_EchoedFramingIsStoredOnce(t *testing.T) {
-	reply := summaryMarkerStart + "\n## Progress\nFixed the auth bug.\n" + summaryMarkerEnd
-	result, err := summarizeReplying(t, reply, "")
-	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
-	}
-	stored := result[0].Message.Text()
-	starts, ends := strings.Count(stored, summaryMarkerStart), strings.Count(stored, summaryMarkerEnd)
-	if starts != 1 || ends != 1 {
-		t.Fatalf("stored summary holds %d start markers and %d end markers, want one of each:\n%s", starts, ends, stored)
-	}
-	if !strings.Contains(stored, "Fixed the auth bug.") {
-		t.Fatalf("the echoed framing took the summary's own text with it:\n%s", stored)
-	}
-}
-
-// A framing marker sharing a line with a real heading does not hide it: the
-// marker is stripped and the heading is read as a section.
-func TestSummarizeWithLLM_ReadsAHeadingBehindAnEchoedMarker(t *testing.T) {
-	result, err := summarizeReplying(t, summaryMarkerStart+" ## Progress\nFixed the auth bug.", "")
-	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
-	}
-	stored := result[0].Message.Text()
-	if !strings.Contains(stored, "## Progress\nFixed the auth bug.") {
-		t.Fatalf("the heading behind the echoed marker was not read as the summary's own:\n%s", stored)
-	}
-}
-
 // A line of bare markers is framing, not content: counting it as content would
 // store an empty summary as the only record of the folded history.
 func TestSummarizeWithLLM_RejectsALineOfBareMarkers(t *testing.T) {
@@ -86,55 +14,61 @@ func TestSummarizeWithLLM_RejectsALineOfBareMarkers(t *testing.T) {
 	}
 }
 
-// The framing is stripped only where it frames. A summary that names the
-// markers — a session summarizing its own work on them — keeps every word.
-func TestSummarizeWithLLM_KeepsTheMarkersAReplyNames(t *testing.T) {
-	named := "Added constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing."
-	result, err := summarizeReplying(t, "## Progress\n"+named, "")
-	if err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
-	}
-	if stored := result[0].Message.Text(); !strings.Contains(stored, named) {
-		t.Fatalf("the stripped reply lost the markers it names:\n%s", stored)
-	}
-}
-
-// A fenced quote of the framing keeps its text (it is the model's content, not
-// framing) and does not count as the summary's content either: a reply whose
-// only body is a quoted marker has not summarized anything.
-func TestSummarizeWithLLM_RejectsAFenceHoldingOnlyAMarker(t *testing.T) {
-	reply := "## Progress\n```\n" + summaryMarkerEnd + "\n```"
-	if result, err := summarizeReplying(t, reply, ""); err == nil {
-		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
-	}
-}
-
-// A marker beside a heading is not content whichever end of the heading's line
-// it sits on: a reply of framing alone has not summarized anything.
-func TestSummarizeWithLLM_RejectsAMarkerBesideAHeadingWithNoContent(t *testing.T) {
-	reply := summaryMarkerStart + " ## Progress: " + summaryMarkerEnd
-	if result, err := summarizeReplying(t, reply, ""); err == nil {
-		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
-	}
-}
-
-// The markers an echoing model wraps a heading's line in can sit at either end
-// and repeat: the heading behind them is still the summary's own, and the
-// content under it counts.
-func TestSummarizeWithLLM_ReadsAHeadingBehindMarkersAtBothEnds(t *testing.T) {
+// A model sometimes echoes the framing around its own heading. The check reads
+// through a run of markers at the line's start, whichever markers they are, so
+// the heading still counts and the content under it stands.
+func TestSummarizeWithLLM_ReadsAHeadingBehindAnEchoedMarker(t *testing.T) {
 	for name, reply := range map[string]string{
-		"both ends":        summaryMarkerStart + " ## Progress " + summaryMarkerEnd + "\nFixed the auth bug.",
-		"repeated marker":  summaryMarkerStart + summaryMarkerStart + " ## Progress\nFixed the auth bug.",
-		"repeated suffix":  summaryMarkerStart + " ## Progress " + summaryMarkerEnd + summaryMarkerEnd + "\nFixed the auth bug.",
-		"alternating ends": summaryMarkerEnd + summaryMarkerStart + " ## Progress\nFixed the auth bug.",
+		"one marker":        summaryMarkerStart + " ## Progress\nFixed the auth bug.",
+		"repeated marker":   summaryMarkerStart + summaryMarkerStart + " ## Progress\nFixed the auth bug.",
+		"alternating ends":  summaryMarkerEnd + summaryMarkerStart + " ## Progress\nFixed the auth bug.",
+		"marker at the end": summaryMarkerStart + " ## Progress " + summaryMarkerEnd + "\nFixed the auth bug.",
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
 			if err != nil {
 				t.Fatalf("summarizeWithLLM: %v", err)
 			}
-			if stored := result[0].Message.Text(); !strings.Contains(stored, "## Progress\nFixed the auth bug.") {
+			if stored := result[0].Message.Text(); !strings.Contains(stored, "Fixed the auth bug.") {
 				t.Fatalf("the heading behind the echoed markers was not read as the summary's own:\n%s", stored)
+			}
+		})
+	}
+}
+
+// A reply whose only body is framing has summarized nothing, whether the markers
+// sit on their own line, beside a heading, or inside a fenced quote.
+func TestSummarizeWithLLM_RejectsFramingWithNoContent(t *testing.T) {
+	for name, reply := range map[string]string{
+		"markers alone":    summaryMarkerStart + "\n" + summaryMarkerEnd,
+		"beside a heading": summaryMarkerStart + " ## Progress: " + summaryMarkerEnd,
+		"in a fence":       "## Progress\n```\n" + summaryMarkerEnd + "\n```",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if result, err := summarizeReplying(t, reply, ""); err == nil {
+				t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+			}
+		})
+	}
+}
+
+// The check reads the reply and edits nothing: a summary that names the markers,
+// or quotes the framing inside a fenced or indented block, is stored as the model
+// wrote it.
+func TestSummarizeWithLLM_StoresTheReplyAsWritten(t *testing.T) {
+	for name, reply := range map[string]string{
+		"named in prose":    "## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing.",
+		"quoted in a fence": "## Progress\n~~~\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n~~~",
+		"indented marker":   "## Progress\n    " + summaryMarkerEnd + "\nFixed the auth bug.",
+		"list-item fence":   "## Progress\nSTATE\n- ~~~text\n  " + summaryMarkerEnd + "\n  ~~~",
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := summarizeReplying(t, reply, "")
+			if err != nil {
+				t.Fatalf("summarizeWithLLM: %v", err)
+			}
+			if stored := result[0].Message.Text(); !strings.Contains(stored, reply) {
+				t.Fatalf("the reply was not stored as written:\n%s", stored)
 			}
 		})
 	}
@@ -163,37 +97,9 @@ func TestSummarizeWithLLM_RejectsAnIndentedExample(t *testing.T) {
 	}
 }
 
-// The strip removes the framing and nothing else: whatever a reply says around
-// the markers is still there afterwards. Over-stripping — taking a marker that
-// was a line's own last word, or the tail of a heading's prose — shows up here
-// as text the strip did not have the right to remove.
-func TestStripSummaryFramingRemovesOnlyTheFraming(t *testing.T) {
-	withoutMarkers := func(text string) string {
-		text = strings.ReplaceAll(text, summaryMarkerStart, "")
-		text = strings.ReplaceAll(text, summaryMarkerEnd, "")
-		return strings.Join(strings.Fields(text), " ")
-	}
-	for name, reply := range map[string]string{
-		"named in prose":      "## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing.",
-		"prose then marker":   "## Progress\n- Renamed " + summaryMarkerStart,
-		"marker then prose":   summaryMarkerStart + " is the framing we write.",
-		"prose after heading": "## Critical Context: The closing delimiter is " + summaryMarkerEnd,
-		"framed reply":        summaryMarkerStart + "\n## Progress\nFixed it.\n" + summaryMarkerEnd,
-		"indented marker":     "## Progress\n    " + summaryMarkerEnd + "\nFixed it.",
-		"quoted in a fence":   "## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```",
-	} {
-		t.Run(name, func(t *testing.T) {
-			got := stripSummaryFraming(reply)
-			if withoutMarkers(got) != withoutMarkers(reply) {
-				t.Fatalf("stripSummaryFraming(%q) = %q, which lost text the framing did not own", reply, got)
-			}
-		})
-	}
-}
-
 // A fenced quote of the framing is the model's content, even when the block's
 // own delimiter is indented by four spaces: Markdown reads that as code inside
-// the block, not as a delimiter, so the quote's marker lines are not framing.
+// the block, not as a delimiter, so the block stays open and the quote stays.
 func TestSummarizeWithLLM_KeepsAFencedQuoteWithAnIndentedDelimiter(t *testing.T) {
 	quoted := "## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~\nFixed the auth bug."
 	result, err := summarizeReplying(t, quoted, "")
@@ -202,5 +108,20 @@ func TestSummarizeWithLLM_KeepsAFencedQuoteWithAnIndentedDelimiter(t *testing.T)
 	}
 	if stored := result[0].Message.Text(); !strings.Contains(stored, summaryMarkerEnd+"\n~~~") {
 		t.Fatalf("the summary lost the framing it quoted:\n%s", stored)
+	}
+}
+
+// The same Markdown rule decides where a block ends, so the section after such a
+// block is read as a section and not as text inside it: reading the lines
+// trimmed would close the block at the indented delimiter, reopen it at the real
+// one, and swallow the heading.
+func TestSummarizeWithLLM_ReadsASectionAfterAnIndentedDelimiter(t *testing.T) {
+	reply := "~~~\n    ~~~\n~~~\n\n## Progress\nFixed the auth bug."
+	result, err := summarizeReplying(t, reply, "")
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+	if stored := result[0].Message.Text(); !strings.Contains(stored, "## Progress\nFixed the auth bug.") {
+		t.Fatalf("the section after the block was not read:\n%s", stored)
 	}
 }

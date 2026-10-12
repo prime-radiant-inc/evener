@@ -97,40 +97,29 @@ const (
 // summaryTurnStart opens a summary turn.
 const summaryTurnStart = summaryMarkerStart + "\n"
 
-// stripSummaryFraming removes the framing a model sometimes echoes back around
-// its summary, and nothing else. A line holding nothing but markers is framing
-// and is dropped. A marker at a line's edge comes off when the rest of that line
-// is a section heading, so an echoed marker cannot hide the heading the model
-// wrote beside it. Anywhere else the markers are the model's own words — prose
-// that names them, a fenced quote, an indented block, a heading the summary's
-// own sections do not name — and stay, as does every line the framing did not
-// touch. A line the framing touched is written trimmed; the reply's own leading
-// whitespace is never touched, because Markdown reads it as indentation.
-func stripSummaryFraming(reply string) string {
-	if !strings.Contains(reply, summaryMarkerStart) && !strings.Contains(reply, summaryMarkerEnd) {
-		return strings.TrimRight(reply, " \t\r\n") // no framing to strip: the copy below would be a no-op
-	}
-	var b strings.Builder
-	var fence fenceTracker
-	for line := range strings.Lines(reply) {
+// withoutEdgeFraming returns line without any framing markers at its edges, in
+// however many copies they sit there, so a section heading a model wrapped in
+// the framing it was shown is still read as one. It reads through the markers
+// and nothing else: the reply is stored as the model wrote it, and a marker
+// inside a line's own text stays part of that text.
+func withoutEdgeFraming(line string) string {
+	for {
 		trimmed := strings.TrimSpace(line)
-		// The tracker reads the line as written: its own rule is that a delimiter
-		// indented by four spaces is code inside the block, not a delimiter.
-		if fence.step(line) || fence.inside() || indentedCode(line) {
-			b.WriteString(line)
-			continue
+		rest, found := strings.CutPrefix(trimmed, summaryMarkerStart)
+		if !found {
+			rest, found = strings.CutPrefix(trimmed, summaryMarkerEnd)
 		}
-		if markerOnly(trimmed) {
-			continue
+		if !found {
+			rest, found = strings.CutSuffix(trimmed, summaryMarkerEnd)
 		}
-		if heading, cut := framingBesideHeading(trimmed); cut {
-			b.WriteString(heading)
-			b.WriteString("\n")
-			continue
+		if !found {
+			rest, found = strings.CutSuffix(trimmed, summaryMarkerStart)
 		}
-		b.WriteString(line)
+		if !found {
+			return line
+		}
+		line = strings.TrimSpace(rest)
 	}
-	return strings.TrimRight(b.String(), " \t\r\n")
 }
 
 // markerOnly reports whether a trimmed line holds at least one framing marker
@@ -159,50 +148,6 @@ func indentedCode(line string) bool {
 		}
 	}
 	return false // the line is whitespace only
-}
-
-// framingBesideHeading takes the framing markers off a line's edges, in however
-// many copies sit there, and reports whether what is left is a section heading:
-// the heading a model wrote beside an echoed marker is the summary's own. A
-// marker at the start of a line cannot be part of a heading's text, so the whole
-// run there comes off once the rest of the line is a heading, inline prose
-// included. A marker at the end could be the tail of that prose, so the run
-// there comes off only when the heading it leaves holds nothing but its name. A
-// line the markers do not leave as a heading is that text's own word and is left
-// whole.
-func framingBesideHeading(line string) (rest string, cut bool) {
-	bare := line
-	for {
-		without, found := strings.CutPrefix(bare, summaryMarkerStart)
-		if !found {
-			without, found = strings.CutPrefix(bare, summaryMarkerEnd)
-		}
-		if !found {
-			break
-		}
-		bare, cut = strings.TrimSpace(without), true
-	}
-	trailing, run := strings.TrimSpace(bare), 0
-	for {
-		without, found := strings.CutSuffix(trailing, summaryMarkerEnd)
-		if !found {
-			without, found = strings.CutSuffix(trailing, summaryMarkerStart)
-		}
-		if !found {
-			break
-		}
-		trailing, run = strings.TrimSpace(without), run+1
-	}
-	if _, inline, ok := summarySectionHeading(trailing); run > 0 && ok && inline == "" {
-		bare, cut = trailing, true
-	}
-	if !cut {
-		return line, false
-	}
-	if _, _, ok := summarySectionHeading(bare); !ok {
-		return line, false
-	}
-	return bare, true
 }
 
 // summaryPointerLead begins the compaction pointer line a summary turn opens

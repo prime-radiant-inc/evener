@@ -2012,6 +2012,8 @@ func checkSummaryReply(reply, instructions string) error {
 	// content there alone carries none of the folded work: a reply that is
 	// only "## Permissions and Holds\nNone." is no summary.
 	// A heading inside a fenced block is quoted text, not a section.
+	// This reads the reply as the model wrote it and edits nothing: the framing a
+	// model may echo back around its own text stays in the stored turn.
 	inSection := false
 	var fence fenceTracker
 	// The lines are read as written: the reply's own indentation is Markdown's,
@@ -2023,18 +2025,20 @@ func checkSummaryReply(reply, instructions string) error {
 		if fence.step(raw) {
 			continue
 		}
-		// An indented line is code: it is content under a section, never one.
-		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() && !indentedCode(raw) {
+		// A model sometimes echoes the framing around its own heading. Read through
+		// the markers at the line's edges so the heading still counts; a marker
+		// inside the line's own text is that text. An indented line is code: it is
+		// content under a section, never one.
+		if section, rest, ok := summarySectionHeading(withoutEdgeFraming(line)); ok && !fence.inside() && !indentedCode(raw) {
 			inSection = !strings.EqualFold(section, permissionsSection)
-			if inSection && rest != "" && !markerOnly(rest) {
+			if inSection && rest != "" {
 				return nil
 			}
 			continue
 		}
-		// A line of framing markers is not content either: the stripper drops
-		// such a line outside a fence (stripSummaryFraming), and one inside a
-		// fence is the model quoting the framing, which is no summary of the
-		// folded history.
+		// A line of framing markers is not content: quoting the framing is not
+		// summarizing the folded history, whether the markers sit on their own line
+		// or inside a fenced block.
 		if inSection && line != "" && !markerOnly(line) {
 			return nil
 		}
@@ -2401,17 +2405,13 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
 	sumProfile := cm.currentProfile()
-	// A model sometimes echoes the framing the prompt shows it: it is stripped
-	// before the reply is validated and stored, so the turn carries the framing
-	// once and the check reads what the model actually said.
-	var reply string
-	if _, err := cm.completeSummarization(ctx, sumProfile, prompt, func(r llm.Response) error {
-		reply = stripSummaryFraming(r.Text())
-		if err := checkSummaryReply(reply, instructions); err != nil {
+	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply llm.Response) error {
+		if err := checkSummaryReply(reply.Text(), instructions); err != nil {
 			return err
 		}
-		return checkNotCutOff(r)
-	}); err != nil {
+		return checkNotCutOff(reply)
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -2421,7 +2421,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// the reply or shedding partner messages below the cap the #4173 ruling
 	// chose for them.
 	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
-		renderCompactionModelText(summaryModelTextHeading, reply) + carry + summaryMarkerEnd
+		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryMarkerEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
