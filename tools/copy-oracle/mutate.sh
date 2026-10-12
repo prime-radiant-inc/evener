@@ -21,8 +21,8 @@
 # test command runs from the throwaway root: first unmutated, where it must
 # pass (BASELINE-FAIL otherwise), then mutated.
 #
-# Output: KILLED (a test assertion failed, good; the failing tests are listed
-# under it, exit 0), SURVIVED (tests passed: the conversion lost coverage,
+# Output: KILLED (a named test failed, its setup included; the failing tests
+# are listed under it, exit 0), SURVIVED (tests passed: the conversion lost coverage,
 # exit 1), NO-OP (the substitution matched nothing, exit 1), or BROKEN (the
 # mutated code did not build or no test ran, so it proves nothing; exit 3).
 # The full test log path is printed on SURVIVED and BROKEN, and kept for every
@@ -136,10 +136,12 @@ if run_tests "$@"; then
   echo "SURVIVED $file: $subst (log: $log)"
   exit 1
 fi
-# A failing run counts as KILLED only when a test assertion failed: a vitest
-# failed-test line (`×`, or `FAIL file > test`) or Go's `--- FAIL:`. A compile,
-# transform or setup error also fails the run, but no converted assertion ran,
-# so it proves nothing about coverage.
+# A failing run counts as KILLED only when a named test failed: a vitest
+# failed-test line (`×`, or `FAIL file > test`) or Go's `--- FAIL:`. That
+# includes a test whose own setup (beforeEach, a t.Cleanup) fails under the
+# mutation: the test fails, which is the guarantee a converted test owes. The
+# failing tests are listed so a reviewer can see which ones. A compile or
+# transform error fails the run before any named test, so it proves nothing.
 failed_tests=$(grep -E '^[[:space:]]*(×|--- FAIL:)|FAIL[[:space:]].* > ' "$log" || true)
 if [[ -z "$failed_tests" ]]; then
   echo "BROKEN  $file: $subst (the mutated code did not build or no test ran; log: $log)"
@@ -148,4 +150,4 @@ if [[ -z "$failed_tests" ]]; then
 fi
 echo "KILLED  $file: $subst"
 # Show which tests caught it.
-printf '%s\n' "$failed_tests" | sed 's/^/    /' | head -5
+printf '%s\n' "$failed_tests" | sed -n '1,5s/^/    /p'
