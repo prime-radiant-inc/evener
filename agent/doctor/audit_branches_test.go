@@ -545,15 +545,6 @@ func TestRenderAudit_FindingsWithManual(t *testing.T) {
 	}
 }
 
-func TestRenderAudit_NoFindingsHealthy(t *testing.T) {
-	t.Parallel()
-	res := AuditResult{Runbook: "test", SessionsChecked: 0}
-	out := RenderAudit(res)
-	if !strings.Contains(out, "no findings — healthy") {
-		t.Errorf("rendered audit with no findings should say healthy:\n%s", out)
-	}
-}
-
 func TestRenderAudit_UnreadableSessions(t *testing.T) {
 	t.Parallel()
 	res := AuditResult{

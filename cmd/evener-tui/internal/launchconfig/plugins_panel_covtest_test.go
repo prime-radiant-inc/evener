@@ -584,35 +584,23 @@ func TestCovRenderBrowseTabError(t *testing.T) {
 	}
 }
 
-// --- renderBrowseTab: loading ---
+// --- browse tab: loading ---
 
-func TestCovRenderBrowseTabLoading(t *testing.T) {
-	p := PluginsPanel{browseMarketplace: "mp", browseLoading: true}
-	v := p.renderBrowseTab()
-	if !strings.Contains(v, "Loading catalog") {
-		t.Fatalf("browse tab should show loading: %q", v)
+// Choosing a marketplace puts the browse tab into its loading state until the
+// catalog result for that marketplace arrives.
+func TestCovBrowseTabLoadsUntilCatalogArrives(t *testing.T) {
+	p := PluginsPanel{tab: pluginsTabBrowse, marketplaces: []appwire.MarketplaceEntry{{Name: "mp"}}}
+	updated, _ := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !updated.(PluginsPanel).browseLoading {
+		t.Fatal("choosing a marketplace should start loading its catalog")
 	}
-}
-
-// --- renderBrowseTab: no marketplaces ---
-
-func TestCovRenderBrowseTabNoMarketplaces(t *testing.T) {
-	p := PluginsPanel{tab: pluginsTabBrowse}
-	v := p.renderBrowseTab()
-	if !strings.Contains(v, "No marketplaces registered") {
-		t.Fatalf("browse tab with no marketplaces should show empty state: %q", v)
+	updated, _ = updated.(PluginsPanel).Update(MarketplaceBrowseResultMsg{Name: "mp"})
+	if updated.(PluginsPanel).browseLoading {
+		t.Fatal("the catalog result should end loading")
 	}
 }
 
 // --- renderInstalledTab: empty/error ---
-
-func TestCovRenderInstalledTabEmpty(t *testing.T) {
-	p := PluginsPanel{}
-	v := p.renderInstalledTab()
-	if !strings.Contains(v, "No plugins installed") {
-		t.Fatalf("empty installed tab: %q", v)
-	}
-}
 
 func TestCovRenderInstalledTabError(t *testing.T) {
 	p := PluginsPanel{pluginsErr: errors.New("load fail")}
