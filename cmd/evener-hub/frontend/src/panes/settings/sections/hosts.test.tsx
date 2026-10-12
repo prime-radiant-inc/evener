@@ -480,6 +480,26 @@ test("a server-side mid-attach row settles via the poll: in-progress -> failed r
   }
 });
 
+// The sheet opens with Connect focused. Pressing Enter right away disables it
+// while the attach runs; the keyboard must stay on a control inside the sheet
+// rather than resting on the disabled button (Chrome drops that to <body>).
+test("Enter on the sheet's initially focused Connect keeps focus inside the sheet", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/attach", () => new Promise(() => {}));
+  render(<HostsSection sectionId="hosts" />);
+  const sheet = await openHost("beta");
+  const connect = within(sheet).getByRole("button", { name: "Connect" });
+  await waitFor(() => expect(document.activeElement).toBe(connect));
+
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect((connect as HTMLButtonElement).disabled).toBe(true));
+  const active = document.activeElement as HTMLButtonElement | null;
+  expect(active !== null && sheet.contains(active)).toBe(true);
+  expect(active?.disabled).not.toBe(true);
+});
+
 // The list row and the sheet agree on the last attach error: a detached host
 // shows it in both, and an attached host - whose stale error no longer
 // explains anything - in neither.
