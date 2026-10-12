@@ -244,6 +244,7 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
         aria-readonly="true"
         tabIndex={-1}
         aria-label={`Press the new shortcut for ${title}. Enter saves, Escape cancels.`}
+        data-state={captured !== null ? "captured" : held.length > 0 ? "holding" : "idle"}
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
         onBlur={() => onCancel(false)}
@@ -399,7 +400,12 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
     );
 
   return (
-    <li className={CLASS.row}>
+    <li
+      className={CLASS.row}
+      data-action={actionId}
+      data-customized={customized || undefined}
+      data-unbound={binding === undefined || undefined}
+    >
       <span className={CLASS.label}>
         {title}
         {customized && <Chip>Customized</Chip>}
@@ -440,7 +446,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
         chordCell
       )}
       {conditionalEntries.length > 0 && (
-        <p className={CLASS.note}>
+        <p className={CLASS.note} data-testid="conditional-trigger-note">
           Also opens on{" "}
           {conditionalEntries.map((entry) =>
             entry.chord.map((press) => <KeyHint key={serializeChord([press])} keys={chordDisplayKeys(press)} />),
@@ -458,6 +464,19 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   );
 }
 
+/** Why the section is read-only, rendered as the status line's `data-reason`. */
+type ReadOnlyReason = "hub-unknown" | "unsupported" | "unsupported-overrides-retained" | "loading" | "load-failed";
+
+interface ReadOnlyStatus {
+  reason: ReadOnlyReason;
+  text: string;
+}
+
+const LOAD_FAILED_STATUS: ReadOnlyStatus = {
+  reason: "load-failed",
+  text: "Editing is unavailable until this hub's synced keybinding overrides load cleanly.",
+};
+
 export function KeybindingsSection() {
   const hubSupport = useKeybindingsStore((s) => s.hubSupport);
   const hubLoading = useKeybindingsStore((s) => s.hubLoading);
@@ -468,30 +487,39 @@ export function KeybindingsSection() {
   const characterKeyTriggers = usePrefsStore((s) => s.characterKeyTriggers);
   const editable = hubSupport === "supported" && hubError === null && !hubLoading && loaded;
 
-  let status: string | undefined;
+  let status: ReadOnlyStatus | undefined;
   if (hubSupport === "unknown") {
-    status = "Waiting for the hub connection to report keybindings support.";
+    status = { reason: "hub-unknown", text: "Waiting for the hub connection to report keybindings support." };
   } else if (hubSupport === "unsupported") {
     // Finding 35: after an un-apply ROLLBACK the hubError alert says the
     // old overrides are still in effect - the status must not contradict it
     // by claiming the built-in defaults.
     status =
       hubError === null
-        ? "This hub does not support synced keybinding overrides. The built-in defaults are in effect."
-        : "This hub does not support synced keybinding overrides. The previously synced overrides are still in effect; restoring the built-in defaults is retried on the next connection change.";
+        ? {
+            reason: "unsupported",
+            text: "This hub does not support synced keybinding overrides. The built-in defaults are in effect.",
+          }
+        : {
+            reason: "unsupported-overrides-retained",
+            text: "This hub does not support synced keybinding overrides. The previously synced overrides are still in effect; restoring the built-in defaults is retried on the next connection change.",
+          };
   } else if (hubLoading || !loaded) {
     // The stale-hub window: a client replacement reset the loaded state and
     // the new hub's refresh has not landed (or failed - the alert below
     // carries that message). Read-only until the overrides are current.
     status =
       hubError === null
-        ? "Loading this hub's synced keybinding overrides; the shortcuts shown are read-only until they arrive."
-        : "Editing is unavailable until this hub's synced keybinding overrides load cleanly.";
+        ? {
+            reason: "loading",
+            text: "Loading this hub's synced keybinding overrides; the shortcuts shown are read-only until they arrive.",
+          }
+        : LOAD_FAILED_STATUS;
   } else if (hubError !== null) {
     // A patch or re-refresh failed AFTER a successful load: the listing is
     // current, but editing waits for a clean reload (the alert carries the
     // failure itself).
-    status = "Editing is unavailable until this hub's synced keybinding overrides load cleanly.";
+    status = LOAD_FAILED_STATUS;
   }
 
   return (
@@ -519,8 +547,8 @@ export function KeybindingsSection() {
       </div>
 
       {status !== undefined && (
-        <p className={CLASS.status} role="status">
-          {status}
+        <p className={CLASS.status} role="status" data-reason={status.reason}>
+          {status.text}
         </p>
       )}
       {hubError !== null && (
@@ -554,7 +582,9 @@ export function KeybindingsSection() {
           </p>
           <ul className={CLASS.warningList}>
             {warnings.map((warning) => (
-              <li key={warning.message}>{warning.message}</li>
+              <li key={warning.message} data-reason={warning.reason}>
+                {warning.message}
+              </li>
             ))}
           </ul>
         </div>

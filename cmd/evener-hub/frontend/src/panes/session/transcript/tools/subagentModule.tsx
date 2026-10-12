@@ -240,10 +240,14 @@ function SubagentCard({
     stableUsage?.inputTokens !== undefined && stableUsage.outputTokens !== undefined
       ? formatUsagePair({ inputTokens: stableUsage.inputTokens, outputTokens: stableUsage.outputTokens })
       : null;
-  const statsSegments: string[] = [];
-  if (turnCount !== undefined) statsSegments.push(`${turnCount} ${turnCount === 1 ? "turn" : "turns"}`);
-  if (callCount !== undefined) statsSegments.push(`${callCount} ${callCount === 1 ? "call" : "calls"}`);
-  if (usage) statsSegments.push(usage);
+  const statsSegments: { key: "turns" | "calls" | "usage"; text: string }[] = [];
+  if (turnCount !== undefined) {
+    statsSegments.push({ key: "turns", text: `${turnCount} ${turnCount === 1 ? "turn" : "turns"}` });
+  }
+  if (callCount !== undefined) {
+    statsSegments.push({ key: "calls", text: `${callCount} ${callCount === 1 ? "call" : "calls"}` });
+  }
+  if (usage) statsSegments.push({ key: "usage", text: usage });
 
   const nowMs = useSessionNow();
   // Only the stable projection supplies a child's run window: the launch
@@ -265,7 +269,19 @@ function SubagentCard({
       {/* The card's FIRST line is the status line: the lifecycle word leads,
           and the turn/call counts and run clock ride WITH it on one line. The
           child's latest words (the quote) follow below, secondary. */}
-      <div className={CLASS.stats} data-testid="subagent-stats" data-status-line="delegate" data-kind={displayKind}>
+      {/* The line's numbers ride as data too (turns, calls, the clock's
+          milliseconds, the token pair), beside the words that show them. */}
+      <div
+        className={CLASS.stats}
+        data-testid="subagent-stats"
+        data-status-line="delegate"
+        data-kind={displayKind}
+        data-turns={turnCount}
+        data-calls={callCount}
+        data-clock-ms={clockMs}
+        data-input-tokens={usage ? stableUsage?.inputTokens : undefined}
+        data-output-tokens={usage ? stableUsage?.outputTokens : undefined}
+      >
         <span className={CLASS.statusGlyph} data-testid="subagent-status-glyph" aria-hidden="true">
           {STATUS_GLYPH[displayKind]}
         </span>
@@ -273,13 +289,17 @@ function SubagentCard({
         {/* Each segment rides behind the word, behind its own separator -
             never a dangling "·" advertising a segment that has no data. */}
         {statsSegments.map((segment) => (
-          <Fragment key={segment}>
+          <Fragment key={segment.key}>
             <span className={CLASS.statsSep}>·</span>
-            <span>{segment}</span>
+            <span data-segment={segment.key}>{segment.text}</span>
           </Fragment>
         ))}
         <span className={CLASS.statsSpring} />
-        {clockMs !== undefined && <span className={CLASS.clock}>{formatElapsed(clockMs)}</span>}
+        {clockMs !== undefined && (
+          <span className={CLASS.clock} data-segment="clock">
+            {formatElapsed(clockMs)}
+          </span>
+        )}
         <Tooltip label={open ? "Hide recent activity" : "Show recent activity"}>
           <IconButton
             label={open ? "Hide recent activity" : "Show recent activity"}
@@ -300,7 +320,13 @@ function SubagentCard({
           {quoteText}
         </em>
       ) : (
-        <span className={CLASS.quotesEmpty}>{model ? "No activity yet" : "Child activity unavailable"}</span>
+        <span
+          className={CLASS.quotesEmpty}
+          data-testid="subagent-quotes-empty"
+          data-reason={model ? "no-activity" : "unavailable"}
+        >
+          {model ? "No activity yet" : "Child activity unavailable"}
+        </span>
       )}
       {open && (
         <section
@@ -342,7 +368,13 @@ function SubagentCard({
               })}
             </ol>
           ) : (
-            <div className={CLASS.quotesEmpty}>{model ? "No activity yet" : "Activity unavailable"}</div>
+            <div
+              className={CLASS.quotesEmpty}
+              data-testid="subagent-quotes-empty"
+              data-reason={model ? "no-activity" : "unavailable"}
+            >
+              {model ? "No activity yet" : "Activity unavailable"}
+            </div>
           )}
           {row.receiptStatus !== undefined && (
             <div className={CLASS.mandate} data-testid="subagent-receipt">

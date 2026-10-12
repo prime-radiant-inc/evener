@@ -4,6 +4,7 @@ import { connectJobOutputPeer } from "@evener/appwire-client/testing/jobOutputPe
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { accessibleName } from "../../../accessibleNameTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
@@ -245,6 +246,7 @@ describe("ActivityRowDetail", () => {
 
     const showMore = document.querySelector("summary");
     if (!showMore) throw new Error("Missing show-more disclosure");
+    expect(accessibleName(showMore as HTMLElement).trim()).not.toBe("");
     await userEvent.click(showMore);
     expect(screen.getByText("Additional instructions: keep the report concise.")).toBeTruthy();
 

@@ -103,12 +103,12 @@ export function TranscriptDisplayCard({
           </div>
 
           {localOverride === undefined ? (
-            <p className={CLASS.scope}>
+            <p className={CLASS.scope} data-testid="transcript-display-scope" data-state="hub-default">
               No browser-local live override is set for this layout. This browser follows the hub default unless a live
               transcript choice is made.
             </p>
           ) : (
-            <p className={CLASS.scope}>
+            <p className={CLASS.scope} data-testid="transcript-display-scope" data-state="local-override">
               A browser-local live view is overriding this hub default ({contentSummary(localOverride.content)}).
               Changing this card does not replace that local choice.
             </p>
@@ -145,10 +145,10 @@ export function TranscriptDisplayCard({
               </div>
             </div>
             <div className={CLASS.inventory}>
-              <p className={CLASS.inventoryRow}>
+              <p className={CLASS.inventoryRow} data-inventory="shown" data-categories={inventory.visible.join(" ")}>
                 <strong>Shown:</strong> {categoryList(inventory.visible)}
               </p>
-              <p className={CLASS.inventoryRow}>
+              <p className={CLASS.inventoryRow} data-inventory="hidden" data-categories={inventory.hidden.join(" ")}>
                 <strong>Hidden:</strong> {categoryList(inventory.hidden)}
               </p>
             </div>

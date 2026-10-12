@@ -88,7 +88,9 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
     <section className={CLASS.section}>
       <ul aria-label="Marketplaces" className={CLASS.list}>
         {marketplaces.length === 0 ? (
-          <li className={CLASS.empty}>No marketplaces registered. Add one below.</li>
+          <li className={CLASS.empty} data-reason="empty">
+            No marketplaces registered. Add one below.
+          </li>
         ) : (
           marketplaces.map((m) => (
             <li key={m.name}>

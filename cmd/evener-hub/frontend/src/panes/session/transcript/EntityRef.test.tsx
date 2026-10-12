@@ -8,6 +8,7 @@ import {
 } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { accessibleName } from "../../../accessibleNameTestUtils";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
@@ -208,6 +209,31 @@ test("the id trigger does not navigate", () => {
 
   fireEvent.click(screen.getByTestId("entity-trigger"));
   expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+// data-entity-kind is invisible to a screen reader: the card's kind label is
+// what tells it a job from a delegate from a watch.
+test("each entity card reads its kind aloud, distinctly", () => {
+  vi.useFakeTimers();
+  const views = [
+    { view: jobView("job_k", "Kind check"), id: "job_k" },
+    { view: delegateView(), id: "dlg_x" },
+    { view: watchView(), id: "watch_x" },
+  ];
+  const labels = views.map(({ view, id }) => {
+    const { unmount } = render(<EntityRef view={view} id={id} />);
+    const card = focusCard();
+    const kind = card.querySelector<HTMLElement>("[data-entity-kind] strong");
+    if (!kind) throw new Error("card has no kind label");
+    // The label is plain content, so it is heard as part of the tooltip's
+    // computed name: hidden or display:none label text drops out of it.
+    const label = kind.textContent?.trim() ?? "";
+    expect(label).not.toBe("");
+    expect(accessibleName(card)).toContain(label);
+    unmount();
+    return label;
+  });
+  expect(new Set(labels).size).toBe(labels.length);
 });
 
 test("watch renders a card trigger with no OpenButton", () => {

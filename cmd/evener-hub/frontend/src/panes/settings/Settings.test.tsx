@@ -1,5 +1,5 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
@@ -9,7 +9,9 @@ import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetSettingsOverviewStoreForTests } from "../../stores/settingsOverview";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import Settings from "./Settings";
+import { SETTINGS_SECTIONS, settingsSectionLabel } from "./sections";
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -46,8 +48,9 @@ afterEach(() => {
 // General and Hub read the hub overview on mount. With no client connected
 // that read fails, so a test that shows either section waits for its error
 // state before it ends, leaving no update in flight.
-const GENERAL_SETTLED = "Couldn't load general settings";
-const HUB_SETTLED = "Couldn't load hub settings";
+async function sectionLoadFailed(): Promise<void> {
+  await waitFor(() => expect(emptyStateReasons(screen.getByTestId("settings-content"))).toEqual(["unavailable"]));
+}
 
 // FIX 1: settings has no way out other than clicking a session in the rail
 // (Escape does nothing, no close affordance) - the main slot's tab bar is
@@ -75,7 +78,7 @@ test("Escape closes this pane", async () => {
   stubMatchMedia(false);
   seedOpenSettingsPane();
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await screen.findByText(GENERAL_SETTLED);
+  await sectionLoadFailed();
 
   fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "Escape" });
 
@@ -133,7 +136,7 @@ test("a non-Escape key does not close this pane", async () => {
   stubMatchMedia(false);
   seedOpenSettingsPane();
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await screen.findByText(GENERAL_SETTLED);
+  await sectionLoadFailed();
 
   fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "a" });
 
@@ -143,7 +146,7 @@ test("a non-Escape key does not close this pane", async () => {
 test("bare params show the default (General) section", async () => {
   stubMatchMedia(false);
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await screen.findByText(GENERAL_SETTLED);
+  await sectionLoadFailed();
   expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
   // General's own nav link is the active one.
   expect(screen.getByRole("button", { name: "General" }).getAttribute("aria-current")).toBe("page");
@@ -158,7 +161,7 @@ test("params.section selects that section", () => {
 test("desktop: nav and content render simultaneously, with no back button", async () => {
   stubMatchMedia(false);
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await screen.findByText(GENERAL_SETTLED);
+  await sectionLoadFailed();
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Back to settings" })).toBeNull();
@@ -201,13 +204,13 @@ test("mobile: a section param shows that section's content", () => {
   stubMatchMedia(true);
   render(<Settings params={{ section: "bogus" }} paneId="settings-1" focused={true} />);
   expect(screen.getByTestId("settings-content")).toBeTruthy();
-  expect(screen.getByText("This section hasn't been built yet.")).toBeTruthy();
+  expect(emptyStateReasons(screen.getByTestId("settings-content"))).toEqual(["not-built"]);
 });
 
 test("mobile: the section detail has no in-content back button - back lives in the shell top bar", async () => {
   stubMatchMedia(true);
   render(<Settings params={{ section: "hub" }} paneId="settings-1" focused={true} />);
-  await screen.findByText(HUB_SETTLED);
+  await sectionLoadFailed();
   expect(screen.queryByRole("button", { name: "Back to settings" })).toBeNull();
 });
 
@@ -229,11 +232,13 @@ test("mobile: a focused section publishes a paneBack to the section list; the li
 test("mobile: the section list publishes 'Settings' as the pane title; a focused section publishes its label", async () => {
   stubMatchMedia(true);
   const { rerender } = render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  expect(chromeStore.getState().paneTitle).toBe("Settings");
+  const listTitle = chromeStore.getState().paneTitle;
+  expect(listTitle).toBeTruthy();
+  expect(SETTINGS_SECTIONS.map((s) => s.label)).not.toContain(listTitle);
 
   rerender(<Settings params={{ section: "hub" }} paneId="settings-1" focused={true} />);
-  expect(chromeStore.getState().paneTitle).toBe("Hub");
-  await screen.findByText(HUB_SETTLED);
+  expect(chromeStore.getState().paneTitle).toBe(settingsSectionLabel("hub"));
+  await sectionLoadFailed();
 });
 
 test("mobile: the list stays mounted across a drill-down round trip - its filter text survives", async () => {
@@ -265,7 +270,7 @@ test("mobile: the list stays mounted across a drill-down round trip - its filter
 test("the pane title reflects the focused section", () => {
   stubMatchMedia(false);
   render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
-  expect(screen.getByRole("heading", { name: "Providers & credentials" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: settingsSectionLabel("credentials") })).toBeTruthy();
 });
 
 // Reopening Settings returns to the section the user last visited
@@ -283,7 +288,7 @@ test("a bare /settings reopens on the last visited section", async () => {
 
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
 
-  expect(await screen.findByRole("heading", { name: "Keybindings" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: settingsSectionLabel("keybindings") })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Keybindings" }).getAttribute("aria-current")).toBe("page");
 });
 
@@ -291,9 +296,9 @@ test("a bare /settings opens on General when no section has been visited", async
   stubMatchMedia(false);
   seedOpenSettingsPane();
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await screen.findByText(GENERAL_SETTLED);
+  await sectionLoadFailed();
 
-  expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: settingsSectionLabel("general") })).toBeTruthy();
 });
 
 test("the pane tab title follows the remembered section too - no General tab over Keybindings content", async () => {
@@ -307,13 +312,13 @@ test("the pane tab title follows the remembered section too - no General tab ove
   localStorage.setItem("evener.prefs.lastSettingsSection", "keybindings");
   resetPrefsStoreForTests();
 
-  expect(paneFor("settings").title({}, {})).toBe("Keybindings");
+  expect(paneFor("settings").title({}, {})).toBe(settingsSectionLabel("keybindings"));
   // An explicit section always wins over the memory.
-  expect(paneFor("settings").title({ section: "theme" }, {})).toBe("Theme");
+  expect(paneFor("settings").title({ section: "theme" }, {})).toBe(settingsSectionLabel("theme"));
   // And a stale remembered id falls back to General, like the content does.
   localStorage.setItem("evener.prefs.lastSettingsSection", "retired.section");
   resetPrefsStoreForTests();
-  expect(paneFor("settings").title({}, {})).toBe("General");
+  expect(paneFor("settings").title({}, {})).toBe(settingsSectionLabel("general"));
 });
 
 test("a remembered section that is no longer a known section falls back to General", async () => {
@@ -322,9 +327,9 @@ test("a remembered section that is no longer a known section falls back to Gener
   localStorage.setItem("evener.prefs.lastSettingsSection", "retired.section");
   resetPrefsStoreForTests();
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await screen.findByText(GENERAL_SETTLED);
+  await sectionLoadFailed();
 
-  expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: settingsSectionLabel("general") })).toBeTruthy();
 });
 
 test("the project section is not remembered (it has no nav row and needs its ?cwd= context)", () => {

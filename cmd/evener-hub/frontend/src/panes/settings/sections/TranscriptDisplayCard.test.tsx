@@ -1,13 +1,14 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig, shippedDefault, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
+import { getToasts } from "../../../widgets/toast/store";
 import { TranscriptDisplayCard } from "./TranscriptDisplayCard";
 
 const capturedPreviewBodies = vi.hoisted(
@@ -33,6 +34,12 @@ vi.mock("../../session/transcript/TranscriptBody", async () => {
 });
 
 const confirmed = shippedDefault("desktop");
+
+/** The categories a card's inventory lists as shown or hidden. */
+function inventoryCategories(card: HTMLElement, visibility: "shown" | "hidden"): string[] {
+  const row = card.querySelector(`[data-inventory="${visibility}"]`);
+  return row?.getAttribute("data-categories")?.split(" ").filter(Boolean) ?? [];
+}
 
 function renderCard(overrides: Partial<React.ComponentProps<typeof TranscriptDisplayCard>> = {}): void {
   render(
@@ -77,9 +84,11 @@ test("renders controls before a production-backed example and inventories shown 
   expect(canvas.contains(preview)).toBe(true);
   expect(preview.getAttribute("style")).toBeNull();
   expect(preview.style.width).toBe("");
-  expect(screen.getByText("Example only—not your data")).toBeTruthy();
-  expect(card.textContent).toMatch(/Shown:.*User messages.*Agent messages.*Critical rows/s);
-  expect(card.textContent).toMatch(/Hidden:.*Reasoning/);
+  expect(canvas.contains(exampleHeading)).toBe(true);
+  expect(inventoryCategories(card, "shown")).toEqual(
+    expect.arrayContaining(["userMessages", "agentMessages", "criticalRows"]),
+  );
+  expect(inventoryCategories(card, "hidden")).toContain("reasoning");
   expect(preview.querySelector('[data-testid="transcript-preview-flow"]')).toBeTruthy();
   expect(preview.querySelector('[data-tool-name="read_file"]')).toBeTruthy();
 });
@@ -125,7 +134,7 @@ test("makes the Mobile outer canvas the phone-width owner", () => {
 
   expect(canvas.contains(host)).toBe(true);
   expect(host.className).not.toContain("mobile");
-  expect(screen.getByText("Example only—not your data")).toBeTruthy();
+  expect(within(canvas).getByRole("heading", { level: 3 })).toBeTruthy();
 });
 
 test("isolates preview disclosures and never consults the live threads store", async () => {
@@ -205,16 +214,16 @@ test("shows local override, saving, and retryable failure without claiming succe
     localOverride: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
     saveState: "saving",
   });
-  expect(screen.getByText(/browser-local live view is overriding this hub default/i)).toBeTruthy();
-  expect(screen.getByRole("status").textContent).toMatch(/Saving/);
+  expect(screen.getByTestId("transcript-display-scope").getAttribute("data-state")).toBe("local-override");
+  expect(screen.getByRole("status")).toBeTruthy();
 
   cleanup();
-  renderCard({ saveState: "error", error: "revision conflict", onRetry });
-  expect(screen.getByRole("alert").textContent).toContain("revision conflict");
+  renderCard({ saveState: "error", error: "error-from-props", onRetry });
+  expect(screen.getByRole("alert").textContent).toContain("error-from-props");
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   screen.getByRole("button", { name: "Retry" }).click();
   expect(onRetry).toHaveBeenCalledTimes(1);
-  expect(screen.queryByText("Settings saved")).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 test("uses a fresh deterministic preview model for the card", () => {

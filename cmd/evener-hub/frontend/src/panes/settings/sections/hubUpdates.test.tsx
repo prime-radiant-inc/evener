@@ -1,7 +1,7 @@
 import type { SettingsOverviewResponse, UpdateCheckResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
@@ -9,6 +9,15 @@ import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResiden
 import { APPLY_TIMEOUT_MS, resetHubUpdateStoreForTests } from "../../../stores/hubUpdate";
 import { resetSettingsOverviewStoreForTests, settingsOverviewStore } from "../../../stores/settingsOverview";
 import { HubSection } from "./hub";
+
+function updateStatus(): HTMLElement {
+  return screen.getByTestId("hub-update-status");
+}
+
+/** Waits for the Updates status line to reach `state`. */
+async function updateStateIs(state: string): Promise<void> {
+  await waitFor(() => expect(updateStatus().getAttribute("data-state")).toBe(state));
+}
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -58,7 +67,7 @@ test("dev build shows the rebuild note and no update controls", async () => {
 
   render(<HubSection />);
 
-  expect(await screen.findByText(/Dev build/)).toBeTruthy();
+  expect(await screen.findByTestId("hub-update-dev-note")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Check for updates" })).toBeNull();
   await waitFor(() =>
     expect(fake.calls.map((c) => c.method)).toEqual(["evener/settings/overview", "evener/daemon/list"]),
@@ -73,13 +82,11 @@ test("release build checks on mount with the build channel and reports up to dat
 
   render(<HubSection />);
 
-  expect(await screen.findByText(/Up to date on snapshot/)).toBeTruthy();
-  // Scope to the Updates region: HubResidents may also render a role="status"
-  // element (stale-data indicator) if its own refresh errors, so a bare
-  // getByRole("status") is no longer unambiguous. The Updates section is a
-  // landmark region (<section aria-labelledby="hub-updates-heading">).
+  await updateStateIs("up-to-date");
+  // The status line lives in the Updates region, and names the checked channel.
   const updatesRegion = screen.getByRole("region", { name: "Updates" });
-  expect(within(updatesRegion).getByRole("status").textContent).toMatch(/Up to date on snapshot/);
+  expect(updatesRegion.contains(updateStatus())).toBe(true);
+  expect(updateStatus().textContent).toContain("snapshot");
   expect(fake.calls).toContainEqual({ method: "evener/update/check", params: { channel: "snapshot" } });
   expect(screen.getByRole("radio", { name: "Snapshot" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("button", { name: "Update and restart" })).toHaveProperty("disabled", true);
@@ -96,11 +103,12 @@ test("switching channel re-checks with the new channel", async () => {
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
   render(<HubSection />);
-  await screen.findByText(/Up to date on snapshot/);
+  await updateStateIs("up-to-date");
 
   await userEvent.click(screen.getByRole("radio", { name: "Release" }));
 
-  expect(await screen.findByText(/Up to date on release/)).toBeTruthy();
+  await waitFor(() => expect(updateStatus().textContent).toContain("release"));
+  expect(updateStatus().getAttribute("data-state")).toBe("up-to-date");
   expect(fake.calls).toContainEqual({ method: "evener/update/check", params: { channel: "release" } });
 });
 
@@ -112,7 +120,8 @@ test("update available enables the button; confirming applies and shows restarti
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
   render(<HubSection />);
-  expect(await screen.findByText(/Update available: snapshot be70029/)).toBeTruthy();
+  await updateStateIs("update-available");
+  expect(updateStatus().textContent).toContain("be70029");
 
   const button = screen.getByRole("button", { name: "Update and restart" });
   expect(button).toHaveProperty("disabled", false);
@@ -134,14 +143,14 @@ test("restarting and timed-out states render their messages", async () => {
   fake.on("evener/update/check", () => UP_TO_DATE);
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
   render(<HubSection />);
-  await screen.findByText(/Up to date on snapshot/);
+  await updateStateIs("up-to-date");
 
   const { hubUpdateStore } = await import("../../../stores/hubUpdate");
   act(() => hubUpdateStore.setState({ restarting: true }));
-  expect(await screen.findByText(/Restarting hub/)).toBeTruthy();
+  await updateStateIs("restarting");
 
   act(() => hubUpdateStore.setState({ restarting: false, restartTimedOut: true }));
-  expect(await screen.findByText(/didn't come back within 30s/)).toBeTruthy();
+  await updateStateIs("restart-timed-out");
 });
 
 test("check failure shows the error and a working Check for updates button", async () => {
@@ -156,10 +165,11 @@ test("check failure shows the error and a working Check for updates button", asy
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
   render(<HubSection />);
-  expect(await screen.findByText(/rate limit/)).toBeTruthy();
+  await updateStateIs("check-failed");
+  expect(updateStatus().textContent).toContain("403 Forbidden");
 
   await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
 
-  expect(await screen.findByText(/Up to date on release/)).toBeTruthy();
+  await updateStateIs("up-to-date");
   expect(settingsOverviewStore.getState().data).not.toBeNull();
 });

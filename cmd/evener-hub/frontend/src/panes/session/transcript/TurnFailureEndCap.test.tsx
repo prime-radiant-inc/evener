@@ -2,6 +2,7 @@ import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { translateAttachmentMarkers } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
+import { accessibleName } from "../../../accessibleNameTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -79,7 +80,8 @@ test("the hint renders when present", () => {
       sessionRef="ref_a"
     />,
   );
-  expect(hintSummary()).not.toBeNull();
+  // The toggle names itself to a screen reader.
+  expect(accessibleName(hintSummary() as HTMLElement).trim()).not.toBe("");
   expect(screen.queryByText("check your API key")).toBeNull();
 });
 

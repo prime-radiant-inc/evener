@@ -61,9 +61,9 @@ test("a held steer appearing is announced once", async () => {
   await act(async () => {
     await seedHeld("steer", "hello");
   });
-  await waitFor(() =>
-    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held."),
-  );
+  await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("held"));
+  // The live region speaks it.
+  expect(screen.getByTestId("held-steer-announcements").textContent).not.toBe("");
   // Not re-announced on a re-render (no new transition).
   const before = screen.getByTestId("held-steer-announcements").textContent;
   await act(async () => {});
@@ -144,9 +144,7 @@ test("delivery is announced once when the transcript reflects the id", async () 
     await refreshPendingTurnsProjection("ref_a");
   });
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() =>
-    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message delivered."),
-  );
+  await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("delivered"));
   // Announced once, not re-announced on a re-render.
   const before = screen.getByTestId("held-steer-announcements").textContent;
   await act(async () => {});
@@ -210,9 +208,7 @@ test("a same-batch delivery plus a new arrival announces the delivery", async ()
     await refreshPendingTurnsProjection("ref_a");
   });
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() =>
-    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message delivered."),
-  );
+  await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("delivered"));
 });
 
 test("mixed departures announce every distinct outcome in departure order", async () => {
@@ -260,9 +256,7 @@ test("mixed departures announce every distinct outcome in departure order", asyn
   });
   await flushPendingTurnsProjectionForTests();
 
-  expect(screen.getByTestId("held-steer-announcements").textContent).toBe(
-    "Steering message delivered. Steering message failed to deliver.",
-  );
+  expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("delivered failed");
 });
 
 // seedKind names the STORAGE WRITE, not a literal recovery-kind string: the
@@ -271,9 +265,9 @@ test("mixed departures announce every distinct outcome in departure order", asyn
 // record moves where the departure's real path moves it, and the projection
 // refresh publishes it.
 test.each([
-  ["rejected", "Steering message was rejected. It's kept with the queue.", "transferToRecovery"],
-  ["canceled by Stop", "Steering message was canceled by Stop. It's kept with the queue.", "cancelUnattempted"],
-  ["delivery-uncertain", "Steering message delivery is uncertain. It's kept with the queue.", "markUnknown"],
+  ["rejected", "rejected", "transferToRecovery"],
+  ["canceled by Stop", "canceled", "cancelUnattempted"],
+  ["delivery-uncertain", "uncertain", "markUnknown"],
 ] as const)("a %s departure is announced once", async (_label, expected, seedKind) => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
@@ -296,7 +290,7 @@ test.each([
     await refreshPendingTurnsProjection("ref_a");
   });
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(screen.getByTestId("held-steer-announcements").textContent).toBe(expected));
+  await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe(expected));
   // Announced once, not re-announced on a re-render.
   const before = screen.getByTestId("held-steer-announcements").textContent;
   await act(async () => {});
@@ -324,9 +318,7 @@ test("a failed-delivery vanish (record gone, nothing holds the id) is announced 
     await refreshPendingTurnsProjection("ref_a");
   });
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() =>
-    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message failed to deliver."),
-  );
+  await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("failed"));
   // Announced once, not re-announced on a re-render.
   const before = screen.getByTestId("held-steer-announcements").textContent;
   await act(async () => {});
@@ -347,9 +339,7 @@ test("the region stays silent on the timer's cadence", async () => {
   await act(async () => {
     await seedHeld("steer", "hello");
   });
-  await waitFor(() =>
-    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held."),
-  );
+  await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("held"));
   // The clock advances under a mounted region (Session's own 3s
   // SessionNowContext tick): the component never reads it, so the
   // announcement is neither changed nor re-announced.
@@ -358,7 +348,7 @@ test("the region stays silent on the timer's cadence", async () => {
       <HeldSteerAnnouncements ref="ref_a" />
     </SessionNowContext.Provider>,
   );
-  expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held.");
+  expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("held");
 });
 
 // The VisuallyHidden widget's sr-only class, through the project's canonical
@@ -385,9 +375,7 @@ test("the announcement text is visually hidden", async () => {
   await act(async () => {
     await seedHeld("steer", "hello");
   });
-  await waitFor(() =>
-    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held."),
-  );
+  await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("held"));
   const child = screen.getByTestId("held-steer-announcements").firstElementChild;
   expect(child).not.toBeNull();
   expect(child?.classList.contains(VISUALLY_HIDDEN_CLASS)).toBe(true);

@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
 import { Toast } from "../../../widgets";
+import { getToasts } from "../../../widgets/toast/store";
 import { ProjectSection } from "./project";
+import { shownReasons } from "./reasonTestUtils";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -53,7 +55,7 @@ afterEach(() => {
 describe("no cwd in the query string", () => {
   test("shows an instructional message instead of fetching anything", () => {
     render(<ProjectSection sectionId="project" />);
-    expect(screen.getByText(/No project selected/i)).toBeTruthy();
+    expect(shownReasons()).toEqual(["no-project"]);
   });
 });
 
@@ -85,10 +87,8 @@ describe("3-state loaded contract", () => {
       throw new Error("boom");
     });
     render(<ProjectSection sectionId="project" />);
-    await screen.findByText(/Failed to load project launch settings/i);
-    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    expect(screen.getByText(/Something went wrong/)).toBeTruthy();
-    // Assert the raw string no longer appears
+    await waitFor(() => expect(shownReasons()).toContain("load-failed"));
+    // error is converted via friendlyErrorMessage: the raw string never appears
     expect(screen.queryByText(/boom/)).toBeNull();
   });
 
@@ -99,7 +99,7 @@ describe("3-state loaded contract", () => {
     fake.on("evener/launch/getLayer", (params) => (params.layer === "project" ? PROJECT_LAYER : GLOBAL_LAYER));
     render(<ProjectSection sectionId="project" />);
     await screen.findByLabelText("Agent");
-    expect(screen.queryByText("Warnings")).toBeNull();
+    expect(screen.queryByTestId("launch-diagnostics")).toBeNull();
   });
 });
 
@@ -123,8 +123,8 @@ describe("save", () => {
     await screen.findByLabelText("Agent");
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
-    await screen.findByText(/^Saved at /);
-    expect(screen.getAllByText("Project launch settings saved").length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByTestId("launch-config-status").getAttribute("data-state")).toBe("saved"));
+    expect(getToasts().at(-1)?.kind).toBe("success");
   });
 });
 

@@ -16,5 +16,7 @@ export interface PlaceholderSectionProps {
  * report).
  */
 export function PlaceholderSection({ sectionId }: PlaceholderSectionProps) {
-  return <EmptyState title={settingsSectionLabel(sectionId)} hint="This section hasn't been built yet." />;
+  return (
+    <EmptyState title={settingsSectionLabel(sectionId)} hint="This section hasn't been built yet." reason="not-built" />
+  );
 }

@@ -265,6 +265,7 @@ export function HostsSection(_props: HostsSectionProps) {
     return (
       <EmptyState
         title="Couldn't load hosts"
+        reason="unavailable"
         hint={load.message}
         action={
           <Button size="sm" onClick={() => void hostsStore.getState().fetch()}>
@@ -326,10 +327,14 @@ export function HostsSection(_props: HostsSectionProps) {
                   // state (registry spec 08 §13): the chip names the state, the
                   // line is the record's own prose — a failure's 04b message
                   // verbatim — and a stopped read says so instead of stalling.
-                  <span className={CLASS.rowOperation}>
+                  <span className={CLASS.rowOperation} data-testid="host-operation" data-state={operation?.state}>
                     <Chip tone={operationView.tone}>{operationView.label}</Chip>
                     {operationView.line !== null && <span className={CLASS.rowDetail}>{operationView.line}</span>}
-                    {operationView.replay !== null && <span className={CLASS.rowDetail}>{operationView.replay}</span>}
+                    {operationView.replay !== null && (
+                      <span className={CLASS.rowDetail} data-testid="host-operation-replay">
+                        {operationView.replay}
+                      </span>
+                    )}
                     {operationView.unavailable !== null && (
                       <span className={CLASS.rowOperationError} role="alert">
                         {operationView.unavailable}
@@ -493,7 +498,9 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
   const [addr, setAddr] = useState(row?.addr ?? "");
   const [roots, setRoots] = useState(rootsToText(row?.roots));
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<{ field: string | null; message: string } | null>(null);
+  // `reason` is the refusal kind when the hub says the host moved under the
+  // dialog, rendered as the form alert's `data-reason`.
+  const [error, setError] = useState<{ field: string | null; message: string; reason?: "stale-entry" } | null>(null);
 
   // A backend refusal may name an input this mode deliberately omits (notably
   // immutable name in Edit). Only rendered fields get an inline slot; every
@@ -511,7 +518,7 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
 
   const fieldError = (field: string): string | undefined =>
     error !== null && error.field === field ? error.message : undefined;
-  const formError = error !== null && error.field === null ? error.message : null;
+  const formError = error !== null && error.field === null ? error : null;
   // Submission stays available for invalid values so the hub remains the one
   // validator and can blame the precise input. It is disabled only in flight.
 
@@ -535,9 +542,11 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
       // A refusal that names an input goes on that input; everything else is
       // form-level.
       const field = hostFieldError(err);
+      const hostChanged = hostChangedSinceOpened(err);
       setError({
         field: field !== undefined && renderedFields.has(field) ? field : null,
-        message: hostChangedSinceOpened(err) ? HOST_CHANGED_MESSAGE : friendlyErrorMessage(err),
+        message: hostChanged ? HOST_CHANGED_MESSAGE : friendlyErrorMessage(err),
+        ...(hostChanged ? { reason: "stale-entry" as const } : {}),
       });
     } finally {
       setBusy(false);
@@ -646,8 +655,8 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
           <Textarea id={`${prefix}-roots`} value={roots} onChange={(e) => setRoots(e.target.value)} rows={3} />
         </FormRow>
         {formError !== null && (
-          <p className={CLASS.formError} role="alert">
-            {formError}
+          <p className={CLASS.formError} role="alert" data-reason={formError.reason}>
+            {formError.message}
           </p>
         )}
       </div>
@@ -795,7 +804,11 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
         </div>
       ) : planned !== null ? (
         <div className={CLASS.planFields}>
-          {planned.notice !== null && <p className={CLASS.planNotice}>{planned.notice}</p>}
+          {planned.notice !== null && (
+            <p className={CLASS.planNotice} data-testid="host-replan-notice">
+              {planned.notice}
+            </p>
+          )}
           <PlanField label="Target host" value={planned.plan.host} />
           <PlanField label="Controller revision" value={planned.plan.controllerRevision} />
           <PlanField label="Remote target path" value={planned.plan.targetPath} />
@@ -806,7 +819,7 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
             value={`${planned.plan.factsCapturedAt} (${planned.plan.factsAgeSec}s ago)`}
           />
           {refusal !== null && (
-            <p className={CLASS.formError} role="alert">
+            <p className={CLASS.formError} role="alert" data-reason={refusal.kind}>
               {refusal.message}
             </p>
           )}
@@ -827,7 +840,7 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
         </div>
       ) : state.phase === "error" ? (
         <div className={CLASS.planFields}>
-          <p className={CLASS.formError} role="alert">
+          <p className={CLASS.formError} role="alert" data-reason={state.refusal.kind}>
             {state.refusal.message}
           </p>
           {state.recovery !== "none" && (
@@ -942,7 +955,7 @@ function RestartDialog({ row, onClose }: HostOpDialogProps) {
       </p>
       {refusal !== null && (
         <>
-          <p className={CLASS.formError} role="alert">
+          <p className={CLASS.formError} role="alert" data-reason={refusal.kind}>
             {refusal.message}
           </p>
           {refusal.kind === "remnant-open" && refusal.remnantId !== undefined && (
@@ -1091,7 +1104,7 @@ function RemnantRepairControls({
       {repair?.phase === "retrying" && <Loader label={`Retrying teardown for remnant ${remnantId}…`} />}
       {repair?.phase === "recovering" && <Loader label={`Recovering remnant ${remnantId}…`} />}
       {refusal !== null && (
-        <p className={CLASS.formError} role="alert">
+        <p className={CLASS.formError} role="alert" data-reason={refusal.kind}>
           {refusal.message}
         </p>
       )}

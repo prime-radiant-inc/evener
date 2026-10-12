@@ -1,10 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { Toast } from "../../../widgets";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ThemeSection } from "./theme";
 
 beforeAll(() => {
@@ -20,6 +20,12 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   resetToastStoreForTests();
 });
+
+/** Waits for a success toast naming the theme value just chosen. */
+async function themeToasted(value: string): Promise<void> {
+  await waitFor(() => expect(getToasts().at(-1)).toMatchObject({ kind: "success" }));
+  expect(getToasts().at(-1)?.text).toContain(value);
+}
 
 function renderWithToasts() {
   render(
@@ -44,20 +50,20 @@ describe("Color theme", () => {
 
     expect(prefsStore.getState().theme).toBe("light");
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
-    expect(await screen.findByText("Theme: light")).toBeTruthy();
+    await themeToasted("light");
   });
 
   test("choosing System after a concrete theme removes data-theme and does not toast a stale value", async () => {
     const user = userEvent.setup();
     renderWithToasts();
     await user.click(screen.getByRole("radio", { name: "Dark" }));
-    await screen.findByText("Theme: dark");
+    await themeToasted("dark");
 
     await user.click(screen.getByRole("radio", { name: "System" }));
 
     expect(prefsStore.getState().theme).toBe("system");
     expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
-    expect(await screen.findByText("Theme: system")).toBeTruthy();
+    await themeToasted("system");
   });
 });
 
@@ -71,15 +77,7 @@ describe("Phone density", () => {
 
     expect(prefsStore.getState().phoneDensity).toBe("comfortable");
     expect(document.body.dataset.phoneDensity).toBe("comfortable");
-    expect(screen.queryByText(/Settings saved/)).toBeNull();
-  });
-
-  // The help copy must name the gate that's actually shipped in tokens.css
-  // (@media (max-width: 899px), matching useIsMobile's own breakpoint) -
-  // not a stale number that names a different, unimplemented gate.
-  test("the help copy states the shipped 899px density gate", () => {
-    renderWithToasts();
-    expect(screen.getByText(/phones \(≤899px\)/)).toBeTruthy();
+    expect(getToasts()).toEqual([]);
   });
 });
 

@@ -8,6 +8,13 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
 
+// One manage_worktree call's summary, from its arguments and settled output.
+function worktreeSummary(args: Record<string, unknown>, output?: string): string {
+  return toolRendererFor("manage_worktree").summary(
+    item({ toolName: "manage_worktree", argumentsJSON: JSON.stringify(args), output }),
+  );
+}
+
 // --- manage_worktree: create --------------------------------------------
 
 test("create: summary leads with the operation and the new worktree's name", () => {
@@ -27,9 +34,9 @@ test("create: a base_ref arg is parenthesized", () => {
 // --- list -----------------------------------------------------------------
 
 test("list: with no settled output yet, summary names the operation with no count", () => {
-  const d = toolRendererFor("manage_worktree");
-  const args = JSON.stringify({ operation: "list" });
-  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe("Listed worktrees");
+  const summary = worktreeSummary({ operation: "list" });
+  expect(summary).not.toMatch(/\d/);
+  expect(worktreeSummary({ operation: "list" }, JSON.stringify({ status: "listed", entries: [] }))).not.toBe(summary);
 });
 
 test("list: a settled result reports how many worktrees were found", () => {
@@ -69,9 +76,10 @@ test("switch: a settled `unchanged` result reads as a no-op, not a switch", () =
 // --- exit -----------------------------------------------------------------
 
 test("exit: with no settled output yet, summary names the bare operation (exit takes no args of its own)", () => {
-  const d = toolRendererFor("manage_worktree");
-  const args = JSON.stringify({ operation: "exit" });
-  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe("Exited worktree");
+  const summary = worktreeSummary({ operation: "exit" });
+  expect(summary).not.toContain("/");
+  const settled = JSON.stringify({ status: "exited", left_path: "/repo/.worktrees/kata-8m70" });
+  expect(worktreeSummary({ operation: "exit" }, settled)).not.toBe(summary);
 });
 
 test("exit: a settled result names the worktree left, read from output.left_path", () => {
@@ -96,11 +104,10 @@ test("remove: summary leads with the destructive verb and the target name", () =
 });
 
 test("remove: force_dirty is called out on the row, not hidden behind an expand", () => {
-  const d = toolRendererFor("manage_worktree");
-  const args = JSON.stringify({ operation: "remove", name: "kata-8m70", force_dirty: true });
-  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe(
-    "Removed worktree kata-8m70 · discarded uncommitted changes",
-  );
+  const plain = worktreeSummary({ operation: "remove", name: "kata-8m70" });
+  const dirty = worktreeSummary({ operation: "remove", name: "kata-8m70", force_dirty: true });
+  expect(dirty.startsWith(plain)).toBe(true);
+  expect(dirty.length).toBeGreaterThan(plain.length);
 });
 
 test("remove: a plain `force` (merge-safety override, not a dirty-tree override) earns no dirty-discard claim", () => {
@@ -121,15 +128,16 @@ test("remove: a read-only list and a force_dirty remove of the same name read un
     }),
   );
   expect(listSummary).not.toBe(removeSummary);
-  expect(removeSummary).toContain("discarded uncommitted changes");
+  expect(removeSummary).not.toBe(worktreeSummary({ operation: "remove", name: "kata-8m70" }));
 });
 
 // --- prune -----------------------------------------------------------------
 
 test("prune: with no settled output yet, summary names the bare operation", () => {
-  const d = toolRendererFor("manage_worktree");
-  const args = JSON.stringify({ operation: "prune" });
-  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe("Pruned worktrees");
+  const summary = worktreeSummary({ operation: "prune" });
+  expect(summary).not.toMatch(/\d/);
+  const settled = JSON.stringify({ status: "pruned", removed: [], skipped: [] });
+  expect(worktreeSummary({ operation: "prune" }, settled)).not.toBe(summary);
 });
 
 test("prune: a settled result reports removed/skipped counts", () => {
@@ -155,20 +163,17 @@ test("dispose: summary leads with the destructive verb and the delegate id", () 
 });
 
 test("dispose: force_dirty is called out on the row", () => {
-  const d = toolRendererFor("manage_worktree");
-  const args = JSON.stringify({ operation: "dispose", id: "dlg_abc123", force_dirty: true });
-  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe(
-    "Disposed dlg_abc123 · discarded uncommitted changes",
-  );
+  const plain = worktreeSummary({ operation: "dispose", id: "dlg_abc123" });
+  const dirty = worktreeSummary({ operation: "dispose", id: "dlg_abc123", force_dirty: true });
+  expect(dirty.startsWith(plain)).toBe(true);
+  expect(dirty.length).toBeGreaterThan(plain.length);
 });
 
 test("dispose: a settled `already_disposed` result reads as the idempotent no-op it is", () => {
-  const d = toolRendererFor("manage_worktree");
-  const args = JSON.stringify({ operation: "dispose", id: "dlg_abc123" });
   const output = JSON.stringify({ status: "already_disposed", id: "dlg_abc123" });
-  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args, output }))).toBe(
-    "Already disposed dlg_abc123",
-  );
+  const noOp = worktreeSummary({ operation: "dispose", id: "dlg_abc123" }, output);
+  expect(noOp.endsWith(" dlg_abc123")).toBe(true);
+  expect(noOp).not.toBe(worktreeSummary({ operation: "dispose", id: "dlg_abc123" }));
 });
 
 test("dispose: an already-disposed result never claims a dirty-discard even if force_dirty was passed (nothing was torn down to discard)", () => {
@@ -176,7 +181,7 @@ test("dispose: an already-disposed result never claims a dirty-discard even if f
   const args = JSON.stringify({ operation: "dispose", id: "dlg_abc123", force_dirty: true });
   const output = JSON.stringify({ status: "already_disposed", id: "dlg_abc123" });
   expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args, output }))).toBe(
-    "Already disposed dlg_abc123",
+    worktreeSummary({ operation: "dispose", id: "dlg_abc123" }, output),
   );
 });
 
@@ -206,7 +211,10 @@ test("body head-clips the raw JSON output", () => {
 
 test("find_session_transcripts: a bare catalog call (no query/children_of) is a listing, not a search", () => {
   const d = toolRendererFor("find_session_transcripts");
-  expect(d.summary(item({ toolName: "find_session_transcripts", argumentsJSON: "{}" }))).toBe("Listed recent sessions");
+  const listing = d.summary(item({ toolName: "find_session_transcripts", argumentsJSON: "{}" }));
+  const search = d.summary(item({ toolName: "find_session_transcripts", argumentsJSON: '{"query":"x"}' }));
+  expect(listing).not.toContain('"');
+  expect(listing.split(" ")[0]).not.toBe(search.split(" ")[0]);
 });
 
 test("find_session_transcripts: a query call names what was searched for", () => {

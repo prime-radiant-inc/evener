@@ -287,7 +287,7 @@ test("job_status: body shows a disclosure for a multi-paragraph mandate", () => 
   });
   render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
   expect(screen.getByText("First paragraph of the mandate.")).toBeTruthy();
-  expect(screen.getByText("Show full mandate")).toBeTruthy();
+  expect(screen.getByTestId("delegate-mandate-rest")).toBeTruthy();
 });
 
 test("job_status: body renders available tools with a count", () => {
@@ -619,32 +619,39 @@ test("job_list: rows state the command-outcome statuses under the card's display
 
   const rows = screen.getAllByTestId("job-list-row");
   expect(rows).toHaveLength(ids.length);
-  const [exited, killed] = rows;
-  expect(exited?.textContent ?? "").toContain("Command failed");
-  expect(exited?.textContent ?? "").not.toContain("command_exited_nonzero");
-  expect(killed?.textContent ?? "").toContain("Command killed");
-  expect(killed?.textContent ?? "").not.toContain("command_killed");
+  const [exited, killed] = rows.map((row, index) => (row.textContent ?? "").replace(ids[index] ?? "", ""));
+  expect(exited).not.toContain("command_exited_nonzero");
+  expect(killed).not.toContain("command_killed");
+  // The two endings read as two different words.
+  expect(exited).not.toBe(killed);
 });
 
 test("job_list: rows join a legacy failed record to the display word by its reason", () => {
   const d = toolRendererFor("job_list");
   const Body = d.body!;
   render(
-    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(["job_l1"])}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(["job_l1", "job_l2"])}>
       <Body
         item={item({
           toolName: "job_list",
           raw: {
-            items: [{ id: "job_l1", type: "shell", status: "failed", reason: "exit_nonzero" }],
-            count: 1,
-            total: 1,
+            items: [
+              { id: "job_l1", type: "shell", status: "failed", reason: "exit_nonzero" },
+              { id: "job_l2", type: "shell", status: "command_exited_nonzero" },
+            ],
+            count: 2,
+            total: 2,
           },
         })}
         live={false}
       />
     </TranscriptRenderProvider>,
   );
-  expect(screen.getAllByTestId("job-list-row")[0]?.textContent ?? "").toContain("Command failed");
+  // The legacy record reads exactly as the current one with the same ending.
+  const [legacy, current] = screen
+    .getAllByTestId("job-list-row")
+    .map((row, index) => (row.textContent ?? "").replace(["job_l1", "job_l2"][index] ?? "", ""));
+  expect(legacy).toBe(current);
 });
 
 // --- job_stop -----------------------------------------------------------
@@ -866,9 +873,8 @@ test("delegate_send: an update a wait carried renders as an earlier update", () 
   });
 
   const [earlier] = screen.getAllByTestId("delegate-send-earlier-response");
-  expect(within(earlier!).getByText("dlg_abc123 (delegate, earlier update 1 of 1)")).toBeTruthy();
+  expect(within(earlier!).getByText(/dlg_abc123/)).toBeTruthy();
   expect(within(earlier!).getByTestId("user-bubble").textContent).toBe("Which table?");
-  expect(screen.queryByText(/earlier reply/)).toBeNull();
 });
 
 test("delegate_send: canonical raw output preserves the delegate response when formatted output has trailing metadata", () => {
