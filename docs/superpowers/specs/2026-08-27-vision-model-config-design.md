@@ -371,3 +371,21 @@ and a session that expects to hand history to a sightless model pins an
 explicit `vision_model` (or `off`) instead. Extending the model-switch
 preflight to warn about or reject switches that would orphan undescribed
 inline images is an open product choice (#4217).
+
+## Revision (2026-10-12): the Anthropic builder carries documents (#4209)
+
+The Anthropic request builder now maps a user-message `ContentDocument` to the
+Anthropic document content block (a base64 `application/pdf` source, or a `url`
+source), so the side-channel's PDF describe request succeeds on Anthropic routes
+and `llm.DeliversUserMessageDocuments` is true for the Anthropic and Responses
+protocols. Two statements above are superseded:
+
+- "their APIs accept images only" describes the *image* block, which does
+  reject a document media type. The Messages API also accepts a document block,
+  so the builder now writes inline tool-result bytes for image media only; a
+  non-image result contributes its text alone and a PDF tool result no longer
+  400s the turn. `llm.DeliversToolResultMedia` stays image-only, so documents
+  still take the side-channel.
+- "only the Responses builder writes input_file today" is superseded: the
+  Anthropic builder writes a document block too, and the `AcceptsDocumentInput`
+  retry/failure gate covers both protocols.
