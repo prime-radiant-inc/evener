@@ -496,6 +496,8 @@ def run_session(args, binpath, arm, scen, stage, trial, session_ids):
     env = fixture_env(work, xdg)
     if args.when:
         env["EVENER_MEMORY_WHEN"] = args.when
+    if args.rank:
+        env["EVENER_MEMORY_RANK"] = args.rank
     if stage.get("seed_project_memory"):
         rc, out = run_bounded([PROJID, work], work, env, COMMAND_TIMEOUT)
         if rc != 0:
@@ -1220,8 +1222,10 @@ def main():
     r.add_argument("--effort", default="high")
     r.add_argument("--timeout", type=positive_int, default=1200, help="seconds per stage")
     r.add_argument("--jobs", type=positive_int, default=4)
-    r.add_argument("--when", choices=["off", "both"],
-                   help="spike: set EVENER_MEMORY_WHEN for every session (both = index shows each page's when line)")
+    r.add_argument("--when", choices=["off", "both", "only"],
+                   help="spike: set EVENER_MEMORY_WHEN for every session (both = description then when line; only = when line in place of the description)")
+    r.add_argument("--rank", choices=["off", "on"],
+                   help="spike: set EVENER_MEMORY_RANK for every session (on = BM25-ranked hidden pages listed at each human message)")
     r.add_argument("--arm", choices=["on", "off"],
                    help="run only this arm of each scenario that declares it (default: every arm it declares)")
     r.add_argument("--work-root", metavar="DIR", help="create each workspace at DIR/<project>-<random> instead of inside the "

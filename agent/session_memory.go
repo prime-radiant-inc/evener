@@ -147,6 +147,8 @@ type memoryIndexFlight struct {
 	projection memoryProjection
 	// pages holds the current record of each read page the flight checked.
 	pages map[string]memoryPageRecord
+	// allPages is every page the read listed, for the spike's ranking.
+	allPages []memoryPage
 	// Guarded by memoryMu, the worker only sets projection and closes done.
 	// stale marks a result that no longer reflects what the session may rely
 	// on: the session's own write, compaction or revocation came after the
@@ -173,20 +175,27 @@ type memoryEnvironmentFlight struct {
 // writing session migrates. A failed migration never blocks the rendering;
 // the next one retries it. A failed listing leaves p as it was.
 func (s *Session) renderMemoryScope(env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
+	_, err := s.renderMemoryScopePages(env, p)
+	return err
+}
+
+// renderMemoryScopePages is renderMemoryScope, also returning every page it
+// listed (the spike's ranking scores pages the projection leaves out).
+func (s *Session) renderMemoryScopePages(env *execenv.LocalExecutionEnvironment, p *memoryProjection) ([]memoryPage, error) {
 	if s.memorySaveInstructionsEnabled() {
 		_ = migrateMemoryScope(env)
 	}
 	pages, err := listMemoryPages(env)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(pages) == 0 {
 		p.Status, p.Content, p.Index, p.Truncated = "missing", "", "", false
-		return nil
+		return nil, nil
 	}
 	p.Status = "current"
 	p.Content, p.Index, p.Truncated = projectMemoryIndex(pages, memoryProjectionCap)
-	return nil
+	return pages, nil
 }
 
 func (s *Session) unavailableMemoryToolNames() []string {
@@ -373,17 +382,17 @@ func (s *Session) closeMemoryEnvironments() {
 }
 
 func (s *Session) readMemoryIndex(scope string) memoryProjection {
-	p, _ := s.readMemoryScope(scope, nil)
+	p, _, _ := s.readMemoryScope(scope, nil)
 	return p
 }
 
 // readMemoryScope reads scope's index and, beneath the same environment
 // lease, the current record of each named page.
-func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjection, map[string]memoryPageRecord) {
+func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjection, map[string]memoryPageRecord, []memoryPage) {
 	p := memoryProjection{Scope: scope, Status: "unavailable"}
 	env, release, err := s.acquireMemoryEnvironment(scope)
 	if err != nil {
-		return p, nil
+		return p, nil, nil
 	}
 	defer release()
 	// Admit before the pre-read boundary, not merely before ReadFileRaw. Close
@@ -392,7 +401,7 @@ func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjectio
 	s.memoryMu.Lock()
 	if s.memoryClosed {
 		s.memoryMu.Unlock()
-		return p, nil
+		return p, nil, nil
 	}
 	if s.memoryIndexReaders == nil {
 		s.memoryIndexReaders = make(map[string]*execenv.LocalExecutionEnvironment)
@@ -405,16 +414,16 @@ func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjectio
 		s.memoryMu.Unlock()
 	}()
 	if err := s.beforeMemoryIO(scope, "index_read"); err != nil {
-		return p, nil
+		return p, nil, nil
 	}
-	_ = s.renderMemoryScope(env, &p) // a failed rendering leaves p unavailable
+	allPages, _ := s.renderMemoryScopePages(env, &p) // a failed rendering leaves p unavailable
 	records := make(map[string]memoryPageRecord, len(pages))
 	for _, page := range pages {
 		if record, ok := readMemoryPageRecord(env, page); ok {
 			records[page] = record
 		}
 	}
-	return p, records
+	return p, records, allPages
 }
 
 // readMemoryPageRecord reads page's current record through env. It reports
@@ -630,7 +639,7 @@ func (s *Session) memoryFlight(scope string, pages []string) *memoryIndexFlight 
 	s.memoryIndexFlights[scope] = flight
 	s.memoryMu.Unlock()
 	go func() {
-		flight.projection, flight.pages = s.readMemoryScope(scope, pages)
+		flight.projection, flight.pages, flight.allPages = s.readMemoryScope(scope, pages)
 		close(flight.done)
 	}()
 	return flight
@@ -878,6 +887,10 @@ func (s *Session) maybeAppendMemoryContext(ctx context.Context, turnStart bool) 
 	}
 	timer := s.sclock().NewTimer(s.memoryBoundaryWait())
 	defer timer.Stop()
+	query := ""
+	if turnStart && memoryRankEnabled() {
+		query = s.latestUserInputText()
+	}
 	flights := make(map[string]*memoryIndexFlight)
 	var sections []memoryContextSection
 	for _, scope := range memoryScopes {
@@ -931,11 +944,12 @@ publish:
 		p := memoryProjection{Scope: scope, Status: "unavailable"}
 		observed := false
 		var pages map[string]memoryPageRecord
+		var allPages []memoryPage
 		s.memoryMu.Lock()
 		select {
 		case <-flight.done:
 			if !flight.stale {
-				p, pages, observed = flight.projection, flight.pages, true
+				p, pages, allPages, observed = flight.projection, flight.pages, flight.allPages, true
 			}
 			delete(s.memoryIndexFlights, scope)
 		default:
@@ -956,6 +970,9 @@ publish:
 			sections = append(sections, s.memoryProjectionSection(p))
 		}
 		sections = append(sections, s.memoryPageChangesSection(scope, pages))
+		if observed && query != "" && p.Status == "current" {
+			sections = append(sections, rankedMemorySection(scope, allPages, p.Content, query))
+		}
 	}
 	s.appendMemoryContext(sections)
 }

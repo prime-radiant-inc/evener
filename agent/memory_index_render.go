@@ -91,22 +91,37 @@ func isMemoryUnlinkedIndexLine(line string) bool {
 		(strings.HasSuffix(line, `" — `+memoryUnlinkedPathNote) || strings.HasSuffix(line, `" — `+memoryInvalidUTF8PathNote))
 }
 
-// Spike: EVENER_MEMORY_WHEN=both shows a page's when line after its description.
+// Spike: EVENER_MEMORY_WHEN selects how the index shows a page's when line.
 const (
 	memoryWhenEnv  = "EVENER_MEMORY_WHEN"
-	memoryWhenBoth = "both"
+	memoryWhenBoth = "both" // the description, then the when line
+	memoryWhenOnly = "only" // the when line in place of the description
 )
 
-// memoryWhenEnabled reports whether the spike switch asks for when lines.
-func memoryWhenEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(memoryWhenEnv)), memoryWhenBoth)
+// memoryWhenMode is "both" or "only" when the spike switch asks for when
+// lines, else "" (today's index).
+func memoryWhenMode() string {
+	switch mode := strings.ToLower(strings.TrimSpace(os.Getenv(memoryWhenEnv))); mode {
+	case memoryWhenBoth, memoryWhenOnly:
+		return mode
+	}
+	return ""
 }
 
-// memoryIndexText is the text after a page's link: its description, then its
-// when line when the switch is on and the page has one.
+// memoryWhenEnabled reports whether pages are asked for, and shown with, a
+// when line.
+func memoryWhenEnabled() bool { return memoryWhenMode() != "" }
+
+// memoryIndexText is the text after a page's link, by memoryWhenMode. A page
+// with no when line shows its description in every mode.
 func memoryIndexText(p memoryPage) string {
-	if p.When != "" && memoryWhenEnabled() {
+	switch {
+	case p.When == "":
+		return p.Description
+	case memoryWhenMode() == memoryWhenBoth:
 		return p.Description + " | when: " + p.When
+	case memoryWhenMode() == memoryWhenOnly:
+		return p.When
 	}
 	return p.Description
 }

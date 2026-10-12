@@ -35,6 +35,15 @@ func TestMemoryIndexLineWhenSwitch(t *testing.T) {
 	if got := memoryIndexLine(p); got != "- [A](a.md) — desc" {
 		t.Fatalf("both, no when: %q", got)
 	}
+	p.When = "Before X"
+	t.Setenv(memoryWhenEnv, "only")
+	if got := memoryIndexLine(p); got != "- [A](a.md) — Before X" {
+		t.Fatalf("only: %q", got)
+	}
+	p.When = ""
+	if got := memoryIndexLine(p); got != "- [A](a.md) — desc" {
+		t.Fatalf("only, no when falls back to description: %q", got)
+	}
 }
 
 func TestMemoryPromptAsksForWhenOnlyWhenSwitchedOn(t *testing.T) {
