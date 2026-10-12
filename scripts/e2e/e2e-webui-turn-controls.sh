@@ -156,16 +156,18 @@ echo "$fakellm_pid" >"$run/fakellm.pid"
 e2e_wait_for_port "$run/fakellm.log" "$fakellm_pid" fakellm
 fakellm_port="$e2e_port"
 
+# Current registry schema (§14.1 of docs/superpowers/specs/2026-08-28-provider-registry-design.md):
+# `base` inherits the curated openai-compatible row, and session_affinity_headers
+# is the registry spelling of the key fakellm reads to name each round's session.
 cat >"$HOME/.config/evener/providers.toml" <<EOF
-schema = 1
+schema = 2
 default = "fake"
 
-[instances.fake]
-type = "openai"
-api_style = "chat-completions"
+[providers.fake]
+base = "openai-compatible"
 base_url = "http://127.0.0.1:$fakellm_port/v1"
 api_key = "fakellm-not-a-secret"
-send_session_affinity_headers = true
+session_affinity_headers = true
 EOF
 
 echo "==> starting evener hub" >&2
