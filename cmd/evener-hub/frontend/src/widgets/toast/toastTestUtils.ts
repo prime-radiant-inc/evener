@@ -1,9 +1,15 @@
-import { getToasts, type ToastKind } from "./store";
+import { getToasts } from "./store";
 
-/** The kind of every queued toast, in order, so a test can check that a
- * refusal raised an error toast without reading its copy. */
-export function toastKinds(): ToastKind[] {
+/** The kind of every toast raised so far, in order, so a test can tell a
+ * success from a warning from a failure without reading the toast's words. */
+export function toastKinds(): string[] {
   return getToasts().map((toast) => toast.kind);
+}
+
+/** The reason of every toast raised so far, in order (undefined where the
+ * caller named none), for telling apart two toasts of the same kind. */
+export function toastReasons(): (string | undefined)[] {
+  return getToasts().map((toast) => toast.reason);
 }
 
 /** The error toasts that carry `fixture` - a value the test fed in, such as a

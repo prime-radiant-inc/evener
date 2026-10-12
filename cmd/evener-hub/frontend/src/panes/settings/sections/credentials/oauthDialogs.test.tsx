@@ -8,8 +8,13 @@ import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
-import { getToasts } from "../../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
+
+// The dialogs' outcomes, read from their markers: the device flow's status line
+// by its data-state and the toasts by kind, never by the words either shows.
+const statusState = (): string | null => screen.getByRole("status").getAttribute("data-state");
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -24,6 +29,8 @@ async function advanceTime(milliseconds: number): Promise<void> {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  // Each test reads the toasts its own actions raised.
+  resetToastStoreForTests();
   // The auth mutations carry the page's identity on the wire now, so the
   // assertions that pin their exact params need one that cannot vary.
   setMutationClientIdentityForTests("test-tab");
@@ -112,9 +119,10 @@ describe("OAuthRedirectDialog", () => {
     expect(replacement.calls.filter((call) => call.method === "evener/auth/login/complete")).toHaveLength(0);
     // The refusal is named for the change it is, never in the store's own words
     // and never as a failed sign-in.
-    expect(screen.getByRole("alert").textContent).toContain("connection changed");
-    expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
-    expect(screen.queryByText(/Sign-in failed/)).toBeNull();
+    // The inline refusal and the one toast say the same thing, as a warning.
+    expect(getToasts().map(({ kind, text }) => ({ kind, text }))).toEqual([
+      { kind: "warning", text: screen.getByRole("alert").textContent },
+    ]);
     expect(onSuccess).not.toHaveBeenCalled();
     // The pasted URL survives for the retry.
     expect((screen.getByLabelText("Redirect URL") as HTMLInputElement).value).toBe("https://redirect?code=1");
@@ -186,7 +194,7 @@ describe("OAuthRedirectDialog", () => {
     // from an earlier test could otherwise satisfy findByText before this
     // test's own flow has actually completed.
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
-    expect(screen.getAllByText("Signed in to work").length).toBeGreaterThan(0);
+    expect(toastKinds()).toEqual(["success"]);
   });
 
   test("a completed sign-in whose listing read is lost is still reported as a sign-in", async () => {
@@ -226,7 +234,7 @@ describe("OAuthRedirectDialog", () => {
       }),
     );
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
-    expect(within(screen.getByRole("dialog")).queryByText(/no client connected/)).toBeNull();
+    expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
   });
 
   test("failure shows an inline error and a 'Sign-in failed' toast, without closing", async () => {
@@ -250,8 +258,8 @@ describe("OAuthRedirectDialog", () => {
     const user = userEvent.setup();
     await user.type(screen.getByLabelText("Redirect URL"), "https://redirect");
     await user.click(screen.getByRole("button", { name: "Finish" }));
-    await screen.findByText("expired flow");
-    expect(screen.getByText("Sign-in failed: expired flow")).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("expired flow"));
+    expect(toastKinds()).toEqual(["error"]);
     expect(onSuccess).not.toHaveBeenCalled();
   });
 });
@@ -340,13 +348,7 @@ describe("DeviceCodeDialog", () => {
     // uncaught error, and nothing may be opened.
     expect(() => fireEvent.click(sendButton)).not.toThrow();
     expect(anchors).toHaveLength(0);
-    expect(
-      getToasts().some(
-        (toast) =>
-          toast.kind === "error" &&
-          toast.text === "Couldn't open the verification page: refusing to open a URL with the javascript: scheme",
-      ),
-    ).toBe(true);
+    expect(toastKinds()).toEqual(["error"]);
   });
 
   test("a dismissed device editor ignores success after its refresh completes", async () => {
@@ -408,7 +410,7 @@ describe("DeviceCodeDialog", () => {
     // Asserting on onSuccess rather than toast DOM text - see the identical
     // comment on OAuthRedirectDialog's own success test for why.
     expect(onSuccess).toHaveBeenCalled();
-    expect(screen.getAllByText("Signed in to work").length).toBeGreaterThan(0);
+    expect(toastKinds()).toEqual(["success"]);
     // An authorized flow is finished: no later interval polls it again.
     const polls = fake.calls.filter((call) => call.method === "evener/auth/device/poll").length;
     await advanceTime(3000);
@@ -451,7 +453,7 @@ describe("DeviceCodeDialog", () => {
     connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
     await act(async () => poll({ state: "authorized" }));
     expect(onSuccess).toHaveBeenCalled();
-    expect(screen.getAllByText("Signed in to work").length).toBeGreaterThan(0);
+    expect(toastKinds()).toEqual(["success"]);
   });
 
   test("polling: expired stops polling and switches to a 'Start again' action", async () => {
@@ -471,7 +473,7 @@ describe("DeviceCodeDialog", () => {
       />,
     );
     await advanceTime(1000);
-    expect(screen.getByText(/Code expired/)).toBeTruthy();
+    expect(statusState()).toBe("expired");
     expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /copy code/i })).toBeNull();
   });
@@ -498,7 +500,7 @@ describe("DeviceCodeDialog", () => {
     );
     await advanceTime(1000);
     expect(calls).toBe(1);
-    expect(screen.getByText(/Waiting for you to authorize/)).toBeTruthy();
+    expect(statusState()).toBe("waiting-for-authorization");
   });
 
   // Pins the headline behavior verified directly against the legacy source
@@ -528,7 +530,8 @@ describe("DeviceCodeDialog", () => {
       />,
     );
     await advanceTime(1000);
-    expect(screen.getByText("network error")).toBeTruthy();
+    expect(statusState()).toBe("error");
+    expect(screen.getByRole("status").textContent).toBe("network error");
     expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
     const callsAtError = calls;
     await advanceTime(2200);
@@ -582,7 +585,7 @@ describe("DeviceCodeDialog", () => {
     await advanceTime(1000);
     expect(replacement.calls.filter((call) => call.method === "evener/auth/device/poll")).toHaveLength(0);
     expect(screen.queryByRole("button", { name: "Start again" })).toBeNull();
-    expect(screen.getByText("Waiting for the connection to be restored…")).toBeTruthy();
+    expect(statusState()).toBe("waiting-for-connection");
 
     // This connection's own listing lands; the next tick polls and the flow
     // completes against the connection that is actually there.
@@ -689,7 +692,7 @@ describe("DeviceCodeDialog", () => {
     // Each refused tick asks again (the first ask is the connect's own read,
     // then one per refusal) and the dialog says what it is waiting for.
     await advanceTime(1000);
-    expect(screen.getByText("Waiting for the connection to be restored…")).toBeTruthy();
+    expect(statusState()).toBe("waiting-for-connection");
     const readsAfterFirstRefusal = replacement.calls.filter((call) => call.method === "evener/instance/list").length;
     await advanceTime(1000);
     expect(replacement.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(
@@ -702,7 +705,7 @@ describe("DeviceCodeDialog", () => {
     expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false);
     await advanceTime(1000);
     await advanceTime(0);
-    expect(screen.queryByText("Waiting for the connection to be restored…")).toBeNull();
+    expect(screen.queryByRole("status")?.getAttribute("data-state")).not.toBe("waiting-for-connection");
     expect(replacement.calls.filter((call) => call.method === "evener/auth/device/poll")).toHaveLength(1);
     expect(onSuccess).toHaveBeenCalled();
   });
@@ -808,5 +811,5 @@ test("a completed remote sign-in names the instance AND the host in its toast", 
   await advanceTime(1000);
   await advanceTime(0);
   expect(onSuccess).toHaveBeenCalled();
-  expect(getToasts().some((toast) => toast.text === "Signed in to work on beta")).toBe(true);
+  expect(getToasts().some((toast) => toast.kind === "success" && toast.text.includes("beta"))).toBe(true);
 });

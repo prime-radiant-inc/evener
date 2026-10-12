@@ -51,6 +51,7 @@
     "regenerate-unicode-properties": "10.2.2",
     "regexpu-core": "6.4.0",
     "tinykeys": "4.0.0",
+    "tweetnacl": "1.0.3",
     "zustand": "^5.0.15"
   },
   "devDependencies": {

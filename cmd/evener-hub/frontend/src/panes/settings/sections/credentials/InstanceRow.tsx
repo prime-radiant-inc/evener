@@ -12,15 +12,10 @@
 // view of a remote host's own listing uses it, where nothing is actionable from
 // this browser. One implementation keeps the two surfaces from drifting.
 import type { InstanceEntry } from "@evener/appwire-client";
-import {
-  credentialLayers,
-  fromEnvironment,
-  keylessByDesign,
-  styleInfoText,
-  unconfiguredLabel,
-} from "@evener/appwire-client";
+import { fromEnvironment, styleInfoText, unconfiguredLabel } from "@evener/appwire-client";
 import { Button, Chevron, Chip, StatusDot, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { CREDENTIAL_DOT, type CredentialState, credentialState } from "./credentialState";
 import styles from "./InstanceRow.module.css";
 
 const CLASS = {
@@ -39,8 +34,8 @@ const CLASS = {
 // set · optional") follows it.
 // A credential the hub found an error with leads the line the same way:
 // "Error" is the most important thing the row can say (#3539).
-function metaText(instance: InstanceEntry, authError: string | undefined): string {
-  const lead = authError ? "Error" : unconfiguredLabel(instance);
+function metaText(instance: InstanceEntry, state: CredentialState): string {
+  const lead = state === "error" ? "Error" : unconfiguredLabel(instance);
   const styleInfo = styleInfoText(instance);
   return lead === null ? styleInfo : `${lead} · ${styleInfo}`;
 }
@@ -66,21 +61,17 @@ export type InstanceRowProps = {
 
 export function InstanceRow(props: InstanceRowProps) {
   const { instance, authError } = props;
-  const meta = metaText(instance, authError);
-  const dot = authError
-    ? "failed"
-    : credentialLayers(instance).length > 0 || keylessByDesign(instance)
-      ? "idle"
-      : "ended";
+  const state = credentialState(instance, authError);
+  const meta = metaText(instance, state);
   // Both variants render this node, so a read-only row states exactly what the
   // tappable one does.
   const body = (
-    <div className={CLASS.rowMain}>
+    <div className={CLASS.rowMain} data-credential-state={state}>
       <div className={CLASS.heading}>
-        <StatusDot state={dot} />
+        <StatusDot state={CREDENTIAL_DOT[state]} />
         <span className={CLASS.name}>{instance.name}</span>
-        {instance.isDefault && <Chip>★ default</Chip>}
-        {fromEnvironment(instance) && <Chip>from environment</Chip>}
+        {instance.isDefault && <Chip kind="default">★ default</Chip>}
+        {fromEnvironment(instance) && <Chip kind="environment">from environment</Chip>}
       </div>
       <div className={CLASS.meta}>{meta}</div>
     </div>

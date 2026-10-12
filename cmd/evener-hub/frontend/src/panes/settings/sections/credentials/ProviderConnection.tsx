@@ -18,6 +18,7 @@ import {
 } from "../../../../stores/credentials";
 import { Button, Chevron, Dialog, Disclosure, FormRow, Input, OpenButton, Skeleton } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
+import type { FormError } from "./formError";
 import { AddInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
@@ -29,6 +30,29 @@ import { useEditorLifetime } from "./useEditorLifetime";
 // assertion this flow carried, or the client's own listing moved under it.
 const ENDPOINT_MOVED_ERROR =
   "This connection changed to a different endpoint. Check its destination and enter the key again.";
+const CHANGED_ERROR = "Connection or configuration changed. Review access and check again.";
+const REFRESH_FAILED_ERROR = "Access could not be refreshed. Your saved credential is retained; retry the check.";
+const RELOAD_FAILED_ERROR =
+  "The saved connection could not be loaded. Reload it or open the full editor; do not create it again.";
+
+/** Why the flow stopped, as its alert's data-reason: the connection or its
+ * configuration changed under it, the check or the save was refused for a
+ * destination the hub cannot fingerprint, the endpoint moved, the connection
+ * was replaced, the check failed, the refresh failed, the connection needs
+ * configuration, the save or the sign-in start failed, or a created connection
+ * could not be reloaded. */
+type ConnectionErrorReason =
+  | "changed"
+  | "check-fingerprint-unavailable"
+  | "fingerprint-unavailable"
+  | "endpoint-changed"
+  | "connection-replaced"
+  | "check-failed"
+  | "refresh-failed"
+  | "needs-configuration"
+  | "save-failed"
+  | "sign-in-failed"
+  | "reload-failed";
 
 export interface ProviderConnectionProps {
   onClose(): void;
@@ -256,7 +280,7 @@ function SelectedConnection({
   const [oauth, setOAuth] = useState<OAuthEditor | null>(null);
   const [phase, setPhaseState] = useState<Phase>("idle");
   const phaseRef = useRef<Phase>("idle");
-  const [error, setError] = useState("");
+  const [error, setError] = useState<FormError<ConnectionErrorReason> | null>(null);
   const [result, setResult] = useState<AuthTestResponse | null>(null);
   const [review, setReview] = useState<InstanceEntry | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -283,13 +307,13 @@ function SelectedConnection({
     // any open OAuth flow - and is said out loud: it is never this draft's own
     // save or check, so the user has to check again rather than trust a result
     // that was taken against the connection that is gone.
-    (message = "Connection or configuration changed. Review access and check again.") => {
+    () => {
       operation.current += 1;
       setPhase("idle");
       setResult(null);
       setReview(null);
       setOAuth(null);
-      setError(message);
+      setError({ reason: "changed", message: CHANGED_ERROR });
     },
     [setPhase],
   );
@@ -323,9 +347,10 @@ function SelectedConnection({
       unsubscribeStore();
     };
   }, [invalidate, oauth, name, baseline]);
+  const errorMessage = error?.message;
   useEffect(() => {
-    if (error) errorRef.current?.focus();
-  }, [error]);
+    if (errorMessage) errorRef.current?.focus();
+  }, [errorMessage]);
 
   function leave(callback: () => void) {
     operation.current += 1;
@@ -342,7 +367,7 @@ function SelectedConnection({
     setResult(null);
     setReview(null);
     setPhase("idle");
-    setError("");
+    setError(null);
   }
 
   async function check(token: number, target: InstanceEntry) {
@@ -352,11 +377,11 @@ function SelectedConnection({
     // resolves to now: refuse it before the call.
     if (fingerprintUnavailable(target)) {
       setPhase("idle");
-      setError(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+      setError({ reason: "check-fingerprint-unavailable", message: FINGERPRINT_UNAVAILABLE_TEST_MESSAGE });
       return;
     }
     setPhase("checking");
-    setError("");
+    setError(null);
     setReview(null);
     try {
       // The probe carries the destination this flow reviewed. The hub validates
@@ -370,7 +395,7 @@ function SelectedConnection({
       if (!current(token)) return;
       setResult(response);
       setPhase("result");
-      if (response.status !== "success") setError(response.message);
+      if (response.status !== "success") setError({ reason: "check-failed", message: response.message });
     } catch (err) {
       if (!current(token)) return;
       // A refused assertion means the destination moved under the check, and a
@@ -381,7 +406,11 @@ function SelectedConnection({
       // failure, which no retry against this listing would fix.
       const replaced = isStaleListingRefusal(err);
       if (isEndpointConflict(err) || replaced) {
-        await recoverChangedEndpoint(replaced ? CONNECTION_REPLACED_ERROR : ENDPOINT_MOVED_ERROR);
+        await recoverChangedEndpoint(
+          replaced
+            ? { reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR }
+            : { reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR },
+        );
         return;
       }
       const response = safeCredentialTestResult(target.name, {
@@ -391,7 +420,7 @@ function SelectedConnection({
       });
       setResult(response);
       setPhase("result");
-      setError(response.message);
+      setError({ reason: "check-failed", message: response.message });
     }
   }
 
@@ -400,13 +429,13 @@ function SelectedConnection({
   // flow anchored on was read by a connection that is gone - so the draft was
   // typed for a destination nobody can vouch for: drop it, re-anchor to what
   // the listing now holds, and say why - rather than leave the user with a save
-  // that silently went somewhere else. changedMessage names the change, because
+  // that silently went somewhere else. changed names the change, because
   // the two differ in what the user has to check and the caller knows which one
   // refused it. The re-read is the flow's own, so it carries the flow's own
   // marker (fetchSelf): this refusal is the outcome the user gets, not a reason
   // for the invalidation watch to reset the flow underneath it. changeValue
   // below settles the flow either way.
-  async function recoverChangedEndpoint(changedMessage: string) {
+  async function recoverChangedEndpoint(changed: FormError<ConnectionErrorReason>) {
     try {
       await credentialsStore.getState().fetchSelf();
     } catch {
@@ -414,7 +443,7 @@ function SelectedConnection({
     }
     changeValue("");
     setBaseline(findSetup(name));
-    setError(changedMessage);
+    setError(changed);
   }
 
   async function refreshAndCheck(token: number, expectedSource?: string) {
@@ -441,19 +470,22 @@ function SelectedConnection({
       // other refresh failure instead of escaping as an unhandled rejection.
       if (!current(token)) return;
       setPhase("idle");
-      setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
+      setError({ reason: "refresh-failed", message: REFRESH_FAILED_ERROR });
       return;
     }
     const fresh = credentialsStore.getState();
     const target = findSetup(name);
     if (!applied || fresh.loading || fresh.error) {
       setPhase("idle");
-      setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
+      setError({ reason: "refresh-failed", message: REFRESH_FAILED_ERROR });
       return;
     }
     if (needsConfiguration(target)) {
       setPhase("idle");
-      setError("This connection needs configuration before it can be checked. Open the full editor.");
+      setError({
+        reason: "needs-configuration",
+        message: "This connection needs configuration before it can be checked. Open the full editor.",
+      });
       return;
     }
     // needsConfiguration already covers a missing target, so this is the type
@@ -461,7 +493,7 @@ function SelectedConnection({
     // rather than returning with the phase still "refreshing".
     if (!target) {
       setPhase("idle");
-      setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
+      setError({ reason: "refresh-failed", message: REFRESH_FAILED_ERROR });
       return;
     }
     if (
@@ -483,7 +515,7 @@ function SelectedConnection({
       return;
     }
     const token = ++operation.current;
-    setError("");
+    setError(null);
     setResult(null);
     setReview(null);
     if (!saved && storedMode && !host && value.trim()) {
@@ -494,7 +526,7 @@ function SelectedConnection({
       // never tested. Refuse the write here, as the instance dialogs do.
       if (fingerprintUnavailable(row)) {
         setPhase("idle");
-        setError(FINGERPRINT_UNAVAILABLE_ERROR);
+        setError({ reason: "fingerprint-unavailable", message: FINGERPRINT_UNAVAILABLE_ERROR });
         return;
       }
       // The draft was typed against the connection this flow anchored on, and a
@@ -507,7 +539,7 @@ function SelectedConnection({
       if (row && destination(row) !== destination(baseline)) {
         changeValue("");
         setBaseline(row);
-        setError(ENDPOINT_MOVED_ERROR);
+        setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
         return;
       }
       setPhase("saving");
@@ -528,11 +560,18 @@ function SelectedConnection({
         // the listing it was anchored on belongs to a connection that is gone.
         const replaced = isStaleListingRefusal(err);
         if (isEndpointConflict(err) || replaced) {
-          await recoverChangedEndpoint(replaced ? CONNECTION_REPLACED_ERROR : ENDPOINT_MOVED_ERROR);
+          await recoverChangedEndpoint(
+            replaced
+              ? { reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR }
+              : { reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR },
+          );
           return;
         }
         setPhase("idle");
-        setError("Credential could not be saved. Your draft is retained; retry saving.");
+        setError({
+          reason: "save-failed",
+          message: "Credential could not be saved. Your draft is retained; retry saving.",
+        });
         return;
       }
       await refreshAndCheck(token, "store");
@@ -542,7 +581,7 @@ function SelectedConnection({
   async function signIn() {
     const token = ++operation.current;
     setPhase("saving");
-    setError("");
+    setError(null);
     setResult(null);
     try {
       const editor = await startOAuthFlow(name, () => current(token));
@@ -558,14 +597,14 @@ function SelectedConnection({
         // what changed and ask for this connection's listing, whose arrival is
         // what makes the retry land.
         if (isStaleListingRefusal(err)) {
-          setError(CONNECTION_REPLACED_ERROR);
+          setError({ reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR });
           void credentialsStore
             .getState()
             .fetch()
             .catch(() => {});
           return;
         }
-        setError("Sign-in could not be started. Try again.");
+        setError({ reason: "sign-in-failed", message: "Sign-in could not be started. Try again." });
       }
     }
   }
@@ -617,7 +656,7 @@ function SelectedConnection({
     // skip this instance's credential submission entirely.
     setHost(false);
     setMissingCredential(false);
-    setError("");
+    setError(null);
     setReview(null);
     setResult(null);
     setPhase("idle");
@@ -626,7 +665,7 @@ function SelectedConnection({
   async function reloadCreated() {
     const token = ++operation.current;
     setPhase("refreshing");
-    setError("");
+    setError(null);
     // The listing this reload waits for can be superseded by a concurrent
     // request (a write or another view's read), and the store drops a
     // superseded response without applying it. The read's own applied verdict
@@ -648,7 +687,7 @@ function SelectedConnection({
       // own recovery message keeps the user on an actionable path.
       if (!current(token)) return;
       setPhase("idle");
-      setError("The saved connection could not be loaded. Reload it or open the full editor; do not create it again.");
+      setError({ reason: "reload-failed", message: RELOAD_FAILED_ERROR });
       return;
     }
     if (!current(token)) return;
@@ -656,7 +695,7 @@ function SelectedConnection({
     const state = credentialsStore.getState();
     const created = findSetup(name);
     if (!applied || state.loading || state.error || !created) {
-      setError("The saved connection could not be loaded. Reload it or open the full editor; do not create it again.");
+      setError({ reason: "reload-failed", message: RELOAD_FAILED_ERROR });
     } else setBaseline(created);
   }
 
@@ -712,16 +751,20 @@ function SelectedConnection({
           void submit();
         }}
       >
-        {configured && <p>Connection settings saved as {name}. Add access below; retrying will use this connection.</p>}
+        {configured && (
+          <p data-testid="connection-configured">
+            Connection settings saved as {name}. Add access below; retrying will use this connection.
+          </p>
+        )}
         {saved && (
-          <p>
+          <p data-testid="credential-saved">
             Credential saved for {name}. {row && activeSourceLabel(row)}
           </p>
         )}
         {help && (
           <>
             {modes.includes("apiKey") && <OpenButton href={help.keyUrl} word="Get an API key" />}
-            <p>{help.billing}</p>
+            <p data-testid="billing-note">{help.billing}</p>
           </>
         )}
         {row && (
@@ -796,10 +839,10 @@ function SelectedConnection({
             )}
             <p>The check requests only the model list. It does not send a prompt or generate a response.</p>
             {review ? (
-              <div className={styles.review}>
+              <div className={styles.review} data-testid="access-review">
                 <p>Review changed access before contacting the provider.</p>
-                <p>Previous destination: {baseline?.baseUrl ?? "Not configured"}</p>
-                <p>Current destination: {review.baseUrl}</p>
+                <p data-destination="previous">Previous destination: {baseline?.baseUrl ?? "Not configured"}</p>
+                <p data-destination="current">Current destination: {review.baseUrl}</p>
                 <p>{activeSourceLabel(review)}</p>
                 <Button
                   disabled={unavailable}
@@ -813,7 +856,9 @@ function SelectedConnection({
               </div>
             ) : result?.status === "success" ? (
               <>
-                <p role="status">Model list access confirmed. This does not verify generation access.</p>
+                <p role="status" data-state="success">
+                  Model list access confirmed. This does not verify generation access.
+                </p>
                 <Button onClick={() => leave(() => onConnected(name))}>Continue</Button>
               </>
             ) : (
@@ -839,11 +884,15 @@ function SelectedConnection({
           </>
         )}
         {error && (
-          <div className={styles.review} role="alert" tabIndex={-1} ref={errorRef}>
-            {error}
+          <div className={styles.review} role="alert" tabIndex={-1} ref={errorRef} data-reason={error.reason}>
+            {error.message}
           </div>
         )}
-        {connection !== "ready" && <p role="status">Waiting for the Evener host to reconnect.</p>}
+        {connection !== "ready" && (
+          <p role="status" data-state="reconnecting">
+            Waiting for the Evener host to reconnect.
+          </p>
+        )}
         <Disclosure open={advancedOpen} onOpenChange={setAdvancedOpen} summary="Advanced settings">
           <div className={styles.actions}>
             {storedMode && (
