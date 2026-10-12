@@ -11,7 +11,7 @@ func TestRenderMemoryIndex(t *testing.T) {
 	t.Parallel()
 	pages := []memoryPage{
 		{Path: "vitest/loader.md", Title: "Vitest read-only loader", Description: "read-only Vitest needs --configLoader runner", HasDescription: true, Tags: []string{"vitest"}, Updated: "2026-10-07"},
-		{Path: "cents.md", Title: "Integer cents", Description: "Money is integer cents, never floats", HasDescription: true, Tags: []string{"money", "formatting"}, Updated: "2026-10-08"},
+		{Path: "cents.md", Title: "Integer cents", Description: "Money is integer cents, never floats", HasDescription: true, When: "Formatting or storing a price", Tags: []string{"money", "formatting"}, Updated: "2026-10-08"},
 		{Path: "b.md", Title: "b", Description: "unstamped, older mtime", HasDescription: true, ModTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 		{Path: "a.md", Title: "a", Description: "unstamped, same day as loader", HasDescription: true, ModTime: time.Date(2026, 10, 7, 23, 0, 0, 0, time.UTC)},
 		{Path: "fresh-bad.md", Title: "fresh-bad", Description: "fresh-bad.md", Unreadable: true, ModTime: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
@@ -20,7 +20,7 @@ func TestRenderMemoryIndex(t *testing.T) {
 	// Pages with unreadable frontmatter come last, by path, however fresh
 	// their files are.
 	want := "Tags: formatting (1), money (1), vitest (1)\n" +
-		"- [Integer cents](cents.md) — Money is integer cents, never floats [money, formatting] (updated 2026-10-08)\n" +
+		"- [Integer cents](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)\n" +
 		"- [a](a.md) — unstamped, same day as loader\n" +
 		"- [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)\n" +
 		"- [b](b.md) — unstamped, older mtime\n" +

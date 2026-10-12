@@ -933,7 +933,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 	sess.Close()
 
 	for ev := range sess.Events() {
-		if d, ok := ev.Data.(events.WarningData); ok && strings.Contains(d.Message, "of context window") {
+		if d, ok := ev.Data.(events.WarningData); ok && d.Code == events.WarningCodeContextBudget {
 			t.Fatalf("did not expect context-window warning: %q", d.Message)
 		}
 	}

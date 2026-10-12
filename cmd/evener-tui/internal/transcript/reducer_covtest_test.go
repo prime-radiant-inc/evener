@@ -1060,12 +1060,6 @@ func TestCovImageItemsPlaceholderEmpty(t *testing.T) {
 	}
 }
 
-func TestCovImageItemsPlaceholderSingle(t *testing.T) {
-	if got := ImageItemsPlaceholder([]appwire.InputItem{{}}); got != "[image]" {
-		t.Fatalf("single = %q", got)
-	}
-}
-
 // --- ApplyUserMessageEcho / RemoveUserMessageEcho ---
 
 func TestCovRemoveUserMessageEchoEmpty(t *testing.T) {

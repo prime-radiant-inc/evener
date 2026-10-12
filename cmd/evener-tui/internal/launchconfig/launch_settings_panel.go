@@ -280,10 +280,16 @@ func renderRepoView(r *appwire.RepoLaunchConfigStatus) string {
 	if r.Preview != "" {
 		fmt.Fprintf(&b, "preview:\n%s\n", r.Preview)
 	}
-	if r.Trust == "untrusted" || r.Trust == "changed" {
+	if repoAwaitingTrust(r) {
 		b.WriteString("\n[T] trust this file")
 	}
 	return b.String()
+}
+
+// repoAwaitingTrust reports whether an in-repo launch file needs the user's
+// trust: they never trusted it, or its contents changed since they did.
+func repoAwaitingTrust(r *appwire.RepoLaunchConfigStatus) bool {
+	return r.Trust == "untrusted" || r.Trust == "changed"
 }
 
 // LaunchSettingsEditRequestMsg is emitted when the user presses Enter on
@@ -301,7 +307,7 @@ func (p LaunchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
 		if p.resolved.Repo == nil || p.resolved.Repo.Hash == "" {
 			return p, nil
 		}
-		if p.resolved.Repo.Trust == "untrusted" || p.resolved.Repo.Trust == "changed" {
+		if repoAwaitingTrust(p.resolved.Repo) {
 			return p, CmdTrustRepo(p.client, p.cwd, p.resolved.Repo.Hash)
 		}
 		return p, nil

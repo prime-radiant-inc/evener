@@ -179,6 +179,7 @@ func isMemoryIndexPath(file string) bool {
 
 const (
 	memoryMissingDescriptionNote    = "\n\nThis page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter."
+	memoryMissingWhenNote           = "\n\nThis page has no when in its frontmatter. Add when: <one line> saying when a future session will need this page, the way a skill says when to use it."
 	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a description that contains a colon."
 )
 
@@ -204,6 +205,8 @@ func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes
 		notes = memoryUnreadableFrontmatterNote
 	case !page.HasDescription:
 		notes = memoryMissingDescriptionNote
+	case page.When == "":
+		notes = memoryMissingWhenNote
 	}
 	return stamped, notes
 }
