@@ -61,6 +61,14 @@ type toolDeps struct {
 	// a result tool name (issue #4218). The flag is fixed for a session.
 	memoryToolsStripped bool
 
+	// toolNameMap is the profile's canonical→provider-visible tool name map
+	// (provider.Profile.ToolNameMap). The result tool's registration refuses a
+	// name that is already advertised as a registered tool's wire alias
+	// (issue #4218): rebuildToolDefsCache drops a registry tool whose wire name
+	// is taken, so a result tool named that way is never advertised at all.
+	// Nil for surfaces that keep canonical names.
+	toolNameMap map[string]string
+
 	// cmdTimeouts is a live getter for the default and max shell command
 	// timeouts. It reads cfg on every call so cfg mutations are visible;
 	// the values are NOT snapshotted at registration time.
@@ -364,6 +372,7 @@ func newToolDeps(s *Session) *toolDeps {
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		offersEndReason:        s.hasHumanPartnerToAsk(),
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
+		toolNameMap:            s.profile.ToolNameMap(),
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok

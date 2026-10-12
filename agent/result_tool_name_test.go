@@ -92,6 +92,10 @@ func TestNewSessionRejectsResultToolNameCollidingWithNativeTool(t *testing.T) {
 		{"task tool", SessionConfig{ResultToolName: "task_list"}},
 		{"notes tool", SessionConfig{ResultToolName: "notes_read"}},
 		{"ask_user on an interactive root", SessionConfig{ResultToolName: "ask_user"}},
+		// ask_user's name carries name-keyed dispatch (registry normalization)
+		// and restore semantics, so it is unusable even where no question tool
+		// is registered.
+		{"ask_user with no question tool registered", SessionConfig{ResultToolName: "ask_user", NonInteractive: true}},
 		{"skill tool", SessionConfig{ResultToolName: "use_skill"}},
 		{"transcript tool", SessionConfig{ResultToolName: "doctor_evener", StateDir: t.TempDir()}},
 		{"compact tool", SessionConfig{ResultToolName: "compact_context"}},
@@ -99,6 +103,28 @@ func TestNewSessionRejectsResultToolNameCollidingWithNativeTool(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			requireResultToolRejected(t, NewOpenAIProfile("gpt-5.2"), tc.cfg)
+		})
+	}
+}
+
+// TestNewSessionRejectsResultToolNameCollidingWithProviderWireName covers the
+// provider-visible wire namespace: a name that exists only as a profile's
+// rename of a registered tool (openai's exec_command for shell) is suppressed
+// from the advertised list by rebuildToolDefsCache, so the session would have
+// no usable result tool at all.
+func TestNewSessionRejectsResultToolNameCollidingWithProviderWireName(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile *provider.Profile
+		value   string
+	}{
+		{"openai shell alias", NewOpenAIProfile("gpt-5.2"), "exec_command"},
+		{"openai grep alias", NewOpenAIProfile("gpt-5.2"), "grep_files"},
+		{"google shell alias", newGeminiProfile("gemini-test"), "run_shell_command"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requireResultToolRejected(t, tc.profile, SessionConfig{ResultToolName: tc.value})
 		})
 	}
 }
@@ -119,8 +145,6 @@ func TestNewSessionAllowsResultToolNameNoToolHolds(t *testing.T) {
 		name string
 		cfg  SessionConfig
 	}{
-		// evener run is non-interactive, so ask_user is never registered.
-		{"ask_user in a non-interactive session", SessionConfig{ResultToolName: "ask_user", NonInteractive: true}},
 		// web_search is google-only; this session's profile does not declare it.
 		{"web_search on an openai profile", SessionConfig{ResultToolName: "web_search"}},
 		// memory_foo is usable while this session has memory.
@@ -212,12 +236,18 @@ func TestNewSessionRefusesEveryNameItsOwnRegistryRegisters(t *testing.T) {
 			if len(names) < 20 {
 				t.Fatalf("reference registry looks too small to be a drift guard: %v", names)
 			}
+			nameMap := tc.profile.ToolNameMap()
 			for _, name := range names {
 				if name == tool.DefaultResultToolName {
 					continue
 				}
 				cfg.ResultToolName = name
 				requireResultToolRejected(t, tc.profile, cfg)
+				// A registered tool's provider-visible alias is taken too.
+				if wire, ok := nameMap[name]; ok && wire != name {
+					cfg.ResultToolName = wire
+					requireResultToolRejected(t, tc.profile, cfg)
+				}
 			}
 		})
 	}
