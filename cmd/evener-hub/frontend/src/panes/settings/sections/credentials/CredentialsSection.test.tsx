@@ -22,14 +22,13 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
-import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds, toastReasons } from "../../../../widgets/toast/toastTestUtils";
 import { CredentialsSection } from "./CredentialsSection";
 
 // The section's outcomes, read from their markers rather than from the words
 // shown for them: toasts by kind and reason, a row by its credential state, and
 // the sheet's credential-test result by its wire status.
-const toastKinds = (): string[] => getToasts().map((toast) => toast.kind);
-const toastReasons = (): (string | undefined)[] => getToasts().map((toast) => toast.reason);
 const waitForToastKind = (kind: string): Promise<void> => waitFor(() => expect(toastKinds()).toContain(kind));
 const waitForToastReason = (reason: string): Promise<void> => waitFor(() => expect(toastReasons()).toContain(reason));
 const rowState = (name: RegExp): string | null | undefined =>

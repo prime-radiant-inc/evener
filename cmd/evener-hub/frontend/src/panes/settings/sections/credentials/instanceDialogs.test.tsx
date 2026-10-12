@@ -14,13 +14,13 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { enterText } from "../../../../textEntryTestUtils";
 import { Toast } from "../../../../widgets";
-import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 
 // The dialogs' outcomes, read from their markers: the inline refusal by its
 // data-reason and the toasts by kind, never by the words either shows.
 const alertReason = (): string | null => screen.getByRole("alert").getAttribute("data-reason");
-const toastKinds = (): string[] => getToasts().map((toast) => toast.kind);
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");

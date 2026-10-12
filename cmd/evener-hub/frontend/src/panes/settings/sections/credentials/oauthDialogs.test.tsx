@@ -9,12 +9,12 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 
 // The dialogs' outcomes, read from their markers: the device flow's status line
 // by its data-state and the toasts by kind, never by the words either shows.
 const statusState = (): string | null => screen.getByRole("status").getAttribute("data-state");
-const toastKinds = (): string[] => getToasts().map((toast) => toast.kind);
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");

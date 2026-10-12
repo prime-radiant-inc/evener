@@ -9,6 +9,7 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { InstanceSheet } from "./InstanceSheet";
 
 /** The refusal these controls use instead of the native attribute: a click that
@@ -32,7 +33,6 @@ const formErrorReason = (): string | null => screen.getByRole("alert").getAttrib
 const refusalShown = (reason: string): boolean =>
   document.querySelector(`[role="alert"][data-reason="${reason}"]`) !== null;
 const renameNote = (): string | null => document.querySelector("form")?.getAttribute("data-rename") ?? null;
-const toastKinds = (): string[] => getToasts().map((toast) => toast.kind);
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
