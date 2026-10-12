@@ -12,6 +12,7 @@ declare global {
     devicePairingGuard: {
       samples: number[][];
       nodes: AudioBufferSourceNode[];
+      firstAudioStarted: Promise<void>;
       waitFor: (text: string) => Promise<void>;
       click: (label: string) => void;
       invitationPixels: () => Promise<number[]>;
@@ -25,6 +26,10 @@ let holdApproval = false;
 let approvalReceived = () => {};
 const receivedApproval = new Promise<void>((resolve) => {
   approvalReceived = resolve;
+});
+let resolveFirstAudioStart = () => {};
+const firstAudioStarted = new Promise<void>((resolve) => {
+  resolveFirstAudioStart = resolve;
 });
 const inFlight = new Map<unknown, { method: string; received: Promise<void>; resolve(): void }>();
 
@@ -70,6 +75,7 @@ function pairingSocket(url: string): WebSocketLike {
 window.devicePairingGuard = {
   samples: [],
   nodes: [],
+  firstAudioStarted,
   holdApproval() {
     holdApproval = true;
   },
@@ -122,9 +128,10 @@ window.devicePairingGuard = {
 };
 const start = AudioBufferSourceNode.prototype.start;
 AudioBufferSourceNode.prototype.start = function (when?: number, offset?: number, duration?: number) {
+  start.call(this, when, offset, duration);
   window.devicePairingGuard.samples.push(Array.from(this.buffer?.getChannelData(0) ?? []));
   window.devicePairingGuard.nodes.push(this);
-  start.call(this, when, offset, duration);
+  resolveFirstAudioStart();
 };
 const client = new AppwireClient({ url: `ws://${location.host}/rpc`, socketFactory: pairingSocket });
 await client.connect();

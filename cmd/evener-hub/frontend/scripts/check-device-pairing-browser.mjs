@@ -72,12 +72,13 @@ try {
     await click("Create invitation");
     await wait("Play setup sound");
     await click("Play setup sound");
-    await wait("Sending setup sound");
+    await evaluate(send, "window.devicePairingGuard.firstAudioStarted");
     await click("Stop sound");
     await wait("Sound stopped");
     assert.equal(await evaluate(send, "window.devicePairingGuard.nodes.every(n=>n.context.state==='closed')"), true);
     await click("Play sound again");
     await wait("Sound sent");
+    assert.equal(await evaluate(send, "window.devicePairingGuard.samples.length"), 2);
     assert.equal(
       await evaluate(
         send,
