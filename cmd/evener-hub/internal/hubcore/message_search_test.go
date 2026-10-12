@@ -72,8 +72,26 @@ func rebuildTranscriptIndexForTest(transcriptPath string) error {
 }
 
 // writeTestTranscript writes a format-2 transcript of turns for sessionID at
-// path.
+// path, with its index sidecar built up front: the refresher's refusing read
+// skips a never-indexed session for the cycle and asks for the shared repair,
+// and these tests read the transcript's messages directly.
 func writeTestTranscript(t *testing.T, path, sessionID string, turns ...schema.Turn) {
+	t.Helper()
+	writeRawTestTranscript(t, path, sessionID, turns...)
+	sidecar, err := transcriptindex.Open(path, transcriptindex.DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sidecar.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeRawTestTranscript writes a format-2 transcript only, leaving any index
+// sidecar beside it exactly as it was: a test that rewrites a transcript this
+// way leaves the previous content's sidecar stale, the way a replaced file
+// does, for the refusing read to answer.
+func writeRawTestTranscript(t *testing.T, path, sessionID string, turns ...schema.Turn) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -91,17 +109,6 @@ func writeTestTranscript(t *testing.T, path, sessionID string, turns ...schema.T
 		}
 	}
 	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// Build the transcript's index sidecar up front: the refresher's
-	// refusing read skips a never-indexed session for the cycle and asks
-	// for the shared repair, and these tests read the transcript's messages
-	// directly.
-	sidecar, err := transcriptindex.Open(path, transcriptindex.DirFor(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sidecar.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -396,7 +403,7 @@ func TestMessageSearchRereadsARewrittenTranscriptWhole(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	writeTestTranscript(t, path, "s1",
+	writeRawTestTranscript(t, path, "s1",
 		schema.NewTurn(schema.TurnUserInput, llm.User("audit the tool descriptions")),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Fourteen descriptions mention flags.")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("drop them")),
@@ -406,8 +413,12 @@ func TestMessageSearchRereadsARewrittenTranscriptWhole(t *testing.T) {
 	// for the shared repair (wired in openTestMessageSearch), and the next
 	// cycle reads the rewritten transcript whole — the rebuilt index's
 	// update log starts empty, so nothing of the old content survives.
-	if _, err := index.Refresh(context.Background(), sessions); err != nil {
+	failures, err := index.Refresh(context.Background(), sessions)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("failures = %+v, want none: the rebuild refusal skips the session for the cycle", failures)
 	}
 	if _, err := index.Refresh(context.Background(), sessions); err != nil {
 		t.Fatal(err)
@@ -417,6 +428,50 @@ func TestMessageSearchRereadsARewrittenTranscriptWhole(t *testing.T) {
 	}
 	if matches, _ := index.Match(context.Background(), "descriptions", 3); matches["s1"].Count != 2 {
 		t.Fatalf("descriptions matches = %+v, want the rewritten transcript's two messages", matches)
+	}
+}
+
+// A refresh whose read finds the sidecar's lock held — a live writer or a
+// repair already at work on it — must skip the session silently: no failure
+// recorded, and no repair asked for, since the holder is already doing what
+// the lane would schedule. The next cycle, with the lock free, reads it.
+func TestALockHeldByAnotherHandleSkipsTheRefreshSilently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1", schema.NewTurn(schema.TurnUserInput, llm.User("settle the lock question")))
+	index := openTestMessageSearch(t)
+	var asks int
+	index.SetRepairAsker(func(string) { asks++ })
+
+	release, err := transcriptindex.HoldSidecarLockForTest(transcriptindex.DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := []MessageSearchSession{{ID: "s1", TranscriptPath: path}}
+
+	failures, err := index.Refresh(context.Background(), sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("failures = %+v, want none: lock contention is a skip, not a failure", failures)
+	}
+	if asks != 0 {
+		t.Fatalf("repair asks = %d, want none: the lock's holder is already at work", asks)
+	}
+	if matches, _ := index.Match(context.Background(), "settle", 3); len(matches) != 0 {
+		t.Fatalf("settle matches = %+v, want none: the session was skipped for the cycle", matches)
+	}
+
+	release()
+	failures, err = index.Refresh(context.Background(), sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("failures after the release = %+v, want none", failures)
+	}
+	if matches, _ := index.Match(context.Background(), "settle", 3); matches["s1"].Count != 1 {
+		t.Fatalf("settle matches = %+v, want the session indexed once the lock is free", matches)
 	}
 }
 

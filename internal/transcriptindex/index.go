@@ -1135,8 +1135,12 @@ func (x *Index) openFiles(create bool) error {
 	if create {
 		flags |= os.O_CREATE | os.O_EXCL
 	}
-	open := func(name string) (*os.File, error) {
-		return os.OpenFile(filepath.Join(x.dir, x.build, name), flags, 0o600)
+	open := func(name string) (recordFile, error) {
+		f, err := os.OpenFile(filepath.Join(x.dir, x.build, name), flags, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		return f, nil
 	}
 	if x.items.file, err = open(itemsFile); err != nil {
 		return err
@@ -1172,7 +1176,11 @@ func (x *Index) openFiles(create bool) error {
 // closeBuild drops the open build and its view of the transcript.
 func (x *Index) closeBuild() error {
 	var errs []error
-	for _, f := range []**os.File{&x.transcript, &x.items.file, &x.turns.file, &x.updates.file, &x.strings.file} {
+	if x.transcript != nil {
+		errs = append(errs, x.transcript.Close())
+		x.transcript = nil
+	}
+	for _, f := range []*recordFile{&x.items.file, &x.turns.file, &x.updates.file, &x.strings.file} {
 		if *f != nil {
 			errs = append(errs, (*f).Close())
 			*f = nil

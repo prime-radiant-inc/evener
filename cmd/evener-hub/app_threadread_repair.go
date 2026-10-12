@@ -39,6 +39,15 @@ var transcriptIndexRepairLog = func(format string, args ...any) {
 // observe it.
 var runTranscriptIndexRepair = repairTranscriptIndex
 
+// transcriptIndexRepairRecorded, when set, runs after one armed repair's
+// outcome is recorded into the registry and its log lines are written —
+// after run's whole critical section, never inside it. A package variable
+// so the tests' seam can signal completion exactly when the registry's
+// state has settled: a signal from inside the recipe itself would fire
+// before the recording and let a test assert against a registry that has
+// not decided yet.
+var transcriptIndexRepairRecorded func(path string)
+
 // repairTranscriptIndex rebuilds path's transcript index sidecar from the
 // transcript — the authority — through the exported Rebuild, under the
 // blocking exclusive lock, in the caller's goroutine. It stats the transcript
@@ -200,8 +209,13 @@ func (r *transcriptIndexRepairRegistry) askFromRefresher(path string) {
 		r.mu.Unlock()
 		return
 	}
+	// A path whose budget is exhausted is paced: the lane skips it until the
+	// interval has passed since its last refresher re-arm, without recording
+	// a failure. The pacing uses the budget's own stamp key — a transcript
+	// that changed since the failures is no longer exhausted, so the lane
+	// re-arms it now rather than against another state of the file.
 	if e != nil && e.failures >= transcriptRepairBudget && e.stamp != nil &&
-		time.Since(e.lastLaneRearm) < transcriptRepairLaneExhaustedInterval {
+		time.Since(e.lastLaneRearm) < transcriptRepairLaneExhaustedInterval && r.exhaustedLocked(path, e) {
 		r.mu.Unlock()
 		return
 	}
@@ -263,4 +277,7 @@ func (r *transcriptIndexRepairRegistry) run(path string, viaLane bool) {
 		}
 	}
 	r.mu.Unlock()
+	if transcriptIndexRepairRecorded != nil {
+		transcriptIndexRepairRecorded(path)
+	}
 }

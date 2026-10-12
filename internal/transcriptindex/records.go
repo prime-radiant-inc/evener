@@ -384,6 +384,16 @@ func decodeContributors(buf []byte) ([]contributor, error) {
 	return list, nil
 }
 
+// recordFile is the slice of *os.File the record stores run on, so a test
+// can wrap the file and count the bytes a flush writes.
+type recordFile interface {
+	ReadAt(p []byte, off int64) (int, error)
+	WriteAt(p []byte, off int64) (int, error)
+	Stat() (os.FileInfo, error)
+	Truncate(size int64) error
+	Close() error
+}
+
 // table is a file of fixed-size records.
 //
 // While buffering (buf non-nil), the file's whole content lives in buf: reads
@@ -394,10 +404,18 @@ func decodeContributors(buf []byte) ([]contributor, error) {
 // A table whose content outgrows recordBufferLimit stops buffering and writes
 // through, exactly as an unbuffered one.
 type table struct {
-	file *os.File
+	file recordFile
 	size int64 // record size
 	n    uint64
 	buf  []byte // nil: reads and writes go straight to the file
+	// flushed is how much of buf the file already holds, and dirty is the
+	// lowest offset in buf whose bytes no longer match the file: an in-place
+	// write below flushed moves it down, and a flush writes only from
+	// min(flushed, dirty) — so a live extension that touches the record it
+	// keeps open, its turn, at the table's end, still commits a tail rather
+	// than the whole file. Valid only while buf != nil.
+	flushed int64
+	dirty   int64
 }
 
 func (t *table) read(slot uint64, count int) ([]byte, error) {
@@ -423,7 +441,11 @@ func (t *table) write(slot uint64, record []byte) error {
 		// nil now means buffer stopped at the limit: fall through and write
 		// straight to the file.
 		if t.buf != nil {
-			copy(t.buf[int64(slot)*t.size:], record)
+			off := int64(slot) * t.size
+			if off < t.flushed {
+				t.dirty = min(t.dirty, off)
+			}
+			copy(t.buf[off:], record)
 			return nil
 		}
 	}
@@ -445,6 +467,7 @@ func (t *table) buffer(slot uint64) error {
 			return err
 		}
 		t.buf = nil
+		t.flushed, t.dirty = 0, 0
 		return nil
 	}
 	t.buf = append(t.buf, make([]byte, end-int64(len(t.buf)))...)
@@ -462,9 +485,13 @@ func (t *table) append(record []byte) (uint64, error) {
 
 // blob is the append-only strings file, buffered like a table (see table).
 type blob struct {
-	file *os.File
+	file recordFile
 	n    uint64
 	buf  []byte // nil: reads and writes go straight to the file
+	// flushed is how much of buf the file already holds. Valid only while
+	// buf != nil. The strings file only ever appends, so a flush never has to
+	// rewrite what the file already holds.
+	flushed int64
 }
 
 func (b *blob) put(data []byte) (strRef, error) {
@@ -518,6 +545,7 @@ func (b *blob) reserve(n int) error {
 		return err
 	}
 	b.buf = nil
+	b.flushed = 0
 	return nil
 }
 
@@ -553,20 +581,27 @@ func (b *blob) load() error {
 		b.buf = nil
 		return err
 	}
+	// The buffer mirrors the file it just read: everything is current.
+	b.flushed = int64(len(b.buf))
 	return nil
 }
 
-// flush writes buffered strings back to the file.
+// flush writes buffered strings back to the file. Only the appended tail is
+// written — the strings file never rewrites in place, so what the file
+// already holds is current — and, as table.flush's, the truncate always runs.
 func (b *blob) flush() error {
 	if b.buf == nil {
 		return nil
 	}
-	if _, err := b.file.WriteAt(b.buf, 0); err != nil {
-		return fmt.Errorf("write index strings: %w", err)
+	if b.flushed < int64(len(b.buf)) {
+		if _, err := b.file.WriteAt(b.buf[b.flushed:], b.flushed); err != nil {
+			return fmt.Errorf("write index strings: %w", err)
+		}
 	}
 	if err := b.file.Truncate(int64(len(b.buf))); err != nil {
 		return fmt.Errorf("truncate index strings: %w", err)
 	}
+	b.flushed = int64(len(b.buf))
 	return nil
 }
 
@@ -584,6 +619,8 @@ func (t *table) available() (uint64, error) {
 func (t *table) truncate(n uint64) error {
 	if t.buf != nil {
 		t.buf = t.buf[:int64(n)*t.size]
+		t.flushed = min(t.flushed, int64(n)*t.size)
+		t.dirty = min(t.dirty, int64(n)*t.size)
 		t.n = n
 		return nil
 	}
@@ -608,21 +645,33 @@ func (t *table) load() error {
 		t.buf = nil
 		return err
 	}
+	// The buffer mirrors the file it just read: everything is current.
+	t.flushed, t.dirty = int64(len(t.buf)), int64(len(t.buf))
 	return nil
 }
 
 // flush writes buffered records back to the file, at the commit points where
-// the meta that counts them is about to publish.
+// the meta that counts them is about to publish. Only what the file does not
+// already hold — the appended records, plus any in-place rewrite from dirty
+// down — is written: a live writer commits one flush per extension, and
+// rewriting the whole table every time would amplify a few appended records
+// into megabytes of writes. The truncate always runs, so a shrink reaches the
+// file and rows past the counts never survive a restart.
 func (t *table) flush() error {
 	if t.buf == nil {
 		return nil
 	}
-	if _, err := t.file.WriteAt(t.buf, 0); err != nil {
-		return fmt.Errorf("write index records: %w", err)
+	from := min(t.flushed, t.dirty)
+	if from < int64(len(t.buf)) {
+		if _, err := t.file.WriteAt(t.buf[from:], from); err != nil {
+			return fmt.Errorf("write index records: %w", err)
+		}
 	}
 	if err := t.file.Truncate(int64(len(t.buf))); err != nil {
 		return fmt.Errorf("truncate index records: %w", err)
 	}
+	t.flushed = int64(len(t.buf))
+	t.dirty = t.flushed
 	return nil
 }
 

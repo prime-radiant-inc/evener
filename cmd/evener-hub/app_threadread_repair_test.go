@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/transcriptindex"
@@ -35,27 +36,30 @@ func wireRepairsForTest(t *testing.T) context.Context {
 // installRepairSeam replaces the repair recipe with a queue the test feeds
 // one outcome per repair: a repair with no outcome fed yet holds (in flight,
 // doing nothing), and each fed outcome runs to the repair's completion.
-// completions receives one signal per finished repair; calls counts recipes
-// the registry started.
+// completions receives one signal per finished repair — fired from the
+// registry's post-recording hook, so a received signal means the outcome is
+// recorded and the log lines written, never merely that the recipe returned;
+// calls counts recipes the registry started.
 func installRepairSeam(t *testing.T) (feed func(func(path string) error), completions chan struct{}, calls *atomic.Int32) {
 	t.Helper()
 	calls = &atomic.Int32{}
 	outcomes := make(chan func(string) error, 16)
 	completions = make(chan struct{}, 16)
 	old := runTranscriptIndexRepair
+	oldRecorded := transcriptIndexRepairRecorded
 	runTranscriptIndexRepair = func(path string) error {
 		calls.Add(1)
 		outcome, ok := <-outcomes
 		if !ok {
 			return nil // the test finished; let the goroutine retire
 		}
-		err := outcome(path)
-		completions <- struct{}{}
-		return err
+		return outcome(path)
 	}
+	transcriptIndexRepairRecorded = func(string) { completions <- struct{}{} }
 	feed = func(fn func(path string) error) { outcomes <- fn }
 	t.Cleanup(func() {
 		runTranscriptIndexRepair = old
+		transcriptIndexRepairRecorded = oldRecorded
 		close(outcomes)
 	})
 	return feed, completions, calls
@@ -361,8 +365,12 @@ func TestLockContentionWithoutARepairIsAnOrdinaryTransient(t *testing.T) {
 
 // TestTheRepairRebuildsRatherThanCatchingUp pins the repair's recipe on the
 // trigger where a catch-up-only repair would no-op forever: a corrupt record
-// the covered-prefix check cannot see. The repair must run the exported
-// Rebuild, whose scan quarantines the corrupted entry.
+// the covered-prefix check cannot see. The sidecar stays identity-healthy —
+// the corruption is the SOLE trigger — so the read's catch-up succeeds, the
+// window read re-decodes the corrupted entry and refuses, and only a repair
+// that rebuilds from the transcript (whose scan quarantines the corrupted
+// entry) heals it. A catch-up-only recipe no-ops here: the corruption stays,
+// and the post-repair read refuses again, failing this test.
 func TestTheRepairRebuildsRatherThanCatchingUp(t *testing.T) {
 	wireRepairsForTest(t)
 	feed, completions, _ := installRepairSeam(t)
@@ -371,10 +379,10 @@ func TestTheRepairRebuildsRatherThanCatchingUp(t *testing.T) {
 		big = append(big, execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("word ", 200)+fmt.Sprint(i)))))
 	}
 	cfg, entry, path := seedIndexedPastSession(t, big...)
-	staleSidecarForTest(t, path) // a committed build exists for the corruption to sit inside
 	corruptTranscriptEntry(t, path)
 
-	// The window read re-decodes the corrupted entry and refuses.
+	// The catch-up over the healthy sidecar succeeds; the window read
+	// re-decodes the corrupted entry and refuses.
 	_, err := readStaleSession(t, cfg, entry)
 	requireTranscriptIndexRebuilding(t, err)
 
@@ -588,9 +596,13 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 	}
 
 	// Within the interval, the lane skips the path without recording
-	// anything.
+	// anything. askFromRefresher decides take-or-skip synchronously under
+	// the registry's mutex, so the entry's in-flight flag is settled the
+	// moment the ask returns — no sleep races a late take.
 	transcriptIndexRepairs.askFromRefresher(path)
-	time.Sleep(10 * time.Millisecond)
+	if transcriptIndexRepairs.inFlight(path) {
+		t.Fatal("the lane took an exhausted path within the interval, want a skip")
+	}
 	if got := calls.Load(); got != 4 {
 		t.Fatalf("repairs = %d, want the lane to skip an exhausted path within the interval", got)
 	}
@@ -603,6 +615,57 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 	<-completions
 	if got := calls.Load(); got != 5 {
 		t.Fatalf("repairs = %d, want the lane to re-arm after the interval", got)
+	}
+}
+
+// TestTheLanePacesAnExhaustedPathOnlyWhileItsStampStands pins the exhausted
+// pacing to the failure budget's own key: the transcript's (size, mtime)
+// stamp. A transcript that changed since the failures were counted is no
+// longer exhausted, so the lane re-arms it immediately instead of pacing it
+// against failures some earlier state of the file accumulated.
+func TestTheLanePacesAnExhaustedPathOnlyWhileItsStampStands(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, calls := installRepairSeam(t)
+	// The interval is wide enough that the two adjacent asks below cannot
+	// straddle its expiry: the skip proves the interval stands when the
+	// stamp changes, so the take that follows can only be the stamp's.
+	shrinkTranscriptRepairLaneIntervalForTest(t, 500*time.Millisecond)
+	_, _, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	staleSidecarForTest(t, path)
+
+	// Exhaust the path's budget through the refresher's lane, then let one
+	// paced re-arm mark the interval.
+	boom := errors.New("repair failed on purpose")
+	for range 3 {
+		transcriptIndexRepairs.askFromRefresher(path)
+		feed(func(string) error { return boom })
+		<-completions
+	}
+	transcriptIndexRepairs.askFromRefresher(path)
+	feed(func(string) error { return boom })
+	<-completions
+	transcriptIndexRepairs.askFromRefresher(path)
+	if transcriptIndexRepairs.inFlight(path) {
+		t.Fatal("the lane took an exhausted path within the interval, want a skip")
+	}
+
+	// The transcript moves on — a live daemon appended, or the file was
+	// rewritten. The failures were counted against another state of the
+	// file, so the budget no longer applies and the lane must re-arm now.
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	transcriptIndexRepairs.askFromRefresher(path)
+	if !transcriptIndexRepairs.inFlight(path) {
+		t.Fatal("the lane paced a path whose transcript changed, want an immediate re-arm")
+	}
+	feed(func(path string) error { return repairTranscriptIndex(path) })
+	<-completions
+	if got := calls.Load(); got != 5 {
+		t.Fatalf("repairs = %d, want 5 (three failures, one paced re-arm, one after the stamp change)", got)
 	}
 }
 
@@ -676,8 +739,12 @@ func TestARefresherRefusalRegistersThroughTheWiredLane(t *testing.T) {
 
 	// First cycle: the refusing read skips the session — nothing indexed,
 	// no failure recorded — and registers exactly one lane repair.
-	if _, err := search.Refresh(ctx, sessions); err != nil {
+	failures, err := search.Refresh(ctx, sessions)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("failures = %+v, want none: the refusal skips the session, it does not fail it", failures)
 	}
 	<-completions
 	if got := calls.Load(); got != 1 {
@@ -796,22 +863,35 @@ func TestALiveWriterObservesTheRepairHoldAsAStallAndSurvivesIt(t *testing.T) {
 	cfg, entry, path := seedIndexedPastSession(t, big...)
 	staleSidecarForTest(t, path)
 
-	// The repair holds the sidecar's lock as its rebuild would.
-	holding := make(chan struct{})
-	held := make(chan struct{})
-	feed(func(p string) error {
-		release, err := transcriptindex.HoldSidecarLockForTest(transcriptindex.DirFor(p))
-		if err != nil {
-			return err
-		}
-		close(holding)
-		<-held
-		release()
-		return repairTranscriptIndex(p)
-	})
+	// The real recipe heals the sidecar first: a live writer arrives after a
+	// repair, on a sidecar its own catch-up can extend from — not on the
+	// stale one, whose catch-up would be a full rebuild racing the repair
+	// instead of the stall this test means to observe.
 	_, err := readStaleSession(t, cfg, entry)
 	requireTranscriptIndexRebuilding(t, err)
-	<-holding
+	feed(func(p string) error { return repairTranscriptIndex(p) })
+	<-completions
+
+	// The live writer's own turn, appended raw: extending to it must be a
+	// genuine incremental extension, the one the repair's incarnation stands.
+	turn := execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("the writer's own message")))
+	w, err := transcript.OpenWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(turn); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := sidecarIncarnation(t, path)
+
+	// The repair holds the sidecar's lock as its rebuild would.
+	release, err := transcriptindex.HoldSidecarLockForTest(transcriptindex.DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// A live writer extends through the same sidecar: its blocking extension
 	// stalls on the repair's hold and completes after the release.
@@ -826,20 +906,44 @@ func TestALiveWriterObservesTheRepairHoldAsAStallAndSurvivesIt(t *testing.T) {
 		extension <- writer.CatchUp()
 	}()
 	time.Sleep(10 * time.Millisecond) // let the writer reach the lock
-	close(held)
-	<-completions
+	select {
+	case err := <-extension:
+		t.Fatalf("the writer's extension completed while the repair held the lock: %v", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+	release()
 	if err := <-extension; err != nil {
 		t.Fatalf("the writer's extension after the repair's hold: %v", err)
 	}
+	if after := sidecarIncarnation(t, path); after != before {
+		t.Fatalf("the sidecar's incarnation moved from %q to %q: the writer rebuilt instead of extending", before, after)
+	}
 
-	// Records stay consistent: the hub's next read describes the transcript.
+	// Records stay consistent: the hub's next read describes the transcript,
+	// the repair's three entries plus the extension's fourth.
 	response, err := readStaleSession(t, cfg, entry)
 	if err != nil {
 		t.Fatalf("read after the repair and the extension: %v", err)
 	}
-	if items := flattenTestItems(response.Thread.Turns); len(items) != 3 {
-		t.Fatalf("items after the repair and the extension = %+v, want the transcript's three", items)
+	if items := flattenTestItems(response.Thread.Turns); len(items) != 4 {
+		t.Fatalf("items after the repair and the extension = %+v, want the transcript's four", items)
 	}
+}
+
+// sidecarIncarnation reads the sidecar build's incarnation, the identity a
+// genuine incremental extension keeps and a rebuild mints anew.
+func sidecarIncarnation(t *testing.T, path string) string {
+	t.Helper()
+	index, err := transcriptindex.OpenRefusing(path, transcriptindex.DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = index.Close() }()
+	incarnation, err := index.Incarnation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return incarnation
 }
 
 // staleSidecarOrdinal reads the sidecar's last recorded entry ordinal, for
@@ -870,10 +974,11 @@ func staleSidecarOrdinal(t *testing.T, path string) uint64 {
 }
 
 // shrinkTranscriptRepairLaneIntervalForTest shrinks the lane's exhausted-path
-// pacing for the test's duration.
-func shrinkTranscriptRepairLaneIntervalForTest(t *testing.T, d time.Duration) func() {
+// pacing for the test's duration and restores the production default on
+// cleanup, so the shrunk value never leaks into later tests in this package.
+func shrinkTranscriptRepairLaneIntervalForTest(t *testing.T, d time.Duration) {
 	t.Helper()
 	old := transcriptRepairLaneExhaustedInterval
 	transcriptRepairLaneExhaustedInterval = d
-	return func() { transcriptRepairLaneExhaustedInterval = old }
+	t.Cleanup(func() { transcriptRepairLaneExhaustedInterval = old })
 }
