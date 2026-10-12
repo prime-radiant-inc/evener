@@ -9,7 +9,6 @@ import {
 } from "@evener/appwire-client";
 import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
-import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import {
   ENTRY_COVERAGE_STORE,
   ENTRY_ITEM_STORE,
@@ -2198,13 +2197,7 @@ it("refuses a stale-epoch entry write after real Clear and keeps mounted content
   owner.acceptRead(read("base"), { lifetime: 1, readId: "read-clear", boundary: "read-clear-boundary" });
   await owner.settled();
   const reader = owner.attachReader();
-  const clearCache = new SessionCacheIndexedDB({
-    indexedDB: fixture.indexedDB,
-    databaseName: fixture.name,
-    databaseVersion: 3,
-  });
-  expect(await clearCache.clear()).toEqual({ committed: true, epoch: 1 });
-  clearCache.close();
+  expect(await fixture.cache.clear()).toEqual({ committed: true, epoch: 1 });
 
   owner.accept(
     {
@@ -2239,7 +2232,8 @@ it("refuses a stale-epoch entry write after real Clear and keeps mounted content
       .map((item) => item.text),
   ).toContain("visible after clear");
   expect((await reader.openLocal(40)).status).toBe("recovery-needed");
-  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toMatchObject([{ transcriptKey: "item-base" }]);
+  // The entry cache's own clear() retires the rows it owns; only the mounted display keeps them.
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toEqual([]);
   await expect(fixture.cache.getCoverage(historyKey, "suffix:read-clear")).resolves.toBeUndefined();
   reader.dispose();
   owner.dispose();

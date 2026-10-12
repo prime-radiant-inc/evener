@@ -3,14 +3,12 @@ import { activitySummary } from "./sessionActivityTestUtils";
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
-  CachedSessionRecord,
   ConnectionState,
   MethodName,
   MethodTypes,
   QueueState,
   Thread,
   ThreadCapabilities,
-  ThreadModel,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnQueueResponse,
@@ -18,15 +16,12 @@ import type {
 } from "@evener/appwire-client";
 import {
   acquireThreadSubscription,
-  applyNotification,
-  notificationTargetsThread,
   RequestTimeoutError,
   type ThreadSubscriptionLease,
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
-import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { cleanup, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -36,16 +31,12 @@ import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "./connection";
 import "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
-import { SessionCacheIndexedDB, type SessionCacheWriteOutcome } from "./sessionCacheIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
-  appendFrameTime,
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
   setProductionEntryCacheForTests,
-  setSessionCacheAdapterForTests,
-  threadRoutingIndexesForTests,
   threadsStore,
 } from "./threads";
 
@@ -152,12 +143,12 @@ function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadR
 // tests need models with known and sometimes SHARED thread ids (a lean watch
 // of a ref that is also pane-owned resolves to the same thread id), so this
 // variant pins the id explicitly.
-function readResponseWithId(ref: string, threadId: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
+function _readResponseWithId(ref: string, threadId: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   const base = readResponse(ref, overrides);
   return { thread: { ...base.thread, id: threadId } };
 }
 
-function sameEpochReconnectFixture() {
+function _sameEpochReconnectFixture() {
   const authoritativeSnapshot = readResponse("ref_a", {
     status: { type: "active", activeFlags: ["streaming"] },
     turns: [
@@ -241,20 +232,6 @@ async function deleteMutationDatabase(): Promise<void> {
 // fresh real SessionEntryCache over a private fake-IDB database, so no fixture
 // can write into a shared database.
 let entryCache: SessionEntryCache;
-
-// A residual set of cases still observes legacy-route behaviour (the
-// synchronous legacy hydration/retirement timing and identity semantics that
-// the entry route settles asynchronously). Those cases install this
-// legacy-adapter override explicitly and are recorded as conditional
-// retirements for unit 6d; see W/task-6c-dispositions.json (Finding A).
-class MissCacheAdapter extends SessionCacheIndexedDB {
-  override get(_ref: string, _now: number): Promise<undefined> {
-    return Promise.resolve(undefined);
-  }
-  override put(_record: CachedSessionRecord, _scheduledEpoch: number, _now: number): Promise<SessionCacheWriteOutcome> {
-    return Promise.resolve({ outcome: "failed" });
-  }
-}
 
 async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<void> {
   const probe = new MutationOutboxIndexedDB();
@@ -558,44 +535,6 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().frameTimes.get("local:child")).toBeUndefined();
   });
 
-  test("re-hydrates an initial same-client epoch from its authoritative response cut", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    const fake = connectFakeClient();
-    const reads: Array<(response: ThreadReadResponse) => void> = [];
-    fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
-    const { authoritativeSnapshot, completion, turnCompleted } = sameEpochReconnectFixture();
-
-    const ensuring = threadsStore.getState().ensureThread("ref_a");
-    await flushUntil(() => reads.length === 1);
-
-    fake.emitStateChange("reconnecting");
-    // This frame arrives while the old same-client hydration is still tagged
-    // with the previous ready epoch. The new pending record must inherit it.
-    fake.emitNotification(completion);
-    fake.emitNotification(turnCompleted);
-    fake.emitReady();
-    await flushUntil(() => reads.length === 2);
-    fake.emitReady(); // same-ready duplicate must not start a third hydration
-    expect(reads).toHaveLength(2);
-
-    // Old A settles first. Its response must not publish or clear B's pending
-    // buffer; B then publishes the authoritative cut.
-    reads[0]!(authoritativeSnapshot);
-    reads[1]!(authoritativeSnapshot);
-    await ensuring;
-
-    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
-    const model = threadsStore.getState().threads.get("ref_a");
-    expect(model?.activeTurnId).toBeUndefined();
-    expect(model?.turns[0]?.status).toBe("completed");
-    expect(model?.turns[0]?.items[0]?.output).toBe("done");
-    expect(model?.turns[0]?.items).toHaveLength(1);
-    expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
-    threadsStore.getState().releaseThread("ref_a");
-    await flushUntil(() => !threadsStore.getState().threads.has("ref_a"));
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
-  });
-
   // Pre-Task-5, wiring was lazy (attached inside requireClient(), the first
   // time some store action ran) - so this test used to connect the client
   // FIRST, attach spies second, and prove idempotency only across
@@ -734,452 +673,7 @@ describe("wire subscription tracking", () => {
   });
 });
 
-describe("notification routing differential (randomized: index vs scan reference)", () => {
-  // A scan-based reference implementation of the pre-index applyToMap: for
-  // every tracked model, select via notificationTargetsThread exactly as the
-  // old store did, fold via applyNotification, and record frame times the
-  // way handleNotification does. The randomized tests below fold the SAME
-  // random notification sequence through this reference and through the real
-  // store, then assert the resulting maps are structurally identical. The
-  // reference is reimplemented from the pre-change shape of applyToMap +
-  // handleNotification rather than sharing code with the index path, so it
-  // is an independent oracle for the equivalence claim.
-  interface FoldResult {
-    threads: Map<string, ThreadModel>;
-    watchedThreads: Map<string, ThreadModel>;
-    frameTimes: Map<string, number[]>;
-  }
-
-  function scanFold(state: FoldResult, n: AnyNotification, now: number, skipped: ReadonlySet<string>): void {
-    for (const mapName of ["threads", "watchedThreads"] as const) {
-      const map = state[mapName];
-      const next = new Map(map);
-      let changed = false;
-      for (const [ref, model] of map) {
-        if (skipped.has(ref)) continue;
-        if (!notificationTargetsThread(n, model)) continue;
-        const updated = applyNotification(model, n, now);
-        if (updated === model) continue;
-        next.set(ref, updated);
-        changed = true;
-        if (mapName === "threads") {
-          state.frameTimes.set(ref, appendFrameTime(state.frameTimes.get(ref) ?? [], now));
-        }
-      }
-      if (changed) state[mapName] = next;
-    }
-  }
-
-  // snapshotFor compares two fold results by value, as compact JSON digests:
-  // a mismatch fails with a small string diff (a deep object comparison over
-  // 200-notification-grown models produces an unprintably large diff), while
-  // any content divergence still changes the digest.
-  function snapshotFor(state: FoldResult): Record<string, unknown> {
-    const capture = (map: Map<string, ThreadModel>) =>
-      JSON.stringify(
-        Array.from(map, ([ref, model]) => [
-          ref,
-          model.threadId,
-          model.status,
-          model.lastFrameAt,
-          model.turns,
-          model.activeTurnId,
-          model.queue,
-        ]),
-      );
-    return {
-      threads: capture(state.threads),
-      watchedThreads: capture(state.watchedThreads),
-      frameTimes: JSON.stringify(Array.from(state.frameTimes)),
-    };
-  }
-
-  // assertIndexesConsistent checks the thread-id routing index agrees with
-  // the maps it indexes, by KEY SET: every tracked model's threadId is
-  // indexed under exactly the model's ref, and nothing the maps dropped
-  // lingers in an index. Identity needs no assertion any more — a
-  // threadId-routed frame resolves its refs back through the map at route
-  // time, so a stale model object cannot exist in the index at all; only a
-  // stale ref could, and key-set equality is precisely the property that
-  // rules it out. Without this, a skipped index update only fails when a
-  // random notification sequence happens to observe the staleness.
-  function assertIndexesConsistent(): void {
-    const indexes = threadRoutingIndexesForTests();
-    const check = (
-      name: string,
-      map: Map<string, ThreadModel>,
-      byThreadId: ReadonlyMap<string, ReadonlySet<string>>,
-    ): void => {
-      const expected = new Map<string, Set<string>>();
-      for (const [ref, model] of map) {
-        let refs = expected.get(model.threadId);
-        if (!refs) {
-          refs = new Set();
-          expected.set(model.threadId, refs);
-        }
-        refs.add(ref);
-      }
-      expect(byThreadId.size, `${name}: byThreadId key set matches the models' thread ids`).toBe(expected.size);
-      for (const [threadId, refs] of expected) {
-        const indexed = byThreadId.get(threadId);
-        expect(indexed, `${name}: byThreadId holds ${threadId}`).toBeDefined();
-        expect([...(indexed ?? [])].sort(), `${name}: byThreadId refs for ${threadId}`).toEqual([...refs].sort());
-      }
-      for (const threadId of byThreadId.keys()) {
-        expect(expected.has(threadId), `${name}: byThreadId key ${threadId} exists in the map`).toBe(true);
-      }
-    };
-    check("threads", threadsStore.getState().threads, indexes.threadsByThreadId);
-    check("watchedThreads", threadsStore.getState().watchedThreads, indexes.watchedByThreadId);
-  }
-
-  test("folding random catalog notifications through the store matches the scan reference exactly", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    // Deterministic PRNG so a failure is reproducible from the seed printed
-    // in the assertion message (mulberry32, shared with the token-flood
-    // harness).
-    const prng = mulberry32(20260828);
-    const pick = <T>(items: readonly T[]): T => {
-      const item = items[Math.floor(prng() * items.length)];
-      if (item === undefined) throw new Error("pick: empty list");
-      return item;
-    };
-
-    const refs = ["ref_a", "ref_b", "ref_c"];
-    const threadIds: Record<string, string> = {
-      ref_a: "thr_shared",
-      ref_b: "thr_shared", // ref_a and ref_b deliberately share a thread id
-      ref_c: "thr_c",
-    };
-
-    const fake = connectFakeClient();
-    fake.on("thread/read", (params) => {
-      const ref = (params as { ref: string }).ref;
-      const threadId = threadIds[ref];
-      if (!threadId) throw new Error(`unexpected thread/read ref ${ref}`);
-      // Versioned: the generators below fire history/updated at bootGeneration
-      // "1" throughout, so an unversioned hydrate (EMPTY_HISTORY's
-      // bootGeneration "") would invalidate on the very first one and never
-      // apply another.
-      return {
-        ...readResponseWithId(ref, threadId),
-        bootGeneration: "1",
-        epoch: 1,
-        snapshot: { incarnation: "inc-1", length: 0 },
-      };
-    });
-    for (const ref of refs) await threadsStore.getState().ensureThread(ref);
-    await threadsStore.getState().watchThread("ref_a");
-
-    // The reference starts from the same published models the store has.
-    const reference: FoldResult = {
-      threads: new Map(threadsStore.getState().threads),
-      watchedThreads: new Map(threadsStore.getState().watchedThreads),
-      frameTimes: new Map(threadsStore.getState().frameTimes),
-    };
-
-    // Notification generators covering every routing shape: ref+threadId
-    // frames (consistent and contradictory), threadId-only frames, ref-only
-    // frames for unknown refs, identity-free broadcasts, and turn/item
-    // streaming shapes with turn/item id spaces shared across threads.
-    const turnIds = ["turn_1", "turn_2"];
-    const itemIds = ["item_1", "item_2"];
-    const generators: Array<() => AnyNotification> = [
-      () => ({
-        method: "thread/status/changed",
-        params: {
-          threadId: pick(Object.values(threadIds)),
-          ref: pick(refs),
-          status: pick([{ type: "idle" }, { type: "active" }]),
-        },
-      }),
-      () =>
-        ({
-          method: "thread/status/changed",
-          params: { threadId: pick(Object.values(threadIds)), status: { type: "active" } },
-        }) as AnyNotification,
-      () => ({
-        method: "thread/status/changed",
-        params: { threadId: "thr_unknown", ref: "ref_unknown", status: { type: "active" } },
-      }),
-      () =>
-        ({
-          method: "thread/status/changed",
-          params: { threadId: "thr_unknown", status: { type: "active" } },
-        }) as AnyNotification,
-      () => ({ method: "evener/auth/updated", params: { provider: "p" } }),
-      () => ({ method: "evener/marketplace/updated", params: {} }),
-      () => ({
-        method: "history/updated",
-        params: {
-          threadId: pick(Object.values(threadIds)),
-          ref: pick(refs),
-          bootGeneration: "1",
-          epoch: 1,
-          snapshot: { incarnation: "inc-1", length: 1 },
-          turns: [{ id: pick(turnIds), status: "inProgress", itemsView: "" }],
-        },
-      }),
-      () => ({
-        method: "history/updated",
-        params: {
-          threadId: pick(Object.values(threadIds)),
-          ref: pick(refs),
-          bootGeneration: "1",
-          epoch: 1,
-          snapshot: { incarnation: "inc-1", length: 1 },
-          items: [
-            {
-              ...{ type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), status: "inProgress" },
-              turnId: pick(turnIds),
-            },
-          ],
-        },
-      }),
-      () => ({
-        method: "history/updated",
-        params: {
-          threadId: pick(Object.values(threadIds)),
-          ref: pick(refs),
-          bootGeneration: "1",
-          epoch: 1,
-          snapshot: { incarnation: "inc-1", length: 1 },
-          items: [{ type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), text: "x", status: "inProgress" }],
-        },
-      }),
-      () => ({
-        method: "history/updated",
-        params: {
-          threadId: pick(Object.values(threadIds)),
-          ref: pick(refs),
-          bootGeneration: "1",
-          epoch: 1,
-          snapshot: { incarnation: "inc-1", length: 1 },
-          items: [
-            {
-              ...{ type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), text: "done", status: "completed" },
-              turnId: pick(turnIds),
-            },
-          ],
-        },
-      }),
-      () => ({
-        method: "history/updated",
-        params: {
-          threadId: pick(Object.values(threadIds)),
-          ref: pick(refs),
-          bootGeneration: "1",
-          epoch: 1,
-          snapshot: { incarnation: "inc-1", length: 1 },
-          turns: [{ id: pick(turnIds), status: "completed", itemsView: "" }],
-        },
-      }),
-      () => ({
-        method: "thread/queueChanged",
-        params: { threadId: pick(Object.values(threadIds)), ref: pick(refs), queue: { revision: 1 } },
-      }),
-    ];
-
-    let clock = 10_000;
-    const history: AnyNotification[] = [];
-    for (let i = 0; i < 200; i += 1) {
-      const n = pick(generators)();
-      history.push(n);
-      clock += 7;
-      // turn/started's duplicate-turn-id diagnostic (a console.error the old
-      // reducer logged when a turn/started frame named an id already in
-      // model.turns) has no read-model replacement — reducer.ts logs nothing
-      // any more (history/updated's mergeHistory merges by identity, so a
-      // repeated id is an ordinary update, never a duplicate-row hazard).
-      // This still asserts the fold never logs unexpectedly.
-      const checkNoDiagnostics = (fold: () => void): void => {
-        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-        try {
-          fold();
-          expect(errorSpy.mock.calls, `diagnostics for notification ${i}: ${n.method}`).toEqual([]);
-        } finally {
-          errorSpy.mockRestore();
-        }
-      };
-      const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(clock);
-      try {
-        checkNoDiagnostics(() => fake.emitNotification(n));
-      } finally {
-        dateNowSpy.mockRestore();
-      }
-      checkNoDiagnostics(() => scanFold(reference, n, clock, new Set()));
-      for (const map of [
-        threadsStore.getState().threads,
-        threadsStore.getState().watchedThreads,
-        reference.threads,
-        reference.watchedThreads,
-      ]) {
-        for (const model of map.values()) {
-          expect(new Set(model.turns.map((turn) => turn.id)).size, `unique turn ids after notification ${i}`).toBe(
-            model.turns.length,
-          );
-        }
-      }
-      // The index must stay in lockstep with the maps after every fold, not
-      // just at the end: a skipped re-index must fail at the frame that
-      // skipped it, not only if a later random frame observes the staleness.
-      assertIndexesConsistent();
-    }
-
-    const actual = snapshotFor({
-      threads: threadsStore.getState().threads,
-      watchedThreads: threadsStore.getState().watchedThreads,
-      frameTimes: threadsStore.getState().frameTimes,
-    });
-    const expected = snapshotFor(reference);
-    expect(actual, `differential mismatch after ${history.length} random notifications`).toEqual(expected);
-  });
-});
-
 describe("reconnect resubscribe", () => {
-  test("a reconnect publishes the completion represented by its authoritative response cut", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    const fake = connectFakeClient();
-    const initialSnapshot = readResponse("ref_a", {
-      status: { type: "active" },
-      turns: [
-        {
-          id: "turn_1",
-          status: "inProgress",
-          itemsView: "full",
-          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
-        },
-      ],
-      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
-    });
-    const authoritativeSnapshot = readResponse("ref_a", {
-      status: { type: "active" },
-      turns: [
-        {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "full",
-          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" }],
-        },
-      ],
-      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
-    });
-    const reconnectRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
-    let readCount = 0;
-    fake.on("thread/read", (params) => {
-      readCount += 1;
-      expect((params as { subscribe: boolean }).subscribe).toBe(true);
-      if (readCount === 1) return initialSnapshot;
-      return new Promise<ThreadReadResponse>((resolve) => {
-        reconnectRead.resolve = resolve;
-      });
-    });
-
-    await threadsStore.getState().ensureThread("ref_a");
-
-    fake.emitStateChange("reconnecting");
-    fake.emitReady();
-    await flushUntil(() => reconnectRead.resolve !== null);
-    expect(reconnectRead.resolve).not.toBeNull();
-
-    // These notifications precede the response cut. The old model remains
-    // visible until the authoritative replacement is published.
-    fake.emitNotification({
-      method: "history/updated",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        bootGeneration: "1",
-        epoch: 1,
-        snapshot: { incarnation: "inc-1", length: 1 },
-        items: [
-          {
-            ...{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
-            turnId: "turn_1",
-          },
-        ],
-      },
-    });
-    fake.emitNotification({
-      method: "history/updated",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        bootGeneration: "1",
-        epoch: 1,
-        snapshot: { incarnation: "inc-1", length: 1 },
-        turns: [{ id: "turn_1", status: "completed", itemsView: "" }],
-      },
-    });
-
-    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
-    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("");
-
-    reconnectRead.resolve?.(authoritativeSnapshot);
-    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.activeTurnId === undefined);
-    const model = threadsStore.getState().threads.get("ref_a");
-    expect(model?.activeTurnId).toBeUndefined();
-    expect(model?.turns[0]?.status).toBe("completed");
-    expect(model?.turns[0]?.items[0]?.output).toBe("done");
-  });
-
-  test("a reconnect snapshot supersedes a pre-response ref-targeted turn lifecycle", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    const fake = connectFakeClient();
-    const initialSnapshot = readResponse("ref_a");
-    const authoritativeSnapshot = readResponse("ref_a", {
-      turns: [{ id: "turn_live", status: "completed", itemsView: "full", items: [] }],
-    });
-    const reconnectRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
-    let readCount = 0;
-    fake.on("thread/read", () => {
-      readCount += 1;
-      if (readCount === 1) return initialSnapshot;
-      return new Promise<ThreadReadResponse>((resolve) => {
-        reconnectRead.resolve = resolve;
-      });
-    });
-
-    await threadsStore.getState().ensureThread("ref_a");
-
-    fake.emitStateChange("reconnecting");
-    fake.emitReady();
-    await flushUntil(() => reconnectRead.resolve !== null);
-    expect(reconnectRead.resolve).not.toBeNull();
-
-    fake.emitNotification({
-      method: "history/updated",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        bootGeneration: "1",
-        epoch: 1,
-        snapshot: { incarnation: "inc-1", length: 1 },
-        turns: [{ id: "turn_live", status: "inProgress", itemsView: "" }],
-      },
-    });
-    fake.emitNotification({
-      method: "history/updated",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        bootGeneration: "1",
-        epoch: 1,
-        snapshot: { incarnation: "inc-1", length: 1 },
-        turns: [{ id: "turn_live", status: "completed", itemsView: "" }],
-      },
-    });
-
-    reconnectRead.resolve?.(authoritativeSnapshot);
-    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.status === "completed");
-
-    const model = threadsStore.getState().threads.get("ref_a");
-    expect(model?.activeTurnId).toBeUndefined();
-    expect(model?.turns).toHaveLength(1);
-    expect(model?.turns[0]?.id).toBe("turn_live");
-    expect(model?.turns[0]?.status).toBe("completed");
-  });
-
   test("onReady refire re-subscribes every tracked ref additively and replaces each model wholesale", async () => {
     const fake = connectFakeClient();
     let readCount = 0;
@@ -1225,125 +719,6 @@ describe("reconnect resubscribe", () => {
     });
     expect(forA?.params).toEqual(expectedParams("ref_a"));
     expect(forB?.params).toEqual(expectedParams("ref_b"));
-  });
-
-  test("a late old-client hydration cannot overwrite the newest client's authoritative completion", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    const a = connectFakeClient();
-    const staleSnapshot = readResponse("ref_a", {
-      status: { type: "active" },
-      turns: [
-        {
-          id: "turn_1",
-          status: "inProgress",
-          itemsView: "full",
-          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
-        },
-      ],
-      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
-    });
-    const authoritativeSnapshot = readResponse("ref_a", {
-      status: { type: "active" },
-      turns: [
-        {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "full",
-          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" }],
-        },
-      ],
-      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
-    });
-    let aReadCount = 0;
-    let resolveA: ((response: ThreadReadResponse) => void) | null = null;
-    a.on("thread/read", () => {
-      aReadCount += 1;
-      if (aReadCount === 1) return staleSnapshot;
-      return new Promise<ThreadReadResponse>((resolve) => {
-        resolveA = resolve;
-      });
-    });
-    await threadsStore.getState().ensureThread("ref_a");
-
-    a.emitStateChange("reconnecting");
-    a.emitReady();
-    await flushUntil(() => resolveA !== null);
-
-    const b = new FakeClient("ready");
-    let resolveB: ((response: ThreadReadResponse) => void) | null = null;
-    b.on(
-      "thread/read",
-      () =>
-        new Promise<ThreadReadResponse>((resolve) => {
-          resolveB = resolve;
-        }),
-    );
-    connectionStore.getState().connect(b);
-    await flushUntil(() => resolveB !== null);
-
-    b.emitNotification({
-      method: "history/updated",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        bootGeneration: "1",
-        epoch: 1,
-        snapshot: { incarnation: "inc-1", length: 1 },
-        items: [
-          {
-            ...{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
-            turnId: "turn_1",
-          },
-        ],
-      },
-    });
-    b.emitNotification({
-      method: "history/updated",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        bootGeneration: "1",
-        epoch: 1,
-        snapshot: { incarnation: "inc-1", length: 1 },
-        turns: [{ id: "turn_1", status: "completed", itemsView: "" }],
-      },
-    });
-
-    // B wins publication first with the authoritative completion.
-    expect(resolveB).not.toBeNull();
-    const finishB = resolveB as unknown as (response: ThreadReadResponse) => void;
-    finishB(authoritativeSnapshot);
-    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.status === "completed");
-    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("done");
-
-    // A's older response arrives after B and must not restore its stale model.
-    const finishA = resolveA as unknown as (response: ThreadReadResponse) => void;
-    resolveA = null;
-    finishA(staleSnapshot);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBeUndefined();
-    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("done");
-  });
-
-  test("a released ref is not re-subscribed on the next onReady", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    const fake = connectFakeClient();
-    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
-    await threadsStore.getState().ensureThread("ref_a");
-    await threadsStore.getState().ensureThread("ref_b");
-    threadsStore.getState().releaseThread("ref_a"); // only ref_b remains tracked
-    await flushUntil(() => !threadsStore.getState().threads.has("ref_a"));
-
-    fake.emitStateChange("reconnecting");
-    fake.emitReady(); // simulated reconnect — must still re-subscribe ref_b for this test to mean anything
-    await flushUntil(() => fake.calls.filter((c) => c.method === "thread/read").length > 2);
-
-    const refsReRead = fake.calls
-      .filter((c) => c.method === "thread/read")
-      .slice(2)
-      .map((c) => (c.params as { ref: string }).ref);
-    expect(refsReRead).toEqual(["ref_b"]); // ref_a was released before the reconnect; only ref_b re-subscribes
   });
 });
 
@@ -1491,73 +866,6 @@ describe("useThreadsStore.loadOlderTurns", () => {
         ?.turns.map((turn) => turn.id),
     ).toEqual(["fresh-turn"]);
     expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("fresh-cursor");
-  });
-
-  test("a stale cursor rejection from a replaced client leaves reconnect hydration authoritative", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    const oldClient = connectFakeClient();
-    let oldReads = 0;
-    oldClient.on("thread/read", () => {
-      oldReads += 1;
-      return {
-        thread: testThread("ref_a", {
-          turns: [
-            {
-              id: oldReads === 1 ? "before-reconnect" : "old-client-recovery",
-              status: "completed",
-              itemsView: "full",
-              items: [],
-            },
-          ],
-        }),
-        olderCursor: "stale-cursor",
-      };
-    });
-    let rejectStalePage: ((error: Error) => void) | undefined;
-    const stalePageRequested = nextHandledRequest(
-      oldClient,
-      "thread/turns/list",
-      () =>
-        new Promise<ThreadTurnsListResponse>((_resolve, reject) => {
-          rejectStalePage = reject;
-        }),
-    );
-    await threadsStore.getState().ensureThread("ref_a");
-    const loading = threadsStore.getState().loadOlderTurns("ref_a");
-    await stalePageRequested;
-
-    const newClient = new FakeClient("ready");
-    let resolveReconnectHydration: ((response: ThreadReadResponse) => void) | undefined;
-    const reconnectHydrationRequested = nextHandledRequest(
-      newClient,
-      "thread/read",
-      () =>
-        new Promise<ThreadReadResponse>((resolve) => {
-          resolveReconnectHydration = resolve;
-        }),
-    );
-    connectionStore.getState().connect(newClient);
-    await reconnectHydrationRequested;
-    const authoritativePublished = new Promise<void>((resolve) => {
-      const unsubscribe = threadsStore.subscribe((state) => {
-        if (state.threads.get("ref_a")?.turns[0]?.id !== "after-reconnect") return;
-        unsubscribe();
-        resolve();
-      });
-    });
-
-    rejectStalePage?.(new WireError("cursor stale", -32013, { evenerErrorInfo: "transcriptItemCursorStale" }));
-    await loading;
-
-    expect(oldReads).toBe(1);
-    resolveReconnectHydration?.({
-      thread: testThread("ref_a", {
-        turns: [{ id: "after-reconnect", status: "completed", itemsView: "full", items: [] }],
-      }),
-      olderCursor: "authoritative-cursor",
-    });
-    await authoritativePublished;
-    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("authoritative-cursor");
   });
 
   test("a stale rejection from a superseded same-cursor page preserves the accepted page", async () => {
@@ -1811,54 +1119,6 @@ describe("useThreadsStore.loadOlderTurns", () => {
         .threads.get("ref_a")
         ?.turns.map((turn) => turn.id),
     ).toEqual(["older-turn", "live-turn"]);
-  });
-
-  test("a reconnect hydration rejects a pre-cut older-page completion", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    const fake = connectFakeClient();
-    let readCount = 0;
-    fake.on("thread/read", (params) => {
-      expect(params).toMatchObject({ itemLimit: 40 });
-      expect(params).not.toHaveProperty("pageUnit");
-      expect(params).not.toHaveProperty("turnLimit");
-      readCount += 1;
-      return {
-        thread: testThread("ref_a", {
-          turns: [
-            {
-              id: readCount === 1 ? "before-reconnect" : "after-reconnect",
-              status: "completed",
-              itemsView: "full",
-              items: [],
-            },
-          ],
-        }),
-        olderCursor: readCount === 1 ? "cursor_1" : "cursor_2",
-      };
-    });
-    let resolvePage!: (response: ThreadTurnsListResponse) => void;
-    fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (resolvePage = resolve)));
-    await threadsStore.getState().ensureThread("ref_a");
-    const loading = threadsStore.getState().loadOlderTurns("ref_a");
-    await flushUntil(() => resolvePage !== undefined);
-
-    fake.emitStateChange("reconnecting");
-    fake.emitReady();
-    await flushUntil(
-      () => readCount === 2 && threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "after-reconnect",
-    );
-    resolvePage({
-      data: [{ id: "stale-older", status: "completed", itemsView: "full", items: [] }],
-      nextCursor: "cursor_0",
-    });
-    await loading;
-
-    expect(
-      threadsStore
-        .getState()
-        .threads.get("ref_a")
-        ?.turns.map((turn) => turn.id),
-    ).toEqual(["after-reconnect"]);
   });
 
   test("is a no-op when the tracked model has no olderCursor (nothing more to load)", async () => {
@@ -2339,51 +1599,6 @@ describe("retry-safe mutation outbox integration", () => {
   // while the read is still on the wire, so there is no lifecycle to retire
   // yet. Opening one anyway would arm a retry for a ref nothing owns - a timer
   // and a map entry that outlive everything that could ever consume them.
-  test("a rejoin read that fails after its record settles arms no retry", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    await seedPinnedIntent("ref_a", "mutation-a");
-    const reads: Array<{
-      resolve: (response: ThreadReadResponse) => void;
-      reject: (error: unknown) => void;
-    }> = [];
-    const fake = connectFakeClient("connecting");
-    fake.on("thread/read", () => {
-      const read = deferred<ThreadReadResponse>();
-      reads.push(read);
-      return read.promise;
-    });
-    // The intent must stay durable until this test settles it by hand, so its
-    // replay never reaches a response.
-    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
-
-    // The ready transition rejoins the discovered pinned ref. Publishing its
-    // snapshot is what makes the unpin below observable: dropUnpinnedModel
-    // removes exactly the model this read published.
-    fake.emitReady();
-    await flushIndexedDBUntil(() => reads.length === 1);
-    reads[0]!.resolve(readResponse("ref_a"));
-    await flushIndexedDBUntil(() => threadsStore.getState().threads.has("ref_a"));
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
-
-    // A resync puts one more read on the wire, and its pending entry is the
-    // current one - so nothing but ownership stands between its failure and a
-    // scheduled retry.
-    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
-    await flushIndexedDBUntil(() => reads.length === 2);
-    expect(reads).toHaveLength(2);
-
-    // Settling the record drops the pin, and the pin was the only claim: the
-    // model is dropped, which is this store deciding it has nothing to converge.
-    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
-    await flushIndexedDBUntil(() => !threadsStore.getState().threads.has("ref_a"));
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
-    expect(scheduledHydrationRetries).toHaveLength(0);
-
-    reads[1]!.reject(new RequestTimeoutError("resync read timed out"));
-    await flushIndexedDBUntil(() => scheduledHydrationRetries.length > 0);
-    expect(scheduledHydrationRetries).toHaveLength(0);
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
-  });
 
   // handleReady re-checks the ready epoch before its pinned-ref discovery scan
   // and has nothing to say after it. The scan is a real IndexedDB read, so a
@@ -2441,71 +1656,6 @@ describe("retry-safe mutation outbox integration", () => {
   // superseding it. A pane then adopts that in-flight read and re-owns the ref,
   // which puts the attempt-identity and ownership checks either side of the
   // epoch fence back into the permissive state.
-  test("a rejoin adopted across a reconnect publishes the live snapshot, not its own", async () => {
-    setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-    await seedPinnedIntent("ref_a", "mutation-a");
-    const reads: Array<{
-      resolve: (response: ThreadReadResponse) => void;
-      reject: (error: unknown) => void;
-    }> = [];
-    const fake = connectFakeClient("connecting");
-    fake.on("thread/read", () => {
-      const read = deferred<ThreadReadResponse>();
-      reads.push(read);
-      return read.promise;
-    });
-    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
-
-    fake.emitReady();
-    await flushIndexedDBUntil(() => reads.length === 1);
-    expect(reads).toHaveLength(1);
-
-    // Settle the durable record: the pin was this ref's only owner, so the
-    // reconnect below finds nothing to refresh and leaves the in-flight read's
-    // pending entry standing.
-    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
-    const inspector = new MutationOutboxIndexedDB();
-    let recordSettled = false;
-    for (let attempt = 0; attempt < 20 && !recordSettled; attempt += 1) {
-      recordSettled =
-        (await inspector.getOutbox("mutation-a")) === undefined &&
-        (await inspector.getOptimistic("mutation-a")) === undefined;
-    }
-    inspector.close();
-    expect(recordSettled).toBe(true);
-    await settleCallerContinuations();
-
-    // A fan-out puts its requests on the wire synchronously, so if the ref were
-    // still owned this read count would already be 2 on the next line. Nothing
-    // is being waited out here: the reconnect either superseded that pending
-    // entry or it did not, and the answer is settled by the time emitReady
-    // returns.
-    fake.emitStateChange("reconnecting");
-    fake.emitReady();
-    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
-
-    // A pane claims the ref and adopts the read already in flight for it -
-    // also synchronous, for the same reason: starting its own read instead
-    // would show up in fake.calls before ensureThread first suspends.
-    const ensuring = threadsStore.getState().ensureThread("ref_a");
-    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
-
-    reads[0]!.resolve(
-      readResponse("ref_a", { turns: [{ id: "turn_stale", status: "completed", itemsView: "full", items: [] }] }),
-    );
-    await flushIndexedDBUntil(() => reads.length === 2);
-    expect(reads).toHaveLength(2);
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
-
-    reads[1]!.resolve(
-      readResponse("ref_a", { turns: [{ id: "turn_live", status: "completed", itemsView: "full", items: [] }] }),
-    );
-    await ensuring;
-
-    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_live");
-    threadsStore.getState().releaseThread("ref_a");
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
-  });
 
   // The publish gate's ownership fence does more than keep an unowned model out
   // of the store - the setState below it declines that on its own. What only
@@ -2687,21 +1837,6 @@ describe("retry-safe mutation outbox integration", () => {
   });
 });
 
-test("explicit refresh captures the replacement client with its ready epoch", async () => {
-  setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-  const oldClient = connectFakeClient();
-  oldClient.on("thread/read", () => ({ thread: testThread("ref_a", { status: { type: "restartRequired" } }) }));
-  await threadsStore.getState().ensureThread("ref_a");
-  const refreshing = threadsStore.getState().refreshThread("ref_a");
-  const replacement = new FakeClient("ready");
-  replacement.on("thread/read", () => ({ thread: testThread("ref_a", { status: { type: "idle" } }) }));
-  connectionStore.getState().connect(replacement);
-  await refreshing;
-  await settleCallerContinuations();
-  expect(oldClient.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
-  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
-});
-
 test("a new message composed after a saved snapshot can still dispatch", async () => {
   const fake = connectFakeClient("connecting");
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: "notLoaded" } }));
@@ -2790,35 +1925,6 @@ test("reload after a failed restart write reconciles persisted uncertainty with 
       .filter((call) => call.method === "thread/read")
       .map((call) => (call.params as { requestGeneration?: number }).requestGeneration),
   ).toContain(2);
-});
-
-test("saved snapshots retain restart protection for subsequently discovered outbox records", async () => {
-  setSessionCacheAdapterForTests(new MissCacheAdapter()); // retained legacy-route case (Finding A retirement)
-  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "late-upgrade-record" });
-  setMutationStorageForTests(storage);
-  const fake = connectFakeClient("connecting");
-  let status = "restartRequired";
-  fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
-  fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
-  fake.emitReady();
-  await threadsStore.getState().ensureThread("ref_a");
-  status = "notLoaded";
-  await threadsStore.getState().refreshThread("ref_a");
-  const record = await storage.enqueueIntent({
-    targetRef: "ref_a",
-    method: "turn/queue",
-    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
-    attachments: [],
-    optimisticDisplay: { text: "sentinel" },
-  });
-  await storage.markAttempted(record.clientMutationId);
-  await threadsStore.getState().refreshThread("ref_a");
-  expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
-  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
-  status = "idle";
-  await threadsStore.getState().refreshThread("ref_a");
-  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
-  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
 });
 
 // RoboRev finding on the reduced branch: the refreshThread beforePublish fence

@@ -1217,8 +1217,7 @@ it("refuses a pre-Clear batch after real Clear and allows a fresh epoch write", 
   const factory = new IDBFactory();
   databases.push({ factory, name });
   const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
-  const sessionCache = new SessionCacheIndexedDB({ indexedDB: factory, databaseName: name, databaseVersion: 3 });
-  caches.push(cache, sessionCache);
+  caches.push(cache);
   const historyKey = "host/session/real-clear";
   const baseline = {
     historyKey,
@@ -1242,7 +1241,7 @@ it("refuses a pre-Clear batch after real Clear and allows a fresh epoch write", 
     },
   });
   const beforeClearTotals = await cache.getByteTotals(historyKey);
-  const clear = await sessionCache.clear();
+  const clear = await cache.clear();
   expect(clear).toEqual({ committed: true, epoch: 1 });
 
   const stale = {
@@ -1267,19 +1266,17 @@ it("refuses a pre-Clear batch after real Clear and allows a fresh epoch write", 
       },
     }),
   ).resolves.toEqual({ outcome: "refused", reason: "clear-epoch" });
-  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([baseline]);
-  await expect(cache.getCoverage(historyKey, "read:before-clear")).resolves.toMatchObject({
-    boundary: "before-clear",
-    serverCursor: "cursor-before-clear",
-  });
+  // The entry cache's own clear() retires the history rows and coverage it owns.
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+  await expect(cache.getCoverage(historyKey, "read:before-clear")).resolves.toBeUndefined();
   await expect(cache.getCoverage(historyKey, "read:stale-after-clear")).resolves.toBeUndefined();
-  await expect(cache.getByteTotals(historyKey)).resolves.toEqual(beforeClearTotals);
+  expect(beforeClearTotals.aggregateBytes).toBeGreaterThan(0);
 
   const fresh = { ...stale, transcriptKey: "fresh-after-clear", item: { ...stale.item, id: "fresh-after-clear" } };
   await expect(cache.commitBatch({ historyKey, clearEpoch: 1, items: [fresh] })).resolves.toMatchObject({
     outcome: "committed",
   });
-  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([baseline, fresh]);
+  await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([fresh]);
   await expect(cache.getByteTotals(historyKey)).resolves.toMatchObject({
     historyBytes: expect.any(Number),
     aggregateBytes: expect.any(Number),

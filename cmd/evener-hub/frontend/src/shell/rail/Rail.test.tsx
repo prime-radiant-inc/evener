@@ -34,7 +34,6 @@ import {
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
-import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
 import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
@@ -2125,7 +2124,6 @@ describe("resource-backed Rail", () => {
     resetThreadsStoreForTests();
     const convergence = deferred<void>();
     const applyNavigationMutation = vi.fn(() => convergence.promise);
-    const deleteRecords = vi.spyOn(SessionCacheIndexedDB.prototype, "deleteRecords").mockResolvedValue(true);
     const postMessage = vi.fn();
     setCacheChannelFactoryForTests(
       () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
@@ -2153,7 +2151,6 @@ describe("resource-backed Rail", () => {
       await act(async () => undefined);
       expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
       expect([...threadsStore.getState().deletedRefs]).toEqual(["local:a", "local:b"]);
-      expect(deleteRecords).toHaveBeenCalledExactlyOnceWith(["local:a", "local:b"]);
       expect(postMessage).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ kind: "deletion", refs: ["local:a", "local:b"] }),
       );
@@ -2169,7 +2166,6 @@ describe("resource-backed Rail", () => {
         else convergence.resolve();
       });
       expect([...threadsStore.getState().deletedRefs]).toEqual(["local:a", "local:b"]);
-      expect(deleteRecords).toHaveBeenCalledTimes(1);
       expect(postMessage).toHaveBeenCalledTimes(1);
       if (outcome === "reject")
         expect(getToasts().some((toast) => toast.text.includes("navigation unavailable"))).toBe(true);
@@ -2177,7 +2173,6 @@ describe("resource-backed Rail", () => {
       await act(async () => {
         convergence.resolve();
       });
-      deleteRecords.mockRestore();
       resetThreadsStoreForTests();
     }
   });
