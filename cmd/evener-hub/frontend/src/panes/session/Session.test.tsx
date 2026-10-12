@@ -3865,7 +3865,13 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   expect(threadsStore.getState().restartBlockingObligations.size).toBe(0);
   expect(threadsStore.getState().mutationAuthorityRefs.has("local:retained-child")).toBe(false);
   await flushPendingTurnsProjectionForTests();
-  expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+  // The ordinary entry route publishes its reconciliation a task behind the
+  // projection flush; awaiting the outbox read yields to that task, so the read
+  // runs inside act and that store update lands inside the scope instead of as
+  // an un-acted update to Session (#2599's sibling: act to settle the publish).
+  await act(async () => {
+    expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+  });
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
   fireEvent.click(refresh);
   await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
@@ -4388,11 +4394,15 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
   // The fence must not hide the editor or its force-stop menu.
-  const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  // Query the menu trigger only AFTER the entry-route hydration settles: the
+  // publish re-renders the composer's chrome and replaces the trigger node, so
+  // a handle taken before the activity discovery resolves is detached by the
+  // time it is clicked.
+  const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   const editor = screen.getByRole("textbox", { name: "Message" });
   // The composer's editor is a contenteditable div, which carries neither
   // `disabled` nor `readOnly`; `contenteditable="true"` is the one writable
