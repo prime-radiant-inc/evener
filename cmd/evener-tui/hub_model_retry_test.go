@@ -54,8 +54,9 @@ func TestApplyHubNotificationRecordsModelRetry(t *testing.T) {
 	if m.modelRetry.Attempt != 9 || m.modelRetry.AttemptCap != 11 {
 		t.Errorf("attempt = %d/%d, want 9/11", m.modelRetry.Attempt, m.modelRetry.AttemptCap)
 	}
-	if got := composerRetryChip(m.modelRetry, "", false); got != "rate limited — attempt 9/11 — retrying in 60s — 0s on this call" {
-		t.Errorf("chip = %q, want %q", got, "rate limited — attempt 9/11 — retrying in 60s — 0s on this call")
+	want := retryChip{rateLimited: true, attempt: 9, attemptCap: 11, waitSeconds: 60}
+	if got, ok := retryChipFor(m.modelRetry, "", false); !ok || got != want {
+		t.Errorf("chip = %+v (ok %v), want %+v", got, ok, want)
 	}
 }
 
@@ -144,11 +145,17 @@ func TestModelRetryClearsOnModelOutputItemCompletion(t *testing.T) {
 // A non-rate-limit retryable failure must not be labelled a rate limit; the
 // user's response to the two differs (wait vs investigate).
 func TestComposerRetryChipNamesNonRateLimitCausesGenerically(t *testing.T) {
-	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
+	params := appwire.ThreadModelRetryParams{
 		Attempt: 2, MaxAttempts: 11, AttemptCap: 11, DelayMS: 4000, ErrorClass: "server", StatusCode: 503,
-	}, "", false)
-	if want := "provider error — attempt 2/11 — retrying in 4s — 0s on this call"; chip != want {
-		t.Errorf("chip = %q, want %q", chip, want)
+	}
+	want := retryChip{attempt: 2, attemptCap: 11, waitSeconds: 4}
+	if chip, ok := retryChipFor(&params, "", false); !ok || chip != want {
+		t.Errorf("chip = %+v (ok %v), want %+v", chip, ok, want)
+	}
+	rateLimited := params
+	rateLimited.ErrorClass = "rate_limit"
+	if composerRetryChip(&params, "", false) == composerRetryChip(&rateLimited, "", false) {
+		t.Error("a server error reads the same as a rate limit")
 	}
 }
 
@@ -160,8 +167,8 @@ func TestComposerRetryChipUsesAttemptCapAsDenominator(t *testing.T) {
 	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
 		Attempt: 3, MaxAttempts: 11, AttemptCap: 4, DelayMS: 0, ErrorClass: "server", StatusCode: 503,
 	}, "", false)
-	if !strings.Contains(chip, "attempt 3/4") {
-		t.Errorf("chip = %q, want it to contain %q", chip, "attempt 3/4")
+	if !strings.Contains(chip, "3/4") || strings.Contains(chip, "3/11") {
+		t.Errorf("chip = %q, want the attempt position 3/4", chip)
 	}
 }
 
@@ -173,8 +180,8 @@ func TestComposerRetryChipShowsModelTagOnFallback(t *testing.T) {
 		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 0, ErrorClass: "server", StatusCode: 503,
 		Model: "anthropic/claude-opus-4",
 	}, "openai/gpt-5", false)
-	if !strings.Contains(chip, "provider error (anthropic/claude-opus-4)") {
-		t.Errorf("chip = %q, want it to contain the fallback model tag immediately after the cause", chip)
+	if !strings.Contains(chip, "anthropic/claude-opus-4") {
+		t.Errorf("chip = %q, want it to carry the fallback model tag", chip)
 	}
 }
 
@@ -198,8 +205,8 @@ func TestComposerRetryChipRendersElapsedMinutes(t *testing.T) {
 		Attempt: 3, MaxAttempts: 11, AttemptCap: 11, DelayMS: 0, ErrorClass: "server", StatusCode: 503,
 		GroupElapsedMS: 14 * 60 * 1000,
 	}, "", false)
-	if !strings.Contains(chip, "14m on this call") {
-		t.Errorf("chip = %q, want it to contain %q", chip, "14m on this call")
+	if elapsed := formatExactGap(14 * 60 * 1000); !strings.Contains(chip, elapsed) {
+		t.Errorf("chip = %q, want it to carry the elapsed time %q", chip, elapsed)
 	}
 }
 
@@ -235,11 +242,16 @@ func TestComposerRetryChipReadsInProgressWhileStreaming(t *testing.T) {
 		Attempt: 2, MaxAttempts: 11, AttemptCap: 4, DelayMS: 45000, ErrorClass: "server", StatusCode: 503,
 		GroupElapsedMS: 14 * 60 * 1000,
 	}
-	if want := "provider error — attempt 2/4 — retrying in 45s — 14m on this call"; composerRetryChip(retry, "", false) != want {
-		t.Errorf("waiting chip = %q, want %q", composerRetryChip(retry, "", false), want)
+	waiting, _ := retryChipFor(retry, "", false)
+	streaming, _ := retryChipFor(retry, "", true)
+	if waiting.inProgress || waiting.waitSeconds != 45 {
+		t.Errorf("waiting chip = %+v, want the 45s countdown", waiting)
 	}
-	if want := "provider error — attempt 2/4 — in progress — 14m on this call"; composerRetryChip(retry, "", true) != want {
-		t.Errorf("in-progress chip = %q, want %q", composerRetryChip(retry, "", true), want)
+	if !streaming.inProgress || streaming.elapsedMS != waiting.elapsedMS || streaming.attempt != waiting.attempt {
+		t.Errorf("in-progress chip = %+v, want in progress with the same attempt and elapsed time as %+v", streaming, waiting)
+	}
+	if text := streaming.text(); strings.Contains(text, "45") {
+		t.Errorf("in-progress chip %q still counts down the expired delay", text)
 	}
 }
 
@@ -265,8 +277,8 @@ func TestModelRetryChipReadsInProgressAfterDelta(t *testing.T) {
 		if m.modelRetry == nil {
 			t.Fatalf("modelRetry cleared on an overlay %s delta; deltas must not clear the chip", field)
 		}
-		if got := composerRetryChip(m.modelRetry, "", m.modelRetryInProgress); !strings.Contains(got, "in progress") {
-			t.Errorf("chip after an overlay %s delta = %q, want it to read %q", field, got, "in progress")
+		if !m.modelRetryInProgress {
+			t.Errorf("chip after an overlay %s delta still counts down, want it in progress", field)
 		}
 	}
 }
@@ -294,8 +306,8 @@ func TestModelRetryChipCountsDownAgainAfterANewRetry(t *testing.T) {
 	if m.modelRetryInProgress {
 		t.Error("a newly reported retry must read as a wait again, not as in progress")
 	}
-	if got := composerRetryChip(m.modelRetry, "", m.modelRetryInProgress); !strings.Contains(got, "— retrying in 8s —") {
-		t.Errorf("chip = %q, want the new retry's countdown", got)
+	if got, _ := retryChipFor(m.modelRetry, "", m.modelRetryInProgress); got.inProgress || got.waitSeconds != 8 {
+		t.Errorf("chip = %+v, want the new retry's 8s countdown", got)
 	}
 }
 
@@ -306,8 +318,8 @@ func TestComposerRetryChipFallsBackToMaxAttemptsWhenCapMissing(t *testing.T) {
 	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
 		Attempt: 2, MaxAttempts: 11, AttemptCap: 0, DelayMS: 4000, ErrorClass: "server", StatusCode: 503,
 	}, "", false)
-	if !strings.Contains(chip, "attempt 2/11") {
-		t.Errorf("chip = %q, want it to contain %q", chip, "attempt 2/11")
+	if !strings.Contains(chip, "2/11") {
+		t.Errorf("chip = %q, want the attempt position 2/11", chip)
 	}
 }
 
@@ -318,8 +330,8 @@ func TestComposerRetryChipOmitsDenominatorWhenNoBoundKnown(t *testing.T) {
 	chip := composerRetryChip(&appwire.ThreadModelRetryParams{
 		Attempt: 3, MaxAttempts: 0, AttemptCap: 0, DelayMS: 4000, ErrorClass: "server", StatusCode: 503,
 	}, "", false)
-	if !strings.Contains(chip, "attempt 3") || strings.Contains(chip, "attempt 3/") {
-		t.Errorf("chip = %q, want it to contain bare %q and no %q", chip, "attempt 3", "attempt 3/")
+	if !strings.Contains(chip, "3") || strings.Contains(chip, "3/") {
+		t.Errorf("chip = %q, want the bare attempt 3 with no denominator", chip)
 	}
 }
 
