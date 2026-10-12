@@ -21,7 +21,7 @@ import { CodeBlock, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { statedIntentOf } from "../ToolRow";
 import { registerToolRenderer, type ToolRenderProps } from "../toolRenderers";
-import { WriteFileBody } from "./bodies";
+import { TOOL_BODY_MAX_CHARS, WriteFileBody } from "./bodies";
 import styles from "./compactcontext.module.css";
 
 const CLASS = {
@@ -29,11 +29,6 @@ const CLASS = {
   label: requireClass(styles.label, "compactcontext.module.css", "label"),
   skills: requireClass(styles.skills, "compactcontext.module.css", "skills"),
 };
-
-// The same clip budget memory_write's content gets (memoryTools.tsx): the
-// note and instructions are authored prose that can run long in a legacy
-// transcript, and Markdown handles the rest.
-const COMPACT_TEXT_MAX_CHARS = 8000;
 
 // The reload_skills selection, or undefined when it renders nothing here:
 // absent and null both mean "no selection" (the tool distinguishes a
@@ -161,12 +156,12 @@ function CompactContextBody({ item, live }: ToolRenderProps) {
       )}
       {noteText !== undefined && (
         <Field label="Note to self" section="note">
-          <Markdown source={clip(noteText, COMPACT_TEXT_MAX_CHARS)} />
+          <Markdown source={clip(noteText, TOOL_BODY_MAX_CHARS)} />
         </Field>
       )}
       {instructionsText !== undefined && (
         <Field label="Compaction instructions" section="instructions">
-          <Markdown source={clip(instructionsText, COMPACT_TEXT_MAX_CHARS)} />
+          <Markdown source={clip(instructionsText, TOOL_BODY_MAX_CHARS)} />
         </Field>
       )}
       {skills !== undefined && (
@@ -178,7 +173,7 @@ function CompactContextBody({ item, live }: ToolRenderProps) {
       )}
       {intentText !== undefined && (
         <Field label="Intent" section="intent">
-          <Markdown source={clip(intentText, COMPACT_TEXT_MAX_CHARS)} />
+          <Markdown source={clip(intentText, TOOL_BODY_MAX_CHARS)} />
         </Field>
       )}
       {Object.keys(leftovers).length > 0 && (

@@ -316,6 +316,27 @@ test("a whitespace-only note renders its block: the tool pins it rather than cle
   expect(section("note")).not.toBeNull();
 });
 
+test("a note passes through at the 8,000-char boundary and clips with the shared marker above it", () => {
+  const Body = toolRendererFor("compact_context").body!;
+  const atBudget = "x".repeat(8_000);
+  render(
+    <Body
+      item={item({ toolName: "compact_context", argumentsJSON: JSON.stringify({ note_to_self: atBudget }) })}
+      live={false}
+    />,
+  );
+  expect(screen.getByText(atBudget)).toBeTruthy();
+
+  const overBudget = "y".repeat(8_001);
+  render(
+    <Body
+      item={item({ toolName: "compact_context", argumentsJSON: JSON.stringify({ note_to_self: overBudget }) })}
+      live={false}
+    />,
+  );
+  expect(screen.getByText(`${"y".repeat(8_000)}…`)).toBeTruthy();
+});
+
 test("hasBody is false exactly when the body would render nothing", () => {
   const d = toolRendererFor("compact_context");
   // A live note-clearing call: no fields, no leftovers, no output yet.

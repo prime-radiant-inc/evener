@@ -75,7 +75,7 @@ test("distinct child reads and owner projections never derive current lifecycle 
   expect(native.split("\n")).toHaveLength(160);
   expect(native).toContain("160\tconst fixtureLine160");
   // The long line must survive read_file's 8,000-char retention budget whole
-  // (bodies.tsx's TAIL_MAX_CHARS): a sample over that budget drops its head -
+  // (bodies.tsx's TOOL_BODY_MAX_CHARS): a sample over that budget drops its head -
   // most of the long line included - before the fold ever runs, and the
   // documented "Show 60 earlier lines" count (160 - 100) no longer matches
   // what renders (docs/web-ui/editorial-preview.md and

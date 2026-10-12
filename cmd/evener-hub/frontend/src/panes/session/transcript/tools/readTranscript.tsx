@@ -34,13 +34,12 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { MCPToolArguments } from "../MCPToolArguments";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
+import { TOOL_BODY_MAX_CHARS } from "./bodies";
 import styles from "./readtranscript.module.css";
 
 const CLASS = {
   elision: requireClass(styles.elision, "readtranscript.module.css", "elision"),
 };
-
-const CONTENT_MAX_CHARS = 8000;
 
 function ReadTranscriptBody(props: ToolRenderProps) {
   const { item } = props;
@@ -65,7 +64,7 @@ function ReadTranscriptBody(props: ToolRenderProps) {
           {elided} turn{elided === 1 ? "" : "s"} elided by the read's own budget
         </div>
       )}
-      <CodeBlock text={clip(envelope.content, CONTENT_MAX_CHARS)} copyLabel="Copy transcript" />
+      <CodeBlock text={clip(envelope.content, TOOL_BODY_MAX_CHARS)} copyLabel="Copy transcript" />
     </div>
   );
 }

@@ -189,6 +189,19 @@ test("body renders nothing when there is no output at all", () => {
   expect(container.textContent).toBe("");
 });
 
+test("body head-clips the transcript content at the shared 8,000-char budget", () => {
+  const d = toolRendererFor("read_transcript");
+  const Body = d.body!;
+  const overBudget = "y".repeat(8_001);
+  render(
+    <Body
+      item={call({ transcript_ref: "local:01KABC" }, { ...MARKDOWN_ENVELOPE, content: overBudget })}
+      live={false}
+    />,
+  );
+  expect(screen.getByText(`${"y".repeat(8_000)}…`)).toBeTruthy();
+});
+
 // --- body: the request arguments, so "what range/scope was asked for" is answerable ---
 
 test("body shows the pretty-printed request arguments, above the transcript content", () => {
