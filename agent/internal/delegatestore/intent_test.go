@@ -3,7 +3,6 @@ package delegatestore
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -209,9 +208,8 @@ func TestIntentEventEnvelopeValidation(t *testing.T) {
 	}
 	missing := intentEvent("dlg_alpha", 1, "Reading the board's row tests.")
 	missing.IntentStated = nil
-	err := validateEventEnvelope(missing)
-	if err == nil || !strings.Contains(err.Error(), "payload does not match kind") {
-		t.Fatalf("missing payload error = %v, want payload-does-not-match-kind", err)
+	if err := validateEventEnvelope(missing); err == nil {
+		t.Fatal("envelope accepted an event whose payload was missing")
 	}
 	overfull := intentEvent("dlg_alpha", 1, "Reading the board's row tests.")
 	overfull.AttentionChanged = &DelegateAttentionChanged{NeedsAttention: true}

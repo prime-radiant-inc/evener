@@ -256,20 +256,22 @@ func TestChildReportsStatedIntentToTheController(t *testing.T) {
 	close(release)
 	waitSubagentRun(t, child)
 
-	var published, cleared bool
+	var published, settled bool
 	for _, frame := range recordedIntentFrames(f, delegateID) {
 		if frame.LatestIntent == "Reading the board's row tests." {
 			published = true
 		}
-		if frame.LatestIntent == "" {
-			cleared = true
+		// The clear must be settlement's own frame: the run's initial frame
+		// also carries an empty line, so any empty frame proves nothing.
+		if frame.LatestIntent == "" && frame.Terminal {
+			settled = true
 		}
 	}
 	if !published {
 		t.Fatal("no pushed frame carried the stated intent")
 	}
-	if !cleared {
-		t.Fatal("no pushed frame carried the settled clear")
+	if !settled {
+		t.Fatal("no settled frame carried the cleared line")
 	}
 }
 
