@@ -16,8 +16,11 @@ interface DisclosureCommonProps {
   children: ReactNode;
   /** "quiet" drops the hover fill, the open-state wash, and the summary's
    * inline inset: chevron and summary text in the content column, the body
-   * below. For rows inside a reading surface such as the transcript. */
-  variant?: "default" | "quiet";
+   * below. For rows inside a reading surface such as the transcript.
+   * "rule" centres the summary as a caption between two hairlines, with no
+   * chevron and no washes: a quiet divider that folds a run of transcript
+   * actions. */
+  variant?: "default" | "quiet" | "rule";
   disabled?: boolean;
   "data-testid"?: string;
 }
@@ -74,9 +77,11 @@ function DisclosureView({
         }}
       >
         {summary}
-        <span className={CLASS.chevron} aria-hidden="true" data-open={open ? "true" : "false"}>
-          <Chevron />
-        </span>
+        {variant !== "rule" && (
+          <span className={CLASS.chevron} aria-hidden="true" data-open={open ? "true" : "false"}>
+            <Chevron />
+          </span>
+        )}
       </summary>
       {open && <div className={CLASS.body}>{children}</div>}
     </details>

@@ -29,6 +29,12 @@ function DisclosureDemo() {
       <Disclosure id="gallery-disclosure-quiet-closed" summary="Quiet · 3 system events" variant="quiet">
         <p className={styles.body}>A quiet disclosure, collapsed.</p>
       </Disclosure>
+      <Disclosure id="gallery-disclosure-rule-open" summary="3 actions" variant="rule" defaultOpen>
+        <p className={styles.body}>Rule: a caption centred between hairlines, folding a run of transcript actions.</p>
+      </Disclosure>
+      <Disclosure id="gallery-disclosure-rule-closed" summary="5 actions" variant="rule">
+        <p className={styles.body}>A rule disclosure, collapsed.</p>
+      </Disclosure>
       <Disclosure id="gallery-disclosure-ignore-baseline" summary="Shared notes updated · 1.2K chars" ignoreBaseline>
         <p className={styles.body}>
           ignoreBaseline: stays folded when the transcript expands everything; only a click opens it.
