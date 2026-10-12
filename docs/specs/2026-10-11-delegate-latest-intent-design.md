@@ -214,13 +214,17 @@ as any other wide page.
   rate — and it keeps a five-second floor (Jesse's amendment on approval)
   with a never-drop guarantee. An
   intent change publishes immediately only when at least five seconds have
-  passed since the last publication: a quiescent gap, which is exactly the
-  multi-minute-tool-call case immediacy exists for, so its intent lands the
-  moment the call starts. An intent change inside the window is journaled and
+  passed since the intent channel last published a frame: a quiescent gap,
+  which is exactly the multi-minute-tool-call case immediacy exists for, so
+  its intent lands the moment the call starts — even beside the batch-start
+  activity report that published the same instant, because during a single
+  long call nothing else publishes and a floor the activity channel could arm
+  would shelve the line until the next event. An intent change inside the
+  window is journaled and
   held pending, and rides the next publication of any kind (the next round's
   activity report, or the next intent change after the window) — it is never
   dropped, unlike plain motion. A parallel burst therefore costs at most one
-  publication per five seconds instead of one per call. Each publication re-samples
+  intent-caused publication per five seconds instead of one per call. Each publication re-samples
   the owner's diagnostics as every `delegate/updated` does today, and emits
   the per-thread `evener/thread/activity/changed` invalidation every
   publication already emits; those invalidations ride the store's existing

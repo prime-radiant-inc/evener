@@ -276,6 +276,55 @@ func TestReportIntentPublishesAfterQuiescentGapAndNeverDrops(t *testing.T) {
 	}
 }
 
+// TestReportIntentLandsAtCallStartBesideTheBatchReport pins the real
+// call-start sequence: the lifecycle fires the batch-start activity report
+// before the tool batch, and the stated intent arrives at the same instant.
+// The floor must read the intent channel's own clock — the spec's outcome is
+// that the intent lands the moment the call starts, the multi-minute-call case
+// immediacy exists for — so the activity publication beside it cannot arm the
+// window the intent would then wait out; during a single long call nothing
+// else publishes, so a floor shared with the activity channel would shelve
+// the line until the next event.
+func TestReportIntentLandsAtCallStartBesideTheBatchReport(t *testing.T) {
+	c, lease, _ := newIntentChannelHarness(t, 1)
+	var frames intentChannelFrames
+	frames.install(c)
+	t0 := time.Unix(300, 0).UTC()
+
+	// The batch-start activity report publishes: the run was quiet before it.
+	if err := c.ReportActivity(lease, t0); err != nil {
+		t.Fatalf("ReportActivity: %v", err)
+	}
+	// The stated intent at the same instant publishes as its own frame.
+	if err := c.ReportIntent(lease, t0, "Reading the config file."); err != nil {
+		t.Fatalf("ReportIntent: %v", err)
+	}
+	if len(frames.rows) != 2 {
+		t.Fatalf("call start published %d rows, want the activity frame and the intent frame", len(frames.rows))
+	}
+	if got := frames.rows[len(frames.rows)-1].latestIntent; got != "Reading the config file." {
+		t.Fatalf("the call-start frame carried %q, want the stated line", got)
+	}
+
+	// The burst bound still holds on the intent channel's own clock: a change
+	// inside the floor journals and rides the next publication of any kind.
+	if err := c.ReportIntent(lease, t0.Add(time.Second), "Fixing the parser."); err != nil {
+		t.Fatalf("in-window ReportIntent: %v", err)
+	}
+	if len(frames.rows) != 2 {
+		t.Fatalf("in-window change published %d rows, want the two from before", len(frames.rows))
+	}
+	if err := c.ReportActivity(lease, t0.Add(2*time.Second)); err != nil {
+		t.Fatalf("riding ReportActivity: %v", err)
+	}
+	if len(frames.rows) != 3 {
+		t.Fatalf("the ride published %d rows, want 3", len(frames.rows))
+	}
+	if got := frames.rows[len(frames.rows)-1].latestIntent; got != "Fixing the parser." {
+		t.Fatalf("the riding frame carried %q, want the pending line", got)
+	}
+}
+
 // TestReportIntentRejectedWhileSettling pins the settling-window fence: through
 // the documented settling window a report — statement or clear — is rejected
 // exactly the way an activity report is, and the row keeps the pre-report
@@ -391,6 +440,86 @@ func TestRestoredWindowFrameCarriesStandingFoldedIntent(t *testing.T) {
 	data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(at, "root-session", frames.rows[0]))
 	if data.LatestIntent != "Reading the board's row tests." {
 		t.Fatalf("DelegateUpdatedData.LatestIntent = %q, want the standing folded line", data.LatestIntent)
+	}
+}
+
+// TestRuntimeLostReconcileRetiresTheStatedIntent pins the restore lane's
+// retirement: a lost runtime's reconcile settles the interrupted open
+// generation with the failed outcome, and the run's settlement clears the
+// stated line with it — the fold and the row the reconcile publishes both show
+// a retired run with no line left standing.
+func TestRuntimeLostReconcileRetiresTheStatedIntent(t *testing.T) {
+	c, lease, journalPath := newIntentChannelHarness(t, 1)
+	at := time.Unix(200, 0).UTC()
+	if err := c.ReportIntent(lease, at, "Reading the board's row tests."); err != nil {
+		t.Fatalf("ReportIntent before the restart: %v", err)
+	}
+
+	// The restart finds the generation open with its runtime gone: the same
+	// journal, a fresh controller, and no live binding to reclaim the run.
+	store, err := delegatestore.Open(journalPath)
+	if err != nil {
+		t.Fatalf("reopen the delegate journal: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	root := filepath.Dir(journalPath)
+	restart, err := openDelegateTreeController(delegateTreeControllerConfig{
+		store:         store,
+		rootSessionID: "root-session",
+		stateDir:      root,
+		worktreeRoot:  filepath.Join(root, "worktrees"),
+		turnLimit:     1,
+		driveLimit:    1,
+		now:           func() time.Time { return time.Unix(100, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("reopen the controller over the journal: %v", err)
+	}
+	restart.mu.Lock()
+	restart.reconcileOrder = []delegateLease{lease}
+	_, err = restart.reconcileRuntimeLostFromEvidenceLocked()
+	restart.mu.Unlock()
+	if err != nil {
+		t.Fatalf("runtime-lost reconcile: %v", err)
+	}
+
+	aggregate := durableIntentState(t, restart, lease.delegateID)
+	if aggregate.CurrentRunOpen || aggregate.Phase == delegatestore.PhaseRunning {
+		t.Fatalf("the runtime-lost reconcile left the run open: %+v", aggregate)
+	}
+	if aggregate.LatestIntent != "" {
+		t.Fatalf("the runtime-lost retirement left the stated line %q in the fold", aggregate.LatestIntent)
+	}
+}
+
+// TestReportIntentRejectsStaleLease pins the channel's lease admission: only
+// the open generation's running lease may state a line, so a report from any
+// other generation is stale-lease-rejected exactly like an activity report,
+// leaving the journal, the fold and the live line untouched.
+func TestReportIntentRejectsStaleLease(t *testing.T) {
+	c, lease, path := newIntentChannelHarness(t, 1)
+	var frames intentChannelFrames
+	frames.install(c)
+	lines := intentJournalLines(t, path)
+	stale := lease
+	stale.generation++
+	at := time.Unix(200, 0).UTC()
+	intentErr := c.ReportIntent(stale, at, "From a stale lease.")
+	activityErr := c.ReportActivity(stale, at)
+	if intentErr == nil || activityErr == nil || intentErr.Error() != activityErr.Error() {
+		t.Fatalf("stale-lease ReportIntent error = %v, want the activity channel's %v", intentErr, activityErr)
+	}
+	if got := intentJournalLines(t, path); got != lines {
+		t.Fatalf("stale-lease report appended %d journal lines, want 0", got-lines)
+	}
+	if len(frames.rows) != 0 {
+		t.Fatalf("stale-lease report published %d rows, want none", len(frames.rows))
+	}
+	if got := liveIntentState(t, c, lease.delegateID).intent; got != "" {
+		t.Fatalf("live intent = %q after a stale-lease report", got)
+	}
+	if got := durableIntentState(t, c, lease.delegateID).LatestIntent; got != "" {
+		t.Fatalf("folded intent = %q after a stale-lease report", got)
 	}
 }
 

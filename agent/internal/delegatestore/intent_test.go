@@ -23,6 +23,16 @@ func intentEvent(id string, generation uint64, intent string) Event {
 	}
 }
 
+// TestJournalHeaderVersionStaysOne pins the compatibility promise the intent
+// event rode: the journal header's version is 1, exactly what this build
+// reads and writes — a bump would strand every journal a daemon ever wrote,
+// so an additive event kind must never move it.
+func TestJournalHeaderVersionStaysOne(t *testing.T) {
+	if CurrentVersion != 1 {
+		t.Fatalf("journal header version = %d, want 1: an additive event kind must not bump it", CurrentVersion)
+	}
+}
+
 // reportedFinish is a completed run's finish with the reported packet the
 // fold requires when no terminal was prepared first.
 func reportedFinish(id string, generation uint64) Event {

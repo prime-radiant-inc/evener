@@ -194,8 +194,14 @@ type delegateLiveState struct {
 	// intent is the open generation's newest stated tool-call intent,
 	// Excerpt-bounded at the report site. Display-only state: it never moves
 	// any supervision clock, and it clears at both generation boundaries.
-	intent           string
-	recoveryRequired bool
+	intent string
+	// intentPublishedAt is when an intent change last published a frame of its
+	// own — the only clock the intent floor (delegateIntentPublishFloor)
+	// measures. A pending change rides other publications without moving it, so
+	// two intent-caused frames are always at least the floor apart while a
+	// quiescent run's first stated line still lands the moment its call starts.
+	intentPublishedAt time.Time
+	recoveryRequired  bool
 	// finalizationRecoveryRequired prevents a failed runner finalizer from
 	// retrying around the stop-only external-state recovery path.
 	finalizationRecoveryRequired bool
@@ -205,11 +211,9 @@ type delegateLiveState struct {
 	activityAt            time.Time
 	productiveActivityAt  time.Time
 	// activityPublishedAt is the activity time ReportActivityPhase last
-	// published a snapshot for. The intent channel's five-second floor
-	// (delegateIntentPublishFloor) measures from the same instant and every
-	// publication of either kind moves it, so an intent change never publishes
-	// twice inside one window and always rides the next publication of any
-	// kind.
+	// published a snapshot for; the one-second activity coalescer measures it.
+	// The intent channel keeps its own publication clock (intentPublishedAt),
+	// so an intent publication neither waits on this one nor moves it.
 	activityPublishedAt time.Time
 	quietSequence       uint64
 	quietNotified       bool

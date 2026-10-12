@@ -2774,7 +2774,11 @@ test("a read row's over-bound intent applies as absent without dropping the row"
   expect(row?.latestIntent).toBeUndefined();
 });
 
-test("a previous generation's intent frame never writes onto a newer run's row", async () => {
+test("an older run's intent frame loses to a newer row's revision", async () => {
+  // The store fences by the wire's per-delegate revision monotonicity, not by
+  // generation: the daemon never publishes an old generation's frame with a
+  // revision newer than the row it belongs to, so the strictly-greater revision
+  // join keeps the older run's line off the newer run's row.
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
     context: pushContext(),
