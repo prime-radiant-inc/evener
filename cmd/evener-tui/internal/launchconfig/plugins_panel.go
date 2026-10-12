@@ -75,6 +75,12 @@ func (p PluginsPanel) Done() bool { return p.done }
 // live-refresh notification can also re-fetch the open catalog.
 func (p PluginsPanel) BrowseMarketplace() string { return p.browseMarketplace }
 
+// MarketplaceListState reports whether the Marketplaces tab is still waiting
+// for its list read, and the read's failure when it landed as one.
+func (p PluginsPanel) MarketplaceListState() (loading bool, err error) {
+	return p.loadingMarketplaces, p.marketplacesErr
+}
+
 func (p PluginsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case MarketplaceListResultMsg:
