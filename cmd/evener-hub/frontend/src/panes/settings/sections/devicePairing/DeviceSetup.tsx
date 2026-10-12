@@ -11,7 +11,7 @@ import styles from "./devicePairing.module.css";
 const rootClass = requireClass(styles.root, "devicePairing.module.css", "root");
 const controlsClass = requireClass(styles.controls, "devicePairing.module.css", "controls");
 
-export function DeviceSetup({ initialOrigin, onClose }: { initialOrigin: string; onClose(): void }) {
+export function DeviceSetup({ initialOrigin }: { initialOrigin: string }) {
   const client = useClient(),
     id = useId();
   const [origin, setOrigin] = useState(initialOrigin);
@@ -172,11 +172,6 @@ export function DeviceSetup({ initialOrigin, onClose }: { initialOrigin: string;
         </>
       )}
       {error && <InlineNotice tone="danger">{error}</InlineNotice>}
-      <div className={controlsClass}>
-        <Button size="sm" variant="secondary" onClick={onClose}>
-          Close setup
-        </Button>
-      </div>
     </section>
   );
 }

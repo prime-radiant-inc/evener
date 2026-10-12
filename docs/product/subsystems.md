@@ -67,6 +67,8 @@ and encrypted credential delivery. The Hub also owns automatic destination
 discovery from the browser origin, listener and network interfaces;
 the browser presents that default and lets the operator edit it before creating
 an invitation. Ordinary LAN/tailnet setup requires no configuration-file edit.
+The parent settings view owns setup dismissal, keeping the loaded pairing link
+accessible while setup loads or fails.
 The browser sends invitations and confirms
 matching codes. Clients own durable settings and saved work scoped by destination
 and authenticated Tailscale peer. S05 AppWire

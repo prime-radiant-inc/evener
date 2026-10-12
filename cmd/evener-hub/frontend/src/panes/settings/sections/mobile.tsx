@@ -72,24 +72,24 @@ export function MobileSection() {
   return (
     <>
       {setup ? (
-        <QRChunkBoundary
-          fallback={
-            <>
+        <>
+          <QRChunkBoundary
+            fallback={
               <EmptyState
                 title="Couldn't load device setup"
                 hint="Return to pairing to use the existing link, or reload to try setup again."
                 reason="unavailable"
               />
-              <Button size="sm" variant="secondary" onClick={() => setSetup(false)}>
-                Back to pairing
-              </Button>
-            </>
-          }
-        >
-          <Suspense fallback={<Skeleton lines={4} />}>
-            <DeviceSetup initialOrigin={origin} onClose={() => setSetup(false)} />
-          </Suspense>
-        </QRChunkBoundary>
+            }
+          >
+            <Suspense fallback={<Skeleton lines={4} />}>
+              <DeviceSetup initialOrigin={origin} />
+            </Suspense>
+          </QRChunkBoundary>
+          <Button size="sm" variant="secondary" onClick={() => setSetup(false)}>
+            Close setup
+          </Button>
+        </>
       ) : (
         <Button size="sm" onClick={() => setSetup(true)}>
           Pair a device
