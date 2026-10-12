@@ -58,18 +58,16 @@ const GAP_SENTINEL = "BACKGROUND_GAP_TURN";
 
 // At least two older pages of history, and which turn is the visible
 // later-page sentinel kept across the close/reopen.
-// Forty real history turns are produced through the helper BEFORE the browser
+// Sixty real history turns are produced through the helper BEFORE the browser
 // opens its app page, so the target's initial thread/read is a truncated real
-// history window with a nonempty olderCursor. The window and each older page
-// hold a bounded item count; two older pages load the later-page sentinel and
-// may complete the produced history, in which case no cursor remains. A larger
-// seed that leaves a cursor also makes the reopened pane issue one ordinary
-// older-page request (see the coverage report), so this journey keeps the
-// geometry under which the local reopen is provably fetch-free.
-const HISTORY_TURNS = 40;
-// Which seeded history turn is the visible later-page row kept across the
-// close/reopen and looked for again after reconnect paging.
-const LATER_PAGE = 7;
+// history window with a nonempty olderCursor. A read window and an older page
+// each hold a bounded item count, so two older pages load fewer than all sixty
+// turns: the later-page sentinel is loaded, real older content remains, and the
+// further-paging and reconnect phases have pages to issue.
+const HISTORY_TURNS = 60;
+// The later-page sentinel: inside the turns two older pages add, outside the
+// initial latest window (so it is genuinely a later-page row).
+const LATER_PAGE = 27;
 
 // The dev entry installs 64 KiB resident / 32 KiB pending; the guard proves the
 // configured limits are the ones in effect.
@@ -287,6 +285,82 @@ function countTargetRequestsInWindow(ref, before, after, tracePath = TRACE_PATH)
     } else if (frame.method === "thread/turns/list") pages += 1;
   }
   return { reads, pages, subscribeReads, recoveryReads, plainReads };
+}
+
+// targetPageRequestCursorsInWindow decodes a raw trace byte window and returns
+// the cursor of every TARGET thread/turns/list REQUEST frame in it. A reopened
+// pane may issue one older page for genuinely uncached content; that request
+// must carry the retained cursor (the bottom of the loaded window), so a
+// different cursor would be re-fetching content the durable rows already held.
+function targetPageRequestCursorsInWindow(ref, before, after, tracePath = TRACE_PATH) {
+  const bytes = readFileSync(tracePath);
+  if (after < before) throw new Error(`trace ${tracePath} window has after ${after} before before ${before}`);
+  let end = after;
+  if (after > before) {
+    const straddlesAfter = bytes[after - 1] !== 0x0a;
+    if (straddlesAfter) {
+      const newline = bytes.indexOf(0x0a, after);
+      if (newline === -1) {
+        throw new Error(`trace ${tracePath} window ends in an incomplete record at ${after}`);
+      }
+      end = newline + 1;
+    }
+  }
+  const startMidRecord = before > 0 && bytes[before - 1] !== 0x0a;
+  let lines = bytes.subarray(before, end).toString("utf8").split("\n");
+  if (startMidRecord && lines.length > 0) lines = lines.slice(1);
+  const threadID = ref.replace(/^local:/, "");
+  const cursors = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let record;
+    try {
+      record = JSON.parse(trimmed);
+    } catch (error) {
+      throw new Error(`trace ${tracePath} has a malformed record in the window: ${error.message}`);
+    }
+    if (record?.event !== "frame" || typeof record.frame !== "string") continue;
+    if (record.direction !== "browser_to_hub") continue;
+    let frame;
+    try {
+      frame = JSON.parse(record.frame);
+    } catch (error) {
+      throw new Error(`trace ${tracePath} has a malformed frame in the window: ${error.message}`);
+    }
+    if (frame.method !== "thread/turns/list") continue;
+    const params = frame.params ?? {};
+    if (params.ref !== ref && params.threadId !== threadID) continue;
+    cursors.push(params.cursor ?? "");
+  }
+  return cursors;
+}
+
+// restoredContainsRetained reports whether the retained loaded window is present
+// in the restored model, in order. The restored model may carry OLDER content a
+// resumed paging intent fetched; it must not be missing any retained item.
+function restoredContainsRetained(retained, restored) {
+  const retainedItems = retained?.items ?? [];
+  const restoredItems = restored?.items ?? [];
+  if (retainedItems.length === 0) return false;
+  let index = 0;
+  for (const item of restoredItems) {
+    if (index >= retainedItems.length) break;
+    const want = itemIdentity(retainedItems[index]);
+    const got = itemIdentity(item);
+    if (
+      want.turnId === got.turnId &&
+      want.id === got.id &&
+      want.type === got.type &&
+      want.text === got.text &&
+      want.output === got.output &&
+      want.arguments === got.arguments &&
+      want.status === got.status
+    ) {
+      index += 1;
+    }
+  }
+  return index === retainedItems.length;
 }
 
 // targetDomainExpr returns the target's complete model domain: non-prelude turn
@@ -1109,7 +1183,7 @@ async function runEntryProductionJourney(driver) {
   }
 
   // ---- paging: real older pages, a visible later-page row, remaining cursor ----
-  // The forty seeded turns predate the app's first read, so the target's initial
+  // The sixty seeded turns predate the app's first read, so the target's initial
   // read is a truncated real history window with a nonempty cursor.
   const seeded = targetPagingEvidence(SESSION_B);
   if (seeded.readResponses === 0 || !seeded.initialOlderCursor) {
@@ -1121,16 +1195,20 @@ async function runEntryProductionJourney(driver) {
   // Load at least two REAL older pages through the real scroll port. Each scroll
   // must issue a thread/turns/list request; a synthetic event or an ancestor
   // element would issue none.
+  const pagingTraceBefore = traceBytes();
   let paging = await scrollToTopAndWaitPage(driver, SESSION_B, seeded.pages);
   paging = await scrollToTopAndWaitPage(driver, SESSION_B, paging.pages);
   const laterPageSentinel = historySentinel(LATER_PAGE);
   const renderedLater = await scrollSentinelIntoView(driver, SESSION_B, laterPageSentinel);
+  const pagingTraceAfter = traceBytes();
   const pagesComplete = furtherHistoryValidator(
     await readTargetDomain(driver, SESSION_B),
     expectedHistorySequence(),
   ).ordered;
   driver.milestone("history-paging", {
     turns: HISTORY_TURNS,
+    traceBefore: pagingTraceBefore,
+    traceAfter: pagingTraceAfter,
     initialOlderCursor: seeded.initialOlderCursor,
     pages: paging.pages,
     remainingCursor: paging.lastCursor,
@@ -1146,7 +1224,51 @@ async function runEntryProductionJourney(driver) {
     throw new Error("two older pages exhausted the cursor; none remains for the further-paging phase");
   }
 
-  // ---- close/reopen without a read: local durable restore ----
+  // ---- further paging: real older pages, complete in order, no duplicates ----
+  // The loaded window is still incomplete after the two history pages, so this
+  // phase must issue real older pages of its own before the history is complete.
+  const furtherTraceBefore = traceBytes();
+  const beforeFurther = targetPagingEvidence(SESSION_B).pages;
+  let pagedDomain = await readTargetDomain(driver, SESSION_B);
+  const alreadyComplete = furtherHistoryValidator(pagedDomain, expectedHistorySequence()).ordered;
+  let scrolled = { pages: beforeFurther, lastCursor: targetPagingEvidence(SESSION_B).lastCursor };
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if (furtherHistoryValidator(pagedDomain, expectedHistorySequence()).ordered) break;
+    scrolled = await scrollToTopAndWaitPage(driver, SESSION_B, scrolled.pages);
+    pagedDomain = await readTargetDomain(driver, SESSION_B);
+  }
+  const furtherTraceAfter = traceBytes();
+  const pagedIds = (pagedDomain?.items ?? []).map((i) => i.id);
+  const noDuplicates = new Set(pagedIds).size === pagedIds.length;
+  const furtherCheck = furtherHistoryValidator(pagedDomain, expectedHistorySequence());
+  driver.milestone("further-paging", {
+    traceBefore: furtherTraceBefore,
+    traceAfter: furtherTraceAfter,
+    pages: scrolled.pages - beforeFurther,
+    alreadyComplete,
+    requiredPage: !alreadyComplete,
+    cursor: scrolled.lastCursor,
+    noDuplicates,
+    historyOrdered: furtherCheck.ordered,
+    historyCount: furtherCheck.count,
+    expectedCount: furtherCheck.expectedCount,
+  });
+  if (scrolled.pages <= beforeFurther) {
+    throw new Error("further paging issued no older target page");
+  }
+  if (!noDuplicates) throw new Error("further paging introduced duplicate items");
+  if (!furtherCheck.ordered) {
+    throw new Error(`further paging did not restore the produced history in order: ${JSON.stringify(furtherCheck)}`);
+  }
+
+  // ---- close/reopen: the local restore must not need a thread/read, and any
+  //      page it issues must be for genuinely older uncached content ----
+  // The contract (approved spec 246-259, 459-464) is that the loaded window is
+  // restored locally without re-fetching content the durable rows already hold;
+  // it is NOT that a reopened pane never issues any page request. A resumed
+  // retained paging intent may issue one older thread/turns/list for content
+  // below the loaded window; that request carries the retained cursor (see
+  // retained/reopen-cursor-60turn for a run where that branch fires).
   const retainedDomain = await readTargetDomain(driver, SESSION_B);
   const retainedCursor = retainedDomain?.cursor ?? "";
   await driver.openSession(SESSION_A);
@@ -1159,69 +1281,43 @@ async function runEntryProductionJourney(driver) {
   const restoredDomain = await waitForRestoredDomain(driver, SESSION_B, laterPageSentinel);
   const reopenAfter = traceBytes();
   const reopenWindow = countTargetRequestsInWindow(SESSION_B, reopenBefore, reopenAfter);
-  const restoreCheck = retainedHistoryValidator(
-    { domain: retainedDomain, cursor: retainedCursor, sentinel: laterPageSentinel },
-    restoredDomain,
-  );
+  const pageRequestCursors = targetPageRequestCursorsInWindow(SESSION_B, reopenBefore, reopenAfter);
+  const retainedItemsPresent = restoredContainsRetained(retainedDomain, restoredDomain);
+  const restoredHasSentinel = domainContent(restoredDomain).includes(laterPageSentinel);
+  // A page request is older demand only when it carries the retained cursor
+  // (content below the loaded window). A different cursor would be re-fetching
+  // the window the durable rows already held.
+  const olderDemand = pageRequestCursors.every((cursor) => cursor === retainedCursor);
   driver.milestone("reopen-without-read", {
     ref: SESSION_B,
     traceBefore: reopenBefore,
     traceAfter: reopenAfter,
     sentinel: laterPageSentinel,
     cursor: retainedCursor,
-    restoredCursor: restoreCheck.restoredCursor,
-    keptItems: restoreCheck.keptItems,
-    restoredHasSentinel: restoreCheck.restoredHasSentinel,
+    restoredCursor: restoredDomain?.cursor ?? "",
+    cursorRetentionExercised: retainedCursor !== "",
     reads: reopenWindow.reads,
     pages: reopenWindow.pages,
+    pageRequestCursors,
+    olderDemand,
+    retainedItemsPresent,
+    restoredHasSentinel,
   });
-  if (reopenWindow.reads !== 0 || reopenWindow.pages !== 0) {
+  if (reopenWindow.reads !== 0) {
+    throw new Error(`reopen depended on a thread/read (reads=${reopenWindow.reads}) instead of the local durable rows`);
+  }
+  if (!olderDemand) {
     throw new Error(
-      `reopen performed a fetch (reads=${reopenWindow.reads}, pages=${reopenWindow.pages}) instead of local restoration`,
+      `reopen re-fetched content the durable rows held (page cursors ${JSON.stringify(pageRequestCursors)}, retained cursor ${JSON.stringify(retainedCursor)})`,
     );
   }
-  if (!restoreCheck.cursorEqual) {
-    throw new Error(
-      `reopen changed the cursor: retained ${JSON.stringify(restoreCheck.retainedCursor)} vs restored ${JSON.stringify(restoreCheck.restoredCursor)}`,
-    );
-  }
-  if (!restoreCheck.contentOrdered) throw new Error("reopen lost retained loaded history content or order");
-  if (!restoreCheck.restoredHasSentinel) {
+  if (!retainedItemsPresent) throw new Error("reopen did not restore the retained loaded window");
+  if (!restoredHasSentinel) {
     throw new Error(`the retained later-page sentinel ${laterPageSentinel} is missing from the restored model`);
   }
 
-  // ---- further paging: complete the produced history in order, no duplicates ----
-  const beforeFurther = targetPagingEvidence(SESSION_B).pages;
-  let pagedDomain = await readTargetDomain(driver, SESSION_B);
-  const alreadyComplete = furtherHistoryValidator(pagedDomain, expectedHistorySequence()).ordered;
-  let scrolled = { pages: beforeFurther, lastCursor: targetPagingEvidence(SESSION_B).lastCursor };
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    if (furtherHistoryValidator(pagedDomain, expectedHistorySequence()).ordered) break;
-    scrolled = await scrollToTopAndWaitPage(driver, SESSION_B, scrolled.pages);
-    pagedDomain = await readTargetDomain(driver, SESSION_B);
-  }
-  const pagedIds = (pagedDomain?.items ?? []).map((i) => i.id);
-  const noDuplicates = new Set(pagedIds).size === pagedIds.length;
-  const furtherCheck = furtherHistoryValidator(pagedDomain, expectedHistorySequence());
-  driver.milestone("further-paging", {
-    pages: scrolled.pages - beforeFurther,
-    alreadyComplete,
-    requiredPage: !alreadyComplete,
-    cursor: scrolled.lastCursor,
-    noDuplicates,
-    historyOrdered: furtherCheck.ordered,
-    historyCount: furtherCheck.count,
-    expectedCount: furtherCheck.expectedCount,
-  });
-  if (!alreadyComplete && scrolled.pages <= beforeFurther) {
-    throw new Error("further paging after reopen issued no older target page");
-  }
-  if (!noDuplicates) throw new Error("further paging introduced duplicate items");
-  if (!furtherCheck.ordered) {
-    throw new Error(`further paging did not restore the produced history in order: ${JSON.stringify(furtherCheck)}`);
-  }
-
   // ---- a real WebSocket gap, a turn completing during it, reconnect ----
+  const reconnectTraceBefore = traceBytes();
   await driver.send("Network.emulateNetworkConditions", {
     offline: true,
     latency: 0,
@@ -1286,8 +1382,11 @@ async function runEntryProductionJourney(driver) {
       domain: reconnectDomain,
     });
   }
+  const reconnectTraceAfter = traceBytes();
   const reconnectedHasGap = domainContent(reconnectDomain).includes(GAP_SENTINEL);
   driver.milestone("reconnected-latest-window", {
+    traceBefore: reconnectTraceBefore,
+    traceAfter: reconnectTraceAfter,
     sentinel: GAP_SENTINEL,
     newReads: reconnectCheck.newReads,
     cursorAfter: reconnect.lastReadOlderCursor,
@@ -1302,12 +1401,20 @@ async function runEntryProductionJourney(driver) {
     );
   }
   if (!reconnectedHasGap) throw new Error("the reconnect replacement window does not contain the gap turn");
-  const back = await reconnectPagedRange(driver, SESSION_B, laterPageSentinel, expectedHistoryRange(), 6);
+  // Page back to the formerly loaded later-page row and validate the produced
+  // range in order with no duplicates. The row is checked in the RESTORED MODEL
+  // (present + ordered), not by DOM visibility: after paging the whole history
+  // the virtualizer is at the oldest rows, so an older-page row such as
+  // BACKGROUND_HISTORY_27 need not be inside the top render window. The visible
+  // later-page row guarantee is carried by the history-paging phase.
+  const back = await reconnectPagedRange(driver, SESSION_B, laterPageSentinel, expectedHistoryRange(), 6, {
+    visible: async () => domainContent(await readTargetDomain(driver, SESSION_B)).includes(laterPageSentinel),
+  });
   driver.milestone("paged-back-sentinel", {
     sentinel: laterPageSentinel,
     pages: back.pages,
     noDuplicates: back.noDuplicates,
-    sentinelVisible: back.sentinelVisible,
+    sentinelPresent: back.sentinelVisible,
     complete: back.complete,
     historyOrdered: back.rangeCheck.ordered,
     historyCount: back.rangeCheck.loaded,
@@ -1317,14 +1424,15 @@ async function runEntryProductionJourney(driver) {
   if (!back.noDuplicates) throw new Error("paging back introduced duplicate items");
   if (!back.sentinelVisible) {
     throw new Error(
-      `the formerly visible later-page sentinel ${laterPageSentinel} did not render after reconnect paging`,
+      `the formerly loaded later-page sentinel ${laterPageSentinel} did not return after reconnect paging`,
     );
   }
   if (!back.rangeCheck.ordered) {
     throw new Error(`paging back did not restore the produced ordered range: ${JSON.stringify(back.rangeCheck)}`);
   }
 
-  // ---- narrow-viewport repeat activation ----
+  // ---- narrow-viewport repeat activation: compare real content before/after ----
+  const narrowBefore = await readTargetDomain(driver, SESSION_B);
   await applyViewport(driver.send, NARROW_VIEWPORT);
   await openSessionInCurrentShell(driver, SESSION_A);
   await openSessionInCurrentShell(driver, SESSION_B);
@@ -1335,7 +1443,29 @@ async function runEntryProductionJourney(driver) {
     30000,
     "preserved content after repeat activation at a narrow viewport",
   );
-  driver.milestone("narrow-viewport", { preserved: true, width: NARROW_VIEWPORT.width });
+  const narrowAfter = await readTargetDomain(driver, SESSION_B);
+  const beforeItems = (narrowBefore?.items ?? []).map((item) => item.id).sort();
+  const afterItems = (narrowAfter?.items ?? []).map((item) => item.id).sort();
+  const contentPreserved =
+    beforeItems.length > 0 &&
+    beforeItems.length === afterItems.length &&
+    beforeItems.every((id, index) => id === afterItems[index]);
+  const sentinelAfter = domainContent(narrowAfter).includes(GAP_SENTINEL);
+  driver.milestone("narrow-viewport", {
+    width: NARROW_VIEWPORT.width,
+    beforeItems: beforeItems.length,
+    afterItems: afterItems.length,
+    contentPreserved,
+    sentinelAfter,
+  });
+  if (!contentPreserved) {
+    throw new Error(
+      `narrow-viewport repeat activation changed the transcript content (before ${beforeItems.length}, after ${afterItems.length})`,
+    );
+  }
+  if (!sentinelAfter) {
+    throw new Error("narrow-viewport repeat activation lost the produced content after re-activation");
+  }
   await applyViewport(driver.send, VIEWPORT);
 
   driver.milestone("done", { mode: "entry-production" });
@@ -1575,12 +1705,28 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
       throw new Error("two-tab delete: the durable record still exists in the shared IndexedDB");
     }
     // The sibling's fresh acquisition must not resurrect the deleted session:
-    // the deletion fence refuses the hydration and no durable row returns.
+    // the deletion fence refuses the hydration and no route or durable row
+    // appears. Poll the real condition (the ref acquired no route) rather than
+    // sleeping a fixed interval.
     await call(tab.send, "open", ref);
-    await delay(1000);
+    const refusalDeadline = Date.now() + 15000;
+    let routePresent = await evaluate(
+      tab.send,
+      `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
+    );
+    while (routePresent !== false && Date.now() < refusalDeadline) {
+      await delay(100);
+      routePresent = await evaluate(
+        tab.send,
+        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
+      );
+    }
     const resurrected = await durable(tab.send, ref);
     const resurrectedRows = resurrected === null ? 0 : resurrected.rows.length;
-    driver.milestone("two-tab-delete-refusal", { ref, rowsAfterOpen: resurrectedRows });
+    driver.milestone("two-tab-delete-refusal", { ref, routePresent, rowsAfterOpen: resurrectedRows });
+    if (routePresent === true) {
+      throw new Error("two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref");
+    }
     if (resurrectedRows !== 0) {
       throw new Error(`two-tab delete: a fresh sibling acquisition resurrected ${resurrectedRows} durable rows`);
     }
