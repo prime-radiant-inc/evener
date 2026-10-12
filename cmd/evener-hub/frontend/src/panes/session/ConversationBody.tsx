@@ -62,8 +62,11 @@ export interface ConversationSeat {
   focused: boolean;
   // A resumed conversation continues under a new ref. A pane replaces its
   // route; a cascade column lets its own reconciliation replace the scope in
-  // place. The draft always carries to the resumed identity first.
-  onResumedIdentity?(resumedRef: string): void;
+  // place. The draft always carries to the resumed identity first. The
+  // callback reports whether the frame applied the change: the identity is
+  // acknowledged only then, so a rejected replacement retries on the next
+  // seat change instead of being lost.
+  onResumedIdentity?(resumedRef: string): boolean | undefined;
   // The pane whose focus gates this seat's keyboard scroll: the pane's own
   // id, or the host pane's id for the cascade's active leaf column. Null on
   // every other column - the dispatcher runs same-action handlers in
@@ -142,9 +145,9 @@ export function ConversationBody({
   const resumedIdentity = useThreadsStore((s) => s.resumedIdentities.get(ref));
   useEffect(() => {
     if (resumedIdentity === undefined) return;
-    threadsStore.getState().clearResumedIdentity(ref);
     carryComposerDraft(ref, resumedIdentity);
-    seat.onResumedIdentity?.(resumedIdentity);
+    const applied = seat.onResumedIdentity?.(resumedIdentity);
+    if (applied !== false) threadsStore.getState().clearResumedIdentity(ref);
   }, [resumedIdentity, ref, seat]);
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);

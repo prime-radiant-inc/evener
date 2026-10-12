@@ -126,10 +126,10 @@ function ScopeConversation({
       // A resumed conversation replaces its path entry in place; a cascade
       // column has no route of its own to navigate. The session menu
       // belongs to the conversation pane.
-      onResumedIdentity: (resumedRef) => resumeCascadeScope(pane, scope.requestedRef, resumedRef),
+      onResumedIdentity: (resumedRef) => resumeCascadeScope(lifetime, scope.requestedRef, resumedRef),
       sessionMenu: false,
     }),
-    [view, composer, leaf, pane, scope.requestedRef],
+    [view, composer, leaf, pane, lifetime, scope.requestedRef],
   );
   const readableWidth = leaf ? 440 : 400;
   const desktopWidth = readable ? readableWidth : 52;

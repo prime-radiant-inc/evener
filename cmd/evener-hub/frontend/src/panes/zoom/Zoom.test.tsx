@@ -32,7 +32,7 @@ import { readerWireTurns } from "../session/transcript/transcriptReaderTestUtils
 import { holdReaderFrames, installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
-import { enterAgentCascade, popAgentCascade } from "./actions";
+import { enterAgentCascade, popAgentCascade, returnFromAgentCascade } from "./actions";
 import { cascadeScope } from "./cascadeTestUtils";
 import { recordCascadeOrigin } from "./inspectionOrigin";
 import type { SessionZoomParams } from "./intent";
@@ -556,6 +556,74 @@ test("a store-driven resume replaces the drilled column's identity in place", as
       "draft follows the resume",
     ),
   );
+});
+
+test("simultaneous parent and leaf resumes each replace their own scope", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+
+  // One commit carries both columns' identity changes: both callbacks hold
+  // the same pane record, and whichever resume runs first retypes it before
+  // the other applies.
+  await act(async () => {
+    await threadsStore.getState().ensureThread("child-resumed");
+    await threadsStore.getState().ensureThread("grandchild-resumed");
+  });
+  act(() =>
+    threadsStore.setState((state) => ({
+      resumedIdentities: new Map(state.resumedIdentities)
+        .set("child", "child-resumed")
+        .set("grandchild", "grandchild-resumed"),
+    })),
+  );
+  await screen.findByText("child-resumed content child-resumed");
+  expect(currentParams().ref).toBe("grandchild-resumed");
+  expect(currentParams().edges).toEqual([
+    { ownerRef: "root", childRef: "child-resumed", delegateId: "d1" },
+    { ownerRef: "child-resumed", childRef: "grandchild-resumed", delegateId: "d2" },
+  ]);
+  // The leaf column's conversation renders the resumed identity too.
+  await screen.findByText("grandchild-resumed content grandchild-resumed");
+});
+
+test("resuming the rendered source moves the cascade's source ownership to the resumed identity", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  // A draft typed in the source column follows the resumed identity.
+  const editor = within(cascadeScope("root")).getByRole("textbox", { name: "Message" });
+  replaceEditorText(editor, "source draft carries to the resumed identity");
+
+  await act(async () => {
+    await threadsStore.getState().ensureThread("root-resumed");
+  });
+  act(() =>
+    threadsStore.setState((state) => ({
+      resumedIdentities: new Map(state.resumedIdentities).set("root", "root-resumed"),
+    })),
+  );
+  await screen.findByText("root-resumed content root-resumed");
+
+  // The source column moved onto the resumed identity, and the source
+  // descriptor and retained source ownership moved with it.
+  expect(columnRefs()).toEqual(["root-resumed", "child"]);
+  expect(currentParams().source).toMatchObject({ type: "session", params: { ref: "root-resumed" } });
+  expect(conversationPaneLifetime(currentPane()).sourceRef).toBe("root-resumed");
+  const resumedEditor = within(cascadeScope("root-resumed")).getByRole("textbox", { name: "Message" });
+  expect(resumedEditor.textContent).toBe("source draft carries to the resumed identity");
+
+  // Return reopens the resumed conversation with its carried draft, not
+  // the superseded identity.
+  act(() => returnFromAgentCascade("cascade"));
+  expect(currentPane()).toMatchObject({ type: "session", params: { ref: "root-resumed" } });
 });
 
 test("deeper drill retains the root view as a paused spine and pop reuses its source role", async () => {

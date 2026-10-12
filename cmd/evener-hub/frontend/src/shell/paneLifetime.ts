@@ -16,6 +16,10 @@ export interface PaneLifetime {
   readonly readViews: Map<string, TranscriptReadView>;
   readonly jobOutputReads: Map<string, JobLogReader>;
   readonly resolvedSessions: Map<string, string>;
+  /** A store-driven resume of the source conversation moves retained source
+   * ownership (the Return target, the source read view's role, and the
+   * source composer's ref) to the resumed identity. */
+  adoptResumedSource(resumedRef: string): void;
   dispose(): void;
 }
 let nextSerial = 0;
@@ -25,14 +29,17 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   const existing = lifetimes.get(pane);
   if (existing) return existing;
   const source = pane.type === "sessionZoom" ? parseZoomParams(pane.params)?.source : null;
-  const sourceRef = refParam(source?.params ?? pane.params);
-  if (sourceRef === null) throw new Error("Conversation pane requires a session ref");
+  const initialSourceRef = refParam(source?.params ?? pane.params);
+  if (initialSourceRef === null) throw new Error("Conversation pane requires a session ref");
+  let sourceRef = initialSourceRef;
   const sourceType = source?.type ?? (pane.type === "session" ? "session" : "transcript");
   let alive = true;
   const lifetime: PaneLifetime = {
     paneId: pane.id,
     serial: ++nextSerial,
-    sourceRef,
+    get sourceRef() {
+      return sourceRef;
+    },
     sourceType,
     composers: new Map(),
     readViews: new Map(),
@@ -49,6 +56,20 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
         lifetime.composers.set(sourceRef, state);
       }
       return state;
+    },
+    adoptResumedSource(resumedRef: string): void {
+      if (sourceRef === resumedRef) return;
+      // The retained composer is the source's in-memory ownership: it moves
+      // to the resumed identity, and the superseded ref's state retires with
+      // the move.
+      const prior = lifetime.composers.get(sourceRef);
+      lifetime.composers.delete(sourceRef);
+      if (prior && !lifetime.composers.has(resumedRef)) {
+        lifetime.composers.set(resumedRef, prior);
+      } else {
+        prior?.dispose();
+      }
+      sourceRef = resumedRef;
     },
     dispose() {
       if (!alive) return;

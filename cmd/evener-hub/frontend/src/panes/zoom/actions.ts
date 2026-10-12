@@ -172,21 +172,39 @@ export function reconcileCascadeBinding(expected: OpenPaneRecord, ref: string, s
  * edges follow the resumed identity — so the column re-renders on the
  * resumed ref with a fresh retained reader and the carried draft. The
  * resume driver has already hydrated the resumed ref before it publishes
- * the identity this answers. */
-export function resumeCascadeScope(expected: OpenPaneRecord, ref: string, resumedRef: string): void {
-  if (ref === resumedRef) return;
-  if (!workspaceStore.getState().panes.includes(expected)) return;
-  const params = intentFor(expected);
-  if (!params) return;
-  if (!pathFor(params).scopes.some((scope) => scope.requestedRef === ref)) return;
+ * the identity this answers.
+ *
+ * The retained lifetime is the frame's identity: a same-commit pair of
+ * resumes (whichever applies first retypes the pane record the other
+ * captured) still resolves the current record through it, while a wholesale
+ * replacement (a closed pane, a reused pane id) cannot inherit the resume.
+ * Returns whether the frame applied the change, so the caller acknowledges
+ * the resume only then. A resumed source conversation also moves the source
+ * descriptor and the lifetime's retained source ownership, so Return
+ * reopens the resumed identity instead of the superseded one. */
+export function resumeCascadeScope(lifetime: PaneLifetime, ref: string, resumedRef: string): boolean {
+  if (ref === resumedRef) return true;
+  if (!lifetime.alive) return false;
+  const current = workspaceStore.getState().panes.find((record) => record.id === lifetime.paneId);
+  if (!current || conversationPaneLifetime(current) !== lifetime) return false;
+  const params = intentFor(current);
+  if (!params) return false;
+  if (!pathFor(params).scopes.some((scope) => scope.requestedRef === ref)) return false;
+  const sourceResumed = params.source.type === "session" && refParam(params.source.params) === ref;
   const next: SessionZoomParams = {
     ...params,
     ref: params.ref === ref ? resumedRef : params.ref,
+    // The rendered source conversation keeps rendering through its resumed
+    // identity: the descriptor follows, so Return reopens the resumed
+    // conversation instead of the superseded one.
+    source: sourceResumed ? { ...params.source, params: { ...params.source.params, ref: resumedRef } } : params.source,
     edges: params.edges.map((edge) => ({
       ...edge,
       ownerRef: edge.ownerRef === ref ? resumedRef : edge.ownerRef,
       childRef: edge.childRef === ref ? resumedRef : edge.childRef,
     })),
   };
-  updateIntent(expected, next);
+  updateIntent(current, next);
+  if (sourceResumed) lifetime.adoptResumedSource(resumedRef);
+  return true;
 }

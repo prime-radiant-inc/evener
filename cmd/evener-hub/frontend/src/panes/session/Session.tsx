@@ -124,7 +124,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       // opens the resumed session rather than leaving a stale identity.
       onResumedIdentity: (resumedRef) => {
         const url = paneToURL("session", { ref: resumedRef });
-        if (url !== null) navigate(url, { replace: true });
+        if (url === null) return false;
+        navigate(url, { replace: true });
+        return true;
       },
       keyboardScrollPaneId: paneId,
       sessionMenu: true,

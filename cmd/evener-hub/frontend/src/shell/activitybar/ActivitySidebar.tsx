@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
 import { popAgentCascade } from "../../panes/zoom/actions";
-import { cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
+import { cascadeOrigin, cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
 import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
@@ -20,7 +20,7 @@ import { tabbable } from "../../widgets/focusscope/tabbable";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
-import { useWorkspaceStore } from "../workspace";
+import { useWorkspaceStore, workspaceStore } from "../workspace";
 import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import {
@@ -156,7 +156,19 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                     hierarchy
                     onNavigate={
                       focusedPane?.type === "sessionZoom"
-                        ? (ancestor) => popAgentCascade(focusedPane.id, ancestor)
+                        ? (ancestor) => {
+                            // The origin conversation never renders inside a
+                            // separated inspector's cascade, and selecting it
+                            // there is refused: its crumb routes to the
+                            // retained origin pane instead of doing nothing.
+                            const origin =
+                              cascadeOriginRef(focusedPane) === ancestor ? cascadeOrigin(focusedPane) : null;
+                            if (origin) {
+                              workspaceStore.getState().focusPane(origin.id);
+                              return;
+                            }
+                            popAgentCascade(focusedPane.id, ancestor);
+                          }
                         : undefined
                     }
                   />

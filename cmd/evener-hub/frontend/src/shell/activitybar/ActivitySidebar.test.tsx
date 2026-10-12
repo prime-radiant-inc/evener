@@ -9,6 +9,7 @@ import type { SessionPaneParams } from "../../panes/session/Session";
 import { replaceEditorText, selectEditorText } from "../../panes/session/testing/editor";
 import { installTranscriptGeometry } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { cascadeClient, cascadeContext, cascadeThread } from "../../panes/zoom/cascadeTestUtils";
+import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import Zoom from "../../panes/zoom/Zoom";
 import "../../panes/zoom";
@@ -616,6 +617,56 @@ test("an embedded column's Overview describes that column, then the sidebar foll
   } finally {
     mounted.unmount();
   }
+});
+
+test("the held column's origin crumb routes to the retained origin pane", async () => {
+  // A separated inspector: the origin conversation lives in its own pane,
+  // and popAgentCascade refuses to select the origin inside the cascade
+  // (selecting it there would leave an empty track). The origin crumb in a
+  // held column's ancestry must route to that pane instead of doing
+  // nothing.
+  const context = (ref: string) =>
+    cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []);
+  const client = cascadeClient(context);
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: context(ref),
+    scope: scope ?? "session",
+    delegates: [activityDelegate({ ownerRef: ref, description: `delegate owned by ${ref}` })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope("grandchild");
+  const params: SessionZoomParams = {
+    ref: "grandchild",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [
+      { ownerRef: "root", childRef: "child", delegateId: "d1" },
+      { ownerRef: "child", childRef: "grandchild", delegateId: "d2" },
+    ],
+    inspection: { origin: { paneId: "origin", type: "session", ref: "root" } },
+  };
+  workspaceStore.setState({
+    panes: [
+      { id: "origin", type: "session", params: { ref: "root" }, slot: "main" },
+      { id: "zoom", type: "sessionZoom", params, slot: "secondary" },
+    ],
+    focusedPaneId: "zoom",
+  });
+  const panes = workspaceStore.getState().panes;
+  const inspector = panes.find((pane) => pane.id === "zoom");
+  const origin = panes.find((pane) => pane.id === "origin");
+  if (!inspector || !origin) throw new Error("fixture panes missing");
+  act(() => recordCascadeOrigin(inspector, origin));
+  // The parent column's Overview hold, like its chrome's own request.
+  activitySidebarStore.getState().openFor("child", "agents");
+  mount();
+  const sidebar = within(screen.getByTestId("activity-sidebar"));
+  const originCrumb = await sidebar.findByRole("button", { name: "root" });
+  act(() => fireEvent.click(originCrumb));
+  expect(workspaceStore.getState().focusedPaneId).toBe("origin");
+  // The sidebar follows focus onto the origin conversation, and that read
+  // settles inside the test rather than after it.
+  await sidebar.findByRole("button", { name: /delegate owned by root/ });
 });
 
 test("activity tabs keep a named keyboard radio group without a visible heading", async () => {
