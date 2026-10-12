@@ -129,19 +129,17 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 	}
 
 	data, recovered := recoverMissingOpeningDelimiter(data)
-	if !bytes.HasPrefix(data, []byte(skillFrontmatterDelimiter)) {
-		return invalidFrontmatter("skill file requires YAML frontmatter", nil)
-	}
-
 	document, err := frontmatter.Parse(string(data))
 	if err != nil {
 		return invalidFrontmatter("skill frontmatter is not valid YAML", fmt.Errorf("parsing skill frontmatter: %w", err))
 	}
+	switch document.Framing {
+	case frontmatter.NoOpeningDelimiter:
+		return invalidFrontmatter("skill file requires YAML frontmatter", nil)
+	case frontmatter.NoClosingDelimiter:
+		return invalidFrontmatter("skill frontmatter has no closing delimiter", nil)
+	}
 	if document.Meta == nil {
-		if document.Body == string(data) {
-			// No whole-line closing delimiter: Parse returns the input verbatim.
-			return invalidFrontmatter("skill frontmatter has no closing delimiter", nil)
-		}
 		// Framed, but the YAML decodes to null (e.g. "---\nnull\n---").
 		return invalidFrontmatter("skill frontmatter has no metadata", nil)
 	}
