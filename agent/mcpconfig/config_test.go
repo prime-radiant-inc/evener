@@ -30,7 +30,7 @@ func TestParseServerMapReturnsServersSortedByName(t *testing.T) {
 	want := []string{"alpha", "delta", "mid", "omega", "zeta"}
 	// The map ranges in a different order per call, so ten calls make an
 	// accidental all-sorted pass at HEAD negligible.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		configs, err := ParseServerMap(servers, "test")
 		if err != nil {
 			t.Fatalf("ParseServerMap: %v", err)
