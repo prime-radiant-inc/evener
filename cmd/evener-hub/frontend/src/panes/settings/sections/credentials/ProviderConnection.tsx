@@ -16,7 +16,18 @@ import {
   isStaleListingRefusal,
   useCredentialsStore,
 } from "../../../../stores/credentials";
-import { Button, Chevron, Dialog, Disclosure, FormRow, Input, OpenButton, Skeleton } from "../../../../widgets";
+import {
+  Button,
+  Card,
+  Dialog,
+  Disclosure,
+  FormRow,
+  InlineNotice,
+  Input,
+  ListRow,
+  OpenButton,
+  Skeleton,
+} from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
 import type { FormError } from "./formError";
 import { AddInstanceDialog } from "./instanceDialogs";
@@ -134,11 +145,8 @@ function needsConfiguration(row: InstanceEntry | undefined): boolean {
 }
 
 /**
- * One tappable row per provider, drawn with the app's list-of-selectable-
- * things row (panes/settings/sections/marketplacesPlugins/InstalledSection.tsx
- * and MarketplacesSection.tsx: a full-width button carrying a surface, an
- * edge and a trailing chevron) rather than a box per provider. The whole row
- * is the target and a real <button>, so it is a tab stop whose accessible
+ * One tappable ListRow per provider rather than a box per provider. The whole
+ * row is the target and a real <button>, so it is a tab stop whose accessible
  * name is exactly the provider's label - the same label the list has always
  * printed (help metadata first, then the registry's name, then the id).
  */
@@ -155,12 +163,11 @@ function ProviderChoices({
     <ul aria-label="Providers" className={styles.providers}>
       {rows.map((row) => (
         <li key={row.id}>
-          <button type="button" className={styles.provider} disabled={disabled} onClick={() => onSelect(row)}>
-            <span className={styles.providerLabel}>{HELP[row.id]?.label || row.name || row.id}</span>
-            <span className={styles.providerChevron} aria-hidden="true">
-              <Chevron direction="right" />
-            </span>
-          </button>
+          <ListRow
+            label={HELP[row.id]?.label || row.name || row.id}
+            disabled={disabled}
+            onSelect={() => onSelect(row)}
+          />
         </li>
       ))}
     </ul>
@@ -201,14 +208,20 @@ export function ProviderConnection(props: ProviderConnectionProps) {
         <p>Connect one provider to get started. Add others later.</p>
         {store.loading && <Skeleton />}
         {store.error && (
-          <div role="alert" tabIndex={-1} ref={errorRef}>
-            Providers could not be loaded.{" "}
-            {/* fetch() rejects when there is no client; the error region this
-                button lives in is already the recovery affordance. */}
-            <Button variant="secondary" onClick={() => void store.fetch().catch(() => {})}>
-              Retry
-            </Button>
-          </div>
+          <InlineNotice
+            tone="danger"
+            tabIndex={-1}
+            ref={errorRef}
+            action={
+              // fetch() rejects when there is no client; the error region this
+              // button lives in is already the recovery affordance.
+              <Button variant="secondary" onClick={() => void store.fetch().catch(() => {})}>
+                Retry
+              </Button>
+            }
+          >
+            Providers could not be loaded.
+          </InlineNotice>
         )}
         {!showAll && <ProviderChoices rows={popular} disabled={listingUnavailable} onSelect={selectProvider} />}
         {/* A disclosure, not a second mode: one focusable control opens the
@@ -768,10 +781,12 @@ function SelectedConnection({
           </>
         )}
         {row && (
-          <div className={styles.review}>
-            <p>{row.baseUrl}</p>
-            <p>{activeSourceLabel(row)}</p>
-          </div>
+          <Card variant="outlined">
+            <div className={styles.review}>
+              <p>{row.baseUrl}</p>
+              <p>{activeSourceLabel(row)}</p>
+            </div>
+          </Card>
         )}
         {configured && needsConfiguration(row) ? (
           <>
@@ -839,21 +854,23 @@ function SelectedConnection({
             )}
             <p>The check requests only the model list. It does not send a prompt or generate a response.</p>
             {review ? (
-              <div className={styles.review} data-testid="access-review">
-                <p>Review changed access before contacting the provider.</p>
-                <p data-destination="previous">Previous destination: {baseline?.baseUrl ?? "Not configured"}</p>
-                <p data-destination="current">Current destination: {review.baseUrl}</p>
-                <p>{activeSourceLabel(review)}</p>
-                <Button
-                  disabled={unavailable}
-                  onClick={() => {
-                    setBaseline(review);
-                    void check(++operation.current, review);
-                  }}
-                >
-                  Use reviewed access and check
-                </Button>
-              </div>
+              <Card variant="outlined" data-testid="access-review">
+                <div className={styles.review}>
+                  <p>Review changed access before contacting the provider.</p>
+                  <p data-destination="previous">Previous destination: {baseline?.baseUrl ?? "Not configured"}</p>
+                  <p data-destination="current">Current destination: {review.baseUrl}</p>
+                  <p>{activeSourceLabel(review)}</p>
+                  <Button
+                    disabled={unavailable}
+                    onClick={() => {
+                      setBaseline(review);
+                      void check(++operation.current, review);
+                    }}
+                  >
+                    Use reviewed access and check
+                  </Button>
+                </div>
+              </Card>
             ) : result?.status === "success" ? (
               <>
                 <p role="status" data-state="success">
@@ -884,9 +901,9 @@ function SelectedConnection({
           </>
         )}
         {error && (
-          <div className={styles.review} role="alert" tabIndex={-1} ref={errorRef} data-reason={error.reason}>
+          <InlineNotice tone="danger" tabIndex={-1} ref={errorRef} data-reason={error.reason}>
             {error.message}
-          </div>
+          </InlineNotice>
         )}
         {connection !== "ready" && (
           <p role="status" data-state="reconnecting">

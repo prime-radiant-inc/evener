@@ -9,7 +9,6 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { clearCachedSessions, countCachedSessions, subscribeCacheWrites } from "../../../stores/threads";
 import { Button } from "../../../widgets";
-import { SettingsField } from "./settingsField";
 
 export type SessionCacheRowStatus = "empty" | "cached" | "unavailable" | "cleared";
 
@@ -98,7 +97,12 @@ export function resetSessionCacheRowStoreForTests(): void {
  * browser only. Same-tab writes refresh a mounted row immediately. An
  * unrelated render also recounts, bounding sibling-write staleness, while
  * an uncertain Clear's own render preserves unavailable and its Retry. */
-export function SessionCacheRow() {
+export const SESSION_CACHE_LABEL = "Cached session content";
+
+export const SESSION_CACHE_HELP =
+  "Copies of this browser's session transcripts kept on disk, so reopening a session paints without a fetch. Clear removes them from this browser only.";
+
+export function SessionCacheStatus() {
   const status = useSessionCacheRowStore((s) => s.status);
   const clearing = useSessionCacheRowStore((s) => s.clearing);
   const refresh = useSessionCacheRowStore((s) => s.refresh);
@@ -125,28 +129,21 @@ export function SessionCacheRow() {
   });
 
   return (
-    <SettingsField
-      field="session-cache"
-      label="Cached session content"
-      value={
-        <>
-          {status}
-          {status === "unavailable" && (
-            <Button size="sm" variant="secondary" onClick={() => void refresh()}>
-              Retry
-            </Button>
-          )}
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={clearing || status === "empty" || status === "unavailable"}
-            onClick={() => void clear()}
-          >
-            Clear
-          </Button>
-        </>
-      }
-      help="Copies of this browser's session transcripts kept on disk, so reopening a session paints without a fetch. Clear removes them from this browser only."
-    />
+    <>
+      {status}
+      {status === "unavailable" && (
+        <Button size="sm" variant="secondary" onClick={() => void refresh()}>
+          Retry
+        </Button>
+      )}
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled={clearing || status === "empty" || status === "unavailable"}
+        onClick={() => void clear()}
+      >
+        Clear
+      </Button>
+    </>
   );
 }

@@ -137,6 +137,42 @@ test("disabled is the native attribute: inert and out of the tab order", async (
   expect(onChange).not.toHaveBeenCalled();
 });
 
+test("a description describes the switch without joining its name", () => {
+  render(
+    <Switch
+      label="Notifications"
+      checked={false}
+      onChange={() => {}}
+      description={<span data-testid="switch-detail">detail</span>}
+    />,
+  );
+  const control = screen.getByRole("switch", { name: "Notifications" });
+  const describedBy = control.getAttribute("aria-describedby");
+  expect(describedBy).toBeTruthy();
+  const description = document.getElementById(describedBy ?? "");
+  expect(description?.contains(screen.getByTestId("switch-detail"))).toBe(true);
+});
+
+test("without a description the switch has no aria-describedby", () => {
+  render(<Switch label="Notifications" checked={false} onChange={() => {}} />);
+  expect(screen.getByRole("switch").hasAttribute("aria-describedby")).toBe(false);
+});
+
+test("clicking the description does not toggle the switch", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(
+    <Switch
+      label="Notifications"
+      checked={false}
+      onChange={onChange}
+      description={<span data-testid="switch-detail">detail</span>}
+    />,
+  );
+  await user.click(screen.getByTestId("switch-detail"));
+  expect(onChange).not.toHaveBeenCalled();
+});
+
 test("is keyboard-focusable when enabled", () => {
   render(<Switch label="Notifications" checked={false} onChange={() => {}} />);
   const toggle = screen.getByRole("switch") as HTMLButtonElement;

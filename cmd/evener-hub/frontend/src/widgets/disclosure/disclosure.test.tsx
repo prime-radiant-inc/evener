@@ -3,9 +3,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { act, useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { resetDisclosureStoreForTests, setDisclosureOpen } from "./disclosureStore";
+import { beginDisclosureBaseline, resetDisclosureStoreForTests, setDisclosureOpen } from "./disclosureStore";
 import { Disclosure } from "./index";
 
 // jsdom runs no animations, so A6's motion can only be asserted at the
@@ -65,6 +65,64 @@ test("defaultOpen renders open when the store has no entry", () => {
     </Disclosure>,
   );
   expect(screen.getByText("Body")).toBeTruthy();
+});
+
+test("an expand-all baseline opens a store-backed disclosure, and one click closes it", () => {
+  render(
+    <Disclosure id={"scope\0row"} summary="Head" data-testid="d">
+      Body
+    </Disclosure>,
+  );
+  act(() => beginDisclosureBaseline("scope", ["row"], true));
+  expect((screen.getByTestId("d") as HTMLDetailsElement).open).toBe(true);
+  fireEvent.click(screen.getByText("Head"));
+  expect((screen.getByTestId("d") as HTMLDetailsElement).open).toBe(false);
+  expect(screen.queryByText("Body")).toBeNull();
+});
+
+test("ignoreBaseline keeps a disclosure on its default through expand-all while a reader's click still wins", () => {
+  render(
+    <Disclosure id={"scope\0row"} summary="Head" data-testid="d" ignoreBaseline>
+      Body
+    </Disclosure>,
+  );
+  act(() => beginDisclosureBaseline("scope", ["row"], true));
+  expect((screen.getByTestId("d") as HTMLDetailsElement).open).toBe(false);
+  fireEvent.click(screen.getByText("Head"));
+  expect((screen.getByTestId("d") as HTMLDetailsElement).open).toBe(true);
+  expect(screen.getByText("Body")).toBeTruthy();
+});
+
+test("variant defaults to the filled row and quiet is reported on the disclosure", () => {
+  render(
+    <>
+      <Disclosure id="v-default" summary="Default" data-testid="default">
+        Body
+      </Disclosure>
+      <Disclosure id="v-quiet" summary="Quiet" data-testid="quiet" variant="quiet">
+        Body
+      </Disclosure>
+    </>,
+  );
+  expect(screen.getByTestId("default").dataset.variant).toBe("default");
+  expect(screen.getByTestId("quiet").dataset.variant).toBe("quiet");
+  fireEvent.click(screen.getByText("Quiet"));
+  expect((screen.getByTestId("quiet") as HTMLDetailsElement).open).toBe(true);
+});
+
+// Declaration-level (jsdom runs no cascade): the quiet variant drops the hover
+// fill and the open-state wash, and keeps the summary flush with the content
+// column, while the default variant keeps both washes.
+test("the quiet variant declares no hover fill, no open wash, and no inline inset", () => {
+  const css = motionCss();
+  const rule = (selector: string) =>
+    css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+  expect(rule('.details[data-variant="quiet"] > .summary')).toMatch(/padding-inline:\s*0/);
+  expect(rule('.details[data-variant="quiet"] > .summary:hover:not([aria-disabled="true"])')).toMatch(
+    /background:\s*none/,
+  );
+  expect(rule('.details[data-variant="quiet"][open] > .summary')).toMatch(/background:\s*none/);
+  expect(rule(".details[open] > .summary")).toMatch(/background:\s*var\(--hover-2\)/);
 });
 
 test("controlled harness owns the open state", () => {

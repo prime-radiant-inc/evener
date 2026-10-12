@@ -4,7 +4,7 @@
 // task list render nothing.
 import { type ItemModel, stripSystemReminder, type TurnModel } from "@evener/appwire-client";
 import { type SystemEventWireCase, systemEventWireItem } from "@evener/appwire-client/testing/systemEventWireFixtures";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { SteeringItem } from "./SteeringItem";
@@ -20,6 +20,11 @@ function steer(name: SystemEventWireCase): ItemModel {
   return systemEventWireItem(name) as ItemModel;
 }
 
+// The kind the divider's label names (its label span's data-kind).
+function steeringKind(): string | undefined {
+  return screen.getByTestId("steering-item").querySelector<HTMLElement>(":scope > summary [data-kind]")?.dataset.kind;
+}
+
 test.each([
   ["steer-hook-context", "hook-context"],
   ["steer-precompact-hook", "precompact-hook"],
@@ -32,7 +37,8 @@ test.each([
   ["steer-from-parent", "parent"],
 ] as const)("folds %s under its %s label, opening to what it said", (name, kind) => {
   render(<SteeringItem item={steer(name)} turn={turn} live={false} />);
-  expect(screen.getByTestId("steering-item").dataset.kind).toBe(kind);
+  expect(steeringKind()).toBe(kind);
+  fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
   const body = screen.getByTestId("steering-item").querySelector("pre")?.textContent;
   expect(body).toBe(stripSystemReminder(systemEventWireItem(name).text ?? ""));
 });
@@ -47,7 +53,8 @@ Delegate dlg_42 completed.
 ])("renders a parent's message that quotes notification markup whole: %s", (text) => {
   const item = { ...steer("steer-from-parent"), text };
   render(<SteeringItem item={item} turn={turn} live={false} />);
-  expect(screen.getByTestId("steering-item").dataset.kind).toBe("parent");
+  expect(steeringKind()).toBe("parent");
+  fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
   expect(screen.getByTestId("steering-item").querySelector("pre")?.textContent).toBe(text);
 });
 

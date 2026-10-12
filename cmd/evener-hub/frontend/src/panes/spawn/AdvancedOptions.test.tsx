@@ -529,13 +529,20 @@ test.each([
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
-  const section = screen.getByRole("region", { name: label });
+  const section = screen.getByRole("group", { name: label });
   const labelId = section.getAttribute("aria-labelledby");
   if (!labelId) throw new Error("expected the collection section to reference its visible schema label");
   const visibleLabel = document.getElementById(labelId);
   if (!visibleLabel) throw new Error("expected the visible schema label to be in the document");
   expectSightedText(visibleLabel, label);
-  if (description) expectSightedText(within(section).getByText(description), description);
+  const helpId = section.getAttribute("aria-describedby");
+  if (description) {
+    const help = document.getElementById(helpId ?? "");
+    if (!help) throw new Error("expected the collection section to be described by its visible help");
+    expectSightedText(help, description);
+  } else {
+    expect(helpId).toBeNull();
+  }
 });
 
 test("a modelList field rejects a model already in the list", async () => {

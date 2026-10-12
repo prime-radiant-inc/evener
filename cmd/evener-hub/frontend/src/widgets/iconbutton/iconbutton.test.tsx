@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
+import { SHOW_DELAY_MS } from "../hovercard/useFloatingLabel";
 import { IconButton, type IconButtonProps } from "./index";
 
 function DotIcon() {
@@ -88,6 +89,50 @@ test("an aria-disabled refusal swallows the click but keeps focus, exactly as Bu
 
   rerender(<IconButton label="Go" icon={<DotIcon />} onClick={onClick} />);
   await user.click(screen.getByRole("button", { name: "Go" }));
+  expect(onClick).toHaveBeenCalledOnce();
+});
+
+function focusAndWaitForTooltip(button: HTMLElement): void {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    act(() => button.focus());
+    act(() => {
+      vi.advanceTimersByTime(SHOW_DELAY_MS);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+test("a disabled button with a disabledReason stays focusable, refuses the press, and is described by its reason", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  const reason = "test-reason";
+  render(<IconButton label="Go" icon={<DotIcon />} disabled disabledReason={reason} onClick={onClick} />);
+  const button = screen.getByRole("button", { name: "Go" }) as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.getAttribute("aria-disabled")).toBe("true");
+
+  focusAndWaitForTooltip(button);
+  expect(document.activeElement).toBe(button);
+  const tooltip = screen.getByRole("tooltip");
+  expect(button.getAttribute("aria-describedby")).toBe(tooltip.id);
+  expect(tooltip.textContent).toBe(reason);
+
+  await user.keyboard("{Enter}");
+  await user.click(button);
+  expect(onClick).not.toHaveBeenCalled();
+});
+
+test("a disabledReason on an enabled button is inert: no refusal, no tooltip", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  render(<IconButton label="Go" icon={<DotIcon />} disabledReason="test-reason" onClick={onClick} />);
+  const button = screen.getByRole("button", { name: "Go" });
+  expect(button.hasAttribute("aria-disabled")).toBe(false);
+  focusAndWaitForTooltip(button);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  await user.click(button);
   expect(onClick).toHaveBeenCalledOnce();
 });
 
@@ -187,6 +232,28 @@ test("xs size is square at 24px, matching Button's own xs height", () => {
   expect(/\.xs\s*\{([^}]*)\}/.exec(buttonCss)?.[1] ?? "").toMatch(/height:\s*24px/);
 });
 
+// badge: a count riding the icon's corner (the hidden rail's Show sidebar,
+// the phone's Sessions trigger). It is part of the button, so it hides,
+// moves and clicks with it, and it never renames the button.
+test("a badge renders its count inside the button without changing the accessible name", () => {
+  render(<IconButton label="Sessions" icon={<DotIcon />} badge={{ count: 3, tone: "attention" }} />);
+  const button = screen.getByRole("button", { name: "Sessions" });
+  expect(button.textContent).toBe("3");
+});
+
+test("a click on a badged button still reaches onClick", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  render(<IconButton label="Sessions" icon={<DotIcon />} badge={{ count: 3 }} onClick={onClick} />);
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+  expect(onClick).toHaveBeenCalledTimes(1);
+});
+
+test("without a badge the button carries no count", () => {
+  render(<IconButton label="Sessions" icon={<DotIcon />} />);
+  expect(screen.getByRole("button", { name: "Sessions" }).textContent).toBe("");
+});
+
 // Mobile touch-target floor (2026-07-30-mobile-session-layout-design.md,
 // decision 4): the square icon-only sizes (the top bar's Back/drawer, the
 // composer's attach) reach 44px in both dimensions on the phone. min-*, not
@@ -215,4 +282,19 @@ test("an aria-disabled reset icon button does not reset its form", async () => {
   await user.type(field, "kept");
   await user.click(screen.getByRole("button", { name: "Clear" }));
   expect(field).toHaveProperty("value", "kept");
+});
+
+// Toggling a refusal on and off must not remount the button: a keyboard user
+// standing on it keeps focus, which is the point of refusing via aria-disabled.
+test("toggling disabled-with-a-reason keeps the focused button focused", () => {
+  const { rerender } = render(<IconButton label="Steer" icon={<span>s</span>} disabledReason="Session is busy" />);
+  const button = screen.getByRole("button", { name: "Steer" });
+  act(() => button.focus());
+  rerender(<IconButton label="Steer" icon={<span>s</span>} disabled disabledReason="Session is busy" />);
+  expect(screen.getByRole("button", { name: "Steer" })).toBe(button);
+  expect(document.activeElement).toBe(button);
+  rerender(<IconButton label="Steer" icon={<span>s</span>} disabledReason="Session is busy" />);
+  expect(screen.getByRole("button", { name: "Steer" })).toBe(button);
+  expect(document.activeElement).toBe(button);
+  expect(button.hasAttribute("aria-describedby")).toBe(false);
 });

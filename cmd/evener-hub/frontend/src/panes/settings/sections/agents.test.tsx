@@ -1,18 +1,10 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests, type SettingsOverviewStoreState } from "../../../stores/settingsOverview";
 import { AgentsSection } from "./agents";
-
-// The repo's CSS-source pin idiom (difftable.test.tsx, select.test.tsx):
-// jsdom has no layout, so placement contracts are pinned against the
-// stylesheet's own source.
-const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "agents.module.css"), "utf8");
 
 afterEach(() => {
   // Unmount first: resetting the settingsOverview singleton then notifies
@@ -50,18 +42,19 @@ describe("AgentsSection", () => {
     expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   });
 
-  test("shows an error message on failure", () => {
+  test("raises an alert on failure, without leaking the raw error string", () => {
     render(<AgentsSection sectionId="agents" useOverview={fixture({ error: "network down" })} />);
-    // error is converted via friendlyErrorMessage: raw strings like "network down" become the generic message
-    expect(screen.getByRole("alert")).toBeTruthy();
-    // Assert the raw string no longer appears
-    expect(screen.queryByText(/network down/)).toBeNull();
+    const alert = screen.getByRole("alert");
+    // error is converted via friendlyErrorMessage: the raw wire string never reaches the reader
+    expect(alert.textContent).not.toContain("network down");
+    expect(screen.queryByRole("list")).toBeNull();
   });
 
-  test("an empty agent list shows the empty state", () => {
+  test("no agents renders the empty state instead of a list", () => {
     const data: SettingsOverviewResponse = { agents: [] };
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
     expect(screen.getByTestId("empty-state")).toBeTruthy();
+    expect(screen.queryByRole("list")).toBeNull();
   });
 
   test("an agent with an editPath renders the standard open affordance: 'open in editor', target=_blank, no opener access", () => {
@@ -78,10 +71,10 @@ describe("AgentsSection", () => {
     expect(link.rel).toContain("noreferrer");
   });
 
-  test("an agent with no editPath shows a dim 'built-in' label instead of a link", () => {
+  test("an agent with no editPath offers no link", () => {
     const data: SettingsOverviewResponse = { agents: [{ name: "evener" }] };
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
-    expect(screen.getByText("built-in")).toBeTruthy();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
     expect(screen.queryByRole("link")).toBeNull();
   });
 
@@ -92,9 +85,18 @@ describe("AgentsSection", () => {
     expect(screen.getByText("explorer")).toBeTruthy();
   });
 
-  test("the open-in-editor anchor rides beside the agent name, not the row's far edge", () => {
-    expect(css).not.toMatch(/\.row\s*\{[^}]*justify-content:\s*space-between/);
-    expect(css).toMatch(/\.trailing\s*\{[^}]*margin-left:\s*auto/);
+  test("each agent is one list row holding its name and its own open control", () => {
+    const data: SettingsOverviewResponse = {
+      agents: [{ name: "reviewer", editPath: "editor://open?path=/plugins/reviewer.md" }, { name: "evener" }],
+    };
+    render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
+    const rows = screen.getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    const [reviewer, builtin] = rows as [HTMLElement, HTMLElement];
+    expect(within(reviewer).getByText("reviewer")).toBeTruthy();
+    expect(within(reviewer).getByRole("link", { name: /open in editor/i })).toBeTruthy();
+    expect(within(builtin).getByText("evener")).toBeTruthy();
+    expect(within(builtin).queryByRole("link")).toBeNull();
   });
 });
 

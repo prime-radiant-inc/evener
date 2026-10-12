@@ -54,6 +54,22 @@ try {
     });
     assert.equal(result.result.exceptionDetails, undefined);
   };
+  const decodeSound = async () => {
+    const samples = await evaluate(send, "window.devicePairingGuard.samples[0]");
+    const pcm = Buffer.alloc(samples.length * 2);
+    samples.forEach((v, i) => pcm.writeInt16LE(Math.round(v * 32767), i * 2));
+    const fields = execFileSync(native.binary, ["decode-invitation", secret, "00".repeat(8)], {
+      input: pcm,
+      encoding: "utf8",
+    })
+      .trim()
+      .split(" ");
+    return { pcm, fields };
+  };
+  const captureScreenshot = async (name) => {
+    const shot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
+    writeFileSync(path.join(output, `${name}.png`), Buffer.from(shot.result.data, "base64"));
+  };
   for (const width of [1280, 390, 320]) {
     const tailnet = width === 1280;
     await applyViewport(send, { width, height: 960 });
@@ -61,9 +77,11 @@ try {
       bootExpression: "Boolean(window.devicePairingGuard)",
       bootLabel: "Device pairing fixture",
     });
-    await wait("Pair a device");
+    await wait("Pair using sound");
     await wait("Copy pairing link");
-    await click("Pair a device");
+    await wait("Mobile app pairing QR code");
+    await captureScreenshot(`device-pairing-entry-${width}`);
+    await click("Pair using sound");
     await wait("Create invitation");
     assert.equal(await evaluate(send, "document.querySelector('input').value"), "http://100.64.1.2:9180");
     if (!tailnet)
@@ -76,10 +94,10 @@ try {
     await click("Play setup sound");
     await evaluate(send, "window.devicePairingGuard.firstAudioStarted");
     await click("Stop sound");
-    await wait("Sound stopped");
+    await wait("Play setup sound");
     assert.equal(await evaluate(send, "window.devicePairingGuard.nodes.every(n=>n.context.state==='closed')"), true);
-    await click("Play sound again");
-    await wait("Sound sent");
+    await click("Play setup sound");
+    await wait("Play setup sound");
     assert.equal(await evaluate(send, "window.devicePairingGuard.samples.length"), 2);
     assert.equal(
       await evaluate(
@@ -88,25 +106,13 @@ try {
       ),
       true,
     );
-    const samples = await evaluate(send, "window.devicePairingGuard.samples[0]");
-    const pcm = Buffer.alloc(samples.length * 2);
-    samples.forEach((v, i) => pcm.writeInt16LE(Math.round(v * 32767), i * 2));
+    const { pcm, fields } = await decodeSound();
     writeFileSync(path.join(output, `invitation-${width}.pcm`), pcm);
-    const fields = execFileSync(native.binary, ["decode-invitation", secret, "00".repeat(8)], {
-      input: pcm,
-      encoding: "utf8",
-    })
-      .trim()
-      .split(" ");
     assert.deepEqual(fields.slice(0, 5), ["100.64.1.2", "9180", "/rpc", tailnet ? "1" : "0", "0"]);
     const [, , , , , comparison, publicKey, invitation] = fields;
     const invite = { origin: "http://100.64.1.2:9180", tailnet, invitation, expiresAt: 0 };
-    const pixels = await evaluate(send, "window.devicePairingGuard.invitationPixels()");
-    const qr = jsQR(new Uint8ClampedArray(pixels), 768, 768);
-    assert.ok(qr, "displayed invitation QR decodes");
-    const phoneInvite = pairing.parseInvitation(qr.data);
-    assert.deepEqual(phoneInvite, invite);
-    const phone = pairing.createPairingClaim(phoneInvite, new Uint8Array(32).fill(0x3a));
+    assert.equal(await evaluate(send, "document.querySelector('[role=img]')"), null);
+    const phone = pairing.createPairingClaim(invite, new Uint8Array(32).fill(0x3a));
     assert.equal(phone.publicKey, publicKey);
     assert.equal(phone.comparison, comparison);
     const claim = (claimKey = publicKey, client = "Test device") =>
@@ -126,14 +132,18 @@ try {
     const pending = await claim();
     assert.equal(pending.state, "pending");
     assert.equal(pending.envelope, undefined);
-    await wait(`Approve code ${comparison}`);
+    await wait(`Codes match — approve ${comparison}`);
+    const comparisonLines = await evaluate(send, "document.querySelector('pre').textContent.trim().split('\\n')");
+    assert.equal(comparisonLines.length, 4);
+    assert.ok(comparisonLines.every((line) => line.split(/\s+/).length === 2));
+    assert.equal(comparisonLines.flatMap((line) => line.split(/\s+/)).join("-"), comparison);
     if (width <= 390) {
       const longClientName = "M".repeat(48);
-      const rival = pairing.createPairingClaim(phoneInvite, new Uint8Array(32).fill(0x3b));
+      const rival = pairing.createPairingClaim(invite, new Uint8Array(32).fill(0x3b));
       assert.equal((await claim(rival.publicKey, longClientName)).state, "pending");
-      await wait(`Approve code ${rival.comparison}`);
+      await wait(`Codes match — approve ${rival.comparison}`);
       const claimFits = await evaluate(send, `(() => {
-        const claim = Array.from(document.querySelectorAll('span')).find(node => node.textContent.startsWith(${JSON.stringify(longClientName + ":")}));
+        const claim = Array.from(document.querySelectorAll('strong')).find(node => node.textContent === ${JSON.stringify(longClientName)});
         if (!claim) throw new Error('Missing long device label');
         const parent = claim.parentElement.getBoundingClientRect();
         const range = document.createRange();
@@ -164,10 +174,9 @@ try {
       true,
       "pairing controls fit the viewport",
     );
-    const pendingShot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
-    writeFileSync(path.join(output, `device-pairing-pending-${width}.png`), Buffer.from(pendingShot.result.data, "base64"));
-    await click(`Approve code ${comparison}`);
-    await wait("Approved. Your device can now save this Hub.");
+    await captureScreenshot(`device-pairing-pending-${width}`);
+    await click(`Codes match — approve ${comparison}`);
+    await wait("Approved. Keep your device connected");
     const approved = await claim();
     assert.equal(approved.state, "approved");
     assert.deepEqual(await claim(), approved);
@@ -193,8 +202,7 @@ try {
       authenticated.close();
     }
     assert.equal(await evaluate(send, "document.documentElement.scrollWidth<=innerWidth"), true);
-    const shot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
-    writeFileSync(path.join(output, `device-pairing-${width}.png`), Buffer.from(shot.result.data, "base64"));
+    await captureScreenshot(`device-pairing-${width}`);
     await click("Close setup");
     assert.equal(await evaluate(send, "window.devicePairingGuard.nodes.every(n=>n.context.state==='closed')"), true);
     assert.equal(
@@ -205,16 +213,37 @@ try {
       `PASS ${width}px HTTP browser -> invitation PCM -> C/mobile protocol -> real Hub claim/approval -> both decrypt -> authenticated request`,
     );
   }
-  // A committed approval must survive closing the browser before its reply is
-  // delivered. Wait for actual wire completion, not a guessed cleanup delay.
-  await click("Pair a device");
+  // A phone can need a different destination from the browser's valid default.
+  // Its QR invitation and committed approval must survive a lost browser reply.
+  await navigateTo(page, `http://127.0.0.1:${guard.vitePort}/devicepairingguard.html`, {
+    bootExpression: "Boolean(window.devicePairingGuard)",
+    bootLabel: "Device pairing fixture",
+  });
+  await wait("Use another Hub address");
+  await click("Use another Hub address");
   await wait("Create invitation");
+  const phoneOrigin = "https://phone-hub.example.test:9443";
+  assert.equal(await evaluate(send, "document.querySelector('input').value"), "http://100.64.1.2:9180");
+  await evaluate(send, `(() => {
+    const address = document.querySelector('input');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(address, ${JSON.stringify(phoneOrigin)});
+    address.dispatchEvent(new Event('input', {bubbles: true}));
+    const transport = document.querySelector('select');
+    transport.value = 'direct';
+    transport.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
   await click("Create invitation");
-  await wait("Play setup sound");
+  await wait("Device pairing invitation QR code");
   const pixels = await evaluate(send, "window.devicePairingGuard.invitationPixels()");
   const qr = jsQR(new Uint8ClampedArray(pixels), 768, 768);
-  assert.ok(qr);
+  assert.ok(qr, "manual phone invitation QR decodes");
   const invitation = pairing.parseInvitation(qr.data);
+  assert.ok(invitation);
+  assert.equal(invitation.origin, phoneOrigin);
+  assert.equal(invitation.tailnet, false);
+  assert.equal(await evaluate(send, "window.devicePairingGuard.samples.length"), 0);
+  assert.equal(await evaluate(send, "document.documentElement.scrollWidth<=innerWidth"), true);
+  await captureScreenshot("device-pairing-manual-qr-320");
   const phone = pairing.createPairingClaim(invitation, new Uint8Array(32).fill(0x3a));
   const claim = () =>
     fetch(`${endpoint}/api/device-pairing`, {
@@ -227,16 +256,20 @@ try {
       }),
     }).then((response) => response.json());
   assert.equal((await claim()).state, "pending");
-  await wait(`Approve code ${phone.comparison}`);
+  await wait(`Codes match — approve ${phone.comparison}`);
   await evaluate(send, "window.devicePairingGuard.holdApproval()");
-  await click(`Approve code ${phone.comparison}`);
+  await click(`Codes match — approve ${phone.comparison}`);
   await evaluate(send, "window.devicePairingGuard.approvalReceived");
   await click("Close setup");
   await evaluate(send, "window.devicePairingGuard.drain()");
   const approved = await claim();
   assert.equal(approved.state, "approved", "closing setup must preserve an approval with a lost acknowledgement");
-  assert.equal(pairing.openPairingEnvelope(phone, approved.envelope).token, "synthetic-pairing-token");
-  console.log("PASS committed approval survives lost browser acknowledgement and immediate close");
+  assert.deepEqual(pairing.openPairingEnvelope(phone, approved.envelope), {
+    origin: phoneOrigin,
+    token: "synthetic-pairing-token",
+  });
+  await wait("Use another Hub address");
+  console.log("PASS edited phone destination -> displayed QR -> real Hub approval survives lost browser acknowledgement and immediate close");
 } finally {
   page?.close();
   await guard.cleanup();

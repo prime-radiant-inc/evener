@@ -1,17 +1,20 @@
 import type { DevicePairingInvitation, DevicePairingStatus } from "@evener/appwire-client";
 import { encodeInvitation, invitationText } from "@evener/appwire-client/pairing";
-import { QRCodeSVG } from "qrcode.react";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useClient } from "../../../../shell/clientContext";
-import { Button, FormRow, InlineNotice, Input, Select } from "../../../../widgets";
+import { Button, FormRow, InlineNotice, Input, Select, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { encodeAudio, SAMPLE_RATE } from "./audio";
 import styles from "./devicePairing.module.css";
 
 const rootClass = requireClass(styles.root, "devicePairing.module.css", "root");
 const controlsClass = requireClass(styles.controls, "devicePairing.module.css", "controls");
+const claimClass = requireClass(styles.claim, "devicePairing.module.css", "claim");
+const comparisonClass = requireClass(styles.comparison, "devicePairing.module.css", "comparison");
+const helpClass = requireClass(styles.help, "devicePairing.module.css", "help");
+const QRCodeSVG = lazy(() => import("qrcode.react").then((m) => ({ default: m.QRCodeSVG })));
 
-export function DeviceSetup({ initialOrigin }: { initialOrigin: string }) {
+export function DeviceSetup({ initialOrigin, method }: { initialOrigin: string; method: "sound" | "qr" }) {
   const client = useClient(),
     id = useId();
   const [origin, setOrigin] = useState(initialOrigin);
@@ -100,13 +103,17 @@ export function DeviceSetup({ initialOrigin }: { initialOrigin: string }) {
   }
   return (
     <section className={rootClass} aria-labelledby={`${id}-title`}>
-      <h3 id={`${id}-title`}>Pair a device</h3>
-      <p>On your device, choose Receive setup to listen, or Scan pairing code to use the camera.</p>
+      <h3 id={`${id}-title`}>{method === "sound" ? "Pair using sound" : "Scan with your phone"}</h3>
       {!invite || status?.state === "expired" ? (
         <>
           {status?.state === "expired" && (
-            <InlineNotice>This invitation expired. Create a new one and listen or scan again.</InlineNotice>
+            <InlineNotice>This invitation expired. Create a new one to try again.</InlineNotice>
           )}
+          <p>
+            {method === "sound"
+              ? "Choose Receive setup on your device, then create an invitation for this Hub."
+              : "Enter the Hub address your phone can reach, then create an invitation."}
+          </p>
           <FormRow label="Hub address" htmlFor={`${id}-origin`}>
             <Input
               id={`${id}-origin`}
@@ -138,35 +145,47 @@ export function DeviceSetup({ initialOrigin }: { initialOrigin: string }) {
             <strong>{invite.origin}</strong>
           </p>
           {status?.state === "approved" ? (
-            <InlineNotice>
-              Approved. Your device can now save this Hub. Keep it connected until setup finishes.
-            </InlineNotice>
+            <InlineNotice>Approved. Keep your device connected until setup finishes.</InlineNotice>
           ) : (
             <>
-              <div role="img" aria-label="Device pairing invitation QR code">
-                <QRCodeSVG value={invitationText(invite)} includeMargin level="M" size={192} />
-              </div>
-              <SetupSound invitation={invite} />
-              <p>This invitation lasts ten minutes. Compare the code on your device before approving it here.</p>
-              {status?.claims.length ? (
-                status.claims.map((claim) => (
-                  <div key={claim.publicKey} className={controlsClass}>
-                    <span>
-                      {claim.client}: <strong>{claim.comparison}</strong>
-                    </span>
-                    <Button
-                      size="sm"
-                      aria-label={`Approve code ${claim.comparison}`}
-                      disabled={busy}
-                      onClick={() => void approve(claim.publicKey)}
-                    >
-                      Approve this device
-                    </Button>
-                  </div>
-                ))
+              {method === "sound" ? (
+                <SetupSound invitation={invite} hasClaims={Boolean(status?.claims.length)} />
               ) : (
-                <InlineNotice>Waiting for your device…</InlineNotice>
+                <>
+                  <p>Scan this invitation in the Evener mobile app.</p>
+                  <Suspense fallback={<Skeleton lines={1} />}>
+                    <div role="img" aria-label="Device pairing invitation QR code">
+                      <QRCodeSVG value={invitationText(invite)} includeMargin level="M" size={192} />
+                    </div>
+                  </Suspense>
+                </>
               )}
+              {status?.claims.length ? (
+                <>
+                  <p>
+                    {method === "sound"
+                      ? "Compare all four lines with your device."
+                      : "Compare the whole code with your phone."}
+                  </p>
+                  {status.claims.map((claim) => (
+                    <div key={claim.publicKey} className={claimClass}>
+                      <strong>{claim.client}</strong>
+                      <pre className={comparisonClass}>
+                        {claim.comparison.replace(/([^-]+)-([^-]+)(?:-|$)/g, "$1  $2\n").trim()}
+                      </pre>
+                      <Button
+                        size="sm"
+                        aria-label={`Codes match — approve ${claim.comparison}`}
+                        disabled={busy}
+                        onClick={() => void approve(claim.publicKey)}
+                      >
+                        Codes match — approve
+                      </Button>
+                    </div>
+                  ))}
+                </>
+              ) : null}
+              <p className={helpClass}>The invitation expires after ten minutes.</p>
             </>
           )}
         </>
@@ -176,7 +195,7 @@ export function DeviceSetup({ initialOrigin }: { initialOrigin: string }) {
   );
 }
 
-function SetupSound({ invitation }: { invitation: DevicePairingInvitation }) {
+function SetupSound({ invitation, hasClaims }: { invitation: DevicePairingInvitation; hasClaims: boolean }) {
   const [state, setState] = useState<"ready" | "playing" | "sent" | "stopped">("ready");
   const [error, setError] = useState("");
   const audio = useRef<AudioContext | null>(null),
@@ -230,16 +249,16 @@ function SetupSound({ invitation }: { invitation: DevicePairingInvitation }) {
     }
   }
   const messages: Record<typeof state, string> = {
-    ready: "Hold your device near your speaker.",
-    playing: "Sending setup sound…",
-    sent: "Sound sent. Play it again if your device missed part of it.",
-    stopped: "Sound stopped. You can play it again.",
+    ready: "Hold your listening device near this computer’s speaker, then play the sound.",
+    playing: "Keep your device near the speaker while the sound plays.",
+    sent: "Waiting for your device. Play the sound again if it did not receive setup.",
+    stopped: "Sound stopped. Play it again when your device is ready.",
   };
   return (
     <>
       <div className={controlsClass}>
         <Button size="sm" disabled={state === "playing"} onClick={() => void play()}>
-          {state === "ready" ? "Play setup sound" : "Play sound again"}
+          {state === "playing" ? "Playing setup sound…" : "Play setup sound"}
         </Button>
         {state === "playing" && (
           <Button
@@ -254,7 +273,7 @@ function SetupSound({ invitation }: { invitation: DevicePairingInvitation }) {
           </Button>
         )}
       </div>
-      <InlineNotice>{messages[state]}</InlineNotice>
+      {(!hasClaims || state === "playing") && <InlineNotice>{messages[state]}</InlineNotice>}
       {error && <InlineNotice tone="danger">{error}</InlineNotice>}
     </>
   );

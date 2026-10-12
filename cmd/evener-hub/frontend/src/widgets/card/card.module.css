@@ -13,3 +13,29 @@
     corner-shape: squircle;
   }
 }
+
+/* The bordered box shared by outlined and attention: a real 1px edge on the
+ * pane radius, padded one step tighter than the flat card because the edge
+ * already separates it from what is around it. */
+.outlined,
+.attention {
+  padding: var(--space-3);
+  border: 1px solid;
+  border-radius: var(--radius-pane);
+}
+
+.outlined {
+  border-color: var(--edge);
+  background: var(--surface-1);
+}
+
+/* Stronger than the --attention-bg/-edge token defaults (15%/40%): against
+ * dark's very dark, low-chroma --surface-1 those barely tint the box, leaving
+ * the envelope nearly invisible. 24%/55% was checked in both themes in the
+ * /dev/surfaces gallery: dark gains a legible amber wash and edge, light stays
+ * close to the token reading. Card is on token-contract.test.ts's
+ * SEMANTIC_USE_ALLOWLIST for this tone. */
+.attention {
+  border-color: color-mix(in oklab, var(--attention) 55%, var(--edge));
+  background: color-mix(in oklab, var(--attention) 24%, var(--surface-1));
+}

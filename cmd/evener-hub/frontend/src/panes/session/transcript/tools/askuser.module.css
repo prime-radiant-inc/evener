@@ -1,12 +1,8 @@
-.card {
+.questions,
+.content {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  background: var(--surface-1);
-  margin-bottom: var(--space-2);
 }
 
 .question {
@@ -37,13 +33,6 @@
 .detail {
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
-}
-
-.recommended {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }
 
 .note {

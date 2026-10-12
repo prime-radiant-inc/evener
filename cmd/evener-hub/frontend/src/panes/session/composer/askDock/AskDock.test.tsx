@@ -140,21 +140,6 @@ test("renders nothing when there is no pending ask for this ref", async () => {
   expect(container.firstChild).toBeNull();
 });
 
-// Dark-theme legibility (UX fix): the amber envelope's default --attention-bg/
-// -edge (15%/40% mixes, tokens.css) barely reads as amber against dark
-// surfaces. This file is already on the semantic-hue exception list
-// (token-contract.test.ts's SEMANTIC_PATH_EXCEPTIONS), so it strengthens the
-// mix locally rather than changing the global token (which every OTHER
-// --attention consumer also reads).
-test("the batch envelope strengthens the amber mix locally, past the token default, for dark-theme legibility", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
-  const batchRule = css.match(/\.batch\s*\{([^}]*)\}/);
-  expect(batchRule, "askdock.module.css must declare a .batch rule").not.toBeNull();
-  const body = batchRule![1]!;
-  expect(body).toMatch(/background:\s*color-mix\(in oklab,\s*var\(--attention\)\s*24%,\s*var\(--surface-1\)\)/);
-  expect(body).toMatch(/border:\s*1px solid color-mix\(in oklab,\s*var\(--attention\)\s*55%,\s*var\(--edge\)\)/);
-});
-
 // Touch target (UX fix): the tab strip's own buttons are dense (kata 99yf's
 // question-switcher), so a coarse pointer (phone/tablet touch) needs the
 // platform's 44px tap floor - the same --tap-min button.module.css's own

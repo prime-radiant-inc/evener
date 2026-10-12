@@ -17,7 +17,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { LOCAL_HOST } from "../../../../stores/hostRouting";
-import { EmptyState, SegmentedControl, Skeleton } from "../../../../widgets";
+import { InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "../hostScopedSurface";
 import { useHostScopedLoad } from "../useConnectedEffect";
@@ -140,7 +140,9 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   if (loadError !== null) {
     return (
       <section className={CLASS.page}>
-        <EmptyState title="Failed to load" hint={friendlyErrorMessage(loadError)} reason="unavailable" />
+        <InlineNotice tone="danger" live="status" data-reason="unavailable">
+          Failed to load: {friendlyErrorMessage(loadError)}
+        </InlineNotice>
       </section>
     );
   }

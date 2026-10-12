@@ -21,7 +21,7 @@ import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireRespons
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
 import { daemonResidentsStore, residentRowKey, useDaemonResidentsStore } from "../../../stores/daemonResidents";
-import { Button, ConfirmDialog, EmptyState, Skeleton } from "../../../widgets";
+import { Button, ConfirmDialog, EmptyState, InlineNotice, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hubResidents.module.css";
 
@@ -38,7 +38,6 @@ const CLASS = {
   root: requireClass(styles.root, "hubResidents.module.css", "root"),
   heading: requireClass(styles.heading, "hubResidents.module.css", "heading"),
   meta: requireClass(styles.meta, "hubResidents.module.css", "meta"),
-  errorBanner: requireClass(styles.errorBanner, "hubResidents.module.css", "errorBanner"),
   tableWrapper: requireClass(styles.tableWrapper, "hubResidents.module.css", "tableWrapper"),
   table: requireClass(styles.table, "hubResidents.module.css", "table"),
   actions: requireClass(styles.actions, "hubResidents.module.css", "actions"),
@@ -302,9 +301,9 @@ export function HubResidents() {
       {/* Stale-data indicator: shown when the last refresh failed but old
           rows are retained. Uses role="status" so screen readers announce it. */}
       {error !== null && (
-        <p className={CLASS.errorBanner} role="status">
+        <InlineNotice tone="danger" live="status">
           Unable to refresh resident list (showing last known data): {friendlyErrorMessage(error)}
-        </p>
+        </InlineNotice>
       )}
 
       {/* Initial-load skeleton */}
@@ -427,11 +426,7 @@ export function HubResidents() {
                         {/* Per-row action error — shown when a retire or force-stop
                             RPC fails. role="alert" for immediate screen-reader
                             announcement. */}
-                        {actionError !== undefined && (
-                          <div className={CLASS.errorBanner} role="alert">
-                            {actionError}
-                          </div>
-                        )}
+                        {actionError !== undefined && <InlineNotice tone="danger">{actionError}</InlineNotice>}
                       </div>
                     </td>
                   </tr>

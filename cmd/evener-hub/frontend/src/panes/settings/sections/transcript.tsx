@@ -10,7 +10,7 @@ import {
   transcriptDisplayStore,
   useTranscriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
-import { Button, useToasts } from "../../../widgets";
+import { Button, InlineNotice, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptDisplayCard } from "./TranscriptDisplayCard";
 import styles from "./transcript.module.css";
@@ -20,7 +20,6 @@ const CLASS = {
   intro: requireClass(styles.intro, "transcript.module.css", "intro"),
   cards: requireClass(styles.cards, "transcript.module.css", "cards"),
   status: requireClass(styles.status, "transcript.module.css", "status"),
-  error: requireClass(styles.error, "transcript.module.css", "error"),
 };
 
 type Layout = "desktop" | "mobile";
@@ -126,9 +125,7 @@ export function TranscriptSection() {
       </p>
 
       {storageWarning !== null && (
-        <p className={CLASS.error} role="alert">
-          Browser-local storage warning: {storageWarning}
-        </p>
+        <InlineNotice tone="danger">Browser-local storage warning: {storageWarning}</InlineNotice>
       )}
       {status !== undefined && (
         <p className={CLASS.status} role="status" aria-live="polite" data-reason={status.reason}>
@@ -136,16 +133,20 @@ export function TranscriptSection() {
         </p>
       )}
       {serverIssue && (
-        <div className={CLASS.error} role="alert">
-          <span>Could not load transcript display defaults: {hubError}</span>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => void transcriptDisplayStore.getState().refreshHubDefaults()}
-          >
-            Retry
-          </Button>
-        </div>
+        <InlineNotice
+          tone="danger"
+          action={
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void transcriptDisplayStore.getState().refreshHubDefaults()}
+            >
+              Retry
+            </Button>
+          }
+        >
+          Could not load transcript display defaults: {hubError}
+        </InlineNotice>
       )}
 
       <div className={CLASS.cards}>

@@ -2537,13 +2537,45 @@ func candidateSatisfies(candidate any, schemas ...map[string]any) bool {
 }
 
 // candidateMatchesSchema checks one candidate against a single property schema:
-// its const, its enum membership, its declared type, and any numeric/string
-// bounds it declares.
+// its own keywords, and for an object or array candidate that schema's
+// object/array constraints recursively. A candidate that is neither is judged
+// by the own keywords alone, and the walk applies no combining applicator; a
+// constraint those keywords do not read therefore makes the candidate decline
+// rather than report it as satisfying a schema it may not (issue #4099).
 func candidateMatchesSchema(candidate any, schema map[string]any) bool {
 	if schema == nil {
 		return true
 	}
 	candidate = canonicalJSONValue(candidate)
+	// The own-keyword check runs before the container dispatch: the object and
+	// array walks assume the candidate's const, enum and declared type were
+	// already judged (see objectCandidateSatisfies).
+	if !schemaOwnKeywordsMatch(candidate, schema) {
+		return false
+	}
+	switch v := candidate.(type) {
+	case map[string]any:
+		return objectCandidateSatisfies(v, schema)
+	case []any:
+		return arrayCandidateSatisfies(v, schema)
+	}
+	// Refuse what the walk cannot evaluate, matching candidateSatisfies' own
+	// screen: a nested property and a top-level one must agree.
+	return !hasUnhandledCandidateRisk(schema)
+}
+
+// schemaOwnKeywordsMatch reports whether candidate satisfies the constraints
+// schema states in its own keywords — const, enum, declared type, numeric
+// bounds/multipleOf, string length — with no combining applicator applied. The
+// candidate is expected in canonical JSON form (the null handling passes nil,
+// candidateMatchesSchema canonicalizes first), and a nil schema imposes
+// nothing. The repair package's null handling reads a schema's own keywords
+// with it and then evaluates anyOf/oneOf/allOf/not itself, so it must not
+// refuse them here.
+func schemaOwnKeywordsMatch(candidate any, schema map[string]any) bool {
+	if schema == nil {
+		return true
+	}
 	if declared, present := schema["const"]; present && !jsonEqual(candidate, declared) {
 		return false
 	}
@@ -2558,12 +2590,6 @@ func candidateMatchesSchema(candidate any, schema map[string]any) bool {
 		// could be validated against a different value than the one rendered
 		// (issue #624 review): decline rather than assert an off-by-one Example.
 		return false
-	}
-	switch v := candidate.(type) {
-	case map[string]any:
-		return objectCandidateSatisfies(v, schema)
-	case []any:
-		return arrayCandidateSatisfies(v, schema)
 	}
 	if v, ok := numericValue(candidate); ok {
 		return numericValueSatisfies(v, schema)
@@ -2914,7 +2940,7 @@ func valueHasJSONType(v any, name string) bool {
 	return true
 }
 
-// unhandledCandidateRiskKeys are constraints candidateSatisfies cannot
+// unhandledCandidateRiskKeys are constraints the candidate walk cannot
 // evaluate for an arbitrary candidate, so their presence makes it decline.
 var unhandledCandidateRiskKeys = append([]string{
 	"pattern", "format",
@@ -2927,8 +2953,10 @@ var unhandledCandidateRiskKeys = append([]string{
 	"patternProperties", "unevaluatedProperties", "unevaluatedItems",
 }, refKeywords...)
 
-// hasUnhandledCandidateRisk reports whether schema declares a constraint
-// candidateSatisfies cannot evaluate.
+// hasUnhandledCandidateRisk reports whether schema declares a constraint the
+// candidate walk cannot evaluate. Both candidateSatisfies (whole-property
+// screen) and candidateMatchesSchema (a value the walk does not descend into)
+// consult it.
 func hasUnhandledCandidateRisk(schema map[string]any) bool {
 	for _, key := range unhandledCandidateRiskKeys {
 		if _, present := schema[key]; present {

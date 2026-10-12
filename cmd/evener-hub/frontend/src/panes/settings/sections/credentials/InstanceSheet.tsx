@@ -45,7 +45,19 @@ import {
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, Switch, useToasts } from "../../../../widgets";
+import {
+  Button,
+  Chip,
+  FormRow,
+  InlineNotice,
+  Input,
+  PropertyList,
+  Select,
+  Sheet,
+  StatusDot,
+  Switch,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { CREDENTIAL_DOT, credentialState } from "./credentialState";
 import type { FormError } from "./formError";
@@ -71,17 +83,12 @@ import { confirmListingState } from "./reconcileListing";
 const CLASS = {
   headingRow: requireClass(styles.headingRow, "InstanceSheet.module.css", "headingRow"),
   form: requireClass(styles.form, "InstanceSheet.module.css", "form"),
-  formError: requireClass(styles.formError, "InstanceSheet.module.css", "formError"),
   layers: requireClass(styles.layers, "InstanceSheet.module.css", "layers"),
   layer: requireClass(styles.layer, "InstanceSheet.module.css", "layer"),
   unconfigured: requireClass(styles.unconfigured, "InstanceSheet.module.css", "unconfigured"),
-  metaRow: requireClass(styles.metaRow, "InstanceSheet.module.css", "metaRow"),
-  metaLabel: requireClass(styles.metaLabel, "InstanceSheet.module.css", "metaLabel"),
-  metaValue: requireClass(styles.metaValue, "InstanceSheet.module.css", "metaValue"),
   actionRows: requireClass(styles.actionRows, "InstanceSheet.module.css", "actionRows"),
   fullRow: requireClass(styles.fullRow, "InstanceSheet.module.css", "fullRow"),
   divider: requireClass(styles.divider, "InstanceSheet.module.css", "divider"),
-  testResult: requireClass(styles.testResult, "InstanceSheet.module.css", "testResult"),
   modelNote: requireClass(styles.modelNote, "InstanceSheet.module.css", "modelNote"),
 };
 
@@ -789,12 +796,11 @@ export function InstanceSheet({
                   disabled={busy}
                 />
               </FormRow>
-              <div className={CLASS.metaRow}>
-                <span className={CLASS.metaLabel}>Base provider</span>
-                <span className={CLASS.metaValue} data-testid="base-provider">
-                  {instance.providerId}
-                </span>
-              </div>
+              <PropertyList
+                rows={[
+                  { label: "Base provider", value: <span data-testid="base-provider">{instance.providerId}</span> },
+                ]}
+              />
               <FormRow
                 label="Base URL"
                 htmlFor={`${ids}-baseurl`}
@@ -859,9 +865,9 @@ export function InstanceSheet({
                 />
               </FormRow>
               {formError !== null && (
-                <p className={CLASS.formError} role="alert" data-reason={formError.reason}>
+                <InlineNotice tone="danger" data-reason={formError.reason}>
                   {formError.message}
-                </p>
+                </InlineNotice>
               )}
             </form>
           )}
@@ -869,9 +875,9 @@ export function InstanceSheet({
               action just taken: a named status, which assistive tech reads
               when the sheet is read rather than announcing it on open. */}
           {authError ? (
-            <p className={CLASS.formError} role="status" aria-label="Credential error">
+            <InlineNotice tone="danger" live="status" aria-label="Credential error">
               {authError}
-            </p>
+            </InlineNotice>
           ) : null}
           {unconfigured !== null ? (
             <p className={CLASS.unconfigured}>{unconfigured}</p>
@@ -959,9 +965,9 @@ export function InstanceSheet({
               </Button>
             </div>
             {safeTestResult && (
-              <p className={CLASS.testResult} role="status" data-state={safeTestResult.status}>
+              <InlineNotice data-state={safeTestResult.status}>
                 {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
-              </p>
+              </InlineNotice>
             )}
             {supportsApiKey && (
               <div className={CLASS.fullRow}>

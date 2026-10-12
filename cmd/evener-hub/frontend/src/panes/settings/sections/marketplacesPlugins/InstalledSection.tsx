@@ -6,8 +6,8 @@
 // client-side filter matches plugin name OR marketplace, case-insensitively.
 
 import type { PluginEntry } from "@evener/appwire-client";
-import { useId, useState } from "react";
-import { type CadenceState, Chevron, Input, StatusDot, VisuallyHidden } from "../../../../widgets";
+import { useState } from "react";
+import { type CadenceState, EmptyState, Input, ListRow, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
@@ -17,12 +17,6 @@ const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
   filterRow: requireClass(styles.filterRow, "marketplacesPlugins.module.css", "filterRow"),
   list: requireClass(styles.list, "marketplacesPlugins.module.css", "list"),
-  rowButton: requireClass(styles.rowButton, "marketplacesPlugins.module.css", "rowButton"),
-  rowMain: requireClass(styles.rowMain, "marketplacesPlugins.module.css", "rowMain"),
-  rowText: requireClass(styles.rowText, "marketplacesPlugins.module.css", "rowText"),
-  rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
-  rowChevron: requireClass(styles.rowChevron, "marketplacesPlugins.module.css", "rowChevron"),
-  empty: requireClass(styles.empty, "marketplacesPlugins.module.css", "empty"),
 };
 
 export interface InstalledSectionProps {
@@ -41,7 +35,6 @@ function pluginStatus(plugin: PluginEntry): CadenceState {
 export function InstalledSection({ onSelect }: InstalledSectionProps) {
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
   const [filterQuery, setFilterQuery] = useState("");
-  const filterId = useId();
 
   const trimmedQuery = filterQuery.trim().toLowerCase();
   const visible =
@@ -54,11 +47,8 @@ export function InstalledSection({ onSelect }: InstalledSectionProps) {
   return (
     <section className={CLASS.section}>
       <div className={CLASS.filterRow}>
-        <VisuallyHidden>
-          <label htmlFor={filterId}>Filter installed</label>
-        </VisuallyHidden>
         <Input
-          id={filterId}
+          aria-label="Filter installed"
           value={filterQuery}
           onChange={(event) => setFilterQuery(event.target.value)}
           placeholder="Filter installed…"
@@ -66,31 +56,23 @@ export function InstalledSection({ onSelect }: InstalledSectionProps) {
       </div>
       <ul aria-label="Installed plugins" className={CLASS.list}>
         {plugins.length === 0 ? (
-          <li className={CLASS.empty} data-reason="empty">
-            No plugins installed yet. Install one from Browse.
+          <li>
+            <EmptyState size="compact" reason="empty" title="No plugins installed yet. Install one from Browse." />
           </li>
         ) : visible.length === 0 ? (
-          <li className={CLASS.empty}>{`No plugins match "${filterQuery.trim()}".`}</li>
+          <li>
+            <EmptyState size="compact" title={`No plugins match "${filterQuery.trim()}".`} />
+          </li>
         ) : (
           visible.map((p) => (
             <li key={`${p.plugin}@${p.marketplace}`}>
-              <button
-                type="button"
-                className={CLASS.rowButton}
-                onClick={() => onSelect({ plugin: p.plugin, marketplace: p.marketplace })}
-              >
-                <div className={CLASS.rowMain}>
-                  <div className={CLASS.rowText}>
-                    <StatusDot state={pluginStatus(p)} />
-                    {p.plugin}
-                    {pluginStatusChips(p)}
-                  </div>
-                  <div className={CLASS.rowMeta}>{`@ ${p.marketplace} · v${p.version || "unknown"}`}</div>
-                </div>
-                <span className={CLASS.rowChevron} aria-hidden="true">
-                  <Chevron direction="right" />
-                </span>
-              </button>
+              <ListRow
+                leading={<StatusDot state={pluginStatus(p)} />}
+                label={p.plugin}
+                chips={pluginStatusChips(p).length > 0 ? pluginStatusChips(p) : undefined}
+                meta={`@ ${p.marketplace} · v${p.version || "unknown"}`}
+                onSelect={() => onSelect({ plugin: p.plugin, marketplace: p.marketplace })}
+              />
             </li>
           ))
         )}

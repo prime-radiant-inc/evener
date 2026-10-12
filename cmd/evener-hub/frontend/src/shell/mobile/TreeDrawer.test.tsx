@@ -1,5 +1,5 @@
 import { keyID } from "@evener/appwire-client/state/navigation";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -112,4 +112,15 @@ test("trigger calls onToggle instead of opening a Sheet", async () => {
   expect(onToggle).toHaveBeenCalled();
   // No dialog (Sheet) should be rendered by TreeDrawer anymore
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+// The badge is decoration inside the button, so the count must also reach
+// the accessible name, as RailHost's Show-sidebar trigger does.
+test("a screen reader hears the needs-you count in the trigger's name", () => {
+  setNeedsYou(3);
+  const { rerender } = render(<TreeDrawer onToggle={vi.fn()} />);
+  expect(screen.getByRole("button").getAttribute("aria-label")).toMatch(/\b3\b/);
+  act(() => setNeedsYou(0));
+  rerender(<TreeDrawer onToggle={vi.fn()} />);
+  expect(screen.getByRole("button").getAttribute("aria-label")).not.toMatch(/\d/);
 });

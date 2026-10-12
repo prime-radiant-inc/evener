@@ -545,3 +545,49 @@ test("saves stay refused while a recovery refresh is still in flight, and resume
   const [params] = setLayerSpy.mock.calls[0] as unknown as [{ config: Record<string, unknown> }];
   expect(params.config.skillsDirs).toEqual(["/skills/changed-elsewhere"]);
 });
+
+// A row's meta is one truncated line, so a failed probe's error renders in
+// full in its own wrapping notice under the row, never as the row's meta.
+test("a discovered server's probe error is shown in full beneath its row", async () => {
+  connectFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
+  const longError = `dial unix /run/mcp/${"deep/".repeat(30)}server.sock: connect: no such file or directory`;
+  render(
+    <McpSection
+      useOverviewStore={overviewHook({
+        data: {
+          mcpDiscovered: { servers: [{ name: "broken-tool", transport: "stdio", status: "error", error: longError }] },
+        },
+      })}
+    />,
+  );
+  const list = screen.getByRole("list", { name: "Discovered MCP servers" });
+  const notice = list.querySelector('[data-reason="probe-failed"]');
+  expect(notice?.textContent).toBe(longError);
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
+});
+
+// A long server name keeps the label to itself, apart from the transport, and
+// renders in full: the layoutguard case mcp-discovered-long-name proves it
+// wraps inside the row instead of truncating, which jsdom cannot measure.
+test("a discovered server's transport sits apart from a long name, and the full name is rendered", async () => {
+  connectFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
+  const longName = `team-shared-${"knowledge-".repeat(8)}server`;
+  render(
+    <McpSection
+      useOverviewStore={overviewHook({
+        data: { mcpDiscovered: { servers: [{ name: longName, transport: "streamable-http", status: "available" }] } },
+      })}
+    />,
+  );
+  const list = screen.getByRole("list", { name: "Discovered MCP servers" });
+  const name = within(list).getByText(longName);
+  expect(within(list).getByText("streamable-http")).not.toBe(name);
+  expect(name.textContent).toBe(longName);
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
+});

@@ -229,17 +229,17 @@ test("the thought icon is a centred flex-none glyph (baseline alignment would se
   expect(rule![1]).toContain("align-self: center");
 });
 
-test("the thought icon rails at 50% opacity in the speaker-avatar column, gutter-pulled only above the breakpoint", () => {
+test("the thought icon rails at 50% opacity in the speaker-avatar column; only the live eyebrow pulls into the gutter", () => {
   const css = thinkCss();
   const rule = /\.icon\s*\{([^}]*)\}/.exec(css);
   expect(rule).not.toBeNull();
   expect(rule![1]).toContain("opacity: 0.5");
   expect(rule![1]).toContain("width: var(--speaker-avatar-size)");
   expect(rule![1]).toContain("margin-right: var(--speaker-gap)");
-  // The pull is on the CONTAINERS, never on the icon: .summary's overflow:
-  // hidden would clip a negatively-margined child away entirely (qrv1).
+  // The pull is on the live eyebrow row, never on the icon; the settled
+  // thought is a Disclosure in the content column.
   expect(rule![1]).not.toContain("margin-left: calc(-1 * var(--speaker-gutter))");
-  const mediaRule = /@media \(min-width: 700px\) \{\s*\.label,\s*\.summary\s*\{([^}]*)\}/.exec(css);
+  const mediaRule = /@media \(min-width: 700px\) \{\s*\.label\s*\{([^}]*)\}/.exec(css);
   expect(mediaRule).not.toBeNull();
   expect(mediaRule![1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
 });
@@ -496,36 +496,24 @@ test("the open disclosure keeps the dot-joined duration label - never the old 'f
   expect(thoughtSummaryParts()).toEqual({ durationMs: "4000", preview: undefined });
 });
 
-// --- the trailing chevron: mockup #4's disclosure affordance ----------------
-// The draft restyle's collapsed line is "close to today plus a chevron" - the
-// same shared widgets/chevron every disclosure uses, riding at the tail of the
-// summary and turning 90° when open (ToolRow's data-open idiom).
+// --- the settled thought is a Disclosure ------------------------------------
 
-test("the settled summary trails with a chevron that tracks the open state", () => {
+test("the settled summary opens and closes the thought", () => {
   renderTools(
-    <ThinkBlock
-      item={item({ id: "think_chevron", reasoningSummaries: [["deep thought"]] })}
-      turn={turn}
-      live={false}
-    />,
+    <ThinkBlock item={item({ id: "think_toggle", reasoningSummaries: [["deep thought"]] })} turn={turn} live={false} />,
   );
-  const summary = document.querySelector("summary");
-  const chevron = screen.getByTestId("think-block-chevron");
-  expect(chevron.getAttribute("aria-hidden")).toBe("true");
-  expect(chevron.querySelector("svg")).not.toBeNull();
-  expect(summary?.lastElementChild).toBe(chevron);
-  expect(chevron.dataset.open).toBe("false");
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  const summary = details.querySelector("summary");
+  expect(details.open).toBe(false);
   fireEvent.click(summary!);
-  expect(chevron.dataset.open).toBe("true");
+  expect(details.open).toBe(true);
+  fireEvent.click(summary!);
+  expect(details.open).toBe(false);
 });
 
-test("the live eyebrow carries no chevron - there is nothing to disclose while streaming", () => {
+test("the live eyebrow is not a disclosure - there is nothing to disclose while streaming", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [["streaming"]] })} turn={turn} live={true} />);
-  expect(screen.queryByTestId("think-block-chevron")).toBeNull();
-});
-
-test("the chevron turns via the shared rotate-on-open idiom, scoped to data-open (declaration-level, jsdom runs no cascade)", () => {
-  expect(thinkCss()).toMatch(/\.chevron\[data-open="true"\]\s*>\s*svg\s*\{[^}]*transform:\s*rotate\(90deg\)/);
+  expect(document.querySelector("summary")).toBeNull();
 });
 
 test("the summary text ellipsizes in its own span so the trailing chevron is never pushed out of view", () => {
@@ -535,7 +523,7 @@ test("the summary text ellipsizes in its own span so the trailing chevron is nev
   expect(rule![1]).toContain("text-overflow: ellipsis");
 });
 
-test("the collapsed summary keeps the final context even though the expanded body remains complete", () => {
+test("the collapsed summary keeps the final context and opening mounts the complete body", () => {
   const { container } = renderTools(
     <ThinkBlock
       item={item({ reasoningSummaries: [["Delegating simple directory inspection task\n\nmore detail"]] })}
@@ -543,7 +531,11 @@ test("the collapsed summary keeps the final context even though the expanded bod
       live={false}
     />,
   );
+  const summary = container.querySelector("summary");
+  // The collapsed line previews the fixture's final context, not its first line.
   expect(thoughtSummaryParts(container).preview).toBe("more detail");
+  expect(screen.queryByText(/Delegating simple directory inspection task/)).toBeNull();
+  fireEvent.click(summary!);
   expect(screen.getByText(/Delegating simple directory inspection task/)).toBeTruthy();
 });
 
@@ -558,6 +550,7 @@ test("the plain context removes common Markdown decoration while the expanded bo
   const summary = container.querySelector("summary");
   expect(thoughtSummaryParts(container).preview).toBe("Delegating simple directory inspection task");
   expect(summary?.textContent).not.toMatch(/\*/);
+  fireEvent.click(summary!);
   expect(container.querySelector("details > div strong")?.textContent).toBe(
     "Delegating simple directory inspection task",
   );

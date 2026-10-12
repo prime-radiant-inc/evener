@@ -22,7 +22,7 @@ import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Button, EmptyState, Loader, PaneScaffold } from "../../widgets";
+import { Button, EmptyState, InlineNotice, Loader, PaneScaffold } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import { RepoLocation } from "./composer/RepoLocation";
 import styles from "./session.module.css";
@@ -58,7 +58,7 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
         Force shutdown…
       </Button>
       <ForceStopDialog open={open} onClose={() => setOpen(false)} onConfirm={stop} />
-      {error && <span role="alert">{error}</span>}
+      {error && <InlineNotice tone="danger">{error}</InlineNotice>}
     </>
   );
 }

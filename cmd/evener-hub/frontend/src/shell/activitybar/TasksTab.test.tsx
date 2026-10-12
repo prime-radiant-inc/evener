@@ -3,7 +3,7 @@
 
 import type { NavigationManifest, Task, ThreadModel } from "@evener/appwire-client";
 import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -11,6 +11,7 @@ import { MotionProvider } from "../../motion";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
 import { activityClient, activityThread } from "../../stores/sessionActivityTestUtils";
+import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
@@ -126,10 +127,45 @@ function renderSidebar() {
   );
 }
 
-function expectNoSummaries() {
-  const sidebar = within(screen.getByTestId("activity-sidebar"));
-  expect(sidebar.queryByText(/\d+ of \d+ settled/)).toBeNull();
-  expect(sidebar.queryByTestId("tasks-body-head")).toBeNull();
+function numbersIn(text: string | null | undefined): number[] {
+  return (text?.match(/\d+/g) ?? []).map(Number);
+}
+
+// The open tab is the Tasks tab; its visible label and accessible name both
+// carry the settled and total counts, in that order.
+function expectTabCounts(settled: number, total: number) {
+  const tab = screen.getByRole("radio", { checked: true });
+  expect(numbersIn(tab.textContent)).toEqual([settled, total]);
+  expect(tab.getAttribute("aria-label") ?? "").toMatch(new RegExp(`\\b${settled}\\b\\D+\\b${total}\\b`));
+}
+
+function liveGroupSizes(): Record<string, number> {
+  return Object.fromEntries(
+    screen.queryAllByTestId("task-group-live").map((group) => {
+      expect(within(group).getByRole("heading")).toBeTruthy();
+      return [group.dataset.status, within(group).getAllByTestId("task-row").length];
+    }),
+  );
+}
+
+function settledSummaryCounts(): number[] {
+  return numbersIn(screen.getByTestId("task-settled-group-summary").textContent);
+}
+
+// Counts live in the tab label alone: no element below the tab bar restates
+// "<done or settled> of <total>".
+function expectNoSummaries(counts: { done: number; total: number; cancelled?: number }) {
+  const sidebar = screen.getByTestId("activity-sidebar");
+  expect(within(sidebar).queryByTestId("tasks-body-head")).toBeNull();
+  const settled = counts.done + (counts.cancelled ?? 0);
+  const restates = new RegExp(`\\b(?:${counts.done}|${settled})\\b\\D+\\b${counts.total}\\b`);
+  const restating = [...sidebar.querySelectorAll("*")].filter(
+    (element) =>
+      element.children.length === 0 &&
+      element.closest('[role="radio"]') === null &&
+      restates.test(element.textContent ?? ""),
+  );
+  expect(restating).toEqual([]);
 }
 
 beforeEach(() => {
@@ -171,11 +207,10 @@ describe("TasksTab", () => {
     openTasks(counts);
     renderSidebar();
     await screen.findByText("Remaining work");
-    expect(screen.getByRole("radio", { name: "Tasks, 2 of 4 settled" }).textContent).toBe("Tasks\n2/4");
-    expect(screen.getByRole("heading", { name: "Current 1" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Remaining 1" })).toBeTruthy();
+    expectTabCounts(2, 4);
+    expect(liveGroupSizes()).toEqual({ in_progress: 1, open: 1 });
     const settled = screen.getByTestId("task-settled-group");
-    expect(settled.textContent).toContain("1 completed task · 1 cancelled task");
+    expect(settledSummaryCounts()).toEqual([1, 1]);
     await user.click(within(settled).getByTestId("task-settled-group-summary"));
     expect(screen.getByText("Completed work")).toBeTruthy();
     expect(screen.getByText("Cancelled work")).toBeTruthy();
@@ -184,30 +219,36 @@ describe("TasksTab", () => {
     if (!current) throw new Error("Current task row missing");
     await user.click(within(current).getByText("Current work"));
     expect(screen.getByText("Read the contract")).toBeTruthy();
-    expectNoSummaries();
+    expectNoSummaries(counts);
     expect(screen.queryByRole("button", { name: "Open tasks" })).toBeNull();
     expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionTasks")).toBe(false);
   });
 
+  test("an empty list keeps a zero tab count and shows no task rows or summary", async () => {
+    const counts = { total: 0, done: 0 };
+    connectTasks(() => [], counts);
+    openTasks(counts);
+    renderSidebar();
+    await waitFor(() => expect(tasksPanelStore.getState().entries.get(REF)?.rows).toEqual([]));
+    expect(screen.queryAllByTestId("task-row")).toHaveLength(0);
+    expect(screen.queryByTestId("task-settled-group")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expectTabCounts(0, 0);
+    expectNoSummaries(counts);
+  });
+
   test.each([
-    { state: "empty", rows: [], counts: { total: 0, done: 0 }, label: "No tasks yet", settled: 0 },
-    { state: "completed", rows: [TASKS[0]], counts: { total: 1, done: 1 }, label: "1 completed task", settled: 1 },
-    {
-      state: "cancelled",
-      rows: [TASKS[3]],
-      counts: { total: 1, done: 0, cancelled: 1, remaining: 0 },
-      label: "1 cancelled task",
-      settled: 1,
-    },
-  ])("keeps the $state state and tab count without either summary", async ({ rows, counts, label, settled }) => {
+    { state: "completed", rows: [TASKS[0]], counts: { total: 1, done: 1 } },
+    { state: "cancelled", rows: [TASKS[3]], counts: { total: 1, done: 0, cancelled: 1, remaining: 0 } },
+  ])("keeps the $state state and tab count without either summary", async ({ rows, counts }) => {
     connectTasks(() => rows, counts);
     openTasks(counts);
     renderSidebar();
-    await screen.findByText(label);
-    expect(screen.getByRole("radio", { name: `Tasks, ${settled} of ${counts.total} settled` }).textContent).toBe(
-      `Tasks\n${settled}/${counts.total}`,
-    );
-    expectNoSummaries();
+    await screen.findByTestId("task-settled-group");
+    expect(settledSummaryCounts()).toEqual([1]);
+    expect(liveGroupSizes()).toEqual({});
+    expectTabCounts(1, counts.total);
+    expectNoSummaries(counts);
   });
 
   test("live task updates refresh groups and tab counts without restoring summaries", async () => {
@@ -227,10 +268,10 @@ describe("TasksTab", () => {
       // This test exercises task transport, not navigation invalidation.
       installSummary({ total: 4, done: 4 });
     });
-    await screen.findByText("4 completed tasks");
-    expect(screen.queryByRole("heading", { name: /Current|Remaining/ })).toBeNull();
-    expect(screen.getByRole("radio", { name: "Tasks, 4 of 4 settled" }).textContent).toBe("Tasks\n4/4");
-    expectNoSummaries();
+    await waitFor(() => expect(liveGroupSizes()).toEqual({}));
+    expect(settledSummaryCounts()).toEqual([4]);
+    expectTabCounts(4, 4);
+    expectNoSummaries({ total: 4, done: 4 });
   });
 
   test("a failed refresh retains rows and retry recovers without restoring summaries", async () => {
@@ -249,15 +290,14 @@ describe("TasksTab", () => {
       });
     });
     const stale = await screen.findByTestId("tasks-stale");
-    expect(within(stale).getByRole("alert").textContent).toBe("Couldn't load tasks: task refresh unavailable");
-    expect(stale.textContent).toContain("Showing the last list that loaded.");
+    expect(within(stale).getByRole("alert").textContent).toContain("task refresh unavailable");
     expect(screen.getByText("Remaining work")).toBeTruthy();
-    expectNoSummaries();
+    expectNoSummaries({ total: 4, done: 1 });
     fake.on("evener/tasks/list", () => ({ data: [{ ...TASKS[2], id: 5, description: "Recovered work" }] }));
     await user.click(within(stale).getByRole("button", { name: "Try again" }));
     await screen.findByText("Recovered work");
     expect(screen.queryByTestId("tasks-stale")).toBeNull();
     expect(screen.queryByText("Remaining work")).toBeNull();
-    expectNoSummaries();
+    expectNoSummaries({ total: 4, done: 1 });
   });
 });

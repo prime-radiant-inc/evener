@@ -27,7 +27,18 @@ import { HUB_WRITE_BUSY, isHubWriteBusy, marketplaceRemovalOutcome } from "@even
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { connectionStore } from "../../../../stores/connection";
-import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, Sheet, useToasts } from "../../../../widgets";
+import {
+  Button,
+  ConfirmDialog,
+  FormRow,
+  InlineNotice,
+  Input,
+  PathField,
+  PropertyList,
+  RadioGroup,
+  Sheet,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import {
@@ -43,15 +54,9 @@ import styles from "./marketplacesPlugins.module.css";
 
 const CLASS = {
   sheetForm: requireClass(styles.sheetForm, "marketplacesPlugins.module.css", "sheetForm"),
-  sheetNote: requireClass(styles.sheetNote, "marketplacesPlugins.module.css", "sheetNote"),
-  sheetError: requireClass(styles.sheetError, "marketplacesPlugins.module.css", "sheetError"),
   sheetActions: requireClass(styles.sheetActions, "marketplacesPlugins.module.css", "sheetActions"),
   sheetDivider: requireClass(styles.sheetDivider, "marketplacesPlugins.module.css", "sheetDivider"),
   metaList: requireClass(styles.metaList, "marketplacesPlugins.module.css", "metaList"),
-  metaRow: requireClass(styles.metaRow, "marketplacesPlugins.module.css", "metaRow"),
-  metaLabel: requireClass(styles.metaLabel, "marketplacesPlugins.module.css", "metaLabel"),
-  metaValue: requireClass(styles.metaValue, "marketplacesPlugins.module.css", "metaValue"),
-  rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
 };
 
 export interface MarketplaceSheetProps {
@@ -396,37 +401,41 @@ export function MarketplaceSheet({
                 </FormRow>
               )}
               {sourceTouched && (
-                <p className={CLASS.sheetNote} role="status" data-testid="marketplace-refetch-note">
+                <InlineNotice data-testid="marketplace-refetch-note">
                   Saving re-fetches the marketplace. Installed plugins are unaffected.
-                </p>
+                </InlineNotice>
               )}
-              {formError !== null && (
-                <p className={CLASS.sheetError} role="alert">
-                  {formError}
-                </p>
-              )}
+              {formError !== null && <InlineNotice tone="danger">{formError}</InlineNotice>}
             </form>
             <div className={CLASS.metaList}>
-              <div className={CLASS.metaRow}>
-                <span className={CLASS.metaLabel}>Install location</span>
-                <span
-                  className={`${CLASS.metaValue} ${CLASS.rowMeta}`}
-                  data-testid="marketplace-install-location"
-                  data-state={entry.installLocation ? undefined : "unfetched"}
-                >
-                  {entry.installLocation || "not fetched yet"}
-                </span>
-              </div>
-              <div className={CLASS.metaRow}>
-                <span className={CLASS.metaLabel}>Last updated</span>
-                <span
-                  className={`${CLASS.metaValue} ${CLASS.rowMeta}`}
-                  data-testid="marketplace-last-updated"
-                  data-state={entry.lastUpdated > 0 ? undefined : "never"}
-                >
-                  {lastUpdatedText(entry.lastUpdated)}
-                </span>
-              </div>
+              <PropertyList
+                rows={[
+                  {
+                    label: "Install location",
+                    value: (
+                      <span
+                        data-testid="marketplace-install-location"
+                        data-state={entry.installLocation ? undefined : "unfetched"}
+                      >
+                        {entry.installLocation || "not fetched yet"}
+                      </span>
+                    ),
+                    mono: true,
+                  },
+                  {
+                    label: "Last updated",
+                    value: (
+                      <span
+                        data-testid="marketplace-last-updated"
+                        data-state={entry.lastUpdated > 0 ? undefined : "never"}
+                      >
+                        {lastUpdatedText(entry.lastUpdated)}
+                      </span>
+                    ),
+                    mono: true,
+                  },
+                ]}
+              />
             </div>
             <div className={CLASS.sheetActions}>
               <Button variant="quiet" onClick={() => void handleRefresh()} disabled={busy}>

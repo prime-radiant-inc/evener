@@ -31,10 +31,11 @@ import { CredentialsSection } from "./CredentialsSection";
 // the sheet's credential-test result by its wire status.
 const waitForToastKind = (kind: string): Promise<void> => waitFor(() => expect(toastKinds()).toContain(kind));
 const waitForToastReason = (reason: string): Promise<void> => waitFor(() => expect(toastReasons()).toContain(reason));
+// The row is a ListRow button carrying the marker itself.
 const rowState = (name: RegExp): string | null | undefined =>
   screen
     .getByRole("button", { name, hidden: true })
-    .querySelector("[data-credential-state]")
+    .closest("[data-credential-state]")
     ?.getAttribute("data-credential-state");
 const testResultShown = (status: string): boolean =>
   document.querySelector(`[role="status"][data-state="${status}"]`) !== null;
@@ -221,7 +222,9 @@ describe("initial load", () => {
     });
     render(<CredentialsSection sectionId="credentials" />);
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    await screen.findByTestId("load-error");
+    const notice = await screen.findByTestId("load-error");
+    // The list loads as the section opens, so its failure is a polite status.
+    expect(notice.getAttribute("role")).toBe("status");
     // Assert the raw string no longer appears
     expect(screen.queryByText(/network down/)).toBeNull();
   });

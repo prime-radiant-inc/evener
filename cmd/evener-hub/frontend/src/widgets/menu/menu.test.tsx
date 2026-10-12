@@ -330,6 +330,42 @@ test.each(["{ArrowDown}", "{ArrowUp}", "{Enter}", " "])(
   },
 );
 
+// --- icon-only trigger --------------------------------------------------
+// The rail's row and section menus and the session menu all open from a
+// bare glyph: the accessible name is `label`, the glyph is decoration.
+
+test("an icon-only trigger takes its accessible name from label and hides the glyph from assistive tech", () => {
+  render(<Menu icon={<span data-testid="glyph">⋯</span>} label="Actions for Alpha" items={items()} />);
+  const trigger = screen.getByRole("button", { name: "Actions for Alpha" });
+  const glyph = screen.getByTestId("glyph");
+  expect(trigger.contains(glyph)).toBe(true);
+  expect(glyph.closest("[aria-hidden='true']")).not.toBeNull();
+});
+
+test("an icon-only trigger names the popup it opens", async () => {
+  const user = userEvent.setup();
+  render(<Menu icon="⋯" label="Actions for Alpha" items={items()} />);
+  await user.click(screen.getByRole("button", { name: "Actions for Alpha" }));
+  expect(screen.getByRole("menu", { name: "Actions for Alpha" })).toBeTruthy();
+});
+
+test("an icon-only trigger keeps triggerTabIndex and the trigger's key containment", async () => {
+  const user = userEvent.setup();
+  const onAncestorKeyDown = vi.fn();
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: test-only event-bubbling probe, not a rendered widget
+    <div onKeyDown={onAncestorKeyDown}>
+      <Menu icon="⋯" label="Actions" items={items()} triggerTabIndex={-1} />
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Actions" });
+  expect(trigger.tabIndex).toBe(-1);
+  trigger.focus();
+  await user.keyboard("{ArrowDown}");
+  expect(screen.getByRole("menu")).toBeTruthy();
+  expect(onAncestorKeyDown).not.toHaveBeenCalled();
+});
+
 test("Escape closes only the menu when nested in a Dialog; a second Escape then closes the Dialog", async () => {
   const user = userEvent.setup();
   const onDialogClose = vi.fn();

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { hubUpdateStore, RESTART_TIMEOUT_MS, type UpdateChannel, useHubUpdateStore } from "../../../stores/hubUpdate";
 import { useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Button, ConfirmDialog, Loader, RadioGroup } from "../../../widgets";
+import { Button, ConfirmDialog, InlineNotice, Loader, RadioGroup } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hubUpdates.module.css";
 import { Code, FieldDim } from "./settingsField";
@@ -111,7 +111,7 @@ export function HubUpdates() {
             disabled={applying || restarting}
           />
 
-          <p className={CLASS.status} role="status" data-testid="hub-update-status" data-state={updateState}>
+          <InlineNotice data-testid="hub-update-status" data-state={updateState}>
             {restarting && <Loader label="Restarting hub" />}
             {!restarting &&
               restartTimedOut &&
@@ -128,8 +128,8 @@ export function HubUpdates() {
               (check.updateAvailable
                 ? `Update available: ${check.channel} ${shortCommit(check.latestCommit ?? "")}, running ${check.currentVersion}`
                 : `Up to date on ${check.channel} (${shortCommit(check.latestCommit ?? "")})`)}
-          </p>
-          {applyError !== null && <p className={CLASS.status}>Update failed: {applyError}</p>}
+          </InlineNotice>
+          {applyError !== null && <InlineNotice tone="danger">Update failed: {applyError}</InlineNotice>}
 
           <div className={CLASS.actions}>
             <Button

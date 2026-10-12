@@ -22,7 +22,7 @@ import {
   memoryContextStateLabel,
   parseMemoryContext,
 } from "@evener/appwire-client";
-import { Markdown } from "../../../../widgets";
+import { EmptyState, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./memorycontextitem.module.css";
 import { SteeringDivider } from "./SteeringDivider";
@@ -33,7 +33,6 @@ const CLASS = {
   state: requireClass(styles.state, "memorycontextitem.module.css", "state"),
   truncated: requireClass(styles.truncated, "memorycontextitem.module.css", "truncated"),
   content: requireClass(styles.content, "memorycontextitem.module.css", "content"),
-  empty: requireClass(styles.empty, "memorycontextitem.module.css", "empty"),
   fallback: requireClass(styles.fallback, "memorycontextitem.module.css", "fallback"),
   source: requireClass(styles.source, "memorycontextitem.module.css", "source"),
   sourceSummary: requireClass(styles.sourceSummary, "memorycontextitem.module.css", "sourceSummary"),
@@ -93,9 +92,13 @@ export function MemoryContextBody({
           <Markdown source={observation.content} />
         </div>
       ) : (
-        <p className={CLASS.empty} data-testid="memory-context-empty" data-reason={observation.state}>
-          {memoryContextEmptyText(observation.state)}
-        </p>
+        // A current index that read as nothing is empty; every other state
+        // could not read it at all. The meta row above names which state.
+        <EmptyState
+          size="compact"
+          title={memoryContextEmptyText(observation.state)}
+          reason={observation.state === "current" ? "empty" : "unavailable"}
+        />
       )}
       <MemorySource text={item.text} />
     </div>

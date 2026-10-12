@@ -6,7 +6,7 @@ import { connectionStore } from "../../stores/connection";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { Button, Cadence, EmptyState, type VirtualListHandle, VisuallyHidden } from "../../widgets";
+import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
@@ -385,9 +385,9 @@ export function ConversationBody({
             <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" discoverActivity />
           )}
         {reconciliationFailed && (
-          <div role="alert" data-testid="message-recovery-pending">
+          <InlineNotice live="alert" data-testid="message-recovery-pending">
             Message recovery has not completed. Sending will resume after recovery succeeds.
-          </div>
+          </InlineNotice>
         )}
         <PendingChips sessionRef={ref} />
         {seat.composerSource && (

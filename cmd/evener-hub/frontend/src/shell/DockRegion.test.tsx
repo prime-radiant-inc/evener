@@ -2,7 +2,7 @@ import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwi
 import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { holdChunk } from "../lazyChunkTestUtils";
@@ -242,18 +242,20 @@ test("a chunk still in flight leaves a visible workspace placeholder beside the 
   // parent: a parent captured before the await is stale and its contains()
   // check flakes.
   await screen.findByTestId("rail-search");
-  const loading = screen.getByText("Loading the workspace…").closest("[data-testid='empty-state']");
-  const workspaceRow = loading?.closest("[data-testid='workspace-column']")?.parentElement;
-  expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
+  const loading = screen.getByTestId("dock-loading");
+  const workspaceColumn = loading.closest<HTMLElement>("[data-testid='workspace-column']");
+  if (workspaceColumn === null) throw new Error("dock loading placeholder is outside the workspace column");
+  expect(workspaceColumn.parentElement?.contains(screen.getByTestId("rail-search"))).toBe(true);
+  // A wait is a Loader, never an empty state: the placeholder announces a
+  // loading status and nothing in the workspace column claims to be empty.
+  expect(within(loading).getByRole("status")).toBeTruthy();
+  expect(within(workspaceColumn).queryByTestId("empty-state")).toBeNull();
   // The rail chunk arrives with its own empty-state Retry (a bare
   // FakeClient("ready") scripts no navigation manifest, so the rail shows
-  // "Couldn't load sessions" with a Retry beside the dock's own loading
-  // placeholder), so scope the dock Retry to the loading empty-state rather
-  // than querying the whole shell.
-  // No jest-dom matchers in this tree (vite.config.ts setupFiles is empty),
-  // so read the scoped button's text directly.
-  expect(loading?.querySelector("button")?.textContent).toBe("Retry");
-  expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
+  // its load failure with a Retry beside the dock's own loading
+  // placeholder), so scope the dock Retry to the placeholder rather than
+  // querying the whole shell.
+  expect(within(loading).getByRole("button", { name: "Retry" })).toBeTruthy();
   // An unanswered request is not a failure and must not retry on its own.
   expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
 });
@@ -266,10 +268,11 @@ test("Retry abandons a chunk still in flight and mounts a fresh attempt", async 
   const user = userEvent.setup();
 
   render(<DockRegion />);
-  expect(screen.getByText("Loading the workspace…")).toBeTruthy();
+  const loading = screen.getByTestId("dock-loading");
+  expect(within(loading).getByRole("status")).toBeTruthy();
   expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
 
-  await user.click(screen.getByRole("button", { name: "Retry" }));
+  await user.click(within(loading).getByRole("button", { name: "Retry" }));
   await retryChunk.resolve({ DockHost: StubDockHost });
 
   expect(screen.getByText("dock host mounted")).toBeTruthy();

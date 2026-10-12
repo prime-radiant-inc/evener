@@ -78,27 +78,39 @@
   height: calc(var(--line-height-ui) * 1em);
 }
 
+/* The label is the row's identity, so the chips never squeeze it below a
+ * readable floor: the label asks for 12ch (flex-basis), and when 12ch plus
+ * the chips do not fit on one line the chips wrap under it instead. It grows
+ * into spare width only up to its own text (max-content), so short labels
+ * keep their chips beside them; a long one truncates past its line. */
 .heading {
   display: flex;
+  flex-wrap: wrap;
   grid-row: 1;
   grid-column: -3 / -2;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
   min-width: 0;
 }
 
 .label {
+  flex: 1 1 12ch;
   min-width: 0;
+  max-width: max-content;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Chips wrap among themselves on a line too narrow for all of them, rather
+ * than shrinking a pill below its text. */
 .chips {
   display: inline-flex;
+  flex-wrap: wrap;
   flex: none;
   align-items: center;
   gap: var(--space-1);
+  max-width: 100%;
 }
 
 .meta {

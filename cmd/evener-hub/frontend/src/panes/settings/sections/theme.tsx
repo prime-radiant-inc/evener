@@ -6,8 +6,6 @@ import styles from "./theme.module.css";
 const CLASS = {
   root: requireClass(styles.root, "theme.module.css", "root"),
   intro: requireClass(styles.intro, "theme.module.css", "intro"),
-  row: requireClass(styles.row, "theme.module.css", "row"),
-  help: requireClass(styles.help, "theme.module.css", "help"),
 };
 
 const THEME_OPTIONS: RadioGroupOption[] = [
@@ -64,48 +62,40 @@ export function ThemeSection() {
     <div className={CLASS.root}>
       <p className={CLASS.intro}>Theme, density, font size and transcript width are saved per-browser.</p>
 
-      <div className={CLASS.row}>
-        <RadioGroup
-          label="Color theme"
-          value={theme}
-          options={THEME_OPTIONS}
-          onChange={(value) => {
-            prefsStore.getState().setTheme(value as "system" | "dark" | "light");
-            push("success", `Theme: ${value}`);
-          }}
-        />
-        <p className={CLASS.help}>Both palettes ship; default follows your OS preference.</p>
-      </div>
+      <RadioGroup
+        label="Color theme"
+        value={theme}
+        options={THEME_OPTIONS}
+        onChange={(value) => {
+          prefsStore.getState().setTheme(value as "system" | "dark" | "light");
+          push("success", `Theme: ${value}`);
+        }}
+        description="Both palettes ship; default follows your OS preference."
+      />
 
-      <div className={CLASS.row}>
-        <RadioGroup
-          label="Phone density"
-          value={phoneDensity}
-          options={PHONE_DENSITY_OPTIONS}
-          onChange={(value) => prefsStore.getState().setPhoneDensity(value as "compact" | "comfortable")}
-        />
-        <p className={CLASS.help}>Scales line spacing on phones (≤899px). Compact is the default.</p>
-      </div>
+      <RadioGroup
+        label="Phone density"
+        value={phoneDensity}
+        options={PHONE_DENSITY_OPTIONS}
+        onChange={(value) => prefsStore.getState().setPhoneDensity(value as "compact" | "comfortable")}
+        description="Scales line spacing on phones (≤899px). Compact is the default."
+      />
 
-      <div className={CLASS.row}>
-        <RadioGroup
-          label="Font size"
-          value={fontSize}
-          options={FONT_SIZE_OPTIONS}
-          onChange={(value) => prefsStore.getState().setFontSize(value as "s" | "m" | "l" | "xl")}
-        />
-        <p className={CLASS.help}>Scales all UI text. M is the default.</p>
-      </div>
+      <RadioGroup
+        label="Font size"
+        value={fontSize}
+        options={FONT_SIZE_OPTIONS}
+        onChange={(value) => prefsStore.getState().setFontSize(value as "s" | "m" | "l" | "xl")}
+        description="Scales all UI text. M is the default."
+      />
 
-      <div className={CLASS.row}>
-        <RadioGroup
-          label="Transcript width"
-          value={transcriptMeasure}
-          options={TRANSCRIPT_MEASURE_OPTIONS}
-          onChange={(value) => prefsStore.getState().setTranscriptMeasure(value as "reading" | "wide")}
-        />
-        <p className={CLASS.help}>Reading keeps lines near 90 characters. Wide uses more of the window.</p>
-      </div>
+      <RadioGroup
+        label="Transcript width"
+        value={transcriptMeasure}
+        options={TRANSCRIPT_MEASURE_OPTIONS}
+        onChange={(value) => prefsStore.getState().setTranscriptMeasure(value as "reading" | "wide")}
+        description="Reading keeps lines near 90 characters. Wide uses more of the window."
+      />
     </div>
   );
 }

@@ -1,16 +1,15 @@
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Button, EmptyState, Skeleton } from "../../../widgets";
+import { Button, InlineNotice, PropertyList, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
 import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
-import { Code, SettingsField } from "./settingsField";
+import { Code, FieldValue } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "hub.module.css", "root"),
-  list: requireClass(styles.list, "hub.module.css", "list"),
 };
 
 /**
@@ -34,19 +33,22 @@ export function HubSection() {
 
   if (!data && error) {
     return (
-      <EmptyState
+      <InlineNotice
+        tone="danger"
+        live="status"
+        data-reason="unavailable"
         title="Couldn't load hub settings"
-        reason="unavailable"
-        // friendlyErrorMessage, not the raw store error - see general.tsx's
-        // matching comment for why (settingsOverview.ts stores errorText(err)
-        // verbatim, including AppwireClient's own internal-wiring text).
-        hint={friendlyErrorMessage(error)}
         action={
           <Button size="sm" onClick={() => void settingsOverviewStore.getState().refresh()}>
             Retry
           </Button>
         }
-      />
+      >
+        {/* friendlyErrorMessage, not the raw store error - see general.tsx's
+            matching comment for why (settingsOverview.ts stores errorText(err)
+            verbatim, including AppwireClient's own internal-wiring text). */}
+        {friendlyErrorMessage(error)}
+      </InlineNotice>
     );
   }
 
@@ -56,31 +58,31 @@ export function HubSection() {
 
   return (
     <div className={CLASS.root}>
-      <dl className={CLASS.list}>
-        <SettingsField
-          field="listen-address"
-          label="Listen address"
-          value={hub?.listenAddr ?? ""}
-          help={
-            <>
-              Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
-              <Code>~/.config/evener/hub.toml</Code> or <Code>--addr</Code>.
-            </>
-          }
-        />
-        <SettingsField
-          field="run-dir"
-          label="Run dir"
-          value={hub?.runDir ?? ""}
-          help="Per-PID rendezvous files; the hub watches this directory to discover live daemons."
-        />
-        <SettingsField
-          field="spawn-timeout"
-          label="Spawn timeout"
-          value={hub?.spawnTimeout ?? ""}
-          help="How long the hub waits for a daemon to report ready after spawn before treating it as failed."
-        />
-      </dl>
+      <PropertyList
+        layout="stacked"
+        rows={[
+          {
+            label: "Listen address",
+            value: <FieldValue field="listen-address">{hub?.listenAddr ?? ""}</FieldValue>,
+            help: (
+              <>
+                Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
+                <Code>~/.config/evener/hub.toml</Code> or <Code>--addr</Code>.
+              </>
+            ),
+          },
+          {
+            label: "Run dir",
+            value: <FieldValue field="run-dir">{hub?.runDir ?? ""}</FieldValue>,
+            help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
+          },
+          {
+            label: "Spawn timeout",
+            value: <FieldValue field="spawn-timeout">{hub?.spawnTimeout ?? ""}</FieldValue>,
+            help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
+          },
+        ]}
+      />
       <HubUpdates />
       <HubResidents />
     </div>

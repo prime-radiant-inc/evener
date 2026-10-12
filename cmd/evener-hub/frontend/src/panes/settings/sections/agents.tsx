@@ -6,7 +6,7 @@
 // stores/settingsOverview adapter.
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { type SettingsOverviewStoreState, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Chip, EmptyState, OpenButton, Skeleton } from "../../../widgets";
+import { Chip, EmptyState, InlineNotice, ListRow, OpenButton, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
 import { useConnectedEffect } from "./useConnectedEffect";
@@ -14,11 +14,7 @@ import { useConnectedEffect } from "./useConnectedEffect";
 const CLASS = {
   root: requireClass(styles.root, "agents.module.css", "root"),
   help: requireClass(styles.help, "agents.module.css", "help"),
-  error: requireClass(styles.error, "agents.module.css", "error"),
   list: requireClass(styles.list, "agents.module.css", "list"),
-  row: requireClass(styles.row, "agents.module.css", "row"),
-  name: requireClass(styles.name, "agents.module.css", "name"),
-  trailing: requireClass(styles.trailing, "agents.module.css", "trailing"),
 };
 
 export interface AgentsSectionProps {
@@ -49,11 +45,7 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
         definition.
       </p>
       {loading && <Skeleton />}
-      {error && (
-        <p className={CLASS.error} role="alert">
-          Failed to load: {friendlyErrorMessage(error)}
-        </p>
-      )}
+      {error && <InlineNotice tone="danger">Failed to load: {friendlyErrorMessage(error)}</InlineNotice>}
       {!loading &&
         !error &&
         (agents.length === 0 ? (
@@ -61,15 +53,12 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
         ) : (
           <ul className={CLASS.list}>
             {agents.map((agent) => (
-              <li key={agent.name} className={CLASS.row}>
-                <span className={CLASS.name}>{agent.name}</span>
-                {agent.editPath ? (
-                  <OpenButton href={agent.editPath} word="open in editor" />
-                ) : (
-                  <span className={CLASS.trailing}>
-                    <Chip>built-in</Chip>
-                  </span>
-                )}
+              <li key={agent.name}>
+                <ListRow
+                  label={agent.name}
+                  chips={agent.editPath ? undefined : <Chip>built-in</Chip>}
+                  action={agent.editPath ? <OpenButton href={agent.editPath} word="open in editor" /> : undefined}
+                />
               </li>
             ))}
           </ul>

@@ -4,9 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
-import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { DirListSetting, PathListEditor } from "./dirListSetting";
+import { alertReasons, statusReasons } from "./reasonTestUtils";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -274,18 +274,21 @@ describe("DirListSetting", () => {
       throw new Error("boom");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+    await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
     expect(entryCount()).toBeNull();
   });
 
-  test("shows a failed-to-load error when the launch layer fetch rejects", async () => {
+  // The load runs as the section opens, not because of anything the reader
+  // did, so its failure is a polite status rather than an interrupting alert.
+  test("shows a failed-to-load status, not an alert, when the launch layer fetch rejects", async () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => {
       throw new Error("network down");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
-    expect(screen.getByText("network down")).toBeTruthy();
+    await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
+    expect(alertReasons()).toEqual([]);
+    expect(screen.getByRole("status").textContent).toContain("network down");
   });
 
   test("adding a valid path validates then saves the layer with the new entry appended", async () => {

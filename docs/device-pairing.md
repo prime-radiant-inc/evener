@@ -10,9 +10,16 @@ network identities and unsent work. This document is the wire contract; the
 
 An invitation carries a Hub locator and a random short-lived secret. It carries
 neither the Hub's durable credential nor Tailscale credentials. A Playdate hears
-it as sound. The native mobile app reads the same bytes from a QR code. The Web
-UI only plays audio and displays codes: it requires no camera, microphone, or
-secure-context browser API, so it works on HTTP over a tailnet.
+it as sound; clients can also read the same invitation bytes from a QR code.
+The Hub's Mobile settings offer **Scan with your phone** for the native app's
+direct credential QR and **Pair using sound** for devices listening for an
+invitation. Sound setup shows the playback controls and device claims without
+another QR code. **Use another Hub address** opens manual QR invitation setup
+with an editable address when the phone needs a different destination. If
+discovery fails, **Enter Hub address** opens the same recovery flow. QR
+invitations use the same comparison and approval flow as sound. The Web UI
+requires no camera, microphone, or secure-context browser API, so both choices
+work on HTTP over a tailnet.
 
 After receiving the invitation, the client generates an ephemeral X25519 key.
 It independently computes and displays the comparison code below, then claims
@@ -70,8 +77,8 @@ by discovery. A loopback-only listener still works behind a reachable reverse
 proxy when the browser supplies that proxy's origin.
 
 The Web UI uses the discovered origin for both the direct credential QR and
-the invitation form. The operator can edit the Hub address in **Pair a device**;
-that explicit destination takes precedence when creating an invitation. An
+the invitation form. The operator can edit the Hub address in **Pair using sound**
+or manual QR setup; that explicit destination takes precedence when creating an invitation. An
 empty creation origin uses the configured or discovered default. Ordinary
 LAN/tailnet setup needs no configuration-file edit. Discovery is repeated when
 the settings section connects; it does not change saved client destinations.
@@ -146,7 +153,9 @@ The code is SHA-512 over these concatenated bytes:
 
 Encode the first 16 digest bytes as 32 lowercase hexadecimal digits, grouped in
 eight groups of four separated by hyphens, for example
-`2be9-271d-6222-d455-d2d1-c217-62b2-3b82`. Display and compare every group. The
+`2be9-271d-6222-d455-d2d1-c217-62b2-3b82`. Display and compare every group. The Hub
+presents the groups as four lines of two, separated by spaces on each line, so
+the operator can compare the device's display line by line before approving. The
 128-bit fingerprint resists offline searches for a key matching an observed
 claim; a short decimal reduction does not. The Hub refuses approval when two
 distinct claims have the same fingerprint, and the operator starts a new

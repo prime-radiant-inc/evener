@@ -2,19 +2,7 @@ import type { InstanceEntry } from "@evener/appwire-client";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
-import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstanceRow } from "./InstanceRow";
-import rawStyles from "./InstanceRow.module.css";
-
-// CSS Modules import as an index signature, so any dotted access on the imported
-// binding is `string | undefined` under noUncheckedIndexedAccess: requireClass
-// makes a missing class a loud error instead of a comparison that can never
-// fail. (Deliberately no member-access example in prose: the styles contract
-// test matches an import-bound name anywhere in the file's text.)
-const CLASS = {
-  row: requireClass(rawStyles.row, "InstanceRow.module.css", "row"),
-  rowButton: requireClass(rawStyles.rowButton, "InstanceRow.module.css", "rowButton"),
-};
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
@@ -338,20 +326,17 @@ describe("the read-only variant", () => {
 
   // Low (roborev): the read-only branch returned a bare <li>, so a remote row
   // lost the row chrome entirely (padding, edge, radius, surface background, the
-  // 44px phone floor) while the same instance was a surface row locally. The
-  // chrome is one class now, and both variants carry it.
-  test("carries the shared row chrome class the tappable row also carries", () => {
-    const { container } = render(
-      <InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} readOnly />,
-    );
-    expect(container.querySelector("li")?.classList.contains(CLASS.row)).toBe(true);
-  });
-
-  test("the tappable row keeps the chrome class plus its interactive one", () => {
+  // 44px phone floor) while the same instance was a surface row locally. Both
+  // variants are the same ListRow, the tappable one adding only its
+  // interactive modifier.
+  test("the read-only row carries all of the chrome the tappable row carries", () => {
+    const readOnly = render(<InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} readOnly />);
+    const readOnlyClasses = readOnly.container.querySelector("li > *")?.className.split(" ") ?? [];
+    readOnly.unmount();
     render(<InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} onSelect={() => {}} />);
-    const button = screen.getByRole("button", { name: /on-host/ });
-    expect(button.classList.contains(CLASS.row)).toBe(true);
-    expect(button.classList.contains(CLASS.rowButton)).toBe(true);
+    const buttonClasses = screen.getByRole("button", { name: /on-host/ }).className.split(" ");
+    expect(readOnlyClasses.length).toBeGreaterThan(0);
+    expect(buttonClasses).toEqual(expect.arrayContaining(readOnlyClasses));
   });
 });
 

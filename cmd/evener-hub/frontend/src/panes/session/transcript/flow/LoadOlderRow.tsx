@@ -28,6 +28,7 @@
 // failure is not an option. Retry is also the accessible escape hatch: a
 // failed fetch must be recoverable without pixel-precise scrolling.
 import { useEffect, useRef } from "react";
+import { Button } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./loadolderrow.module.css";
 import { portGeometryTargets, shouldAutoLoadOlder } from "./scrollMetrics";
@@ -52,7 +53,6 @@ const CLASS = {
   row: requireClass(styles.row, "loadolderrow.module.css", "row"),
   label: requireClass(styles.label, "loadolderrow.module.css", "label"),
   error: requireClass(styles.error, "loadolderrow.module.css", "error"),
-  retry: requireClass(styles.retry, "loadolderrow.module.css", "retry"),
 };
 
 export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlderRowProps) {
@@ -144,9 +144,9 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
           <span role="alert" className={CLASS.error}>
             {error}
           </span>
-          <button type="button" data-testid="load-older-retry" className={CLASS.retry} onClick={onLoad}>
+          <Button variant="link" data-testid="load-older-retry" onClick={onLoad}>
             Retry
-          </button>
+          </Button>
         </>
       ) : (
         loading && <span className={CLASS.label}>Loading older turns…</span>

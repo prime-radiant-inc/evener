@@ -41,28 +41,27 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Card, Chevron, Chip, Markdown, MarkdownBubble, ToolIcon, type ToolIconKind } from "../../../../widgets";
+import { Card, Chip, Disclosure, Markdown, MarkdownBubble, ToolIcon, type ToolIconKind } from "../../../../widgets";
 import { AnsiTailBuffer, parseAnsiLines } from "../../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
-import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault } from "../../../../widgets/disclosure/disclosureStore";
 import { FailureGlyph } from "../../../../widgets/failureglyph";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
-import { splitTrailingWord } from "../tailWord";
 import styles from "./notificationcard.module.css";
 
 const CLASS = {
+  collapsible: requireClass(styles.collapsible, "notificationcard.module.css", "collapsible"),
   disclosure: requireClass(styles.disclosure, "notificationcard.module.css", "disclosure"),
+  besideOpen: requireClass(styles.besideOpen, "notificationcard.module.css", "besideOpen"),
+  delegateRef: requireClass(styles.delegateRef, "notificationcard.module.css", "delegateRef"),
+  expanded: requireClass(styles.expanded, "notificationcard.module.css", "expanded"),
   root: requireClass(styles.root, "notificationcard.module.css", "root"),
-  head: requireClass(styles.head, "notificationcard.module.css", "head"),
   headingText: requireClass(styles.headingText, "notificationcard.module.css", "headingText"),
   title: requireClass(styles.title, "notificationcard.module.css", "title"),
   secondary: requireClass(styles.secondary, "notificationcard.module.css", "secondary"),
-  secondaryTail: requireClass(styles.secondaryTail, "notificationcard.module.css", "secondaryTail"),
-  secondaryTailText: requireClass(styles.secondaryTailText, "notificationcard.module.css", "secondaryTailText"),
   openTrailing: requireClass(styles.openTrailing, "notificationcard.module.css", "openTrailing"),
-  chevron: requireClass(styles.chevron, "notificationcard.module.css", "chevron"),
   metadata: requireClass(styles.metadata, "notificationcard.module.css", "metadata"),
   field: requireClass(styles.field, "notificationcard.module.css", "field"),
   fieldLabel: requireClass(styles.fieldLabel, "notificationcard.module.css", "fieldLabel"),
@@ -74,6 +73,8 @@ const CLASS = {
   rawBody: requireClass(styles.rawBody, "notificationcard.module.css", "rawBody"),
   statusIcon: requireClass(styles.statusIcon, "notificationcard.module.css", "statusIcon"),
   statusIconError: requireClass(styles.statusIconError, "notificationcard.module.css", "statusIconError"),
+  summaryIcon: requireClass(styles.summaryIcon, "notificationcard.module.css", "summaryIcon"),
+  summaryIconError: requireClass(styles.summaryIconError, "notificationcard.module.css", "summaryIconError"),
   resultTable: requireClass(styles.resultTable, "notificationcard.module.css", "resultTable"),
   resultKey: requireClass(styles.resultKey, "notificationcard.module.css", "resultKey"),
   resultValue: requireClass(styles.resultValue, "notificationcard.module.css", "resultValue"),
@@ -106,11 +107,15 @@ const STATUS_ICON_KIND: Record<Exclude<NotificationTone, "error">, ToolIconKind>
 // The error tone's presentation decision in one place: the FailureGlyph cross
 // seated at full strength, never the quiet rail's kind icon - the red cross
 // IS the failure signal. Every other tone draws its kind from the table above.
-function statusIconSeat(tone: NotificationTone): { className: string; glyph: ReactNode } {
+function statusIconSeat(tone: NotificationTone): { className: string; summaryClassName: string; glyph: ReactNode } {
   if (tone === "error") {
-    return { className: CLASS.statusIconError, glyph: <FailureGlyph /> };
+    return { className: CLASS.statusIconError, summaryClassName: CLASS.summaryIconError, glyph: <FailureGlyph /> };
   }
-  return { className: CLASS.statusIcon, glyph: <ToolIcon kind={STATUS_ICON_KIND[tone]} /> };
+  return {
+    className: CLASS.statusIcon,
+    summaryClassName: CLASS.summaryIcon,
+    glyph: <ToolIcon kind={STATUS_ICON_KIND[tone]} />,
+  };
 }
 
 function ExcerptText({ text, ansi }: { text: string; ansi: boolean }) {
@@ -372,7 +377,6 @@ export function NotificationCard({
   const disclosureKey = scopedDisclosureId(disclosureScope, scopedNotificationId);
   const disclosureFallback =
     expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);
-  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   // Only warning earns a Chip; success + neutral recede with no chip at all
   // (the done glyph is the same neutral as any other card). Error announces
   // itself with the red FailureGlyph in the head's rail seat instead - a
@@ -404,9 +408,7 @@ export function NotificationCard({
   // is the shared entity-card trigger, with the ending a failed or stopped run
   // appends riding after it - the same composition the parser's `secondary`
   // carries, the trigger standing in for the plain label. When the entity map
-  // cannot answer, EntityRef falls back to plain text and the click guard
-  // stays off, so an unresolved name keeps toggling the row like any other
-  // head text.
+  // cannot answer, EntityRef falls back to plain text.
   const delegateLabel =
     notification.type === "delegate"
       ? [notification.name, notification.description, notification.delegateId].find(
@@ -445,98 +447,49 @@ export function NotificationCard({
         notification.structuredResultValid === false ||
         notification.concerns.length > 0,
     );
-  // A delegate head with a label carries its trigger composition in place of
-  // the plain secondary string; every other shape splits that string.
-  const secondaryParts =
-    delegateLabel === undefined && notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
-  const delegateTrigger =
+  // The delegate's name, in two forms. On the static head (a plain row) it is
+  // the shared entity-card trigger. In a disclosure summary it is the same
+  // card on hover but never a focus stop or click target of its own: the
+  // summary stays one control, the Disclosure's. When the entity map cannot
+  // answer, EntityRef falls back to plain text either way.
+  const delegateTrigger = (embedded: boolean) =>
     delegateLabel !== undefined && delegateView ? (
-      // biome-ignore lint/a11y/noStaticElementInteractions: this span is a click guard, not a control - it only swallows the click so the trigger never toggles the enclosing summary; the interaction is the EntityRef trigger inside, which owns its own focus and hover lifecycle
-      // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard events never reach this wrapper - focus lands on the EntityRef trigger inside, and the summary's disclosure toggle is click-only, so there is no key path to guard
-      <span
-        onClick={(event) => {
-          // A click on the name opens the delegate's card, never the row's own
-          // disclosure - the same ownership OpenButton's stopPropagation gives
-          // its control, plus preventDefault against the summary's native
-          // activation.
-          event.stopPropagation();
-          event.preventDefault();
-        }}
-      >
-        <EntityRef view={delegateView} id={notification.delegateId ?? ""} display={delegateLabel} triggerOnly />
-      </span>
-    ) : undefined;
-  // The unresolved-name fallback (plain text instead of the trigger) and the
-  // delegate secondary as the head grammar's two pieces: the leading node
-  // (trigger or label, plus the ending's lead) and the trailing word the
-  // chevron hugs. A reported run has no ending, so its tail holds the controls
-  // alone.
-  const delegateName = delegateTrigger ?? delegateLabel;
-  let delegateLead: ReactNode | undefined;
-  let delegateTailWord: string | undefined;
-  if (delegateLabel !== undefined) {
-    if (delegateEnding === undefined) {
-      delegateLead = delegateName;
-      delegateTailWord = "";
-    } else {
-      const [endingLead, endingWord] = splitTrailingWord(delegateEnding);
-      delegateLead = (
-        <>
-          {delegateName}
-          {" · "}
-          {endingLead}
-        </>
-      );
-      delegateTailWord = endingWord;
-    }
-  }
-  // The head grammar's inputs, generalized: a delegate head with a label
-  // carries its trigger composition in place of the plain secondary string;
-  // every other shape splits that string exactly as before.
-  const secondaryLead: ReactNode | undefined = delegateLead ?? secondaryParts?.[0];
-  const secondaryTailWord: string | undefined = delegateTailWord ?? secondaryParts?.[1];
-  const hasSecondary = secondaryLead !== undefined;
-  // The title-only branch (no secondary) splits the title the same way, so
-  // its chevron rides the title's final word atomically. Computed eagerly: the
-  // branch that reads it is the one where no secondary exists.
-  const titleParts = splitTrailingWord(notification.title);
-  // The head suppresses the native details marker (the old text glyphs were
-  // font-dependent and overhung their boxes - see widgets/chevron), so this is
-  // the reader's only expand affordance: the same trailing <Chevron> idiom
-  // ThinkBlock's summary uses. EVERY branch renders it inside an atomic
-  // secondaryTail unit with the words it opens - after the Open control where
-  // one exists (the ToolRow grammar's "text, Open, chevron" order) - so a line
-  // that runs out moves the whole unit and the glyph can never strand alone
-  // on a wrapped line.
-  const chevron = (
-    <span
-      className={CLASS.chevron}
-      aria-hidden="true"
-      data-open={open ? "true" : "false"}
-      data-testid="notification-chevron"
-    >
-      <Chevron />
-    </span>
-  );
-  // The head's Open control, hoisted like the chevron: every seat renders the
-  // same wrapped control, so the label and wrapper cannot drift between them.
+      <EntityRef
+        view={delegateView}
+        id={notification.delegateId ?? ""}
+        display={delegateLabel}
+        triggerOnly
+        embedded={embedded}
+      />
+    ) : (
+      delegateLabel
+    );
+  // The Open control. It is interactive, so it never rides inside a
+  // disclosure summary: the collapsible card seats it right after the
+  // Disclosure, on the summary's line.
   const openControl = transcriptRef ? (
     <span className={CLASS.openTrailing}>
       <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
     </span>
   ) : null;
-  // Seated first in the summary, before the chip and title: the glyph rides
-  // the transcript's icon rail (see notificationcard.module.css's .statusIcon;
-  // error's full-strength variant is .statusIconError). Decorative - the
+  // Seated first in the head, before the chip and title. Decorative - the
   // title's own words ("Job completed", "Job failed") already name the status
   // for assistive tech, so exposing the glyph would announce the same fact
   // twice (the same ruling as every other rail icon and ThinkBlock's bulb) -
   // which is also why FailureGlyph's own accessible name is silenced by the
   // aria-hidden seat here, unlike its inline use on failed tool rows where it
-  // is the only failure signal.
+  // is the only failure signal. The static head seats it in the transcript's
+  // icon rail (see notificationcard.module.css's .statusIcon; error's
+  // full-strength variant is .statusIconError); a Disclosure summary sits in
+  // the content column like every Disclosure, so there it takes only the
+  // glyph's own box.
   const seat = statusIconSeat(notification.tone);
-  const statusIcon = (
-    <span className={seat.className} data-testid="notification-status-icon" aria-hidden="true">
+  const statusIcon = (inSummary: boolean) => (
+    <span
+      className={inSummary ? seat.summaryClassName : seat.className}
+      data-testid="notification-status-icon"
+      aria-hidden="true"
+    >
       {seat.glyph}
     </span>
   );
@@ -550,9 +503,10 @@ export function NotificationCard({
     "data-update": notification.update ? "true" : undefined,
   };
   if (!delegateHasReport) {
+    const delegateName = delegateTrigger(false);
     return (
       <div className={CLASS.staticHead} {...headData}>
-        {statusIcon}
+        {statusIcon(false)}
         {showWarningChip && (
           <Chip tone="attention" kind="warning">
             warning
@@ -576,108 +530,87 @@ export function NotificationCard({
       </div>
     );
   }
+  const delegateName = delegateTrigger(true);
+  const secondary =
+    delegateName !== undefined ? (
+      <>
+        {delegateName}
+        {delegateEnding ? ` · ${delegateEnding}` : null}
+      </>
+    ) : (
+      notification.secondary || undefined
+    );
   return (
-    <details className={CLASS.disclosure} open={open}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled for the same single-source-of-truth reason as ToolRow */}
-      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: summary's implicit role is button, which supports aria-expanded (same ruling as ToolRow.tsx) - and it can never disagree with the native details state, which the same `open` drives */}
-      <summary
-        className={CLASS.head}
-        {...headData}
-        aria-expanded={open}
-        onClick={(e) => {
-          e.preventDefault();
-          toggleDisclosure(disclosureKey, disclosureFallback);
-        }}
-      >
-        {statusIcon}
-        {showWarningChip && (
-          <Chip tone="attention" kind="warning">
-            warning
-          </Chip>
-        )}
-        <span className={CLASS.headingText}>
-          {hasSecondary || !transcriptRef ? (
-            hasSecondary ? (
-              <span className={CLASS.title}>{notification.title}</span>
-            ) : (
-              // Title-only mirrors the secondary treatment: the FINAL word and
-              // the chevron are one atomic unit, so the glyph hugs the title's
-              // last line at any width (a whole-title unit parks it at the
-              // unit's right edge) and never strands.
-              <>
-                <span className={CLASS.title}>{titleParts[0]}</span>
-                <span className={CLASS.secondaryTail}>
-                  <span className={`${CLASS.title} ${CLASS.secondaryTailText}`}>{titleParts[1]}</span>
-                  {chevron}
-                </span>
-              </>
-            )
-          ) : (
-            <span className={CLASS.secondaryTail}>
-              <span className={`${CLASS.title} ${CLASS.secondaryTailText}`}>{notification.title}</span>
-              {openControl}
-              {chevron}
-            </span>
-          )}
-          {hasSecondary ? (
-            <span className={CLASS.secondary}>
-              {transcriptRef ? (
-                <>
-                  {secondaryLead}
-                  <span className={CLASS.secondaryTail}>
-                    <span className={CLASS.secondaryTailText}>{secondaryTailWord}</span>
-                    {openControl}
-                    {chevron}
-                  </span>
-                </>
-              ) : (
-                <>
-                  {secondaryLead}
-                  <span className={CLASS.secondaryTail}>
-                    <span className={CLASS.secondaryTailText}>{secondaryTailWord}</span>
-                    {chevron}
-                  </span>
-                </>
+    <div className={CLASS.collapsible} {...headData}>
+      <div className={CLASS.disclosure}>
+        <Disclosure
+          variant="quiet"
+          id={disclosureKey}
+          defaultOpen={disclosureFallback}
+          summary={
+            <>
+              {statusIcon(true)}
+              {showWarningChip && (
+                <Chip tone="attention" kind="warning">
+                  warning
+                </Chip>
               )}
-            </span>
-          ) : null}
-        </span>
-      </summary>
-      {open && (
-        <Card>
-          <div className={CLASS.root} data-testid="notification-card-root">
-            <NotificationMetadata notification={notification} />
-            {notification.prose && (
-              <pre className={CLASS.prose} data-testid="notification-prose">
-                {notification.prose}
-              </pre>
-            )}
-            {notification.message ? (
-              notification.type === "delegate" ? (
-                <MarkdownBubble source={notification.message.slice(0, MESSAGE_MAX)} dataTestId="notification-message" />
-              ) : (
-                <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
-                  <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
-                </div>
-              )
-            ) : (
-              <Excerpt text={notification.excerpt} ansi={notification.jobType === "shell"} />
-            )}
-            <StructuredResult notification={notification} />
-            {notification.concerns.length > 0 && (
-              <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
-            )}
-            {notification.type !== "delegate" && (
-              <details className={CLASS.raw} data-testid="notification-raw-disclosure">
-                <summary className={CLASS.summary}>Raw notification</summary>
-                <pre className={CLASS.rawBody} data-testid="notification-raw">
-                  {notification.rawText}
-                </pre>
-              </details>
-            )}
+              <span className={CLASS.headingText}>
+                <span className={CLASS.title}>{notification.title}</span>
+                {secondary !== undefined && <span className={CLASS.secondary}>{secondary}</span>}
+              </span>
+            </>
+          }
+        >
+          <div className={CLASS.expanded}>
+            <Card>
+              <div className={CLASS.root} data-testid="notification-card-root">
+                {/* The head's name is hover-only; here it is the same entity card
+                    as a keyboard focus stop, so a keyboard reader reaches what a
+                    pointer reader gets. */}
+                {delegateView && delegateLabel !== undefined && (
+                  <div className={CLASS.delegateRef} data-testid="notification-delegate">
+                    {delegateTrigger(false)}
+                  </div>
+                )}
+                <NotificationMetadata notification={notification} />
+                {notification.prose && (
+                  <pre className={CLASS.prose} data-testid="notification-prose">
+                    {notification.prose}
+                  </pre>
+                )}
+                {notification.message ? (
+                  notification.type === "delegate" ? (
+                    <MarkdownBubble
+                      source={notification.message.slice(0, MESSAGE_MAX)}
+                      dataTestId="notification-message"
+                    />
+                  ) : (
+                    <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
+                      <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
+                    </div>
+                  )
+                ) : (
+                  <Excerpt text={notification.excerpt} ansi={notification.jobType === "shell"} />
+                )}
+                <StructuredResult notification={notification} />
+                {notification.concerns.length > 0 && (
+                  <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
+                )}
+                {notification.type !== "delegate" && (
+                  <details className={CLASS.raw} data-testid="notification-raw-disclosure">
+                    <summary className={CLASS.summary}>Raw notification</summary>
+                    <pre className={CLASS.rawBody} data-testid="notification-raw">
+                      {notification.rawText}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            </Card>
           </div>
-        </Card>
-      )}
-    </details>
+        </Disclosure>
+      </div>
+      {openControl && <span className={CLASS.besideOpen}>{openControl}</span>}
+    </div>
   );
 }

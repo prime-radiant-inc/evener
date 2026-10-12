@@ -4,9 +4,9 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
-import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { GeneralSection } from "./general";
-import { settingsFieldIds, settingsFieldRow } from "./settingsFieldTestUtils";
+import { statusReasons } from "./reasonTestUtils";
+import { settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -28,11 +28,12 @@ const FULL_RESPONSE: SettingsOverviewResponse = {
   storage: { stateDir: "/home/user/.evener" },
 };
 
-/** The load-failure explanation's text; throws when the hint is missing. */
-function loadFailureHint(): string {
-  const hint = screen.getByTestId("empty-state").querySelector('[data-slot="hint"]');
-  if (hint === null) throw new Error("load failure shows no hint");
-  return hint.textContent?.trim() ?? "";
+/** The section's load-failure notice: a polite status, since the failure
+ * arrives as the section opens rather than from anything the reader did. */
+function loadFailureNotice(): HTMLElement {
+  const notice = document.querySelector<HTMLElement>('[role="status"][data-reason="unavailable"]');
+  if (notice === null) throw new Error("load failure shows no notice");
+  return notice;
 }
 
 beforeEach(() => {
@@ -60,7 +61,7 @@ test("renders every field in the documented order with the cross-referenced Stat
   ]);
   // State dir is General's own field per SettingsStorageOverview - but reads
   // through settingsOverview.storage.stateDir, not any hub.* field.
-  expect(within(settingsFieldRow("state-dir")).getByRole("definition").textContent).toBe("/home/user/.evener");
+  expect(settingsFieldValue("state-dir").textContent).toBe("/home/user/.evener");
 });
 
 test("never renders the bearer token value itself - only a fixed mask plus the optional age", async () => {
@@ -70,7 +71,7 @@ test("never renders the bearer token value itself - only a fixed mask plus the o
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
 
-  const token = within(settingsFieldRow("bearer-token")).getByRole("definition");
+  const token = settingsFieldValue("bearer-token");
   expect(within(token).getByText("token-age-from-hub")).toBeTruthy();
   expect(token.textContent).toContain("••••••••••••");
 });
@@ -82,8 +83,9 @@ test("Hub config's static value carries the 'edit to change' dim hint (unlike St
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
 
-  const configValue = within(settingsFieldRow("hub-config")).getByRole("definition");
-  expect(configValue.querySelector("span")).not.toBeNull();
+  // The value carries a note beside the path itself.
+  const configValue = settingsFieldValue("hub-config");
+  expect(configValue.textContent).not.toBe(configValue.querySelector("code")?.textContent);
 });
 
 test("Hub version appends the commit only when present", async () => {
@@ -121,8 +123,9 @@ test("shows an inline error state with retry on load failure, not a toast", asyn
 
   render(<GeneralSection />);
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
-  expect(loadFailureHint()).toMatch(/\S/);
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(within(loadFailureNotice()).getByRole("button", { name: "Retry" })).toBeTruthy();
+  expect(screen.queryByTestId("empty-state")).toBeNull();
   expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
 });
 
@@ -138,7 +141,7 @@ test("a client-unreachable rejection (the reported bug) shows the friendly hub-u
 
   render(<GeneralSection />);
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
-  expect(loadFailureHint()).toMatch(/\S/);
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(loadFailureNotice().textContent).toMatch(/\S/);
   expect(screen.queryByText(/AppwireClient/i)).toBeNull();
 });

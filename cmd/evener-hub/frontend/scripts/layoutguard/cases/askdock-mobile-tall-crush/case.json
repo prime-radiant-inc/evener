@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "widgets/card/card.module.css",
     "panes/session/composer/askDock/askquestioncard.module.css",
     "panes/session/composer/askDock/askdock.module.css"
   ],

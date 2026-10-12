@@ -13,6 +13,7 @@
 // window.measure() returns, for every scroll container under the pane, how
 // far its content escapes its own content box, plus the deepest elements
 // responsible - which is the answer the fix has to be aimed at.
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { MotionProvider } from "../motion";
 import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
@@ -1246,6 +1247,17 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
 // The second: the standard visually-hidden recipe (`width: 1px; overflow:
 // hidden`) is a 1px box on every page that has one, and is not a pane anyone
 // can see or scroll.
+// Opens or closes a disclosure the way a reader does - a click on its
+// summary - and lets React commit before returning. A store-backed
+// Disclosure (the system prompt) mounts its body only while open, so writing
+// details.open would leave nothing to measure; a native <details> (the raw
+// notification) toggles on the same click.
+function setDisclosureTargetOpen(target: DisclosureTarget, open: boolean): void {
+  if (target.details.open === open) return;
+  const summary = target.details.querySelector<HTMLElement>(":scope > summary");
+  if (summary) flushSync(() => summary.click());
+}
+
 function disclosureContract(target: DisclosureTarget): DisclosureContract | null {
   const { kind, details, originalOpen } = target;
   const summary = details.firstElementChild;
@@ -1389,13 +1401,11 @@ function twoPaintedFrames(): Promise<void> {
   return new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
 
-// The session menu's trigger, located by the lead words of its accessible
-// name; one finder because three probes read it, so a rename edits one
-// literal. Defaults to the whole document; the verb probe scopes to its pane.
+// The session menu's trigger, located by the data-session-actions-ref marker
+// SessionMenu puts inside its icon; one finder because three probes read it.
+// Defaults to the whole document; the verb probe scopes to its pane.
 function findSessionMenuTrigger(root: ParentNode = document): HTMLButtonElement | undefined {
-  return Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-    button.textContent?.includes("Session actions"),
-  );
+  return root.querySelector("[data-session-actions-ref]")?.closest("button") ?? undefined;
 }
 
 async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
@@ -1414,13 +1424,22 @@ async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
     const toolsRowFocused = document.activeElement === toolTrigger;
 
     transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }));
+    // Open, the intent entry carries its own anchor inside the group; closed,
+    // the group's wrapper is the one anchor and lists the entry as a member.
     const rationale = await waitFor(
-      () => pane.querySelector<HTMLElement>('[data-view-anchor-id="intent:i3b"]'),
+      () =>
+        pane.querySelector<HTMLElement>('[data-view-anchor-id="intent:i3b"]') ??
+        Array.from(pane.querySelectorAll<HTMLElement>("[data-view-anchor-members]")).find((anchor) =>
+          anchor.dataset.viewAnchorMembers?.split(",").includes("intent:i3b"),
+        ) ??
+        null,
       "Chat focus",
       "Chat intent rationale",
     );
     await twoPaintedFrames();
-    const group = rationale.closest<HTMLDetailsElement>('details[data-testid="intent-group"]');
+    const group =
+      rationale.closest<HTMLDetailsElement>('details[data-testid="intent-group"]') ??
+      rationale.querySelector<HTMLDetailsElement>(':scope > details[data-testid="intent-group"]');
     const summary = group?.querySelector<HTMLElement>(":scope > summary");
     const active = document.activeElement;
     return {
@@ -1478,7 +1497,10 @@ async function inspectIntentColumn(): Promise<IntentColumnMeasurement> {
       "turn block",
     );
     await twoPaintedFrames();
-    const groupRect = group.getBoundingClientRect();
+    // The row box is the Disclosure's wrapper (it carries the virtual row's
+    // data-transcript-row-id); the Disclosure inside it is inset by the gutter.
+    const row = group.closest<HTMLElement>("[data-transcript-row-id]") ?? group;
+    const groupRect = row.getBoundingClientRect();
     const turnRect = turn.getBoundingClientRect();
     return {
       groupFound: true,
@@ -1560,7 +1582,7 @@ function measure() {
       });
     }
 
-    for (const target of disclosureTargets) target.details.open = true;
+    for (const target of disclosureTargets) setDisclosureTargetOpen(target, true);
     disclosures = disclosureTargets.flatMap((target) => {
       const measured = disclosureContract(target);
       return measured ? [measured] : [];
@@ -1613,7 +1635,7 @@ function measure() {
       });
     }
   } finally {
-    for (const target of disclosureTargets) target.details.open = target.originalOpen;
+    for (const target of disclosureTargets) setDisclosureTargetOpen(target, target.originalOpen);
     for (const disclosure of disclosures) {
       const target = disclosureTargets.find((candidate) => candidate.kind === disclosure.kind);
       disclosure.restoredOpen = target?.details.open ?? false;
@@ -1850,7 +1872,7 @@ const settled = new Promise<true>((resolve) => {
         // overflow fixture) only when expanded. Expand it the way a user would
         // - through React's synthetic click - so the guard's two disclosure
         // fixtures exist by the time measure() runs.
-        document.querySelector<HTMLElement>('[data-testid="notification-card"]')?.click();
+        document.querySelector<HTMLElement>('[data-testid="notification-card"] summary')?.click();
         requestAnimationFrame(() =>
           setTimeout(() => {
             // Boot-time expansions start CSS transitions, and a square chevron

@@ -8,7 +8,7 @@ import { useLayoutEffect } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { Button, Chevron, Skeleton } from "../../widgets";
+import { Button, Chevron, EmptyState, InlineNotice, Skeleton } from "../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isMobileViewport } from "../useIsMobile";
@@ -21,7 +21,6 @@ import type { ActivityTabBodyProps } from "./activityTabs";
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
   foldButton: requireClass(styles.foldButton, "activitybar.module.css", "foldButton"),
-  emptyNote: requireClass(styles.emptyNote, "activitybar.module.css", "emptyNote"),
 };
 
 const PAGE = 20;
@@ -53,14 +52,14 @@ export function AgentsTab({ scope, onDrill = drill }: ActivityTabBodyProps) {
     collection?.hasMore ?? false,
   );
   if (collection?.permanent && collection.rows.length === 0)
-    return <span className={CLASS.emptyNote}>Subagents unavailable for this session.</span>;
+    return <EmptyState size="compact" title="Subagents unavailable for this session." />;
   if (!collection || (collection.rows.length === 0 && !collection.complete)) {
     return <Skeleton lines={2} />;
   }
   return (
     <div className={CLASS.stack}>
       {rows.length === 0 && collection.complete ? (
-        <span className={CLASS.emptyNote}>No subagents at this level.</span>
+        <EmptyState size="compact" title="No subagents at this level." />
       ) : null}
       {current.map((sub) => (
         <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} onDrill={() => onDrill(sub)} />
@@ -104,7 +103,7 @@ export function AgentsTab({ scope, onDrill = drill }: ActivityTabBodyProps) {
         loadMore={loadMore}
       />
       {collection.error && !collection.permanent ? (
-        <span className={CLASS.emptyNote}>Subagents are updating…</span>
+        <InlineNotice live="off">Subagents are updating…</InlineNotice>
       ) : null}
     </div>
   );

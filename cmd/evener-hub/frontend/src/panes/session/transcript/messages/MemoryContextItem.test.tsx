@@ -218,7 +218,9 @@ test("an empty current index reads as an empty index, not an error", () => {
   const config = preset("tools");
   renderProjected(project([wireItem({ raw: memoryRaw({ content: "" }) })], config), config);
   openSummary();
-  expect(screen.getByTestId("memory-context-empty").dataset.reason).toBe("current");
+  expect(memoryMeta().state).toBe("current");
+  expect(screen.getByTestId("empty-state").dataset.reason).toBe("empty");
+  expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByTestId("memory-context-content")).toBeNull();
 });
 
@@ -367,5 +369,8 @@ test("a memory refresh neither joins nor lets a system-event run straddle it", (
   const memory = screen.getByTestId("memory-context-item");
   expect(memory.closest('[data-testid="system-notice-group"]')).toBeNull();
   // The two notices before it do NOT group with the three after it.
-  expect(screen.getByTestId("system-notice-group").dataset.count).toBe("3");
+  expect(
+    screen.getByTestId("system-notice-group").querySelector<HTMLElement>(":scope > summary [data-count]")?.dataset
+      .count,
+  ).toBe("3");
 });
