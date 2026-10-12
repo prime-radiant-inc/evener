@@ -392,10 +392,18 @@ transcript remains the authority; the entry repository remains the browser's
 single owner of recorded-history ingestion and persistence, so a discarded
 session reopens through an ordinary authoritative read and recovery.
 
-The upgrade is bounded to the legacy stores. The entry item, turn, coverage and
-metadata stores and the durable Clear epoch hold their records across it: an
-upgrade from the pre-6d schema discards the old rows without disturbing the
-entry stores or the Clear epoch.
+The upgrade means two different things depending on the schema it starts
+from, and the behaviour below names which one is meant. From a pre-6d schema the
+legacy `records`, legacy `meta`, `current` and `currentMeta` stores are dropped
+along with their rows, so the legacy Clear epoch (which lived in the dropped
+legacy `meta`) is discarded with them: the entry stores are created and the
+entry-owned Clear epoch reads `0`. That is safe because the fence counter only
+moves down, so nothing captured before a pre-upgrade Clear can be wrongly
+accepted, and the cache is rebuilt from the server. From a schema where the
+entry stores already exist, the upgrade drops only the legacy stores, so the
+entry item, turn, coverage and metadata stores and the entry-owned Clear epoch
+(held in the entry metadata store, not the dropped legacy `meta`) are preserved
+across the version bump.
 
 Clear atomically removes all history record types and advances the durable clear
 epoch. Every write and asynchronous publication respects that fence.
@@ -470,11 +478,15 @@ Required evidence:
    tabs, Clear, deletion and late completions. No old binding publishes into a
    new one, no older version replaces newer content, no clear/delete is undone,
    and cached authority cannot dispatch input.
-9. **Upgrade and capacity:** seed a pre-6d database with legacy `records`,
-   `meta`, `current` and `currentMeta` rows, then open it: prove the upgrade
-   discards the legacy rows, leaves the entry stores and the durable Clear epoch
-   undisturbed, and reopens the session from an authoritative server read rather
-   than from any migrated legacy blob. Test TTL/disk eviction and oversized
+9. **Upgrade and capacity:** seed a pre-6d (v3) database with legacy
+   `records`, `meta`, `current` and `currentMeta` rows, including a legacy Clear
+   epoch in `meta`, then open it through `SessionEntryCache`: prove the upgrade
+   discards the legacy rows and the legacy epoch (the entry-owned Clear epoch
+   reads `0`), creates the four entry stores, and reopens the session from an
+   authoritative server read rather than from any migrated legacy blob.
+   Separately, prove a version bump from a schema where the entry stores already
+   exist preserves the entry-owned Clear epoch in the entry metadata store.
+   Test TTL/disk eviction and oversized
    records without erasing held reader state or manufacturing complete ranges.
    Include multiple loaded pages plus an isolated completion below them: preserve
    every compatible row without certifying the intervening gap. Open a completed
