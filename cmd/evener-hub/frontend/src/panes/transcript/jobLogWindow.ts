@@ -81,8 +81,9 @@ export function applyJobLogPage(
   const next = reconcileJobLogBounds(windows, page.retainedStartBytes, page.totalBytes);
   if (page.bytes.length === 0 && next[target] !== null) return next;
   verifyOverlap(next[target === "older" ? "live" : "older"], page);
-  const merged = mergeRawWindow(next[target], page);
-  let parsed = parseAnsiByteRows(merged.bytes, merged.offsetBytes, merged.initialState);
+  const previous = next[target];
+  const merged = mergeRawWindow(previous, page);
+  let parsed = parseAnsiByteRows(merged.bytes, merged.offsetBytes, merged.initialState, previous ? [previous] : []);
   if (merged.bytes.length > JOB_LOG_WINDOW_BYTES) {
     if (keep === "end") {
       const minimumCut = merged.offsetBytes + merged.bytes.length - JOB_LOG_WINDOW_BYTES;
@@ -101,7 +102,7 @@ export function applyJobLogPage(
       if (boundary === undefined) throw new Error("job output trim has no parsed boundary");
       merged.bytes = merged.bytes.slice(0, boundary.offsetBytes - merged.offsetBytes);
     }
-    parsed = parseAnsiByteRows(merged.bytes, merged.offsetBytes, merged.initialState);
+    parsed = parseAnsiByteRows(merged.bytes, merged.offsetBytes, merged.initialState, [parsed]);
   }
   return { ...next, [target]: { ...merged, rows: parsed.rows, boundaries: parsed.boundaries } };
 }
@@ -145,5 +146,5 @@ export function jobLogRows({ older, live }: JobLogWindows): JobLogRow[] {
   if (first.offsetBytes + first.bytes.length < second.offsetBytes) return [...first.rows, ...second.rows];
   // This union is temporary presentation input, never a third retained window.
   const merged = mergeRawWindow(first, second);
-  return parseAnsiByteRows(merged.bytes, merged.offsetBytes, merged.initialState).rows;
+  return parseAnsiByteRows(merged.bytes, merged.offsetBytes, merged.initialState, [first, second]).rows;
 }

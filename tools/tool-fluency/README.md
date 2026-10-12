@@ -99,10 +99,12 @@ Keep each append file atomic. A useful campaign changes one guidance surface at
 a time, then reruns the same probe/model/harness that exposed the failure. Store
 reusable variants under `tools/tool-fluency/variants/`.
 
-For callback or notification workflows, use the live in-process harness. The
-default CLI harness intentionally matches one-shot `evener` behavior and closes
-the session after the root turn; that is useful for ordinary tool probes but
-cannot prove that a watch-resumed observer had time to complete callback work.
+For callback or notification workflows, prefer the live in-process harness: it
+drives the runtime kicks and notification callbacks itself and waits out a
+bounded post-turn window (`--post-turn-wait`). The default CLI harness runs
+one-shot `evener`, which on a successful turn drains the session's job tree
+before exiting (`cmd/evener/run.go`) and so drives follow-up
+`EntryNotification` turns for the jobs that run owns.
 
 ```sh
 go run ./tools/tool-fluency/cmd/evener-fluency run \
@@ -162,10 +164,8 @@ decision or one short tool workflow.
 
 ```yaml
 schema: 1
-id: read_file.happy_path
+id: read_file.report_token
 tool: read_file
-contexts: [root, leaf_subagent]
-intent: "Read a known fixture and report its token."
 prompt: |
   Read fixture.txt and report the TOKEN value exactly.
 fixture:
@@ -174,17 +174,24 @@ fixture:
 expect:
   calls:
     - tool: read_file
-      args:
-        file_path: fixture.txt
   forbidden_calls: [shell, grep, read_session_transcript]
   artifacts:
     - path: fixture.txt
-      unchanged: true
-  final_contains: "FLUENCY_123"
+      exists: true
+  final_contains: ["FLUENCY_123"]
 metrics:
   max_tool_calls: 2
   wants_investigative_call_count: true
 ```
+
+The runner decodes a manifest strictly (`decodeProbe`,
+`tools/tool-fluency/cmd/evener-fluency/main.go`), so a field it does not know
+is a load-time error naming that field rather than a silently ignored one. A
+call records `tool` and an optional `min`; an artifact records `path` and an
+optional `exists` or `contains`; `final_contains` is a list.
+
+The example is illustrative. The shipped probe for the same tool is
+`probes/read_file.yaml` (`read_file.happy_path`).
 
 ### Future-tool probe
 
@@ -196,7 +203,6 @@ cannot infer the semantic oracle.
 schema: 1
 id: new_tool.happy_path
 tool: new_tool
-contexts: [root]
 prompt: |
   Use the project tool to inspect the prepared fixture and report its verdict.
 fixture:
@@ -212,6 +218,11 @@ metrics:
   wants_investigative_call_count: true
   wants_repeated_read_or_grep_count: true
 ```
+
+This block is the intended shape, not a working manifest: the current runner
+has no `semantic_oracle` field and no `command` oracle type (see Oracles), so a
+copy fails to load. Add the manifest once the tool exists and the oracle is
+implemented.
 
 The `metrics:` block is strictly validated: the recognized keys are
 `max_tool_calls` (a manifest-local threshold) and the `wants_*` flags
@@ -253,7 +264,9 @@ tools). This catches prompt/schema drift before a live model run.
 
 ## Contexts
 
-Every probe declares the contexts it applies to:
+Planned: the probe schema has no `contexts` key yet, so a manifest that carries
+one fails to load. When implemented, every probe will declare the contexts it
+applies to:
 
 - `root`: default root session.
 - `leaf_subagent`: typed or allowance-zero child that cannot delegate.
@@ -262,7 +275,8 @@ Every probe declares the contexts it applies to:
 - `provider:<behavior_tag>`: provider-specific surface such as Google
   function web search.
 
-Unavailable-by-design is not a failure. The report should distinguish:
+Unavailable-by-design is not a failure. The report should distinguish these
+statuses; the runner emits all but the last today:
 
 - `passed`;
 - `failed`;
@@ -278,7 +292,8 @@ under test.
 
 ## Oracles
 
-The runner should support a small set of reusable oracle types:
+The runner should support a small set of reusable oracle types (planned: none
+are implemented yet):
 
 | Oracle | Purpose |
 | --- | --- |
@@ -296,7 +311,8 @@ token or marker. It must not be the main assertion for a tool behavior.
 
 ## Metrics
 
-Every run should write pass/fail plus fluency metrics:
+Every run should write pass/fail plus fluency metrics (planned beyond the
+`wants_*` keys named under Metrics):
 
 - `task_success`;
 - `semantic_verified`;
@@ -353,11 +369,12 @@ fluency is a workflow suite, not just a `job_watch` unit.
 9. Print a compact matrix summary and the exact commands/session IDs needed for
     forensic follow-up.
 
-This CLI harness intentionally started small. It does not yet keep a session
-alive after the initial noninteractive invocation to drive follow-up
-`EntryNotification` turns. Observer sidecar probes can therefore expose both
-model fluency and CLI/harness lifecycle gaps. A live-session or hub-backed
-runner is the next step for full `job_watch` callback verification.
+This CLI harness intentionally started small. Each probe is one noninteractive
+`evener` run, which drains the session's job tree on a successful turn (see the
+harness notes above) and so drives follow-up `EntryNotification` turns for the
+jobs that run owns. Observer sidecar probes can still expose CLI/harness
+lifecycle gaps that only the in-process harness reaches. A hub-backed runner is
+the next step for `job_watch` verification that needs the hub's own scheduling.
 
 ### Hermetic by default
 
@@ -380,6 +397,10 @@ A hermetic CLI run refuses an evener older than `--enabled-plugins`
 `--inherit-operator-env`.
 
 ## Result shape
+
+The shape below is the target: the runner writes `status`, `env_mode`, and the
+metrics a probe's `wants_*` flags name, but not yet `suite`, `semantic_verified`,
+or the count metrics shown here.
 
 ```json
 {
@@ -422,8 +443,8 @@ empty findings list.
 
 ## Next Improvements
 
-1. Add a live-session or hub-backed harness that can drive notification turns
-   after observer callbacks.
+1. Add a hub-backed harness that can drive notification turns after observer
+   callbacks.
 2. Expand the catalog with canonical names, provider aliases, JSON schema, and
    context availability.
 3. Promote common checks into reusable oracles: first-call tool, max tool calls,

@@ -1,4 +1,5 @@
 import type { ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { tokenUnitLabel } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
@@ -100,9 +101,8 @@ test("the trigger opens the details sheet", async () => {
 test("a live session's context row shows percent used, used / window, and how much is left", async () => {
   await openPanel(testModel());
   const row = screen.getByTestId("session-details-context");
-  expect(row.textContent).toContain("42% used");
-  expect(row.textContent).toContain("42K / 100K");
-  expect(row.textContent).toContain("58K left");
+  // The figures, not the words around them: 42% of a 100K window, 42K used, 58K left.
+  for (const figure of ["42%", "42K", "100K", "58K"]) expect(row.textContent).toContain(figure);
 });
 
 test("the context row carries a meter at the session's pressure", async () => {
@@ -212,14 +212,17 @@ test("a session with no thread-level total falls back to summing the loaded turn
 // must say what it actually counts instead of overstating its scope.
 test("a derived total over a truncated turn window is labelled as covering only the loaded turns", async () => {
   await openPanel(testModel({ usage: null, turns: [usageTurn("t1", 500, 20)], olderCursor: "cursor_1" }));
-  expect(screen.getByTestId("session-details-tokens").textContent).toContain("↑500");
-  expect(panelText()).toContain("tokens (loaded turns)");
+  const row = screen.getByTestId("session-details-tokens");
+  expect(row.textContent).toContain("↑500");
+  expect(row.getAttribute("data-scope")).toBe("loaded");
+  expect(row.querySelector("dt")?.textContent).toBe(tokenUnitLabel("loaded"));
 });
 
 test("the thread's own cumulative total is labelled plainly as the session's tokens", async () => {
   await openPanel(testModel({ olderCursor: "cursor_1" }));
-  expect(panelText()).toContain("tokens");
-  expect(panelText()).not.toContain("tokens (loaded turns)");
+  const row = screen.getByTestId("session-details-tokens");
+  expect(row.getAttribute("data-scope")).toBe("session");
+  expect(row.querySelector("dt")?.textContent).toBe(tokenUnitLabel("session"));
 });
 
 // --- cost -------------------------------------------------------------------

@@ -79,15 +79,6 @@
   line-height: var(--line-height-body);
 }
 
-.marker {
-  background: var(--surface-inset);
-  border-radius: var(--radius-chip);
-  padding: 0 var(--space-2);
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
-}
-
 .unbound {
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
@@ -104,55 +95,6 @@
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
-}
-
-/* The chord cell made clickable: same look as the read-only chord run, plus
-   a hover/focus affordance. */
-.chordButton {
-  appearance: none;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: var(--radius-chip);
-  padding: var(--space-1) var(--space-2);
-  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-2));
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.chordButton:hover {
-  border-color: var(--edge);
-}
-
-.chordButton:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 1px;
-}
-
-/* The row's small text-level actions (Unbind / Reset). */
-.actionButton {
-  appearance: none;
-  background: none;
-  border: none;
-  padding: var(--space-1) var(--space-2);
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
-  cursor: pointer;
-  border-radius: var(--radius-chip);
-}
-
-.actionButton:hover {
-  color: var(--ink-hi);
-  background: var(--surface-inset);
-}
-
-.actionButton:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 1px;
 }
 
 .note {

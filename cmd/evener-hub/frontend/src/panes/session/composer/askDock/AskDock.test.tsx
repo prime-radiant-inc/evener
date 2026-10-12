@@ -65,6 +65,26 @@ function readResponse(ref: string): ThreadReadResponse {
   };
 }
 
+// The footer's answered-of-total count.
+function answeredCount(): { answered: string | undefined; total: string | undefined } {
+  const count = screen.getByTestId("ask-dock-count");
+  return { answered: count.dataset.answered, total: count.dataset.total };
+}
+
+// The answered-of-total count the live region last announced.
+function announcedCount(): { answered: string | undefined; total: string | undefined } {
+  const region = screen.getByTestId("ask-dock-announcements");
+  return { answered: region.dataset.answered, total: region.dataset.total };
+}
+
+// The live region announces a "prompt" when a pending set activates and
+// "progress" when the answered count moves.
+function expectAnnouncement(kind: "prompt" | "progress"): void {
+  const region = screen.getByTestId("ask-dock-announcements");
+  expect(region.dataset.kind).toBe(kind);
+  expect(region.textContent).not.toBe("");
+}
+
 function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
   const fake = new FakeClient(state);
   connectionStore.getState().connect(fake);
@@ -142,8 +162,8 @@ test("the batch envelope strengthens the amber mix locally, past the token defau
 // coarse) media feature since this is a plain <button>, not that widget.
 test("the tab strip buttons reach the tap floor on a coarse pointer", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
-  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(coarse, "askdock.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "askdock.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
   const rule = coarse![1]!.match(/\.tab\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .tab").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
@@ -207,9 +227,9 @@ test("shows an N of M answered footer count that updates as questions are answer
 
   render(<AskDock ref="ref_a" />);
 
-  expect(screen.getByText(/0 of 2 questions answered/i)).toBeTruthy();
+  expect(answeredCount()).toEqual({ answered: "0", total: "2" });
   await user.click(screen.getByRole("radio", { name: "a" }));
-  expect(screen.getByText(/1 of 2 questions answered/i)).toBeTruthy();
+  expect(answeredCount()).toEqual({ answered: "1", total: "2" });
 });
 
 test("Send is enabled even with nothing answered - an unresolved question composes as skip", async () => {
@@ -408,10 +428,13 @@ test("a one-click answer auto-advances to the next unanswered question and check
 
   expect(screen.queryByText("q1")).toBeNull();
   expect(screen.getByText("q2")).toBeTruthy();
-  // The answered tab keeps its place but gains the answered marker (a
-  // visually-hidden "(answered)" for AT, a check glyph on screen).
-  expect(screen.getByRole("tab", { name: /1\. First \(answered\)/ })).toBeTruthy();
-  expect(screen.getByText(/1 of 2 questions answered/i)).toBeTruthy();
+  // The answered tab keeps its place but gains the answered marker (an
+  // aria-label carrying the state for AT, a check glyph on screen).
+  const [firstTab, secondTab] = screen.getAllByRole("tab");
+  expect(firstTab?.dataset.state).toBe("answered");
+  expect(firstTab?.getAttribute("aria-label")).not.toBeNull();
+  expect(secondTab?.dataset.state).toBe("open");
+  expect(answeredCount()).toEqual({ answered: "1", total: "2" });
 });
 
 test("a multi-select answer does not auto-advance - more boxes may follow", async () => {
@@ -992,7 +1015,7 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
     await hydrateWithOneAsk(fake);
     render(<AskDockAnnouncements ref="ref_a" />);
 
-    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+    expectAnnouncement("prompt");
 
     await act(async () => {
       const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
@@ -1000,23 +1023,39 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
       await askDockStore.sendBatch("ref_a", batchId);
     });
     await waitFor(() => expect(screen.getByTestId("ask-dock-announcements").textContent).toBe(""));
+    expect(screen.getByTestId("ask-dock-announcements").dataset.kind).toBeUndefined();
   });
 
   test("announces answered-count transitions while pending", async () => {
     const fake = connectFakeClient();
     await hydrateWithTwoAsk(fake);
     render(<AskDockAnnouncements ref="ref_a" />);
-    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+    expectAnnouncement("prompt");
+    const prompt = screen.getByTestId("ask-dock-announcements").textContent;
 
-    const firstKey = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.questions[0]?.key;
-    if (firstKey === undefined) throw new Error("batch did not reconcile");
+    const [firstKey, secondKey] =
+      askDockStore
+        .getState()
+        .byRef.get("ref_a")
+        ?.batches[0]?.questions.map((question) => question.key) ?? [];
+    if (firstKey === undefined || secondKey === undefined) throw new Error("batch did not reconcile");
     act(() => {
       askDockStore.setAnswer("ref_a", firstKey, { kind: "option", labels: ["a"] });
     });
 
-    await waitFor(() =>
-      expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("1 of 2 questions answered"),
-    );
+    await waitFor(() => expectAnnouncement("progress"));
+    expect(announcedCount()).toEqual({ answered: "1", total: "2" });
+    const firstProgress = screen.getByTestId("ask-dock-announcements").textContent;
+    expect(firstProgress).not.toBe(prompt);
+
+    // A second answer moves the count again while the kind stays progress.
+    act(() => {
+      askDockStore.setAnswer("ref_a", secondKey, { kind: "option", labels: ["c"] });
+    });
+
+    await waitFor(() => expect(announcedCount()).toEqual({ answered: "2", total: "2" }));
+    expectAnnouncement("progress");
+    expect(screen.getByTestId("ask-dock-announcements").textContent).not.toBe(firstProgress);
   });
 
   test("a dock row remount never re-announces: the announcements component owns the only live region", async () => {
@@ -1029,7 +1068,7 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
       </>,
     );
     const region = screen.getByTestId("ask-dock-announcements");
-    expect(region.textContent).toBe("Answer the agent’s questions.");
+    expectAnnouncement("prompt");
     // The region's content is stable across anything the row does - the row
     // holds no live region at all (the sibling test above pins that), so a
     // virtualized remount has nothing to re-announce with.
@@ -1049,14 +1088,16 @@ test("a session ref change re-announces the new session's pending prompt", async
   const { rerender } = render(<AskDockAnnouncements ref="ref_a" />);
   const region = screen.getByTestId("ask-dock-announcements");
   const firstNode = region.firstChild;
-  expect(region.textContent).toBe("Answer the agent’s questions.");
+  expectAnnouncement("prompt");
+  const prompt = region.textContent;
 
   rerender(<AskDockAnnouncements ref="ref_b" />);
 
   // Identical text, but a NEW announcement node: a live region announces
   // content mutations, and unchanged text is no mutation - the transition
   // must remount the content to be heard at all.
-  expect(region.textContent).toBe("Answer the agent’s questions.");
+  expectAnnouncement("prompt");
+  expect(region.textContent).toBe(prompt);
   expect(region.firstChild).not.toBe(firstNode);
 });
 
@@ -1071,7 +1112,7 @@ test("an atomic pending-set replacement with an identical count re-announces the
   render(<AskDockAnnouncements ref="ref_a" />);
   const region = screen.getByTestId("ask-dock-announcements");
   const firstNode = region.firstChild;
-  expect(region.textContent).toBe("Answer the agent’s questions.");
+  expectAnnouncement("prompt");
 
   // One snapshot resync: call_1 answered (user message after it), call_2
   // pending after that message - one reconcile swaps the batch set.
@@ -1112,7 +1153,7 @@ test("an atomic pending-set replacement with an identical count re-announces the
     putThreadModel("ref_a", hydrateThread({ thread } as never, "ref_a", Date.now()));
   });
 
-  await waitFor(() => expect(region.textContent).toBe("Answer the agent’s questions."));
+  await waitFor(() => expectAnnouncement("prompt"));
   expect(region.firstChild).not.toBe(firstNode);
 });
 

@@ -230,7 +230,9 @@ func TestCovDetailsDrawer_DiagnosticsNilShowsGhost(t *testing.T) {
 	d := detailsDrawer{Detail: hubSessionDetail{Title: "Test", Diagnostics: nil}}
 	got := d.View()
 	plain := ansiPattern.ReplaceAllString(got, "")
-	if !strings.Contains(plain, "not reported") {
+	// A title-only detail renders the header line and, for want of
+	// diagnostics, the ghost line saying so.
+	if lines := strings.Split(plain, "\n"); len(lines) != 2 || strings.TrimSpace(lines[1]) == "" {
 		t.Fatalf("nil diagnostics should show ghost text:\n%s", plain)
 	}
 }

@@ -17,6 +17,11 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 // entirely from argumentsJSON directly (the model preserves it through
 // settle like every other tool call).
 
+// The rendered question cards, as the body draws them.
+function questionCards(): HTMLElement[] {
+  return screen.queryAllByTestId("ask-user-question");
+}
+
 function askUserArgs(questions: unknown[]): string {
   return JSON.stringify({ questions });
 }
@@ -36,14 +41,14 @@ const ONE_QUESTION = [
 
 test("summary lists each question's header, bracketed and comma-joined", () => {
   const d = toolRendererFor("ask_user");
-  expect(d.summary(item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) }))).toBe("Asked: [Deploy?]");
+  expect(d.summary(item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) }))).toContain("[Deploy?]");
 });
 
 test("summary joins multiple question headers", () => {
   const d = toolRendererFor("ask_user");
   const questions = [
     {
-      header: "A",
+      header: "Alpha",
       question: "q1",
       options: [
         { label: "x", detail: "y" },
@@ -51,7 +56,7 @@ test("summary joins multiple question headers", () => {
       ],
     },
     {
-      header: "B",
+      header: "Beta",
       question: "q2",
       options: [
         { label: "x", detail: "y" },
@@ -59,13 +64,15 @@ test("summary joins multiple question headers", () => {
       ],
     },
   ];
-  expect(d.summary(item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) }))).toBe("Asked: [A], [B]");
+  const summary = d.summary(item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) }));
+  expect(summary.indexOf("[Alpha]")).toBeGreaterThan(-1);
+  expect(summary.indexOf("[Beta]")).toBeGreaterThan(summary.indexOf("[Alpha]"));
 });
 
 test("summary degrades to a bare label for malformed argumentsJSON, never throws", () => {
   const d = toolRendererFor("ask_user");
   expect(() => d.summary(item({ toolName: "ask_user", argumentsJSON: "{not json" }))).not.toThrow();
-  expect(d.summary(item({ toolName: "ask_user", argumentsJSON: "{not json" }))).toBe("Asked a question");
+  expect(d.summary(item({ toolName: "ask_user", argumentsJSON: "{not json" }))).not.toBe("");
 });
 
 // --- summarySuffix (kata h70z): the collapsed row's "— answered: ..."
@@ -94,7 +101,7 @@ test("summarySuffix returns the answered recap once a later [answers] reply reso
     type: "userMessage",
     text: '[answers]\n1. [Deploy?] → "Yes"',
   };
-  expect(d.summarySuffix?.(ask, threadModel([ask, reply]))).toBe(' — answered: "Yes"');
+  expect(d.summarySuffix?.(ask, threadModel([ask, reply]))).toContain('"Yes"');
 });
 
 // --- body: renders read-only question cards --------------------------
@@ -108,14 +115,15 @@ test("body renders the question text, options with detail, and the recommended m
   expect(screen.getByText("Yes")).toBeTruthy();
   expect(screen.getByText("Ship it")).toBeTruthy();
   expect(screen.getByText("No")).toBeTruthy();
-  expect(screen.getByText(/recommended/i)).toBeTruthy();
+  const options = screen.getAllByRole("listitem");
+  expect(options.map((option) => option.dataset.recommended)).toEqual(["true", undefined]);
 });
 
 test("body notes the answer happens in the composer (this wave is read-only)", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) })} live={false} />);
-  expect(screen.getByText(/answer in the composer/i)).toBeTruthy();
+  expect(screen.getByTestId("ask-user-answer-hint")).toBeTruthy();
 });
 
 test("body shows a multi_select note when the question allows multiple answers", () => {
@@ -123,7 +131,7 @@ test("body shows a multi_select note when the question allows multiple answers",
   const Body = d.body!;
   const questions = [{ ...ONE_QUESTION[0], multi_select: true }];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  expect(screen.getByText(/select multiple/i)).toBeTruthy();
+  expect(screen.getByTestId("ask-user-question").querySelector('[data-note="multi-select"]')).not.toBeNull();
 });
 
 test("body shows why/if_unanswered notes when present", () => {
@@ -131,8 +139,10 @@ test("body shows why/if_unanswered notes when present", () => {
   const Body = d.body!;
   const questions = [{ ...ONE_QUESTION[0], why: "affects the release", if_unanswered: "assume yes" }];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  expect(screen.getByText("affects the release")).toBeTruthy();
-  expect(screen.getByText(/assume yes/)).toBeTruthy();
+  const card = screen.getByTestId("ask-user-question");
+  expect(card.querySelector('[data-note="why"]')?.textContent).toBe("affects the release");
+  expect(card.querySelector('[data-note="if-unanswered"]')?.textContent).toContain("assume yes");
+  expect(card.querySelector('[data-note="multi-select"]')).toBeNull();
 });
 
 test("body renders multiple question cards in order", () => {
@@ -157,8 +167,7 @@ test("body renders multiple question cards in order", () => {
     },
   ];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  expect(screen.getByText("question one")).toBeTruthy();
-  expect(screen.getByText("question two")).toBeTruthy();
+  expect(questionCards().map((card) => card.firstElementChild?.textContent)).toEqual(["question one", "question two"]);
 });
 
 // --- defensive parsing: malformed input never crashes ---------------------
@@ -178,23 +187,21 @@ test("body renders the malformed-data fallback for a genuine JSON syntax error",
   expect(() =>
     render(<Body item={item({ toolName: "ask_user", argumentsJSON: "{not json" })} live={false} />),
   ).not.toThrow();
-  expect(screen.getByText(/couldn.t read/i)).toBeTruthy();
+  expect(screen.getByTestId("ask-user-fallback").dataset.reason).toBe("malformed");
 });
 
 test("body renders the absent-data fallback (not malformed) when questions is missing from otherwise-valid JSON", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: "{}" })} live={false} />);
-  expect(screen.getByText(/question data unavailable/i)).toBeTruthy();
-  expect(screen.queryByText(/malformed/i)).toBeNull();
+  expect(screen.getByTestId("ask-user-fallback").dataset.reason).toBe("unavailable");
 });
 
 test("body renders the absent-data fallback (not malformed) when argumentsJSON is missing entirely - the cold-open case", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
   render(<Body item={item({ toolName: "ask_user" })} live={false} />);
-  expect(screen.getByText(/question data unavailable/i)).toBeTruthy();
-  expect(screen.queryByText(/malformed/i)).toBeNull();
+  expect(screen.getByTestId("ask-user-fallback").dataset.reason).toBe("unavailable");
 });
 
 test("body skips a malformed individual question (missing required fields) rather than crashing the whole card", () => {
@@ -212,6 +219,5 @@ test("body skips a malformed individual question (missing required fields) rathe
     { header: "Bad" /* missing question/options */ },
   ];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  expect(screen.getByText("a real question")).toBeTruthy();
-  expect(screen.queryByText("Bad")).toBeNull();
+  expect(questionCards().map((card) => card.firstElementChild?.textContent)).toEqual(["a real question"]);
 });

@@ -220,8 +220,8 @@ func TestCovStartForkDraft(t *testing.T) {
 	if m.forkDraft != nil {
 		t.Fatal("should not create fork draft for non-user message")
 	}
-	if got := m.session.messages[len(m.session.messages)-1].Text; got != "Select a user message to fork." {
-		t.Fatalf("non-user refusal = %q", got)
+	if msgs := m.session.messages; len(msgs) != 2 || msgs[1].Kind != transcript.MsgSystem {
+		t.Fatalf("non-user selection posted no refusal: %+v", msgs)
 	}
 
 	// User message with no entry index.

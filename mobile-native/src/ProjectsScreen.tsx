@@ -66,18 +66,26 @@ function FilterTab({ label, selected, onPress }: { label: string; selected: bool
 
 const UNCONFIRMED = "The current navigation could not be confirmed.";
 
+/** Why an organize change can't be confirmed against the page read after it,
+ * in the person's terms. */
+const UNCONFIRMED_REASONS = {
+	unread: UNCONFIRMED,
+	restarted: "The hub restarted during the check.",
+};
+
 /** Why the page read after an organize change can't confirm it, or null when
- * it does: the read must have landed cleanly, and a navigation page must come
- * from the generation the change was observed in. An archived list has no
- * navigation version, so only its read is checked. */
+ * it does: the read must have landed cleanly ("unread" otherwise), and a
+ * navigation page must come from the generation the change was observed in
+ * ("restarted" otherwise). An archived list has no navigation version, so
+ * only its read is checked. */
 export function unconfirmedReason(
 	pages: PageSource<unknown>,
 	observation: Pick<OrganizationObservation, "generationId"> | null,
-): string | null {
+): keyof typeof UNCONFIRMED_REASONS | null {
 	const page = pages.getSnapshot();
-	if (!page.loaded || page.loading || page.stale || page.error) return UNCONFIRMED;
+	if (!page.loaded || page.loading || page.stale || page.error) return "unread";
 	if (observation && pages.navigationVersioned && pages.getResourceVersion()?.generationId !== observation.generationId)
-		return "The hub restarted during the check.";
+		return "restarted";
 	return null;
 }
 
@@ -150,7 +158,7 @@ export function PageList<T>({
 			const page = pages.getSnapshot();
 			if (!isCurrent()) throw Error(UNCONFIRMED);
 			const unconfirmed = unconfirmedReason(pages, observation);
-			if (unconfirmed) throw Error(unconfirmed);
+			if (unconfirmed) throw Error(UNCONFIRMED_REASONS[unconfirmed]);
 			const same = previous !== null && JSON.stringify(previous) === JSON.stringify({ checkpoint, observation });
 			previous = checkpoint && observation ? { checkpoint, observation } : null;
 			setReview(checkpoint && observation ? { owner: binding, checkpoint, observation } : null);
@@ -658,7 +666,9 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 					{location.params.tier ? ` · ${location.params.tier}` : ""}
 				</Copy>
 				{(location.revealRef ?? location.ref) !== location.ref ? (
-					<Copy muted>Showing the row that owns this session</Copy>
+					<View testID="location-owner-row">
+						<Copy muted>Showing the row that owns this session</Copy>
+					</View>
 				) : null}
 			</View>
 			{pages ? (

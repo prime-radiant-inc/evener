@@ -49,6 +49,9 @@ type attachOptions struct {
 // loopback would put the hub's master token on the wire in cleartext.
 var errNonLoopbackAddr = errors.New("attach requires a loopback hub address")
 
+// errNoHubAt reports an attach whose dial reached no hub at the address.
+var errNoHubAt = errors.New("no hub at")
+
 // attachDialTimeout bounds the WebSocket handshake. A hub that accepts the TCP
 // connection but never completes the upgrade would otherwise hang the bridge
 // forever with no way out; the pump that follows is bounded by the caller's
@@ -169,7 +172,7 @@ func proxyAppWire(ctx context.Context, addr, token string, stream appwire.Transp
 		if ctx.Err() != nil {
 			return nil
 		}
-		return fmt.Errorf("no hub at %s: %w", addr, err)
+		return fmt.Errorf("%w %s: %w", errNoHubAt, addr, err)
 	}
 	return pumpBoth(ctx, ws, stream)
 }

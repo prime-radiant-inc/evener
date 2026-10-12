@@ -766,6 +766,7 @@ type DelegateUpdatedData struct {
 	RunStartedAt        string                `json:"run_started_at,omitempty"`
 	RunEndedAt          string                `json:"run_ended_at,omitempty"`
 	LatestActivityAt    string                `json:"latest_activity_at,omitempty"`
+	LatestIntent        string                `json:"latest_intent,omitempty"`
 	RunningForMS        *int64                `json:"running_for_ms,omitempty"`
 	QuietForMS          *int64                `json:"quiet_for_ms,omitempty"`
 	DurationMS          *int64                `json:"duration_ms,omitempty"`

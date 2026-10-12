@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/inputhistory"
+	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -31,14 +33,11 @@ func TestHubModelSessionComposerShowsReadOnlyReasonAndDraft(t *testing.T) {
 	m.detail.Capabilities.Steer = false
 	m.session.setInputValue("keep this draft")
 
-	got := m.sessionView()
-	for _, want := range []string{"read-only:", "source does not support send", "> keep this draft"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("read-only composer missing %q:\n%s", want, got)
-		}
+	if mode, reason := m.sessionComposerMode(), m.sessionComposerReadOnlyReason(); mode != hubComposerModeReadOnly || reason != composerNoSend {
+		t.Fatalf("composer mode=%v reason=%v, want read-only because the source cannot send", mode, reason)
 	}
-	if strings.Contains(got, "enter: send") {
-		t.Fatalf("read-only composer advertised send:\n%s", got)
+	if got := m.sessionView(); !strings.Contains(got, "keep this draft") {
+		t.Fatalf("read-only composer dropped the draft:\n%s", got)
 	}
 }
 
@@ -51,23 +50,17 @@ func TestHubModelBusyComposerShowsQueueOrReadOnlyMode(t *testing.T) {
 	m.session.processing = true
 	m.session.setInputValue("nudge the running turn")
 
-	got := m.sessionView()
-	for _, want := range []string{"queue", "enter: queue", "ctrl+s: send as steer", "> nudge the running turn"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("busy queue composer missing %q:\n%s", want, got)
-		}
+	if mode, panel := m.sessionComposerMode(), m.sessionComposerPanel(); mode != hubComposerModeQueue || !panel.CanSteer {
+		t.Fatalf("busy composer mode=%v canSteer=%v, want queue with force-steer", mode, panel.CanSteer)
+	}
+	if got := m.sessionView(); !strings.Contains(got, "nudge the running turn") {
+		t.Fatalf("busy queue composer dropped the draft:\n%s", got)
 	}
 
 	// Queue without steer: no force-steer hint.
 	m.detail.Capabilities.Steer = false
-	got = m.sessionView()
-	for _, want := range []string{"queue", "enter: queue"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("queue-without-steer composer missing %q:\n%s", want, got)
-		}
-	}
-	if strings.Contains(got, "ctrl+s: send as steer") {
-		t.Fatalf("queue-without-steer composer must not advertise force-steer:\n%s", got)
+	if mode, panel := m.sessionComposerMode(), m.sessionComposerPanel(); mode != hubComposerModeQueue || panel.CanSteer {
+		t.Fatalf("queue-without-steer composer mode=%v canSteer=%v, want queue without force-steer", mode, panel.CanSteer)
 	}
 
 	// A source that advertises send while a turn runs is not composed into
@@ -75,23 +68,17 @@ func TestHubModelBusyComposerShowsQueueOrReadOnlyMode(t *testing.T) {
 	// turn/start against a running turn would be refused): with no queue
 	// either, the composer is read-only and keeps the draft.
 	m.detail.Capabilities.Queue = false
-	got = m.sessionView()
-	for _, want := range []string{"read-only:", "source does not advertise queue", "> nudge the running turn"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("busy send-only composer missing %q:\n%s", want, got)
-		}
+	if mode, reason := m.sessionComposerMode(), m.sessionComposerReadOnlyReason(); mode != hubComposerModeReadOnly || reason != composerNoQueue {
+		t.Fatalf("busy send-only composer mode=%v reason=%v, want read-only for want of a queue", mode, reason)
 	}
-	if strings.Contains(got, "enter: send") {
-		t.Fatalf("busy send-only composer offered send during a running turn:\n%s", got)
+	if got := m.sessionView(); !strings.Contains(got, "nudge the running turn") {
+		t.Fatalf("busy send-only composer dropped the draft:\n%s", got)
 	}
 
 	// Neither queue nor send: read-only.
 	m.detail.Capabilities.Send = false
-	got = m.sessionView()
-	for _, want := range []string{"read-only:", "source does not advertise queue", "> nudge the running turn"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("busy read-only composer missing %q:\n%s", want, got)
-		}
+	if mode, reason := m.sessionComposerMode(), m.sessionComposerReadOnlyReason(); mode != hubComposerModeReadOnly || reason != composerNoQueue {
+		t.Fatalf("busy read-only composer mode=%v reason=%v, want read-only for want of a queue", mode, reason)
 	}
 }
 
@@ -111,11 +98,11 @@ func TestHubModelBusyEnterWithoutQueuePreservesDraftAndExplainsReason(t *testing
 	if got.session.input.Value() != "do not drop this" {
 		t.Fatalf("draft=%q, want preserved", got.session.input.Value())
 	}
-	view := got.sessionView()
-	for _, want := range []string{"Send is not available for this session.", "source does not advertise queue", "> do not drop this"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("busy unsupported queue view missing %q:\n%s", want, view)
-		}
+	if _, ok := noticeByCategory(got, "action-unavailable"); !ok {
+		t.Fatalf("busy unsupported enter raised no action-unavailable notice: %+v", got.notices)
+	}
+	if reason := got.sessionComposerReadOnlyReason(); reason != composerNoQueue {
+		t.Fatalf("busy unsupported enter reason = %v, want the missing queue", reason)
 	}
 }
 
@@ -363,9 +350,11 @@ func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 	if len(drained.sessionQueue) != 0 {
 		t.Fatalf("force-steer should clear local queue after queueChanged, got %v", drained.sessionQueue)
 	}
-	view := drained.View()
-	if !strings.Contains(view, "Force-steer sent.") {
-		t.Fatalf("missing force-steer confirmation:\n%s", view)
+	if _, ok := noticeByCategory(drained, "appwire"); ok || drained.sessionStatusError != "" {
+		t.Fatalf("successful force-steer left a failure standing: notices=%+v error=%q", drained.notices, drained.sessionStatusError)
+	}
+	if msgs := drained.session.messages; len(msgs) == 0 || msgs[len(msgs)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("missing force-steer confirmation: %+v", msgs)
 	}
 }
 
@@ -404,9 +393,8 @@ func TestHubModelBusyCtrlSDrainFailureRestoresDraft(t *testing.T) {
 	if len(got.sessionQueue) != 0 {
 		t.Fatalf("sessionQueue=%v, want unchanged empty queue", got.sessionQueue)
 	}
-	view := got.View()
-	if !strings.Contains(view, "Force-steer failed") {
-		t.Fatalf("missing failure notice:\n%s", view)
+	if notice, ok := noticeByCategory(got, "appwire"); !ok || !strings.Contains(notice.Reason, "drain failed") {
+		t.Fatalf("failure notice = %+v (found %v), want the drain failure as its reason", notice, ok)
 	}
 }
 
@@ -440,8 +428,11 @@ func TestHubModelBusyCtrlSQueuedDrainPartialDoesNotRestoreDraft(t *testing.T) {
 	if len(got.sessionQueue) != 1 || got.sessionQueue[0] != "queued before failed drain" {
 		t.Fatalf("sessionQueue=%v, want queued payload preview", got.sessionQueue)
 	}
-	if !strings.Contains(got.View(), "Force-steer failed after queueing") {
-		t.Fatalf("missing queued partial notice:\n%s", got.View())
+	if notice, ok := noticeByCategory(got, "appwire"); !ok || !strings.Contains(notice.Reason, "composer payload queued but drain failed") {
+		t.Fatalf("queued partial notice = %+v (found %v), want the partial failure as its reason", notice, ok)
+	}
+	if !got.queueRevisionStale {
+		t.Fatal("queued partial should hold Ctrl+S until the queue revision syncs")
 	}
 }
 
@@ -459,8 +450,8 @@ func TestHubModelBusyCtrlSWithEmptyQueueAndEmptyComposerBanner(t *testing.T) {
 		t.Fatal("ctrl+s with empty queue+composer should not call the hub")
 	}
 	got := updated.(hubModel)
-	if view := got.View(); !strings.Contains(view, "Nothing to steer") {
-		t.Fatalf("missing empty-steer banner:\n%s", view)
+	if msgs := got.session.messages; len(msgs) != len(m.session.messages)+1 || msgs[len(msgs)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("missing empty-steer banner: %+v", msgs)
 	}
 }
 
@@ -586,21 +577,23 @@ func TestHubModelFailedSendPreservesDraftExactly(t *testing.T) {
 	if got.session.input.Value() != draft {
 		t.Fatalf("failed send draft=%q, want exact %q", got.session.input.Value(), draft)
 	}
-	view := got.sessionView()
-	for _, want := range []string{"Send failed: appwire turn/start: session is busy", ">   exact draft\n  with trailing spaces  "} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("failed send view missing %q:\n%s", want, view)
-		}
+	if notice, ok := noticeByCategory(got, "appwire"); !ok || !strings.Contains(notice.Reason, "session is busy") || got.sessionStatusError == "" {
+		t.Fatalf("failed send notice = %+v (found %v), status error %q, want the hub's refusal recorded", notice, ok, got.sessionStatusError)
+	}
+	if view := got.sessionView(); !strings.Contains(view, "  exact draft\n  with trailing spaces  ") {
+		t.Fatalf("failed send view lost the exact draft:\n%s", view)
 	}
 }
 
 func TestHubModelFailureRestorePreservesNewerComposerDraft(t *testing.T) {
 	for _, tt := range []struct {
-		name string
-		msg  tea.Msg
+		name  string
+		draft string
+		msg   tea.Msg
 	}{
 		{
-			name: "send",
+			name:  "send",
+			draft: "old send",
 			msg: hubSendMsg{
 				ref:   "local:01SEND",
 				text:  "old send",
@@ -609,7 +602,8 @@ func TestHubModelFailureRestorePreservesNewerComposerDraft(t *testing.T) {
 			},
 		},
 		{
-			name: "queue",
+			name:  "queue",
+			draft: "old queue",
 			msg: hubQueueMsg{
 				ref:   "local:01SEND",
 				text:  "old queue",
@@ -618,7 +612,8 @@ func TestHubModelFailureRestorePreservesNewerComposerDraft(t *testing.T) {
 			},
 		},
 		{
-			name: "force steer",
+			name:  "force steer",
+			draft: "old steer",
 			msg: hubDrainAsSteerMsg{
 				ref:   "local:01SEND",
 				text:  "old steer",
@@ -636,8 +631,10 @@ func TestHubModelFailureRestorePreservesNewerComposerDraft(t *testing.T) {
 			if got.session.input.Value() != "newer draft" {
 				t.Fatalf("input=%q, want newer draft", got.session.input.Value())
 			}
-			if !strings.Contains(got.sessionView(), "preserved current draft") {
-				t.Fatalf("missing failed payload notice:\n%s", got.sessionView())
+			if !slices.ContainsFunc(got.session.messages, func(msg transcript.ChatMessage) bool {
+				return msg.Kind == transcript.MsgSystem && strings.Contains(msg.Text, tt.draft)
+			}) {
+				t.Fatalf("no system message accounts for the unrestored payload %q: %+v", tt.draft, got.session.messages)
 			}
 		})
 	}

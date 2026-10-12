@@ -16,6 +16,13 @@ import { FailureGlyph } from "../../../../widgets/failureglyph";
 import { ToolIcon } from "../../../../widgets/toolicon";
 import { NotificationCard } from "./NotificationCard";
 
+// The head's chips, by what each marks (the Chip widget's data-kind).
+function chipKinds(): (string | undefined)[] {
+  return [...screen.getByTestId("notification-card").querySelectorAll<HTMLElement>("[data-kind]")].map(
+    (chip) => chip.dataset.kind,
+  );
+}
+
 beforeAll(async () => {
   await import("../../");
 });
@@ -242,9 +249,7 @@ test("renders stable delegate identity as Delegate while shell identity remains 
   // entity trigger) and in the daemon's own frame, so the expanded body
   // renders neither a delegate-id nor a status field.
   expect(screen.getByTestId("notification-card").textContent).toContain("dlg_42");
-  expect(screen.queryByText(/delegate id/i)).toBeNull();
-  expect(screen.queryByText(/job id/i)).toBeNull();
-  expect(screen.queryByTestId("notification-field-status")).toBeNull();
+  expect(document.querySelectorAll('[data-testid^="notification-field-"]')).toHaveLength(0);
 
   rerender(
     <NotificationCard
@@ -293,13 +298,20 @@ test("a delegate report renders its message as a bubble and its structured resul
   expect(screen.getByTestId("notification-message").textContent).toContain("Non-null assertions removed");
   const table = screen.getByTestId("notification-structured-result");
   expect(table.querySelectorAll("tr")).toHaveLength(6);
-  expect(table.querySelector("th")?.textContent).toBe("Finding verdict");
-  expect(table.querySelectorAll("td")[0]?.textContent).toBe("ADDRESSED");
-  expect(table.textContent).toContain("Fix round");
-  expect(table.textContent).toContain("All findings addressed, no new Critical/Important breakage");
-  expect(table.textContent).toContain("Tests rerun");
+  const rows = [...table.querySelectorAll("tr")];
+  expect(rows.map((row) => row.dataset.key)).toEqual([
+    "finding_verdict",
+    "fix_round",
+    "new_breakage",
+    "out_of_scope",
+    "tests_rerun",
+    "artifacts",
+  ]);
+  expect(rows[0]?.querySelector("td")?.textContent).toBe("ADDRESSED");
+  expect(rows[1]?.querySelector("td")?.textContent).toBe("All findings addressed, no new Critical/Important breakage");
   // An empty array renders as an explicit none, not an empty cell.
-  expect(table.textContent).toContain("(none)");
+  expect(rows[5]?.querySelector("td [data-empty]")).not.toBeNull();
+  expect(rows[0]?.querySelector("td [data-empty]")).toBeNull();
   // No echo metadata, no raw disclosure: neither survives the redesign.
   expect(screen.queryByTestId("notification-field-delegate-id")).toBeNull();
   expect(screen.queryByTestId("notification-field-status")).toBeNull();
@@ -344,7 +356,7 @@ test("a structured result that failed its verdict shows a quiet note, never a ta
       })}
     />,
   );
-  expect(screen.getByTestId("notification-structured-note").textContent).toBe("Structured result too large to show.");
+  expect(screen.getByTestId("notification-structured-note").dataset.reason).toBe("schema_result_too_large");
   expect(screen.queryByTestId("notification-structured-result")).toBeNull();
 });
 
@@ -524,7 +536,7 @@ test("a validated null result renders as none", () => {
       })}
     />,
   );
-  expect(screen.getByTestId("notification-structured-json").textContent).toContain("(none)");
+  expect(screen.getByTestId("notification-structured-json").querySelector("[data-empty]")).not.toBeNull();
 });
 
 // A legacy attribute frame's `reason` is a raw producer code (exit_nonzero):
@@ -578,18 +590,17 @@ test("an expanded notification card stays open across a remount through the scop
 
 test("warning tone chip is visible even when collapsed", () => {
   render(<NotificationCard notification={notif({ tone: "warning", title: "watcher reported" })} />);
-  expect(screen.getByTestId("notification-card").textContent).toContain("warning");
+  expect(chipKinds()).toEqual(["warning"]);
 });
 
 test("a success/neutral notification recedes: no tone chip (color spent on the warning chip and the failure glyph)", () => {
   render(<NotificationCard notification={notif({ tone: "success" })} />);
-  expect(screen.queryByText("error")).toBe(null);
-  expect(screen.queryByText("warning")).toBe(null);
+  expect(chipKinds()).toEqual([]);
 });
 
 test("an error notification carries no chip: the failure glyph is the whole signal", () => {
   render(<NotificationCard notification={notif({ tone: "error" })} />);
-  expect(screen.queryByText("error")).toBeNull();
+  expect(chipKinds()).toEqual([]);
   expect(screen.getByTestId("failure-glyph")).toBeTruthy();
 });
 
@@ -624,8 +635,7 @@ test("confirmed cancellation recedes while expanded diagnostics retain physical 
   expect(row.textContent).toContain("Run repository lint, vet, and test gates");
   expect(row.textContent).not.toContain("exit -1");
   expect(row.textContent).not.toContain("stopped_by_parent");
-  expect(screen.queryByText("error")).toBeNull();
-  expect(screen.queryByText("warning")).toBeNull();
+  expect(chipKinds()).toEqual([]);
 
   expect(screen.getByTestId("notification-field-status").textContent).toContain("cancelled");
   expect(screen.getByTestId("notification-field-reason").textContent).toContain("stopped_by_parent");
@@ -959,7 +969,7 @@ test("keeps raw notification as the one direct full-width disclosure row", async
   const raw = screen.getByTestId("notification-raw-disclosure");
   expect(root.querySelectorAll("details")).toHaveLength(1);
   expect(raw.parentElement).toBe(root);
-  expect(raw.querySelector("summary")?.textContent).toBe("Raw notification");
+  expect(raw.firstElementChild?.tagName).toBe("SUMMARY");
   expect(raw.querySelector("pre")?.textContent).toContain("<job-notification");
 });
 
@@ -1020,8 +1030,7 @@ test("a timer's prose renders with no echo metadata and no tone chip", () => {
   expect(screen.queryByTestId("notification-field-output")).toBeNull();
   expect(screen.queryByTestId("notification-field-reason")).toBeNull();
   expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("neutral");
-  expect(screen.queryByText("warning")).toBeNull();
-  expect(screen.queryByText("error")).toBeNull();
+  expect(chipKinds()).toEqual([]);
 });
 
 test("a watch card keeps the watch id inspectable in the raw disclosure", () => {
@@ -1105,7 +1114,7 @@ test("the head's delegate name opens the delegate hover card on focus", () => {
     });
 
     const card = screen.getByRole("tooltip");
-    expect(card.textContent).toContain("Delegate");
+    expect(card.querySelector("[data-entity-kind]")?.getAttribute("data-entity-kind")).toBe("delegate");
     expect(card.textContent).toContain("Review the first line");
   } finally {
     vi.useRealTimers();
@@ -1178,7 +1187,7 @@ test("an identity field's trigger opens the entity card", () => {
     });
 
     const card = screen.getByRole("tooltip");
-    expect(card.textContent).toContain("Job");
+    expect(card.querySelector("[data-entity-kind]")?.getAttribute("data-entity-kind")).toBe("job");
     expect(card.textContent).toContain("Compile the frontend");
   } finally {
     vi.useRealTimers();
@@ -1327,7 +1336,7 @@ test("a delivery-failure card earns a warning chip and failure title", () => {
     />,
   );
   expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("warning");
-  expect(screen.getByTestId("notification-card").textContent).toContain("warning");
+  expect(chipKinds()).toEqual(["warning"]);
   expect(screen.getByTestId("notification-card").textContent).toContain("Watch delivery failed");
 });
 

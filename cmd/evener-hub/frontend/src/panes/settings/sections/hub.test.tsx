@@ -6,7 +6,9 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
+import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { HubSection } from "./hub";
+import { settingsFieldIds, settingsFieldRow } from "./settingsFieldTestUtils";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -39,8 +41,10 @@ test("fetches the overview on mount and renders the 3 read-only fields with thei
   expect(await screen.findByText("127.0.0.1:9180")).toBeTruthy();
   expect(screen.getByText("/tmp/evener-run")).toBeTruthy();
   expect(screen.getByText("30s")).toBeTruthy();
-  expect(screen.getByText("Listen address").tagName).toBe("DT");
-  expect(screen.getByText(/Address and port the hub HTTP server binds to/)).toBeTruthy();
+  expect(settingsFieldIds()).toEqual(["listen-address", "run-dir", "spawn-timeout"]);
+  for (const field of settingsFieldIds()) {
+    expect(settingsFieldRow(field ?? "").querySelector("p")).not.toBeNull();
+  }
   await waitFor(() =>
     expect(fake.calls).toEqual([
       { method: "evener/settings/overview", params: {} },
@@ -65,26 +69,28 @@ describe("on load failure", () => {
   test("shows an inline error state with a retry action instead of a toast", async () => {
     const fake = connectFakeClient();
     fake.on("evener/settings/overview", () => {
-      throw new Error("hub unreachable");
+      throw new Error("raw-overview-failure");
     });
     // daemon/list is not called when overview fails (HubResidents never mounts)
 
     render(<HubSection />);
 
-    expect(await screen.findByText("Couldn't load hub settings")).toBeTruthy();
-    expect(await screen.findByText("Something went wrong.")).toBeTruthy();
-    expect(screen.queryByText("hub unreachable")).toBeNull();
+    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+    const hint = screen.getByTestId("empty-state").querySelector('[data-slot="hint"]');
+    if (hint === null) throw new Error("load failure shows no hint");
+    expect(hint.textContent).toMatch(/\S/);
+    expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
   });
 
   test("Retry re-requests the overview", async () => {
     const fake = connectFakeClient();
     fake.on("evener/settings/overview", () => {
-      throw new Error("hub unreachable");
+      throw new Error("raw-overview-failure");
     });
     const user = userEvent.setup();
 
     render(<HubSection />);
-    await screen.findByText("Couldn't load hub settings");
+    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
 
     fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
     fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));

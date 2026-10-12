@@ -597,13 +597,12 @@ func TestCovWebassetsHandlerTraversal(t *testing.T) {
 	}
 }
 
-// --- project_delete.go: appendProjectDeleteLiveSkip ---
+// --- project_delete.go: ownershipSkip ---
 
-// TestCovAppendProjectDeleteLiveSkip covers the helper.
-func TestCovAppendProjectDeleteLiveSkip(t *testing.T) {
-	result := appendProjectDeleteLiveSkip(nil, "s1")
-	want := []projectDeleteSkip{{ID: "s1", Reason: "resumed live"}}
-	if !reflect.DeepEqual(result, want) {
-		t.Fatalf("result = %+v, want %+v", result, want)
+// TestCovOwnershipSkipLive covers the live branch.
+func TestCovOwnershipSkipLive(t *testing.T) {
+	result := ownershipSkip("s1", &projectDeletionOwnershipError{ThreadID: "s1", Live: true})
+	if result.ID != "s1" || result.Kind != appwire.SkipKindLive {
+		t.Fatalf("result = %+v, want s1 skipped as live", result)
 	}
 }

@@ -132,7 +132,11 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
   });
 
   return (
-    <div className={CLASS.row} data-testid="load-older-row">
+    <div
+      className={CLASS.row}
+      data-testid="load-older-row"
+      data-state={error !== null ? "failed" : loading ? "loading" : "idle"}
+    >
       {error !== null ? (
         <>
           {/* role=alert: a failure the reader did not ask for and cannot see

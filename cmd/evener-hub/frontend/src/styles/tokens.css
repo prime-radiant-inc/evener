@@ -213,13 +213,17 @@
    * chrome (color/background/border/shadow only — transitions name their
    * properties, never `all`), and the 240ms spatial budget for
    * user-initiated geometry changes (the activity sidebar sliding in, a
-   * zoom column opening). Data arriving never animates geometry. No idle
-   * pulses, no shimmer.
+   * zoom column opening). Data arriving never animates geometry. No
+   * decorative idle pulses, no shimmer. The one continuous motion for agent
+   * liveness is StatusDot's working spinner, gated by reduced motion
+   * (design-system.md §5).
    */
   --motion-duration-attention: 200ms;
   --motion-duration-overlay: 120ms;
   --motion-duration-hover: 150ms;
   --motion-duration-spatial: 240ms;
+  /* one turn of StatusDot's continuous working spinner (agent liveness) */
+  --motion-duration-activity: 800ms;
   --motion-easing-standard: ease-out;
 }
 
@@ -375,11 +379,18 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
     /* A floor, not an alias: the S preference scales the phone body to
      * 14.4px, and iOS zooms into a 14.4px field just the same. */
     --font-size-control: max(16px, var(--font-size-body));
-    /* The touch-target floor (2026-07-30-mobile-session-layout-design.md,
-     * decision 4): 44px per the platform HIG. Declared here, consumed by
-     * button.module.css / iconbutton.module.css's own phone blocks as
-     * min-width/min-height so desktop sizing rules stay untouched. */
-    --tap-min: 44px;
   }
   body[data-phone-density="comfortable"] { --density-scale: 1.25; }
+}
+
+/* The touch-target floor (2026-07-30-mobile-session-layout-design.md,
+ * decision 4): 44px per the platform HIG, on phones and on any coarse
+ * pointer at any width (touch laptops, iPad landscape; Jesse 2026-10-11).
+ * Only the floor widens - the phone font-size and density rules above stay
+ * phone-only. Widgets consume it under this same query as min-width/
+ * min-height, so desktop sizing rules stay untouched. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  body {
+    --tap-min: 44px;
+  }
 }

@@ -37,7 +37,9 @@
 //                  fallback font the product never ships, and waitForFonts
 //                  fails saying so (kata e4sh). Plus
 //                  an optional "viewport": { "width": 390, "height": 844,
-//                  "deviceScaleFactor": 2, "mobile": true } and/or
+//                  "deviceScaleFactor": 2, "mobile": true, "touch": true }
+//                  ("touch" turns on touch emulation, which is what makes
+//                  (any-pointer: coarse)/(hover: none) match) and/or
 //                  optional "forcePseudoStates":
 //                  [{ "selector": ".x", "pseudoClasses": ["hover"] }] for a
 //                  state no page script can reach (see browserGuardCdp.mjs's

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -644,7 +645,7 @@ func TestArchivedListCursorIsBoundToTheHint(t *testing.T) {
 	}
 	for _, hint := range []string{"", "archived_projects", "test_runs"} {
 		_, err := parseNavigationArchivedListParams(appwire.ArchivedListParams{Catalog: hint, ProjectKey: "moving", Cursor: first.NextCursor})
-		if err == nil || err.Error() != "cursor belongs to another archived list" {
+		if !errors.Is(err, errArchivedCursorForeign) {
 			t.Fatalf("hint %q accepted a cursor minted under projects: %v", hint, err)
 		}
 	}

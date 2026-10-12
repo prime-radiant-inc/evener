@@ -193,7 +193,7 @@ func FuzzExactTails(f *testing.F) {
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, duplicateRegistry, appwire.ThreadTranscriptListParams{Ref: "local:root"})
 		hubTranscriptRootForList = oldTranscriptRoot
 
-		_ = appendProjectDeleteLiveSkip(nil, "id")
+		_ = ownershipSkip("id", &projectDeletionOwnershipError{ThreadID: "id", Live: true})
 		t.Setenv(envvars.Home.Name, "")
 		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 	})

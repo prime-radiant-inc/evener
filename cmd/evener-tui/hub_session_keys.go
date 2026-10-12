@@ -448,7 +448,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, sendHubQueue(m.client, ref, text, draft, attachments, m.detail.InstanceID)
 		}
 		if composerMode == hubComposerModeReadOnly || !m.sessionCanStartTurn() {
-			reason := m.sessionComposerReadOnlyReason()
+			reason := m.sessionComposerReadOnlyReason().text()
 			reason = sessionSendUnavailableReason(reason)
 			m.addActionUnavailableNotice("send", "Send is not available for this session.", reason)
 			return m, nil
@@ -545,7 +545,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 		if appwire.IsRestingThreadStatus(m.detail.State) && m.detail.Queue.Depth == 0 && !m.queueRevisionStale {
 			return m, nil
 		}
-		m.addSessionSystem("Force-steer is not available: " + controls.drainReason + ".")
+		m.addSessionSystem("Force-steer is not available: " + controls.drainReason.text() + ".")
 		return m, nil
 	}
 	ref, ok := m.currentRef()

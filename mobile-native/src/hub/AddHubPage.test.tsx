@@ -16,6 +16,12 @@ vi.mock("expo-camera", () => ({
 	useCameraPermissions: () => [mocks.permission, vi.fn(), vi.fn()],
 }));
 vi.mock("expo-clipboard", () => ({ getStringAsync: mocks.getStringAsync }));
+vi.mock("@react-navigation/native", () => {
+	const navigation = { isFocused: () => true, addListener: () => () => {} };
+	return { useNavigation: () => navigation };
+});
+vi.mock("expo/fetch", () => ({ fetch: vi.fn() }));
+vi.mock("expo-crypto", () => ({ getRandomBytes: (count: number) => new Uint8Array(count).fill(7) }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));

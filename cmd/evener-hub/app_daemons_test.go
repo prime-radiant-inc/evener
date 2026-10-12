@@ -417,7 +417,7 @@ func TestRetireDaemonRefusesDeletedSiblingAlias(t *testing.T) {
 	}
 	_, err = client.DaemonRetire(t.Context(), appwire.DaemonRetireParams{Identity: identity})
 	var wire appwire.WireError
-	if err == nil || !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || !strings.Contains(err.Error(), "target has been deleted") {
+	if err == nil || !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || !wireErrorInfoIs(wire.Data, appwire.ErrorActionUnavailable) {
 		t.Fatalf("retire of a sibling-deleted daemon = %v, want the target-deleted refusal", err)
 	}
 	if retireCalls != 0 {

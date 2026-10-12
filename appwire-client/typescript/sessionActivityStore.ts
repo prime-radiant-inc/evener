@@ -1,6 +1,7 @@
 import type { AppwireClientLike } from "./clientLike";
 import { mutationErrorData, WireError } from "./errors";
 import { sameJsonValue } from "./plainObject";
+import { intentWithinBound } from "./sessionActivity";
 import { isThreadNotFound } from "./sessionErrors";
 import {
   acquireThreadSubscription,
@@ -959,7 +960,9 @@ export class SessionActivityStore {
     served: ReadonlySet<string>,
   ): SessionDelegate[] {
     const previousById = new Map(previous.map((row) => [rowIdentity("delegates", row), row]));
-    return incoming.map((row) => {
+    return incoming.map((servedRow) => {
+      // The served row rides the same bound as a frame.
+      const row = inadmissibleIntent(servedRow.latestIntent) ? { ...servedRow, latestIntent: undefined } : servedRow;
       const identity = rowIdentity("delegates", row);
       const existing = previousById.get(identity);
       const applied = this.appliedRevision(identity);
@@ -1248,6 +1251,21 @@ export class SessionActivityStore {
   }
 }
 
+/** An intent the wire's bound admits -- a string of at most
+ * MAX_INTENT_CODE_POINTS code points, astral characters counted once, the
+ * same walk the S5 decoder applies -- or undefined. Absent, wrong-typed, and
+ * over-bound values all read as omitted: the S5 decoder drops a session entry
+ * that carries one, but a row or frame keeps every other field, so a bad
+ * value costs only the line itself. */
+function boundedIntent(value: unknown): string | undefined {
+  return typeof value === "string" && intentWithinBound(value) ? value : undefined;
+}
+/** Whether value is present but not admissible — the one case both strip sites
+ * read the same way: an over-bound or invalid line applies as omitted, and
+ * the row or frame keeps every other field. */
+function inadmissibleIntent(value: string | undefined): boolean {
+  return value !== undefined && boundedIntent(value) === undefined;
+}
 /** A winning frame supplies every mutating field, absent optionals included,
  * so it clears what it omits; only the loaded row's identity survives: a frame
  * carries no refs and `name` is immutable per delegate. */
@@ -1286,6 +1304,7 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
       frame.latestActivityAt !== undefined && activityInstant(frame.latestActivityAt)
         ? frame.latestActivityAt
         : undefined,
+    latestIntent: boundedIntent(frame.latestIntent),
     usage: frame.usage,
     worktree: frame.worktree,
   };
@@ -1372,7 +1391,9 @@ function boundedDelegateFrame(frame: EvenerDelegateInfo): EvenerDelegateInfo {
     diagnostics: _diagnostics,
     ...bounded
   } = frame;
-  return bounded;
+  // The buffer's entry cap bounds ids, not memory, so an intent past the
+  // wire's bound is dropped here rather than held by 128 buffered frames.
+  return inadmissibleIntent(bounded.latestIntent) ? { ...bounded, latestIntent: undefined } : bounded;
 }
 /** The projector's join for two frame snapshots of one delegate: the strictly
  * greater revision supplies the fields, latestActivityAt is the independent
@@ -1416,6 +1437,7 @@ const delegateRowFields: Record<keyof SessionDelegate, true> = {
   runStartedAt: true,
   runEndedAt: true,
   latestActivityAt: true,
+  latestIntent: true,
   usage: true,
   worktree: true,
 };

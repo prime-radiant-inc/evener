@@ -40,7 +40,7 @@ import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
 import { keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { KeyHint, Switch } from "../../../widgets";
+import { Button, Chip, KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./keybindings.module.css";
 
@@ -55,14 +55,11 @@ const CLASS = {
   list: requireClass(styles.list, "keybindings.module.css", "list"),
   row: requireClass(styles.row, "keybindings.module.css", "row"),
   label: requireClass(styles.label, "keybindings.module.css", "label"),
-  marker: requireClass(styles.marker, "keybindings.module.css", "marker"),
   unbound: requireClass(styles.unbound, "keybindings.module.css", "unbound"),
   chord: requireClass(styles.chord, "keybindings.module.css", "chord"),
-  chordButton: requireClass(styles.chordButton, "keybindings.module.css", "chordButton"),
   controls: requireClass(styles.controls, "keybindings.module.css", "controls"),
   rowError: requireClass(styles.rowError, "keybindings.module.css", "rowError"),
   note: requireClass(styles.note, "keybindings.module.css", "note"),
-  actionButton: requireClass(styles.actionButton, "keybindings.module.css", "actionButton"),
   captureWrap: requireClass(styles.captureWrap, "keybindings.module.css", "captureWrap"),
   capture: requireClass(styles.capture, "keybindings.module.css", "capture"),
   capturePrompt: requireClass(styles.capturePrompt, "keybindings.module.css", "capturePrompt"),
@@ -247,6 +244,7 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
         aria-readonly="true"
         tabIndex={-1}
         aria-label={`Press the new shortcut for ${title}. Enter saves, Escape cancels.`}
+        data-state={captured !== null ? "captured" : held.length > 0 ? "holding" : "idle"}
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
         onBlur={() => onCancel(false)}
@@ -402,19 +400,24 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
     );
 
   return (
-    <li className={CLASS.row}>
+    <li
+      className={CLASS.row}
+      data-action={actionId}
+      data-customized={customized || undefined}
+      data-unbound={binding === undefined || undefined}
+    >
       <span className={CLASS.label}>
         {title}
-        {customized && <span className={CLASS.marker}>Customized</span>}
+        {customized && <Chip>Customized</Chip>}
       </span>
       {capturing ? (
         <CaptureBox title={title} onSave={saveCapture} onCancel={cancelCapture} />
       ) : editable ? (
         <span className={CLASS.controls}>
-          <button
+          <Button
             ref={chordButtonRef}
-            type="button"
-            className={CLASS.chordButton}
+            variant="quiet"
+            size="sm"
             aria-label={binding === undefined ? `Set a shortcut for ${title}` : `Change the shortcut for ${title}`}
             onClick={() => {
               captureGenerationRef.current += 1;
@@ -423,31 +426,27 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
             }}
           >
             {binding === undefined ? <span className={CLASS.unbound}>Unbound</span> : chordCell}
-          </button>
+          </Button>
           {binding !== undefined && (
-            <button
-              type="button"
-              className={CLASS.actionButton}
-              onClick={() => void applyRules(() => replacementRules(actionId, null))}
-            >
+            <Button variant="quiet" size="xs" onClick={() => void applyRules(() => replacementRules(actionId, null))}>
               Unbind
-            </button>
+            </Button>
           )}
           {hasOverride && (
-            <button
-              type="button"
-              className={CLASS.actionButton}
+            <Button
+              variant="quiet"
+              size="xs"
               onClick={() => void applyRules(() => replacementRules(actionId, undefined))}
             >
               Reset
-            </button>
+            </Button>
           )}
         </span>
       ) : (
         chordCell
       )}
       {conditionalEntries.length > 0 && (
-        <p className={CLASS.note}>
+        <p className={CLASS.note} data-testid="conditional-trigger-note">
           Also opens on{" "}
           {conditionalEntries.map((entry) =>
             entry.chord.map((press) => <KeyHint key={serializeChord([press])} keys={chordDisplayKeys(press)} />),
@@ -465,6 +464,19 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   );
 }
 
+/** Why the section is read-only, rendered as the status line's `data-reason`. */
+type ReadOnlyReason = "hub-unknown" | "unsupported" | "unsupported-overrides-retained" | "loading" | "load-failed";
+
+interface ReadOnlyStatus {
+  reason: ReadOnlyReason;
+  text: string;
+}
+
+const LOAD_FAILED_STATUS: ReadOnlyStatus = {
+  reason: "load-failed",
+  text: "Editing is unavailable until this hub's synced keybinding overrides load cleanly.",
+};
+
 export function KeybindingsSection() {
   const hubSupport = useKeybindingsStore((s) => s.hubSupport);
   const hubLoading = useKeybindingsStore((s) => s.hubLoading);
@@ -475,30 +487,39 @@ export function KeybindingsSection() {
   const characterKeyTriggers = usePrefsStore((s) => s.characterKeyTriggers);
   const editable = hubSupport === "supported" && hubError === null && !hubLoading && loaded;
 
-  let status: string | undefined;
+  let status: ReadOnlyStatus | undefined;
   if (hubSupport === "unknown") {
-    status = "Waiting for the hub connection to report keybindings support.";
+    status = { reason: "hub-unknown", text: "Waiting for the hub connection to report keybindings support." };
   } else if (hubSupport === "unsupported") {
     // Finding 35: after an un-apply ROLLBACK the hubError alert says the
     // old overrides are still in effect - the status must not contradict it
     // by claiming the built-in defaults.
     status =
       hubError === null
-        ? "This hub does not support synced keybinding overrides. The built-in defaults are in effect."
-        : "This hub does not support synced keybinding overrides. The previously synced overrides are still in effect; restoring the built-in defaults is retried on the next connection change.";
+        ? {
+            reason: "unsupported",
+            text: "This hub does not support synced keybinding overrides. The built-in defaults are in effect.",
+          }
+        : {
+            reason: "unsupported-overrides-retained",
+            text: "This hub does not support synced keybinding overrides. The previously synced overrides are still in effect; restoring the built-in defaults is retried on the next connection change.",
+          };
   } else if (hubLoading || !loaded) {
     // The stale-hub window: a client replacement reset the loaded state and
     // the new hub's refresh has not landed (or failed - the alert below
     // carries that message). Read-only until the overrides are current.
     status =
       hubError === null
-        ? "Loading this hub's synced keybinding overrides; the shortcuts shown are read-only until they arrive."
-        : "Editing is unavailable until this hub's synced keybinding overrides load cleanly.";
+        ? {
+            reason: "loading",
+            text: "Loading this hub's synced keybinding overrides; the shortcuts shown are read-only until they arrive.",
+          }
+        : LOAD_FAILED_STATUS;
   } else if (hubError !== null) {
     // A patch or re-refresh failed AFTER a successful load: the listing is
     // current, but editing waits for a clean reload (the alert carries the
     // failure itself).
-    status = "Editing is unavailable until this hub's synced keybinding overrides load cleanly.";
+    status = LOAD_FAILED_STATUS;
   }
 
   return (
@@ -526,8 +547,8 @@ export function KeybindingsSection() {
       </div>
 
       {status !== undefined && (
-        <p className={CLASS.status} role="status">
-          {status}
+        <p className={CLASS.status} role="status" data-reason={status.reason}>
+          {status.text}
         </p>
       )}
       {hubError !== null && (
@@ -541,14 +562,14 @@ export function KeybindingsSection() {
             // rollback message's own retry is connection-change-driven.
             // Disabled while hubLoading so a double-click cannot double-fire
             // the refresh.
-            <button
-              type="button"
-              className={CLASS.actionButton}
+            <Button
+              variant="quiet"
+              size="xs"
               disabled={hubLoading}
               onClick={() => void keybindingsStore.getState().refreshOverrides()}
             >
               Retry
-            </button>
+            </Button>
           )}
         </p>
       )}
@@ -561,7 +582,9 @@ export function KeybindingsSection() {
           </p>
           <ul className={CLASS.warningList}>
             {warnings.map((warning) => (
-              <li key={warning.message}>{warning.message}</li>
+              <li key={warning.message} data-reason={warning.reason}>
+                {warning.message}
+              </li>
             ))}
           </ul>
         </div>

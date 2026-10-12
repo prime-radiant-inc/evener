@@ -53,15 +53,15 @@ describe("AgentsSection", () => {
   test("shows an error message on failure", () => {
     render(<AgentsSection sectionId="agents" useOverview={fixture({ error: "network down" })} />);
     // error is converted via friendlyErrorMessage: raw strings like "network down" become the generic message
-    expect(screen.getByText(/Failed to load: Something went wrong/)).toBeTruthy();
+    expect(screen.getByRole("alert")).toBeTruthy();
     // Assert the raw string no longer appears
     expect(screen.queryByText(/network down/)).toBeNull();
   });
 
-  test("empty state: 'No agents discovered.'", () => {
+  test("an empty agent list shows the empty state", () => {
     const data: SettingsOverviewResponse = { agents: [] };
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
-    expect(screen.getByText("No agents discovered.")).toBeTruthy();
+    expect(screen.getByTestId("empty-state")).toBeTruthy();
   });
 
   test("an agent with an editPath renders the standard open affordance: 'open in editor', target=_blank, no opener access", () => {
@@ -94,7 +94,7 @@ describe("AgentsSection", () => {
 
   test("the open-in-editor anchor rides beside the agent name, not the row's far edge", () => {
     expect(css).not.toMatch(/\.row\s*\{[^}]*justify-content:\s*space-between/);
-    expect(css).toMatch(/\.builtin\s*\{[^}]*margin-left:\s*auto/);
+    expect(css).toMatch(/\.trailing\s*\{[^}]*margin-left:\s*auto/);
   });
 });
 

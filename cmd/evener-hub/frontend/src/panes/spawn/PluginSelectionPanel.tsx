@@ -8,8 +8,8 @@ import {
   selectNoPlugins,
   setPluginSelected,
 } from "@evener/appwire-client";
-import type { ReactElement } from "react";
-import { Button, Switch } from "../../widgets";
+import { type ReactElement, useState } from "react";
+import { Button, Disclosure, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./pluginSelection.module.css";
 
@@ -60,6 +60,7 @@ export function PluginSelectionPanel({
   onSelectionChange,
   onRetry,
 }: PluginSelectionPanelProps): ReactElement {
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const selectedNames = selection.mode === "explicit" ? new Set(selection.names) : null;
   const issueNames =
     selectedNames ?? new Set(preview.plugins.filter((plugin) => plugin.selected).map((plugin) => plugin.name));
@@ -99,20 +100,25 @@ export function PluginSelectionPanel({
       </div>
 
       {diagnostics.length > 0 && (
-        <details className={CLASS.diagnostics}>
-          <summary>
-            {diagnostics.length} preview diagnostic{diagnostics.length === 1 ? "" : "s"} · Show details
-          </summary>
-          <ul>
-            {diagnostics.map((diagnostic) => (
-              <li key={`${diagnostic.name ?? ""}:${diagnostic.path ?? ""}:${diagnostic.message}`}>
-                {diagnostic.name && <strong>{diagnostic.name}: </strong>}
-                {diagnostic.message}
-                {diagnostic.path && !diagnostic.message.includes(diagnostic.path) && <span> ({diagnostic.path})</span>}
-              </li>
-            ))}
-          </ul>
-        </details>
+        <div className={CLASS.diagnostics}>
+          <Disclosure
+            open={diagnosticsOpen}
+            onOpenChange={setDiagnosticsOpen}
+            summary={`${diagnostics.length} preview diagnostic${diagnostics.length === 1 ? "" : "s"} · Show details`}
+          >
+            <ul>
+              {diagnostics.map((diagnostic) => (
+                <li key={`${diagnostic.name ?? ""}:${diagnostic.path ?? ""}:${diagnostic.message}`}>
+                  {diagnostic.name && <strong>{diagnostic.name}: </strong>}
+                  {diagnostic.message}
+                  {diagnostic.path && !diagnostic.message.includes(diagnostic.path) && (
+                    <span> ({diagnostic.path})</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Disclosure>
+        </div>
       )}
 
       <div className={CLASS.list} data-testid="plugin-selection-list">

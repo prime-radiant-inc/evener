@@ -496,6 +496,44 @@ export interface DelegateStopResponse {
 export interface DeletionSkip {
   id: string;
   reason: string;
+  /**
+   * Kind classifies the skip structurally: SkipKindLive, or empty for any
+   * other reason, which Reason then explains.
+   */
+  kind?: string;
+}
+
+export interface DevicePairingApproveParams {
+  invitation: string;
+  publicKey: string;
+}
+
+export interface DevicePairingClaim {
+  publicKey: string;
+  client: string;
+  comparison: string;
+}
+
+export interface DevicePairingCreateParams {
+  origin: string;
+  tailnet: boolean;
+}
+
+export interface DevicePairingInvitation {
+  invitation: string;
+  origin: string;
+  tailnet: boolean;
+  expiresAt: number;
+}
+
+export interface DevicePairingParams {
+  invitation: string;
+}
+
+export interface DevicePairingStatus {
+  state: string;
+  claims: DevicePairingClaim[];
+  approvedKey?: string;
 }
 
 export interface DiagnosticCause {
@@ -591,6 +629,13 @@ export interface EvenerDelegateInfo {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  /**
+   * LatestIntent is the open generation's newest stated tool-call intent
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the row's display line, the same Excerpt-bounded value the read
+   * projects. Empty whenever no run is open, and absent from older daemons.
+   */
+  latestIntent?: string;
   runningForMs?: number;
   quietForMs?: number;
   durationMs?: number;
@@ -2921,6 +2966,11 @@ export interface ProjectDeleteResponse {
 export interface ProjectDeleteSkip {
   id: string;
   reason: string;
+  /**
+   * Kind classifies the skip structurally: SkipKindLive, or empty for any
+   * other reason, which Reason then explains.
+   */
+  kind?: string;
 }
 
 export interface ProjectsRecentParams {
@@ -3327,6 +3377,14 @@ export interface SessionDelegate {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  /**
+   * LatestIntent is the open generation's newest stated tool-call intent
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the controller's live value when non-empty, else the folded journal
+   * value — the same join the pushed frame applies, so the read and the
+   * frame agree for every row state. Absent from older daemons.
+   */
+  latestIntent?: string;
   usage?: EvenerUsage;
   worktree?: JobActivityWorktree;
 }
@@ -4683,6 +4741,10 @@ export const METHOD_NAMES = [
   "evener/path/validate",
   "evener/git/head",
   "evener/mobile/pairing",
+  "evener/devicePairing/create",
+  "evener/devicePairing/read",
+  "evener/devicePairing/approve",
+  "evener/devicePairing/cancel",
   "evener/navigation/read",
   "evener/favorite/set",
   "evener/archive/set",
@@ -4993,6 +5055,10 @@ export interface MethodTypes {
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
   "evener/git/head": { params: GitHeadParams; result: GitHeadResponse };
   "evener/mobile/pairing": { params: MobilePairingParams; result: MobilePairingResponse };
+  "evener/devicePairing/create": { params: DevicePairingCreateParams; result: DevicePairingInvitation };
+  "evener/devicePairing/read": { params: DevicePairingParams; result: DevicePairingStatus };
+  "evener/devicePairing/approve": { params: DevicePairingApproveParams; result: DevicePairingStatus };
+  "evener/devicePairing/cancel": { params: DevicePairingParams; result: DevicePairingStatus };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
   "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
   "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };

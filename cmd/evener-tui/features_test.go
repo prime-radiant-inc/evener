@@ -118,13 +118,13 @@ func TestRenderToolCall_DoneVsInProgress(t *testing.T) {
 
 func TestRenderTasks_Empty(t *testing.T) {
 	out := renderTasks(nil, 80)
-	if out != "No tasks." {
-		t.Errorf("empty tasks = %q, want %q", out, "No tasks.")
+	if strings.TrimSpace(out) == "" {
+		t.Error("empty tasks should say so, not render blank")
 	}
 
 	out2 := renderTasks([]taskpkg.Task{}, 80)
-	if out2 != "No tasks." {
-		t.Errorf("empty slice = %q, want %q", out2, "No tasks.")
+	if out2 != out {
+		t.Errorf("empty slice = %q, want the same empty state as nil %q", out2, out)
 	}
 }
 

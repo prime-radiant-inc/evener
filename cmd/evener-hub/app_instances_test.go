@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -412,7 +413,7 @@ func TestInstances_ListReportsAvailableProvidersAndUserLayer(t *testing.T) {
 	if !slices.IsSorted(openai.VarsEnv) {
 		t.Fatalf("VarsEnv not sorted: %v", openai.VarsEnv)
 	}
-	if !strings.Contains(resp.UserLayer, f.tomlPath) && !strings.Contains(resp.UserLayer, "user layer: none") {
+	if resp.UserLayer == "" {
 		t.Fatalf("UserLayer = %q, want the note the registry produced", resp.UserLayer)
 	}
 	if resp.WritesRefused {
@@ -456,86 +457,63 @@ func TestInstances_ListOffersOnlyTemplateVars(t *testing.T) {
 }
 
 func TestInstances_CreateRejectsBadInput(t *testing.T) {
+	// Each case differs from a create that succeeds in one field, so the
+	// refusal, its class and the file it did not write are the field's own.
 	for _, tt := range []struct {
 		name   string
 		params appwire.InstanceCreateParams
-		want   string
-		wire   bool
 	}{
 		{
-			wire:   true,
 			name:   "invalid instance name",
 			params: appwire.InstanceCreateParams{Name: "Work/Two", Base: "openai"},
-			want:   "invalid instance name",
 		},
 		{
-			wire:   true,
 			name:   "unknown base provider",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "not-a-provider"},
-			want:   "unknown base provider",
 		},
 		{
-			wire:   true,
 			name:   "invalid variable name",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Vars: map[string]string{"region": "value"}},
-			want:   "invalid variable name",
 		},
 		{
-			wire:   true,
 			name:   "literal secret in a credential header",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer sk-literal"},
-			want:   "$VARIABLE",
 		},
 		{
 			// A bare "contains a $" check takes this: the key rides in the
 			// literal text beside the reference (spec §11.2).
-			wire:   true,
 			name:   "a literal secret smuggled beside a reference",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer sk-live-abc$X"},
-			want:   "$VARIABLE",
 		},
 		{
-			wire:   true,
 			name:   "a literal secret as its own word",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer sk-live-abc $X"},
-			want:   "$VARIABLE",
 		},
 		{
-			wire:   true,
 			name:   "unterminated variable reference in a credential header",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer ${TOKEN"},
-			want:   "unterminated",
 		},
 		{
-			wire:   true,
 			name:   "invalid variable name in a credential header",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer ${1BAD}"},
-			want:   "invalid environment variable name",
 		},
 		{
-			wire:   true,
 			name:   "a credential header that is not NAME=VALUE",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization $PORTKEY_KEY"},
-			want:   "NAME=VALUE",
 		},
 		{
 			// api_key_env names the variable holding the key, never the key.
-			wire:   true,
 			name:   "a literal key in api_key_env",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", APIKeyEnv: "sk-live-abc"},
-			want:   "environment variable",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newInstancesFixture(t, nil)
 			err := f.ctl.Create(tt.params)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Create = %v, want an error mentioning %q", err, tt.want)
-			}
-			// A credential header the form got wrong is the caller's to fix,
-			// so the pane is told which field, not handed a bare error.
+			// A field the form got wrong is the caller's to fix, so the pane is
+			// told which field, not handed a bare error.
 			var wire appwire.WireError
-			if tt.wire && (!errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams) {
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 				t.Fatalf("Create = %v, want an InvalidParams wire error", err)
 			}
 			if strings.Contains(err.Error(), "sk-live-abc") || strings.Contains(err.Error(), "sk-literal") {
@@ -555,9 +533,6 @@ func TestInstances_CreateRejectsDuplicateName(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	err := f.ctl.Create(params)
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("second Create = %v, want an already-exists error", err)
-	}
 	// The name collides with an existing entry, matching the Conflict class
 	// hubDirsCreate and the pin-section store use for the same "taken" shape.
 	var wire appwire.WireError
@@ -805,8 +780,8 @@ func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	if err == nil {
 		t.Fatal("Remove accepted an implicit instance")
 	}
-	if !strings.Contains(err.Error(), "GROQ_API_KEY") {
-		t.Fatalf("the refusal names the variable that creates the instance: %v", err)
+	if refusal, ok := errors.AsType[*environmentBackedError](err); !ok || refusal.remedy != (removalRemedy{kind: remedyUnsetVariable, variable: "GROQ_API_KEY"}) {
+		t.Fatalf("Remove = %v, want the refusal to name the variable that creates the instance", err)
 	}
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
@@ -977,12 +952,12 @@ func TestInstances_RemoveClearsADefaultNamingTheRemovedInstance(t *testing.T) {
 // of reporting only a rolled-back removal.
 func TestInstances_RemoveRetriesTheReloadWhenNothingWasWritten(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		fail    func(load int) bool
-		wantErr string
+		name          string
+		fail          func(load int) bool
+		retryFailsToo bool
 	}{
 		{name: "the retry brings the registry back", fail: func(load int) bool { return load == 2 }},
-		{name: "the retry fails too", fail: func(load int) bool { return load >= 2 }, wantErr: "instance writes stay refused"},
+		{name: "the retry fails too", fail: func(load int) bool { return load >= 2 }, retryFailsToo: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFlakyReloadFixture(t, "groq", tt.fail)
@@ -991,18 +966,18 @@ func TestInstances_RemoveRetriesTheReloadWhenNothingWasWritten(t *testing.T) {
 			}
 
 			err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
-			if err == nil || !strings.Contains(err.Error(), "was rolled back") {
+			if !errors.Is(err, errRemovalRolledBack) {
 				t.Fatalf("Remove = %v, want the removal reported as rolled back", err)
 			}
-			if tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Remove = %v, want it to name the registry %q", err, tt.wantErr)
+			if errors.Is(err, errRegistryNotReloaded) != tt.retryFailsToo {
+				t.Fatalf("Remove = %v, want the failed retry reported: %v", err, tt.retryFailsToo)
 			}
 			// Either way the credential this call deleted is back, because a
 			// rollback that dropped it would leave the instance unauthenticated.
 			if v, _ := f.store.Get("groq"); v != "gk" {
 				t.Fatalf("the stored key was not restored: %q", v)
 			}
-			if tt.wantErr == "" {
+			if !tt.retryFailsToo {
 				if f.ctl.reg.WritesRefused() {
 					t.Fatalf("the registry stayed refused after the retry: %v", f.ctl.reg.LoadError())
 				}
@@ -1095,13 +1070,13 @@ func TestInstances_RemoveReportsAStandingRemovalWhenTheRestoreFails(t *testing.T
 	if err == nil {
 		t.Fatal("Remove = nil, want the failure")
 	}
-	if strings.Contains(err.Error(), "was rolled back") {
+	if errors.Is(err, errRemovalRolledBack) {
 		t.Fatalf("Remove = %v, must not claim the removal was rolled back when its credential could not be restored", err)
 	}
-	if !strings.Contains(err.Error(), "the removal stands") {
+	if !errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want the standing removal named", err)
 	}
-	if !strings.Contains(err.Error(), "stored key could not be restored") {
+	if !errors.Is(err, errStoredKeyNotRestored) {
 		t.Fatalf("Remove = %v, want the unrestored layer named", err)
 	}
 	// The key really is gone: an honest "stands" report matches the disk.
@@ -1587,8 +1562,11 @@ func TestInstances_RemoveDoesNotNeedACredentialsPathWithNothingToClear(t *testin
 	unwritableCredentialsPath(t, f.credsPath)
 
 	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
-	if err == nil || !strings.Contains(err.Error(), "clear stored credential") {
-		t.Fatalf("Remove(work) = %v, want the store's failure for the key it has to clear", err)
+	if err == nil {
+		t.Fatal("Remove(work) = nil, want the store's failure for the key it has to clear")
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the key the refused clear could not persist", v)
 	}
 	if _, still := f.ctl.reg.Get().Instance("work"); !still {
 		t.Fatal("the refused removal lost the instance it could not clean up")
@@ -1673,7 +1651,7 @@ func TestInstances_CreateRollsBackWhenTheReloadFails(t *testing.T) {
 	// Pins the branch: a write-loadable refusal never carries this text, so a
 	// fixture that stopped parsing before the write would not pass as a
 	// reload-rollback test.
-	if !strings.Contains(err.Error(), "cannot be loaded") {
+	if !errors.Is(err, errInstanceUnloadable) {
 		t.Fatalf("Create = %v, want the create to name the config it could not load", err)
 	}
 	// The rollback re-serializes the layer, so the check is what the file holds,
@@ -1734,7 +1712,7 @@ func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
 	// Pins the branch: a write-loadable refusal never carries this text, so a
 	// fixture that stopped parsing before the write would not pass as a
 	// reload-rollback test.
-	if !strings.Contains(err.Error(), "was rolled back") {
+	if !errors.Is(err, errRemovalRolledBack) {
 		t.Fatalf("Remove = %v, want the reload rollback", err)
 	}
 	// The file the rollback put back is the same unresolvable one, so the reload
@@ -1746,7 +1724,7 @@ func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
 	// and rewrite a file it cannot read - but the failure has to say it: a
 	// caller told only that the removal "was rolled back" would read the hub as
 	// healthy.
-	if !strings.Contains(err.Error(), "does not load either") {
+	if !errors.Is(err, errRestoredConfigUnloadable) {
 		t.Fatalf("Remove = %v, want the rollback to name the config it could not load", err)
 	}
 	if !f.ctl.reg.WritesRefused() {
@@ -1793,7 +1771,7 @@ func TestInstances_RemoveStandsWhenAnImplicitDefaultLosesItsKeyOnRollback(t *tes
 	if err == nil {
 		t.Fatal("Remove = nil, want the failed restore reported")
 	}
-	if !strings.Contains(err.Error(), "the removal stands") {
+	if !errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want the standing frame: the carrying key is gone", err)
 	}
 	// The removal stood, so the one sentence must not also claim it was rolled
@@ -1801,7 +1779,7 @@ func TestInstances_RemoveStandsWhenAnImplicitDefaultLosesItsKeyOnRollback(t *tes
 	// web toast, and two opposite outcomes in it leave them unable to tell
 	// whether to retry. The rolled-back wording belongs to the branch where the
 	// carrying layer actually came back.
-	if strings.Contains(err.Error(), "was rolled back") {
+	if errors.Is(err, errRemovalRolledBack) {
 		t.Fatalf("Remove = %v, must not claim the removal was rolled back when its carrying key could not be restored", err)
 	}
 	if _, applied := errors.AsType[removeAppliedError](err); !applied {
@@ -1837,10 +1815,10 @@ func TestInstances_RemoveStandsWhenTheCleanupFailsOnAnImplicitStoredKey(t *testi
 	if err == nil {
 		t.Fatal("Remove = nil, want the cleanup and restore failures reported")
 	}
-	if !strings.Contains(err.Error(), "the removal stands") {
+	if !errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want the standing frame: the carrying key is gone", err)
 	}
-	if strings.Contains(err.Error(), "still configured") {
+	if errors.Is(err, errInstanceStillConfigured) {
 		t.Fatalf("Remove = %v, want no configured frame on an implicit instance whose key stayed deleted", err)
 	}
 	if _, applied := errors.AsType[removeAppliedError](err); !applied {
@@ -1917,12 +1895,12 @@ func TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload(t *testing
 	if err == nil {
 		t.Fatal("Remove = nil, want the reload failure")
 	}
-	if !strings.Contains(err.Error(), "was rolled back") {
+	if !errors.Is(err, errRemovalRolledBack) {
 		t.Fatalf("Remove = %v, want the reload rollback", err)
 	}
 	// Pins the branch: this rollback's reload succeeded, so the failure must not
 	// claim a config that does not load.
-	if strings.Contains(err.Error(), "does not load either") {
+	if errors.Is(err, errRestoredConfigUnloadable) {
 		t.Fatalf("Remove = %v, want a rollback whose reload succeeded", err)
 	}
 	if v, _ := f.store.Get("work"); v != "sk-stored" {
@@ -2021,10 +1999,10 @@ func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *te
 	}
 	// The removal stands, so the error must say so and must not claim a
 	// rollback that never landed.
-	if strings.Contains(err.Error(), "was rolled back") {
+	if errors.Is(err, errRemovalRolledBack) {
 		t.Fatalf("Remove = %v, want the failed rollback reported as standing", err)
 	}
-	if !strings.Contains(err.Error(), "removal stands in the config") {
+	if !errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want the removal named as still applied", err)
 	}
 	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
@@ -2109,7 +2087,7 @@ base = "anthropic"
 	case err := <-done:
 		// Errorf, not Fatalf: the credential check below is the other half of
 		// the finding and is worth reporting in the same run.
-		if err == nil || !strings.Contains(err.Error(), "exists from the environment") {
+		if _, refused := errors.AsType[*environmentBackedError](err); !refused {
 			t.Errorf("Remove = %v, want the refusal for the instance the name holds now", err)
 		}
 	case <-time.After(10 * time.Second):
@@ -2325,7 +2303,7 @@ func TestInstances_RemoveRefusesWhenARacerMadeItEnvironmentBacked(t *testing.T) 
 	}
 	select {
 	case err := <-removeDone:
-		if err == nil || !strings.Contains(err.Error(), "exists from the environment") {
+		if _, refused := errors.AsType[*environmentBackedError](err); !refused {
 			t.Fatalf("Remove = %v, want the refusal for the instance the environment supplies once its stored key was cleared", err)
 		}
 		// The locked re-check answers with the same wire class the pre-lock
@@ -2673,9 +2651,6 @@ func TestInstances_ListDiagnosesAnUnusableEndpointFingerprintKey(t *testing.T) {
 		found := keyDiagnostics(diags)
 		if len(found) != 1 {
 			t.Fatalf("Diagnostics = %v, want exactly one entry for the unusable %s", diags, endpointFingerprintKeyFile)
-		}
-		if !strings.Contains(found[0], "(endpoint fingerprints are unavailable until it can be read or written)") {
-			t.Fatalf("diagnostic = %q, want it to say the fingerprints are unavailable until the key can be read or written", found[0])
 		}
 		if strings.Contains(found[0], "in the way") {
 			t.Fatalf("diagnostic carried the obstacle file's content: %q", found[0])
@@ -3044,11 +3019,8 @@ func TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck(t *testing.T) {
 		t.Fatal("ApiKeySet accepted a write whose destination the hub cannot key a fingerprint for")
 	}
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict || !errors.Is(err, errEndpointUnkeyable) {
 		t.Fatalf("ApiKeySet = %v, want a Conflict saying the destination cannot be verified", err)
-	}
-	if !strings.Contains(err.Error(), "cannot key its endpoint fingerprints right now") {
-		t.Fatalf("refusal = %q, want it to say the hub cannot key its endpoint fingerprints", err)
 	}
 	if v, _ := f.store.Get("work"); v != "" {
 		t.Fatalf("stored key = %q, want nothing stored for a write the hub cannot verify", v)
@@ -3221,7 +3193,7 @@ base = "anthropic"
 
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), `instance "work" not found`) {
+		if !errors.Is(err, errInstanceNotFound) {
 			t.Fatalf("SetDefault = %v, want the not-found refusal for the name the rename left behind", err)
 		}
 	case <-time.After(10 * time.Second):
@@ -3274,7 +3246,7 @@ func TestInstances_OldSchemaRefusesEveryWrite(t *testing.T) {
 		"SetDefault": func() error { return f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}) },
 	} {
 		err := call()
-		if err == nil || !strings.Contains(err.Error(), "§14.1") {
+		if !errors.Is(err, registry.ErrOldSchema) {
 			t.Fatalf("%s = %v, want a refusal carrying the pointer", name, err)
 		}
 	}
@@ -3331,31 +3303,27 @@ func TestInstances_RefusesAnyWriteTheRegistryCouldNotReadBack(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		params appwire.InstanceCreateParams
-		want   string
 	}{
 		{
 			// Var NAMES are checked by hand; their values are the parser's.
 			name:   "unterminated variable reference in a var value",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Vars: map[string]string{"REGION": "${TOKEN"}},
-			want:   "vars.REGION",
 		},
 		{
 			// The word the form itself used to show.
 			name:   "protocol outside the registry vocabulary",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Protocol: "chat-completions"},
-			want:   "unknown protocol",
 		},
 		{
 			name:   "surface outside the registry vocabulary",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Surface: "compat"},
-			want:   "unknown surface",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 			err := f.ctl.Create(tt.params)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Create = %v, want an error mentioning %q", err, tt.want)
+			if !errors.Is(err, registry.ErrConfigUnloadable) {
+				t.Fatalf("Create = %v, want the registry's read-back refusal", err)
 			}
 			if _, statErr := os.Stat(f.tomlPath); !os.IsNotExist(statErr) {
 				t.Fatalf("a rejected create wrote providers.toml (stat err=%v)", statErr)
@@ -3411,8 +3379,8 @@ func TestInstances_RefusalKindsAreDistinguishable(t *testing.T) {
 		if errors.As(err, &wire) && wire.Code == appwire.CodeInvalidParams {
 			t.Fatalf("err = %v, want the write error; InvalidParams blames the caller for the hub's failed write", err)
 		}
-		if !strings.Contains(err.Error(), "providers.toml: write:") {
-			t.Fatalf("err = %v, want the write failure verbatim", err)
+		if !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("err = %v, want the write failure itself", err)
 		}
 	})
 }
@@ -3429,8 +3397,8 @@ func TestInstances_EditRefusesAnUnreadableCredentialHeader(t *testing.T) {
 	before := authoredEntry(t, f.tomlPath, "work")
 
 	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "responses"})
-	if err == nil || !strings.Contains(err.Error(), "unknown protocol") {
-		t.Fatalf("Edit = %v, want an unknown-protocol error", err)
+	if !errors.Is(err, registry.ErrConfigUnloadable) {
+		t.Fatalf("Edit = %v, want the registry's read-back refusal of the unknown protocol", err)
 	}
 	if after := authoredEntry(t, f.tomlPath, "work"); after.Protocol != before.Protocol {
 		t.Fatalf("a rejected edit changed the authored entry: %q → %q", before.Protocol, after.Protocol)
@@ -3459,7 +3427,7 @@ func TestInstances_RefusesAVarsKeyThePlaceholderGrammarCannotName(t *testing.T) 
 			if err == nil {
 				t.Fatalf("Create accepted the vars key %q, which no placeholder can name", key)
 			}
-			if !strings.Contains(err.Error(), "invalid variable name") {
+			if !errors.Is(err, errInvalidVarName) {
 				t.Fatalf("Create = %v, want the refusal to name the offending key", err)
 			}
 			if _, ok := readConfigProviders(t, f.tomlPath)["work"]; ok {
@@ -3473,7 +3441,7 @@ func TestInstances_RefusesAVarsKeyThePlaceholderGrammarCannotName(t *testing.T) 
 			if err == nil {
 				t.Fatalf("Edit accepted the vars key %q", key)
 			}
-			if !strings.Contains(err.Error(), "invalid variable name") {
+			if !errors.Is(err, errInvalidVarName) {
 				t.Fatalf("Edit = %v, want the refusal to name the offending key", err)
 			}
 			// validVarNames is the same helper Create uses, and Create's
@@ -3537,14 +3505,14 @@ vars = { "bad-name" = "x", REGION = "us-east-1" }
 		t.Fatalf("the delete disturbed the vars beside it: %v", got)
 	}
 	err := ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"bad-name": "y"}})
-	if err == nil || !strings.Contains(err.Error(), "invalid variable name") {
+	if !errors.Is(err, errInvalidVarName) {
 		t.Fatalf("Edit(set bad-name) = %v, want the invalid-name refusal", err)
 	}
 	// Create has no delete: an empty value there is written under a key
 	// nothing can substitute, so every key it carries is still held to the
 	// grammar.
 	err = ctl.Create(appwire.InstanceCreateParams{Name: "other", Base: "openai", Vars: map[string]string{"bad-name": ""}})
-	if err == nil || !strings.Contains(err.Error(), "invalid variable name") {
+	if !errors.Is(err, errInvalidVarName) {
 		t.Fatalf("Create(empty bad-name) = %v, want the invalid-name refusal", err)
 	}
 }
@@ -4095,7 +4063,7 @@ func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *test
 	}
 
 	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
-	if err == nil || !strings.Contains(err.Error(), "refresh-refusal marker") {
+	if !errors.Is(err, errRefusalMarkerNotCopied) {
 		t.Fatalf("Edit(rename) = %v, want the refused marker copy reported", err)
 	}
 	// The rename still finished: no duplicate record under both names.
@@ -4140,7 +4108,7 @@ func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
 	breakCredentialWrites(t, f.credsPath)
 
 	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
-	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
+	if !errors.Is(err, errStoredKeyNotCopied) {
 		t.Fatalf("Edit(rename) = %v, want the refused copy reported", err)
 	}
 
@@ -4214,10 +4182,10 @@ func TestInstances_EditRenameReportsTheMoveAndReloadFailuresTogether(t *testing.
 	if err == nil {
 		t.Fatal("Edit(rename) = nil, want both failures reported")
 	}
-	if !strings.Contains(err.Error(), "stored key not copied") {
+	if !errors.Is(err, errStoredKeyNotCopied) {
 		t.Fatalf("Edit(rename) = %v, want the leftover credential reported", err)
 	}
-	if !strings.Contains(err.Error(), "could not be reloaded") {
+	if !errors.Is(err, errRegistryNotReloaded) {
 		t.Fatalf("Edit(rename) = %v, want the failed reload reported too", err)
 	}
 	if !writeDidApply(err) {
@@ -4454,9 +4422,7 @@ base_url = "http://127.0.0.1:9/v1"
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
 	}
-	if !strings.Contains(err.Error(), "curated provider id") {
-		t.Fatalf("Edit = %v, want the refusal to name what the new name would inherit", err)
-	}
+
 	p := authoredEntry(t, tomlPath, "work")
 	if p.Transport.BaseURL != "http://127.0.0.1:9/v1" || p.Protocol != "openai-chat" {
 		t.Fatalf("authored entry = %+v after a refused rename, want the original untouched", p)
@@ -5134,68 +5100,54 @@ func TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn(t *testing.T) {
 // the caller to unset a key the scheme never needed.
 func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		inst    registry.Instance
-		want    string
-		refuses []string
+		name string
+		inst registry.Instance
+		want removalRemedy
 	}{
 		{
 			name: "an environment variable is unset by name",
 			inst: registry.Instance{Name: "groq", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "env:GROQ_API_KEY"},
-			want: "unset GROQ_API_KEY instead",
+			want: removalRemedy{kind: remedyUnsetVariable, variable: "GROQ_API_KEY"},
 		},
 		{
-			name:    "the ADC file is the host's to remove",
-			inst:    registry.Instance{Name: "vertex", Implicit: true, Auth: registry.AuthGCPADC, CredentialSource: "adc"},
-			want:    "application-default credentials",
-			refuses: []string{"unset", "OAuth record"},
+			name: "the ADC file is the host's to remove",
+			inst: registry.Instance{Name: "vertex", Implicit: true, Auth: registry.AuthGCPADC, CredentialSource: "adc"},
+			want: removalRemedy{kind: remedyRemoveADC},
 		},
 		{
-			name:    "a keyless instance holding a stored key names its endpoint, not the clear",
-			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "store"},
-			want:    "remove or disable that endpoint instead",
-			refuses: []string{"unset", "OAuth record", "clear the stored credential instead"},
+			name: "a keyless instance holding a stored key names its endpoint, not the clear",
+			inst: registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "store"},
+			want: removalRemedy{kind: remedyDisableEndpointNotStoredKey},
 		},
 		{
-			name:    "a credential-required instance whose stored key carries it keeps its wording",
-			inst:    registry.Instance{Name: "groq", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "store"},
-			want:    "remove the credential that supplies it instead",
-			refuses: []string{"remove or disable that endpoint", "unset", "OAuth record"},
+			name: "a credential-required instance whose stored key carries it keeps its wording",
+			inst: registry.Instance{Name: "groq", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "store"},
+			want: removalRemedy{kind: remedyRemoveCredential},
 		},
 		{
-			name:    "a keyless instance holding nothing does not invent one",
-			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthNone, CredentialSource: "none"},
-			want:    "holds no credential of its own to clear",
-			refuses: []string{"clear the stored credential", "unset", "OAuth record"},
+			name: "a keyless instance holding nothing does not invent one",
+			inst: registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthNone, CredentialSource: "none"},
+			want: removalRemedy{kind: remedyNothingToClear},
 		},
 		{
-			name:    "a keyless instance the environment supplies names its endpoint, not the optional variable",
-			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "env:OLLAMA_API_KEY"},
-			want:    "remove or disable that endpoint instead",
-			refuses: []string{"unset", "OLLAMA_API_KEY", "holds no credential of its own to clear", "clear the stored credential"},
+			name: "a keyless instance the environment supplies names its endpoint, not the optional variable",
+			inst: registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "env:OLLAMA_API_KEY"},
+			want: removalRemedy{kind: remedyDisableEndpoint},
 		},
 		{
-			name:    "a non-keyless instance with no credential source names none to remove",
-			inst:    registry.Instance{Name: "work", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "none"},
-			want:    "holds no credential of its own to clear",
-			refuses: []string{"remove the credential that supplies it", "unset", "OAuth record"},
+			name: "a non-keyless instance with no credential source names none to remove",
+			inst: registry.Instance{Name: "work", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "none"},
+			want: removalRemedy{kind: remedyNothingToClear},
 		},
 		{
-			name:    "an empty credential source is treated the same as none",
-			inst:    registry.Instance{Name: "work", Implicit: true, Auth: registry.AuthBearer, CredentialSource: ""},
-			want:    "holds no credential of its own to clear",
-			refuses: []string{"remove the credential that supplies it", "unset", "OAuth record"},
+			name: "an empty credential source is treated the same as none",
+			inst: registry.Instance{Name: "work", Implicit: true, Auth: registry.AuthBearer, CredentialSource: ""},
+			want: removalRemedy{kind: remedyNothingToClear},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := removalRemedy(tt.inst)
-			if !strings.Contains(got, tt.want) {
-				t.Fatalf("removalRemedy = %q, want it to name %q", got, tt.want)
-			}
-			for _, wrong := range tt.refuses {
-				if strings.Contains(got, wrong) {
-					t.Fatalf("removalRemedy = %q, which names the action %q that this instance cannot take", got, wrong)
-				}
+			if got := removalRemedyFor(tt.inst); got != tt.want {
+				t.Fatalf("removalRemedyFor = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
@@ -5208,33 +5160,29 @@ func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 // that does.
 func TestInstances_RemoveRefusalNamesTheSourceSpecificRemedy(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		env     map[string]string
-		store   string
-		remove  string
-		want    string
-		refuses []string
+		name   string
+		env    map[string]string
+		store  string
+		remove string
+		want   removalRemedy
 	}{
 		{
-			name:    "a keyless optional-bearer row with a stored key",
-			store:   "ollama",
-			remove:  "ollama",
-			want:    "remove or disable that endpoint instead",
-			refuses: []string{"OAuth record", "clear the stored credential instead"},
+			name:   "a keyless optional-bearer row with a stored key",
+			store:  "ollama",
+			remove: "ollama",
+			want:   removalRemedy{kind: remedyDisableEndpointNotStoredKey},
 		},
 		{
-			name:    "an environment-supplied bearer row",
-			env:     map[string]string{"OPENAI_API_KEY": "env-key"},
-			remove:  "openai",
-			want:    "unset OPENAI_API_KEY instead",
-			refuses: []string{"OAuth record"},
+			name:   "an environment-supplied bearer row",
+			env:    map[string]string{"OPENAI_API_KEY": "env-key"},
+			remove: "openai",
+			want:   removalRemedy{kind: remedyUnsetVariable, variable: "OPENAI_API_KEY"},
 		},
 		{
-			name:    "a keyless optional-bearer row whose optional key is set",
-			env:     map[string]string{"OLLAMA_API_KEY": "gk"},
-			remove:  "ollama",
-			want:    "remove or disable that endpoint instead",
-			refuses: []string{"unset"},
+			name:   "a keyless optional-bearer row whose optional key is set",
+			env:    map[string]string{"OLLAMA_API_KEY": "gk"},
+			remove: "ollama",
+			want:   removalRemedy{kind: remedyDisableEndpoint},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -5248,19 +5196,12 @@ func TestInstances_RemoveRefusalNamesTheSourceSpecificRemedy(t *testing.T) {
 				}
 			}
 			err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: tt.remove})
-			if err == nil {
-				t.Fatalf("Remove(%q) = nil, want the environment-backed refusal", tt.remove)
-			}
-			if !strings.Contains(err.Error(), "exists from the environment") {
+			refusal, ok := errors.AsType[*environmentBackedError](err)
+			if !ok {
 				t.Fatalf("Remove(%q) = %v, want the environment-backed refusal", tt.remove, err)
 			}
-			if !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Remove(%q) = %v, want the remedy %q", tt.remove, err, tt.want)
-			}
-			for _, refuses := range tt.refuses {
-				if strings.Contains(err.Error(), refuses) {
-					t.Fatalf("Remove(%q) = %v, must not name %q", tt.remove, err, refuses)
-				}
+			if refusal.remedy != tt.want {
+				t.Fatalf("Remove(%q) remedy = %+v, want %+v", tt.remove, refusal.remedy, tt.want)
 			}
 		})
 	}

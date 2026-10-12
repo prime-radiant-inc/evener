@@ -874,6 +874,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.MCPInline = nil
 	subCfg.spawn.sessionID = ""
 	subCfg.spawn.parentJobActivity = nil
+	subCfg.spawn.parentJobIntent = nil
 	subCfg.spawn.parentDelegateID = ""
 	subCfg.spawn.delegateController = s.delegateController
 	subCfg.spawn.retirementController = s.retirementController.Load()
@@ -1361,12 +1362,31 @@ func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) 
 }
 
 func (s *Session) noteParentJobActivity(phase string) {
-	if s == nil || s.cfg.spawn.parentJobActivity == nil {
+	if s == nil {
 		return
 	}
-	parentID := s.cfg.spawn.parentDelegateID
-	if parentID != "" {
-		s.cfg.spawn.parentJobActivity(parentID, phase)
+	s.noteParentJob(s.cfg.spawn.parentJobActivity, phase)
+}
+
+// noteParentJobIntent reports the open generation's newest stated tool-call
+// intent to the child's own delegate row, or the explicit clear an execution
+// start states. Plain phase reports never touch this channel.
+func (s *Session) noteParentJobIntent(intent string) {
+	if s == nil {
+		return
+	}
+	s.noteParentJob(s.cfg.spawn.parentJobIntent, intent)
+}
+
+// noteParentJob hands a child-side observation to the per-child binding that
+// owns it: the own-session fence both reporting channels share — only a
+// session with a parent delegate row and a live report hook reports at all.
+func (s *Session) noteParentJob(report func(parentID string, value string), value string) {
+	if report == nil {
+		return
+	}
+	if parentID := s.cfg.spawn.parentDelegateID; parentID != "" {
+		report(parentID, value)
 	}
 }
 

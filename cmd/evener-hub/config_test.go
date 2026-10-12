@@ -665,7 +665,7 @@ func TestDaemonIdleConfigRejectsInteger(t *testing.T) {
 			if err == nil {
 				t.Fatalf("LoadConfig accepted the integer form %q", tc.body)
 			}
-			if !strings.Contains(err.Error(), "duration string") {
+			if !errors.Is(err, errIntegerDuration) {
 				t.Fatalf("error must name the duration-string form, got: %v", err)
 			}
 			if !strings.Contains(err.Error(), tc.got) {
@@ -859,8 +859,8 @@ func TestLoadConfig_HostProbeAndFreeSpaceKnobs(t *testing.T) {
 		if err == nil {
 			t.Fatal("a bare integer host_probe_timeout loaded, want the duration-string refusal")
 		}
-		if !strings.Contains(err.Error(), "host_probe_timeout must be a duration string") {
-			t.Fatalf("refusal %q does not name the duration-string rule", err)
+		if !errors.Is(err, errIntegerDuration) || !strings.Contains(err.Error(), "host_probe_timeout") {
+			t.Fatalf("refusal %q does not name the duration-string rule for host_probe_timeout", err)
 		}
 	})
 }

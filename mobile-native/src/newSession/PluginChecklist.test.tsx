@@ -3,7 +3,8 @@ import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
 import { palettes } from "../design/tokens";
-import { pressable, render, renderedText } from "../renderNative.testkit";
+import { markers } from "../markerTestUtils";
+import { offersButton, pressable, render, renderedText } from "../renderNative.testkit";
 import { sheetContext, TestSheet } from "./newSessionTestUtils";
 import { PluginChecklist } from "./PluginChecklist";
 
@@ -78,18 +79,17 @@ function mount(
 
 it("says it is checking the host's plugins until the first preview lands", async () => {
 	const page = mount();
-	expect(page.text()).toContain("Checking plugins on paradise-park…");
+	expect(markers(page.tree, "plugins-status")).toEqual(["checking"]);
+	expect(page.text()).toContain("paradise-park");
 	await debounce();
-	expect(page.text()).not.toContain("Checking plugins on paradise-park…");
+	expect(markers(page.tree, "plugins-status")).toEqual([]);
 });
 
 it("groups plugins by marketplace, as typed, with the rest under Other plugins", async () => {
 	const page = mount();
 	await debounce();
 	const text = page.text();
-	expect(text).toContain("superpowers-marketplace");
-	expect(text).toContain("Other plugins");
-	expect(text.indexOf("superpowers-marketplace")).toBeLessThan(text.indexOf("Other plugins"));
+	expect(markers(page.tree, "group")).toEqual(["marketplace-superpowers-marketplace", "other-plugins"]);
 	expect(text).toContain("Skills for disciplined work");
 	expect(text).toContain("38 skills · 3 agents");
 	expect(text).toContain("1 MCP server");
@@ -140,15 +140,14 @@ it("shows a failed preview's message with no button", async () => {
 	await debounce();
 	expect(page.text()).toContain("the plugin cache is locked");
 	expect(pressable(page.tree, "Retry plugin preview")).toBeUndefined();
-	expect(page.text()).not.toMatch(/Retry|Refresh|Reconnect/);
+	expect(offersButton(page.tree, /\b(Retry|Refresh|Reconnect)\b/)).toBe(false);
 });
 
 it("says plugins wait for a project, rather than checking forever", async () => {
 	const page = mount({ cwd: "" });
 	await debounce();
 	expect(page.calls).toEqual([]);
-	expect(page.text()).toContain("Plugins are listed once a project is chosen.");
-	expect(page.text()).not.toContain("Checking plugins");
+	expect(markers(page.tree, "plugins-status")).toEqual(["no-project"]);
 });
 
 it("shows the preview's diagnostics that belong to no listed plugin, in attention ink", async () => {

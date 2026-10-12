@@ -37,7 +37,7 @@ test("a background welcome pane does not replace the active session for setup", 
   client.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
   connectionStore.getState().connect(client);
   render(<Welcome params={{}} paneId="welcome" focused={false} />);
-  await screen.findByText("No session open");
+  await screen.findByTestId("empty-state");
   expect(window.location.pathname).toBe("/s/local:existing");
 });
 
@@ -78,9 +78,9 @@ function setRows(needsYou: NavigationSessionSummary[] = [], live: NavigationSess
   navigationStore.setState({ mode: "v3", clientGenerationID: "generation_test", resources });
 }
 
-test('shows "No session open"', () => {
+test("shows the empty state when no session is open", () => {
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
-  expect(screen.getByText("No session open")).toBeTruthy();
+  expect(screen.getByTestId("empty-state")).toBeTruthy();
 });
 
 test('offers a "New session" action', () => {
@@ -107,25 +107,28 @@ test('clicking "New session" navigates to /new', async () => {
   expect(window.location.pathname).toBe("/new");
 });
 
+function emptyStateHint(): Element | null {
+  return screen.getByTestId("empty-state").querySelector('[data-slot="hint"]');
+}
+
 test("shows params.note as a hint when provided", () => {
-  render(<Welcome params={{ note: "Starting a new session isn't available yet." }} paneId="welcome" focused={true} />);
-  expect(screen.getByText("Starting a new session isn't available yet.")).toBeTruthy();
+  render(<Welcome params={{ note: "note-from-params" }} paneId="welcome" focused={true} />);
+  expect(emptyStateHint()?.textContent).toBe("note-from-params");
 });
 
 test("shows no hint when params.note is absent", () => {
-  const { container } = render(<Welcome params={{}} paneId="welcome" focused={true} />);
-  expect(container.textContent).not.toMatch(/available yet/i);
+  render(<Welcome params={{}} paneId="welcome" focused={true} />);
+  expect(emptyStateHint()).toBeNull();
 });
 
 test("WelcomeContent does not render example prompts", () => {
   render(<WelcomeContent />);
-  expect(screen.queryByRole("button", { name: /Find and fix the root cause/i })).toBeNull();
-  expect(screen.queryByText("Try a task to get started")).toBeNull();
+  expect(screen.queryAllByRole("button")).toHaveLength(0);
 });
 
-test("WelcomeContent does not render the removed orientation copy", () => {
-  render(<WelcomeContent showNewSession showHints />);
-  expect(screen.queryByText(/read and edit the repository/i)).toBeNull();
+test("WelcomeContent renders no prose beyond the chord-hint footer", () => {
+  const { container } = render(<WelcomeContent showNewSession showHints />);
+  expect(container.querySelectorAll("p")).toHaveLength(1);
 });
 
 test("WelcomeContent renders New session only when showNewSession is true", () => {
@@ -137,9 +140,9 @@ test("WelcomeContent renders New session only when showNewSession is true", () =
 
 test("WelcomeContent renders chord hints only when showHints is true", () => {
   const { rerender } = render(<WelcomeContent />);
-  expect(screen.queryByText("command palette")).toBeNull();
+  expect(screen.queryAllByRole("term")).toHaveLength(0);
   rerender(<WelcomeContent showHints />);
-  expect(screen.getByText("command palette")).toBeTruthy();
+  expect(screen.getAllByRole("term")).toHaveLength(3);
 });
 
 // tbk8: a cold "/" with no restored pane layout (a fresh browser, or
@@ -199,11 +202,13 @@ test('clicking "Jump back in" opens that session\'s pane', async () => {
 // real <kbd> elements (platform-split "Mod"), so these assertions target the
 // description text next to each chord rather than the glyph itself.
 describe("chord hints", () => {
-  test("shows the command palette, focus composer, and next-needs-you chords", () => {
+  test("pairs the command palette, focus composer, and next-needs-you chords with a description each", () => {
     render(<Welcome params={{}} paneId="welcome" focused={true} />);
-    expect(screen.getByText(/^command palette$/i)).toBeTruthy();
-    expect(screen.getByText(/focus (the )?composer/i)).toBeTruthy();
-    expect(screen.getByText(/next session needing you/i)).toBeTruthy();
+    const chords = screen.getAllByRole("term").map((term) => [...term.querySelectorAll("kbd")].at(-1)?.textContent);
+    expect(chords).toEqual(["K", "I", "J"]);
+    const descriptions = screen.getAllByRole("definition");
+    expect(descriptions).toHaveLength(3);
+    for (const description of descriptions) expect(description.textContent).not.toBe("");
   });
 
   test("renders each chord through KeyHint's own <kbd> elements, not hand-rolled text", () => {
@@ -216,10 +221,5 @@ describe("chord hints", () => {
     const modifierKbds = kbds.filter((kbd) => kbd.textContent === "⌘" || kbd.textContent === "Ctrl");
     expect(modifierKbds.length).toBe(3);
     expect(kbds.map((kbd) => kbd.textContent)).toContain("?");
-  });
-
-  test('mentions that "?" inside the command palette shows all shortcuts', () => {
-    render(<Welcome params={{}} paneId="welcome" focused={true} />);
-    expect(screen.getByText(/shows all shortcuts/i)).toBeTruthy();
   });
 });

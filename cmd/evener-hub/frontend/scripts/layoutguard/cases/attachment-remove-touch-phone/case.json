@@ -1,0 +1,18 @@
+{
+  "name": "attachment-remove-touch-phone",
+  "description": "composer attachment tile on a phone: the remove control is visible at rest and meets the 44px tap floor, and its hit box never covers the thumbnail's centre or a neighbouring tile, so a tap on the image opens the lightbox instead of removing the attachment",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/composer/composer.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css"
+  ],
+  "viewport": { "width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": true },
+  "mutation": {
+    "declaration": "composer.module.css touch block: .removeSlot { top/right 0; translate(50%, -50%); z-index; opacity: 1 } (rule deleted entirely); separately, .imageTile { margin-top: calc(var(--tap-min) / 2) } deleted",
+    "verified": "2026-10-11",
+    "expect": "fail",
+    "note": "Rule deleted (also the pre-fix code): fails, a tap at the first thumbnail's centre lands on first-remove, not first-open. margin-top deleted: fails, the top edge of the remove control lands on BODY - clipped by the pane-standing wrapper."
+  }
+}

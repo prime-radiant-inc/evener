@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 )
 
@@ -69,64 +71,64 @@ func TestDetailsDrawerSharedNotesSection(t *testing.T) {
 	strip := func(s string) string { return ansiPattern.ReplaceAllString(s, "") }
 
 	// Capability unset: no section at all.
-	got := strip(detailsDrawer{Detail: hubSessionDetail{
+	unadvertised := hubSessionDetail{
 		Live:      true,
-		HumanNote: "h",
-	}}.View())
-	if strings.Contains(got, "SHARED NOTES") {
+		HumanNote: "human-note-fixture",
+	}
+	if got := strip(detailsDrawer{Detail: unadvertised}.View()); strings.Contains(got, "human-note-fixture") {
 		t.Fatalf("section rendered without the capability:\n%s", got)
+	}
+	if hint := sharedNotesEmptyHintFor(unadvertised); hint != sharedNotesNoHint {
+		t.Fatalf("unadvertised hint = %v, want none", hint)
 	}
 
 	// Capability set + live: notes, agent note, labeled link, no ghost.
-	got = strip(detailsDrawer{Detail: hubSessionDetail{
+	withContent := hubSessionDetail{
 		Live:      true,
-		HumanNote: "h",
-		AgentNote: "a",
+		HumanNote: "human-note-fixture",
+		AgentNote: "agent-note-fixture",
 		SessionURLs: []appwire.SessionURL{
-			{ID: "u1", URL: "https://x.test/", Label: "why"},
+			{ID: "url-id-fixture", URL: "https://x.test/", Label: "url-label-fixture"},
 		},
 		Capabilities: hubSessionCapabilities{SharedNotes: true},
-	}}.View())
-	for _, want := range []string{"SHARED NOTES", "You:    h", "Agent:  a", "Link:   why (https://x.test/) [u1]"} {
+	}
+	got := strip(detailsDrawer{Detail: withContent}.View())
+	for _, want := range []string{"human-note-fixture", "agent-note-fixture", "url-label-fixture", "https://x.test/", "url-id-fixture"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("drawer missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "Add a note with /notes") {
-		t.Fatalf("ghost trigger rendered with content:\n%s", got)
+	if hint := sharedNotesEmptyHintFor(withContent); hint != sharedNotesNoHint {
+		t.Fatalf("ghost hint offered with content: %v", hint)
+	}
+	linkOnly := withContent
+	linkOnly.HumanNote, linkOnly.AgentNote = "", ""
+	if hint := sharedNotesEmptyHintFor(linkOnly); hint != sharedNotesNoHint {
+		t.Fatalf("ghost hint offered beside a link: %v", hint)
 	}
 
 	// Capability set + live + empty: ghost trigger.
-	got = strip(detailsDrawer{Detail: hubSessionDetail{
+	if hint := sharedNotesEmptyHintFor(hubSessionDetail{
 		Live:         true,
 		Capabilities: hubSessionCapabilities{SharedNotes: true},
-	}}.View())
-	if !strings.Contains(got, "SHARED NOTES") || !strings.Contains(got, "Add a note with /notes") {
-		t.Fatalf("live-empty section missing ghost trigger:\n%s", got)
+	}); hint != sharedNotesAddHint {
+		t.Fatalf("live-empty hint = %v, want the /notes trigger", hint)
 	}
 
 	// Capability set + restart-required + empty: read-only copy, no trigger.
-	got = strip(detailsDrawer{Detail: hubSessionDetail{
+	if hint := sharedNotesEmptyHintFor(hubSessionDetail{
 		Live:         true,
 		State:        appwire.ThreadStatusRestartRequired,
 		Capabilities: hubSessionCapabilities{SharedNotes: true},
-	}}.View())
-	if !strings.Contains(got, "No shared notes") {
-		t.Fatalf("restart-required empty section missing inert copy:\n%s", got)
-	}
-	if strings.Contains(got, "Add a note with /notes") {
-		t.Fatalf("restart-required empty section rendered the edit trigger:\n%s", got)
+	}); hint != sharedNotesInertHint {
+		t.Fatalf("restart-required empty hint = %v, want the inert text", hint)
 	}
 
 	// Capability set + ended + empty: section renders inert text, no trigger.
-	got = strip(detailsDrawer{Detail: hubSessionDetail{
+	if hint := sharedNotesEmptyHintFor(hubSessionDetail{
 		Capabilities: hubSessionCapabilities{SharedNotes: true},
-	}}.View())
-	if !strings.Contains(got, "SHARED NOTES") || !strings.Contains(got, "No shared notes") {
-		t.Fatalf("ended-empty section missing inert copy:\n%s", got)
-	}
-	if strings.Contains(got, "Add a note with /notes") {
-		t.Fatalf("ended-empty section rendered the live trigger:\n%s", got)
+	}); hint != sharedNotesInertHint {
+		t.Fatalf("ended-empty hint = %v, want the inert text", hint)
 	}
 }
 
@@ -423,37 +425,27 @@ func TestHubNotesDispatchRefusesUnderRecoveryFence(t *testing.T) {
 // instead of issuing the RPC and surfacing the daemon's async Unavailable.
 // A session that merely cannot change notes keeps its existing refusal.
 func TestSharedNotesDispatchRequiresCapability(t *testing.T) {
-	lastSystemText := func(m hubModel) string {
-		return m.session.messages[len(m.session.messages)-1].Text
+	refused := func(t *testing.T, m *hubModel, run func(string) tea.Cmd, want sharedNotesRefusal) {
+		t.Helper()
+		before := len(m.session.messages)
+		if cmd := run("u1"); cmd != nil {
+			t.Fatal("shared-notes command returned a command, want refusal")
+		}
+		if got := m.sharedNotesRefusal(); got != want {
+			t.Fatalf("refusal = %v, want %v", got, want)
+		}
+		if len(m.session.messages) != before+1 || m.session.messages[before].Kind != transcript.MsgSystem {
+			t.Fatalf("refusal posted no session message: %+v", m.session.messages)
+		}
 	}
 
 	m := newSessionHubModel(nil)
 	m.detail.Live = true
-	if cmd := m.runHubNotes("hello"); cmd != nil {
-		t.Fatal("runHubNotes without the SharedNotes capability returned a command, want refusal")
-	}
-	if got := lastSystemText(m); got != "This source does not advertise shared notes." {
-		t.Fatalf("runHubNotes refusal = %q, want the missing-capability message", got)
-	}
-	if cmd := m.runHubURLRemove("u1"); cmd != nil {
-		t.Fatal("runHubURLRemove without the SharedNotes capability returned a command, want refusal")
-	}
-	if got := lastSystemText(m); got != "This source does not advertise shared notes." {
-		t.Fatalf("runHubURLRemove refusal = %q, want the missing-capability message", got)
-	}
+	refused(t, &m, m.runHubNotes, sharedNotesNotAdvertised)
+	refused(t, &m, m.runHubURLRemove, sharedNotesNotAdvertised)
 
 	ended := newSessionHubModel(nil)
 	ended.detail.Capabilities.SharedNotes = true
-	if cmd := ended.runHubNotes("hello"); cmd != nil {
-		t.Fatal("runHubNotes on an ended session returned a command, want refusal")
-	}
-	if got := lastSystemText(ended); got != "Note editing is not available for this session." {
-		t.Fatalf("ended-session /notes refusal = %q, want the existing session message", got)
-	}
-	if cmd := ended.runHubURLRemove("u1"); cmd != nil {
-		t.Fatal("runHubURLRemove on an ended session returned a command, want refusal")
-	}
-	if got := lastSystemText(ended); got != "URL removal is not available for this session." {
-		t.Fatalf("ended-session /url-remove refusal = %q, want the existing session message", got)
-	}
+	refused(t, &ended, ended.runHubNotes, sharedNotesSessionUnavailable)
+	refused(t, &ended, ended.runHubURLRemove, sharedNotesSessionUnavailable)
 }

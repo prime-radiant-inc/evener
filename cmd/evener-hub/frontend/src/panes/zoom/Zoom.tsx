@@ -12,7 +12,7 @@ import { type OpenPaneRecord, workspaceStore } from "../../shell/workspace";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
-import { Button, EmptyState, PaneScaffold } from "../../widgets";
+import { Button, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { ReadOnlyThreadContent } from "../transcript/ReadOnlyThreadContent";
@@ -117,7 +117,7 @@ function ScopeConversation({
           {admitted ? (
             <ReadOnlyThreadContent ref={scope.requestedRef} view={view} availability={snapshot?.summaryState} />
           ) : (
-            <EmptyState title="Loading transcript…" />
+            <Skeleton />
           )}
         </CascadeColumn>
       ) : (
@@ -268,7 +268,11 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       )}
       <div className={CLASS.body}>
         {mobile && <div className={CLASS.returnRow}>{returnAction}</div>}
-        {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}
+        {!path.ancestryKnown && (
+          <p className={CLASS.hint} data-testid="cascade-ancestry-incomplete">
+            Earlier ancestry is incomplete
+          </p>
+        )}
         <div ref={track} className={CLASS.track}>
           {scopes.map((scope, index) => (
             <ScopeConversation

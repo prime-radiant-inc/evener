@@ -24,6 +24,7 @@ import {
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { markers, withTestID } from "./markerTestUtils";
 import { projectConversation } from "./projectedRows";
 import { render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
@@ -161,18 +162,40 @@ function subagentRow(level: Level, delegate = subagent(), extra: Extra = {}) {
 	return { tree, openSubagent, row };
 }
 
+type Tree = ReturnType<typeof render>;
+
+/** Each subagent row's state, in order. */
+function subagentStates(tree: Tree): string[] {
+	return markers(tree, "subagent-row");
+}
+
+/** The one subagent row's state and its time, as the row writes it. */
+function stateText(tree: Tree): string {
+	const [node] = withTestID(tree, "subagent-row-state");
+	if (!node) throw new Error("no subagent state");
+	return textOf(node);
+}
+
+/** Whether the one row's activity is what the roster knows, the line a
+ * finished row shows until the coordinator's tree gives its outcome. */
+function saysRosterWord(tree: Tree): boolean {
+	return markers(tree, "subagent-row-activity").join() === "roster";
+}
+
 describe("a subagent row", () => {
 	it.each(LEVELS)("reads a running subagent as running, and opens it, at %s", (level) => {
 		const { tree, openSubagent } = subagentRow(level);
 		expect(renderedText(tree)).toContain("Fix race in tree settle");
-		expect(renderedText(tree)).toMatch(/running · \d+/);
+		expect(subagentStates(tree)).toEqual(["running"]);
+		expect(stateText(tree)).toMatch(/\d/);
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0]?.props.onPress());
 		expect(openSubagent).toHaveBeenCalledWith(RECEIPT.transcript_ref, "Fix race in tree settle");
 	});
 
 	it.each(LEVELS)("reads a failed subagent as failed at %s, though its call succeeded", (level) => {
 		const { tree } = subagentRow(level, FAILED);
-		expect(renderedText(tree)).toMatch(/failed · \d+/);
+		expect(subagentStates(tree)).toEqual(["failed"]);
+		expect(stateText(tree)).toMatch(/\d/);
 		expect(renderedText(tree)).toContain("go test exited 1 three times");
 	});
 });
@@ -198,8 +221,8 @@ describe("a stopped subagent", () => {
 	] as const)("reads as stopped after %s, at every level", (_why, status) => {
 		for (const level of LEVELS) {
 			const { tree } = subagentRow(level, stoppedBy(status));
-			expect(renderedText(tree)).toMatch(/stopped · \d+/);
-			expect(renderedText(tree)).not.toMatch(/failed/);
+			expect(subagentStates(tree)).toEqual(["stopped"]);
+			expect(stateText(tree)).toMatch(/\d/);
 			expect(rail(tree)).not.toBe(DANGER);
 		}
 	});
@@ -214,7 +237,8 @@ describe("an idle subagent", () => {
 	it.each(LEVELS)("reads as running, as the list and chip count it, at %s", (level) => {
 		const idle = subagent({ phase: "idle", status: "idle", terminal: false, resumable: true });
 		const { tree } = subagentRow(level, idle);
-		expect(renderedText(tree)).toMatch(/running · \d+/);
+		expect(subagentStates(tree)).toEqual(["running"]);
+		expect(stateText(tree)).toMatch(/\d/);
 	});
 });
 
@@ -235,7 +259,8 @@ describe("an inline subagent", () => {
 		expect(row.state).toBe("running");
 		// Only the subagent can say how long it has run: a row that read the
 		// call would say a bare "running".
-		expect(renderedText(tree)).toMatch(/running · \d+/);
+		expect(subagentStates(tree)).toEqual(["running"]);
+		expect(stateText(tree)).toMatch(/\d/);
 	});
 
 	it.each(LEVELS)("reads as stopped when its call settled as a tool error, at %s", (level) => {
@@ -244,7 +269,8 @@ describe("an inline subagent", () => {
 		const { tree, row } = subagentRow(level, stoppedBy("stopped"), { calls });
 		// The scenario: the call itself failed.
 		expect(row.state).toBe("failed");
-		expect(renderedText(tree)).toMatch(/stopped · \d+/);
+		expect(subagentStates(tree)).toEqual(["stopped"]);
+		expect(stateText(tree)).toMatch(/\d/);
 	});
 });
 
@@ -504,7 +530,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 	it("says Finished until the tree comes, then the report's opening line", async () => {
 		const client = hub();
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
-		expect(renderedText(screen)).toContain("Finished");
+		expect(saysRosterWord(screen)).toBe(true);
 		await act(async () => {});
 		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
 		expect(renderedText(screen)).not.toContain("The new test covers both orders.");
@@ -530,8 +556,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		act(() => screen.update(<Transcript delegates={[running]} />));
 		const done = finished("dlg_reported", { runGeneration: resumed.runGeneration });
 		act(() => screen.update(<Transcript delegates={[done]} />));
-		expect(renderedText(screen)).toContain("Finished");
-		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+		expect(saysRosterWord(screen)).toBe(true);
 		reply = next;
 		await act(async () => {
 			client.emitNotification(activityChangedNotification(COORDINATOR, ["delegates"]));
@@ -549,15 +574,15 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		}));
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Finished");
-		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+		expect(saysRosterWord(screen)).toBe(true);
 	});
 
 	it("says Stopped for a subagent the user stopped, with no tree to read", async () => {
 		const client = hub();
 		const screen = transcript({ delegates: [finished("dlg_stopped", { outcome: "cancelled" })] });
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Stopped");
+		expect(subagentStates(screen)).toEqual(["stopped"]);
+		expect(saysRosterWord(screen)).toBe(true);
 		expect(renderedText(screen)).not.toContain("Stopped by the user.");
 		expect(jobsLists(client)).toHaveLength(0);
 	});
@@ -569,7 +594,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
 		await act(async () => {});
 		expect(jobsLists(client)).toHaveLength(1);
-		expect(renderedText(screen)).toContain("Finished");
+		expect(saysRosterWord(screen)).toBe(true);
 		expect(screen.root.findAll((node) => String(node.type) === "ActivityIndicator")).toHaveLength(0);
 	});
 
@@ -635,7 +660,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const client = hub(() => answer);
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Finished");
+		expect(saysRosterWord(screen)).toBe(true);
 		answer = recorded;
 		await act(async () => {
 			client.emitNotification(activityChangedNotification(COORDINATOR, ["delegates"]));
@@ -704,8 +729,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const client = pushHub();
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Finished");
-		expect(renderedText(screen)).not.toContain("The frame carried this report.");
+		expect(saysRosterWord(screen)).toBe(true);
 		const reads = jobsLists(client).length;
 		expect(reads).toBeGreaterThan(0);
 		await act(async () => {

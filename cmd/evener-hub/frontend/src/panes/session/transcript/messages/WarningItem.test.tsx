@@ -37,6 +37,7 @@ test("a full payload (title, message, hint) renders all three", () => {
     />,
   );
   expect(screen.getByText("Sandbox blocked")).toBeTruthy();
+  expect(screen.getByTestId("warning-item").dataset.fallback).toBeUndefined();
   expect(screen.getByText("the sandbox blocked write access")).toBeTruthy();
   expect(screen.getByText("retry with --sandbox off")).toBeTruthy();
 });
@@ -44,7 +45,7 @@ test("a full payload (title, message, hint) renders all three", () => {
 test("message-only (no title, no hint) still renders, with a generic label", () => {
   render(<WarningItem item={item({ text: "something concerning happened" })} turn={turn} live={false} />);
   expect(screen.getByText("something concerning happened")).toBeTruthy();
-  expect(screen.getByText("Warning")).toBeTruthy(); // generic fallback label, no title given
+  expect(screen.getByTestId("warning-item").dataset.fallback).toBe("true"); // generic chip, no title given
   expect(screen.queryByTestId("warning-hint")).toBeNull();
 });
 
@@ -53,7 +54,7 @@ test("message-only (no title, no hint) still renders, with a generic label", () 
 test("title-only (no message, no hint) reads the title as its message, under the generic chip", () => {
   render(<WarningItem item={item({ text: "", warning: { title: "Heads up" } })} turn={turn} live={false} />);
   expect(screen.getByTestId("warning-message").textContent).toBe("Heads up");
-  expect(screen.getByText("Warning")).toBeTruthy();
+  expect(screen.getByTestId("warning-item").dataset.fallback).toBe("true");
   expect(screen.queryByTestId("warning-hint")).toBeNull();
 });
 
@@ -78,7 +79,7 @@ test("whitespace-only title/hint counts as absent, the same reading hasWarningTe
   // Blank strings are not real content: the generic "Warning" label stands
   // in for the blank title, and no hint line renders — matching
   // hasWarningText's trim check instead of WarningItem's own truthiness.
-  expect(screen.getByText("Warning")).toBeTruthy();
+  expect(screen.getByTestId("warning-item").dataset.fallback).toBe("true");
   expect(screen.getByText('{"threadId":"thr_t"}')).toBeTruthy();
   expect(screen.queryByTestId("warning-hint")).toBeNull();
 });
@@ -97,7 +98,7 @@ test("an object-valued title/hint (a malformed wire frame bypassing ItemModel's 
   ).not.toThrow();
   // Falls back to the generic label instead of stringifying/crashing on the
   // non-string value.
-  expect(screen.getByText("Warning")).toBeTruthy();
+  expect(screen.getByTestId("warning-item").dataset.fallback).toBe("true");
   expect(screen.queryByTestId("warning-hint")).toBeNull();
 });
 

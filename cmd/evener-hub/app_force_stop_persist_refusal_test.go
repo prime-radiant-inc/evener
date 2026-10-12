@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -54,7 +53,7 @@ func TestForceStopPersistFailureLeavesAdmissionNeutral(t *testing.T) {
 	restore := obstructRecoveryDirectory(t, stateRoot)
 	defer restore()
 	err = forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
-	if err == nil || !strings.Contains(err.Error(), "persist session recovery") {
+	if !errors.Is(err, errPersistSessionRecovery) {
 		t.Fatalf("persist failure did not surface as the stop's error: %v", err)
 	}
 	after := locks.RecoveryState(sessionID)
@@ -107,7 +106,7 @@ func TestResumeRefusesClaimlessRecoveryWithNonCanonicalWorkspaceClaim(t *testing
 	if spawned {
 		t.Fatal("resume launched a replacement while an unconfirmed live process claimed the group's workspace")
 	}
-	if err == nil || !strings.Contains(err.Error(), "resume owner exit is unconfirmed") {
+	if !errors.Is(err, errResumeOwnerExitUnconfirmed) {
 		t.Fatalf("non-canonical workspace claim did not keep the refusal: %v", err)
 	}
 }
@@ -147,7 +146,7 @@ func TestForceStopCommittedPersistErrorStillPublishesTheFence(t *testing.T) {
 	boom := errors.New("after-rename sync failed")
 	locks.SetRecoveryStoreFaultsForTest(nil, func() error { return boom })
 	err = forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
-	if err == nil || !strings.Contains(err.Error(), "persist session recovery") {
+	if !errors.Is(err, errPersistSessionRecovery) {
 		t.Fatalf("committed-with-error did not surface as the stop's error: %v", err)
 	}
 	after := locks.RecoveryState(sessionID)
@@ -205,7 +204,7 @@ func TestForceStopCommittedPersistErrorRejectsDescendantFences(t *testing.T) {
 	boom := errors.New("after-rename sync failed")
 	locks.SetRecoveryStoreFaultsForTest(nil, func() error { return boom })
 	err = forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + parent}, nil)
-	if err == nil || !strings.Contains(err.Error(), "persist session recovery") {
+	if !errors.Is(err, errPersistSessionRecovery) {
 		t.Fatalf("committed-with-error did not surface as the stop's error: %v", err)
 	}
 	parentAfter := locks.RecoveryState(parent)

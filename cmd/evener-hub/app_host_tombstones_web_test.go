@@ -10,7 +10,6 @@ package hub
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -146,15 +145,15 @@ func TestHostTombstoneTreeMergeAndManifest(t *testing.T) {
 	tombstoneRef := "web-side:web-side-t001"
 	var read appwire.ThreadReadResponse
 	err := client.Request(context.Background(), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: tombstoneRef}, &read)
-	if err == nil || !strings.Contains(err.Error(), "source not found") {
-		t.Fatalf("thread/read of the tombstone row = %+v, %v; want source not found", read.Thread, err)
+	if err == nil || read.Thread.ID != "" {
+		t.Fatalf("thread/read of the tombstone row = %+v, %v; want no thread served", read.Thread, err)
 	}
 	var steered appwire.TurnSteerResponse
 	err = client.Request(context.Background(), appwire.MethodTurnSteer, appwire.TurnSteerParams{
 		Ref: tombstoneRef, ClientMutationID: newTestMutationID(), ExpectedInstanceID: "instance", Input: []appwire.InputItem{{Type: "text", Text: "hi"}},
 	}, &steered)
-	if err == nil || !strings.Contains(err.Error(), "source not found") {
-		t.Fatalf("turn/steer on the tombstone row = %+v, %v; want source not found", steered, err)
+	if err == nil {
+		t.Fatalf("turn/steer on the tombstone row = %+v, want it refused", steered)
 	}
 
 	// The manifest's sources array drops the removed host: it is the

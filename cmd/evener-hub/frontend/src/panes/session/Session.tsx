@@ -37,8 +37,15 @@ import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
-import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
+import {
+  Button,
+  Cadence,
+  EmptyState,
+  Loader,
+  PaneScaffold,
+  type VirtualListHandle,
+  VisuallyHidden,
+} from "../../widgets";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
@@ -121,12 +128,16 @@ const DEGRADED_VERSION_EMPTY_HINT =
 // Evener version; other empty sessions invite their first message.
 function EmptyTranscript({ active, restartRequired }: { active: boolean; restartRequired: boolean }) {
   if (restartRequired) {
-    return <EmptyState title={DEGRADED_VERSION_EMPTY_TITLE} hint={DEGRADED_VERSION_EMPTY_HINT} />;
+    return (
+      <EmptyState title={DEGRADED_VERSION_EMPTY_TITLE} hint={DEGRADED_VERSION_EMPTY_HINT} reason="version-mismatch" />
+    );
   }
   if (active) {
-    return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
+    return (
+      <EmptyState title="Waiting for the first reply" hint="The agent has your message." reason="awaiting-reply" />
+    );
   }
-  return <EmptyState title="Send the first message" hint="This session hasn't started yet." />;
+  return <EmptyState title="Send the first message" hint="This session hasn't started yet." reason="no-turns" />;
 }
 
 // Failure-feedback convention: a USER-INITIATED action that fails surfaces via
@@ -167,7 +178,10 @@ function RestartRequiredNotice({
     }
   };
   return (
-    <div role="alert">
+    <div
+      role="alert"
+      data-reason={ownerRef ? "owner-retained" : resumeRequired ? "resume-required" : "version-mismatch"}
+    >
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
@@ -515,6 +529,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         <EmptyState
           title="This session was deleted"
           hint="Its transcript is gone. You can close this pane."
+          reason="deleted"
           action={
             <Button variant="quiet" onClick={handleCloseDeleted}>
               Close
@@ -534,15 +549,17 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         title={title}
         edgeFooter={edgeFooter}
       >
-        <EmptyState
-          title="Loading transcript…"
-          hint={
-            ref.startsWith("local:")
-              ? "If the session is unresponsive, you can stop its process to recover it."
-              : undefined
-          }
-          action={ref.startsWith("local:") ? <SessionForceStopRecovery sessionRef={ref} /> : undefined}
-        />
+        <div className={styles.loading}>
+          <Loader label="Loading transcript" />
+          {ref.startsWith("local:") && (
+            <>
+              <p className={styles.loadingHint}>
+                If the session is unresponsive, you can stop its process to recover it.
+              </p>
+              <SessionForceStopRecovery sessionRef={ref} />
+            </>
+          )}
+        </div>
       </PaneScaffold>
     );
   }
@@ -709,7 +726,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               !restartPending &&
               !controlsFor(model).send && <SessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />}
             {reconciliationFailed && (
-              <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
+              <div role="alert" data-testid="message-recovery-pending">
+                Message recovery has not completed. Sending will resume after recovery succeeds.
+              </div>
             )}
             <PendingChips sessionRef={ref} />
             {composerSource && <Composer ref={ref} paneId={paneId} source={composerSource} focused={paneFocused} />}

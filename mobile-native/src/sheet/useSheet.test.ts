@@ -43,7 +43,7 @@ describe("closing a sheet (spec 6)", () => {
 		expect(alertRequests).toHaveLength(1);
 		const [ask] = alertRequests;
 		expect(ask?.title).toBe("Discard this comment?");
-		expect(ask?.buttons?.map((button) => button.text)).toEqual(["Keep editing", "Discard"]);
+		expect(ask?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 		ask?.buttons?.[0]?.onPress?.();
 		expect(navigation.dispatch).not.toHaveBeenCalled();
 		ask?.buttons?.[1]?.onPress?.();

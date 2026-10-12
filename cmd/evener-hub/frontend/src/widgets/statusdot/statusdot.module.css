@@ -6,12 +6,42 @@
   border-radius: 50%;
 }
 
+/* Failed is shape-distinct from needs-you so the two never differ by hue
+ * alone: a 7px square turned 45deg, which fits the dot's 8px box. */
+.dot[data-shape="diamond"] {
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .dot {
-    /* the one motion this component ever plays: attention onset, when a
-     * state change (usually into needs-you) recolors the dot - same
-     * treatment as Cadence's dot (src/widgets/cadence/cadence.module.css). */
+    /* attention onset, when a state change (usually into needs-you)
+     * recolors the dot - same treatment as Cadence's dot
+     * (src/widgets/cadence/cadence.module.css). */
     transition: background-color var(--motion-duration-attention) var(--motion-easing-standard);
+  }
+
+  /* The working state's activity indicator: the one continuous motion the
+   * design system allows for agent liveness (design-system.md §5). The dot
+   * becomes an open alive ring that turns while the agent works. Under
+   * reduced motion none of this applies and working stays the static alive
+   * dot. Linear easing keeps the rotation's speed constant. .dot.working
+   * outranks the state -> family rules below, whose background would
+   * otherwise fill the ring into a solid disk. */
+  .dot.working {
+    box-sizing: border-box;
+    border: 1.5px solid var(--alive);
+    border-top-color: transparent;
+    background-color: transparent;
+    animation: statusDotSpin var(--motion-duration-activity) linear infinite;
+  }
+}
+
+@keyframes statusDotSpin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

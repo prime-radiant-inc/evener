@@ -3,9 +3,11 @@ import { Input } from "../../widgets/input";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 
-function LiveInput({ placeholder }: { placeholder?: string }) {
+function LiveInput({ placeholder, ariaLabel }: { placeholder?: string; ariaLabel?: string }) {
   const [value, setValue] = useState("");
-  return <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder} />;
+  return (
+    <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder={placeholder} aria-label={ariaLabel} />
+  );
 }
 
 export default function InputGallerySection() {
@@ -16,6 +18,10 @@ export default function InputGallerySection() {
         <div className={styles.row}>
           <p className={styles.rowLabel}>empty</p>
           <LiveInput placeholder="Search…" />
+        </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>aria-label, no visible label</p>
+          <LiveInput placeholder="Filter settings" ariaLabel="Filter settings" />
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>filled</p>

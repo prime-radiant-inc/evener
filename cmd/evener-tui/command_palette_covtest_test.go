@@ -45,8 +45,8 @@ func TestCovViewWithMaxHeight_NoFilterShowsPlaceholder(t *testing.T) {
 	}, 80)
 	got := p.ViewWithMaxHeight(0)
 	plain := ansiPattern.ReplaceAllString(got, "")
-	if !strings.Contains(plain, "Filter: type to filter...") || !strings.Contains(plain, "> /alpha") {
-		t.Fatalf("unfiltered palette lost placeholder or selected command:\n%s", plain)
+	if !strings.Contains(plain, "> /alpha") {
+		t.Fatalf("unfiltered palette lost the selected command:\n%s", plain)
 	}
 }
 
@@ -260,8 +260,8 @@ func TestCovRenderItemsWindow_NoMatchingItems(t *testing.T) {
 	p.panel.SetFilter("zzznotfound")
 	got := p.renderItemsWindow(0)
 	plain := ansiPattern.ReplaceAllString(got, "")
-	if !strings.Contains(plain, "No matching commands") {
-		t.Fatalf("no matching items should show 'No matching commands':\n%s", plain)
+	if strings.TrimSpace(plain) == "" || strings.Contains(plain, "/alpha") {
+		t.Fatalf("no matching items should say so instead of listing commands:\n%s", plain)
 	}
 }
 

@@ -140,7 +140,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   if (loadError !== null) {
     return (
       <section className={CLASS.page}>
-        <EmptyState title="Failed to load" hint={friendlyErrorMessage(loadError)} />
+        <EmptyState title="Failed to load" hint={friendlyErrorMessage(loadError)} reason="unavailable" />
       </section>
     );
   }

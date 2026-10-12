@@ -20,6 +20,7 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -311,6 +312,14 @@ func newHostTombstone(entry hostreg.Host, presenceEpoch uint64, rows []appwire.T
 	}
 }
 
+// Two of the record-shape refusals validateHostTombstones gives, as the
+// phrases their messages read: an effective entry naming something other than
+// its key, and a tombstone with no [generations] twin.
+var (
+	errTombstoneEntryNameMismatch = errors.New("entry names")
+	errTombstoneTwinMissing       = errors.New("high-water twin")
+)
+
 // validateHostTombstones checks the tombstones a hub.toml document carries
 // against the record shape this build writes: the record's name agrees with
 // its key, its effective entry validates under the same component-03 rules
@@ -332,7 +341,7 @@ func validateHostTombstones(tombstones map[string]HostTombstone, generations map
 			// is refused loudly rather than round-tripping a shape the hub can
 			// never produce, which would leave two disagreeing names in the
 			// durable file for every later reader.
-			return fmt.Errorf("tombstones[%q] entry names %q in its record", name, tombstone.Entry.Name)
+			return fmt.Errorf("tombstones[%q] %w %q in its record", name, errTombstoneEntryNameMismatch, tombstone.Entry.Name)
 		}
 		if err := validateHostEntry(tombstoneEntry(tombstone)); err != nil {
 			return fmt.Errorf("tombstones[%q] carries an invalid entry: %w", name, err)
@@ -366,7 +375,7 @@ func validateHostTombstones(tombstones map[string]HostTombstone, generations map
 			// retained high-water mark for the name"). A file carrying one
 			// without the other is not a shape this build writes — refuse it
 			// loudly, the reserved-namespace posture.
-			return fmt.Errorf("tombstones[%q] carries no generations[%q] high-water twin; refusing the unresolvable record", name, name)
+			return fmt.Errorf("tombstones[%q] carries no generations[%q] %w; refusing the unresolvable record", name, name, errTombstoneTwinMissing)
 		}
 		if mark.Generation != tombstone.Generation || mark.IncarnationID != tombstone.IncarnationID || mark.PresenceEpoch != tombstone.PresenceEpoch {
 			return fmt.Errorf("tombstones[%q] carries the triple (%d, %q, %d) while generations carries (%d, %q, %d); the two must agree",
