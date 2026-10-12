@@ -25,7 +25,6 @@ import {
   type TranscriptCoverageRow,
   type TranscriptHistoryMetaRow,
   type TranscriptItemRow,
-  type TranscriptRequestedRef,
   type TranscriptSessionMetadata,
   type TranscriptTurnRow,
   upgradeSessionCache,
@@ -130,29 +129,6 @@ export interface EntryWindow {
   serverCursor?: string;
 }
 
-export type EntryMigrationSource =
-  | { kind: "records"; ref: string }
-  | { kind: "current"; key: readonly [string, string] };
-
-export interface EntryMigrationRequest {
-  historyKey: string;
-  clearEpoch: number;
-  historyGeneration?: number;
-  source: EntryMigrationSource;
-  sessionMetadata?: TranscriptSessionMetadata;
-  // Pure conversion of the stored legacy value into keyed entry rows. Returning
-  // undefined marks the record undecodable and leaves its source intact.
-  convert: (
-    legacy: unknown,
-  ) => { items: readonly TranscriptItemRow<unknown>[]; turns?: readonly TurnModel[] } | undefined;
-}
-
-export type EntryMigrationOutcome =
-  | { outcome: "converted"; itemCount: number; turnCount: number; encodedBytes: number; removedBytes: number }
-  | { outcome: "skipped"; reason: "missing" | "undecodable" }
-  | { outcome: "refused"; reason: "clear-epoch" | "history-fence" | "capacity" }
-  | { outcome: "failed"; error: unknown };
-
 const CLEAR_EPOCH_KEY = "__clearEpoch";
 const AGGREGATE_META_KEY = "__aggregate";
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
@@ -167,7 +143,6 @@ const WRITE_STORES = [
   CURRENT_STORE,
   CURRENT_META_STORE,
 ] as const;
-const MIGRATION_STORES = WRITE_STORES;
 const CLEAR_STORES = [
   ENTRY_ITEM_STORE,
   ENTRY_TURN_STORE,
@@ -202,35 +177,6 @@ function sessionMetadataPayload(
     return undefined;
   }
   return { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion, cachedHeader };
-}
-
-// Migration merges retention metadata instead of replacing it: a compatible
-// legacy source must never regress a newer history's timestamps or drop its
-// aliases, because the TTL policy reads those timestamps in the same
-// transaction and could otherwise delete the freshly merged newer content.
-function mergeRequestedRefs(
-  previous: readonly TranscriptRequestedRef[] | undefined,
-  incoming: readonly TranscriptRequestedRef[],
-): TranscriptRequestedRef[] {
-  const byKey = new Map<string, TranscriptRequestedRef>();
-  for (const ref of previous ?? []) byKey.set(`${ref.clientId}\u0000${ref.ref}`, ref);
-  for (const ref of incoming) byKey.set(`${ref.clientId}\u0000${ref.ref}`, ref);
-  return [...byKey.values()];
-}
-
-function mergeSessionMetadata(
-  previous: TranscriptHistoryMetaRow,
-  incoming: TranscriptSessionMetadata,
-): SessionMetadataPayload {
-  return {
-    historyKey: previous.historyKey,
-    requestedRefs: mergeRequestedRefs(previous.requestedRefs, incoming.requestedRefs),
-    resolvedIdentity: previous.resolvedIdentity ?? incoming.resolvedIdentity,
-    savedAt: Math.max(previous.savedAt ?? 0, incoming.savedAt),
-    accessedAt: Math.max(previous.accessedAt ?? 0, incoming.accessedAt),
-    formatVersion: Math.max(previous.formatVersion ?? 0, incoming.formatVersion),
-    cachedHeader: previous.cachedHeader ?? incoming.cachedHeader,
-  };
 }
 
 function comparePosition(left: ThreadItemPosition | null, right: ThreadItemPosition | null): number {
@@ -827,148 +773,6 @@ export class SessionEntryCache {
         outcome: "committed",
         coverage: policy.protectedSurvived ? coverageResult.result : "not-extended",
         encodedBytes: policy.aggregateBytes,
-      };
-    } catch (error) {
-      try {
-        transaction?.abort();
-      } catch {
-        // The transaction may already have finished.
-      }
-      await complete?.catch(() => {});
-      return { outcome: "failed", error };
-    }
-  }
-
-  /**
-   * Convert one legacy record into entry rows and remove its source together
-   * in one transaction. Interrupted or aborted conversion aborts before any
-   * durable effect, so the source survives for retry. Records import as stale
-   * seeds: items and item-free turns only, never overlay, currentness or
-   * coverage. The durable Clear epoch fences the whole transaction.
-   */
-  async commitMigration(request: EntryMigrationRequest): Promise<EntryMigrationOutcome> {
-    if (
-      request.sessionMetadata &&
-      (request.sessionMetadata.historyKey !== request.historyKey ||
-        entryHistoryKey(request.sessionMetadata.resolvedIdentity) !== request.historyKey)
-    ) {
-      return { outcome: "failed", error: new Error("entry metadata does not match its resolved history identity") };
-    }
-    let transaction: IDBTransaction | undefined;
-    let complete: Promise<void> | undefined;
-    try {
-      const database = await this.#connection.open();
-      transaction = database.transaction([...MIGRATION_STORES], "readwrite");
-      complete = transactionCompletion(transaction);
-      void complete.catch(() => {});
-      const legacyMetaStore = transaction.objectStore(LEGACY_META_STORE);
-      const metaStore = transaction.objectStore(ENTRY_META_STORE);
-      const itemStore = transaction.objectStore(ENTRY_ITEM_STORE);
-      const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
-      const durableEpoch =
-        (await requestResult(legacyMetaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))
-          ?.epoch ?? 0;
-      if (durableEpoch !== request.clearEpoch) {
-        transaction.abort();
-        await complete.catch(() => {});
-        return { outcome: "refused", reason: "clear-epoch" };
-      }
-
-      const historyMeta = (await requestResult(
-        metaStore.get(request.historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
-      )) ?? { historyKey: request.historyKey, encodedBytes: 0, itemCount: 0 };
-      // Fence before touching the source: a migration captured before a delete
-      // is refused without removing the legacy source it would have converted.
-      if ((historyMeta.generation ?? 0) !== (request.historyGeneration ?? 0)) {
-        transaction.abort();
-        await complete.catch(() => {});
-        return { outcome: "refused", reason: "history-fence" };
-      }
-
-      let legacy: unknown;
-      let removedBytes = 0;
-      if (request.source.kind === "records") {
-        const record = await requestResult(transaction.objectStore(LEGACY_RECORDS_STORE).get(request.source.ref));
-        const sourceMeta = await requestResult(legacyMetaStore.get(request.source.ref));
-        if (record === undefined) {
-          await complete;
-          return { outcome: "skipped", reason: "missing" };
-        }
-        legacy = record;
-        removedBytes = encodedBytes(record) + (sourceMeta === undefined ? 0 : encodedBytes(sourceMeta));
-        transaction.objectStore(LEGACY_RECORDS_STORE).delete(request.source.ref);
-        legacyMetaStore.delete(request.source.ref);
-      } else {
-        const key = [...request.source.key];
-        const record = await requestResult(transaction.objectStore(CURRENT_STORE).get(key));
-        const sourceMeta = await requestResult(transaction.objectStore(CURRENT_META_STORE).get(key));
-        if (record === undefined) {
-          await complete;
-          return { outcome: "skipped", reason: "missing" };
-        }
-        legacy = record;
-        removedBytes = encodedBytes(record) + (sourceMeta === undefined ? 0 : encodedBytes(sourceMeta));
-        transaction.objectStore(CURRENT_STORE).delete(key);
-        transaction.objectStore(CURRENT_META_STORE).delete(key);
-      }
-
-      const converted = request.convert(legacy);
-      if (!converted) {
-        transaction.abort();
-        await complete.catch(() => {});
-        return { outcome: "skipped", reason: "undecodable" };
-      }
-      if (converted.items.some((row) => row.historyKey !== request.historyKey)) {
-        throw new Error("migration produced a different history identity");
-      }
-
-      const aggregateMeta = (await requestResult(
-        metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
-      )) ?? { historyKey: AGGREGATE_META_KEY, encodedBytes: 0 };
-      let historyBytes = historyMeta.encodedBytes;
-      let aggregateBytes = aggregateMeta.encodedBytes;
-      const written = await applyEntryRows(
-        itemStore,
-        turnStore,
-        request.historyKey,
-        converted.items,
-        converted.turns ?? [],
-      );
-      historyBytes += written.byteDelta;
-      aggregateBytes += written.byteDelta;
-      const mergedMetadata = request.sessionMetadata
-        ? mergeSessionMetadata(historyMeta, request.sessionMetadata)
-        : undefined;
-      if (mergedMetadata) {
-        const previousPayload = sessionMetadataPayload(historyMeta);
-        const nextPayload = mergedMetadata;
-        const metadataDelta =
-          (nextPayload ? encodedBytes(nextPayload) : 0) - (previousPayload ? encodedBytes(previousPayload) : 0);
-        historyBytes += metadataDelta;
-        aggregateBytes += metadataDelta;
-      }
-      metaStore.put({
-        ...historyMeta,
-        ...mergedMetadata,
-        historyKey: request.historyKey,
-        encodedBytes: historyBytes,
-        itemCount: historyMeta.itemCount + written.changedItems,
-      });
-      metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: aggregateBytes });
-      const policy = await this.#enforcePolicy(transaction, { kind: "entry", historyKey: request.historyKey });
-      if (policy.overCapacity) {
-        transaction.abort();
-        await complete.catch(() => {});
-        return { outcome: "refused", reason: "capacity" };
-      }
-      await complete;
-      this.#notifyWrites();
-      return {
-        outcome: "converted",
-        itemCount: converted.items.length,
-        turnCount: converted.turns?.length ?? 0,
-        encodedBytes: policy.aggregateBytes,
-        removedBytes,
       };
     } catch (error) {
       try {
@@ -1748,21 +1552,5 @@ export class SessionEntryCache {
     return rows
       .filter((row) => row.requestedRefs?.some((binding) => requested.has(binding.ref)))
       .map((row) => row.historyKey);
-  }
-
-  /** Source identities only, not checkpoint bodies, for explicit-open migration. */
-  async currentMigrationSources(ref: string): Promise<EntryMigrationSource[]> {
-    const database = await this.#connection.open();
-    const transaction = database.transaction(CURRENT_META_STORE, "readonly");
-    const complete = transactionCompletion(transaction);
-    const keys = await requestResult(transaction.objectStore(CURRENT_META_STORE).index("ref").getAllKeys(ref));
-    await complete;
-    const sources: EntryMigrationSource[] = [];
-    for (const key of keys) {
-      if (Array.isArray(key) && typeof key[0] === "string" && typeof key[1] === "string") {
-        sources.push({ kind: "current", key: [key[0], key[1]] });
-      }
-    }
-    return sources;
   }
 }

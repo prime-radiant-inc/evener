@@ -68,7 +68,6 @@ import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
 import { connectedClientPort, connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
-import { IDBConnection, requestResult, transactionCompletion } from "./idbConnection";
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
   type MutationAttachment,
@@ -86,15 +85,8 @@ import { trackProjectionWork } from "./projectionWork";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import {
-  entryHistoryKey,
-  SESSION_CACHE_DATABASE_NAME,
-  SESSION_CACHE_DATABASE_VERSION,
-  type TranscriptResolvedIdentity,
-  upgradeSessionCache,
-} from "./sessionCacheSchema";
-import { type EntryMigrationSource, SessionEntryCache } from "./sessionEntryCache";
-import { migrateLegacySession } from "./sessionEntryMigration";
+import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import { SessionEntryCache } from "./sessionEntryCache";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 import { type TranscriptReader, TranscriptRepository, type TranscriptRetirementOutcome } from "./transcriptRepository";
@@ -575,9 +567,6 @@ function currentSessionCache(): SessionCacheIndexedDB {
 // Lazy so the ordinary browser captures its actual storage environment on first
 // use. Both adapters open the same schema version and database, never a new tier.
 let productionEntryCache: SessionEntryCache | undefined;
-// Only scalar source identities wait here. One explicit-open conversion runs
-// at a time across both legacy formats and every production ref in this tab.
-let productionEntryMigrationTail: Promise<void> = Promise.resolve();
 function currentEntryCache(): SessionEntryCache {
   productionEntryCache ??= new SessionEntryCache({ databaseName: SESSION_CACHE_DATABASE_NAME });
   return productionEntryCache;
@@ -657,8 +646,6 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   clearEpoch?: number;
   historyGeneration?: number;
   identity?: TranscriptResolvedIdentity;
-  migration?: Promise<void>;
-  migrationComplete?: boolean;
   cachedUnverified?: boolean;
   cachedOpening?: Promise<void>;
   // The status the last local open (`openEntryTranscript`) reported for this
@@ -824,7 +811,6 @@ async function openEntryTranscript(ref: string): Promise<void> {
   const openingToken = beginEntryTranscriptLocalOpening(ref);
   try {
     fixture.reader ??= fixture.repository.attachReader();
-    startProductionEntryMigration(fixture);
     // Ongoing repository publication: every accepted recorded update republishes
     // the repository model, so continued UI changes are repository-owned rather
     // than supplied by the parallel legacy reducer. The explicit openLocal result
@@ -966,135 +952,6 @@ async function openCachedEntryTranscript(ref: string, generation: number): Promi
   });
   route.cachedOpening = opening;
   await opening;
-}
-
-// This is migration's only legacy lookup. It returns scalars, dropping the
-// decoded blob before the accepted transactional converter rereads its source.
-// Keeping the source's incarnation isolates incompatible seeds from the live
-// repository instead of relabelling an old conversation as the current one.
-async function legacyMigrationMetadata(source: EntryMigrationSource): Promise<
-  | {
-      incarnation: string;
-      savedAt: number;
-      epoch: number;
-    }
-  | undefined
-> {
-  const connection = new IDBConnection({
-    indexedDB: globalThis.indexedDB,
-    databaseName: SESSION_CACHE_DATABASE_NAME,
-    databaseVersion: SESSION_CACHE_DATABASE_VERSION,
-    waitMs: 10_000,
-    upgrade: (database) => upgradeSessionCache(database, true),
-    errors: {
-      open: "legacy migration source open failed",
-      superseded: "legacy migration source retired",
-      timeout: () => new Error("legacy migration source lookup timed out"),
-    },
-    reportDiagnostic: () => {},
-  });
-  try {
-    const database = await connection.open();
-    const transaction = database.transaction(["records", "current", "meta"], "readonly");
-    const complete = transactionCompletion(transaction);
-    const [record, epoch] = await Promise.all([
-      requestResult<unknown>(
-        source.kind === "records"
-          ? transaction.objectStore("records").get(source.ref)
-          : transaction.objectStore("current").get([...source.key]),
-      ),
-      requestResult<{ epoch?: number } | undefined>(transaction.objectStore("meta").get("__clearEpoch")),
-    ]);
-    await complete;
-    if (record === null || typeof record !== "object" || !("savedAt" in record) || typeof record.savedAt !== "number")
-      return undefined;
-    let history: unknown;
-    if (source.kind === "records" && "history" in record) history = record.history;
-    else if (source.kind === "current" && "state" in record) {
-      const state = record.state;
-      if (state !== null && typeof state === "object" && "history" in state) history = state.history;
-    }
-    if (
-      history === null ||
-      typeof history !== "object" ||
-      !("incarnation" in history) ||
-      typeof history.incarnation !== "string"
-    )
-      return undefined;
-    return { incarnation: history.incarnation, savedAt: record.savedAt, epoch: epoch?.epoch ?? 0 };
-  } finally {
-    connection.close();
-  }
-}
-
-function startProductionEntryMigration(route: EntryTranscriptRoute): void {
-  if (
-    productionEntryRoutes.get(route.ref) !== route ||
-    route.migration ||
-    route.migrationComplete ||
-    route.cachedUnverified ||
-    !route.identity ||
-    route.clearEpoch === undefined ||
-    (refCounts.get(route.ref) ?? 0) <= 0 ||
-    threadsStore.getState().cacheLifetimes.get(route.ref)?.suppressed
-  )
-    return;
-  const identity = route.identity;
-  const clearEpoch = route.clearEpoch;
-  const retirement = entryRouteRetirements.get(route.ref) ?? 0;
-  const current = () =>
-    productionEntryRoutes.get(route.ref) === route &&
-    !route.clearInert &&
-    (refCounts.get(route.ref) ?? 0) > 0 &&
-    (entryRouteRetirements.get(route.ref) ?? 0) === retirement &&
-    !threadsStore.getState().cacheLifetimes.get(route.ref)?.suppressed;
-  // Only a foreground open schedules conversion. It is never an automatic
-  // background blob read, and the UI does not await it. The converter owns the
-  // real transaction's source removal, so failure leaves the blob for retry.
-  route.migration = productionEntryMigrationTail
-    .then(async () => {
-      if (!current()) return;
-      const sources: EntryMigrationSource[] = [
-        { kind: "records", ref: route.ref },
-        ...(await route.cache.currentMigrationSources(route.ref)),
-      ];
-      let complete = true;
-      for (const descriptor of sources) {
-        if (!current()) return;
-        const source = await legacyMigrationMetadata(descriptor);
-        if (!current()) return;
-        if (!source) continue;
-        if (source.epoch !== clearEpoch) {
-          complete = false;
-          continue;
-        }
-        const sourceIdentity = { ...identity, incarnation: source.incarnation };
-        const sourceKey = entryHistoryKey(sourceIdentity);
-        const historyGeneration =
-          sourceKey === route.historyKey
-            ? (route.historyGeneration ?? 0)
-            : await route.cache.getHistoryGeneration(sourceKey);
-        if (!current()) return;
-        const outcome = await migrateLegacySession(route.cache, {
-          identity: sourceIdentity,
-          requestedRefs: [{ clientId: identity.clientId, ref: route.ref }],
-          savedAt: source.savedAt,
-          accessedAt: route.cache.now(),
-          source: descriptor,
-          clearEpoch,
-          historyGeneration,
-        });
-        if (outcome.outcome !== "converted" && outcome.outcome !== "skipped") complete = false;
-      }
-      route.migrationComplete = complete;
-    })
-    .catch(() => {
-      // Storage is best-effort. A later explicit open retries failed sources.
-    })
-    .finally(() => {
-      route.migration = undefined;
-    });
-  productionEntryMigrationTail = route.migration;
 }
 
 function releaseEntryTranscriptReader(ref: string): void {
@@ -7399,7 +7256,6 @@ export async function settleBackgroundTranscriptsForTests(): Promise<void> {
 /** @internal Observe actual store hydration before the entry commit, without issuing a read. */
 export async function settleEntryTranscriptForTests(ref: string): Promise<void> {
   await trackedHydrationCompletions.get(ref);
-  await entryTranscriptRoute(ref)?.migration;
   await entryTranscriptRoute(ref)?.repository?.settled();
 }
 
@@ -7558,7 +7414,6 @@ export function resetThreadsStoreForTests(): void {
   productionEntryRoutes.clear();
   productionEntryCache?.close();
   productionEntryCache = undefined;
-  productionEntryMigrationTail = Promise.resolve();
   residencyIfCreated?.dispose();
   residencyIfCreated = undefined;
   currentAdmissions.clear();

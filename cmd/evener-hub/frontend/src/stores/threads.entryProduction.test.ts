@@ -1,7 +1,5 @@
 import type { AnyNotification, ThreadItem } from "@evener/appwire-client";
 import {
-  cachedSessionRecord,
-  currentTranscriptState,
   encodeTranscriptItem,
   hydrateThread,
   type ThreadReadResponse,
@@ -20,10 +18,8 @@ import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { requestResult, transactionCompletion } from "./idbConnection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
-import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME, type TranscriptItemRow } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { holdNextTransaction } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   clearCachedSessions,
@@ -793,97 +789,6 @@ it("an aborted ordinary Clear preserves disk rows and the held entry route resum
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded", "after-abort"]);
 });
 
-it("ordinary first open migrates a legacy blob once as stale seeds and atomically removes its source", async () => {
-  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
-  try {
-    const seeded = cachedSessionRecord(
-      hydrateThread(response("local:a", [turn("legacy-older", 0)]), "local:a", Date.now()),
-      Date.now(),
-    );
-    if (!seeded) throw new Error("fixture must encode a legacy session");
-    expect((await legacy.put(seeded, 0, Date.now())).outcome).toBe("written");
-    const storage = cache();
-    const key = entryHistoryKey({ ...identity, clientId: location.origin });
-    expect(await legacyCounts()).toEqual([1, 0]);
-    connect(response("local:a", [turn("live-newer", 2)]));
-    await threadsStore.getState().ensureThread("local:a");
-    await settleEntryTranscriptForTests("local:a");
-    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["legacy-older", "live-newer"]);
-    expect(await legacyCounts()).toEqual([0, 0]);
-    const window = await storage.getOlderWindow(key, { entry: 2, item: 0 }, 10);
-    expect(window.rows).toEqual([]);
-    expect(window.coverage.every((range) => range.start === null || range.start.entry >= 2)).toBe(true);
-    await threadsStore.getState().ensureThread("local:a");
-    await settleEntryTranscriptForTests("local:a");
-    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["legacy-older", "live-newer"]);
-  } finally {
-    legacy.close();
-  }
-});
-
-it("ordinary migration keeps an aborted source intact and retries the next explicit open", async () => {
-  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
-  try {
-    const seeded = cachedSessionRecord(
-      hydrateThread(response("local:a", [turn("retry-seed", 0)]), "local:a", Date.now()),
-      Date.now(),
-    );
-    if (!seeded) throw new Error("fixture must encode a legacy session");
-    expect((await legacy.put(seeded, 0, Date.now())).outcome).toBe("written");
-    const originalPut = IDBObjectStore.prototype.put;
-    let aborted = false;
-    const fault = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
-      this: IDBObjectStore,
-      value,
-      key,
-    ) {
-      if (!aborted && this.name === "transcriptItems" && value.transcriptKey === "retry-seed") {
-        aborted = true;
-        this.transaction.abort();
-      }
-      return originalPut.call(this, value, key);
-    });
-    connect(response("local:a", [turn("live-newer", 2)]));
-    await threadsStore.getState().ensureThread("local:a");
-    await settleEntryTranscriptForTests("local:a");
-    expect(aborted).toBe(true);
-    fault.mockRestore();
-    expect(await legacyCounts()).toEqual([1, 0]);
-    const storage = cache();
-    const key = entryHistoryKey({ ...identity, clientId: location.origin });
-    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["live-newer"]);
-    await threadsStore.getState().ensureThread("local:a");
-    await settleEntryTranscriptForTests("local:a");
-    expect(await legacyCounts()).toEqual([0, 0]);
-    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["retry-seed", "live-newer"]);
-  } finally {
-    legacy.close();
-  }
-});
-
-it("ordinary migration isolates a legacy incarnation from the current live repository", async () => {
-  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
-  try {
-    const old = response("local:a", [turn("old-incarnation", 0)]);
-    old.snapshot = { incarnation: "old-incarnation", length: 3 };
-    const seeded = cachedSessionRecord(hydrateThread(old, "local:a", Date.now()), Date.now());
-    if (!seeded) throw new Error("fixture must encode a legacy session");
-    expect((await legacy.put(seeded, 0, Date.now())).outcome).toBe("written");
-    connect();
-    await threadsStore.getState().ensureThread("local:a");
-    await settleEntryTranscriptForTests("local:a");
-    const storage = cache();
-    const key = entryHistoryKey({ ...identity, clientId: location.origin });
-    const oldKey = entryHistoryKey({ ...identity, clientId: location.origin, incarnation: "old-incarnation" });
-    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
-    expect((await storage.getLatest(oldKey, 10)).map((row) => row.transcriptKey)).toEqual(["old-incarnation"]);
-    expect(await legacyCounts()).toEqual([0, 0]);
-    expect(await countCachedSessions()).toBe(1);
-  } finally {
-    legacy.close();
-  }
-});
-
 it("ordinary deletion removes bound histories and durably refuses the captured pre-delete write", async () => {
   const storage = cache();
   const client = connect();
@@ -981,139 +886,6 @@ it("ordinary sibling deletion heals entry rows and retires the still-held public
   await settleEntryTranscriptForTests("local:a");
   expect(await storage.getLatest(key, 10)).toEqual([]);
   expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("sibling-deleted");
-});
-
-function checkpoint(owner: string, itemId: string, entry: number): CurrentSessionRecord {
-  const now = Date.now();
-  const state = currentTranscriptState(hydrateThread(response("local:a", [turn(itemId, entry)]), "local:a", now));
-  if (!state) throw new Error("fixture must encode the actual current checkpoint format");
-  return {
-    ownerToken: owner,
-    ref: "local:a",
-    connectionGeneration: 1,
-    ownershipGeneration: 1,
-    clearEpoch: 0,
-    appliedSequence: 7,
-    savedAt: now,
-    state,
-  };
-}
-
-it("ordinary current-only migration converts each owner checkpoint once without certifying its older seeds", async () => {
-  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
-  try {
-    expect((await legacy.putCurrent(checkpoint("old-owner-a", "current-a", 0), Date.now())).outcome).toBe("written");
-    expect((await legacy.putCurrent(checkpoint("old-owner-b", "current-b", 1), Date.now())).outcome).toBe("written");
-    expect(await legacyCounts()).toEqual([0, 2]);
-    connect(response("local:a", [turn("live-current", 3)]));
-    await threadsStore.getState().ensureThread("local:a");
-    await settleEntryTranscriptForTests("local:a");
-    const storage = cache();
-    const key = entryHistoryKey({ ...identity, clientId: location.origin });
-    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual([
-      "current-a",
-      "current-b",
-      "live-current",
-    ]);
-    expect(await legacyCounts()).toEqual([0, 0]);
-    const window = await storage.getOlderWindow(key, { entry: 3, item: 0 }, 10);
-    expect(window.rows).toEqual([]);
-    expect(window.coverage.every((range) => range.start === null || range.start.entry >= 3)).toBe(true);
-  } finally {
-    legacy.close();
-  }
-});
-
-it("ordinary current-only migration leaves an aborted checkpoint intact and retries explicit opening", async () => {
-  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
-  try {
-    expect((await legacy.putCurrent(checkpoint("retry-owner", "retry-current", 0), Date.now())).outcome).toBe(
-      "written",
-    );
-    const originalPut = IDBObjectStore.prototype.put;
-    let aborted = false;
-    const fault = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
-      this: IDBObjectStore,
-      value,
-      key,
-    ) {
-      if (!aborted && this.name === "transcriptItems" && value.transcriptKey === "retry-current") {
-        aborted = true;
-        this.transaction.abort();
-      }
-      return originalPut.call(this, value, key);
-    });
-    connect(response("local:a", [turn("live-current", 3)]));
-    await threadsStore.getState().ensureThread("local:a");
-    await settleEntryTranscriptForTests("local:a");
-    expect(aborted).toBe(true);
-    fault.mockRestore();
-    expect(await legacyCounts()).toEqual([0, 1]);
-    const storage = cache();
-    const key = entryHistoryKey({ ...identity, clientId: location.origin });
-    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["live-current"]);
-    await threadsStore.getState().ensureThread("local:a");
-    await settleEntryTranscriptForTests("local:a");
-    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual([
-      "retry-current",
-      "live-current",
-    ]);
-    expect(await legacyCounts()).toEqual([0, 0]);
-  } finally {
-    legacy.close();
-  }
-});
-
-it("ordinary migration does not read a second legacy blob while the first source is still in flight", async () => {
-  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
-  for (const ref of ["local:a", "local:b"]) {
-    const record = cachedSessionRecord(
-      hydrateThread(response(ref, [turn(`legacy-${ref}`, 0)]), ref, Date.now()),
-      Date.now(),
-    );
-    if (!record) throw new Error("fixture must encode a source blob");
-    expect((await legacy.put(record, 0, Date.now())).outcome).toBe("written");
-  }
-  const get = IDBObjectStore.prototype.get;
-  let secondSourceReads = 0;
-  const observed = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, key) {
-    if (this.name === "records" && key === "local:b") secondSourceReads += 1;
-    return get.call(this, key);
-  });
-  const first = holdNextTransaction(["records", "current", "meta"], "readonly");
-  try {
-    const client = connect();
-    client.on("thread/read", (params) => {
-      const ref = params.ref ?? "local:a";
-      const read = response(ref, [turn(`live-${ref}`, 3)]);
-      if (ref === "local:b") {
-        read.thread.id = "thread-b";
-        read.thread.sessionId = "session-b";
-      }
-      return { ...read, requestGeneration: params.requestGeneration };
-    });
-    await threadsStore.getState().ensureThread("local:a");
-    await first.reached;
-    await threadsStore.getState().ensureThread("local:b");
-    // Storage has completed A's readonly transaction. Only the source owner's
-    // settlement is held, so B could read if the production scheduler let it.
-    expect(secondSourceReads).toBe(0);
-    expect(
-      threadsStore
-        .getState()
-        .threads.get("local:b")
-        ?.turns.flatMap((turn) => turn.items)
-        .map((item) => item.transcriptKey),
-    ).toContain("live-local:b");
-    first.release();
-    await Promise.all([settleEntryTranscriptForTests("local:a"), settleEntryTranscriptForTests("local:b")]);
-    expect(secondSourceReads).toBe(2);
-    expect(await legacyCounts()).toEqual([0, 0]);
-  } finally {
-    first.release();
-    observed.mockRestore();
-    legacy.close();
-  }
 });
 
 it("ordinary recorded notifications persist during busy input without a whole-model publication or debounce", async () => {
