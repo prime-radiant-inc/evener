@@ -9,8 +9,8 @@ import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../..
 import { HOST_GATE_TIMEOUT_MS, hostsStore } from "../../../../stores/hosts";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
-import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { shownReasons, statusReasons } from "../reasonTestUtils";
 import { CredentialsHostScope } from "./CredentialsHostScope";
 
 // What the push action and the listing above it say, read by reason rather
@@ -381,7 +381,7 @@ test("the push action is held while the host is unverifiable", async () => {
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unverifiable"]));
   const held = screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement;
   expect(held.disabled).toBe(true);
   // The action names its own reason, in this state's terms.
@@ -423,7 +423,7 @@ test("a push report survives a registry read that fails under it", async () => {
   // The registry's next read fails: beta's registration can no longer be
   // checked, so the listing says so...
   act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
-  expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]);
+  expect(statusReasons(document.body)).toEqual(["unverifiable"]);
 
   // ...and the report is RETAINED beneath it: the action was not unmounted, so
   // the outcome of a mutation this hub already sent stays readable.
@@ -460,7 +460,7 @@ test("a push in flight when the registry read fails still lands its report", asy
 
   // The registry's next read fails while the push is out...
   act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
-  expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]);
+  expect(statusReasons(document.body)).toEqual(["unverifiable"]);
 
   // ...and the answer already on its way is still this action's to show.
   await act(async () => settle[0]!.resolve({ host: "beta", results: [{ instance: "on-beta", action: "added" }] }));
@@ -528,7 +528,7 @@ test("a verified listing that outlives a failed registry read keeps its rows, wi
   act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
 
   expect(screen.getByText("on-beta")).toBeTruthy();
-  expect(emptyStateReasons(document.body)).not.toContain("unverifiable");
+  expect(shownReasons(document.body)).not.toContain("unverifiable");
   // ...and the action is held until the registry answers again.
   expect((screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement).disabled).toBe(true);
   expect(reasonShown("registry-unanswered")).toBe(true);

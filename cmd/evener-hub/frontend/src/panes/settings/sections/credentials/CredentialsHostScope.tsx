@@ -275,16 +275,20 @@ function RemoteHostInstances({
           </InlineNotice>
         )}
         {unverifiable && (
-          <EmptyState
-            reason="unverifiable"
+          <InlineNotice
+            tone="danger"
+            live="status"
+            data-reason="unverifiable"
             title={`Couldn't check ${host}'s registration`}
-            hint="The hosts list didn't load, so this host's own provider listing can't be verified as still belonging to the name it was selected by. Retry to read the hosts list again."
             action={
               <Button size="sm" onClick={() => retryHostRead(host)}>
                 Retry
               </Button>
             }
-          />
+          >
+            The hosts list didn't load, so this host's own provider listing can't be verified as still belonging to the
+            name it was selected by. Retry to read the hosts list again.
+          </InlineNotice>
         )}
         {state.error === null && !unverifiable && pending && <Skeleton />}
         {!unverifiable && verified && !pending && state.error === null && empty && (
