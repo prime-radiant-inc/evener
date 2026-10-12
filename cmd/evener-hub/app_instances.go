@@ -867,6 +867,12 @@ func (c *hubInstancesController) requireAuth() error {
 // not have.
 var errInstanceNotFound = errors.New("not found")
 
+// instanceNotFound is the caller's refusal for a name the registry does not
+// have.
+func instanceNotFound(name string) error {
+	return invalidParamsFor(fmt.Errorf("instance %q %w", name, errInstanceNotFound))
+}
+
 // errNoCredentialController is requireAuth's refusal.
 var errNoCredentialController = errors.New("this hub has no credential controller: instance changes are unavailable")
 
@@ -1109,7 +1115,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	p, authored := l.Providers[name]
 	if !authored {
 		if _, ok := c.reg.Get().Instance(name); !ok {
-			return invalidParamsFor(fmt.Errorf("instance %q %w", name, errInstanceNotFound))
+			return instanceNotFound(name)
 		}
 		p = registry.Provider{ID: name}
 	}
@@ -1663,7 +1669,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// afterwards.
 	inst, ok := c.reg.Get().Instance(name)
 	if !ok {
-		return invalidParamsFor(fmt.Errorf("instance %q %w", name, errInstanceNotFound))
+		return instanceNotFound(name)
 	}
 	if environmentBacked(inst) {
 		return invalidParamsFor(newEnvironmentBackedError(name, inst))
@@ -1708,7 +1714,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// would have taken the name away entirely.
 	locked, ok := c.reg.Get().Instance(name)
 	if !ok {
-		return invalidParamsFor(fmt.Errorf("instance %q %w", name, errInstanceNotFound))
+		return instanceNotFound(name)
 	}
 	if environmentBacked(locked) {
 		// The same caller-fixable condition the pre-lock check classified as
@@ -2385,7 +2391,7 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 	}
 	name := strings.TrimSpace(params.Name)
 	if _, ok := reg.Instance(name); !ok {
-		return invalidParamsFor(fmt.Errorf("instance %q %w", name, errInstanceNotFound))
+		return instanceNotFound(name)
 	}
 	return fetchInstanceLive(ctx, c.reg, c.auth, name)
 }
@@ -2451,7 +2457,7 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	c.auth.credMu.Lock()
 	defer c.auth.credMu.Unlock()
 	if _, ok := c.reg.Get().Instance(name); !ok {
-		return invalidParamsFor(fmt.Errorf("instance %q %w", name, errInstanceNotFound))
+		return instanceNotFound(name)
 	}
 	// AliasTarget names the row the flag lands on: a same-provider alias's
 	// target, or a cross-provider alias's own row. Membership, glob, and
@@ -2514,7 +2520,7 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 	// the two would leave a default naming an instance that has moved, which
 	// the next load refuses while it sits on disk.
 	if _, ok := c.reg.Get().Instance(name); !ok {
-		return invalidParamsFor(fmt.Errorf("instance %q %w", name, errInstanceNotFound))
+		return instanceNotFound(name)
 	}
 	l, _, err := c.read()
 	if err != nil {

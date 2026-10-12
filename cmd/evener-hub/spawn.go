@@ -1131,7 +1131,7 @@ const requiredLaunchFlag = "api-log"
 
 // errLaunchFlagUnadvertised refuses a child binary whose launch-check does not
 // advertise requiredLaunchFlag.
-var errLaunchFlagUnadvertised = errors.New("did not advertise the")
+var errLaunchFlagUnadvertised = errors.New("evener launch-check did not advertise the --" + requiredLaunchFlag + " flag")
 
 func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
 	if evenerBinary == "" {
@@ -1167,7 +1167,7 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
 	}
 	if !slices.Contains(resp.LaunchFlags, requiredLaunchFlag) {
-		return launchRefusal(fmt.Errorf("evener launch-check %w --%s flag: upgrade the evener binary the hub spawns", errLaunchFlagUnadvertised, requiredLaunchFlag))
+		return launchRefusal(fmt.Errorf("%w: upgrade the evener binary the hub spawns", errLaunchFlagUnadvertised))
 	}
 	return nil
 }
