@@ -79,7 +79,8 @@ test("the hint renders when present", () => {
       sessionRef="ref_a"
     />,
   );
-  expect(hintSummary()).not.toBeNull();
+  // The toggle names itself to a screen reader.
+  expect(hintSummary()?.textContent?.trim()).toBeTruthy();
   expect(screen.queryByText("check your API key")).toBeNull();
 });
 

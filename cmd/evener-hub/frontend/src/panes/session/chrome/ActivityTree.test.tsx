@@ -166,6 +166,16 @@ const FOLD_NAME = "2 inactive";
 
 // metaText reads a row's right-hand cluster alone, so an assertion pins the
 // meta grammar instead of the whole row (name, glyph, and open button text).
+// The row's kind glyph as a screen reader meets it: an exposed image with a
+// non-empty name. Returns the name so a test can compare outcomes without
+// pinning their wording.
+function glyphName(row: HTMLElement, glyph: HTMLElement): string {
+  expect(within(row).getAllByRole("img")).toContain(glyph);
+  const name = glyph.getAttribute("aria-label")?.trim() ?? "";
+  expect(name).not.toBe("");
+  return name;
+}
+
 function metaText(row: HTMLElement): string {
   const meta = row.querySelector<HTMLElement>("[class*='denseMeta']");
   if (!meta) throw new Error("row has no meta cluster");
@@ -384,6 +394,7 @@ describe("ActivityTree", () => {
     expect(row.textContent).toContain("exhausted");
     expect(row.getAttribute("aria-description")).toBe("exhausted");
     expect(within(row).getByText("⌘").getAttribute("data-state")).toBe("failed");
+    glyphName(row, within(row).getByText("⌘"));
   });
 
   test("active child gives a terminal stable delegate a working glyph", () => {
@@ -436,6 +447,7 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "Stable child work" });
     expect(within(row).getByText("⌘").getAttribute("data-state")).toBe("working");
+    glyphName(row, within(row).getByText("⌘"));
     expect(row.textContent).toContain("completed");
   });
 
@@ -546,6 +558,7 @@ describe("ActivityTree", () => {
     expect(failedRow.getAttribute("aria-description")).toBe("failed");
     const kindGlyph = within(failedRow).getByText("$");
     expect(kindGlyph.getAttribute("data-state")).toBe("failed");
+    glyphName(failedRow, kindGlyph);
   });
 
   test("a legacy terminal failed row states the display word by its reason", () => {
@@ -590,18 +603,25 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
 
     // Working rows color the glyph with the alive hue.
-    const liveGlyph = within(screen.getByRole("treeitem", { name: "run tests" })).getByText("$");
+    const liveRow = screen.getByRole("treeitem", { name: "run tests" });
+    const liveGlyph = within(liveRow).getByText("$");
     expect(liveGlyph.getAttribute("data-state")).toBe("working");
     expect(liveGlyph.className).toContain("kindAlive");
 
     // Both settled outcomes keep default low ink without losing the outcome label.
-    const failedGlyph = within(screen.getByRole("treeitem", { name: "broken lint" })).getByText("$");
+    const failedRow = screen.getByRole("treeitem", { name: "broken lint" });
+    const failedGlyph = within(failedRow).getByText("$");
     expect(failedGlyph.getAttribute("data-state")).toBe("failed");
     expect(failedGlyph.className).not.toContain("kindDanger");
-    const endedGlyph = within(screen.getByRole("treeitem", { name: "finished build" })).getByText("$");
+    const endedRow = screen.getByRole("treeitem", { name: "finished build" });
+    const endedGlyph = within(endedRow).getByText("$");
     expect(endedGlyph.getAttribute("data-state")).toBe("ended");
     expect(endedGlyph.className).not.toContain("kindDanger");
     expect(endedGlyph.className).not.toContain("kindAlive");
+
+    // A screen reader hears each outcome by name, and no two outcomes alike.
+    const names = [glyphName(liveRow, liveGlyph), glyphName(failedRow, failedGlyph), glyphName(endedRow, endedGlyph)];
+    expect(new Set(names).size).toBe(names.length);
   });
 
   test("a completed status with a failure outcome uses the failed glyph", () => {
@@ -633,6 +653,7 @@ describe("ActivityTree", () => {
     const failedGlyph = within(failedRow).getByText("$");
     expect(failedGlyph.getAttribute("data-state")).toBe("failed");
     expect(failedGlyph.className).not.toContain("kindDanger");
+    glyphName(failedRow, failedGlyph);
   });
 
   test("a terminal status with no failure outcome keeps the ended glyph", () => {
@@ -664,6 +685,7 @@ describe("ActivityTree", () => {
     const glyph = within(row).getByText("$");
     expect(glyph.getAttribute("data-state")).toBe("ended");
     expect(glyph.className).not.toContain("kindDanger");
+    glyphName(row, glyph);
   });
 
   test("opening the fold reveals rows with their detail strips collapsed", async () => {

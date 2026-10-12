@@ -245,6 +245,7 @@ describe("ActivityRowDetail", () => {
 
     const showMore = document.querySelector("summary");
     if (!showMore) throw new Error("Missing show-more disclosure");
+    expect(showMore.textContent?.trim()).toBeTruthy();
     await userEvent.click(showMore);
     expect(screen.getByText("Additional instructions: keep the report concise.")).toBeTruthy();
 

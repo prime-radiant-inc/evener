@@ -129,6 +129,24 @@ test("the error variant never renders a literal ✕ character", () => {
   expect(screen.getByTestId("new-content-pill").textContent).not.toContain("✕");
 });
 
+// data-kind is invisible to a screen reader: the pill's accessible name is what
+// tells a failed turn from a needs-you flip from a plain jump to latest.
+test("each pill form announces a distinct, non-empty name", () => {
+  const forms = [
+    { needsYou: false, error: true },
+    { needsYou: true, error: false },
+    { needsYou: false, error: false },
+  ];
+  const names = forms.map((form) => {
+    const { unmount } = render(<NewContentPill visible count={0} {...form} onClick={() => {}} />);
+    const name = screen.getByRole("button").textContent?.trim() ?? "";
+    unmount();
+    return name;
+  });
+  for (const name of names) expect(name).not.toBe("");
+  expect(new Set(names).size).toBe(names.length);
+});
+
 test("error defaults to false - existing count/needsYou-only callers are unaffected", () => {
   render(<NewContentPill count={5} needsYou={true} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");

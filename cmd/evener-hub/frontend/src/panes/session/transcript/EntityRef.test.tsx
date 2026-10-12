@@ -210,6 +210,25 @@ test("the id trigger does not navigate", () => {
   expect(workspaceStore.getState().panes).toEqual([]);
 });
 
+// data-entity-kind is invisible to a screen reader: the card's kind label is
+// what tells it a job from a delegate from a watch.
+test("each entity card reads its kind aloud, distinctly", () => {
+  vi.useFakeTimers();
+  const views = [
+    { view: jobView("job_k", "Kind check"), id: "job_k" },
+    { view: delegateView(), id: "dlg_x" },
+    { view: watchView(), id: "watch_x" },
+  ];
+  const labels = views.map(({ view, id }) => {
+    const { unmount } = render(<EntityRef view={view} id={id} />);
+    const label = focusCard().querySelector("[data-entity-kind] strong")?.textContent?.trim() ?? "";
+    unmount();
+    return label;
+  });
+  for (const label of labels) expect(label).not.toBe("");
+  expect(new Set(labels).size).toBe(labels.length);
+});
+
 test("watch renders a card trigger with no OpenButton", () => {
   vi.useFakeTimers();
   render(<EntityRef view={watchView()} id="watch_x" />);
