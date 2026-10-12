@@ -41,7 +41,7 @@
  * .trigger rule gets. min-height, not height - button.module.css's own
  * mobile block follows the same rule - so this only ever GROWS the row,
  * never overrides its desktop sizing. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .railRow {
     min-height: var(--tap-min);
   }

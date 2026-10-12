@@ -317,7 +317,7 @@ test("the footer is a chrome band on the inset surface", () => {
 // pointer precedent for its row action buttons): .closeButton is a plain
 // <button>, not the shared IconButton widget (see OverlayPanel.tsx's own
 // comment on why - FocusScope's initial-focus ordering needs it last in
-// markup), so it never picked up IconButton's own pointer:coarse 44px
+// markup), so it never picked up IconButton's own any-pointer: coarse 44px
 // floor (iconbutton.module.css). Measured 24x24 on TreeDrawer's own Sheet
 // (Dialog and Sheet share this one closeButton via OverlayPanel), under the
 // platform's 44px tap floor every other icon-only control in the app
@@ -325,7 +325,7 @@ test("the footer is a chrome band on the inset surface", () => {
 test("the close button reaches the 44px tap floor on a coarse (touch) pointer", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "dialog.module.css"), "utf8");
-  const coarseBlock = /@media \(max-width: 899px\), \(pointer: coarse\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  const coarseBlock = /@media \(max-width: 899px\), \(any-pointer: coarse\)\s*\{([\s\S]*?)\n\}/.exec(css);
   expect(coarseBlock).toBeTruthy();
   const closeButtonRule = /\.closeButton\s*\{([^}]*)\}/.exec(coarseBlock?.[1] ?? "")?.[1] ?? "";
   expect(closeButtonRule).toContain("min-width: var(--tap-min)");

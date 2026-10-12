@@ -250,7 +250,7 @@
   }
 }
 
-@media (max-width: 899px), (pointer: coarse) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .row {
     min-height: var(--tap-min);
   }

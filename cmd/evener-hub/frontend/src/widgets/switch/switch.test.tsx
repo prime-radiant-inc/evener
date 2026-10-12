@@ -165,7 +165,7 @@ test("the unchecked track background is --field", () => {
 test("the clickable label gets the coarse-pointer touch floor", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "switch.module.css"), "utf8");
-  const tapFloor = [...css.matchAll(/@media \(max-width: 899px\), \(pointer: coarse\) \{([\s\S]*?)\n\}/g)]
+  const tapFloor = [...css.matchAll(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/g)]
     .map((block) => block[1])
     .join("\n");
   expect(tapFloor).toMatch(/\.label\s*\{[^}]*min-height: var\(--tap-min\)/);
@@ -175,11 +175,11 @@ test("keeps the native mobile button at the touch floor without enlarging the pa
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "switch.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css).toMatch(
-    /@media \(max-width: 899px\), \(pointer: coarse\) \{[\s\S]*?\.control\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.control\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
   );
   expect(css).toMatch(/\.control\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);
   expect(css).toMatch(
-    /@media \(max-width: 899px\), \(pointer: coarse\) \{[\s\S]*?\.control\s*\{[^}]*width:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)[^}]*height:\s*var\(--tap-min\)[^}]*min-height:\s*var\(--tap-min\)/,
+    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.control\s*\{[^}]*width:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)[^}]*height:\s*var\(--tap-min\)[^}]*min-height:\s*var\(--tap-min\)/,
   );
   expect(css).toMatch(/\.control:focus-visible\s*\{/);
   expect(css).toMatch(/\.track\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);

@@ -750,7 +750,7 @@ test("a pathList field rejects a path already in the list", async () => {
 // Touch target (UX fix, real-phone measurement): the hand-rolled toggle
 // (not a widgets/disclosure consumer - it renders its own <button>, see
 // this file's own header comment) measured 127x24, low-contrast next to the
-// 48px rows around it. Comfortable desktop padding plus a (pointer: coarse)
+// 48px rows around it. Comfortable desktop padding plus a (any-pointer: coarse)
 // tap floor, same pattern as askdock.module.css's own .tab rule and
 // askquestioncard.module.css's own .option rule.
 test("the Advanced options toggle gets comfortable padding and reaches the tap floor on a coarse pointer", () => {
@@ -759,8 +759,8 @@ test("the Advanced options toggle gets comfortable padding and reaches the tap f
   expect(desktopRule, "advancedOptions.module.css must declare a base .toggle rule").not.toBeNull();
   expect(desktopRule![1]).toMatch(/padding:\s*var\(--space-2\) var\(--space-3\)/);
 
-  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(coarse, "advancedOptions.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "advancedOptions.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
   const rule = coarse![1]!.match(/\.toggle\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .toggle").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");

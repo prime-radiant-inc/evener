@@ -97,7 +97,7 @@
  * width/height, so this only ever grows the hit area beyond the 24px
  * glyph box, never changes its desktop sizing.
  */
-@media (max-width: 899px), (pointer: coarse) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .closeButton {
     min-width: var(--tap-min);
     min-height: var(--tap-min);

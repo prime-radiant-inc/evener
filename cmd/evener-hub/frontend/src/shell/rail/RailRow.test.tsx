@@ -958,10 +958,10 @@ describe("row alignment", () => {
   });
 });
 
-describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
+describe("touch tap floor (RailRow.module.css, any-pointer: coarse)", () => {
   // shellguard's tap-target pass measures these in a real phone context; these
   // source assertions pin the rules themselves (jsdom evaluates no cascade).
-  const coarseBlock = mediaBlock(RAIL_CSS, "pointer: coarse");
+  const coarseBlock = mediaBlock(RAIL_CSS, "any-pointer: coarse");
 
   test("row action buttons meet the 44px floor in BOTH dimensions", () => {
     const rule = nestedRuleBlock(coarseBlock, ".actions button");
@@ -2303,7 +2303,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     // so a project row's "+" IconButton keeps its own square geometry.
     //
     // Anchored to the TOP-LEVEL rule (column 0): the same selector also
-    // appears inside @media (pointer: coarse), where the widened tap target
+    // appears inside @media (any-pointer: coarse), where the widened tap target
     // centres the glyph instead - that override is the tap-floor describe's
     // own assertion above, not this one's.
     const justifyRule = topRuleBlock(RAIL_CSS, '.actions button[aria-haspopup="menu"]');

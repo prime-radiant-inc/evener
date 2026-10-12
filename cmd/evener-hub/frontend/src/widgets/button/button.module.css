@@ -203,7 +203,7 @@
  * tokens.css for phones and coarse pointers. xs is deliberately included:
  * the composer's Stop/Send/Steer verb cluster uses it, and those are exactly
  * the buttons a thumb must hit. */
-@media (max-width: 899px), (pointer: coarse) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .xs {
     min-height: var(--tap-min);
   }

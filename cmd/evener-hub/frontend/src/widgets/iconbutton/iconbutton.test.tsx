@@ -193,7 +193,7 @@ test("xs size is square at 24px, matching Button's own xs height", () => {
 // width/height, so the desktop squares above stay the desktop rule.
 test("mobile: all icon-button sizes meet the 44px tap floor in both dimensions", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "iconbutton.module.css"), "utf8");
-  const mobile = css.match(/@media \(max-width: 899px\), \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
   expect(mobile, "iconbutton.module.css must have a max-width:899px media block").not.toBeNull();
   for (const size of ["xs", "sm", "md"]) {
     const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));

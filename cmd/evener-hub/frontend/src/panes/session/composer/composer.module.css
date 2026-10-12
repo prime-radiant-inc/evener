@@ -167,7 +167,7 @@
  * part hanging outside stays inside the attachment row's box - no ancestor
  * clips it, and the row gap keeps it off the neighbouring tile. Guarded by
  * scripts/layoutguard/cases/attachment-remove-touch-phone. */
-@media (max-width: 899px), (pointer: coarse) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .imageTile {
     overflow: visible;
     margin-top: calc(var(--tap-min) / 2);

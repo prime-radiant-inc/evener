@@ -102,7 +102,7 @@ test("the compact density default leaves the base grid unscaled (multiplier 1)",
 // The tap floor reaches every coarse pointer (touch laptops, iPad landscape),
 // not only the phone width (Jesse 2026-10-11); the font-size and density
 // rules above stay phone-only.
-const TAP_FLOOR_QUERY = "(max-width: 899px), (pointer: coarse)";
+const TAP_FLOOR_QUERY = "(max-width: 899px), (any-pointer: coarse)";
 
 // Each top-level @media block's prelude and body, comments stripped.
 function mediaBlocks(source: string): { prelude: string; body: string }[] {

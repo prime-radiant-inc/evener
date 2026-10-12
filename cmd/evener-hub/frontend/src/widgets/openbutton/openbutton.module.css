@@ -37,7 +37,7 @@
  * 2026-07-30-mobile-session-layout-design.md): iconbutton.module.css's own
  * tap-floor block grows the button to fill, this shell grows with it, and the
  * leading is still exactly one line. */
-@media (max-width: 899px), (pointer: coarse) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .inline {
     height: var(--tap-min);
     margin-block: min(0px, calc((1em - var(--tap-min)) / 2));

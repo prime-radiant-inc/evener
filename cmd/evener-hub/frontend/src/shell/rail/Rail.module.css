@@ -205,7 +205,7 @@
  * rule. The fallback matters: --tap-min is declared inside tokens.css's
  * max-width: 899px block, so on a wider coarse-pointer viewport it is
  * undefined and the declaration would otherwise be dropped. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .sectionDisclosure {
     min-height: var(--tap-min, 44px);
   }

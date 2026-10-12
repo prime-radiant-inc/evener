@@ -389,7 +389,7 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
  * Only the floor widens - the phone font-size and density rules above stay
  * phone-only. Widgets consume it under this same query as min-width/
  * min-height, so desktop sizing rules stay untouched. */
-@media (max-width: 899px), (pointer: coarse) {
+@media (max-width: 899px), (any-pointer: coarse) {
   body {
     --tap-min: 44px;
   }

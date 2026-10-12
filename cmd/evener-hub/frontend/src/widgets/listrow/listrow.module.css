@@ -140,7 +140,7 @@
 /* Tap floor (--tap-min, phones and coarse pointers). A read-only
  * collection row takes it too, so it stays the same row as its tappable
  * twin. */
-@media (max-width: 899px), (pointer: coarse) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .collection,
   .interactive {
     min-height: var(--tap-min);

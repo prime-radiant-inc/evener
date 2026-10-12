@@ -100,7 +100,7 @@
  * phone needs the platform's 44px tap floor - min-height, not height, so the
  * desktop row's own sizing stays untouched and this only ever grows it. A
  * width breakpoint like iconbutton.module.css's own phone block, not
- * (pointer: coarse): the guard measures this floor in a headless browser
+ * (any-pointer: coarse): the guard measures this floor in a headless browser
  * with no coarse pointer to match on. */
 @media (max-width: 899px) {
   .effortTrigger {
