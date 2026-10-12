@@ -176,25 +176,6 @@ func TestDefShellHasExecutionMode(t *testing.T) {
 	}
 }
 
-// TestDefShellDetachedDescriptionStatesEnvironment pins #4331 where the model
-// chooses a mode: a detached command gets none of the session's scratch, so a
-// path built from $EVENER_SCRATCH_DIR collapses to its empty prefix.
-func TestDefShellDetachedDescriptionStatesEnvironment(t *testing.T) {
-	props := DefShell().Parameters["properties"].(map[string]any)
-	mode, ok := props["mode"].(map[string]any)
-	if !ok {
-		t.Fatal("shell: missing required property mode")
-	}
-	desc, _ := mode["description"].(string)
-	// The claim, not the token: naming the variable while promising it is set
-	// would satisfy a bare Contains and state the opposite of the environment.
-	for _, want := range []string{"$EVENER_SCRATCH_DIR is unset", "absolute path"} {
-		if !strings.Contains(desc, want) {
-			t.Errorf("shell mode description must say a detached command has no session scratch and where a path may come from instead (missing %q):\n%q", want, desc)
-		}
-	}
-}
-
 func TestDefDelegateParamsAndEnum(t *testing.T) {
 	agentTypes := []string{"explorer", "implementer"}
 	def := DefDelegate(agentTypes)

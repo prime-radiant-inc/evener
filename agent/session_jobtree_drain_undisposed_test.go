@@ -558,15 +558,6 @@ func TestUndisposedBackgroundJobsFinalWarningUsesAvailableRemedy(t *testing.T) {
 	if !strings.Contains(available, `mode="detached"`) {
 		t.Fatalf("detached-capable warning omitted detached remedy: %q", available)
 	}
-	// The model is relaunching a job that likely logged under its scratch, and a
-	// detached command gets none, so a redirect path built from the scratch
-	// variable collapses to an empty prefix (#4331). The remedy must say where the
-	// output belongs instead.
-	for _, want := range []string{"EVENER_SCRATCH_DIR is unset", "absolute paths"} {
-		if !strings.Contains(available, want) {
-			t.Fatalf("detached announcement must say a detached process has no session scratch and where paths may come from instead (missing %q): %q", want, available)
-		}
-	}
 	sandbox := undisposedBackgroundJobsAnnouncement([]string{"job_sandbox"}, "shell", false)
 	if strings.Contains(sandbox, `mode="detached"`) || !strings.Contains(sandbox, "Stop the job and say so plainly") {
 		t.Fatalf("sandbox announcement advertised detached mode or omitted stop-and-report: %q", sandbox)

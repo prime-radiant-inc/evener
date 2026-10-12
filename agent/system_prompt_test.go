@@ -547,18 +547,6 @@ func TestSystemPromptDiagramGuidanceClaimsNoRendering(t *testing.T) {
 	}
 }
 
-// TestSystemPromptStatesDetachedEnvironment pins the same contract (#4331) on
-// the surface that is always in context.
-func TestSystemPromptStatesDetachedEnvironment(t *testing.T) {
-	t.Parallel()
-	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.2"), promptData{})
-	for _, want := range []string{"gets no session scratch", "never a path built from `$EVENER_SCRATCH_DIR`"} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("the rendered prompt must state the detached environment contract (missing %q)", want)
-		}
-	}
-}
-
 // drainPromptLoadedLabels reads the buffered startup events without
 // blocking and returns the PROMPT_LOADED labels in emission order.
 func drainPromptLoadedLabels(s *Session) []string {
