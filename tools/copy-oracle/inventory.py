@@ -27,6 +27,9 @@ It reads one line at a time, so it can misjudge:
     line;
   - assertion forms it doesn't recognise, such as `expect.soft` and
     `expect.poll`.
+  - quotes in TS: a quote straight after a word is read as JSX text unless
+    the word is a known keyword, so an unusual construct can still blur a
+    test's boundaries.
 Read every listed test before deleting or converting it.
 
 A literal counts as copy only when it also appears in production source (or a
@@ -257,7 +260,9 @@ TS_REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%~^")
 
 
 TS_EXPRESSION_KEYWORDS = {"return", "case", "typeof", "in", "of", "await", "yield", "else", "throw",
-                          "void", "delete", "new", "instanceof", "do"}
+                          "void", "delete", "new", "instanceof", "do",
+                          # type positions: `value as "x"`, `satisfies "x"`, `extends "x"`
+                          "as", "satisfies", "extends", "keyof", "is"}
 
 
 def word_before(line, i):

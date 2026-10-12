@@ -324,5 +324,21 @@ test("renders the hint", () => {
         self.assertEqual(inventory.copy_only_tests(passthrough, {2}, "go"), [])
 
 
+class TypePositionStrings(unittest.TestCase):
+    def test_a_literal_type_after_as_or_satisfies_is_a_string(self):
+        for kw in ("as", "satisfies"):
+            src = f"""test("shows the retry label", () => {{
+  const label = value {kw} "Retry(";
+  expect(fake.calls).toHaveLength(1);
+}});
+
+test("renders the hint", () => {{
+  expect(screen.getByText("Try again")).toBeTruthy();
+}});
+"""
+            blocks = inventory.test_blocks(src, "ts")
+            self.assertEqual([name for _, name, _ in blocks], ["shows the retry label", "renders the hint"], kw)
+
+
 if __name__ == "__main__":
     unittest.main()
