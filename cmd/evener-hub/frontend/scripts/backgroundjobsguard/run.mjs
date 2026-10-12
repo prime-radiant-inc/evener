@@ -81,6 +81,17 @@ async function waitFrames(predicate, label) {
   });
 }
 
+// Waits for a socket closed after the `after` mark to finish closing. Call it
+// only once offline emulation is lifted. A page close() completes when Chrome
+// reads the hub's answering close frame, and under DevTools offline emulation
+// Chrome can stall reads on a socket that already has incoming traffic. The
+// hub has replied by then, but Chrome holds the socket in CLOSING until
+// emulation lifts. Measured with a standalone Chrome probe: 4 of 16 closes
+// still in CLOSING after 20s offline; 24 of 24 completed once emulation lifted.
+async function waitForSocketClosed(after, label) {
+  await waitFrames(() => sockets.slice(after).some(s => s.method === "Network.webSocketClosed"), label);
+}
+
 // Follow actual cursor-bearing responses, never a synthetic complete snapshot.
 function walk(after = 0) {
   const calls = sent(after).filter(f => f.method === "evener/thread/jobs/list" && f.params.ref === fixture.rootRef);
@@ -255,9 +266,9 @@ try {
   await driver.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   const closed = await read(`(() => { const live=window.__backgroundJobsSockets.filter(s => s.readyState===WebSocket.OPEN && new URL(s.url).pathname==='/rpc'); for (const s of live) s.close(4000,'background Jobs guard transport boundary'); return live.length; })()`);
   assert.equal(closed, 1, "interrupt the actual shared hub WebSocket");
-  await waitFrames(() => sockets.slice(socketAfter).some(s => s.method === "Network.webSocketClosed"), "actual hub socket closes");
   driver.control("reconnect");
   await driver.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await waitForSocketClosed(socketAfter, "actual hub socket closes");
   await waitFrames(() => sent(after).some(f => f.method === "thread/read" && f.params.ref === fixture.rootRef && f.params.subscribe && response(f)?.result), "real session subscription recovers on a new socket");
   await retained(visibleId, baseline, after, "reconnect-extent", Buffer.byteLength("BACKGROUND_LATE_INITIAL\nBACKGROUND_LATE_REFRESH\nBACKGROUND_LATE_RECONNECT\n"));
   const previousSocket = initial.pages[0].request.socketId;
@@ -551,8 +562,8 @@ async function runOutputPagingJourney(fixture) {
   let socketAfter = sockets.length;
   await driver.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
   assert.equal(await read(`(() => { const live=window.__backgroundJobsSockets.filter(s=>s.readyState===WebSocket.OPEN && new URL(s.url).pathname==='/rpc'); for(const s of live) s.close(4000,'paging transport boundary'); return live.length; })()`),1);
-  await waitFrames(()=>sockets.slice(socketAfter).some(s=>s.method==='Network.webSocketClosed'),'real output socket closes');
   await driver.send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await waitForSocketClosed(socketAfter,'real output socket closes');
   await waitFrames(()=>outputCalls(after).some(request=>page(request)),'output resumes after real reconnect');
   await assertAnchor(baseline);
   await captureOutput('paging-reconnect');
@@ -579,8 +590,8 @@ async function runOutputPagingJourney(fixture) {
   after=frames.length; socketAfter=sockets.length;
   await driver.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
   await read(`(() => { for(const s of window.__backgroundJobsSockets.filter(s=>s.readyState===WebSocket.OPEN)) s.close(4000,'fresh terminal drain boundary'); window.__pagingWire.replies.length=0; })()`);
-  await waitFrames(()=>sockets.slice(socketAfter).some(s=>s.method==='Network.webSocketClosed'),'terminal drain connection closes');
   await driver.send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await waitForSocketClosed(socketAfter,'terminal drain connection closes');
   await latest('FINAL_AFTER_PENDING_READ_é_😀',after);
   const finalPage = outputCalls(after).find(request=>page(request) && bytes(page(request)).includes(Buffer.from('FINAL_AFTER_PENDING_READ_é_😀')));
   assert.ok(page(finalPage).totalBytes > page(preterminal).totalBytes,'fresh drain reads bytes written after pending request');
