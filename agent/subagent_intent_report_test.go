@@ -257,16 +257,24 @@ func TestChildReportsStatedIntentToTheController(t *testing.T) {
 	waitSubagentRun(t, child)
 
 	var published, settled bool
-	for _, frame := range recordedIntentFrames(f, delegateID) {
-		if frame.LatestIntent == "Reading the board's row tests." {
-			published = true
+	// The recorder consumes the parent's buffered event channel
+	// asynchronously, so run completion only queues the settled frame: wait
+	// for the recorder to have taken in both frames the assertions read.
+	waitForCondition(t, 30*time.Second, "the recorder to take in the published and settled frames", func() bool {
+		published, settled = false, false
+		for _, frame := range recordedIntentFrames(f, delegateID) {
+			if frame.LatestIntent == "Reading the board's row tests." {
+				published = true
+			}
+			// The clear must be settlement's own frame: the run's initial
+			// frame also carries an empty line, so any empty frame proves
+			// nothing.
+			if frame.LatestIntent == "" && frame.Terminal {
+				settled = true
+			}
 		}
-		// The clear must be settlement's own frame: the run's initial frame
-		// also carries an empty line, so any empty frame proves nothing.
-		if frame.LatestIntent == "" && frame.Terminal {
-			settled = true
-		}
-	}
+		return published && settled
+	})
 	if !published {
 		t.Fatal("no pushed frame carried the stated intent")
 	}
