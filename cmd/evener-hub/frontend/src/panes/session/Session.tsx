@@ -42,6 +42,7 @@ import {
   Cadence,
   EmptyState,
   InlineNotice,
+  Loader,
   PaneScaffold,
   type VirtualListHandle,
   VisuallyHidden,
@@ -542,16 +543,17 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         title={title}
         edgeFooter={edgeFooter}
       >
-        <EmptyState
-          title="Loading transcript…"
-          reason="loading"
-          hint={
-            ref.startsWith("local:")
-              ? "If the session is unresponsive, you can stop its process to recover it."
-              : undefined
-          }
-          action={ref.startsWith("local:") ? <SessionForceStopRecovery sessionRef={ref} /> : undefined}
-        />
+        <div className={styles.loading}>
+          <Loader label="Loading transcript" />
+          {ref.startsWith("local:") && (
+            <>
+              <p className={styles.loadingHint}>
+                If the session is unresponsive, you can stop its process to recover it.
+              </p>
+              <SessionForceStopRecovery sessionRef={ref} />
+            </>
+          )}
+        </div>
       </PaneScaffold>
     );
   }
