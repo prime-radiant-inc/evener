@@ -63,7 +63,7 @@ func TestDelegateTerminalCommunicateMarksGenerationEvidence(t *testing.T) {
 	runtime.profile = NewOpenAIProfile("gpt-5.2")
 
 	reg := toolpkg.NewRegistry()
-	registerCommunicateTool(reg, newToolDeps(runtime))
+	_ = registerCommunicateTool(reg, newToolDeps(runtime))
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 	if _, err := reg.Get("communicate").Exec(ctx, nil, map[string]any{
 		"message":  "reported result",

@@ -56,9 +56,9 @@ const VARIANT_CLASS: Record<IconButtonVariant, string> = {
 };
 
 const SIZE_CLASS: Record<ButtonSize, string> = {
-  xs: requireClass(styles.xs, "iconbutton.module.css", "xs"),
-  sm: requireClass(styles.sm, "iconbutton.module.css", "sm"),
-  md: requireClass(styles.md, "iconbutton.module.css", "md"),
+  xs: requireClass(styles.squareXs, "iconbutton.module.css", "squareXs"),
+  sm: requireClass(styles.squareSm, "iconbutton.module.css", "squareSm"),
+  md: requireClass(styles.squareMd, "iconbutton.module.css", "squareMd"),
 };
 
 const BADGE_CLASS = {

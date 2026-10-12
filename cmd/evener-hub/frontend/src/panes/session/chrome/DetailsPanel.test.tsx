@@ -113,9 +113,9 @@ test("the context row carries a meter at the session's pressure", async () => {
 // rendered tone class at each tier, so a drifted threshold shows up here as a
 // wrong class rather than only as a helper-level unit failure.
 const meterToneClass = {
-  neutral: requireClass(rawMeterStyles.neutral, "meter.module.css", "neutral"),
-  attention: requireClass(rawMeterStyles.attention, "meter.module.css", "attention"),
-  danger: requireClass(rawMeterStyles.danger, "meter.module.css", "danger"),
+  neutral: requireClass(rawMeterStyles.fillNeutral, "meter.module.css", "fillNeutral"),
+  attention: requireClass(rawMeterStyles.fillAttention, "meter.module.css", "fillAttention"),
+  danger: requireClass(rawMeterStyles.fillDanger, "meter.module.css", "fillDanger"),
 };
 
 test.each([

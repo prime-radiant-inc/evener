@@ -67,9 +67,9 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 		</View>
 	);
 }
-// The hub overview store keeps the failed request's own text in `error`;
-// this screen shows the same copy for every failure, as the web's sections
-// translate theirs at render.
+// The hub overview store keeps the failed request's friendly text in `error`,
+// which the web's sections render as-is; this screen shows the same copy for
+// every failure instead.
 const HUB_OVERVIEW_REFRESH_FAILED = "Could not load hub information.";
 
 /** The hub's runtime, storage, agents and MCP servers (ruling 12). Its

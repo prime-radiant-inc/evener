@@ -1066,6 +1066,15 @@ func (s *Session) providerWebSearchEnabled(profile *provider.Profile) bool {
 	return true
 }
 
+// protocolInjectsNativeWebSearch reports whether the wire protocol adds its
+// provider's own web_search tool to a request with req.WebSearch set. The
+// anthropic and OpenAI Responses builders do (llm/providers/anthropic and
+// llm/providers/responses); chat completions injects nothing, so the name stays
+// free there.
+func protocolInjectsNativeWebSearch(protocol string) bool {
+	return protocol == registry.ProtocolAnthropic || protocol == registry.ProtocolOpenAIResponses
+}
+
 // buildModelRequest assembles the llm.Request for one round: it lays out the
 // system prompt + history into messages (honoring SystemPromptAsUser), then
 // applies tools, provider options, reasoning effort, and model metadata.

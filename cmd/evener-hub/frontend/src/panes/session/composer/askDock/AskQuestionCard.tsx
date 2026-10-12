@@ -34,12 +34,12 @@ const CLASS = {
   question: requireClass(styles.question, "askquestioncard.module.css", "question"),
   head: requireClass(styles.head, "askquestioncard.module.css", "head"),
   num: requireClass(styles.num, "askquestioncard.module.css", "num"),
-  header: requireClass(styles.header, "askquestioncard.module.css", "header"),
+  questionHeader: requireClass(styles.questionHeader, "askquestioncard.module.css", "questionHeader"),
   questionText: requireClass(styles.questionText, "askquestioncard.module.css", "questionText"),
   why: requireClass(styles.why, "askquestioncard.module.css", "why"),
-  options: requireClass(styles.options, "askquestioncard.module.css", "options"),
-  option: requireClass(styles.option, "askquestioncard.module.css", "option"),
-  optionLabel: requireClass(styles.optionLabel, "askquestioncard.module.css", "optionLabel"),
+  optionGroup: requireClass(styles.optionGroup, "askquestioncard.module.css", "optionGroup"),
+  optionRow: requireClass(styles.optionRow, "askquestioncard.module.css", "optionRow"),
+  optionName: requireClass(styles.optionName, "askquestioncard.module.css", "optionName"),
   optionRecommended: requireClass(styles.optionRecommended, "askquestioncard.module.css", "optionRecommended"),
   optionDetail: requireClass(styles.optionDetail, "askquestioncard.module.css", "optionDetail"),
   alternativeRow: requireClass(styles.alternativeRow, "askquestioncard.module.css", "alternativeRow"),
@@ -149,7 +149,7 @@ export function AskQuestionCard({
   const optionsChildren = (
     <>
       {orderedOptions(question.options).map((opt) => (
-        <label className={CLASS.option} key={opt.label}>
+        <label className={CLASS.optionRow} key={opt.label}>
           <input
             type={multiSelect ? "checkbox" : "radio"}
             name={radioName}
@@ -164,11 +164,11 @@ export function AskQuestionCard({
           />{" "}
           {/* Inline bold label (ask-dialog UX rework), replacing the chip
               pill - the whole row is one continuous inline flow (see
-              .option in the stylesheet), so label, marker, and detail set
+              .optionRow in the stylesheet), so label, marker, and detail set
               like prose and wrap at the row's left edge. The explicit
               spaces are load-bearing: JSX concatenates adjacent elements,
               and inline flow needs real whitespace between them. */}
-          <span className={CLASS.optionLabel}>{opt.label}</span>
+          <span className={CLASS.optionName}>{opt.label}</span>
           {opt.recommended && (
             <span className={CLASS.optionRecommended} data-slot="recommended">
               {" · recommended"}
@@ -206,7 +206,7 @@ export function AskQuestionCard({
     <div className={CLASS.question} data-ask-question data-ask-key={question.key}>
       <div className={CLASS.head}>
         <span className={CLASS.num}>{number}.</span>
-        <span className={CLASS.header} id={headerId}>
+        <span className={CLASS.questionHeader} id={headerId}>
           {question.header}
         </span>
       </div>
@@ -216,11 +216,11 @@ export function AskQuestionCard({
       {question.why && <div className={CLASS.why}>{question.why}</div>}
 
       {multiSelect ? (
-        <fieldset className={CLASS.options} aria-labelledby={optionsLabelledBy}>
+        <fieldset className={CLASS.optionGroup} aria-labelledby={optionsLabelledBy}>
           {optionsChildren}
         </fieldset>
       ) : (
-        <div className={CLASS.options} role="radiogroup" aria-labelledby={optionsLabelledBy}>
+        <div className={CLASS.optionGroup} role="radiogroup" aria-labelledby={optionsLabelledBy}>
           {optionsChildren}
         </div>
       )}

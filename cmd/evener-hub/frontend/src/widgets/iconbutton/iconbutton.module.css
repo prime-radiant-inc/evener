@@ -9,19 +9,19 @@
 
 /* Square counterpart of Button's own xs (button.module.css) - same 24px, for
  * an icon-only control in a prompt card's row. */
-.xs {
+.squareXs {
   width: 24px;
   height: 24px;
   padding: 0;
 }
 
-.sm {
+.squareSm {
   width: 28px;
   height: 28px;
   padding: 0;
 }
 
-.md {
+.squareMd {
   width: 32px;
   height: 32px;
   padding: 0;
@@ -47,15 +47,15 @@
  * The top bar's Back/drawer and the composer's attach are the controls this
  * exists for. */
 @media (max-width: 899px), (any-pointer: coarse) {
-  .xs {
+  .squareXs {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
   }
-  .sm {
+  .squareSm {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
   }
-  .md {
+  .squareMd {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
   }

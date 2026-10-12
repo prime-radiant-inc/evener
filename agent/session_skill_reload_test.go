@@ -1363,6 +1363,63 @@ func TestSkillReloadReminder_CarriesDiscoveryDiagnostics(t *testing.T) {
 	}
 }
 
+// A session that cannot save memory must never be told to reload
+// gardening-memory through use_skill: its inventory summary marks the entry
+// unavailable while a followable skill in the same inventory stays reloadable.
+func TestSkillInventorySummary_UnavailableWithoutSaveTools(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	names := []string{gardeningMemorySkillName, "plain"}
+	for _, name := range names {
+		writeSkillMD(t, root, name, "---\nname: "+name+"\ndescription: fixture\n---\nopaque-body-"+name+"\n")
+	}
+	s := newTestSession(t)
+	for _, name := range names {
+		s.skillLifecycle.Inventory[name] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{
+			Identity:     schema.SkillContentIdentity{Name: name, DeclaredName: name, Source: filepath.Join(root, "skills", name, "SKILL.md"), FileDigest: "f", RenderedDigest: "r"},
+			Controls:     schema.SkillInvocationControls{UserInvocable: true},
+			Route:        "model_tool",
+			InvocationID: "inv-" + name,
+		}}
+	}
+	summary, diagnostics := s.skillInventorySummary(context.Background())
+	if len(diagnostics) != 0 {
+		t.Fatalf("diagnostics = %+v, want none", diagnostics)
+	}
+	availability := map[string]string{}
+	for _, entry := range summary {
+		availability[entry.Name] = entry.Availability
+	}
+	if availability[gardeningMemorySkillName] != skillAvailabilityUnavailable {
+		t.Errorf("%s availability = %q, want unavailable", gardeningMemorySkillName, availability[gardeningMemorySkillName])
+	}
+	if availability["plain"] != skillAvailabilityReloadable {
+		t.Errorf("plain availability = %q, want reloadable: the capability gate must not downgrade a followable skill", availability["plain"])
+	}
+}
+
+// The self-compact advertisement view drops a skill this session cannot load,
+// while the raw snapshot keeps every record for reload_skills resolution.
+func TestSelfCompactAdvertisedInventoryOmitsUnfollowableSkill(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	for _, name := range []string{gardeningMemorySkillName, "plain"} {
+		s.skillLifecycle.Inventory[name] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{
+			Identity: schema.SkillContentIdentity{Name: name, DeclaredName: name, Source: "/nonexistent/SKILL.md"},
+		}}
+	}
+	if _, ok := s.advertisedSkillInventory()[gardeningMemorySkillName]; ok {
+		t.Errorf("advertised inventory offers %s to a save-less session", gardeningMemorySkillName)
+	}
+	if _, ok := s.advertisedSkillInventory()["plain"]; !ok {
+		t.Error("advertised inventory dropped a followable skill")
+	}
+	if _, ok := s.skillInventorySnapshot()[gardeningMemorySkillName]; !ok {
+		t.Error("the raw snapshot must keep every record for selection resolution")
+	}
+}
+
 // TestSkillReloadReminder_ConsumesReceiptOnlyAfterDurableAdmission pins the
 // failure side of the reminder's admission contract. The reminder turn IS the
 // receipt's durable admission, so a transcript write failure must surface the

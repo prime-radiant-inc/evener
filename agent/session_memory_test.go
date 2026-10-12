@@ -34,72 +34,190 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// The bundled gardening-memory skill corrects pages with the memory save tools.
+// A save-capable root session loads it, checks a page and edits it; a
+// memory-disabled session, which cannot save memory either, must not receive it
+// at all and gains no memory tools by trying.
 func TestMemoryGardeningSkill(t *testing.T) {
 	t.Parallel()
-	for _, disabled := range []bool{false, true} {
-		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
-			root := t.TempDir()
-			index := memorySeedPage(t, root, "memory", "fact.md", "opaque-garden-index-71")
-			path := filepath.Join(filepath.Dir(index), "topic.txt")
-			if err := os.WriteFile(path, []byte("opaque-before-72\nopaque-keep-73\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+	t.Run("enabled", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		index := memorySeedPage(t, root, "memory", "fact.md", "opaque-garden-index-71")
+		path := filepath.Join(filepath.Dir(index), "topic.txt")
+		if err := os.WriteFile(path, []byte("opaque-before-72\nopaque-keep-73\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		steps := []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return toolCallResponse(useSkillCall("garden-1", "gardening-memory")) },
+			func(req llm.Request) llm.Response {
+				envelopes := requestSkillEnvelopes(t, req)
+				if len(envelopes) != 1 || envelopes[0].Doc.Name != "gardening-memory" {
+					t.Fatalf("skill delivery=%+v", envelopes)
+				}
+				return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "topic.txt"})
+			},
+			func(req llm.Request) llm.Response {
+				memoryRequireResult(t, req, "memory_read", "opaque-before-72")
+				return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "topic.txt", "old_string": "opaque-before-72", "new_string": "opaque-after-74"})
+			},
+			func(req llm.Request) llm.Response {
+				memoryRequireResult(t, req, "memory_edit", "")
+				return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "topic.txt"})
+			},
+			func(req llm.Request) llm.Response {
+				memoryRequireResult(t, req, "memory_read", "opaque-after-74")
+				return finalResponse("correction complete")
+			},
+		}
+		s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}), withSteps(steps...))
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "opaque-garden-input-75", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if names := skillActivatedEventNames(*evs); !slices.Equal(names, []string{"gardening-memory"}) {
+			t.Fatalf("activations=%v", names)
+		}
+		entry := lifecycleInventory(s)["gardening-memory"]
+		if entry.Ordinary == nil || entry.Ordinary.Route != "model_tool" || entry.Ordinary.InvocationID == "" {
+			t.Fatalf("activation=%+v", entry)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != "opaque-after-74\nopaque-keep-73\n" {
+			t.Fatalf("topic=%q err=%v", got, err)
+		}
+	})
+	t.Run("memory-disabled", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		index := memorySeedPage(t, root, "memory", "fact.md", "opaque-garden-index-71")
+		path := filepath.Join(filepath.Dir(index), "topic.txt")
+		if err := os.WriteFile(path, []byte("opaque-before-72\nopaque-keep-73\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		steps := []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return toolCallResponse(useSkillCall("garden-1", "gardening-memory")) },
+			func(req llm.Request) llm.Response {
+				// The disabled session cannot follow the skill, so its body is
+				// never delivered and no memory tool appears to act with.
+				if envelopes := requestSkillEnvelopes(t, req); len(envelopes) != 0 {
+					t.Fatalf("disabled session received %d skill envelopes", len(envelopes))
+				}
+				for _, def := range req.Tools {
+					if strings.HasPrefix(def.Name, "memory_") {
+						t.Fatalf("disabled skill gained %s", def.Name)
+					}
+				}
+				return finalResponse("ordinary skill refused")
+			},
+		}
+		s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, DisableMemory: true}), withSteps(steps...))
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "opaque-garden-input-75", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("disabled session activated %v", names)
+		}
+		if got := lifecycleInventory(s); len(got) != 0 {
+			t.Fatalf("disabled session recorded inventory: %+v", got)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != "opaque-before-72\nopaque-keep-73\n" {
+			t.Fatalf("topic=%q err=%v", got, err)
+		}
+	})
+}
+
+// The gardening-memory skill corrects pages with the memory save tools, so a
+// session that cannot save memory (a delegate, a memory-disabled session, or a
+// profile that denies a save tool) must neither see it in the model catalog nor
+// activate it through use_skill. A save-capable root session keeps both.
+func TestMemoryGardeningSkillGatedBySaveCapability(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		cfg      SessionConfig
+		revoke   string
+		loadable bool // use_skill activates it; the catalog lists it exactly when true
+	}{
+		{"enabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true},
+		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", false},
+		{"memory-disabled", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project", DisableMemory: true}, "", false},
+		{"delegate", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project", spawn: spawnConfig{parentSessionID: "parent-session", depth: 1}}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var catalogListed, bodyDelivered bool
 			steps := []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response { return toolCallResponse(useSkillCall("garden-1", "gardening-memory")) },
+				func(req llm.Request) llm.Response {
+					for _, msg := range req.Messages {
+						if msg.Role == llm.RoleSystem && strings.Contains(msg.Text(), "- gardening-memory: ") {
+							catalogListed = true
+						}
+					}
+					return toolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+				},
 				func(req llm.Request) llm.Response {
 					envelopes := requestSkillEnvelopes(t, req)
-					if len(envelopes) != 1 || envelopes[0].Doc.Name != "gardening-memory" {
-						t.Fatalf("skill delivery=%+v", envelopes)
-					}
-					if disabled {
-						for _, def := range req.Tools {
-							if strings.HasPrefix(def.Name, "memory_") {
-								t.Fatalf("disabled skill gained %s", def.Name)
-							}
-						}
-						return finalResponse("ordinary skill complete")
-					}
-					return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "topic.txt"})
+					bodyDelivered = len(envelopes) == 1 && envelopes[0].Doc.Name == "gardening-memory"
+					return finalResponse("done")
 				},
 			}
-			if !disabled {
-				steps = append(steps,
-					func(req llm.Request) llm.Response {
-						memoryRequireResult(t, req, "memory_read", "opaque-before-72")
-						return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "topic.txt", "old_string": "opaque-before-72", "new_string": "opaque-after-74"})
-					},
-					func(req llm.Request) llm.Response {
-						memoryRequireResult(t, req, "memory_edit", "")
-						return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "topic.txt"})
-					},
-					func(req llm.Request) llm.Response {
-						memoryRequireResult(t, req, "memory_read", "opaque-after-74")
-						return finalResponse("correction complete")
-					})
+			s := newSession(t, withConfig(tc.cfg), withSteps(steps...))
+			if tc.revoke != "" {
+				s.reg.Remove(tc.revoke)
+				refreshModelFacingCaches(s)
 			}
-			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, DisableMemory: disabled}), withSteps(steps...))
+			if got := s.skillAvailableToSession(gardeningMemorySkillName); got != tc.loadable {
+				t.Errorf("skillAvailableToSession(%s) = %t, want %t", gardeningMemorySkillName, got, tc.loadable)
+			}
 			evs, stop := captureEvents(s)
-			if _, err := s.ProcessInput(context.Background(), "opaque-garden-input-75", nil); err != nil {
+			if _, err := s.ProcessInput(context.Background(), "garden", nil); err != nil {
 				t.Fatal(err)
 			}
 			stop()
-			if names := skillActivatedEventNames(*evs); !slices.Equal(names, []string{"gardening-memory"}) {
-				t.Fatalf("activations=%v", names)
+			// A delegate receives no <skill-catalog> at all, so it expects a
+			// false catalog verdict like the other no-save shapes.
+			if catalogListed != tc.loadable {
+				t.Errorf("model catalog lists %s = %t, want %t", gardeningMemorySkillName, catalogListed, tc.loadable)
 			}
-			entry := lifecycleInventory(s)["gardening-memory"]
-			if entry.Ordinary == nil || entry.Ordinary.Route != "model_tool" || entry.Ordinary.InvocationID == "" {
-				t.Fatalf("activation=%+v", entry)
+			if bodyDelivered != tc.loadable {
+				t.Errorf("use_skill delivered the body = %t, want %t", bodyDelivered, tc.loadable)
 			}
-			want := "opaque-after-74\nopaque-keep-73\n"
-			if disabled {
-				want = "opaque-before-72\nopaque-keep-73\n"
+			if activated := len(skillActivatedEventNames(*evs)) > 0; activated != tc.loadable {
+				t.Errorf("skill activation event = %t, want %t", activated, tc.loadable)
 			}
-			got, err := os.ReadFile(path)
-			if err != nil || string(got) != want {
-				t.Fatalf("topic=%q err=%v", got, err)
+			denied := false
+			for _, state := range skillTurnStates(s) {
+				for _, outcome := range state.Outcomes {
+					if outcome.ToolCallID == "garden-1" && outcome.Status == "failed" && outcome.ErrorCode == "policy_denied" {
+						denied = true
+					}
+				}
+			}
+			if denied != !tc.loadable {
+				t.Errorf("typed policy_denied outcome = %t, want %t", denied, !tc.loadable)
 			}
 		})
 	}
+}
+
+// A user slash naming the gardening skill is refused the same way when the
+// session has no save tools: the known skill route fails visibly, dispatching
+// nothing.
+func TestMemoryGardeningSkillSlashRefusedWithoutSaveTools(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}))
+	s.reg.Remove("memory_write")
+	refreshModelFacingCaches(s)
+	res := s.expandSlashCommand(context.Background(), "/gardening-memory")
+	if !res.Handled || res.Activations != nil {
+		t.Fatalf("slash result = %+v, want handled with no activation", res)
+	}
+	requireActivationError(t, res.Err, "policy_denied")
 }
 
 func memoryRequireResult(t *testing.T, req llm.Request, name, sentinel string) {

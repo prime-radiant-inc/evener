@@ -215,9 +215,9 @@ test("reuses button.module.css's base class, so it inherits Button's :focus-visi
 test("sm size declares equal width and height in CSS", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const ownCss = readFileSync(join(here, "iconbutton.module.css"), "utf8");
-  // Verify that .sm class in iconbutton.module.css declares an explicit height
+  // Verify that .squareSm class in iconbutton.module.css declares an explicit height
   // equal to its width (28px) to make it square-ish, not squat/rectangular
-  expect(ownCss).toMatch(/\.sm\s*{[^}]*width:\s*28px[^}]*height:\s*28px[^}]*}/);
+  expect(ownCss).toMatch(/\.squareSm\s*{[^}]*width:\s*28px[^}]*height:\s*28px[^}]*}/);
 });
 
 // Same square rule one density step down, and matching Button's own xs height
@@ -226,7 +226,7 @@ test("sm size declares equal width and height in CSS", () => {
 test("xs size is square at 24px, matching Button's own xs height", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const ownCss = readFileSync(join(here, "iconbutton.module.css"), "utf8");
-  expect(ownCss).toMatch(/\.xs\s*{[^}]*width:\s*24px[^}]*height:\s*24px[^}]*}/);
+  expect(ownCss).toMatch(/\.squareXs\s*{[^}]*width:\s*24px[^}]*height:\s*24px[^}]*}/);
 
   const buttonCss = readFileSync(join(here, "../button/button.module.css"), "utf8");
   expect(/\.xs\s*\{([^}]*)\}/.exec(buttonCss)?.[1] ?? "").toMatch(/height:\s*24px/);
@@ -262,7 +262,7 @@ test("mobile: all icon-button sizes meet the 44px tap floor in both dimensions",
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "iconbutton.module.css"), "utf8");
   const mobile = css.match(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
   expect(mobile, "iconbutton.module.css must have a max-width:899px media block").not.toBeNull();
-  for (const size of ["xs", "sm", "md"]) {
+  for (const size of ["squareXs", "squareSm", "squareMd"]) {
     const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));
     expect(rule, `mobile media block must override .${size}`).not.toBeNull();
     expect(rule![1]).toContain("min-width: var(--tap-min)");

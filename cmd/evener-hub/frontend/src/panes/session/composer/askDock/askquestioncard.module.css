@@ -19,7 +19,7 @@
   color: var(--ink-mid);
 }
 
-.header {
+.questionHeader {
   min-width: 0;
   font-weight: var(--font-weight-semibold);
   color: var(--ink-hi);
@@ -38,7 +38,7 @@
   color: var(--ink-mid);
 }
 
-.options {
+.optionGroup {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -52,7 +52,7 @@
   padding: 0;
 }
 
-.option {
+.optionRow {
   /* A plain block whose contents are one continuous inline flow: radio,
    * bold label, recommended marker, and detail all set like prose, so a
    * wrapped detail continues at the row's left edge instead of forming an
@@ -74,7 +74,7 @@
  * the old pill treatment): ordinary wrapping text, so a long valid label
  * takes as many lines as it needs instead of being crushed into a
  * fixed-height box. */
-.optionLabel {
+.optionName {
   font-weight: var(--font-weight-semibold);
   color: var(--ink-hi);
 }
@@ -118,10 +118,10 @@
  * 4; UX fix, real-phone measurement: an option row with no detail measured
  * ~21px tall) - min-height, not height, so the desktop sizing above stays
  * the desktop rule and this only ever grows it. Same (any-pointer: coarse)
- * pattern as askdock.module.css's own .tab rule, since .option is not a
+ * pattern as askdock.module.css's own .tab rule, since .optionRow is not a
  * widgets/button consumer. */
 @media (any-pointer: coarse) {
-  .option {
+  .optionRow {
     min-height: var(--tap-min);
   }
 }
