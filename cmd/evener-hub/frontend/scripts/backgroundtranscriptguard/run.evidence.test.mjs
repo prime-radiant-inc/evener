@@ -95,7 +95,32 @@ describe("review finding 8 — trace correlation must not mask invalid input", (
       ]),
     );
     expect(readTraceFrames(p)).toHaveLength(4);
-    expect(countTargetRequestsInWindow("local:t", 0, bytesOf(p).length, p)).toEqual({ reads: 1, pages: 1 });
+    // The read is a foreground subscription; the count also classifies it so a
+    // regression that turned recovery into a subscription still fails.
+    expect(countTargetRequestsInWindow("local:t", 0, bytesOf(p).length, p)).toEqual({
+      reads: 1,
+      pages: 1,
+      subscribeReads: 1,
+      recoveryReads: 0,
+      plainReads: 0,
+    });
+  });
+
+  test("classifies a held-snapshot recovery read apart from a subscription read", () => {
+    const p = fixture(
+      "recovery.jsonl",
+      joinTraced([
+        rec({ direction: B2H, frame: { id: 1, method: "thread/read", params: { ref: "local:t", heldSnapshot: "h" } } }),
+        rec({ direction: H2B, frame: { id: 1, result: { olderCursor: "cur-1" } } }),
+      ]),
+    );
+    expect(countTargetRequestsInWindow("local:t", 0, bytesOf(p).length, p)).toEqual({
+      reads: 1,
+      pages: 0,
+      subscribeReads: 0,
+      recoveryReads: 1,
+      plainReads: 0,
+    });
   });
 
   test("non-frame metadata records are ignored, not rejected", () => {
@@ -109,7 +134,14 @@ describe("review finding 8 — trace correlation must not mask invalid input", (
       ]),
     );
     expect(readTraceFrames(p)).toHaveLength(2);
-    expect(countTargetRequestsInWindow("local:t", 0, bytesOf(p).length, p)).toEqual({ reads: 1, pages: 0 });
+    // No subscribe and no held snapshot: a plain non-subscribing read.
+    expect(countTargetRequestsInWindow("local:t", 0, bytesOf(p).length, p)).toEqual({
+      reads: 1,
+      pages: 0,
+      subscribeReads: 0,
+      recoveryReads: 0,
+      plainReads: 1,
+    });
   });
 
   test("a newline-terminated malformed OUTER record fails, not skipped", () => {
@@ -169,7 +201,13 @@ describe("review finding 8 — trace correlation must not mask invalid input", (
     const trailing = JSON.stringify({ event: "frame", connection: "c1", direction: H2B, frame: '{"id":2,"resu' });
     const p = fixture("end-partial.jsonl", `${request}\n${trailing}`);
     const after = Math.floor(request.length / 2); // inside the request record
-    expect(countTargetRequestsInWindow("local:t", 0, after, p)).toEqual({ reads: 1, pages: 0 });
+    expect(countTargetRequestsInWindow("local:t", 0, after, p)).toEqual({
+      reads: 1,
+      pages: 0,
+      subscribeReads: 0,
+      recoveryReads: 0,
+      plainReads: 1,
+    });
   });
 
   test("a byte window starting mid-record ignores the leading fragment, keeps complete records", () => {
@@ -179,7 +217,13 @@ describe("review finding 8 — trace correlation must not mask invalid input", (
     const text = joinTraced([a, b, c]);
     const p = fixture("start-partial.jsonl", text);
     const before = a.length + 1 + Math.floor(b.length / 2); // inside b
-    expect(countTargetRequestsInWindow("local:t", before, bytesOf(p).length, p)).toEqual({ reads: 1, pages: 0 });
+    expect(countTargetRequestsInWindow("local:t", before, bytesOf(p).length, p)).toEqual({
+      reads: 1,
+      pages: 0,
+      subscribeReads: 0,
+      recoveryReads: 0,
+      plainReads: 1,
+    });
   });
 
   test("multibyte UTF-8: byte-offset windows count the record, not string indices", () => {
@@ -190,7 +234,13 @@ describe("review finding 8 — trace correlation must not mask invalid input", (
     const target = rec({ direction: B2H, frame: { id: 2, method: "thread/read", params: { ref: "local:t" } } });
     const p = fixture("multibyte.jsonl", joinTraced([multibyte, target]));
     const before = Buffer.byteLength(`${multibyte}\n`, "utf8"); // byte offset of the target request
-    expect(countTargetRequestsInWindow("local:t", before, bytesOf(p).length, p)).toEqual({ reads: 1, pages: 0 });
+    expect(countTargetRequestsInWindow("local:t", before, bytesOf(p).length, p)).toEqual({
+      reads: 1,
+      pages: 0,
+      subscribeReads: 0,
+      recoveryReads: 0,
+      plainReads: 1,
+    });
   });
 
   test("interleaved two connections: pairing is connection+id scoped, opposing-direction, sequential", () => {
@@ -217,7 +267,13 @@ describe("review finding 8 — trace correlation must not mask invalid input", (
     expect(paging.initialOlderCursor).toBe("A");
     expect(paging.pages).toBe(1);
     expect(paging.lastCursor).toBe("P");
-    expect(countTargetRequestsInWindow("local:t", 0, bytesOf(p).length, p)).toEqual({ reads: 2, pages: 1 });
+    expect(countTargetRequestsInWindow("local:t", 0, bytesOf(p).length, p)).toEqual({
+      reads: 2,
+      pages: 1,
+      subscribeReads: 0,
+      recoveryReads: 0,
+      plainReads: 2,
+    });
   });
 
   test("a fixed [before, after) window does not count a target request appended after after", () => {
@@ -232,7 +288,13 @@ describe("review finding 8 — trace correlation must not mask invalid input", (
       p,
       `${first}\n${rec({ direction: B2H, frame: { id: 2, method: "thread/read", params: { ref: "local:t" } } })}\n`,
     );
-    expect(countTargetRequestsInWindow("local:t", 0, after, p)).toEqual({ reads: 0, pages: 0 });
+    expect(countTargetRequestsInWindow("local:t", 0, after, p)).toEqual({
+      reads: 0,
+      pages: 0,
+      subscribeReads: 0,
+      recoveryReads: 0,
+      plainReads: 0,
+    });
   });
 
   test("a fixed window whose end record is unterminated must not return a silent no-read verdict", () => {
@@ -253,19 +315,37 @@ describe("review finding 8 — trace correlation must not mask invalid input", (
     const target = rec({ direction: B2H, frame: { id: 2, method: "thread/read", params: { ref: "local:t" } } });
     const p = fixture("empty-window.jsonl", joinTraced([a, target]));
     const boundary = Buffer.byteLength(`${a}\n`, "utf8"); // a zero-width window at a record boundary
-    expect(countTargetRequestsInWindow("local:t", boundary, boundary, p)).toEqual({ reads: 0, pages: 0 });
+    expect(countTargetRequestsInWindow("local:t", boundary, boundary, p)).toEqual({
+      reads: 0,
+      pages: 0,
+      subscribeReads: 0,
+      recoveryReads: 0,
+      plainReads: 0,
+    });
   });
 
   test("a completed window's verdict is unchanged by a later append (recheck the same window)", () => {
     const a = rec({ direction: B2H, frame: { id: 1, method: "thread/read", params: { ref: "local:t" } } });
     const p = fixture("recheck.jsonl", joinTraced([a]));
     const after = bytesOf(p).length;
-    expect(countTargetRequestsInWindow("local:t", 0, after, p)).toEqual({ reads: 1, pages: 0 });
+    expect(countTargetRequestsInWindow("local:t", 0, after, p)).toEqual({
+      reads: 1,
+      pages: 0,
+      subscribeReads: 0,
+      recoveryReads: 0,
+      plainReads: 1,
+    });
     writeFileSync(
       p,
       joinTraced([a, rec({ direction: B2H, frame: { id: 2, method: "thread/read", params: { ref: "local:t" } } })]),
     );
-    expect(countTargetRequestsInWindow("local:t", 0, after, p)).toEqual({ reads: 1, pages: 0 });
+    expect(countTargetRequestsInWindow("local:t", 0, after, p)).toEqual({
+      reads: 1,
+      pages: 0,
+      subscribeReads: 0,
+      recoveryReads: 0,
+      plainReads: 1,
+    });
   });
 
   test("traceBytes fails rather than reporting zero when the trace cannot be statted", () => {
