@@ -54,7 +54,10 @@ export function SubagentBar({
 					</Text>
 				</Pressable>
 			) : offer === "requested" ? (
-				<View style={{ minHeight: 44, alignItems: "center", justifyContent: "center" }}>
+				<View
+					testID="subagent-stop-requested"
+					style={{ minHeight: 44, alignItems: "center", justifyContent: "center" }}
+				>
 					<Text allowFontScaling={allowFontScaling} style={{ ...label, textAlign: "center", color: palette.inkMid }}>
 						Stop requested
 					</Text>

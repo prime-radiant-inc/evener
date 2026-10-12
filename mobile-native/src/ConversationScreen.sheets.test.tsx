@@ -35,7 +35,7 @@ import {
 import { hasTestID, markers, withTestID } from "./markerTestUtils";
 import { ConversationScreen } from "./screens";
 import { connectionStatus } from "./board/connectionStatus";
-import { matchLabel } from "./session/findInSession";
+import { findAnswers, findBar, NO_MATCHES, ONLY_MATCH } from "./findBarTestUtils";
 import { forgetHistoryForHub } from "./session/historyMemory";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
@@ -1471,22 +1471,6 @@ async function advanceHistory(ms: number) {
 		await vi.advanceTimersByTimeAsync(ms);
 	});
 }
-
-/** The session's Find bar. */
-function findBar(tree: ReturnType<typeof render>) {
-	return tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
-}
-
-/** Whether the Find bar shows its settled answer, `label`: not searching
- * older messages, and not reporting an incomplete search. */
-function findAnswers(tree: ReturnType<typeof render>, label: string): boolean {
-	const bar = findBar(tree).props;
-	return !bar.error && !bar.searchingOlder && bar.label === label;
-}
-
-/** Find's answer when nothing matched, and when it sits on its one match. */
-const NO_MATCHES = matchLabel([], null);
-const ONLY_MATCH = matchLabel([0], 0);
 
 function openFind(tree: ReturnType<typeof render>, query: string) {
 	act(() => menuAction("Find in session").onPress());
