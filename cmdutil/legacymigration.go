@@ -28,6 +28,10 @@ var homeRootFiles = []string{
 	"deletions",
 }
 
+// ErrLegacySerfData identifies a launch stopped by a Serf config or state
+// directory that has not been migrated to Evener's.
+var ErrLegacySerfData = errors.New("legacy Serf data")
+
 // checkLegacyDataDirs refuses to let a fresh Evener binary create an empty
 // replacement for a Serf/home-root directory that still holds real data.
 //
@@ -61,10 +65,6 @@ var homeRootFiles = []string{
 // Per-project .serf directories are not checked: that migration is opt-in,
 // run by the user from a project root when ready, not something a binary
 // launch should block on.
-// ErrLegacySerfData identifies a launch stopped by a Serf config or state
-// directory that has not been migrated to Evener's.
-var ErrLegacySerfData = errors.New("legacy Serf data")
-
 func checkLegacyDataDirs() error {
 	home, err := os.UserHomeDir()
 	if err != nil {

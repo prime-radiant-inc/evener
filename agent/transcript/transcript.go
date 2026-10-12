@@ -1119,10 +1119,6 @@ func resumeWriter(fs afero.Fs, open func() (afero.File, error), expectedSessionI
 	return newWriterOnTail(fs, f, tail, header, tail.moved()), entries, nil
 }
 
-// scanForResume validates the transcript, truncates any crash tail, positions
-// f at the end, and returns the header, the entries, the next sequence
-// number, and the recorded length: the file's length once any crash tail is
-// cut off.
 // SessionIDMismatchError reports a transcript opened for one session whose
 // header names another.
 type SessionIDMismatchError struct {
@@ -1134,6 +1130,10 @@ func (e *SessionIDMismatchError) Error() string {
 	return fmt.Sprintf("transcript header session ID %q does not match requested session ID %q", e.HeaderSessionID, e.RequestedSessionID)
 }
 
+// scanForResume validates the transcript, truncates any crash tail, positions
+// f at the end, and returns the header, the entries, the next sequence
+// number, and the recorded length: the file's length once any crash tail is
+// cut off.
 func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int, int64, error) {
 	// Validate complete v2 records while finding the next sequence and the byte
 	// boundary before any crash tail. The shared framer drains an arbitrarily
