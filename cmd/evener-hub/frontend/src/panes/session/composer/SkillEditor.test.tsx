@@ -1,8 +1,36 @@
+import {
+  buildInput,
+  contextForRange,
+  displayedFingerprint,
+  type PreparedAnnotation,
+  sourcePositions,
+} from "@evener/appwire-client";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import "../testing/editorGeometry";
+import { createBrowserDraftRepository } from "../../../stores/browserDraftRepository";
+import { createDocumentAnnotationRepository } from "../../../stores/documentAnnotationIndexedDB";
+import {
+  ANNOTATION_OPERATIONS_STORE,
+  ANNOTATION_PAYLOADS_STORE,
+  type AnnotationOperationRow,
+  type AnnotationPayloadRow,
+} from "../../../stores/localCompositionSchema";
+import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { REFERENCE } from "../../doc/testing/annotationFixtures";
+import {
+  acceptedOperation,
+  attachmentIdentity,
+  blobBytes,
+  cleanupAfterTest,
+  docContent,
+  fixture,
+  rowsForTests,
+} from "../../doc/testing/annotationRepositoryFixtures";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorProps, type SkillEditorValue } from "./SkillEditor";
+import { parseSkillDocument, skillAtomMentions } from "./skillDocument";
+import { type ComposerSourceSnapshot, createComposerSourceState } from "./sourceState";
 
 function mount(initial: SkillEditorValue, extra: Partial<SkillEditorProps> = {}) {
   const ref = createRef<SkillEditorHandle>();
@@ -353,3 +381,413 @@ describe("SkillEditor real ProseMirror view", () => {
     expect(editor.querySelector("[data-skill-name]")?.getAttribute("title")).toBe("New");
   });
 });
+
+// A small unmount-once wrapper so an early assertion failure still cleans up.
+function unmountOnce(result: { unmount: () => void }): () => void {
+  let done = false;
+  const run = () => {
+    if (done) return;
+    done = true;
+    result.unmount();
+  };
+  cleanupAfterTest(run);
+  return run;
+}
+
+describe("SkillEditor annotation reference through remount and persisted reload", () => {
+  // Expected compositions are declared independently of the source that produced
+  // them; the fixture's same/plan offsets are the literal 9.
+  function expectedDraftValue(): SkillEditorValue {
+    return {
+      text: `ordinary /same\n\n${REFERENCE}`,
+      skillNames: ["same"],
+      mentions: [{ kind: "skill", name: "same", offset: 9 }],
+    };
+  }
+
+  function expectedRecoveryValue(): SkillEditorValue {
+    return {
+      text: "recovery /plan [image 1]",
+      skillNames: [],
+      commandNames: ["plan"],
+      mentions: [{ kind: "command", name: "plan", offset: 9 }],
+    };
+  }
+
+  function sourceValue(snapshot: ComposerSourceSnapshot): SkillEditorValue {
+    return {
+      text: snapshot.text,
+      skillNames: [...snapshot.skillNames],
+      ...(snapshot.commandNames.length ? { commandNames: [...snapshot.commandNames] } : {}),
+      ...(snapshot.mentions ? { mentions: snapshot.mentions.map((mention) => ({ ...mention })) } : {}),
+    };
+  }
+
+  it.each(["draft", "recovery"] as const)(
+    "keeps an appended annotation reference literal through editor remount and persisted reload on %s",
+    async (backing) => {
+      const f = await fixture(`editor-${backing}`);
+      // Settle the fixture's earlier pending op so this session's FIFO is free.
+      expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+      if (backing === "recovery") {
+        f.source.setActiveRecoveryId("rec-1");
+        await f.source.prepareAnnotation();
+      }
+      const expectedOriginal = backing === "draft" ? expectedDraftValue() : expectedRecoveryValue();
+      // Preserve the real source boundary: mount the ACTUAL source value below.
+      const originalValue = sourceValue(f.source.getSnapshot());
+      expect(originalValue).toEqual(expectedOriginal);
+
+      const note = backing === "draft" ? "see /same here" : "see /plan here";
+      const reference = REFERENCE.replace('"Keep this scope."', `"${note}"`);
+      const expectedText = `${expectedOriginal.text}\n\n${reference}`;
+
+      const ordinaryBefore = await f.drafts.load(f.key);
+      const recoveryBefore = await f.outbox.getRecovery("rec-1");
+      if (!ordinaryBefore || !recoveryBefore) throw new Error("fixture baseline rows missing");
+      const recoveryAttachmentBefore = recoveryBefore.attachments[0];
+      if (!recoveryAttachmentBefore) throw new Error("fixture recovery attachment missing");
+      expect(recoveryAttachmentBefore).toMatchObject(attachmentIdentity);
+      // The independently declared fixture byte, not a source-produced oracle.
+      expect(await blobBytes(recoveryAttachmentBefore.blob)).toEqual(new Uint8Array([1]));
+
+      // Independent baseline identities for the full applied receipt and payload.
+      const origin = location.origin;
+      const operationKey = JSON.stringify(["browser", origin, `editor-${backing}`]);
+      const documentKey = JSON.stringify(["browser", origin, "root", "NOTES.md"]);
+      const namespaceKey = JSON.stringify(["browser", origin]);
+      const sessionKey = JSON.stringify(["browser", origin, "root"]);
+      const opOnePayload = (
+        await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)
+      ).find((row) => row.operation.operationId === "op-1");
+      const opOneReceipt = (
+        await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)
+      ).find((row) => row.operationId === "op-1");
+      if (!opOnePayload || !opOneReceipt) throw new Error("settled fixture baseline missing");
+      if (opOneReceipt.state !== "applied") throw new Error("fixture op-1 is not applied");
+      const epoch = opOnePayload.epoch;
+      const advancedToken = {
+        ...ordinaryBefore.token,
+        sessionRevision: ordinaryBefore.token.sessionRevision + 1,
+      };
+      const expectedReceipt = {
+        operationKey,
+        namespaceKey,
+        namespaceIncarnation: opOneReceipt.namespaceIncarnation,
+        documentKey,
+        sessionKey,
+        sessionSequence: opOneReceipt.sessionSequence + 1,
+        operationId: `editor-${backing}`,
+        epoch,
+        state: "applied" as const,
+        draftRevision: ordinaryBefore.token.sessionRevision + 1,
+      };
+      const expectedRecoveryInput = [
+        { type: "text", text: expectedText, mentions: [{ kind: "command", name: "plan", offset: 9 }] },
+        { type: "image", mediaType: "image/png", data: "AQ==", name: "one.png" },
+        { type: "command", name: "plan" },
+      ];
+      const expectedRecoveryAfter = {
+        ...recoveryBefore,
+        composerText: expectedText,
+        composerMentions: [{ kind: "command", name: "plan", offset: 9 }],
+        payload: { ...recoveryBefore.payload, input: expectedRecoveryInput },
+        optimisticDisplay: { method: "turn/start", input: expectedRecoveryInput },
+      };
+
+      const enqueues = vi.spyOn(f.outbox, "enqueueIntent");
+      const resends = vi.spyOn(f.outbox, "resendRecovery");
+      const recoveryEdits = vi.spyOn(f.outbox, "updateRecoveryInput");
+
+      // Mount the current composition, then unmount ONLY the editor; the source
+      // and its retained value survive.
+      const first = mount(originalValue);
+      const unmountFirst = unmountOnce(first);
+      expect(first.editor.textContent).toBe(originalValue.text);
+      unmountFirst();
+
+      const operation = await acceptedOperation(f.repo, f.document, `editor-${backing}`, note, f.destination);
+      await f.repo.saveAnnotation(operation);
+      expect((await f.repo.handoff(f.document, operation.operationId)).state).toBe("applied");
+      if (backing === "recovery") {
+        f.source.setActiveRecoveryId("rec-1");
+        await f.source.prepareAnnotation();
+      }
+      const expectedPayload = { payloadKey: operationKey, documentKey, epoch, operation };
+
+      const afterValue = sourceValue(f.source.getSnapshot());
+      expect(afterValue).toEqual({ ...expectedOriginal, text: expectedText });
+
+      const skillAtoms = backing === "draft" ? 1 : 0;
+      const commandAtoms = backing === "draft" ? 0 : 1;
+      const second = mount(afterValue);
+      const unmountSecond = unmountOnce(second);
+      expect(second.editor.textContent).toBe(expectedText);
+      expect(second.editor.querySelectorAll("[data-skill-name]")).toHaveLength(skillAtoms);
+      expect(second.editor.querySelectorAll("[data-command-name]")).toHaveLength(commandAtoms);
+      unmountSecond();
+
+      // The annotation caused no local send/resend/update and left the outbox empty.
+      expect(enqueues).not.toHaveBeenCalled();
+      expect(resends).not.toHaveBeenCalled();
+      expect(recoveryEdits).not.toHaveBeenCalled();
+      expect(await f.outbox.listOutbox()).toEqual([]);
+
+      // Persisted reload: dispose the source, close the original repositories and
+      // reopen fresh ones on the SAME real factory/database, replaying through a
+      // recreated annotation adapter.
+      await f.source.whenSettled();
+      f.source.dispose();
+      f.repo.close();
+      f.drafts.close();
+      f.outbox.close();
+      const reopenedDrafts = createBrowserDraftRepository({ indexedDB: f.factory, databaseName: f.databaseName });
+      cleanupAfterTest(() => reopenedDrafts.close());
+      const reopenedOutbox = new MutationOutboxIndexedDB({
+        indexedDB: f.factory,
+        databaseName: f.databaseName,
+        createMutationId: () => "rec-1",
+        createPresentationId: () => "image-1",
+        now: () => 100,
+      });
+      cleanupAfterTest(() => reopenedOutbox.close());
+      const reopenedRepo = createDocumentAnnotationRepository({
+        indexedDB: f.factory,
+        databaseName: f.databaseName,
+        drafts: reopenedDrafts,
+        targetFor: () => null,
+      });
+      cleanupAfterTest(() => reopenedRepo.close());
+      const reopenedEnqueues = vi.spyOn(reopenedOutbox, "enqueueIntent");
+      const reopenedResends = vi.spyOn(reopenedOutbox, "resendRecovery");
+      const reopenedEdits = vi.spyOn(reopenedOutbox, "updateRecoveryInput");
+      const freshSource = createComposerSourceState("root", {
+        repository: reopenedDrafts,
+        key: f.key,
+        outbox: reopenedOutbox,
+      });
+      cleanupAfterTest(async () => {
+        await freshSource.whenSettled();
+        freshSource.dispose();
+      });
+      await freshSource.ready();
+      if (backing === "recovery") {
+        freshSource.setActiveRecoveryId("rec-1");
+        await freshSource.prepareAnnotation();
+      }
+      const reloadedValue = sourceValue(freshSource.getSnapshot());
+      expect(reloadedValue).toEqual(afterValue);
+      const reloaded = mount(reloadedValue);
+      const unmountReloaded = unmountOnce(reloaded);
+      expect(reloaded.editor.textContent).toBe(expectedText);
+      expect(reloaded.editor.querySelectorAll("[data-skill-name]")).toHaveLength(skillAtoms);
+      expect(reloaded.editor.querySelectorAll("[data-command-name]")).toHaveLength(commandAtoms);
+      unmountReloaded();
+
+      // Read BOTH backings immediately before replay and assert their complete,
+      // independently expected values plus the literal fixture byte.
+      const ordinaryBeforeReplay = await reopenedDrafts.load(f.key);
+      const recoveryBeforeReplay = await reopenedOutbox.getRecovery("rec-1");
+      if (!ordinaryBeforeReplay || !recoveryBeforeReplay) throw new Error("prereplay rows missing");
+      if (backing === "draft") {
+        expect(ordinaryBeforeReplay).toEqual({ ...ordinaryBefore, text: expectedText, token: advancedToken });
+        expect(recoveryBeforeReplay).toEqual(recoveryBefore);
+      } else {
+        expect(ordinaryBeforeReplay).toEqual({ ...ordinaryBefore, token: advancedToken });
+        expect(recoveryBeforeReplay).toEqual(expectedRecoveryAfter);
+      }
+      const recoveryAttachmentBeforeReplay = recoveryBeforeReplay.attachments[0];
+      if (!recoveryAttachmentBeforeReplay) throw new Error("prereplay recovery attachment missing");
+      expect(recoveryAttachmentBeforeReplay).toMatchObject(attachmentIdentity);
+      expect(await blobBytes(recoveryAttachmentBeforeReplay.blob)).toEqual(new Uint8Array([1]));
+
+      const payloadsBeforeReplay = await rowsForTests<AnnotationPayloadRow>(
+        f.factory,
+        f.databaseName,
+        ANNOTATION_PAYLOADS_STORE,
+      );
+      expect(payloadsBeforeReplay.filter((row) => row.operation.operationId === operation.operationId)).toEqual([
+        expectedPayload,
+      ]);
+      const receiptsBeforeReplay = await rowsForTests<AnnotationOperationRow>(
+        f.factory,
+        f.databaseName,
+        ANNOTATION_OPERATIONS_STORE,
+      );
+      expect(receiptsBeforeReplay.find((row) => row.operationId === operation.operationId)).toEqual(expectedReceipt);
+
+      // Terminal replay cannot add a reference or change any row.
+      expect((await reopenedRepo.handoff(f.document, operation.operationId)).state).toBe("already-applied");
+
+      // Freshly reread BOTH backings and compare to the prereplay expectations.
+      const ordinaryAfter = await reopenedDrafts.load(f.key);
+      const recoveryAfter = await reopenedOutbox.getRecovery("rec-1");
+      if (!ordinaryAfter || !recoveryAfter) throw new Error("post-reload rows missing");
+      expect(ordinaryAfter).toEqual(ordinaryBeforeReplay);
+      expect(recoveryAfter).toEqual(recoveryBeforeReplay);
+      const recoveryAttachmentAfter = recoveryAfter.attachments[0];
+      if (!recoveryAttachmentAfter) throw new Error("post-reload recovery attachment missing");
+      expect(recoveryAttachmentAfter).toMatchObject(attachmentIdentity);
+      expect(await blobBytes(recoveryAttachmentAfter.blob)).toEqual(new Uint8Array([1]));
+
+      const payloads = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
+      expect(payloads.filter((row) => row.operation.operationId === operation.operationId)).toEqual([expectedPayload]);
+      const receipts = await rowsForTests<AnnotationOperationRow>(
+        f.factory,
+        f.databaseName,
+        ANNOTATION_OPERATIONS_STORE,
+      );
+      expect(receipts.find((row) => row.operationId === operation.operationId)).toEqual(expectedReceipt);
+
+      expect(reopenedEnqueues).not.toHaveBeenCalled();
+      expect(reopenedResends).not.toHaveBeenCalled();
+      expect(reopenedEdits).not.toHaveBeenCalled();
+      expect(await reopenedOutbox.listOutbox()).toEqual([]);
+    },
+  );
+});
+
+// Plan Step3b: the ORIGINAL source has no explicit mentions but infers a /same
+// atom; the appended annotation reference carries same-spelling slash text. The
+// reference must stay literal through a hidden real editor, Return from the
+// retained source and a freshly hydrated source on both backings.
+it.each(["draft", "recovery"] as const)(
+  "keeps original absent-mention atoms on hidden %s Return/reload",
+  async (backing) => {
+    const f = await fixture(`atoms-${backing}`);
+    const current = await f.drafts.load(f.key);
+    if (!current) throw new Error("missing row");
+    const saved = await f.drafts.commitEdit(f.key, current.token, { text: "/same", skillNames: ["same"] }, () => true);
+    expect(saved.state).toBe("committed");
+    const record = await f.outbox.getRecovery("rec-1");
+    if (!record) throw new Error("missing recovery");
+    const stagedAttachment = { marker: 1, name: "one.png", mediaType: "image/png", data: "AQ==" };
+    const staged = [stagedAttachment];
+    await f.outbox.updateRecoveryInput(
+      "rec-1",
+      buildInput("/same [image 1]", staged, ["same"]),
+      record.attachments,
+      "/same [image 1]",
+    );
+    if (backing === "recovery") f.source.setActiveRecoveryId("rec-1");
+    await f.source.prepareAnnotation();
+    if (backing === "draft") f.source.attachments.setState({ items: [{ ...stagedAttachment, pending: false }] });
+    const attachment = f.source.attachments.getState().items[0];
+    const initial = f.source.getSnapshot();
+    const expectedAtoms = [{ kind: "skill", name: "same", offset: 0 }];
+    expect(initial.mentions).toBeUndefined();
+    expect(skillAtomMentions(parseSkillDocument(initial))).toEqual(expectedAtoms);
+
+    const originalEditor = render(<SkillEditor value={initial} onChange={vi.fn()} aria-label="Message" />);
+    const hideOriginal = unmountOnce(originalEditor);
+    hideOriginal(); // hidden editor, the source is retained
+
+    const source = "Context /same, passage /same, context /same.\n";
+    const changed = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(source, "rev-slash"));
+    if (changed.state !== "expiry-pending" || !changed.receipt) throw new Error("missing expiry");
+    await f.repo.finishExpiry(changed.receipt);
+    const accepted = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(source, "rev-slash"));
+    if (accepted.state !== "accepted") throw new Error("missing acceptance");
+    const start = source.indexOf("/same", source.indexOf("/same") + 1);
+    const range = { start, end: start + "/same".length };
+    const context = contextForRange(source, range);
+    const operation: PreparedAnnotation = {
+      operationId: "atom-id",
+      lease: accepted.lease,
+      destination: f.destination,
+      note: "Keep /same literal.",
+      capture: {
+        evidence: { wholeRevision: "rev-slash", fingerprint: displayedFingerprint(source, false) },
+        sourceRange: range,
+        ...sourcePositions(source, range),
+        selectedRenderedText: "/same",
+        contextBefore: context.before,
+        contextAfter: context.after,
+        mappingId: "slash-map",
+        displayedSnapshotId: accepted.lease.displayedSnapshotId,
+      },
+    };
+    await f.repo.saveAnnotation(operation);
+    expect((await f.repo.handoff(f.document, "atom-id")).state).toBe("applied");
+
+    // Independent literal expectation, not the production formatter.
+    const reference =
+      'A note on `NOTES.md:1:24-1:28` (captured source positions), selecting “/same”: "Keep /same literal."\n' +
+      'Captured whole-file revision: "rev-slash".\n' +
+      'Context before: "Context /same, passage "; after: ", context /same.\\n".\n' +
+      "Verify the quotation and context against current content before relying on these captured coordinates.";
+    const expectedText = `${initial.text}\n\n${reference}`;
+    const returned = f.source.getSnapshot();
+    expect(returned.text).toBe(expectedText);
+    expect(returned.mentions).toEqual(expectedAtoms);
+    expect(skillAtomMentions(parseSkillDocument(returned))).toEqual(expectedAtoms);
+    expect(f.source.attachments.getState().items[0]).toBe(attachment);
+
+    const returnEditor = render(<SkillEditor value={returned} onChange={vi.fn()} aria-label="Message" />);
+    const unmountReturn = unmountOnce(returnEditor);
+    expect(returnEditor.getByRole("textbox").querySelectorAll('[data-skill-name="same"]')).toHaveLength(1);
+    expect(returnEditor.getByRole("textbox").querySelectorAll("[data-command-name]")).toHaveLength(0);
+    unmountReturn();
+
+    const ordinary = await f.drafts.load(f.key);
+    const recovery = await f.outbox.getRecovery("rec-1");
+    expect(recovery?.attachments).toEqual(record.attachments);
+    const recoveryAttachment = recovery?.attachments[0];
+    if (!recoveryAttachment) throw new Error("missing recovery attachment");
+    expect(recoveryAttachment).toMatchObject(attachmentIdentity);
+    expect(await blobBytes(recoveryAttachment.blob)).toEqual(new Uint8Array([1]));
+    expect(backing === "draft" ? ordinary?.text : recovery?.composerText).toBe(expectedText);
+
+    // Persisted reload through freshly recreated repositories on the SAME
+    // factory/database.
+    await f.source.whenSettled();
+    f.source.dispose();
+    f.repo.close();
+    f.drafts.close();
+    f.outbox.close();
+    const reopenedDrafts = createBrowserDraftRepository({ indexedDB: f.factory, databaseName: f.databaseName });
+    cleanupAfterTest(() => reopenedDrafts.close());
+    const reopenedOutbox = new MutationOutboxIndexedDB({
+      indexedDB: f.factory,
+      databaseName: f.databaseName,
+      createMutationId: () => "rec-1",
+      createPresentationId: () => "image-1",
+      now: () => 100,
+    });
+    cleanupAfterTest(() => reopenedOutbox.close());
+    const reopenedRepo = createDocumentAnnotationRepository({
+      indexedDB: f.factory,
+      databaseName: f.databaseName,
+      drafts: reopenedDrafts,
+      targetFor: () => null,
+    });
+    cleanupAfterTest(() => reopenedRepo.close());
+    const reloaded = createComposerSourceState("root", {
+      repository: reopenedDrafts,
+      key: f.key,
+      outbox: reopenedOutbox,
+    });
+    cleanupAfterTest(() => reloaded.dispose());
+    await reloaded.ready();
+    if (backing === "recovery") {
+      reloaded.setActiveRecoveryId("rec-1");
+      await reloaded.prepareAnnotation();
+    }
+    expect(skillAtomMentions(parseSkillDocument(reloaded.getSnapshot()))).toEqual(expectedAtoms);
+    const reloadEditor = render(<SkillEditor value={reloaded.getSnapshot()} onChange={vi.fn()} aria-label="Message" />);
+    const unmountReload = unmountOnce(reloadEditor);
+    expect(reloadEditor.getByRole("textbox").querySelectorAll('[data-skill-name="same"]')).toHaveLength(1);
+    expect(reloadEditor.getByRole("textbox").querySelectorAll("[data-command-name]")).toHaveLength(0);
+    unmountReload();
+
+    const reloadedOrdinary = await reopenedDrafts.load(f.key);
+    const reloadedRecovery = await reopenedOutbox.getRecovery("rec-1");
+    expect(backing === "draft" ? reloadedOrdinary?.text : reloadedRecovery?.composerText).toBe(expectedText);
+    expect(
+      (await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)).filter(
+        (row) => row.operationId === "atom-id" && row.state === "applied",
+      ),
+    ).toHaveLength(1);
+    expect((await reopenedRepo.handoff(f.document, "atom-id")).state).toBe("already-applied");
+  },
+);

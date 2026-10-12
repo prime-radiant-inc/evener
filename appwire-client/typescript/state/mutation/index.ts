@@ -40,6 +40,10 @@ export {
   truncateForDisplay,
 } from "./pendingEntries";
 export type {
+  DraftBackingIdentity,
+  DraftSessionToken,
+  DraftSettlement,
+  DraftSettlementGuard,
   PendingTurnsDraftPort,
   PendingTurnsState,
   PendingTurnsStore,

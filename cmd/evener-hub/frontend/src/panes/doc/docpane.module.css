@@ -15,6 +15,17 @@
  * markdown documents. */
 .markdown {
   --prose-font-size: var(--font-size-prose);
+  /* The annotation highlight overlay positions against the mapped prose host. */
+  position: relative;
+}
+
+/* The pane-level annotation status, kept visible after a comment box closes. */
+.status {
+  display: block;
+  margin-top: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
 }
 
 .imageButton {

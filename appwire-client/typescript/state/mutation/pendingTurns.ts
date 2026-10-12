@@ -13,6 +13,8 @@
 // "what is ref X's current thread model" and "what did ref X's composer
 // draft hold, and how do I clear it" - are the injected ports below, sized
 // to exactly what this module calls.
+
+import type { ComposerMention } from "../../composerInput";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { ThreadModel } from "../../model";
 import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingEntries";
@@ -136,16 +138,42 @@ export interface PendingTurnsState<A extends MutationAttachmentRef = MutationAtt
   submittedHere: ReadonlyMap<string, number>;
 }
 
+export interface DraftSessionToken {
+  readonly namespaceIncarnation: string;
+  readonly sessionRevision: number;
+}
+
+export type DraftBackingIdentity =
+  | { readonly kind: "draft" }
+  | { readonly kind: "recovery"; readonly recoveryId: string };
+
+export interface DraftSettlementGuard {
+  readonly token: DraftSessionToken;
+  readonly backing: DraftBackingIdentity;
+  readonly localGeneration: number;
+}
+
+export interface DraftSettlement {
+  cleared: boolean;
+  draftUnchanged: boolean;
+  persistence: "committed" | "pending";
+}
+
 // The submitted values `settleSubmittedDraft` compares the current draft
 // against: what the composer sent, and the draft revision counter it read
 // just before starting - "unchanged" means neither a later edit (the
 // revision moved) nor a different edit already restored (the text/selections
-// no longer match) has happened since.
+// no longer match) has happened since. `mentions` is carried so a browser
+// settlement can compare the exact editor value, and `settlementGuard` is the
+// transactional fence a browser repository checks against its durable row.
 export interface SubmittedDraft {
   draftRevisionAtStart: number;
   text: string;
   skillNames: readonly string[];
   commandNames?: readonly string[];
+  mentions?: readonly ComposerMention[];
+  settlementGuard?: DraftSettlementGuard;
+  stillOwnsEdit?: () => boolean;
 }
 
 export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAttachmentRef>

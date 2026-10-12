@@ -1456,10 +1456,14 @@ test("a failure superseded by a newer save in the same drain never retries stale
   await user.tab();
   await advance(10_000);
   release();
+  // The stale rejection transfers through real IndexedDB before the next save
+  // can dispatch, independently of this test's fake timeout clock.
+  await flushIndexedDBUntil(() => seen.length >= 2);
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "newer draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("newer draft");
   // The stale failure must not resurrect: no third attempt restores it.
+  await flushIndexedDBUntil(() => screen.queryByTestId("shared-notes-saving") === null);
   await waitFor(() => expect(screen.queryByTestId("shared-notes-saving")).toBeNull());
   expect(seen).toHaveLength(2);
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("newer draft");

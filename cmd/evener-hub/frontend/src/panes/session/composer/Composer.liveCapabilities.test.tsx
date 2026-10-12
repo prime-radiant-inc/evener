@@ -32,11 +32,12 @@
 
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
+import { resetBrowserDraftRepositoryForTests } from "../../../stores/browserDraftRepository";
 import { connectionStore } from "../../../stores/connection";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -45,9 +46,16 @@ import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
-import { createTestComposerSource } from "../testing/composerSource";
+import { createTestComposerSource as createTrackedComposerSource } from "../testing/composerSource";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
+
+const sources = new Set<ReturnType<typeof createTrackedComposerSource>>();
+function createTestComposerSource(ref: string) {
+  const source = createTrackedComposerSource(ref);
+  sources.add(source);
+  return source;
+}
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;
@@ -142,10 +150,12 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
       }) as ThreadReadResponse,
   );
   await threadsStore.getState().ensureThread(REF);
+  const source = createTestComposerSource(REF);
+  await act(async () => source.ready());
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
+      <Composer ref={REF} source={source} focused={false} />
     </ClientProvider>,
   );
   await settleActivityDiscovery(REF);
@@ -228,6 +238,7 @@ async function type(text: string): Promise<void> {
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
+  resetBrowserDraftRepositoryForTests();
   localStorage.clear();
   resetPrefsStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -235,6 +246,14 @@ beforeEach(() => {
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
   resetToastStoreForTests();
+});
+
+afterEach(async () => {
+  cleanup();
+  await act(async () => Promise.all([...sources].map((source) => source.whenSettled())));
+  await flushPendingTurnsProjectionForTests();
+  sources.clear();
+  resetBrowserDraftRepositoryForTests();
 });
 
 // Kata 06t8's report, end to end: a cold exited session opened from the rail,
@@ -331,10 +350,12 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
     await threadsStore
       .getState()
       .ensureThread(REF)
-      .then(() => {
+      .then(async () => {
+        const source = createTestComposerSource(REF);
+        await act(async () => source.ready());
         render(
           <ClientProvider client={fake}>
-            <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
+            <Composer ref={REF} source={source} focused={false} />
           </ClientProvider>,
         );
         act(() => {

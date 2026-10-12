@@ -1142,3 +1142,51 @@ export async function assertGuardOrigin(send, expectedHost) {
     throw new Error(`refusing: expected origin http://${expectedHost}, got ${origin}`);
   }
 }
+
+/**
+ * Resolve after two animation frames: a real browser paint boundary.
+ */
+export async function nextPaint(send) {
+  await evaluate(
+    send,
+    "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))",
+  );
+}
+
+/**
+ * A genuine CDP mouse drag: an ordinary buttonless approach move first, then a
+ * press, ten interpolated moves, and a release at the target point. No
+ * Selection.addRange, no synthetic events.
+ *
+ * `modifiers` threads key state through every event (a Shift-drag). `onApproach`
+ * runs between the approach move and the press, so a guard can record the
+ * hover state the approach itself created. Callers keep their own trailing
+ * paint waits.
+ */
+export async function cdpDrag(send, from, to, { modifiers = 0, steps = 10, onApproach } = {}) {
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x, y: from.y, buttons: 0, modifiers });
+  if (onApproach) await onApproach();
+  await send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: from.x,
+    y: from.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    modifiers,
+  });
+  for (let step = 1; step <= steps; step += 1) {
+    const x = from.x + ((to.x - from.x) * step) / steps;
+    const y = from.y + ((to.y - from.y) * step) / steps;
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1, modifiers });
+  }
+  await send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: to.x,
+    y: to.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    modifiers,
+  });
+}

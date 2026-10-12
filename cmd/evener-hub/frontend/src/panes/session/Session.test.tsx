@@ -3222,7 +3222,15 @@ test("explicit Resume follows the returned identity through transcript and new s
             result = { data: [], nextCursor: null };
             break;
           case "turn/start":
-            result = { turn: { id: "new-turn", status: "inProgress", itemsView: "full" } };
+            result = {
+              turn: { id: "new-turn", status: "inProgress", itemsView: "full" },
+              receipt: {
+                clientMutationId: request.params.clientMutationId,
+                disposition: "applied",
+                threadId: `thr_${currentRef}`,
+                projectionState: "pending",
+              },
+            } satisfies appwireClient.TurnStartResponse;
             break;
         }
         socket.receive({ id: request.id, result });
@@ -3310,6 +3318,14 @@ test("explicit Resume follows the returned identity through transcript and new s
   expect(requests.find(({ method }) => method === "turn/start")?.params).toEqual(
     expect.objectContaining({ ref: currentRef }),
   );
+  const sentId = requests.find(({ method }) => method === "turn/start")?.params.clientMutationId;
+  expect(sentId).toEqual(expect.any(String));
+  expect(sentId).not.toBe("");
+  expect(sentId).not.toBe(uncertain);
+  expect(await mutationStorage.listOutbox(currentRef)).toEqual([]);
+  expect(await mutationStorage.listOutbox(stableRef)).toEqual([
+    expect.objectContaining({ clientMutationId: uncertain, state: "canceled" }),
+  ]);
 });
 
 // RoboRev finding on the reduced branch: the explicit Resume passed

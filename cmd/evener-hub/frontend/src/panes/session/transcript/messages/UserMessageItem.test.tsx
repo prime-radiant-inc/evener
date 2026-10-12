@@ -3,17 +3,24 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, Thread, ThreadCapabilities, TurnModel } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { conversationPaneLifetime } from "../../../../shell/paneLifetime";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
+import * as browserDrafts from "../../../../stores/browserDraftRepository";
+import {
+  createBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
+} from "../../../../stores/browserDraftRepository";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
-import { readDraft } from "../../composer/draft";
+import { getToasts } from "../../../../widgets/toast/store";
 import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { UserMessageItem, UserMessageView } from "./UserMessageItem";
@@ -320,11 +327,134 @@ function connectForkClient(): FakeClient {
 
 describe("per-message fork affordance", () => {
   beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+    resetBrowserDraftRepositoryForTests();
     connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
     resetThreadsStoreForTests();
     resetWorkspaceStoreForTests();
     localStorage.clear();
   });
+
+  // A read projection cannot replace a durable seed before the pane opens.
+  test("fork durably commits the literal original input before the actual pane opens without hydration advancing its revision", async () => {
+    const fake = connectForkClient();
+    fake.on("thread/fork", () => ({ thread: forkWireThread(), originalInput: "literal /same\nsecond line" }));
+    const repository = createBrowserDraftRepository();
+    const key = { namespace: { kind: "browser" as const, origin: location.origin }, sessionRef: "local/child_1" };
+    let atOpen: ReturnType<typeof repository.load> | undefined;
+    const unsubscribe = workspaceStore.subscribe((state) => {
+      if (!atOpen && state.panes.some((pane) => pane.type === "session")) atOpen = repository.load(key);
+    });
+    try {
+      render(
+        <UserMessageItem
+          item={item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+          turn={turn}
+          live={false}
+          sessionRef="ref_a"
+        />,
+      );
+      await userEvent.setup().click(screen.getByRole("button", { name: /fork from here/i }));
+      await waitFor(() => expect(atOpen).toBeDefined());
+      const committed = await atOpen;
+      expect(committed).toEqual({
+        key,
+        text: "literal /same\nsecond line",
+        skillNames: [],
+        token: { namespaceIncarnation: expect.any(String), sessionRevision: 1 },
+      });
+      const pane = workspaceStore.getState().panes.find((record) => record.type === "session");
+      if (!pane) throw new Error("fork did not open its session");
+      const source = conversationPaneLifetime(pane).composer;
+      if (!source) throw new Error("fork session has no composer source");
+      await act(async () => source.ready());
+      expect(source.getSnapshot()).toMatchObject({
+        text: "literal /same\nsecond line",
+        skillNames: [],
+        commandNames: [],
+        mentions: undefined,
+      });
+      expect(await repository.load(key)).toEqual(committed);
+      expect(source.sourceId).toEqual(expect.any(String));
+      expect(pane).not.toHaveProperty("sourceId");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+    } finally {
+      unsubscribe();
+      resetWorkspaceStoreForTests();
+      repository.close();
+    }
+  });
+
+  test.each(["conflict", "transaction fault"] as const)(
+    "fork seed %s preserves existing durable values, reports failure and opens no pane",
+    async (mode) => {
+      const fake = connectForkClient();
+      fake.on("thread/fork", () => ({ thread: forkWireThread(), originalInput: "literal /same\nsecond line" }));
+      let faultArmed = false;
+      let faults = 0;
+      const repository = createBrowserDraftRepository({
+        beforeCommit(operation) {
+          if (faultArmed && operation === "seedDraft") {
+            faults += 1;
+            throw new Error("real fork seed transaction fault");
+          }
+        },
+      });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      const unrelatedKey = browserDrafts.browserDraftKey("unrelated");
+      const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+      try {
+        const unrelated = await repository.seedDraft(unrelatedKey, { text: "unrelated remains", skillNames: [] });
+        expect(unrelated.state).toBe("committed");
+        const beforeUnrelated = await repository.load(unrelatedKey);
+        if (mode === "conflict") {
+          expect(
+            (
+              await repository.seedDraft(key, {
+                text: "existing /audit",
+                skillNames: [],
+                commandNames: ["audit"],
+                mentions: [{ kind: "command", name: "audit", offset: 9 }],
+              })
+            ).state,
+          ).toBe("committed");
+        }
+        const before = await repository.load(key);
+        faultArmed = mode === "transaction fault";
+        const beforeToasts = getToasts().map((toast) => ({ kind: toast.kind, text: toast.text }));
+        render(
+          <UserMessageItem
+            item={item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+            turn={turn}
+            live={false}
+            sessionRef="ref_a"
+          />,
+        );
+        const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+        await userEvent.setup().click(button);
+        await waitFor(() => expect(button.disabled).toBe(false));
+        expect(workspaceStore.getState().panes).toEqual([]);
+        expect(await repository.load(key)).toEqual(before);
+        expect(await repository.load(unrelatedKey)).toEqual(beforeUnrelated);
+        expect(faults).toBe(mode === "transaction fault" ? 1 : 0);
+        expect(fake.calls.filter((call) => call.method === "thread/fork")).toHaveLength(1);
+        expect(getToasts().map((toast) => ({ kind: toast.kind, text: toast.text }))).toEqual([
+          ...beforeToasts,
+          {
+            kind: "error",
+            text:
+              mode === "conflict"
+                ? "Couldn't fork from here: The forked session already has a draft"
+                : "Couldn't fork from here: Couldn't save the forked message locally",
+          },
+        ]);
+      } finally {
+        faultArmed = false;
+        repositoryAccessor.mockRestore();
+        repository.close();
+      }
+    },
+  );
 
   test("a user message with a sessionRef renders a Fork-from-here button; a read-only one (no ref) does not", () => {
     const { rerender } = render(
@@ -393,7 +523,14 @@ describe("per-message fork affordance", () => {
       }),
     );
     // ...with the original text seeded into its composer draft (never auto-sent).
-    expect(readDraft("local/child_1")).toBe("fix the bug");
+    expect(
+      await browserDrafts.getBrowserDraftRepository().load(browserDrafts.browserDraftKey("local/child_1")),
+    ).toMatchObject({
+      text: "fix the bug",
+      skillNames: [],
+      token: { sessionRevision: 1 },
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   });
 
   test("a failed fork surfaces an error toast and opens no pane", async () => {

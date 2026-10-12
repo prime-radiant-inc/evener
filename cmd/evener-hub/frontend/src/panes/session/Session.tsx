@@ -39,6 +39,7 @@ import { hasQueuedNonSend, resumeStopBaseline, threadsStore, useThreadsStore } f
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
+import { DocOpeningProvider, docOpeningOriginFor } from "../doc/docOpeningContext";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
@@ -236,6 +237,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const lifetime = pane ? conversationPaneLifetime(pane) : null;
   const composerSource = lifetime?.composer ?? null;
   const readView = lifetime ? retainedTranscriptReadView(lifetime, ref, "session") : null;
+  // The opening origin every card/link in this pane's transcript captures: its
+  // own session source while alive, else an explicit read-only source pane.
+  const docOpeningOrigin = lifetime ? docOpeningOriginFor(lifetime, ref) : undefined;
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount. AppShell mounts DockHost (and therefore this pane)
@@ -649,7 +653,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <AskDockAnnouncements ref={ref} />
     </div>
   );
-  const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;
+  // The provider wraps the transcript subtree (where file cards and prose links
+  // actually render) without changing this pane's PaneScaffold root.
+  const transcript = (
+    <DocOpeningProvider origin={docOpeningOrigin}>
+      <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>
+    </DocOpeningProvider>
+  );
 
   return (
     <PaneScaffold

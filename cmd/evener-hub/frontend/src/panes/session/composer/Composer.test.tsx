@@ -6,7 +6,7 @@ import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
@@ -20,14 +20,22 @@ import { paletteStore } from "../../../shell/palette/paletteController";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
+import {
+  browserDraftKey,
+  createBrowserDraftRepository,
+  getBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
+} from "../../../stores/browserDraftRepository";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
+import { COMPOSER_DRAFTS_STORE } from "../../../stores/localCompositionSchema";
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
+import { settleProjectionWorkForTests } from "../../../stores/projectionWork";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activitySummary } from "../../../stores/sessionActivityTestUtils";
-import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -41,24 +49,34 @@ import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css"
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
-import { createTestComposerSource } from "../testing/composerSource";
+import { createTestComposerSource as createTrackedComposerSource } from "../testing/composerSource";
 import { editorCursor, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
+import type { PendingAttachment } from "./attachments/useAttachments";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
-import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
+import { composerDraftStorageKey, draftStorageKey, readComposerDraft, readDraft } from "./draft";
 import {
   publishOutboxRecordForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
+  subscribeComposerSubmissionCommitted,
 } from "./queue/pendingTurnsStore";
 import {
   flushPendingTurnsProjectionForTests,
   startFlushPastEmptyRoundForTests,
 } from "./queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
+import * as composerSources from "./sourceState";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
+
+const sourceWork = new Set<ReturnType<typeof createTrackedComposerSource>>();
+function createTestComposerSource(ref: string) {
+  const source = createTrackedComposerSource(ref);
+  sourceWork.add(source);
+  return source;
+}
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;
@@ -294,12 +312,12 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
     this.releaseDiscard?.();
   }
 
-  override async discardRecovery(clientMutationId: string, shouldDiscard?: () => boolean): Promise<boolean> {
-    if (clientMutationId === this.pausedClientMutationId) {
+  override async discardRecovery(...args: Parameters<MutationOutboxIndexedDB["discardRecovery"]>): Promise<boolean> {
+    if (args[0] === this.pausedClientMutationId) {
       this.markDiscardStarted?.();
       await this.discardGate;
     }
-    return super.discardRecovery(clientMutationId, shouldDiscard);
+    return super.discardRecovery(...args);
   }
 }
 
@@ -310,15 +328,19 @@ async function mountComposerWithHandle(
     focused?: boolean;
     prepare?: (fake: FakeClient) => void;
     holdMountProjection?: boolean;
+    readyBeforeRender?: boolean;
+    source?: ReturnType<typeof createTestComposerSource>;
   } = {},
 ) {
   const fake = connectFakeClient(options.prepare);
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
+  const source = options.source ?? createTestComposerSource(ref);
+  if (options.readyBeforeRender) await source.ready();
   const view = render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} source={createTestComposerSource(ref)} focused={options.focused ?? false} />
+      <Composer ref={ref} source={source} focused={options.focused ?? false} />
     </ClientProvider>,
   );
   await settleActivityDiscovery(ref);
@@ -326,7 +348,7 @@ async function mountComposerWithHandle(
   // its state update land during a later bare await, outside act. A test that
   // holds or observes that work open asks to keep it in flight.
   if (!options.holdMountProjection) await flushPendingTurnsProjectionForTests();
-  return { fake, ...view };
+  return { fake, source, ...view };
 }
 
 async function mountComposer(
@@ -336,6 +358,143 @@ async function mountComposer(
 ): Promise<FakeClient> {
   return (await mountComposerWithHandle(ref, overrides, options)).fake;
 }
+
+test("the dev composer surface commits its durable fixture before constructing the drafted source", async () => {
+  const ref = "dev-surface-composer-drafted";
+  const text = "One more thing - can you also add a CHANGELOG entry for this?";
+  const repository = getBrowserDraftRepository();
+  const seed = repository.seedDraft.bind(repository);
+  let fixtureCommitted = false;
+  vi.spyOn(repository, "seedDraft").mockImplementation(async (...args) => {
+    const result = await seed(...args);
+    if (args[0].sessionRef === ref && args[1].text === text && result.state === "committed") fixtureCommitted = true;
+    return result;
+  });
+  const create = composerSources.createComposerSourceState;
+  const sources: ReturnType<typeof create>[] = [];
+  const draftedPublications: boolean[] = [];
+  vi.spyOn(composerSources, "createComposerSourceState").mockImplementation((...args) => {
+    if (args[0] === ref) draftedPublications.push(fixtureCommitted);
+    const source = create(...args);
+    sources.push(source);
+    return source;
+  });
+  const { default: ComposerSurfaceSection } = await import("../../../dev/surface-sections/composer");
+  const view = render(<ComposerSurfaceSection />);
+  try {
+    await waitFor(() => expect(draftedPublications.length).toBeGreaterThan(0));
+    await act(async () => {
+      await Promise.all(sources.map((source) => source.ready()));
+      await Promise.all(sources.map((source) => source.whenSettled()));
+    });
+    expect(draftedPublications.every(Boolean)).toBe(true);
+    expect(await repository.load(browserDraftKey(ref))).toMatchObject({ text, skillNames: [] });
+    expect(sources.find((source) => source.getSnapshot().text === text)).toBeDefined();
+  } finally {
+    view.unmount();
+    await Promise.all(sources.map((source) => source.whenSettled()));
+  }
+});
+
+test.each(["conflict", "unavailable"] as const)(
+  "the dev composer surface handles a real durable seed %s without replacing an existing winner or publishing a failed fixture",
+  async (outcome) => {
+    const ref = "dev-surface-composer-drafted";
+    const repository = getBrowserDraftRepository();
+    const winner = { text: "existing dev work /same", skillNames: [], mentions: [] };
+    if (outcome === "conflict") {
+      expect((await repository.seedDraft(browserDraftKey(ref), winner)).state).toBe("committed");
+    } else {
+      vi.spyOn(indexedDB, "open").mockImplementation(() => {
+        throw new Error("fixture storage unavailable");
+      });
+    }
+    const seed = vi.spyOn(repository, "seedDraft");
+    const create = composerSources.createComposerSourceState;
+    const sources: ReturnType<typeof create>[] = [];
+    vi.spyOn(composerSources, "createComposerSourceState").mockImplementation((...args) => {
+      const source = create(...args);
+      sources.push(source);
+      return source;
+    });
+    const { default: ComposerSurfaceSection } = await import("../../../dev/surface-sections/composer");
+    const view = render(<ComposerSurfaceSection />);
+    try {
+      await act(async () => {
+        await Promise.all(seed.mock.results.map((result) => result.value));
+        await Promise.all(sources.map((source) => source.ready().catch(() => undefined)));
+      });
+      await flushPendingTurnsProjectionForTests();
+      await act(async () => {
+        await Promise.all(sources.map((source) => source.ready().catch(() => undefined)));
+        await Promise.all(sources.map((source) => source.whenSettled()));
+      });
+      const fixtureIndex = seed.mock.calls.findIndex(
+        ([key, value]) =>
+          key.sessionRef === ref && value.text === "One more thing - can you also add a CHANGELOG entry for this?",
+      );
+      expect(fixtureIndex).toBeGreaterThanOrEqual(0);
+      const fixtureResult = seed.mock.results[fixtureIndex];
+      if (!fixtureResult) throw new Error("The dev surface did not seed its literal fixture");
+      expect((await fixtureResult.value).state).toBe(outcome);
+      if (outcome === "conflict") {
+        await waitFor(() => expect(sources.some((source) => source.getSnapshot().text === winner.text)).toBe(true));
+        expect(await repository.load(browserDraftKey(ref))).toMatchObject(winner);
+        expect(view.queryByRole("alert")).toBeNull();
+      } else {
+        expect((await view.findByRole("alert")).textContent).toBe("Couldn't save the composer fixture locally");
+        expect(sources).toEqual([]);
+        expect(view.queryAllByRole("textbox")).toEqual([]);
+      }
+    } finally {
+      view.unmount();
+      await act(async () => Promise.all(sources.map((source) => source.whenSettled())));
+    }
+  },
+);
+
+test("the dev composer surface does not construct sources after unmount while its real durable seed is held", async () => {
+  const repository = getBrowserDraftRepository();
+  const seed = repository.seedDraft.bind(repository);
+  const release = deferred<void>();
+  const intercepted = vi.spyOn(repository, "seedDraft").mockImplementation(async (...args) => {
+    await release.promise;
+    return seed(...args);
+  });
+  const create = composerSources.createComposerSourceState;
+  const sources: ReturnType<typeof create>[] = [];
+  vi.spyOn(composerSources, "createComposerSourceState").mockImplementation((...args) => {
+    const source = create(...args);
+    sources.push(source);
+    return source;
+  });
+  const { default: ComposerSurfaceSection } = await import("../../../dev/surface-sections/composer");
+  const view = render(<ComposerSurfaceSection />);
+  try {
+    expect(intercepted).toHaveBeenCalledWith(browserDraftKey("dev-surface-composer-drafted"), {
+      text: "One more thing - can you also add a CHANGELOG entry for this?",
+      skillNames: [],
+    });
+    expect(sources).toEqual([]);
+    view.unmount();
+    await act(async () => {
+      release.resolve();
+      await Promise.all(intercepted.mock.results.map((result) => result.value));
+    });
+    expect(sources).toEqual([]);
+    expect(await repository.load(browserDraftKey("dev-surface-composer-drafted"))).toMatchObject({
+      text: "One more thing - can you also add a CHANGELOG entry for this?",
+      skillNames: [],
+    });
+  } finally {
+    view.unmount();
+    await act(async () => {
+      release.resolve();
+      await Promise.all(intercepted.mock.results.map((result) => result.value));
+      await Promise.all(sources.map((source) => source.whenSettled()));
+    });
+  }
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -377,6 +536,20 @@ async function seedRejectedRecovery(
   if (!recovered) throw new Error("failed to seed recovery");
   return recovered;
 }
+
+test("automatic recovery activation publishes the real source without a second legacy clear", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovery = await seedRejectedRecovery(storage, "ref_a", "recover this literal /same");
+  const remove = vi.spyOn(localStorage, "removeItem");
+  const { source } = await mountComposerWithHandle("ref_a", {}, { readyBeforeRender: true });
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(recovery.clientMutationId));
+  await act(async () => source.prepareAnnotation());
+  expect(source.getSnapshot().text).toBe("recover this literal /same");
+  expect(readComposerDraft("ref_a").text).toBe("recover this literal /same");
+  expect(await storage.getRecovery(recovery.clientMutationId)).toBeDefined();
+  expect(remove.mock.calls.filter(([key]) => key.startsWith("evener.composer.draft."))).toEqual([]);
+});
 
 // Shaped exactly as composerMutationIntent writes a real submit: the payload
 // text is the PROSE the marker was translated to at the submit boundary, and
@@ -711,6 +884,223 @@ test("goal replacement preserves both recovery rows while a merged source discar
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
 
+test("a merged recovery redundant discard refuses a stale durable token and preserves both recovery rows", async () => {
+  const storage = new ControlledDiscardStorage();
+  const observerRepository = createBrowserDraftRepository({ indexedDB: globalThis.indexedDB as IDBFactory });
+  const observerStorage = new MutationOutboxIndexedDB();
+  const key = browserDraftKey("ref_a");
+  const failures: unknown[] = [];
+  const check = async (assertion: () => void | Promise<void>) => {
+    try {
+      await assertion();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  let unmount: (() => void) | undefined;
+  try {
+    setMutationStorageForTests(storage);
+    await getBrowserDraftRepository().seedDraft(key, { text: "", skillNames: [], mentions: [] });
+    const owner = await seedRejectedRecovery(storage, "ref_a", "first recovery");
+    const redundant = await seedRejectedRecovery(storage, "ref_a", "second recovery");
+    storage.pauseDiscard(redundant.clientMutationId);
+    const mounted = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
+    unmount = mounted.unmount;
+    await flushPendingTurnsProjectionForTests();
+    expect(textarea().textContent).toBe("first recovery");
+    const redundantRow = screen.getByText("second recovery").closest("li");
+    if (!redundantRow) throw new Error("missing redundant recovery row");
+    const beforeRedundant = await observerStorage.getRecovery(redundant.clientMutationId);
+    expect(beforeRedundant).toBeDefined();
+    let competitorRow: NonNullable<Awaited<ReturnType<typeof observerRepository.load>>> | undefined;
+    let mergedOwner: Awaited<ReturnType<typeof observerStorage.getRecovery>>;
+    await act(async () => {
+      fireEvent.click(within(redundantRow).getByRole("button", { name: "Edit message" }));
+      await storage.discardStarted;
+      mergedOwner = await observerStorage.getRecovery(owner.clientMutationId);
+      expect(mergedOwner?.composerText).toBe("first recovery\n\nsecond recovery");
+      const before = await observerRepository.load(key);
+      if (!before) throw new Error("missing metadata before redundant discard");
+      const competitor = await observerRepository.commitEdit(
+        key,
+        before.token,
+        { text: "competing ordinary", skillNames: [], mentions: [] },
+        () => true,
+      );
+      expect(competitor.state).toBe("committed");
+      if (competitor.state !== "committed") throw new Error("redundant discard competitor did not commit");
+      expect(competitor.draft.token.sessionRevision).toBe(before.token.sessionRevision + 1);
+      competitorRow = competitor.draft;
+      storage.release();
+    });
+    await flushPendingTurnsProjectionForTests();
+    await check(async () => expect(await observerRepository.load(key)).toEqual(competitorRow));
+    await check(async () =>
+      expect(await observerStorage.getRecovery(redundant.clientMutationId)).toEqual(beforeRedundant),
+    );
+    await check(async () => expect(await observerStorage.getRecovery(owner.clientMutationId)).toEqual(mergedOwner));
+    await check(async () => expect(await observerStorage.listOutbox("ref_a")).toEqual([]));
+    await check(async () => expect(await observerStorage.listOptimistic("ref_a")).toEqual([]));
+    await check(() => expect(textarea().textContent).toBe("first recovery\n\nsecond recovery"));
+    await check(() =>
+      expect(mounted.source.getRuntimeBacking()).toEqual({ kind: "recovery", recoveryId: owner.clientMutationId }),
+    );
+    await check(() => expect(mounted.fake.calls.filter((call) => call.method.startsWith("turn/"))).toEqual([]));
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    storage.release();
+    await check(() => flushPendingTurnsProjectionForTests());
+    await check(() =>
+      act(() => {
+        unmount?.();
+      }),
+    );
+    // These close calls are sequential. Do not claim independent failure safety.
+    observerStorage.close();
+    storage.close();
+    observerRepository.close();
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "redundant recovery discard checkpoint failed");
+});
+
+test.each([
+  "skill metadata",
+  "command metadata",
+  "mention presence",
+  "attachment replacement",
+  "attachment removal",
+  "backing replacement",
+  "replacement epoch",
+  "source close",
+  "component unmount",
+  "same-ref edit",
+] as const)("first recovery activation preserves %s changed during preparation", async (change) => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const repository = getBrowserDraftRepository();
+  const key = browserDraftKey("ref_a");
+  const value = {
+    text: "ordinary /audit /skill-1 [image 1]",
+    skillNames: change === "mention presence" ? [] : ["skill-1"],
+    commandNames: change === "mention presence" ? [] : ["audit"],
+  };
+  expect((await repository.seedDraft(key, value)).state).toBe("committed");
+  const mounted = await mountComposerWithHandle("ref_a", {
+    evener: {
+      ...testThread("ref_a").evener,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true, commandInput: true },
+    },
+  });
+  const { source } = mounted;
+  const attachment = { marker: 1, name: "proof.png", mediaType: "image/png", data: "AQID", pending: false };
+  await act(async () => {
+    await source.ready();
+    source.attachments.setState({ items: [attachment] });
+  });
+  const recovery = await seedRejectedRecovery(storage, "ref_a", "recover me");
+  await act(async () => refreshPendingTurnsProjection("ref_a"));
+  await flushPendingTurnsProjectionForTests();
+  expect(source.getRuntimeBacking()).toEqual({ kind: "draft" });
+  expect(textarea().textContent).toBe(value.text);
+  const beforeRecovery = await storage.getRecovery(recovery.clientMutationId);
+  let expectedOrdinary = await repository.load(key);
+  // Repository.load uses readwrite for lazy re-tokening. Its completed two-store
+  // read is still an awaited prerequisite BEFORE primary intent capture/write.
+  const hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+  try {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+      const completion = settleProjectionWorkForTests();
+      const boundary = await Promise.race([
+        hold.reached.then(() => "read" as const),
+        completion.then(() => "settled" as const),
+      ]);
+      expect(boundary).toBe("read");
+      expect(source.getSnapshot().text).toBe(value.text);
+      expect(source.getRuntimeBacking()).toEqual({ kind: "draft" });
+      switch (change) {
+        case "skill metadata":
+          source.updateSkillNames([]);
+          source.updateSelectionMeta({
+            ...value,
+            skillNames: [],
+            mentions: [{ kind: "command", name: "audit", offset: value.text.indexOf("/audit") }],
+          });
+          source.markRestore();
+          break;
+        case "command metadata":
+          source.updateSelectionMeta({
+            ...value,
+            commandNames: [],
+          });
+          source.markRestore();
+          break;
+        case "mention presence":
+          expect(source.getSnapshot().mentions).toBeUndefined();
+          source.updateSelectionMeta({ ...value, mentions: [] });
+          break;
+        case "attachment replacement":
+          source.attachments.setState({ items: [{ ...attachment }] });
+          break;
+        case "attachment removal":
+          source.attachments.setState({ items: [] });
+          break;
+        case "backing replacement":
+          source.setActiveRecoveryId("newer-local-recovery");
+          break;
+        case "replacement epoch":
+          source.continuity.recoveryReplacementEpochRef.current += 1;
+          break;
+        case "source close":
+          source.dispose();
+          break;
+        case "component unmount":
+          mounted.unmount();
+          break;
+        case "same-ref edit": {
+          const other = createTestComposerSource("ref_a");
+          await other.ready();
+          other.acceptEdit(value);
+          await other.whenSettled();
+          expectedOrdinary = await repository.load(key);
+          break;
+        }
+      }
+      const expectedLocal = source.getSnapshot();
+      const expectedItems = [...source.attachments.getState().items];
+      const expectedBacking = source.getRuntimeBacking();
+      const expectedCursor = source.editor.read().cursor;
+      const expectedGeneration = source.getLocalGeneration();
+      const expectedEpoch = source.continuity.recoveryReplacementEpochRef.current;
+      hold.release();
+      await completion;
+      expect(source.getSnapshot()).toEqual(expectedLocal);
+      expect(source.getLocalGeneration()).toBe(expectedGeneration);
+      expect(source.getRuntimeBacking()).toEqual(expectedBacking);
+      expect(source.continuity.recoveryReplacementEpochRef.current).toBe(expectedEpoch);
+      const items = source.attachments.getState().items;
+      expect(items).toHaveLength(expectedItems.length);
+      expect(items.every((item, index) => item === expectedItems[index])).toBe(true);
+      expect(source.editor.read().cursor).toBe(expectedCursor);
+    });
+    expect(await repository.load(key)).toEqual(expectedOrdinary);
+    expect(await storage.getRecovery(recovery.clientMutationId)).toEqual(beforeRecovery);
+    expect(await storage.listOutbox("ref_a")).toEqual([]);
+    expect(await storage.listOptimistic("ref_a")).toEqual([]);
+    expect(mounted.fake.calls.filter((call) => call.method.startsWith("turn/"))).toEqual([]);
+  } finally {
+    await act(async () => {
+      hold.release();
+      await settleProjectionWorkForTests();
+      mounted.unmount();
+      source.dispose();
+    });
+    storage.close();
+  }
+});
+
 test("goal replacement closes slash completion and resets selection", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
@@ -831,6 +1221,9 @@ test("the Send button's word collapses to the glyph below the compact pane thres
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
+  // The storage universe is replaced above; drop the repository singleton so
+  // the next default source captures THIS factory, not a previous test's.
+  resetBrowserDraftRepositoryForTests();
   localStorage.clear();
   resetPrefsStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -859,8 +1252,12 @@ beforeEach(() => {
   paletteStore.setState({ open: false, query: "" });
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  // Disposal stops publication, not accepted writes or transfer. Join the
+  // existing helper's sources before the next test replaces storage inputs.
+  await act(async () => Promise.all([...sourceWork].map((source) => source.whenSettled())));
+  sourceWork.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -1248,7 +1645,7 @@ test("typing persists the draft under this ref's storage key", async () => {
 test("a controlled replacement over a leading chip replaces it rather than merging text", async () => {
   const user = userEvent.setup();
   const ref = "ref_inline_replace_with_chip";
-  writeComposerDraft(ref, { text: "/cleanup", skillNames: ["cleanup"] });
+  localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ text: "/cleanup", skillNames: ["cleanup"] }));
   await mountComposer(ref, { evener: currentWorkEvener({ goal: true }) });
   const editor = textarea();
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
@@ -1263,7 +1660,7 @@ test("a controlled replacement over a leading chip replaces it rather than mergi
 
 test("a quote inserted before a leading chip leaves the chip whole and adds only its own text", async () => {
   const ref = "ref_inline_prefix_quote";
-  writeComposerDraft(ref, { text: "/cleanup", skillNames: ["cleanup"] });
+  localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ text: "/cleanup", skillNames: ["cleanup"] }));
   await mountComposer(ref);
   const editor = textarea();
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
@@ -1338,7 +1735,8 @@ test("placement 'append' on a seeded draft matches the unqualified default: appe
 
 test("placement 'prefix' on a seeded draft inserts the addition BEFORE the existing text, with no separator", async () => {
   localStorage.setItem(draftStorageKey("ref_a"), "my own note");
-  await mountComposer("ref_a");
+  const { source } = await mountComposerWithHandle("ref_a");
+  await act(async () => source.ready());
   const editor = textarea();
   expect(editor.textContent).toBe("my own note");
 
@@ -1635,15 +2033,72 @@ test("idle session: submit button reads Send and posts turn/start with the compo
 
 test("the unchanged submitted payload clears as soon as its local outbox commit succeeds", async () => {
   const user = userEvent.setup();
+  const key = browserDraftKey("ref_a");
   const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  // A controlled response gate held across the whole clear: the classic Send
+  // must clear at its LOCAL outbox commit, before the server reply.
+  const turnStart = deferred<void>();
+  fake.on("turn/start", async (params) => {
+    await turnStart.promise;
+    return {
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    };
+  });
 
   const editor = textarea();
   await user.type(editor, "hello");
-  await user.click(submitButton());
+  let before: Awaited<ReturnType<ReturnType<typeof getBrowserDraftRepository>["load"]>> | undefined;
+  await act(async () => {
+    // Drain the accepted typed edit BEFORE the durable pre-submit baseline.
+    await waitFor(async () => {
+      expect((await getBrowserDraftRepository().load(key))?.text).toBe("hello");
+    });
+    before = await getBrowserDraftRepository().load(key);
+  });
+  expect(before).toMatchObject({ text: "hello", skillNames: [] });
+  const beforeToken = before?.token;
+  expect(beforeToken).toBeDefined();
 
-  await waitFor(() => expect(editor.textContent).toBe(""));
-  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
+  try {
+    await user.click(submitButton());
+
+    await waitFor(() => expect(editor.textContent).toBe(""));
+    expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
+    // Local-commit temporal contract: the durable row is cleared and advanced
+    // exactly one revision WHILE the server reply is still gated.
+    await act(async () => {
+      const repository = getBrowserDraftRepository();
+      const cleared = await repository.load(key);
+      expect(cleared).toMatchObject({ text: "", skillNames: [] });
+      expect(cleared?.commandNames).toBeUndefined();
+      expect(cleared?.mentions).toBeUndefined();
+      expect(cleared?.token.namespaceIncarnation).toBe(beforeToken!.namespaceIncarnation);
+      expect(cleared?.token.sessionRevision).toBe(beforeToken!.sessionRevision + 1);
+      const reopened = createBrowserDraftRepository({ indexedDB: globalThis.indexedDB as IDBFactory });
+      try {
+        const reopenedRow = await reopened.load(key);
+        expect(reopenedRow).toMatchObject({ text: "", skillNames: [] });
+        expect(reopenedRow?.commandNames).toBeUndefined();
+        expect(reopenedRow?.mentions).toBeUndefined();
+        expect(reopenedRow?.token).toEqual(cleared?.token);
+      } finally {
+        reopened.close();
+      }
+    });
+  } finally {
+    // Release the held server reply inside act, then join with the strict flush
+    // OUTSIDE act before teardown restores mocks.
+    await act(async () => {
+      turnStart.resolve(undefined);
+    });
+    await flushPendingTurnsProjectionForTests();
+  }
 });
 
 test("text edited while the local outbox commit is pending survives that commit", async () => {
@@ -1655,13 +2110,20 @@ test("text edited while the local outbox commit is pending survives that commit"
 
   const editor = textarea();
   await user.type(editor, "ab");
-  fireEvent.click(submitButton());
-  await storage.commitStarted;
-
-  replaceEditorText(editor, "ab plus more");
-  expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
-
-  storage.release();
+  try {
+    await act(async () => {
+      fireEvent.click(submitButton());
+      await storage.commitStarted;
+      replaceEditorText(editor, "ab plus more");
+      expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
+      storage.release();
+    });
+  } finally {
+    await act(async () => {
+      storage.release();
+    });
+    await flushPendingTurnsProjectionForTests();
+  }
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
 
@@ -1670,19 +2132,36 @@ test("text edited while the local outbox commit is pending survives that commit"
 });
 
 test("a local outbox failure leaves the composer untouched and sends no RPC", async () => {
-  // @ts-expect-error this test exercises the explicit unavailable-storage boundary
-  globalThis.indexedDB = undefined;
-  const user = userEvent.setup();
-  const fake = await act(async () => mountComposer("ref_a"));
-  await flushPendingTurnsProjectionForTests();
+  // Keep ordinary draft preparation available, then fault the real outbox write.
+  let failedEnqueues = 0;
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit: (operation) => {
+      if (operation === "enqueueIntent") {
+        failedEnqueues += 1;
+        throw new Error("local outbox commit failed");
+      }
+    },
+  });
+  setMutationStorageForTests(storage);
+  try {
+    const user = userEvent.setup();
+    const fake = await mountComposer("ref_a");
+    await flushPendingTurnsProjectionForTests();
 
-  const editor = textarea();
-  await user.type(editor, "hello");
-  await user.click(submitButton());
+    const editor = textarea();
+    await user.type(editor, "hello");
+    await user.click(submitButton());
+    await flushPendingTurnsProjectionForTests();
 
-  await waitFor(() => expect(screen.getByText(/send failed/i)).toBeTruthy());
-  expect(editor.textContent).toBe("hello");
-  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    await waitFor(() => expect(screen.getByText(/send failed/i)).toBeTruthy());
+    expect(editor.textContent).toBe("hello");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    expect(failedEnqueues).toBe(1);
+    expect(await storage.listOutbox("ref_a")).toEqual([]);
+    expect(await storage.listOptimistic("ref_a")).toEqual([]);
+  } finally {
+    storage.close();
+  }
 });
 
 test("a lost response never restores submitted content over a newer composer draft", async () => {
@@ -2179,7 +2658,7 @@ test("a plain typed mention stays prose through a programmatic attachment insert
   installCanvasStubs();
   const user = userEvent.setup();
   const ref = "ref_inline_prose_reparse";
-  writeComposerDraft(ref, { text: "Run /cleanup", skillNames: ["cleanup"] });
+  localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ text: "Run /cleanup", skillNames: ["cleanup"] }));
   await mountComposer(ref);
   const editor = textarea();
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
@@ -3021,7 +3500,8 @@ test.each(["automatic", "Edit message"] as const)(
     try {
       const storage = new MutationOutboxIndexedDB();
       setMutationStorageForTests(storage);
-      if (activation === "Edit message") writeComposerDraft("ref_a", { text: "Current work", skillNames: [] });
+      if (activation === "Edit message")
+        await getBrowserDraftRepository().seedDraft(browserDraftKey("ref_a"), { text: "Current work", skillNames: [] });
       const input = [
         { type: "text", text: "Use /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)" },
         { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
@@ -3048,14 +3528,18 @@ test.each(["automatic", "Edit message"] as const)(
       const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
       if (!recovered) throw new Error("failed to seed selected recovery");
       const user = userEvent.setup();
-      const fake = await mountComposer("ref_a", {
-        evener: {
-          ref: "ref_a",
-          capabilities: { ...FULL_CAPABILITIES, skillInput: true },
-          mutationStateAuthoritative: true,
-          queue: { revision: 0 },
+      const { fake } = await mountComposerWithHandle(
+        "ref_a",
+        {
+          evener: {
+            ref: "ref_a",
+            capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+            mutationStateAuthoritative: true,
+            queue: { revision: 0 },
+          },
         },
-      });
+        { readyBeforeRender: activation === "Edit message" },
+      );
       fake.on("turn/start", (params) => ({
         receipt: {
           clientMutationId: params.clientMutationId,
@@ -3152,6 +3636,127 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   otherTab.close();
 });
 
+class HeldMissingRecoveryReadStorage extends MutationOutboxIndexedDB {
+  private holdMissingRead = false;
+  readonly missingReadEntered = deferred<void>();
+  private readonly missingReadGate = deferred<void>();
+
+  release(): void {
+    this.missingReadGate.resolve();
+  }
+
+  override async resendRecovery(
+    ...args: Parameters<MutationOutboxIndexedDB["resendRecovery"]>
+  ): ReturnType<MutationOutboxIndexedDB["resendRecovery"]> {
+    const result = await super.resendRecovery(...args);
+    if (result === undefined) this.holdMissingRead = true;
+    return result;
+  }
+
+  override async getRecovery(
+    ...args: Parameters<MutationOutboxIndexedDB["getRecovery"]>
+  ): ReturnType<MutationOutboxIndexedDB["getRecovery"]> {
+    const result = await super.getRecovery(...args);
+    if (this.holdMissingRead) {
+      this.holdMissingRead = false;
+      this.missingReadEntered.resolve();
+      await this.missingReadGate.promise;
+    }
+    return result;
+  }
+}
+
+test("a delayed missing-recovery reconciliation preserves a newer edit and exact attachment replacement", async () => {
+  const storage = new HeldMissingRecoveryReadStorage();
+  const otherTab = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const source = createTestComposerSource("ref_a");
+  let join: Promise<void> | undefined;
+  try {
+    const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    await act(async () => {
+      await threadsStore.getState().ensureThread("ref_a");
+      render(
+        <ClientProvider client={fake}>
+          <Toast />
+          <Composer ref="ref_a" source={source} focused={false} />
+        </ClientProvider>,
+      );
+    });
+    await settleActivityDiscovery("ref_a");
+    await flushPendingTurnsProjectionForTests();
+    expect(textarea().textContent).toBe("edit me [image 1]");
+    const originalAttachment = source.attachments.getState().items[0];
+    expect(originalAttachment).toMatchObject({ marker: 1, name: "proof.png", data: "AQID" });
+    if (originalAttachment === undefined) throw new Error("activated recovery attachment missing");
+    const winner = await otherTab.resendRecovery(recovered.clientMutationId, {
+      targetRef: "ref_a",
+      threadId: "thread_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "other tab winner" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "other tab winner" }] },
+    });
+    expect(winner).toBeDefined();
+    expect(await otherTab.getRecovery(recovered.clientMutationId)).toBeUndefined();
+    const beforeOutbox = await otherTab.listOutbox("ref_a");
+
+    await userEvent.setup().click(submitButton());
+    // Race the actual read against tracked submission completion. A missing
+    // reconciliation path must fail promptly, not hang waiting for a request.
+    let phase: "read" | "settled" | undefined;
+    const replacement = { ...originalAttachment, name: "replacement.png", data: "BAUG" };
+    const newerValue = {
+      text: "newer local work [image 1]",
+      skillNames: [] as string[],
+      commandNames: [] as string[],
+      mentions: [],
+    };
+    await act(async () => {
+      join = settleProjectionWorkForTests().then(() => undefined);
+      phase = await Promise.race([
+        storage.missingReadEntered.promise.then(() => "read" as const),
+        join.then(() => "settled" as const),
+      ]);
+      expect(phase).toBe("read");
+      source.acceptEdit(newerValue);
+      source.attachments.setState({ items: [replacement] });
+      await source.whenSettled();
+      storage.release();
+      await join;
+    });
+    await flushPendingTurnsProjectionForTests();
+
+    expect(source.getSnapshot()).toMatchObject(newerValue);
+    expect(textarea().textContent).toBe("newer local work [image 1]");
+    expect(source.attachments.getState().items).toEqual([replacement]);
+    expect(source.attachments.getState().items[0]).toBe(replacement);
+    expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy();
+    expect(await getBrowserDraftRepository().load(browserDraftKey("ref_a"))).toMatchObject({
+      text: "newer local work [image 1]",
+      skillNames: [],
+      commandNames: [],
+      mentions: [],
+    });
+    expect(await otherTab.getRecovery(recovered.clientMutationId)).toBeUndefined();
+    expect(await otherTab.listOutbox("ref_a")).toEqual(beforeOutbox);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    expect(getToasts().map((toast) => toast.kind)).toEqual(["info"]);
+  } finally {
+    storage.release();
+    await act(async () => {
+      await join;
+      source.dispose();
+      cleanup();
+    });
+    await flushPendingTurnsProjectionForTests();
+    storage.close();
+    otherTab.close();
+  }
+});
+
 // An activated recovery draft republishes the projection on every durable
 // write, and every projection publish re-renders this component. So an effect
 // that writes on each render is a self-feeding IndexedDB loop that never
@@ -3236,7 +3841,7 @@ test("recovered edits and attachment removal survive Composer remount", async ()
   ]);
   first.unmount();
 
-  await mountComposer("ref_a", { status: { type: "idle" } });
+  render(<Composer ref="ref_a" source={first.source} focused={false} />);
   await flushPendingTurnsProjectionForTests();
   expect(textarea().textContent).toBe("edited");
   // Any remove control at all, not one named for this file: a tile carries
@@ -3259,22 +3864,33 @@ test.each([
   const recovered = image
     ? await seedRejectedRecoveryWithAttachment(storage, "ref_a")
     : await seedRejectedRecovery(storage, "ref_a", "retry me");
-  const fake = await mountComposer("ref_a");
+  const { fake, source } = await mountComposerWithHandle("ref_a");
   fake.on("turn/start", () => new Promise<never>(() => undefined));
   await flushPendingTurnsProjectionForTests();
   const submittedText = image ? "edit me [image 1]" : "retry me";
   expect(textarea().textContent).toBe(submittedText);
 
-  const hold = holdNextWriteTransaction(["recovery"]);
+  // The Send here is a recovery RESEND: it moves the recovery row to the outbox
+  // and advances the session row in one transaction (the six resend stores).
+  const hold = holdNextWriteTransaction([
+    "outbox",
+    "optimistic",
+    "recovery",
+    "sequences",
+    "composerDrafts",
+    "annotationNamespaces",
+  ]);
   const written = hold.reached;
   try {
-    fireEvent.click(submitButton());
-    await written;
+    await act(async () => {
+      fireEvent.click(submitButton());
+      await written;
+    });
     cleanup();
-    render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
-    // The remount restores the recovery draft through an IDB read plus a
-    // render the scheduler commits on a macrotask, while this test
-    // deliberately holds the recovery WRITE - so the projection flush
+    // A component remount retains its pane's source and exact attachment objects.
+    render(<Composer ref="ref_a" source={source} focused={false} />);
+    // The remount reads its pane's source and starts a recovery projection
+    // refresh, while this test deliberately holds the recovery WRITE. The projection flush
     // cannot be the awaitable here (it would wait on the very transaction
     // this test holds). Pump the event loop instead, bounded by turns,
     // not wall clock: a turn completes whenever the scheduler gets CPU, so
@@ -3303,6 +3919,63 @@ test.each([
   fireEvent.click(submitButton());
   await flushPendingTurnsProjectionForTests();
   expect(await storage.listOutbox("ref_a")).toHaveLength(2);
+});
+
+// A recovery RESEND must be refused when its captured claim is invalidated
+// BEFORE final authorization and the write. The caller's submission preparation
+// performs a REAL draft read before the resend write, so holding that read
+// observes the pre-write wait; the newer local edit then lands and is released.
+test("a recovery resend invalidated before its write is refused without success cleanup", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  const fake = await mountComposer("ref_a");
+  let rpcCount = 0;
+  fake.on("turn/start", () => {
+    rpcCount += 1;
+    return new Promise<never>(() => undefined);
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("retry me");
+
+  // Hold the caller's REAL draft read, which precedes final authorization and
+  // the resend write.
+  const get = IDBObjectStore.prototype.get;
+  let held: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let markReached!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    markReached = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = get.apply(this, args);
+    if (!held && this.name === COMPOSER_DRAFTS_STORE) {
+      held = holdIndexedDBEvent(request, "success");
+      void held.reached.then(() => markReached());
+    }
+    return request;
+  });
+  try {
+    fireEvent.click(submitButton());
+    await reached;
+    // The newer local edit invalidates the captured claim before the write.
+    await act(async () => {
+      replaceEditorText(textarea(), "newer local edit");
+    });
+  } finally {
+    await act(async () => {
+      held?.release();
+    });
+    spy.mockRestore();
+    await flushPendingTurnsProjectionForTests();
+  }
+
+  // Refused: recovery kept, no newly accepted outbox/optimistic intent or RPC,
+  // no success settlement/attachment cleanup, newer value preserved.
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
+  expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+  expect(rpcCount).toBe(0);
+  expect(textarea().textContent).toBe("newer local edit");
+  expect(readDraft("ref_a")).toBe("newer local edit");
 });
 
 test("blanking an attachment-free recovered draft discards it durably", async () => {
@@ -3345,7 +4018,16 @@ test("draining an active recovery consumes its owner before the next submission"
   await flushPendingTurnsProjectionForTests();
   const editor = textarea();
   expect(editor.textContent).toBe("retry me");
-  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  // The drain consumes the active recovery: a RESEND moves the recovery row to
+  // the outbox and advances the session row in one transaction (six stores).
+  const hold = holdNextWriteTransaction([
+    "outbox",
+    "optimistic",
+    "recovery",
+    "sequences",
+    "composerDrafts",
+    "annotationNamespaces",
+  ]);
   const committed = hold.reached;
   try {
     await act(async () => {
@@ -3393,9 +4075,11 @@ test.each([false, true])(
     const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
     const committed = hold.reached;
     try {
-      fireEvent.click(firstButton);
-      await committed;
-      replaceEditorText(secondInput, "newer shared draft");
+      await act(async () => {
+        fireEvent.click(firstButton);
+        await committed;
+        replaceEditorText(secondInput, "newer shared draft");
+      });
     } finally {
       await act(async () => hold.release());
       await flushPendingTurnsProjectionForTests();
@@ -4429,8 +5113,12 @@ test.each([
   const before = "Keep before ";
   const selected = "replace /cleanup and prose";
   const after = " keep after";
-  writeComposerDraft(ref, { text: before + selected + after, skillNames: ["cleanup"] });
-  await mountComposer(ref);
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({ text: before + selected + after, skillNames: ["cleanup"] }),
+  );
+  const { source } = await mountComposerWithHandle(ref);
+  await act(async () => source.ready());
   const editor = textarea();
   expect(within(editor).getByTestId("composer-skill-chip").textContent).toBe("/cleanup");
   expect(readComposerDraft(ref)).toEqual({ text: before + selected + after, skillNames: ["cleanup"] });
@@ -4517,7 +5205,12 @@ test.each([
     const submittedText = textarea().textContent;
     const originalAttachment = recovery ? "proof.png" : "original.png";
 
-    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    // A recovery case RESENDs (six stores); an ordinary case ENQUEUEs (four).
+    const hold = holdNextWriteTransaction(
+      recovery
+        ? ["outbox", "optimistic", "recovery", "sequences", "composerDrafts", "annotationNamespaces"]
+        : ["outbox", "optimistic", "recovery", "sequences"],
+    );
     const committed = hold.reached;
     try {
       await user.click(actionButton());
@@ -4610,21 +5303,512 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
   },
 );
 
+test.each([
+  { boundary: "preparation", change: "none" },
+  { boundary: "primary", change: "none" },
+  { boundary: "preparation", change: "selection edit" },
+  { boundary: "preparation", change: "exact replacement" },
+  { boundary: "preparation", change: "explicit remove" },
+  { boundary: "preparation", change: "overlapping activation" },
+  { boundary: "preparation", change: "goal reset" },
+  { boundary: "preparation", change: "competing source" },
+  { boundary: "preparation", change: "retained remount" },
+  { boundary: "preparation", change: "dispose" },
+  { boundary: "preparation", change: "read fault" },
+  { boundary: "primary", change: "durable competitor" },
+  { boundary: "primary", change: "primary fault" },
+  { boundary: "primary", change: "cleanup fault" },
+  { boundary: "primary", change: "close after primary" },
+  { boundary: "primary", change: "cleanup edit" },
+  { boundary: "primary", change: "cleanup edit competitor" },
+])("accepted image retirement remains pending through $boundary ($change)", async ({ boundary, change }) => {
+  installCanvasStubs();
+  const ref = "ref_retirement";
+  const factory = globalThis.indexedDB;
+  const repository = getBrowserDraftRepository();
+  const key = browserDraftKey(ref);
+  const preparationEntered = deferred<void>();
+  const preparationGate = deferred<void>();
+  const primaryEntered = deferred<void>();
+  const primaryGate = deferred<void>();
+  const primaryCompleted = deferred<void>();
+  const cleanupEntered = deferred<void>();
+  const cleanupGate = deferred<void>();
+  const retirementRequested = deferred<void>();
+  const firstDispatch = deferred<void>();
+  let readArmed = false;
+  let holdPreparation = false;
+  let primarySeen = false;
+  let primaryAccepted = false;
+  let writePhase: "primary" | "cleanup" | undefined;
+  let faultCount = 0;
+  let faultArmed = true;
+  const storage = new MutationOutboxIndexedDB({
+    indexedDB: factory,
+    beforeCommit(operation) {
+      if (
+        operation === "updateRecoveryInput" &&
+        faultArmed &&
+        ((change === "primary fault" && writePhase === "primary") ||
+          (change === "cleanup fault" && writePhase === "cleanup"))
+      ) {
+        faultArmed = false;
+        faultCount += 1;
+        throw new Error(`${writePhase} actual commit fault`);
+      }
+    },
+  });
+  setMutationStorageForTests(storage);
+  const source = createTestComposerSource(ref);
+  const otherSources: Array<ReturnType<typeof createTestComposerSource>> = [];
+  const realRetire = source.clearSubmittedAttachments;
+  source.clearSubmittedAttachments = (items) => {
+    const result = realRetire(items);
+    retirementRequested.resolve();
+    return result;
+  };
+  const realLoad = repository.load.bind(repository);
+  const loadObserver = vi.spyOn(repository, "load").mockImplementation(async (...args) => {
+    if (holdPreparation) {
+      holdPreparation = false;
+      preparationEntered.resolve();
+      await preparationGate.promise;
+      readArmed = change === "read fault";
+    }
+    return realLoad(...args);
+  });
+  const realGet = IDBObjectStore.prototype.get;
+  const getObserver = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (
+    this: IDBObjectStore,
+    query,
+  ) {
+    if (readArmed && this.name === "composerDrafts") {
+      readArmed = false;
+      faultCount += 1;
+      throw new Error("actual preparation read fault");
+    }
+    return realGet.call(this, query);
+  });
+  const realUpdate = storage.updateRecoveryInput.bind(storage);
+  let cleanupHold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  const editingCleanup = change === "cleanup edit" || change === "cleanup edit competitor";
+  const updateObserver = vi.spyOn(storage, "updateRecoveryInput").mockImplementation(async (...args) => {
+    const isPrimary = !primarySeen;
+    if (isPrimary) {
+      primarySeen = true;
+      primaryEntered.resolve();
+      if (boundary === "primary") await primaryGate.promise;
+    } else if (change === "close after primary" && args[2]?.length === 0) {
+      cleanupEntered.resolve();
+      await cleanupGate.promise;
+    }
+    // An effect may already have queued an identical primary while its first
+    // write was held. Fault only the actual image-free retirement transaction.
+    writePhase = args[2]?.length ? "primary" : "cleanup";
+    if (editingCleanup && !cleanupHold && writePhase === "cleanup") {
+      cleanupHold = holdNextWriteTransaction(["recovery", "composerDrafts", "annotationNamespaces"]);
+      void cleanupHold.reached.then(() => cleanupEntered.resolve());
+    }
+    const result = await realUpdate(...args);
+    if (isPrimary) {
+      primaryAccepted = result !== undefined;
+      primaryCompleted.resolve();
+    }
+    return result;
+  });
+  let sendHold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  let join: Promise<void> | undefined;
+  let recoveredId: string | undefined;
+  let beforeRecovery: Awaited<ReturnType<typeof storage.getRecovery>>;
+  let expectedCompetitor: Awaited<ReturnType<typeof repository.load>> = null;
+  let replacement: PendingAttachment | undefined;
+  let unsubscribeCommitted: (() => void) | undefined;
+  let newAcceptanceNotifications = 0;
+  const failures: unknown[] = [];
+  const attempt = async (run: () => unknown | Promise<unknown>) => {
+    try {
+      await run();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  try {
+    const { fake, unmount } = await mountComposerWithHandle(
+      ref,
+      {
+        status: { type: "active" },
+        evener: {
+          ...currentWorkEvener({ goal: true }),
+          ref,
+          activeTurnId: "turn_1",
+          queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+        },
+      },
+      { source, readyBeforeRender: true },
+    );
+    for (const method of ["turn/start", "turn/queue", "turn/steer", "turn/drainAsSteer"] as const)
+      fake.on(method, () => {
+        firstDispatch.resolve();
+        return new Promise<never>(() => undefined);
+      });
+    pastePngInto(textarea(), "original.png");
+    await flushPendingTurnsProjectionForTests();
+    const original = source.attachments.getState().items[0];
+    if (!original) throw new Error("missing original exact attachment");
+    sendHold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    await act(async () => {
+      fireEvent.click(submitButton());
+      await sendHold?.reached;
+    });
+    replaceEditorText(textarea(), "follow up [image 1]");
+    await act(async () => source.whenSettled());
+    const recovered = await seedRejectedRecovery(storage, ref, "merge me");
+    recoveredId = recovered.clientMutationId;
+    beforeRecovery = await storage.getRecovery(recoveredId);
+    await act(async () => refreshPendingTurnsProjection(ref));
+    const li = screen.getByText("merge me").closest("li");
+    if (!li) throw new Error("missing real recovery row");
+    holdPreparation = boundary === "preparation";
+    await act(async () => {
+      fireEvent.click(within(li).getByRole("button", { name: "Edit message" }));
+      join = settleProjectionWorkForTests().then(() => undefined);
+      const reached = boundary === "preparation" ? preparationEntered.promise : primaryEntered.promise;
+      expect(await Promise.race([reached.then(() => "held"), join.then(() => "settled")])).toBe("held");
+      sendHold?.release();
+      await retirementRequested.promise;
+      await firstDispatch.promise;
+      await refreshPendingTurnsProjection(ref);
+    });
+    // Admission is checked before any global flush while the actual preparation
+    // or frozen primary remains held, not after cleanup has made it safe.
+    expect(source.attachments.getState().items[0]).toBe(original);
+    expect(submitButton().disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Steer" }).disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Steer queue now" }).disabled).toBe(true);
+    const beforeEarlySubmit = await storage.listOutbox(ref);
+    const outbound = () =>
+      fake.calls.filter((call) =>
+        ["turn/start", "turn/queue", "turn/steer", "turn/drainAsSteer"].includes(call.method),
+      );
+    const beforeOutbound = outbound();
+    unsubscribeCommitted = subscribeComposerSubmissionCommitted(() => {
+      newAcceptanceNotifications += 1;
+    });
+    await act(async () => {
+      fireEvent.submit(textarea().closest("form") as HTMLFormElement);
+      fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+      fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
+    });
+    expect(await storage.listOutbox(ref)).toEqual(beforeEarlySubmit);
+    expect(outbound()).toEqual(beforeOutbound);
+
+    if (change === "goal reset") {
+      fireEvent.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+      fireEvent.click(screen.getByRole("button", { name: "Replace draft" }));
+    } else if (change === "retained remount") {
+      unmount();
+      render(<Composer ref={ref} source={source} focused={false} />);
+      await settleActivityDiscovery(ref);
+      replaceEditorText(textarea(), "returned [image 1]");
+      expect(submitButton().disabled).toBe(true);
+      expect(screen.getByRole<HTMLButtonElement>("button", { name: "Steer" }).disabled).toBe(true);
+      expect(screen.getByRole<HTMLButtonElement>("button", { name: "Steer queue now" }).disabled).toBe(true);
+      await act(async () => {
+        fireEvent.submit(textarea().closest("form") as HTMLFormElement);
+        fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+        fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
+      });
+      expect(await storage.listOutbox(ref)).toEqual(beforeEarlySubmit);
+      expect(outbound()).toEqual(beforeOutbound);
+    }
+    await act(async () => {
+      if (change === "selection edit") {
+        source.acceptEdit({
+          text: "new /skill-1 /audit [image 1]",
+          skillNames: ["skill-1"],
+          commandNames: ["audit"],
+          mentions: [
+            { kind: "skill", name: "skill-1", offset: 4 },
+            { kind: "command", name: "audit", offset: 13 },
+          ],
+        });
+        source.markRestore();
+      } else if (change === "exact replacement") {
+        replacement = { ...original, data: "BAUG" };
+        source.attachments.setState({ items: [replacement] });
+        source.acceptEdit({ text: "replacement [image 1]", skillNames: [] });
+        source.markRestore();
+      } else if (change === "explicit remove") {
+        fireEvent.click(screen.getByRole("button", { name: "Remove original.png" }));
+      } else if (change === "overlapping activation") {
+        fireEvent.click(within(li).getByRole("button", { name: "Edit message" }));
+        expect(await Promise.race([primaryCompleted.promise.then(() => "primary"), join!.then(() => "settled")])).toBe(
+          "primary",
+        );
+        expect(source.attachments.getState().items[0]).toBe(original);
+        expect(submitButton().disabled).toBe(true);
+      } else if (change === "competing source") {
+        const competitor = createTestComposerSource(ref);
+        otherSources.push(competitor);
+        await competitor.ready();
+        competitor.acceptEdit({ text: "competing source", skillNames: [] });
+        await competitor.whenSettled();
+        expectedCompetitor = await realLoad(key);
+      } else if (change === "dispose") {
+        unmount();
+        source.dispose();
+        const next = createTestComposerSource(ref);
+        otherSources.push(next);
+        await next.ready();
+        replacement = { ...original, data: "BAUG" };
+        next.attachments.setState({ items: [replacement] });
+        next.acceptEdit({ text: "new source [image 1]", skillNames: [] });
+        render(<Composer ref={ref} source={next} focused={false} />);
+        await next.whenSettled();
+      } else if (change === "durable competitor") {
+        const before = await realLoad(key);
+        if (!before) throw new Error("missing independent ordinary baseline");
+        const result = await repository.commitEdit(
+          key,
+          before.token,
+          { text: "durable competitor", skillNames: [] },
+          () => true,
+        );
+        expect(result.state).toBe("committed");
+        if (result.state !== "committed") throw new Error("competitor refused");
+        expectedCompetitor = result.draft;
+      }
+      preparationGate.resolve();
+      primaryGate.resolve();
+      if (change === "close after primary") {
+        expect(await Promise.race([cleanupEntered.promise.then(() => "cleanup"), join!.then(() => "settled")])).toBe(
+          "cleanup",
+        );
+        expect(primaryAccepted).toBe(true);
+        expect(source.attachments.getState().items).toEqual([]);
+        expect(submitButton().disabled).toBe(true);
+        source.dispose();
+        cleanupGate.resolve();
+      }
+      if (editingCleanup) {
+        expect(await Promise.race([cleanupEntered.promise.then(() => "cleanup"), join!.then(() => "settled")])).toBe(
+          "cleanup",
+        );
+      } else await join;
+    });
+    if (editingCleanup) {
+      expect(source.getSnapshot().submittedAttachmentRetirementPending).toBe(true);
+      expect((await storage.getRecovery(recoveredId))?.composerText).toBe("follow up \n\nmerge me");
+      expect((await storage.getRecovery(recoveredId))?.attachments).toEqual([]);
+      replaceEditorText(textarea(), "latest /skill-1 /audit ");
+      await act(async () => {
+        source.editSkillNames(["skill-1"]);
+        source.updateSelectionMeta({
+          text: "latest /skill-1 /audit ",
+          skillNames: ["skill-1"],
+          commandNames: ["audit"],
+          mentions: [
+            { kind: "skill", name: "skill-1", offset: 7 },
+            { kind: "command", name: "audit", offset: 16 },
+          ],
+        });
+        source.markRestore();
+      });
+      selectEditorText(textarea(), "latest /skill-1 /audit ".length);
+      pastePngInto(textarea(), "latest.png");
+      await screen.findByRole("button", { name: "View latest.png" });
+      expect(textarea().textContent).toBe("latest /skill-1 /audit [image 1]");
+      expect(submitButton().disabled).toBe(true);
+      if (change === "cleanup edit competitor") {
+        const before = await realLoad(key);
+        if (!before) throw new Error("missing cleanup competitor baseline");
+        const result = await repository.commitEdit(
+          key,
+          before.token,
+          { text: "cleanup competitor", skillNames: [] },
+          () => true,
+        );
+        expect(result.state).toBe("committed");
+        if (result.state !== "committed") throw new Error("cleanup competitor refused");
+        expectedCompetitor = result.draft;
+      }
+      await act(async () => {
+        cleanupHold?.release();
+        await join;
+      });
+    }
+    await flushPendingTurnsProjectionForTests();
+    if (change !== "dispose" && change !== "close after primary")
+      expect(source.attachments.getState().items.includes(original)).toBe(false);
+    if (change === "exact replacement") {
+      expect(source.attachments.getState().items[0]).toBe(replacement);
+      expect(textarea().textContent).toBe("replacement [image 1]");
+    } else if (change === "selection edit") {
+      expect(source.getSnapshot()).toMatchObject({
+        text: "new /skill-1 /audit ",
+        skillNames: ["skill-1"],
+        commandNames: ["audit"],
+      });
+      expect(await realLoad(key)).toMatchObject({
+        text: "new /skill-1 /audit ",
+        skillNames: ["skill-1"],
+        commandNames: ["audit"],
+      });
+      expect(source.getSnapshot().mentions).toEqual([
+        { kind: "skill", name: "skill-1", offset: 4 },
+        { kind: "command", name: "audit", offset: 13 },
+      ]);
+      expect((await realLoad(key))?.mentions).toEqual([
+        { kind: "skill", name: "skill-1", offset: 4 },
+        { kind: "command", name: "audit", offset: 13 },
+      ]);
+    } else if (change === "goal reset") {
+      expect(textarea().textContent).toBe("/goal Keep the session focused");
+    } else if (change === "retained remount") {
+      expect(textarea().textContent).toBe("returned ");
+      expect(await realLoad(key)).toMatchObject({ text: "returned " });
+    } else if (change === "dispose") {
+      expect(otherSources[0]?.attachments.getState().items[0]).toBe(replacement);
+      expect(textarea().textContent).toBe("new source [image 1]");
+    } else if (change === "competing source" || change === "durable competitor") {
+      expect(await realLoad(key)).toEqual(expectedCompetitor);
+      expect(await storage.getRecovery(recoveredId)).toEqual(beforeRecovery);
+      expect(primaryAccepted).toBe(false);
+    } else if (change === "read fault") {
+      expect(faultCount).toBe(1);
+      expect(primarySeen).toBe(false);
+      expect(textarea().textContent).toBe("follow up ");
+      expect(await storage.getRecovery(recoveredId)).toEqual(beforeRecovery);
+    } else if (change === "explicit remove") {
+      expect(textarea().textContent).toBe("follow up ");
+      expect(await storage.getRecovery(recoveredId)).toEqual(beforeRecovery);
+    } else if (editingCleanup) {
+      expect(textarea().textContent).toBe("latest /skill-1 /audit [image 1]");
+      if (change === "cleanup edit competitor") {
+        expect(await realLoad(key)).toEqual(expectedCompetitor);
+        expect((await storage.getRecovery(recoveredId))?.composerText).toBe("follow up \n\nmerge me");
+        expect((await storage.getRecovery(recoveredId))?.attachments).toEqual([]);
+      } else {
+        const latest = await storage.getRecovery(recoveredId);
+        expect(latest?.composerText).toBe("latest /skill-1 /audit [image 1]");
+        expect(latest?.composerMentions).toEqual([
+          { kind: "skill", name: "skill-1", offset: 7 },
+          { kind: "command", name: "audit", offset: 16 },
+        ]);
+        expect(latest?.attachments.map((item) => item.name)).toEqual(["latest.png"]);
+        expect(latest?.payload.input).toEqual([
+          {
+            type: "text",
+            text: "latest /skill-1 /audit [image 1]",
+            mentions: [
+              { kind: "skill", name: "skill-1", offset: 7 },
+              { kind: "command", name: "audit", offset: 16 },
+            ],
+          },
+          { type: "image", mediaType: "image/png", data: "CQkJ", name: "latest.png" },
+          { type: "skill", name: "skill-1" },
+          { type: "command", name: "audit" },
+        ]);
+      }
+    } else if (change === "cleanup fault" || change === "close after primary") {
+      expect(primaryAccepted).toBe(true);
+      expect((await storage.getRecovery(recoveredId))?.attachments.map((item) => item.name)).toEqual(["original.png"]);
+      if (change === "cleanup fault") {
+        expect(faultCount).toBe(1);
+        expect(
+          getToasts()
+            .filter((toast) => toast.kind === "error")
+            .map((toast) => toast.text),
+        ).toEqual(["Couldn't save recovered message: cleanup actual commit fault"]);
+        unmount();
+        render(<Composer ref={ref} source={source} focused={false} />);
+        await settleActivityDiscovery(ref);
+        await flushPendingTurnsProjectionForTests();
+        expect(source.attachments.getState().items).toEqual([]);
+        expect(screen.queryByRole("button", { name: "Remove original.png" })).toBeNull();
+      }
+    } else {
+      expect(textarea().textContent).toBe("follow up \n\nmerge me");
+      expect((await storage.getRecovery(recoveredId))?.composerText).toBe("follow up \n\nmerge me");
+      expect((await storage.getRecovery(recoveredId))?.attachments).toEqual([]);
+      expect(primaryAccepted).toBe(change !== "primary fault");
+      if (change === "primary fault") {
+        expect(faultCount).toBe(1);
+        expect((await realLoad(key))?.text).toBe("follow up [image 1]");
+        expect(
+          getToasts()
+            .filter((toast) => toast.kind === "error")
+            .map((toast) => toast.text),
+        ).toEqual(["Couldn't save recovered message: primary actual commit fault"]);
+      } else expect((await realLoad(key))?.text).toBe("");
+    }
+    expect(await storage.listOutbox(ref)).toEqual(beforeEarlySubmit);
+    expect(outbound()).toEqual(beforeOutbound);
+    expect(newAcceptanceNotifications).toBe(0);
+    if (change === "none" || change === "retained remount" || change === "cleanup fault" || change === "read fault") {
+      await act(async () => {
+        fireEvent.click(submitButton());
+      });
+      await flushPendingTurnsProjectionForTests();
+      const records = await storage.listOutbox(ref);
+      expect(records).toHaveLength(2);
+      expect(records[1]?.attachments).toEqual([]);
+      const input = records[1]?.payload.input;
+      expect(Array.isArray(input)).toBe(true);
+      if (!Array.isArray(input)) throw new Error("missing second real payload input");
+      expect(input.some((item: { type: string }) => item.type === "image")).toBe(false);
+    }
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    holdPreparation = false;
+    readArmed = false;
+    faultArmed = false;
+    await attempt(async () =>
+      act(async () => {
+        try {
+          sendHold?.release();
+        } finally {
+          cleanupHold?.release();
+          preparationGate.resolve();
+          primaryGate.resolve();
+          cleanupGate.resolve();
+        }
+        await join;
+      }),
+    );
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(() => act(() => cleanup()));
+    await attempt(() => act(() => source.dispose()));
+    for (const other of otherSources) await attempt(() => act(() => other.dispose()));
+    source.clearSubmittedAttachments = realRetire;
+    await attempt(() => loadObserver.mockRestore());
+    await attempt(() => getObserver.mockRestore());
+    await attempt(() => updateObserver.mockRestore());
+    await attempt(() => unsubscribeCommitted?.());
+    await attempt(() => storage.close());
+  }
+  if (failures.length) throw new AggregateError(failures, "retirement test failed");
+});
+
 test("submitted markers around retained command and skill atoms preserve their exact identities", async () => {
   installCanvasStubs();
   const user = userEvent.setup();
   const ref = "ref_retained_selections";
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
-  writeComposerDraft(ref, {
-    text: "😀 /same /same /same",
-    skillNames: ["same"],
-    commandNames: ["same"],
-    mentions: [
-      { kind: "command", name: "same", offset: 3 },
-      { kind: "skill", name: "same", offset: 9 },
-    ],
-  });
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({
+      text: "😀 /same /same /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    }),
+  );
   const fake = await mountComposer(ref, {
     evener: {
       ...testThread(ref).evener,
@@ -5124,7 +6308,7 @@ test("removing an attachment that joined a token to a chip keeps the editor and 
   installCanvasStubs();
   const user = userEvent.setup();
   const ref = "ref_attachment_joined_chip";
-  writeComposerDraft(ref, { text: "Use /cleanup", skillNames: ["cleanup"] });
+  localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ text: "Use /cleanup", skillNames: ["cleanup"] }));
   await mountComposer(ref);
   const editor = textarea();
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
@@ -5150,7 +6334,7 @@ test("deleting the separator between two chips restores exactly one space", asyn
   const user = userEvent.setup();
   const ref = "ref_shared_chip_boundary";
   const text = "Run /cleanup /cleanup.v2";
-  writeComposerDraft(ref, { text, skillNames: ["cleanup", "cleanup.v2"] });
+  localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ text, skillNames: ["cleanup", "cleanup.v2"] }));
   await mountComposer(ref);
   const editor = textarea();
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(2);
@@ -5434,8 +6618,11 @@ test.each([
   async (_case, name, pluginDescription, projectDescription, details) => {
     if (!name) throw new Error("command tooltip fixture requires a name");
     const ref = "ref_command_tooltip";
-    writeComposerDraft(ref, { text: `Run /${name}`, skillNames: [], commandNames: [name] });
-    await mountComposer(ref, {
+    localStorage.setItem(
+      composerDraftStorageKey(ref),
+      JSON.stringify({ text: `Run /${name}`, skillNames: [], commandNames: [name] }),
+    );
+    const { source } = await mountComposerWithHandle(ref, {
       evener: {
         ...testThread(ref).evener,
         capabilities: { ...FULL_CAPABILITIES, commandInput: true },
@@ -5447,6 +6634,7 @@ test.each([
         },
       },
     });
+    await act(async () => source.ready());
 
     const chip = textarea().querySelector("[data-command-name]");
     expect(chip?.getAttribute("data-command-name")).toBe(name);
@@ -5457,14 +6645,18 @@ test.each([
 
 test.each([undefined, []])("command chip details retain the missing owner catalog fallback %s", async (commands) => {
   const ref = "ref_missing_command_tooltip";
-  writeComposerDraft(ref, { text: "Run /review", skillNames: [], commandNames: ["review"] });
-  await mountComposer(ref, {
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({ text: "Run /review", skillNames: [], commandNames: ["review"] }),
+  );
+  const { source } = await mountComposerWithHandle(ref, {
     evener: {
       ...testThread(ref).evener,
       capabilities: { ...FULL_CAPABILITIES, commandInput: true },
       diagnostics: { commands },
     },
   });
+  await act(async () => source.ready());
 
   const chip = textarea().querySelector("[data-command-name]");
   expect(chip?.getAttribute("data-command-name")).toBe("review");
@@ -5589,15 +6781,18 @@ test.each(["same", "audit"])(
 test("queue edit retains current command and skill atom locations without activating duplicate prose", async () => {
   const user = userEvent.setup();
   const ref = "ref_queue_atom_intent";
-  writeComposerDraft(ref, {
-    text: "/same and /same and /same",
-    skillNames: ["same"],
-    commandNames: ["same"],
-    mentions: [
-      { kind: "command", name: "same", offset: 0 },
-      { kind: "skill", name: "same", offset: 10 },
-    ],
-  });
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({
+      text: "/same and /same and /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 0 },
+        { kind: "skill", name: "same", offset: 10 },
+      ],
+    }),
+  );
   const fake = await mountComposer(ref, {
     status: { type: "active" },
     evener: {
@@ -5631,7 +6826,7 @@ test("repeated inline skills survive remount and undo while deletion reconciles 
   const user = userEvent.setup();
   const ref = "ref_inline_repeat";
   const original = "Run /skill-1 and /skill-1";
-  writeComposerDraft(ref, { text: original, skillNames: ["skill-1"] });
+  localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ text: original, skillNames: ["skill-1"] }));
   await mountComposer(ref);
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
 
@@ -5658,7 +6853,10 @@ test("repeated inline skills survive remount and undo while deletion reconciles 
 test("a token typed directly against a chip is separated so the reference stays whole", async () => {
   const user = userEvent.setup();
   const ref = "ref_inline_adjacent_token";
-  writeComposerDraft(ref, { text: "Use /cleanup ", skillNames: ["cleanup"] });
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({ text: "Use /cleanup ", skillNames: ["cleanup"] }),
+  );
   await mountComposer(ref);
   const editor = textarea();
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
@@ -5690,7 +6888,7 @@ test("a token typed directly against a chip is separated so the reference stays 
 test("one undo removes a typed character and the separator the chip needed with it", async () => {
   const user = userEvent.setup();
   const ref = "ref_inline_adjacent_undo";
-  writeComposerDraft(ref, { text: "Use /cleanup", skillNames: ["cleanup"] });
+  localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ text: "Use /cleanup", skillNames: ["cleanup"] }));
   await mountComposer(ref);
   const editor = textarea();
 
@@ -5710,7 +6908,10 @@ test("one undo removes a typed character and the separator the chip needed with 
 test("a character that already bounds the reference is left exactly as typed", async () => {
   const user = userEvent.setup();
   const ref = "ref_inline_bounding_character";
-  writeComposerDraft(ref, { text: "Use /cleanup ", skillNames: ["cleanup"] });
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({ text: "Use /cleanup ", skillNames: ["cleanup"] }),
+  );
   await mountComposer(ref);
   const editor = textarea();
 
@@ -5737,7 +6938,10 @@ test.each([
   },
 ])("restored selections: persisted $text submits only complete visible selected references", async (fixture) => {
   const ref = "ref_restored_selections";
-  writeComposerDraft(ref, { text: fixture.text, skillNames: fixture.skillNames });
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({ text: fixture.text, skillNames: fixture.skillNames }),
+  );
   const user = userEvent.setup();
   const fake = await mountComposer(ref, {
     evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: true }, queue: { revision: 0 } },
@@ -5775,11 +6979,12 @@ test.each(["before render", "before subscription"] as const)(
       }),
     );
     await threadsStore.getState().ensureThread(ref);
-    if (arrival === "before render") writeComposerDraft(ref, draft);
+    if (arrival === "before render") localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify(draft));
     let initialSendDisabled: boolean | undefined;
     function SeedBeforeSubscription() {
       useLayoutEffect(() => {
-        if (arrival === "before subscription") writeComposerDraft(ref, draft);
+        if (arrival === "before subscription")
+          localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify(draft));
       }, []);
       return null;
     }
@@ -5812,7 +7017,10 @@ test.each(["before render", "before subscription"] as const)(
 test("a leading skill that shares a builtin name remains message input", async () => {
   const user = userEvent.setup();
   const ref = "ref_inline_builtin";
-  writeComposerDraft(ref, { text: "/clear keep this reference", skillNames: ["clear"] });
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({ text: "/clear keep this reference", skillNames: ["clear"] }),
+  );
   const fake = await mountComposer(ref, {
     evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: true }, queue: { revision: 0 } },
   });
@@ -5843,7 +7051,7 @@ test("a leading skill that shares a builtin name remains message input", async (
 // carry; the description is the whole tooltip.
 test("a selected skill's tooltip never invents an unavailable or non-user-invocable diagnostic", async () => {
   const ref = "ref_skill_tip_usable";
-  writeComposerDraft(ref, { text: "/simplify", skillNames: ["simplify"] });
+  localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ text: "/simplify", skillNames: ["simplify"] }));
   await mountComposer(ref, {
     evener: {
       ref,
@@ -5871,7 +7079,7 @@ test("a selected skill's tooltip never invents an unavailable or non-user-invoca
 // absent.
 test("a selected skill the catalog no longer reports says so in its tooltip", async () => {
   const ref = "ref_skill_tip_missing";
-  writeComposerDraft(ref, { text: "/vanished", skillNames: ["vanished"] });
+  localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ text: "/vanished", skillNames: ["vanished"] }));
   await mountComposer(ref, {
     evener: {
       ref,
@@ -6302,7 +7510,10 @@ test.each([
   // A selection is staged only as a complete chip in the document - main's
   // parser never reconstructs a hidden name that the text does not spell -
   // so the reference has to be present for the gate below to see a skill.
-  writeComposerDraft(ref, { text: "skillful action /pkg:probe", skillNames: ["pkg:probe"] });
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({ text: "skillful action /pkg:probe", skillNames: ["pkg:probe"] }),
+  );
   const fake = await mountComposer(ref, {
     status: { type: "active" },
     evener: {
@@ -6334,7 +7545,10 @@ test("a staged skill on Send to a target without skillInput keeps the draft and 
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const ref = "local:skill-gate-send";
-  writeComposerDraft(ref, { text: "aimed at a target without skills /pkg:probe", skillNames: ["pkg:probe"] });
+  localStorage.setItem(
+    composerDraftStorageKey(ref),
+    JSON.stringify({ text: "aimed at a target without skills /pkg:probe", skillNames: ["pkg:probe"] }),
+  );
   const fake = await mountComposer(ref, {
     status: { type: "idle" },
     evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: false }, queue: { revision: 0 } },

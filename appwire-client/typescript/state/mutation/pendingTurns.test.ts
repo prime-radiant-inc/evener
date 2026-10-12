@@ -1,8 +1,17 @@
 // @vitest-environment node
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, expectTypeOf, test } from "vitest";
+import type { ComposerMention } from "../../composerInput";
 import type { ItemModel, ThreadModel } from "../../model";
-import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";
+import type {
+  DraftBackingIdentity,
+  DraftSessionToken,
+  DraftSettlement,
+  DraftSettlementGuard,
+  PendingTurnsDraftPort,
+  PendingTurnsThreadsPort,
+  SubmittedDraft,
+} from "./pendingTurns";
 import { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
 import type { ClientIdentity, MutationOptimisticRecord } from "./records";
 import { outboxRecord, recoveryRecord, threadModel } from "./testing";
@@ -63,6 +72,35 @@ function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraft
     },
   };
 }
+
+test("browser draft session DTOs remain framework-free complete value contracts", () => {
+  expectTypeOf<DraftSessionToken>().toEqualTypeOf<{
+    readonly namespaceIncarnation: string;
+    readonly sessionRevision: number;
+  }>();
+  expectTypeOf<DraftBackingIdentity>().toEqualTypeOf<
+    { readonly kind: "draft" } | { readonly kind: "recovery"; readonly recoveryId: string }
+  >();
+  expectTypeOf<DraftSettlementGuard>().toEqualTypeOf<{
+    readonly token: DraftSessionToken;
+    readonly backing: DraftBackingIdentity;
+    readonly localGeneration: number;
+  }>();
+  expectTypeOf<DraftSettlement>().toEqualTypeOf<{
+    cleared: boolean;
+    draftUnchanged: boolean;
+    persistence: "committed" | "pending";
+  }>();
+  expectTypeOf<SubmittedDraft>().toMatchTypeOf<{
+    draftRevisionAtStart: number;
+    text: string;
+    skillNames: readonly string[];
+    commandNames?: readonly string[];
+    mentions?: readonly ComposerMention[];
+    settlementGuard?: DraftSettlementGuard;
+    stillOwnsEdit?: () => boolean;
+  }>();
+});
 
 describe("createPendingTurnsStore", () => {
   test("settling a send retains a draft whose command selection changed but text and skills match", () => {

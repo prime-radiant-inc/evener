@@ -1,14 +1,30 @@
-import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import type { DocumentKey, NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
 import { AppwireClient } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
+import {
+  disposeDocumentReaderWork,
+  documentReaderWork,
+  getDocumentAnnotationPorts,
+  publishReader,
+  retryDocumentReaders,
+  subscribeDocumentReaderWork,
+} from "./panes/doc/documentReadState";
+import { acceptedOperation } from "./panes/doc/testing/annotationRepositoryFixtures";
 import { StubResizeObserver } from "./resizeObserverTestUtils";
 import { AppShell } from "./shell/AppShell";
-import { resetWorkspaceStoreForTests } from "./shell/workspace";
+import { conversationPaneLifetime } from "./shell/paneLifetime";
+import { resetWorkspaceStoreForTests, workspaceStore } from "./shell/workspace";
 import { installLocalStorage, MemoryStorage } from "./storageTestUtils";
+import {
+  browserDraftKey,
+  getBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
+} from "./stores/browserDraftRepository";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
 import { resetThreadsStoreForTests } from "./stores/threads";
@@ -287,4 +303,130 @@ test("renders the dev harness at /dev/harness", async () => {
   // Route warmed in beforeAll, so this waits only on this render's own
   // work — no module transform, no Suspense reveal throttle.
   expect(await screen.findByText(/connection:/i)).toBeTruthy();
+});
+
+// The real app-lifetime regression. App teardown must dispose the production
+// annotation runtime/repository (the one lazy browser singleton) and retire the
+// retained reader work, without destroying the database or the unrelated draft
+// authority. The next accessor must build USABLE fresh ports (a real accepted
+// read + save, not object inequality), durable annotations and composer content
+// survive, and a reopened composer lifetime restores its saved text. On the
+// current source nothing disposes the singleton, so the lifecycle assertions
+// marked `expect.soft` below are the failing ones this checkpoint records; the
+// soft form lets the preservation and usability tails still run.
+test("unmounting the app disposes the production annotation ports and preserves durable state", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  resetBrowserDraftRepositoryForTests();
+
+  const composerRef = "app-root";
+  const draftKey = browserDraftKey(composerRef, location.origin);
+  const key: DocumentKey = {
+    namespace: { kind: "browser", origin: location.origin },
+    sessionRef: composerRef,
+    path: "NOTES.md",
+  };
+
+  const draftRepository = getBrowserDraftRepository();
+  const ports = getDocumentAnnotationPorts();
+  let fresh: ReturnType<typeof getDocumentAnnotationPorts> | undefined;
+  let reopenedSource: ReturnType<typeof conversationPaneLifetime>["composer"] = null;
+  let viewerRetained = false;
+  let unsubscribeViewer: (() => void) | undefined;
+
+  try {
+    // A live retained composer source writes durable composer content, then its
+    // pane is removed (disposing the lifetime) BEFORE the app mounts, so the app
+    // boots to the welcome route with only durable state left behind.
+    const paneId = workspaceStore.getState().openPane("session", { ref: composerRef });
+    const pane = workspaceStore.getState().panes.find((record) => record.id === paneId);
+    if (!pane) throw new Error("session pane did not open");
+    const source = conversationPaneLifetime(pane).composer;
+    if (!source) throw new Error("session lifetime lacks a composer source");
+    try {
+      await source.ready();
+      source.editor.write("durable composer text", 23);
+      await source.whenSettled();
+    } finally {
+      source.dispose();
+    }
+    workspaceStore.getState().closePane(paneId);
+
+    const operation = await acceptedOperation(ports.repository, key, "app-op", "Keep this scope.", {
+      kind: "browser-restored-session",
+    });
+    await ports.repository.saveAnnotation(operation);
+    // Complete retained values captured BEFORE teardown (read-only observations).
+    const beforeViews = await ports.repository.listAnnotations(key);
+    const beforeDraft = await draftRepository.load(draftKey);
+
+    // An actual production reader work and subscriber, retained across teardown.
+    const work = documentReaderWork("app-viewer", key);
+    viewerRetained = true;
+    const notified = vi.fn();
+    unsubscribeViewer = subscribeDocumentReaderWork("app-viewer", notified);
+    publishReader(work);
+    expect(notified).toHaveBeenCalledTimes(1); // the subscriber responds before teardown
+
+    const view = render(<App />);
+    await screen.findByText("No session open");
+    view.unmount();
+
+    const next = getDocumentAnnotationPorts();
+    fresh = next;
+
+    // Preserve the retained annotation's complete stored value/receipt and the
+    // durable draft across teardown, BEFORE any new work is added.
+    expect(await next.repository.listAnnotations(key)).toEqual(beforeViews);
+    expect(await draftRepository.load(draftKey)).toEqual(beforeDraft);
+    expect(getBrowserDraftRepository()).toBe(draftRepository);
+
+    // Expected lifecycle REDs (soft so the usability tails below still run):
+    // disposal of the prior singleton, no post-teardown reader publication or
+    // retry publication, and refusal by the prior runtime.
+    expect.soft(next).not.toBe(ports);
+    publishReader(work);
+    expect.soft(notified).toHaveBeenCalledTimes(1);
+    await retryDocumentReaders("foreground");
+    expect.soft(notified).toHaveBeenCalledTimes(1);
+    expect.soft(await ports.runtime.save(structuredClone(operation))).toBeNull();
+
+    // The next accessor is genuinely USABLE: a real accepted read and save with
+    // a distinct operation id, verified by its durable receipt.
+    const second = await acceptedOperation(next.repository, key, "app-op-2", "Second note.", {
+      kind: "browser-restored-session",
+    });
+    await next.repository.saveAnnotation(second);
+    expect((await next.repository.listAnnotations(key)).map((entry) => entry.receipt.operationId)).toContain(
+      "app-op-2",
+    );
+
+    // A reopened composer lifetime restores its saved text from durable storage.
+    const reopenedPaneId = workspaceStore.getState().openPane("session", { ref: composerRef });
+    const reopenedPane = workspaceStore.getState().panes.find((record) => record.id === reopenedPaneId);
+    if (!reopenedPane) throw new Error("reopened session pane did not open");
+    reopenedSource = conversationPaneLifetime(reopenedPane).composer;
+    if (!reopenedSource) throw new Error("reopened lifetime lacks a composer source");
+    await reopenedSource.ready();
+    expect(reopenedSource.getSnapshot().text).toBe("durable composer text");
+  } finally {
+    // Owned cleanup runs before the existing afterEach's vi.unstubAllGlobals,
+    // even when an assertion above failed: close both captured ports and join
+    // their runtime work, then retire the shared draft repository.
+    if (reopenedSource) {
+      await reopenedSource.whenSettled();
+      reopenedSource.dispose();
+    }
+    unsubscribeViewer?.();
+    resetWorkspaceStoreForTests();
+    if (viewerRetained) disposeDocumentReaderWork("app-viewer");
+    if (fresh && fresh !== ports) {
+      await fresh.runtime.whenIdle();
+      fresh.runtime.dispose();
+      fresh.repository.close();
+    }
+    await ports.runtime.whenIdle();
+    ports.runtime.dispose();
+    ports.repository.close();
+    resetBrowserDraftRepositoryForTests();
+  }
 });
