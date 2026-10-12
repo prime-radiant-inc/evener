@@ -2000,8 +2000,7 @@ func checkNotCutOff(reply llm.Response) error {
 // check or on the model: by ruling on #4173, the summary turn carries the
 // partner's messages verbatim beside the reply (partnerMessagesMarkdown).
 func checkSummaryReply(reply, instructions string) error {
-	text := strings.TrimSpace(reply)
-	if text == "" {
+	if strings.TrimSpace(reply) == "" {
 		return errors.New("summarizer returned an empty reply")
 	}
 	if instructions != "" {
@@ -2015,7 +2014,9 @@ func checkSummaryReply(reply, instructions string) error {
 	// A heading inside a fenced block is quoted text, not a section.
 	inSection := false
 	var fence fenceTracker
-	for raw := range strings.Lines(text) {
+	// The lines are read as written: the reply's own indentation is Markdown's,
+	// and trimming it would turn an indented block into a fence.
+	for raw := range strings.Lines(reply) {
 		line := strings.TrimSpace(raw)
 		// The tracker reads the line as written: a delimiter indented by four
 		// spaces is code inside the block, not a delimiter.

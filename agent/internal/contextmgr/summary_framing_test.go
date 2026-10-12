@@ -27,8 +27,10 @@ func TestStripSummaryFraming(t *testing.T) {
 		"prose then marker":  {"## Progress\n- Renamed " + summaryMarkerStart, "## Progress\n- Renamed " + summaryMarkerStart},
 		"marker then prose":  {summaryMarkerStart + " is the framing we write.", summaryMarkerStart + " is the framing we write."},
 		"indented marker":    {"## Progress\n    " + summaryMarkerEnd + "\nFixed it.", "## Progress\n    " + summaryMarkerEnd + "\nFixed it."},
+		"tabbed marker":      {"## Progress\n \t" + summaryMarkerEnd + "\nFixed it.", "## Progress\n \t" + summaryMarkerEnd + "\nFixed it."},
+		"indented block":     {"    ~~~\n    example\n    ~~~\n\n## Progress\nSTATE", "    ~~~\n    example\n    ~~~\n\n## Progress\nSTATE"},
 		"quoted in a fence":  {"## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```", "## Progress\n```\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n```"},
-		"framing and blanks": {summaryMarkerStart + "\n\n## Progress\nFixed it.\n\n" + summaryMarkerEnd, "## Progress\nFixed it."},
+		"framing and blanks": {summaryMarkerStart + "\n\n## Progress\nFixed it.\n\n" + summaryMarkerEnd, "\n## Progress\nFixed it."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := stripSummaryFraming(tc.in); got != tc.want {
@@ -129,6 +131,20 @@ func TestSummarizeWithLLM_ReadsAHeadingBehindMarkersAtBothEnds(t *testing.T) {
 				t.Fatalf("the heading behind the echoed markers was not read as the summary's own:\n%s", stored)
 			}
 		})
+	}
+}
+
+// A reply may open with an indented block. Its indentation is Markdown's, not
+// whitespace to trim: trimming it would turn the block's own ~~~ line into a
+// fence opener and hide every section after it.
+func TestSummarizeWithLLM_AcceptsAnIndentedBlockBeforeASection(t *testing.T) {
+	reply := "    ~~~\n    example\n    ~~~\n\n## Progress\nFixed the auth bug."
+	result, err := summarizeReplying(t, reply, "")
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+	if stored := result[0].Message.Text(); !strings.Contains(stored, "## Progress\nFixed the auth bug.") {
+		t.Fatalf("the section after the indented block was not read:\n%s", stored)
 	}
 }
 

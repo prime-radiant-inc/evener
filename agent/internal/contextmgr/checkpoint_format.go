@@ -104,10 +104,11 @@ const summaryTurnStart = summaryMarkerStart + "\n"
 // wrote beside it. Anywhere else the markers are the model's own words — prose
 // that names them, a fenced quote, an indented block, a heading the summary's
 // own sections do not name — and stay, as does every line the framing did not
-// touch. A line the framing touched is written trimmed.
+// touch. A line the framing touched is written trimmed; the reply's own leading
+// whitespace is never touched, because Markdown reads it as indentation.
 func stripSummaryFraming(reply string) string {
 	if !strings.Contains(reply, summaryMarkerStart) && !strings.Contains(reply, summaryMarkerEnd) {
-		return strings.TrimSpace(reply) // no framing to strip: the copy below would be a no-op
+		return strings.TrimRight(reply, " \t\r\n") // no framing to strip: the copy below would be a no-op
 	}
 	var b strings.Builder
 	var fence fenceTracker
@@ -129,7 +130,7 @@ func stripSummaryFraming(reply string) string {
 		}
 		b.WriteString(line)
 	}
-	return strings.TrimSpace(b.String())
+	return strings.TrimRight(b.String(), " \t\r\n")
 }
 
 // markerOnly reports whether a trimmed line holds at least one framing marker
@@ -142,10 +143,22 @@ func markerOnly(line string) bool {
 	return strings.TrimSpace(rest) == ""
 }
 
-// indentedCode reports whether a line is Markdown-indented code, whose text is
-// the model's content even when it names the framing.
+// indentedCode reports whether a line is Markdown-indented code (four columns of
+// whitespace, a tab reaching the next four-column stop), whose text is the
+// model's content even when it names the framing.
 func indentedCode(line string) bool {
-	return strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t")
+	columns := 0
+	for _, r := range line {
+		switch r {
+		case ' ':
+			columns++
+		case '\t':
+			columns += 4 - columns%4
+		default:
+			return columns >= 4
+		}
+	}
+	return false // the line is whitespace only
 }
 
 // framingBesideHeading takes the framing markers off a line's edges, in however
