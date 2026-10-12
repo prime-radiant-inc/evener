@@ -323,7 +323,7 @@ func TestLintRunHonorsASignalDuringTheLastReplay(t *testing.T) {
 	// shell trap fired here too, between commands, with exit 143.
 	signals := make(chan os.Signal, 1)
 	out := &signalOnFence{signals: signals}
-	t.Setenv("TMPDIR", t.TempDir())
+	setCanonicalTmpDir(t)
 	var errOut strings.Builder
 	r := &lintRun{
 		modules:  []string{"one"},
