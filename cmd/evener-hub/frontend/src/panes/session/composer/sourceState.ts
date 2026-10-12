@@ -236,7 +236,12 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     items: PendingAttachment[];
   } | null = null;
 
-  function cloneValue(value: SkillEditorValue): SkillEditorValue {
+  function cloneValue(value: {
+    readonly text: string;
+    readonly skillNames: readonly string[];
+    readonly commandNames?: readonly string[];
+    readonly mentions?: readonly ComposerMention[];
+  }): SkillEditorValue {
     return {
       text: value.text,
       skillNames: [...value.skillNames],
@@ -301,12 +306,15 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     commandNames?: readonly string[];
     mentions?: readonly ComposerMention[];
   }): SkillEditorValue {
-    return cloneValue({
-      text: row.text,
-      skillNames: [...row.skillNames],
-      ...(row.commandNames === undefined ? {} : { commandNames: [...row.commandNames] }),
-      ...(row.mentions === undefined ? {} : { mentions: row.mentions.map((m) => ({ ...m })) }),
-    });
+    return cloneValue(row);
+  }
+  // Every settle, recovery and submission-committed path clears the local
+  // editor through the same three updates so the cleared shape can never
+  // diverge between them.
+  function clearLocalEditor(): void {
+    updateText("");
+    updateSkillNames([]);
+    updateSelectionMeta({ text: "", skillNames: [] });
   }
   function recoveryValue(record: MutationRecoveryRecord): SkillEditorValue {
     const payloadInput = (record.payload as { input?: unknown }).input;
@@ -627,9 +635,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     recoveryWriteVersionRef.current += 1;
     recoveryReplacementEpochRef.current += 1;
     setActiveRecoveryId(null);
-    updateText("");
-    updateSkillNames([]);
-    updateSelectionMeta({ text: "", skillNames: [] });
+    clearLocalEditor();
     operations.reset();
     return true;
   }
@@ -668,9 +674,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
         if (row) draftToken = row.token;
         activeRecoveryIdRef.current = null;
         state.setState({ activeRecoveryId: null });
-        updateText("");
-        updateSkillNames([]);
-        updateSelectionMeta({ text: "", skillNames: [] });
+        clearLocalEditor();
         runtimeBacking = { kind: "draft" };
       }
       return { cleared: true, draftUnchanged: true, persistence: "committed" };
@@ -692,9 +696,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       const row = await r.load(k);
       if (stillOwnsLocally()) {
         if (row) draftToken = row.token;
-        updateText("");
-        updateSkillNames([]);
-        updateSelectionMeta({ text: "", skillNames: [] });
+        clearLocalEditor();
         runtimeBacking = { kind: "draft" };
       }
     }
@@ -1138,9 +1140,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
         recoveryWriteVersionRef.current += 1;
         recoveryReplacementEpochRef.current += 1;
         setActiveRecoveryId(null);
-        updateText("");
-        updateSkillNames([]);
-        updateSelectionMeta({ text: "", skillNames: [] });
+        clearLocalEditor();
       } else if (
         !recovery &&
         activeRecoveryIdRef.current === null &&
@@ -1169,9 +1169,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
         // pane advanced the revision) clears only THIS source's local editor
         // and must not publish an empty projection over the pane that owns it.
         if (context.settlement.cleared) ownedDraftRevisionRef.current = readDraftRevision(ref);
-        updateText("");
-        updateSkillNames([]);
-        updateSelectionMeta({ text: "", skillNames: [] });
+        clearLocalEditor();
       }
     },
   );
@@ -1264,9 +1262,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
         sameSkillSelections(skillNamesRef.current, names) &&
         sameSkillSelections(selectionMetaRef.current.commandNames, commands)
       ) {
-        updateText("");
-        updateSkillNames([]);
-        updateSelectionMeta({ text: "", skillNames: [] });
+        clearLocalEditor();
         if (readDraftRevision(ref) === draftRevision) {
           markDraftEdited(ref);
           ownedDraftRevisionRef.current = readDraftRevision(ref);

@@ -144,6 +144,23 @@ function invokeObserver(listener: () => void): void {
   }
 }
 
+// One deletion pattern for every store swept by a namespace reset: a row
+// leaves when its namespace identity matches, deleted by the store's own key,
+// so a store added to the reset cannot grow a divergent loop.
+async function deleteRowsWhere<Row>(
+  transaction: IDBTransaction,
+  storeName: string,
+  rowBelongs: (row: Row) => boolean,
+  keyOf: (row: Row) => IDBValidKey,
+): Promise<void> {
+  const rows = await requestResult<Row[]>(transaction.objectStore(storeName).getAll());
+  for (const row of rows) {
+    if (rowBelongs(row)) {
+      await requestResult(transaction.objectStore(storeName).delete(keyOf(row)));
+    }
+  }
+}
+
 const STORAGE_WAIT_MS = 10_000;
 const READ_STORES = [ANNOTATION_NAMESPACES_STORE, ANNOTATION_HEADS_STORE] as const;
 const ACCEPT_STORES = [
@@ -378,11 +395,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // transaction completes, outside every transaction. An observer fault cannot
   // change the committed result.
   #notifyStorageSuccess(): void {
-    try {
-      this.#options.onStorageSuccess?.();
-    } catch {
-      // Observational only.
-    }
+    invokeObserver(() => this.#options.onStorageSuccess?.());
   }
 
   async beginRead(key: DocumentKey): Promise<ReadTicket> {
@@ -1043,54 +1056,42 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         if (!namespaceRow || namespaceRow.incarnation !== expectedIncarnation) {
           return { committed: false, incarnation: namespaceRow?.incarnation ?? "" };
         }
-        const heads = await requestResult<AnnotationHeadRow[]>(
-          transaction.objectStore(ANNOTATION_HEADS_STORE).getAll(),
+        await deleteRowsWhere<AnnotationHeadRow>(
+          transaction,
+          ANNOTATION_HEADS_STORE,
+          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+          (row) => row.documentKey,
         );
-        for (const row of heads) {
-          if (documentKeyNamespace(row.documentKey) === namespaceKey) {
-            await requestResult(transaction.objectStore(ANNOTATION_HEADS_STORE).delete(row.documentKey));
-          }
-        }
-        const evidence = await requestResult<AnnotationEvidenceRow[]>(
-          transaction.objectStore(ANNOTATION_EVIDENCE_STORE).getAll(),
+        await deleteRowsWhere<AnnotationEvidenceRow>(
+          transaction,
+          ANNOTATION_EVIDENCE_STORE,
+          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+          (row) => row.evidenceKey,
         );
-        for (const row of evidence) {
-          if (documentKeyNamespace(row.documentKey) === namespaceKey) {
-            await requestResult(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).delete(row.evidenceKey));
-          }
-        }
-        const payloads = await requestResult<AnnotationPayloadRow[]>(
-          transaction.objectStore(ANNOTATION_PAYLOADS_STORE).getAll(),
+        await deleteRowsWhere<AnnotationPayloadRow>(
+          transaction,
+          ANNOTATION_PAYLOADS_STORE,
+          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+          (row) => row.payloadKey,
         );
-        for (const row of payloads) {
-          if (documentKeyNamespace(row.documentKey) === namespaceKey) {
-            await requestResult(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).delete(row.payloadKey));
-          }
-        }
-        const operations = await requestResult<AnnotationOperationRow[]>(
-          transaction.objectStore(ANNOTATION_OPERATIONS_STORE).getAll(),
+        await deleteRowsWhere<AnnotationOperationRow>(
+          transaction,
+          ANNOTATION_OPERATIONS_STORE,
+          (row) => row.namespaceKey === namespaceKey,
+          (row) => row.operationKey,
         );
-        for (const row of operations) {
-          if (row.namespaceKey === namespaceKey) {
-            await requestResult(transaction.objectStore(ANNOTATION_OPERATIONS_STORE).delete(row.operationKey));
-          }
-        }
-        const sequences = await requestResult<AnnotationSequenceRow[]>(
-          transaction.objectStore(ANNOTATION_SEQUENCES_STORE).getAll(),
+        await deleteRowsWhere<AnnotationSequenceRow>(
+          transaction,
+          ANNOTATION_SEQUENCES_STORE,
+          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+          (row) => row.documentKey,
         );
-        for (const row of sequences) {
-          if (documentKeyNamespace(row.documentKey) === namespaceKey) {
-            await requestResult(transaction.objectStore(ANNOTATION_SEQUENCES_STORE).delete(row.documentKey));
-          }
-        }
-        const expiries = await requestResult<AnnotationExpiryRow[]>(
-          transaction.objectStore(ANNOTATION_EXPIRY_STORE).getAll(),
+        await deleteRowsWhere<AnnotationExpiryRow>(
+          transaction,
+          ANNOTATION_EXPIRY_STORE,
+          (row) => annotationNamespaceKey(row.receipt.key.namespace) === namespaceKey,
+          (row) => row.expiryKey,
         );
-        for (const row of expiries) {
-          if (annotationNamespaceKey(row.receipt.key.namespace) === namespaceKey) {
-            await requestResult(transaction.objectStore(ANNOTATION_EXPIRY_STORE).delete(row.expiryKey));
-          }
-        }
         await requestResult(
           transaction
             .objectStore(ANNOTATION_NAMESPACES_STORE)
@@ -1176,21 +1177,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       return { state: "pending", reason: "owner-unavailable" };
     }
     if (result.state === "applied") {
-      try {
-        this.#options.afterCommit?.();
-      } catch {
-        // An observer cannot relabel a committed append.
-      }
-      try {
-        source.acknowledgeAnnotation(preparation, result.token, result.value);
-      } catch {
-        // An acknowledgement fault cannot relabel a committed append.
-      }
-      try {
-        this.#options.onStorageSuccess?.();
-      } catch {
-        // Observational only.
-      }
+      invokeObserver(() => this.#options.afterCommit?.());
+      invokeObserver(() => source.acknowledgeAnnotation(preparation, result.token, result.value));
+      this.#notifyStorageSuccess();
       // The append committed; wake matching readers (and peers) after commit.
       this.#publishDocumentWake(annotationDocumentKey(key));
       return { state: "applied", draftRevision: result.draftRevision };

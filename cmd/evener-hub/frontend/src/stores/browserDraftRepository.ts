@@ -687,7 +687,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   }
 
   async #write<T>(
-    stores: string | readonly string[],
+    stores: readonly string[],
     operation: BrowserDraftOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
   ): Promise<T> {
@@ -695,13 +695,13 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   }
 
   async #transaction<T>(
-    stores: string | readonly string[],
+    stores: readonly string[],
     mode: "readonly" | "readwrite",
     operation: BrowserDraftOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
   ): Promise<T> {
     const database = await this.#connection.open();
-    const transaction = database.transaction([...([] as string[]).concat(stores as string | readonly string[])], mode);
+    const transaction = database.transaction([...stores], mode);
     const completed = transactionCompletion(transaction);
     // Observe the completion rejection immediately so a request error that aborts
     // the transaction before `await body` returns is never an unhandled rejection.
