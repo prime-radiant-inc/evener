@@ -349,12 +349,34 @@ func runServe(args []string) error {
 // happily with a cancelled context — so the interrupt is only noticed where
 // the context is read, and a startup that was interrupted has to say so and
 // fail rather than bind, shut itself down and exit 0 in silence.
-func startupInterrupted(ctx context.Context, step string) error {
+func startupInterrupted(ctx context.Context, step startupStep) error {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("interrupted while %s: %w", step, err)
+		return &startupInterruptedError{step: step, err: err}
 	}
 	return nil
 }
+
+// startupStep names a startup step that cannot read the context itself.
+type startupStep string
+
+const (
+	stepSeedingMarketplaces   startupStep = "seeding default marketplaces"
+	stepProbingLoginShellPath startupStep = "probing the login shell PATH"
+	stepProvisioningSandbox   startupStep = "provisioning the sandbox"
+	stepCreatingSession       startupStep = "creating the session"
+)
+
+// startupInterruptedError reports the startup step an interrupt ended.
+type startupInterruptedError struct {
+	step startupStep
+	err  error
+}
+
+func (e *startupInterruptedError) Error() string {
+	return fmt.Sprintf("interrupted while %s: %v", e.step, e.err)
+}
+
+func (e *startupInterruptedError) Unwrap() error { return e.err }
 
 // armInterruptRunner arms the mutation runner and the server's cancel func in
 // the one order an accepted interrupt needs: the runner first.
@@ -528,7 +550,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := seedMarketplaces(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
 	}
-	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
 	}
 
@@ -620,7 +642,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
-	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+	if err := startupInterrupted(ctx, stepProbingLoginShellPath); err != nil {
 		return err
 	}
 	memoryProjectID := ""
@@ -692,7 +714,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// until a session owns this environment and its Close does. Every way
 		// out between here and that hand-off has to dispose of them, or an
 		// interrupted startup leaks a directory and a lease per attempt.
-		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+		if err := startupInterrupted(ctx, stepProvisioningSandbox); err != nil {
 			_ = env.DisposeSessionScratch()
 			return err
 		}
@@ -743,7 +765,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session — nothing to announce.
 	printServeSandboxLine(os.Stderr, sandboxEnforcementLine(env))
 
-	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+	if err := startupInterrupted(ctx, stepCreatingSession); err != nil {
 		sess.Close()
 		return err
 	}
@@ -2083,6 +2105,10 @@ func buildInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef, outputSc
 	return provider.WithAllowedDecisions(p, allowedDecisions), nil
 }
 
+// errFastCheapProviderUnavailable identifies a --fast-cheap-model provider the
+// client cannot route a side call to.
+var errFastCheapProviderUnavailable = errors.New("is not configured or has no credential")
+
 // applyFastCheapModel sets the auxiliary cheap model for side calls. The ref is
 // "provider/model" to route side calls to a different provider instance than the
 // active model, or a bare "model" to keep the active provider. A cross-provider
@@ -2096,8 +2122,8 @@ func applyFastCheapModel(profile *provider.Profile, raw string, client *llm.Clie
 	raw = strings.TrimSpace(raw)
 	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
 		if !client.HasProvider(cheapProvider) {
-			return nil, fmt.Errorf("--fast-cheap-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
-				cheapProvider, profile.ID(), strings.Join(client.ProviderNames(), ", "))
+			return nil, fmt.Errorf("--fast-cheap-model provider %q %w (active provider %q); available providers: %s",
+				cheapProvider, errFastCheapProviderUnavailable, profile.ID(), strings.Join(client.ProviderNames(), ", "))
 		}
 	}
 	return provider.WithCheapModel(profile, raw), nil

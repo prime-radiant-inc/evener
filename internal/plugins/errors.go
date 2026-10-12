@@ -41,4 +41,7 @@ var (
 	// ErrMarketplaceSourceUnsupported rejects a source kind this build does not
 	// accept; it is wire input, not a store failure, and carries no path.
 	ErrMarketplaceSourceUnsupported = errors.New("unsupported marketplace source")
+	// ErrSelectionUnavailable identifies an --enabled-plugins selection naming
+	// a plugin that cannot be loaded.
+	ErrSelectionUnavailable = errors.New("enabled plugin selection is unavailable")
 )

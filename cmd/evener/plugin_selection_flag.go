@@ -87,18 +87,22 @@ func isKebabCasePluginName(name string) bool {
 	return true
 }
 
+// errPluginSelectionWithResume identifies an --enabled-plugins selection given
+// to a resume, which keeps the session's own plugins.
+var errPluginSelectionWithResume = errors.New("--enabled-plugins cannot be used with")
+
 func rejectPluginSelectionWithResume(enabledPlugins *[]string, resume string, resumeLast bool) error {
 	if enabledPlugins == nil {
 		return nil
 	}
 	if resume != "" && resumeLast {
-		return errors.New("--enabled-plugins cannot be used with --resume or --resume-last")
+		return fmt.Errorf("%w --resume or --resume-last", errPluginSelectionWithResume)
 	}
 	if resume != "" {
-		return errors.New("--enabled-plugins cannot be used with --resume")
+		return fmt.Errorf("%w --resume", errPluginSelectionWithResume)
 	}
 	if resumeLast {
-		return errors.New("--enabled-plugins cannot be used with --resume-last")
+		return fmt.Errorf("%w --resume-last", errPluginSelectionWithResume)
 	}
 	return nil
 }

@@ -192,6 +192,7 @@ export function BoardRow({
 	const lineOne = 22 * scale;
 	return (
 		<Pressable
+			testID={`board-row:${state}`}
 			accessibilityRole="button"
 			accessibilityLabel={label}
 			accessibilityState={selected === undefined ? { busy: dimmed } : { busy: dimmed, selected }}
@@ -280,7 +281,7 @@ export function BoardRow({
 					) : null}
 				</View>
 				{waiting ? (
-					<WhyText why={{ text: waiting }} numberOfLines={1} marginTop={2} />
+					<WhyText testID="row-waiting" why={{ text: waiting }} numberOfLines={1} marginTop={2} />
 				) : why ? (
 					<WhyText why={why} numberOfLines={needsYou ? 2 : 1} marginTop={2} />
 				) : null}
@@ -381,10 +382,14 @@ function Wash() {
 /** A row's why line (spec 7.2): the state's word in its hue, when it has
  * one, then the reason. */
 export function WhyText({
+	testID,
 	why,
 	numberOfLines,
 	marginTop,
 }: {
+	/** `why-line:<kind>` by default; "row-waiting" for the line a held change
+	 * puts in its place. */
+	testID?: string;
 	why: WhyLine;
 	numberOfLines?: number;
 	marginTop?: number;
@@ -393,6 +398,7 @@ export function WhyText({
 	const scale = useTextScale();
 	return (
 		<Text
+			testID={testID ?? `why-line:${why.kind}`}
 			allowFontScaling={allowFontScaling}
 			numberOfLines={numberOfLines}
 			ellipsizeMode="tail"
@@ -406,6 +412,7 @@ export function WhyText({
 			{why.word ? (
 				<>
 					<Text
+						testID="why-word"
 						style={{
 							fontWeight: "600",
 							color: why.hue === "danger" ? palette.dangerInk : palette.attentionInk,

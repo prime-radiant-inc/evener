@@ -435,7 +435,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         </span>
         {!singlePane && <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />}
       </div>
-      <div className={styles.body}>
+      <div className={styles.body} data-stacked-pane-type={focusedPane?.type}>
         {focusedPane && (
           // key forces a fresh mount on every distinct pane id, including
           // switching BACK to a previously-seen one - without it, two

@@ -114,8 +114,11 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 	});
 
 	it("says where you are", () => {
-		expect(matchLabel([1, 2, 4], 2)).toBe("2 of 3");
-		expect(matchLabel([], null)).toBe("No matches");
+		const numbers = (label: string) => label.match(/\d+/g)?.map(Number) ?? [];
+		// The position, then how many.
+		expect(numbers(matchLabel([1, 2, 4], 2))).toEqual([2, 3]);
+		expect(numbers(matchLabel([1, 2, 4], null))).toEqual([3, 3]);
+		expect(numbers(matchLabel([], null))).toEqual([]);
 	});
 });
 

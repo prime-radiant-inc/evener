@@ -154,7 +154,10 @@ type PaletteItem =
 // One render entry: a section header or a navigable row carrying its flat
 // index (which matches its position in the parallel `items` list, so
 // keyboard nav and rendering can never drift apart).
-type Entry = { type: "header"; label: string } | { type: "row"; item: PaletteItem; index: number };
+// A header's section is its stable identity (rendered as data-section); the
+// label is the copy shown for it.
+type Section = "needs-you" | "live" | "past" | "in-session" | "recent" | "handoff" | "commands";
+type Entry = { type: "header"; section: Section; label: string } | { type: "row"; item: PaletteItem; index: number };
 
 interface ResultsView {
   entries: Entry[];
@@ -758,7 +761,7 @@ function buildView(args: {
     // opened the same way (needsYouCycle.ts). A non-empty query keeps the
     // existing live/past/in-session behavior untouched below.
     if (!query.trim() && needsYouNodes.length > 0) {
-      entries.push({ type: "header", label: "Needs you" });
+      entries.push({ type: "header", section: "needs-you", label: "Needs you" });
       for (const node of needsYouNodes) push({ kind: "needsYou", node });
       return { entries, items };
     }
@@ -767,15 +770,15 @@ function buildView(args: {
     const model = focusedModel(ctx.sessionRef);
     const inSession = model && query.trim() ? findInSessionMatches(model, query.trim()) : [];
     if (live.length) {
-      entries.push({ type: "header", label: "Live" });
+      entries.push({ type: "header", section: "live", label: "Live" });
       for (const result of live) push({ kind: "live", result });
     }
     if (past.length) {
-      entries.push({ type: "header", label: `Past · ${past.length}` });
+      entries.push({ type: "header", section: "past", label: `Past · ${past.length}` });
       for (const result of past) push({ kind: "past", result });
     }
     if (inSession.length) {
-      entries.push({ type: "header", label: `In session · ${inSession.length}` });
+      entries.push({ type: "header", section: "in-session", label: `In session · ${inSession.length}` });
       for (const match of inSession) push({ kind: "insession", match });
     }
     return { entries, items };
@@ -784,7 +787,7 @@ function buildView(args: {
   if (mode === "command-filter") {
     const { recent, commands } = filterCommands(ctx, query);
     if (recent.length) {
-      entries.push({ type: "header", label: "Recent" });
+      entries.push({ type: "header", section: "recent", label: "Recent" });
       for (const command of recent) push({ kind: "command", command });
     }
     // The ONE handoff row (2026-08-14 decision): the typed name prefixes a
@@ -794,10 +797,10 @@ function buildView(args: {
     // empty query, so the palette's plain empty-query view (Recent +
     // Commands, or the needs-you list above) is undisturbed.
     if (sessionScopedHandoffMatch(query, catalogCommands)) {
-      entries.push({ type: "header", label: "Continue in the composer" });
+      entries.push({ type: "header", section: "handoff", label: "Continue in the composer" });
       push({ kind: "handoff", query, hasFocusedSession: ctx.sessionRef !== null });
     }
-    entries.push({ type: "header", label: "Commands" });
+    entries.push({ type: "header", section: "commands", label: "Commands" });
     for (const command of commands) push({ kind: "command", command });
     return { entries, items };
   }
@@ -829,7 +832,9 @@ function renderResults(args: {
   if (showingHelp) {
     return (
       <>
-        <div className={CLASS.sectionHeader}>Keyboard shortcuts</div>
+        <div className={CLASS.sectionHeader} data-section="help">
+          Keyboard shortcuts
+        </div>
         {HELP_ROWS.map((row, i) => (
           // HELP_ROWS is a fixed static list (order IS its meaning, like
           // RowContent's own Highlighted parts above) and the same chord
@@ -837,7 +842,7 @@ function renderResults(args: {
           // vs. ask dock answer) - desc alone isn't unique either, so the
           // stable position is the only real identity here.
           // biome-ignore lint/suspicious/noArrayIndexKey: fixed static list, position is identity - see above
-          <div className={CLASS.helpRow} key={i}>
+          <div className={CLASS.helpRow} key={i} data-help-row>
             <span className={CLASS.helpKeys}>
               <KeyHint keys={row.keys} />
             </span>
@@ -851,7 +856,7 @@ function renderResults(args: {
   if (view.items.length > 0) {
     return view.entries.map((entry) =>
       entry.type === "header" ? (
-        <div className={CLASS.sectionHeader} key={`h-${entry.label}`}>
+        <div className={CLASS.sectionHeader} key={`h-${entry.section}`} data-section={entry.section}>
           {entry.label}
         </div>
       ) : (
@@ -869,27 +874,45 @@ function renderResults(args: {
 
   // No rows: the mode-specific placeholder.
   if (mode === "search") {
-    if (searchFailed) return <Empty title="Search failed" />;
+    if (searchFailed) return <Empty reason="search-failed" title="Search failed" />;
     if (!query.trim()) return null;
-    return <Empty title="No matches" body="Nothing in live, past, or this session." />;
+    return <Empty reason="no-matches" title="No matches" body="Nothing in live, past, or this session." />;
   }
   if (mode === "command-filter") {
-    return <Empty title="No commands match" body="Try a different keyword or open a session first." />;
+    return (
+      <Empty reason="no-commands" title="No commands match" body="Try a different keyword or open a session first." />
+    );
   }
   // command-args
   if (selectedCommand?.args?.kind === "enum") {
-    if (enumStatus === "loading") return <Empty body="Loading…" />;
+    if (enumStatus === "loading") return <Empty reason="options-loading" body="Loading…" />;
     if (enumStatus === "error")
-      return <Empty title="Couldn't load options" body="Something went wrong. Close and reopen to retry." />;
-    return <Empty title="No matches" />;
+      return (
+        <Empty
+          reason="options-failed"
+          title="Couldn't load options"
+          body="Something went wrong. Close and reopen to retry."
+        />
+      );
+    return <Empty reason="no-matches" title="No matches" />;
   }
   // free-arg hint
-  return <Empty body={query.trim() ? `press ↵ to run with: ${query}` : "type a value and press ↵"} />;
+  return <Empty reason="free-arg" body={query.trim() ? `press ↵ to run with: ${query}` : "type a value and press ↵"} />;
 }
 
-function Empty({ title, body }: { title?: string; body?: string }) {
+// reason names which placeholder this is (data-reason), independent of
+// its copy.
+function Empty({
+  reason,
+  title,
+  body,
+}: {
+  reason: "search-failed" | "no-matches" | "no-commands" | "options-loading" | "options-failed" | "free-arg";
+  title?: string;
+  body?: string;
+}) {
   return (
-    <div className={CLASS.empty}>
+    <div className={CLASS.empty} data-reason={reason}>
       {title && <p className={CLASS.emptyTitle}>{title}</p>}
       {body && <p className={CLASS.emptyBody}>{body}</p>}
     </div>
@@ -921,6 +944,7 @@ function Row({
       id={`palette-row-${index}`}
       className={unavailable ? `${CLASS.row} ${CLASS.rowUnavailable}` : CLASS.row}
       role="option"
+      data-kind={item.kind}
       aria-selected={active}
       aria-disabled={unavailable || undefined}
       onClick={() => onActivate(index)}
