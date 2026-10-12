@@ -6891,7 +6891,16 @@ function syncTranscriptResidencyOwners(ref: string): void {
 }
 
 export async function settleBackgroundTranscriptsForTests(): Promise<void> {
+  // The reduced residency owns no disk work (its settled() is a no-op). The
+  // transcript write and checkpoint work the pre-6d helper drained now lives in
+  // each entry route's TranscriptRepository, so drain every route's repository.
+  // Like the pre-6d residency, this must not await an issued network hydration:
+  // a callers' read may legitimately never settle (see residency's own
+  // settled()). A repository's settled() throws when recovery is genuinely
+  // outstanding; that throw propagates, matching settleEntryTranscriptForTests,
+  // so this drain never reports a clean settle while background work remains.
   await residencyIfCreated?.settled();
+  await Promise.all(entryTranscriptRoutes().map((route) => route.repository?.settled()));
 }
 
 /** @internal Observe actual store hydration before the entry commit, without issuing a read. */
