@@ -442,7 +442,8 @@ type skillBrowserAdapter struct {
 
 // Fixture sentinels scripted across the provider boundary by the whole-journey
 // guard. They are opaque data, never prose: the Go owner
-// (TestBackgroundTranscriptsBrowser) asserts its own copies independently.
+// (TestBackgroundTranscriptsEntrySliceBrowser) asserts its own copies
+// independently.
 const (
 	backgroundBeforeEviction = "BACKGROUND_BEFORE_EVICTION"
 	backgroundAfterEviction  = "BACKGROUND_AFTER_EVICTION"

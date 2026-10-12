@@ -7,7 +7,7 @@ package hub
 // lifetime contract against a real child. The command cancellation setup
 // (configureBackgroundDriverCommand) and the owning budget/await composition
 // (backgroundDriverBudget, awaitBackgroundDriver) are the same seams the real
-// TestBackgroundTranscriptsBrowser uses, so the test and the driver share one
+// TestBackgroundTranscriptsEntrySliceBrowser uses, so the test and the driver share one
 // lifetime definition. The child is this test binary re-executed, so a process
 // that installs its own SIGTERM disposition proves the join for real.
 
