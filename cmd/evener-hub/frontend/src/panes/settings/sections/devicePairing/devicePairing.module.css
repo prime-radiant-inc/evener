@@ -6,8 +6,8 @@
   max-width: 40rem;
 }
 
-.root h3,
-.root p {
+.root > h3,
+.root > p {
   margin: 0;
 }
 

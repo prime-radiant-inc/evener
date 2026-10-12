@@ -3,7 +3,7 @@ import { encodeInvitation, invitationText } from "@evener/appwire-client/pairing
 import { QRCodeSVG } from "qrcode.react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useClient } from "../../../../shell/clientContext";
-import { Button, FormRow, Input, Select } from "../../../../widgets";
+import { Button, FormRow, InlineNotice, Input, Select } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { encodeAudio, SAMPLE_RATE } from "./audio";
 import styles from "./devicePairing.module.css";
@@ -105,7 +105,7 @@ export function DeviceSetup({ onClose }: { onClose(): void }) {
       {!invite || status?.state === "expired" ? (
         <>
           {status?.state === "expired" && (
-            <p role="status">This invitation expired. Create a new one and listen or scan again.</p>
+            <InlineNotice>This invitation expired. Create a new one and listen or scan again.</InlineNotice>
           )}
           <FormRow label="Hub address" htmlFor={`${id}-origin`}>
             <Input
@@ -138,7 +138,9 @@ export function DeviceSetup({ onClose }: { onClose(): void }) {
             <strong>{invite.origin}</strong>
           </p>
           {status?.state === "approved" ? (
-            <p role="status">Approved. Your device can now save this Hub. Keep it connected until setup finishes.</p>
+            <InlineNotice>
+              Approved. Your device can now save this Hub. Keep it connected until setup finishes.
+            </InlineNotice>
           ) : (
             <>
               <div role="img" aria-label="Device pairing invitation QR code">
@@ -163,13 +165,13 @@ export function DeviceSetup({ onClose }: { onClose(): void }) {
                   </div>
                 ))
               ) : (
-                <p role="status">Waiting for your device…</p>
+                <InlineNotice>Waiting for your device…</InlineNotice>
               )}
             </>
           )}
         </>
       )}
-      {error && <p role="alert">{error}</p>}
+      {error && <InlineNotice tone="danger">{error}</InlineNotice>}
       <div className={controlsClass}>
         <Button size="sm" variant="secondary" onClick={onClose}>
           Close setup
@@ -257,8 +259,8 @@ function SetupSound({ invitation }: { invitation: DevicePairingInvitation }) {
           </Button>
         )}
       </div>
-      <p role="status">{messages[state]}</p>
-      {error && <p role="alert">{error}</p>}
+      <InlineNotice>{messages[state]}</InlineNotice>
+      {error && <InlineNotice tone="danger">{error}</InlineNotice>}
     </>
   );
 }
