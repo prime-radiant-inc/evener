@@ -37,7 +37,15 @@ import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle, VisuallyHidden } from "../../widgets";
+import {
+  Button,
+  Cadence,
+  EmptyState,
+  Loader,
+  PaneScaffold,
+  type VirtualListHandle,
+  VisuallyHidden,
+} from "../../widgets";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
@@ -534,16 +542,17 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         title={title}
         edgeFooter={edgeFooter}
       >
-        <EmptyState
-          title="Loading transcript…"
-          reason="loading"
-          hint={
-            ref.startsWith("local:")
-              ? "If the session is unresponsive, you can stop its process to recover it."
-              : undefined
-          }
-          action={ref.startsWith("local:") ? <SessionForceStopRecovery sessionRef={ref} /> : undefined}
-        />
+        <div className={styles.loading}>
+          <Loader label="Loading transcript" />
+          {ref.startsWith("local:") && (
+            <>
+              <p className={styles.loadingHint}>
+                If the session is unresponsive, you can stop its process to recover it.
+              </p>
+              <SessionForceStopRecovery sessionRef={ref} />
+            </>
+          )}
+        </div>
       </PaneScaffold>
     );
   }
