@@ -11,6 +11,18 @@ interface DraftSnapshot {
 	error: string | null;
 }
 
+/** Why the composer can't take a recovered message back right now. */
+export type RecoveredRestoreBlock = "unavailable" | "loading" | "sending" | "unsaved" | "image" | "occupied";
+
+const RECOVERED_RESTORE_HINTS: Record<RecoveredRestoreBlock, string> = {
+	unavailable: "The draft is unavailable on this device.",
+	loading: "Wait for the draft to load to restore this message.",
+	sending: "Wait for the current draft to finish sending to restore this message.",
+	unsaved: "Retry saving the draft to restore this message.",
+	image: "Remove the draft's image to restore this message.",
+	occupied: "Clear or send your current draft to restore this message.",
+};
+
 /** Composition survives the lifetime of a socket and a conversation store. */
 export class DraftDocument {
 	private snapshot: DraftSnapshot = {
@@ -254,19 +266,25 @@ export class DraftDocument {
 		);
 	}
 
-	// Why a restore is currently blocked, in the user's terms, or null when the
-	// composer can accept one. It tells an occupied composer apart from a draft
-	// that is still loading/sending or whose last save failed, so a disabled
-	// restore never tells the user to clear a draft that isn't there.
-	recoveredRestoreHint(): string | null {
+	// Why a restore is currently blocked, or null when the composer can accept
+	// one. It tells an occupied composer apart from a draft that is still
+	// loading/sending or whose last save failed, so a disabled restore never
+	// tells the user to clear a draft that isn't there.
+	recoveredRestoreBlock(): RecoveredRestoreBlock | null {
 		const { record, loaded, submitting, error } = this.snapshot;
-		if (this.forgotten) return "The draft is unavailable on this device.";
-		if (!loaded) return "Wait for the draft to load to restore this message.";
-		if (submitting) return "Wait for the current draft to finish sending to restore this message.";
-		if (error !== null) return "Retry saving the draft to restore this message.";
-		if ((record.images?.length ?? 0) > 0) return "Remove the draft's image to restore this message.";
-		if (record.draft !== "") return "Clear or send your current draft to restore this message.";
+		if (this.forgotten) return "unavailable";
+		if (!loaded) return "loading";
+		if (submitting) return "sending";
+		if (error !== null) return "unsaved";
+		if ((record.images?.length ?? 0) > 0) return "image";
+		if (record.draft !== "") return "occupied";
 		return null;
+	}
+
+	// recoveredRestoreBlock, in the user's terms.
+	recoveredRestoreHint(): string | null {
+		const block = this.recoveredRestoreBlock();
+		return block === null ? null : RECOVERED_RESTORE_HINTS[block];
 	}
 
 	// Restores a rejected mutation's recovered text into the composer in one

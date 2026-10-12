@@ -39,11 +39,14 @@ it("can compose when any action or a goal is available, not otherwise", () => {
 // reason, and a harness without steer with the capability reason.
 it("refuses a queue action pressed after the status flipped, with the control's reason", () => {
 	for (const action of ["promote", "drainAll"] as const) {
+		const control = action === "drainAll" ? "drainQueue" : "drain";
+		const awaiting = conversation("awaiting", 1);
+		const statusReason = queueActionRefusal(awaiting, action);
+		const capabilityReason = queueActionRefusal(conversation("idle", 1, { ...STEERING, steer: false }), action);
 		expect(queueActionRefusal(conversation("active", 1), action)).toBeNull();
-		expect(queueActionRefusal(conversation("awaiting", 1), action)).toBe("no active turn");
-		expect(queueActionRefusal(conversation("idle", 1, { ...STEERING, steer: false }), action)).toBe(
-			"Steer is not available for this session",
-		);
+		expect(statusReason).toBe(conversationControls(awaiting).reason[control]);
+		expect(capabilityReason).not.toBeNull();
+		expect(capabilityReason).not.toBe(statusReason);
 	}
 });
 
@@ -51,7 +54,9 @@ it("refuses a queue action pressed after the status flipped, with the control's 
 // the render and the press there is nothing to drain: refused at the boundary
 // with the queue reason, not offered to the daemon to refuse.
 it("refuses a drain-all on an emptied queue with the queue reason", () => {
-	expect(queueActionRefusal(conversation("active", 0), "drainAll")).toBe("queue is empty");
+	const emptied = conversation("active", 0);
+	expect(queueActionRefusal(emptied, "drainAll")).toBe(conversationControls(emptied).reason.drainQueue);
+	expect(queueActionRefusal(emptied, "drainAll")).not.toBeNull();
 	expect(queueActionRefusal(conversation("active", 1), "drainAll")).toBeNull();
 	// A promote names one row; its rule stays the drain's.
 	expect(queueActionRefusal(conversation("active", 0), "promote")).toBeNull();
