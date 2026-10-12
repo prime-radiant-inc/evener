@@ -24,7 +24,8 @@ func TestRunHelpWritesUsageToInjectedStderr(t *testing.T) {
 	if code := Run([]string{"-h"}, nil, io.Discard, &stderr); code != 0 {
 		t.Fatalf("Run(-h) = %d, want 0", code)
 	}
-	if got := stderr.String(); !strings.Contains(got, "Usage: evener tui") {
+	// The usage lists the TUI's flags; --hub-addr is one of them.
+	if got := stderr.String(); !strings.Contains(got, "--hub-addr") {
 		t.Fatalf("help usage did not reach injected stderr: %q", got)
 	}
 }
@@ -42,14 +43,14 @@ func TestRunParseDiagnosticsStayInInjectedStderr(t *testing.T) {
 		t.Fatalf("Run(--no-such-flag) = %d, want 2", code)
 	}
 	got := stderr.String()
-	if !strings.HasPrefix(got, "flag provided but not defined") {
-		t.Fatalf("flag package diagnostic did not start injected stderr: %q", got)
-	}
-	if !strings.Contains(got, "Usage: evener tui") {
+	usage := strings.Index(got, "--hub-addr")
+	if usage < 0 {
 		t.Fatalf("flag error did not print usage to injected stderr: %q", got)
 	}
-	if !strings.Contains(got, "evener-tui: flag provided but not defined") {
-		t.Fatalf("run error line missing from injected stderr: %q", got)
+	// The flag package's diagnostic comes before the usage, Run's own error
+	// line after it; both name the unknown flag.
+	if strings.Count(got[:usage], "no-such-flag") != 1 || strings.Count(got[usage:], "no-such-flag") != 1 {
+		t.Fatalf("injected stderr = %q, want the flag diagnostic before the usage and Run's error line after it", got)
 	}
 }
 
