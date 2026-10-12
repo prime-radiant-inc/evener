@@ -375,35 +375,38 @@ retire the failed work and finish release. Unrecorded overlay has no new disk
 persistence guarantee after its last owner is gone. Never hang shutdown, invent
 a successful final save or publish a retired completion into a new lifetime.
 
-## Cache migration, clear and deletion
+## Cache upgrade, clear and deletion
 
-Bump the existing database schema and convert compatible recorded-history blobs
-into item and turn records, with coverage only where provenance proves a range.
-Migration is the sole permitted bulk read of a legacy session blob. Process one
-legacy record at a time; remove its source only in the transaction that commits
-its complete conversion. Interrupted or failed conversion leaves the source
-intact for retry. Preserve compatible item content and omitted-content markers.
-Imported rows are stale history, never restored live authority.
+The legacy client-side transcript cache is discarded on upgrade, not read
+forward. Bump the existing `evener-session-cache` database schema; the upgrade
+drops the legacy `records`, legacy `meta`, `current` and `currentMeta` object
+stores and creates the entry item, turn, coverage and metadata stores. Old
+cached transcripts are discarded and rebuilt from the server. This is the one
+deliberate behaviour change in this unit and it is authorized: the cache is
+client-side and rebuildable, so a user pays one cold cache after upgrading
+rather than carrying a migration path whose only benefit was avoiding that cold
+cache. There is no bulk read of a legacy session blob; migration is no longer a
+permitted read of one. The repository already refetches after a crash, so a
+discarded cache costs only a larger first read, never correctness. The server
+transcript remains the authority; the entry repository remains the browser's
+single owner of recorded-history ingestion and persistence, so a discarded
+session reopens through an ordinary authoritative read and recovery.
 
-The existing flattened blobs and their single opaque `olderCursor` do not
-identify which rows came from pages and which came from isolated notifications.
-Import those rows as stale item seeds with no certified ranges. This is an
-explicit exception to loaded-page-boundary preservation where legacy provenance
-is absent; it does not permit dropping compatible rows. A legacy cursor alone
-cannot authorize skipping an unverified interval. Obtain usable boundaries and
-cursors from authoritative page reads, without decoding or inventing opaque
-cursors. A fresh latest window validates only its returned range, not every
-imported older row. Preserve older seeds while demand fills missing ranges.
-
-Preserve compatible recorded portions of any prior current-state records, but
-do not migrate their streaming overlay or continuity certificates. Coalesce
-shared recorded identities under the version rules. The combined old/new cache
-obeys the existing byte/expiry policy. Migration failure does not erase the old
-cache, drafts or outbox and does not prevent ordinary foreground server use.
-Old tabs use the existing schema-version fence; no dual-version writer is added.
+The upgrade means two different things depending on the schema it starts
+from, and the behaviour below names which one is meant. From a pre-6d schema the
+legacy `records`, legacy `meta`, `current` and `currentMeta` stores are dropped
+along with their rows, so the legacy Clear epoch (which lived in the dropped
+legacy `meta`) is discarded with them: the entry stores are created and the
+entry-owned Clear epoch reads `0`. That is safe because the fence counter only
+moves down, so nothing captured before a pre-upgrade Clear can be wrongly
+accepted, and the cache is rebuilt from the server. From a schema where the
+entry stores already exist, the upgrade drops only the legacy stores, so the
+entry item, turn, coverage and metadata stores and the entry-owned Clear epoch
+(held in the entry metadata store, not the dropped legacy `meta`) are preserved
+across the version bump.
 
 Clear atomically removes all history record types and advances the durable clear
-epoch. Every write, migration and asynchronous publication respects that fence.
+epoch. Every write and asynchronous publication respects that fence.
 Same-tab Clear immediately revokes pre-clear publication/persistence claims.
 Cross-tab Clear retains the existing bounded-staleness contract: reject old-epoch
 writes, invalidate on observation, and recheck the epoch after a local opening
@@ -417,7 +420,7 @@ read may establish a fresh cache lifetime. A new browser lifetime may do so too.
 Visible content and active output remain usable while caching is suppressed.
 
 Session deletion cancels queued work and removes its cache records. Late reads,
-writes, pages and migrations cannot resurrect it. Client replacement and teardown
+writes and pages cannot resurrect it. Client replacement and teardown
 retire their own publication claims. Outbox and draft stores remain independent.
 
 ## Whole-journey verification
@@ -475,10 +478,16 @@ Required evidence:
    tabs, Clear, deletion and late completions. No old binding publishes into a
    new one, no older version replaces newer content, no clear/delete is undone,
    and cached authority cannot dispatch input.
-9. **Migration and capacity:** convert real legacy record shapes with multiple
-   pages and omitted text, interrupt conversion, retry, and inspect row identity
-   and coverage. Test TTL/disk eviction and oversized records without erasing
-   held reader state or manufacturing complete ranges.
+9. **Upgrade and capacity:** seed a pre-6d (v3) database with legacy
+   `records`, `meta`, `current` and `currentMeta` rows, including a legacy Clear
+   epoch in `meta`, then open it through `SessionEntryCache`: prove the upgrade
+   discards the legacy rows and the legacy epoch (the entry-owned Clear epoch
+   reads `0`), creates the four entry stores, and reopens the session from an
+   authoritative server read rather than from any migrated legacy blob.
+   Separately, prove a version bump from a schema where the entry stores already
+   exist preserves the entry-owned Clear epoch in the entry metadata store.
+   Test TTL/disk eviction and oversized
+   records without erasing held reader state or manufacturing complete ranges.
    Include multiple loaded pages plus an isolated completion below them: preserve
    every compatible row without certifying the intervening gap. Open a completed
    item larger than the disk budget with healthy storage and no held reader.
@@ -502,7 +511,7 @@ boundaries rather than sleeps, widened timeouts or forced eviction hooks.
 The implementation plan must deliver a small end-to-end path first: one real
 session's recorded rows plus streaming overlay, immediate recorded handoff with
 asynchronous writes, then local opening. Add paging, complete-Live ownership,
-failure recovery and migration in independently verifiable increments. Code and
+failure recovery and cache upgrade in independently verifiable increments. Code and
 probes use Jesse's selected author model; review does not authorize a stopped
 repair loop to resume.
 

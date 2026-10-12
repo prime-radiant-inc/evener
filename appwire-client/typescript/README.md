@@ -208,8 +208,12 @@ Typed client-upgrade and deleted-target rejections remain explained failures.
 
 ### Entry-backed older pages and the baseline authority
 
-The browser's entry repository (an isolated fixture route today, not the
-production path) extends the same reader intent with a persistent cache. It
+The browser's entry repository — now the ordinary production route for every
+session — extends the same reader intent with a persistent cache. The server
+transcript remains authoritative; the entry repository is the browser's single
+owner of recorded-history ingestion and persistence and the source of truth for
+a session's cached transcript, writing keyed item, turn and coverage rows to the
+existing `evener-session-cache` IndexedDB. It
 mints an opaque *baseline identity* from its tab-local binding lifetime and its
 source revision. The identity changes when an authoritative read, an identity
 change, or the store's own reconciliation of an ambiguous frontier advances the
@@ -240,9 +244,18 @@ certified chain that ends with no remaining cursor is true history end. A page
 is certified only when the shared reducer actually merged it, and only under the
 authority captured when the request went out.
 
-This contract is verified against the accepted cache at the store level; the
-production browser cutover that selects this repository for all sessions is a
-later task and is not claimed here.
+This contract is verified against the accepted cache at the store level. The
+production browser cutover that selects this repository for all sessions has
+since landed, so the ordinary browser is on this route. A local open with
+complete cached coverage paints without an activation read; one without it
+reconciles from the server through the existing bounded recovery (the 250 ms
+lookup deadline before ordinary recovery can proceed). Active unfinished output
+is memory-only and may exceed the background budget, and charged ended-body
+overage is an accepted exception. Clear suppresses persistence for the existing
+cache lifetime, renewed only by a new explicit foreground acquisition and
+authoritative read or a new browser lifetime. The legacy client-side cache is not
+migrated: old cached transcripts are discarded on upgrade and rebuilt from the
+server.
 
 ## Session activity demand and subscriptions
 
