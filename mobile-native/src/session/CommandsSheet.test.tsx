@@ -145,10 +145,6 @@ function commandRows(tree: ReactTestRenderer): ReactTestInstance[] {
 	return rows;
 }
 
-function texts(tree: ReactTestRenderer): string[] {
-	return tree.root.findAll((node) => String(node.type) === "Text").map((node: ReactTestInstance) => textOf(node));
-}
-
 beforeEach(() => {
 	navigation.goBack.mockReset();
 });

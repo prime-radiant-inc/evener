@@ -61,8 +61,10 @@ export function ModelPicker({
 			ListEmptyComponent={
 				loading || !catalog ? (
 					<ModelSkeleton />
+				) : query.trim() ? (
+					<Quiet reason="noMatch">No models match your search.</Quiet>
 				) : (
-					<Quiet>{query.trim() ? "No models match your search." : "No models are available for this session."}</Quiet>
+					<Quiet reason="noModels">No models are available for this session.</Quiet>
 				)
 			}
 		/>
@@ -272,11 +274,13 @@ function ModelSkeleton() {
 	);
 }
 
-function Quiet({ children }: { children: string }) {
+/** Why the list is empty: nothing matches the search, or there is nothing to choose. */
+function Quiet({ reason, children }: { reason: "noMatch" | "noModels"; children: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
 		<Text
+			testID={`empty-state:${reason}`}
 			allowFontScaling={allowFontScaling}
 			style={{
 				paddingHorizontal: 16,
