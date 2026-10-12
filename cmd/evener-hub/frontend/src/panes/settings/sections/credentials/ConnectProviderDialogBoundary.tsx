@@ -164,7 +164,7 @@ export class ConnectProviderDialogBoundary extends Component<
           </>
         }
       >
-        {this.state.failure}
+        <span data-testid="connect-dialog-load-failure">{this.state.failure}</span>
       </Dialog>
     );
   }

@@ -99,6 +99,7 @@ export function CurrentWork({ task, goal, goalStatus, onOpenTasks, onEditGoal }:
                 <span
                   className={statusKey === "blocked" ? `${CLASS.status} ${CLASS.statusBlocked}` : CLASS.status}
                   data-testid="current-work-goal-status"
+                  data-state={statusKey}
                 >
                   {statusDisplay}
                 </span>

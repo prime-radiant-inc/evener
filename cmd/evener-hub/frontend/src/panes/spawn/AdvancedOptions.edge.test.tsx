@@ -119,7 +119,7 @@ test("show resolved config shows error when resolveConfig fails", async () => {
   await user.click(screen.getByRole("button", { name: "Show resolved config" }));
 
   await waitFor(() => {
-    expect(screen.getByText(/couldn't resolve: resolve failed/i)).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("resolve failed");
   });
 });
 
@@ -132,7 +132,7 @@ test("show resolved config shows error with non-Error throw", async () => {
   await user.click(screen.getByRole("button", { name: "Show resolved config" }));
 
   await waitFor(() => {
-    expect(screen.getByText(/couldn't resolve: string error/i)).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("string error");
   });
 });
 
@@ -213,14 +213,16 @@ test("env map control removes an entry", async () => {
 
 test("env map add without equals sign shows error", async () => {
   const user = userEvent.setup();
-  renderPanel([option({ wireField: "env", kind: "envMap", label: "Environment variables" })]);
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "env", kind: "envMap", label: "Environment variables" }),
+  ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const addInput = screen.getByPlaceholderText("NAME=value");
   await user.type(addInput, "noequals{Enter}");
 
   expect(await screen.findByRole("alert")).toBeTruthy();
-  expect(screen.getByText("Use NAME=value.")).toBeTruthy();
+  expect(onOverridesChange).not.toHaveBeenCalled();
 });
 
 // --- McpControl rendering (lines 498-501) ---
@@ -265,29 +267,37 @@ test("mcp server list removes an entry", async () => {
 
 test("mcp add without equals sign shows error", async () => {
   const user = userEvent.setup();
-  renderPanel([option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" })]);
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
+  ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
   await user.type(addInput, "noequals{Enter}");
 
-  expect(await screen.findByText("Use name=command args.")).toBeTruthy();
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(onOverridesChange).not.toHaveBeenCalled();
 });
 
 test("mcp add with empty command shows error", async () => {
   const user = userEvent.setup();
-  renderPanel([option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" })]);
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
+  ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
   await user.type(addInput, "myserver={Enter}");
 
-  expect(await screen.findByText("A command is required.")).toBeTruthy();
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(onOverridesChange).not.toHaveBeenCalled();
 });
 
 test("mcp add with duplicate name shows error", async () => {
   const user = userEvent.setup();
-  renderPanel([option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" })]);
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
+  ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
@@ -296,7 +306,11 @@ test("mcp add with duplicate name shows error", async () => {
 
   // Add same name again
   await user.type(addInput, "myserver=other-command{Enter}");
-  expect(await screen.findByText("Already added.")).toBeTruthy();
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(onOverridesChange).toHaveBeenCalledTimes(1);
+  expect(onOverridesChange).toHaveBeenLastCalledWith({
+    mcpServers: [{ name: "myserver", command: "npx", args: ["-y", "server"] }],
+  });
 });
 
 // --- ModelListControl onRemove (line 429) ---

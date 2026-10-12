@@ -11,3 +11,9 @@ export function toastKinds(): string[] {
 export function toastReasons(): (string | undefined)[] {
   return getToasts().map((toast) => toast.reason);
 }
+
+/** The error toasts that carry `fixture` - a value the test fed in, such as a
+ * handler's own error message - through to the user. */
+export function errorToastsNaming(fixture: string) {
+  return getToasts().filter((toast) => toast.kind === "error" && toast.text.includes(fixture));
+}

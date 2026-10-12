@@ -1784,7 +1784,8 @@ describe("edit", () => {
       vi.useRealTimers();
     }
     expect(document.activeElement).toBe(edit);
-    expect(screen.getByRole("tooltip").textContent).toContain("image-only message");
+    expect(edit.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByRole("tooltip").textContent).not.toBe("");
     await user.keyboard("{Enter}");
     expect(props.onRestoreToComposer).not.toHaveBeenCalled();
     expect(fake.calls.filter((call) => call.method === "turn/cancelQueued")).toEqual([]);
