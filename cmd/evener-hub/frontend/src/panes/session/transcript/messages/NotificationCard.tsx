@@ -266,7 +266,11 @@ function boundedValue(text: string): string {
 
 function structuredRowValue(value: unknown): ReactNode {
   if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) {
-    return <span className={CLASS.resultNone}>(none)</span>;
+    return (
+      <span className={CLASS.resultNone} data-empty="true">
+        (none)
+      </span>
+    );
   }
   if (Array.isArray(value)) {
     if (value.every((entry) => typeof entry !== "object")) return boundedValue(value.map(String).join(", "));
@@ -286,7 +290,11 @@ function structuredRowValue(value: unknown): ReactNode {
 function StructuredResult({ notification }: { notification: ParsedNotification }) {
   if (notification.structuredResultValid === false) {
     return (
-      <div className={CLASS.structuredNote} data-testid="notification-structured-note">
+      <div
+        className={CLASS.structuredNote}
+        data-testid="notification-structured-note"
+        data-reason={notification.structuredResultReason}
+      >
         {STRUCTURED_RESULT_NOTES[notification.structuredResultReason ?? ""] ?? "Structured result not shown."}
       </div>
     );
@@ -307,7 +315,7 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
     <table className={CLASS.resultTable} data-testid="notification-structured-result">
       <tbody>
         {shown.map(([key, value]) => (
-          <tr key={key}>
+          <tr key={key} data-key={key}>
             <th scope="row" className={CLASS.resultKey}>
               {boundedValue(structuredRowLabel(key))}
             </th>
