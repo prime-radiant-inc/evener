@@ -435,6 +435,10 @@ func refuseHarnessNamingHost(sources *appsource.Registry, harness string) error 
 	return nil
 }
 
+// errResumeOwnerExitUnconfirmed refuses a recovery resume while the previous
+// owner's exit is not proven, so no replacement launches beside it.
+var errResumeOwnerExitUnconfirmed = errors.New("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+
 func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
 	return resumeThread(ctx, cfg, sources, params, false)
 }
@@ -735,11 +739,11 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			// identity the force stop persisted. Only then is the exit
 			// confirmed durably and the launch allowed.
 			if cfg.Roster == nil || recoveryGroupClaimExists(cfg.Roster, cfg.ResumeLocks.RecoveryAliases(sessionID)) {
-				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+				return appwire.ThreadResumeResponse{}, wireRefusal(appwire.Unavailable, errResumeOwnerExitUnconfirmed)
 			}
 			owner, ok := cfg.ResumeLocks.RecoveryOwner(sessionID)
 			if !ok {
-				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+				return appwire.ThreadResumeResponse{}, wireRefusal(appwire.Unavailable, errResumeOwnerExitUnconfirmed)
 			}
 			controller := cfg.DaemonProcesses
 			if controller == nil {
@@ -752,7 +756,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 				defer func() { _ = process.Close() }()
 			}
 			if !errors.Is(err, daemonprocess.ErrExited) {
-				return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+				return appwire.ThreadResumeResponse{}, wireRefusal(appwire.Unavailable, errResumeOwnerExitUnconfirmed)
 			}
 			if err := cfg.ResumeLocks.ConfirmForceStop(state.ResumeSessionID); err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable("confirm recovery exit: " + err.Error())
