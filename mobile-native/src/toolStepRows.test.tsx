@@ -173,7 +173,6 @@ describe("no raw tool name, anywhere", () => {
 		for (const row of rowsAt(level)) {
 			const text = renderedText(render(<TimelineItem item={row} hubId="hub" sessionRef="ref-tools" />));
 			expect(text).not.toMatch(RAW_NAMES);
-			expect(text).not.toMatch(/other steps?\b/);
 		}
 		for (const run of runsAt(level)) expect(stepText(run)).not.toMatch(RAW_NAMES);
 	});

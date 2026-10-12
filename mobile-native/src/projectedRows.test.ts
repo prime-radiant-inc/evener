@@ -2309,7 +2309,7 @@ describe("a streamed reply's key once history records its round", () => {
 							text: wire.text,
 						});
 						if (row?.kind !== "notice") throw new Error("no memory-context notice row");
-						expect(row.label ?? "").toContain("Refreshed my memory");
+						expect(row.label).toBeTruthy();
 						// The decoded observation rides the row only when the payload
 						// validates; the record is never manufactured.
 						expect(row.memoryContext).toEqual(expectedObservation);

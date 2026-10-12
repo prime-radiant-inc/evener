@@ -490,7 +490,9 @@ function Subagent({
 		() => (tree && finished ? subagentOutcome(tree, finished, now, ownerRef, line.runGeneration) : undefined),
 		[tree, finished, now, ownerRef, line.runGeneration],
 	);
-	return <SubagentRow line={outcome ? { ...line, activity: outcome } : line} onOpen={openSubagent} />;
+	return (
+		<SubagentRow line={outcome ? { ...line, activity: outcome, activityFrom: "tree" } : line} onOpen={openSubagent} />
+	);
 }
 
 function TimeMarker({ at }: { at: number }) {
