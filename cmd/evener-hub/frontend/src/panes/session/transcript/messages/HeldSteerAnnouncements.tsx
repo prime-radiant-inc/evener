@@ -13,7 +13,7 @@ import { reflectedMutationIds } from "@evener/appwire-client/state/mutation";
 import type { JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { useThreadsStore } from "../../../../stores/threads";
-import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
+import { VisuallyHidden } from "../../../../widgets";
 import type { PendingTurnEntry } from "../../composer/queue/pendingReconcile";
 import {
   useBlockedMutationEntries,

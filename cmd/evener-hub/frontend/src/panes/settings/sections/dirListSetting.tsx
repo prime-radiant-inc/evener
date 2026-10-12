@@ -27,6 +27,7 @@ import {
   type CollectionAddResult,
   CollectionEditor,
   ConfirmDialog,
+  type DirectoryActions,
   EmptyState,
   FormRow,
   PathField,
@@ -35,7 +36,6 @@ import {
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import type { DirectoryActions } from "../../../widgets/pathfield";
 import styles from "./dirListSetting.module.css";
 import { useHostScopedLoad } from "./useConnectedEffect";
 

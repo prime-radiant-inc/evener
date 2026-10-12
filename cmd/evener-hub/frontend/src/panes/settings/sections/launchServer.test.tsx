@@ -55,7 +55,7 @@ describe("load sequence", () => {
     });
     fake.on("evener/launch/resolve", () => RESOLVED);
     render(<LaunchServerSection sectionId="launch-evener" />);
-    expect(screen.getByText(/Loading launch settings/i)).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Loading launch settings" })).toBeTruthy();
     await screen.findByLabelText("Agent");
     expect(order).toEqual(["schema", "getLayer"]);
   });

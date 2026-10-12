@@ -1,4 +1,4 @@
-import { Timestamp } from "../../../../widgets/timestamp";
+import { Timestamp } from "../../../../widgets";
 import { useSessionNow } from "../../liveness";
 
 // Only this leaf consumes clock ticks, keeping message prose out of timer renders.

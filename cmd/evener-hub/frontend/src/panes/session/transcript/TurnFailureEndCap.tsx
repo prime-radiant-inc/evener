@@ -20,7 +20,7 @@ import type { ItemImage, ItemModel, TurnError, TurnModel } from "@evener/appwire
 import { markerPattern, markerText, sessionActionError, translateAttachmentMarkers } from "@evener/appwire-client";
 import { useMemo, useState } from "react";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
-import { Button, Chip, useToasts } from "../../../widgets";
+import { Button, Chip, Disclosure, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { classifyTurnError } from "./turnFailure";
 import styles from "./turnfailure.module.css";
@@ -30,7 +30,7 @@ const CLASS = {
   head: requireClass(styles.head, "turnfailure.module.css", "head"),
   message: requireClass(styles.message, "turnfailure.module.css", "message"),
   hint: requireClass(styles.hint, "turnfailure.module.css", "hint"),
-  hintSummary: requireClass(styles.hintSummary, "turnfailure.module.css", "hintSummary"),
+  hintText: requireClass(styles.hintText, "turnfailure.module.css", "hintText"),
 };
 
 // The turn that failed opened with the user's own input as its first item
@@ -617,16 +617,10 @@ export function TurnFailureEndCap({
         <Chip tone="danger">{info.badge}</Chip>
         <span className={CLASS.message}>{info.message}</span>
         {info.hint && (
-          <button
-            type="button"
-            className={CLASS.hintSummary}
-            aria-expanded={hintOpen}
-            onClick={() => setHintOpen((o) => !o)}
-          >
-            What can I do?
-          </button>
+          <Disclosure open={hintOpen} onOpenChange={setHintOpen} summary="What can I do?">
+            <div className={CLASS.hintText}>{info.hint}</div>
+          </Disclosure>
         )}
-        {hintOpen && info.hint && <div className={CLASS.hint}>{info.hint}</div>}
         {canRetry && (
           <Button variant="primary" size="sm" onClick={() => void retry()}>
             {info.recoveryLabel}

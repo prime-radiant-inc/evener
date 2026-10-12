@@ -193,41 +193,24 @@
 }
 
 /* The prompt's Markdown composes with its host (see widgets/markdown): the
- * caption font-size below sizes the "Prompt" label, the one-line preview,
- * and the expanded body's text together, matching the meta strip and
- * timestamps around them. No --prose-font-size pin is needed - the widget's
- * 1em fallback inherits this size. Headings and GFM tables inside the
- * markdown keep the widget's fixed ramp steps (its known boundary). */
-.promptDetails {
+ * caption font-size on the summary content and the body sizes the "Prompt"
+ * label, the one-line preview, and the expanded body's text together,
+ * matching the meta strip and timestamps around them. No --prose-font-size
+ * pin is needed - the widget's 1em fallback inherits this size. Headings and
+ * GFM tables inside the markdown keep the widget's fixed ramp steps (its
+ * known boundary). */
+.promptSummary {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--space-1);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
 }
 
-.promptSummary {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-1);
-  list-style: none;
-  cursor: pointer;
-  color: var(--ink-mid);
-}
-
-.promptSummary::-webkit-details-marker {
-  display: none;
-}
-
 .promptLabel {
   flex: none;
-}
-
-.promptChevron {
-  display: inline-flex;
-  flex: none;
-  color: var(--ink-low);
-}
-
-.promptChevron[data-open="true"] {
-  transform: rotate(90deg);
 }
 
 .promptPreview {
@@ -259,7 +242,8 @@
 }
 
 .promptBody {
-  margin-top: var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
   color: var(--ink-hi);
   overflow-wrap: anywhere;
 }
@@ -316,32 +300,4 @@
 
 .note[data-latest="true"]::before {
   border-color: var(--alive);
-}
-
-/* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
- * 4): the prompt disclosure's own <summary> row is a small clickable target
- * (chevron + one-line preview), so a coarse pointer needs the platform's
- * 44px tap floor - min-height, not height, so the resting sizing above
- * stays untouched and this only ever grows it. (pointer: coarse), not a
- * width breakpoint like button.module.css's own phone block: this summary
- * isn't a widgets/button consumer. */
-@media (pointer: coarse) {
-  .promptSummary {
-    min-height: var(--tap-min);
-  }
-}
-
-/* Standard visually-hidden recipe (same as taskcard.module.css's .srOnly):
- * carries the row's status word for assistive tech now that the glyph
- * itself is aria-hidden. */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
 }

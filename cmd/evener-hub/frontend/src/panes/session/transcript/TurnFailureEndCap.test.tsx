@@ -78,8 +78,21 @@ test("hint sits behind a disclosure; retry is inline in the head row", () => {
   const head = cap.firstElementChild as HTMLElement;
   expect(head.contains(screen.getByRole("button", { name: /retry/i }))).toBe(true);
   expect(screen.queryByText("check your API key")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "What can I do?" }));
+  fireEvent.click(screen.getByText("What can I do?"));
   expect(screen.getByText("check your API key")).toBeTruthy();
+});
+
+test("the hint toggle is a disclosure summary with a chevron affordance", () => {
+  render(
+    <TurnFailureEndCap error={{ message: "boom", hint: "check your API key" }} turn={failedTurn()} sessionRef="s1" />,
+  );
+  const summary = screen.getByText("What can I do?").closest("summary");
+  expect(summary).not.toBeNull();
+  expect(summary?.querySelector("svg")).not.toBeNull();
+  fireEvent.click(summary!);
+  expect(screen.getByText("check your API key")).toBeTruthy();
+  fireEvent.click(summary!);
+  expect(screen.queryByText("check your API key")).toBeNull();
 });
 
 test("clicking retry re-issues the turn's user input via threadsStore.send", async () => {

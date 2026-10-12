@@ -558,6 +558,12 @@ test("hosts the tree drawer trigger in the top bar, regardless of which pane is 
   expect(await screen.findByRole("button", { name: "Sessions" })).toBeTruthy();
 });
 
+test("a single-pane route offers no tree drawer trigger", async () => {
+  render(<StackHost singlePane />);
+  expect(await screen.findByTestId("topbar-title")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+});
+
 // --- back navigation ---------------------------------------------------
 
 test("the back affordance is hidden while welcome (the stack's root) is focused", async () => {
@@ -586,7 +592,7 @@ test("a session panel pane's top-bar Back returns to the parent session, not the
   act(() => {
     workspaceStore.getState().openPane("sessionDetails", { ref: "local:ref_panel" });
   });
-  expect(await screen.findByText("Loading session panel…")).toBeTruthy();
+  expect(await screen.findByRole("status", { name: "Loading session panel" })).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Back" }));
 
