@@ -18,6 +18,17 @@ name says its subject is wording. Behavior tests whose only oracle happens to
 be copy are listed separately as incidental. Run its tests with
 `python3 -B tools/copy-oracle/test_inventory.py`.
 
+--copy-only is advisory. It builds review lists; it never decides on its own.
+It reads one line at a time, so it can misjudge:
+  - tests that contain multi-line raw strings, template literals or block
+    comments, whose boundaries it can get wrong;
+  - assertions or conditions split across lines (`expect(...)` then
+    `.toHaveLength(n)` on the next line), which it classifies by their first
+    line;
+  - assertion forms it doesn't recognise, such as `expect.soft` and
+    `expect.poll`.
+Read every listed test before deleting or converting it.
+
 A literal counts as copy only when it also appears in production source (or a
 production text asset such as an embedded prompt). A literal that appears only
 in tests is fixture data the test fed in, and seeing it come out is a real
