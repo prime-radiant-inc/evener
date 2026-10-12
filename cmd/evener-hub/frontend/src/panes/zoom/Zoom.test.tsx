@@ -728,7 +728,9 @@ test("an ancestor with pending runtime metadata stays explicitly unknown until i
   try {
     const runtime = spine.querySelector('[data-runtime-state="unknown"]');
     if (!(runtime instanceof HTMLElement)) throw new Error("Missing unknown runtime state");
-    expect(runtime.querySelector("[data-runtime-label]")?.textContent).not.toBe("");
+    const label = runtime.querySelector("[data-runtime-label]");
+    expect(label).not.toBeNull();
+    expect(label?.textContent?.trim()).not.toBe("");
     expect(within(runtime).queryByRole("img")).toBeNull();
   } finally {
     await act(async () => held.resolve(response("root")));
