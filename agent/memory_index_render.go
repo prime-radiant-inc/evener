@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -90,13 +91,33 @@ func isMemoryUnlinkedIndexLine(line string) bool {
 		(strings.HasSuffix(line, `" — `+memoryUnlinkedPathNote) || strings.HasSuffix(line, `" — `+memoryInvalidUTF8PathNote))
 }
 
+// Spike: EVENER_MEMORY_WHEN=both shows a page's when line after its description.
+const (
+	memoryWhenEnv  = "EVENER_MEMORY_WHEN"
+	memoryWhenBoth = "both"
+)
+
+// memoryWhenEnabled reports whether the spike switch asks for when lines.
+func memoryWhenEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(memoryWhenEnv)), memoryWhenBoth)
+}
+
+// memoryIndexText is the text after a page's link: its description, then its
+// when line when the switch is on and the page has one.
+func memoryIndexText(p memoryPage) string {
+	if p.When != "" && memoryWhenEnabled() {
+		return p.Description + " | when: " + p.When
+	}
+	return p.Description
+}
+
 // memoryIndexLine is one page's index line.
 func memoryIndexLine(p memoryPage) string {
 	if execenv.PathHasControl(p.Path) {
 		return memoryUnlinkedIndexLine(p.Path)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), memoryLinkTarget(p.Path), p.Description)
+	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), memoryLinkTarget(p.Path), memoryIndexText(p))
 	if p.Unreadable {
 		b.WriteString(" " + memoryFrontmatterUnreadable)
 	}

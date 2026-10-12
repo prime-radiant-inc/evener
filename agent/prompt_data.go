@@ -39,6 +39,8 @@ type promptData struct {
 	// MemorySaves is true when the session may be told to save memory (the
 	// memory save tools are callable).
 	MemorySaves bool
+	// MemoryWhen asks pages for a when line (spike, EVENER_MEMORY_WHEN).
+	MemoryWhen bool
 	// ProjectMemory is true when memory is readable and a project id is set.
 	ProjectMemory bool
 

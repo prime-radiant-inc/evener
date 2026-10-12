@@ -22,8 +22,9 @@ type memoryPage struct {
 	Title          string
 	Description    string // one line; the fallback when HasDescription is false
 	HasDescription bool
-	Unreadable     bool // the page's frontmatter did not parse
-	Frontmatter    bool // the page opens with a complete frontmatter block, readable or not
+	When           string // one line saying when a future session needs the page; "" when the page has none
+	Unreadable     bool   // the page's frontmatter did not parse
+	Frontmatter    bool   // the page opens with a complete frontmatter block, readable or not
 	Tags           []string
 	Updated        string    // the YYYY-MM-DD stamp, "" when there is none
 	By             string    // the by: stamp, who last wrote the page; "" when there is none
@@ -35,6 +36,8 @@ const (
 	memoryFrontmatterUnreadable = "(frontmatter unreadable)"
 	// memoryFallbackRunes bounds a fallback description, in characters.
 	memoryFallbackRunes = 120
+	// memoryWhenRunes bounds a when line, in characters.
+	memoryWhenRunes = 160
 	// memoryPageWalkDepth bounds how deep a scope's pages are listed.
 	memoryPageWalkDepth = 64
 )
@@ -128,6 +131,9 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 	if description, ok := doc.Meta["description"].(string); ok {
 		p.Description = collapseWhitespace(description)
 		p.HasDescription = p.Description != ""
+	}
+	if when, ok := doc.Meta["when"].(string); ok {
+		p.When = tool.TruncateRunes(collapseWhitespace(when), memoryWhenRunes)
 	}
 	if !p.HasDescription {
 		p.Description = memoryFallbackDescription(heading, body)
