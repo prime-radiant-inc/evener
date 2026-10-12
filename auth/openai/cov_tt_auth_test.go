@@ -66,9 +66,9 @@ func (cov_errBodyRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 
 type cov_errReader struct{}
 
-var covErrBodyRead = errors.New("body read failed")
+var errCovBodyRead = errors.New("body read failed")
 
-func (cov_errReader) Read([]byte) (int, error) { return 0, covErrBodyRead }
+func (cov_errReader) Read([]byte) (int, error) { return 0, errCovBodyRead }
 
 func covIssuerConfig() Config {
 	c := DefaultConfig()
@@ -88,7 +88,7 @@ func TestRequestDeviceCodeSurfacesTransportError(t *testing.T) {
 func TestRequestDeviceCodeSurfacesBodyReadError(t *testing.T) {
 	client := &http.Client{Transport: cov_errBodyRoundTripper{}}
 	_, err := RequestDeviceCode(context.Background(), client, covIssuerConfig())
-	if !errors.Is(err, covErrBodyRead) {
+	if !errors.Is(err, errCovBodyRead) {
 		t.Fatalf("RequestDeviceCode() error = %v, want response read failure", err)
 	}
 }

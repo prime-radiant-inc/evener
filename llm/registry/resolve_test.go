@@ -1152,7 +1152,7 @@ func TestResolve_DefaultInstanceAndErrors(t *testing.T) {
 	if res := mustResolve(t, r, "gpt-5.5"); res.Instance != "openai" {
 		t.Fatalf("bare id → default instance: %q", res.Instance)
 	}
-	if _, err := r.Resolve("nope/x"); !errors.Is(err, errUnknownInstance) || !strings.Contains(err.Error(), "openai") {
+	if _, err := r.Resolve("nope/x"); !errors.Is(err, ErrUnknownInstance) || !strings.Contains(err.Error(), "openai") {
 		t.Fatalf("unknown instance must list the available ones: %v", err)
 	}
 	if _, err := r.Resolve("huggingface/x"); err == nil {

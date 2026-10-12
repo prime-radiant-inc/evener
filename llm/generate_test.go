@@ -297,7 +297,7 @@ func TestGenerate_ToolArgsSchemaValidationError_SentAsErrorResult_AndDoesNotExec
 							return Response{}, fmt.Errorf("expected is_error=true tool result; got %+v", p.ToolResult)
 						}
 						if content, _ := p.ToolResult.Content.(string); content == "" {
-							return Response{}, fmt.Errorf("expected the validation error to explain itself; got empty content")
+							return Response{}, errors.New("expected the validation error to explain itself; got empty content")
 						}
 						foundErr = true
 					}

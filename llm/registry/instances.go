@@ -714,7 +714,7 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 	name := strings.ToLower(strings.TrimSpace(instance))
 	rec, ok := r.recordFor(name)
 	if !ok {
-		return Resolved{}, fmt.Errorf("%w %q", errUnknownInstance, name)
+		return Resolved{}, fmt.Errorf("%w %q", ErrUnknownInstance, name)
 	}
 	if ref := ParseRef(strings.TrimSpace(model)); strings.EqualFold(ref.Instance, name) {
 		model = ref.Model
