@@ -67,10 +67,15 @@ and encrypted credential delivery. The Hub also owns automatic destination
 discovery from the browser origin, listener and network interfaces;
 the browser presents that default and lets the operator edit it before creating
 an invitation. Ordinary LAN/tailnet setup requires no configuration-file edit.
-The parent settings view owns setup dismissal, keeping the loaded pairing link
-accessible while setup loads or fails.
-The browser sends invitations and confirms
-matching codes. Clients own durable settings and saved work scoped by destination
+Mobile settings distinguish the direct phone QR from sound invitations. Sound
+setup keeps playback and approval in one flow, with all eight comparison groups
+shown as four lines of two. Phone setup offers manual address entry and a QR
+invitation through the same approval flow when discovery fails or the phone
+needs a different destination.
+The parent settings view owns setup dismissal,
+keeping the loaded phone pairing link accessible while sound setup loads or fails.
+The browser sends invitations and confirms matching codes. Clients own durable
+settings and saved work scoped by destination
 and authenticated Tailscale peer. S05 AppWire
 and S06 Hub routing own its session protocol;
 S10 history and S11 durable intent remain authoritative for recorded messages

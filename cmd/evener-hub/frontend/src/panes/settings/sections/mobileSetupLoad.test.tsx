@@ -37,13 +37,13 @@ test("keeps the pairing link accessible while setup loads and after a load failu
   const failure = new Error("Simulated setup chunk load failure");
   try {
     await screen.findByRole("button", { name: "Copy pairing link" });
-    fireEvent.click(screen.getByRole("button", { name: "Pair a device" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pair using sound" }));
     fireEvent.click(await screen.findByRole("button", { name: "Close setup" }));
     fireEvent.click(await screen.findByRole("button", { name: "Copy pairing link" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(authURL));
 
     writeText.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Pair a device" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pair using sound" }));
     await act(async () => setupChunk.reject(failure));
     await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
     fireEvent.click(screen.getByRole("button", { name: "Close setup" }));

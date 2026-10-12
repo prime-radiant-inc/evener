@@ -3,8 +3,15 @@ import { WireError } from "@evener/appwire-client";
 import { Component, lazy, type ReactNode, Suspense, useState } from "react";
 import { useClient } from "../../../shell/clientContext";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
+import { requireClass } from "../../../widgets/internal/requireClass";
 import { copyText } from "./credentials/clipboard";
+import styles from "./devicePairing/devicePairing.module.css";
 import { useConnectedEffect } from "./useConnectedEffect";
+
+const rootClass = requireClass(styles.root, "devicePairing.module.css", "root");
+const controlsClass = requireClass(styles.controls, "devicePairing.module.css", "controls");
+const soundOptionClass = requireClass(styles.soundOption, "devicePairing.module.css", "soundOption");
+const helpClass = requireClass(styles.help, "devicePairing.module.css", "help");
 
 // qrcode.react rides its own split chunk: MobileSection itself stays in the
 // Settings chunk (Settings.tsx imports it statically), but the QR renderer
@@ -48,15 +55,15 @@ type PairingState =
   | { kind: "error" };
 
 /**
- * MobileSection presents a browser-only pairing QR for the dedicated native
- * app. The QR holds the Hub's long-lived capability URL, so it is requested
- * only while this authenticated section is mounted and never stored or logged
- * here.
+ * MobileSection offers direct QR pairing for the native app and invitation
+ * delivery by sound. The QR holds the Hub's long-lived capability URL, so it
+ * is requested only while this authenticated section is mounted and never
+ * stored or logged here.
  */
 export function MobileSection() {
   const client = useClient();
   const [state, setState] = useState<PairingState>({ kind: "loading" });
-  const [setup, setSetup] = useState(false);
+  const [setup, setSetup] = useState<"sound" | "qr" | null>(null);
 
   useConnectedEffect(
     async (isCancelled) => {
@@ -77,38 +84,50 @@ export function MobileSection() {
             fallback={
               <EmptyState
                 title="Couldn't load device setup"
-                hint="Return to pairing to use the existing link, or reload to try setup again."
+                hint="Close setup to return to pairing, or reload to try again."
                 reason="unavailable"
               />
             }
           >
             <Suspense fallback={<Skeleton lines={4} />}>
-              <DeviceSetup initialOrigin={origin} />
+              <DeviceSetup initialOrigin={origin} method={setup} />
             </Suspense>
           </QRChunkBoundary>
-          <Button size="sm" variant="secondary" onClick={() => setSetup(false)}>
+          <Button size="sm" variant="secondary" onClick={() => setSetup(null)}>
             Close setup
           </Button>
         </>
       ) : (
-        <Button size="sm" onClick={() => setSetup(true)}>
-          Pair a device
-        </Button>
+        <>
+          <DirectPairing state={state} onManualSetup={() => setSetup("qr")} />
+          <section className={soundOptionClass} aria-label="Sound pairing">
+            <Button size="sm" onClick={() => setSetup("sound")}>
+              Pair using sound
+            </Button>
+            <p>For devices that listen for setup through a microphone.</p>
+          </section>
+        </>
       )}
-      {!setup && <DirectPairing state={state} />}
     </>
   );
 }
 
-function DirectPairing({ state }: { state: PairingState }) {
+function DirectPairing({ state, onManualSetup }: { state: PairingState; onManualSetup: () => void }) {
   if (state.kind === "loading") return <Skeleton lines={4} />;
+
+  const manualSetup = (
+    <Button size="sm" variant="secondary" onClick={onManualSetup}>
+      {state.kind === "ready" ? "Use another Hub address" : "Enter Hub address"}
+    </Button>
+  );
 
   if (state.kind === "unreachable") {
     return (
       <EmptyState
-        title="Choose an address your device can reach"
+        title="Choose an address your phone can reach"
         reason="needs-configuration"
-        hint="Open Pair a device to enter the Hub address. A Hub listening only on localhost needs a network listener or a reachable reverse proxy."
+        hint="Enter the Hub address to create a QR invitation. A Hub listening only on localhost needs a network listener or a reachable reverse proxy."
+        action={manualSetup}
       />
     );
   }
@@ -117,8 +136,9 @@ function DirectPairing({ state }: { state: PairingState }) {
     return (
       <EmptyState
         title="Couldn't create a mobile pairing link"
-        hint="Reload this page to try again."
+        hint="Enter the Hub address to create a QR invitation, or reload to try again."
         reason="unavailable"
+        action={manualSetup}
       />
     );
   }
@@ -126,9 +146,9 @@ function DirectPairing({ state }: { state: PairingState }) {
   const isPlaintextHTTP = state.authURL.toLowerCase().startsWith("http://");
 
   return (
-    <section aria-labelledby="mobile-app-pairing-heading">
-      <h2 id="mobile-app-pairing-heading">Mobile app</h2>
-      <p>Scan this code from the Evener mobile app to pair another device.</p>
+    <section className={rootClass} aria-labelledby="mobile-app-pairing-heading">
+      <h3 id="mobile-app-pairing-heading">Scan with your phone</h3>
+      <p>Open the Evener mobile app and scan this code.</p>
       <QRChunkBoundary>
         <Suspense fallback={<Skeleton lines={1} />}>
           <div role="img" aria-label="Mobile app pairing QR code">
@@ -136,16 +156,19 @@ function DirectPairing({ state }: { state: PairingState }) {
           </div>
         </Suspense>
       </QRChunkBoundary>
-      <Button size="sm" variant="secondary" onClick={() => void copyText(state.authURL)}>
-        Copy pairing link
-      </Button>
-      <p data-testid="mobile-reuse-warning">
+      <div className={controlsClass}>
+        <Button size="sm" variant="secondary" onClick={() => void copyText(state.authURL)}>
+          Copy pairing link
+        </Button>
+        {manualSetup}
+      </div>
+      <p className={helpClass} data-testid="mobile-reuse-warning">
         {isPlaintextHTTP && (
           <span data-testid="mobile-http-warning">
-            HTTP connection: anyone who can observe this network can observe the pairing capability.{" "}
+            On HTTP, anyone who can observe this network can read the pairing link.{" "}
           </span>
         )}
-        This link remains valid and can be reused until the Hub auth token is rotated.
+        Keep this link private. It works until the Hub auth token is rotated.
       </p>
     </section>
   );

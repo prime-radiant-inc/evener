@@ -90,7 +90,7 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
     // the QR, with the section and its copy-pairing-link action intact.
     await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
     expect(screen.getByRole("button", { name: "Copy pairing link" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Mobile app" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Scan with your phone" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();
     expect(onCaughtError).toHaveBeenCalledTimes(1);
     const caughtError = onCaughtError.mock.calls[0]?.[0];
