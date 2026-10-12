@@ -187,7 +187,7 @@ describe("PinSectionPicker", () => {
   });
 
   test("preserves entered text and shows the server error inline after rejection", async () => {
-    const onAssign = vi.fn().mockRejectedValue(new Error("section name already exists"));
+    const onAssign = vi.fn().mockRejectedValue(new WireError("section name already exists", -32602));
     render(<PinSectionPicker {...props({ onAssign })} />);
     const user = userEvent.setup();
 
@@ -198,6 +198,43 @@ describe("PinSectionPicker", () => {
 
     expect((await screen.findByRole("alert")).textContent).toBe("section name already exists");
     expect(input.value).toBe("Research");
+  });
+
+  // A plain JS exception's message was never written for a person, so it
+  // must not reach the user on any of the picker's request paths.
+  const rawException = "TypeError: cyclic object value";
+  test.each([
+    [
+      "loading the sections",
+      async () => {
+        const fn = navigationStore.getState().loadPinCatalogPages as ReturnType<typeof vi.fn<LoadPinCatalogPages>>;
+        fn.mockRejectedValueOnce(new Error(rawException));
+        render(<PinSectionPicker {...props()} />);
+      },
+    ],
+    [
+      "pinning to an existing section",
+      async () => {
+        render(<PinSectionPicker {...props({ onAssign: vi.fn().mockRejectedValue(new Error(rawException)) })} />);
+        await userEvent.setup().click(await screen.findByRole("button", { name: "Client" }));
+      },
+    ],
+    [
+      "pinning to a new section",
+      async () => {
+        render(<PinSectionPicker {...props({ onAssign: vi.fn().mockRejectedValue(new Error(rawException)) })} />);
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: "New section…" }));
+        await user.type(screen.getByRole("textbox", { name: "Section name" }), "Research");
+        await user.click(screen.getByRole("button", { name: "Create and pin" }));
+      },
+    ],
+  ])("reports a plain exception while %s without its raw text", async (_case, fail) => {
+    await fail();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent?.trim()).not.toBe("");
+    expect(alert.textContent).not.toContain(rawException);
   });
 
   test.each([

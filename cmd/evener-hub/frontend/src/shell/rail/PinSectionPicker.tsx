@@ -1,5 +1,5 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { type ChangeEvent, useEffect, useId, useState } from "react";
 import { selectPinSectionSummaries } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
@@ -48,7 +48,7 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
         setSections(sortedPinSectionSummaries());
       })
       .catch((err) => {
-        if (active) setError(errorText(err));
+        if (active) setError(friendlyErrorMessage(err));
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -64,7 +64,7 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
     try {
       await onAssign({ section_id: section.id }, section);
     } catch (err) {
-      setError(errorText(err));
+      setError(friendlyErrorMessage(err));
       if (isPinSectionNotFound(err)) {
         try {
           await navigationStore.getState().loadPinCatalogPages(true);
@@ -95,7 +95,7 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
     try {
       await onAssign({ section_name: normalized });
     } catch (err) {
-      setError(errorText(err));
+      setError(friendlyErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
