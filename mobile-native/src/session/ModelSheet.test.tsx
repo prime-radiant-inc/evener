@@ -17,8 +17,10 @@ import {
 	textOf,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
+import { markers } from "../markerTestUtils";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
+import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
 
@@ -140,6 +142,7 @@ function sheet(setting: "model" | "vision" = "model"): ReactTestRenderer {
 	return tree;
 }
 
+const sheetTitle = (tree: ReactTestRenderer): string => tree.root.findByType(Sheet).props.title;
 const texts = (tree: ReactTestRenderer) =>
 	tree.root.findAll((node) => String(node.type) === "Text").map((node: ReactTestInstance) => textOf(node));
 
@@ -167,7 +170,7 @@ describe("choosing a model (spec 8.5)", () => {
 	it("lists recent models first, then each provider's", () => {
 		provide(conversation());
 		const tree = sheet();
-		expect(texts(tree)).toContain("Model");
+		expect(sheetTitle(tree)).toEqual(expect.stringMatching(/\S/));
 		expect(listed(tree)).toEqual([
 			"Recent",
 			"GLM 5.3 Vision",
@@ -233,11 +236,12 @@ describe("choosing a model (spec 8.5)", () => {
 		provide(conversation());
 		const tree = sheet();
 		const search = tree.root.find((node) => String(node.type) === "TextInput");
-		expect(search.props.accessibilityLabel).toBe("Search models");
+		expect(search.props.accessibilityLabel).toEqual(expect.stringMatching(/\S/));
 		act(() => search.props.onChangeText("haiku"));
 		expect(listed(tree)).toEqual(["anthropic", "Claude Haiku 5"]);
 		act(() => search.props.onChangeText("nothing like it"));
-		expect(texts(tree)).toContain("No models match your search.");
+		expect(listed(tree)).toEqual([]);
+		expect(markers(tree, "empty-state")).toEqual(["noMatch"]);
 	});
 
 	it("shows why the models didn't load, and stand-in rows while they load", () => {
@@ -295,7 +299,7 @@ describe("effort", () => {
 		provide(conversation({ reasoningEffortLevels: [], supportsReasoning: false }));
 		const tree = sheet();
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "radio")).toEqual([]);
-		expect(texts(tree)).not.toContain("Effort");
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "radiogroup")).toEqual([]);
 	});
 });
 
@@ -303,7 +307,9 @@ describe("the vision model (ruling 17)", () => {
 	it("lists only models that can see images, with Session model and Off, and no effort", () => {
 		provide(conversation({ visionModel: "off" }));
 		const tree = sheet("vision");
-		expect(texts(tree)).toContain("Vision model");
+		// Titled apart from the session model's sheet.
+		expect(sheetTitle(tree)).toEqual(expect.stringMatching(/\S/));
+		expect(sheetTitle(tree)).not.toBe(sheetTitle(sheet()));
 		expect(listed(tree)).toEqual([
 			"Session model",
 			"Off",

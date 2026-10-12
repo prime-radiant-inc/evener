@@ -6,6 +6,7 @@ import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { ApprovalControls } from "../approvalControls";
+import { hasTestID, markers, withTestID } from "../markerTestUtils";
 import { dockBody, pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import { ApprovalDock } from "./ApprovalDock";
 
@@ -77,22 +78,22 @@ describe("the approval dock (spec 8.4)", () => {
 		const { tree } = mount(request(), fakeControls());
 		const body = dockBody(tree, "approval-dock");
 		const scrolled = textOf(body.scroller).replaceAll("\u200b", "");
-		expect(scrolled).toContain("Wants to write outside the workspace");
+		expect(hasTestID(body.scroller, "approval-wants")).toBe(true);
 		expect(scrolled).toContain("write_file  /Users/jesse/sites/docs/index.html");
-		expect(scrolled).toContain("This session can only write inside its project folder.");
+		expect(hasTestID(body.scroller, "approval-scope")).toBe(true);
 		for (const label of ["Allow this file only", "Deny"]) expect(body.holds(label)).toBe(false);
 	});
 
 	it("says what the sandbox blocked, and offers the one file", () => {
 		const { tree } = mount(request(), fakeControls());
 		const text = readable(tree);
-		expect(text).toContain("Wants to write outside the workspace");
+		expect(hasTestID(tree.root, "approval-wants")).toBe(true);
 		expect(text).toContain("write_file  /Users/jesse/sites/docs/index.html");
-		expect(text).toContain("This session can only write inside its project folder.");
-		expect(text).toContain("Allow this file only");
-		expect(text).toContain("It will ask again for the next one");
-		expect(text).toContain("Deny");
-		expect(text).not.toContain("Part of this may already have run.");
+		expect(hasTestID(tree.root, "approval-scope")).toBe(true);
+		// Allow grants this one file, beside Deny.
+		expect(markers(tree, "approval-allow")).toEqual(["file"]);
+		expect(hasTestID(tree.root, "approval-deny")).toBe(true);
+		expect(hasTestID(tree.root, "approval-partially-ran")).toBe(false);
 		// A long path wraps only at its slashes.
 		expect(renderedText(tree)).toContain("/\u200bUsers/\u200bjesse/\u200b");
 	});
@@ -113,21 +114,21 @@ describe("the approval dock (spec 8.4)", () => {
 	it("allows once when the hub couldn't name the path, and says part of it ran", () => {
 		const { tree } = mount(request({ deniedPath: "<denied>", partiallyRan: true }), fakeControls());
 		const text = readable(tree);
-		expect(text).toContain("Allow once");
-		expect(text).toContain("Just this action");
+		expect(markers(tree, "approval-allow")).toEqual(["once"]);
 		expect(text).not.toContain("<denied>");
-		expect(text).toContain("This session can only write inside its project folder. Part of this may already have run.");
+		// The scope says part of it ran.
+		const [scope] = withTestID(tree, "approval-scope");
+		expect(scope && hasTestID(scope, "approval-partially-ran")).toBe(true);
 	});
 
 	it("without controls, says what waits and offers nothing to press", () => {
 		const onDecided = vi.fn();
 		const tree = render(<ApprovalDock request={request()} controls={null} onDecided={onDecided} />);
-		const text = readable(tree);
-		expect(text).toContain("Wants to write outside the workspace");
-		expect(text).toContain("This session can only write inside its project folder.");
-		expect(pressable(tree, "Allow this file only")).toBeUndefined();
-		expect(pressable(tree, "Deny")).toBeUndefined();
-		expect(text).not.toContain("It will ask again for the next one");
+		expect(hasTestID(tree.root, "approval-wants")).toBe(true);
+		expect(hasTestID(tree.root, "approval-scope")).toBe(true);
+		expect(markers(tree, "approval-allow")).toEqual([]);
+		expect(hasTestID(tree.root, "approval-deny")).toBe(false);
+		expect(tree.root.findAll((node) => String(node.type) === "Pressable")).toEqual([]);
 	});
 
 	it("allows, and reports the decision once it settles", async () => {

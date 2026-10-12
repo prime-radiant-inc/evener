@@ -58,7 +58,11 @@ export async function archiveRow(
 ): Promise<JournalOutcome> {
 	const outcome = await journalOutcome(actions, () => archiveRequest(actions, row, archived));
 	if (outcome === "confirmed")
-		toast.show({ text: archived ? "Archived" : "Unarchived", action: { label: "Undo", run: undo } });
+		toast.show({
+			kind: archived ? "archive:done" : "unarchive:done",
+			text: archived ? "Archived" : "Unarchived",
+			action: { label: "Undo", run: undo },
+		});
 	else if (outcome === "unconfirmed") void actions.reconcile();
 	return outcome;
 }

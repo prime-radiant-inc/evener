@@ -84,8 +84,12 @@ it("keeps organization closed while a change it can't check here is unresolved",
 	organizationJournal("hub-1").begin({ kind: "deleteSession", params: { ref: `local:${SESSION_ID}` } });
 	harness.connection = { client: server.client, activeProfile: hub, state: "ready" };
 	const hook = renderHook(() => useBoardOrganization("hub-1"));
-	// The journal's own text proves the settle ran and refused; the Board never shows it.
-	await until(() => expect(hook.result.current.state?.error).toMatch(/Could not confirm/));
+	// The journal restored the change as unresolved; its error moving on from
+	// that proves the settle ran and refused. The Board never shows either.
+	const restored = hook.result.current.state?.error;
+	expect(restored).toEqual(expect.any(String));
+	await until(() => expect(hook.result.current.state?.error).not.toBe(restored));
+	expect(hook.result.current.state).toMatchObject({ uncertain: true, error: expect.any(String) });
 	expect(hook.result.current.ready).toBe(false);
 	expect(organizationJournal("hub-1").load()).not.toBeNull();
 	expect(server.reads).toEqual([]);

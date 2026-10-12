@@ -33,7 +33,7 @@ func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		return unexpectedArguments(fs)
 	}
 
 	resolvedStateDir, err := resolveOpenAIStateDirAction(*workDir, *stateDir)

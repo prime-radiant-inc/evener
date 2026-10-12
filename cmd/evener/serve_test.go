@@ -79,7 +79,7 @@ func TestServePluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) 
 	deps.seedMarketplaces = func(context.Context) error { order = append(order, "seed-marketplaces"); return nil }
 
 	err := runServeWithDeps([]string{"--plugin-dir", root, "--enabled-plugins=missing-plugin"}, deps)
-	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+	if !errors.Is(err, plugins.ErrSelectionUnavailable) {
 		t.Fatalf("serve error = %v, want strict selection error", err)
 	}
 	if !reflect.DeepEqual(order, []string{"ensure-config", "resolve"}) {
@@ -354,8 +354,8 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid --output-schema JSON")
 	}
-	if !strings.Contains(err.Error(), "invalid --output-schema") {
-		t.Fatalf("error=%q, want to contain 'invalid --output-schema'", err.Error())
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+		t.Fatalf("error = %v, want the --output-schema JSON syntax error", err)
 	}
 }
 
@@ -1297,8 +1297,8 @@ func TestServeResumeRunningReservesBeforeRestore(t *testing.T) {
 			if closeErr := owner.Close(); closeErr != nil {
 				t.Fatalf("owner Close: %v", closeErr)
 			}
-			if serveErr == nil || !strings.Contains(serveErr.Error(), "already running") || !strings.Contains(serveErr.Error(), "send work") || !strings.Contains(serveErr.Error(), "fork") {
-				t.Fatalf("serve error = %v, want live-session or fork guidance", serveErr)
+			if !errors.Is(serveErr, llm.ErrAPILogTargetLocked) {
+				t.Fatalf("serve error = %v, want the live-session refusal", serveErr)
 			}
 			if restoreCalled {
 				t.Fatal("RestoreSessionFromMetaWithConfig was called before API-log ownership")
@@ -1334,7 +1334,7 @@ func TestServeResolvesPluginsOnTheSignalContext(t *testing.T) {
 	deps.seedMarketplaces = func(context.Context) error { return nil }
 
 	err := runServeWithDeps([]string{"--enabled-plugins=missing-plugin"}, deps)
-	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+	if !errors.Is(err, plugins.ErrSelectionUnavailable) {
 		t.Fatalf("serve error = %v, want the selection error that stops this startup", err)
 	}
 	if resolveCtx == nil {
@@ -1361,12 +1361,12 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 		name string
 		// step names the gate the interrupt has to trip, so each arm proves
 		// its own gate rather than being caught by a later one.
-		step string
+		step startupStep
 		arm  func(t *testing.T, deps *serveDeps, interrupt func())
 	}{
 		{
 			name: "seeding marketplaces",
-			step: "seeding default marketplaces",
+			step: stepSeedingMarketplaces,
 			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
 				var seedCtx context.Context
 				deps.seedMarketplaces = func(ctx context.Context) error {
@@ -1383,7 +1383,7 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 		},
 		{
 			name: "probing the login shell PATH",
-			step: "probing the login shell PATH",
+			step: stepProbingLoginShellPath,
 			arm: func(_ *testing.T, deps *serveDeps, interrupt func()) {
 				// The probe takes no context, so an interrupt during it (or
 				// during the profile work just before it) is only noticed by
@@ -1397,14 +1397,14 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 		},
 		{
 			name: "provisioning the sandbox",
-			step: "provisioning the sandbox",
+			step: stepProvisioningSandbox,
 			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
 				provisionServeScratchThatMustBeDisposed(t, deps, interrupt)
 			},
 		},
 		{
 			name: "creating the session",
-			step: "creating the session",
+			step: stepCreatingSession,
 			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
 				var sess *agent.Session
 				newSession := deps.newSession
@@ -1455,8 +1455,8 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("serve error = %v, want the interrupt that ended startup", err)
 			}
-			if want := "interrupted while " + tt.step; !strings.Contains(err.Error(), want) {
-				t.Errorf("serve error = %q, want it to say %q", err, want)
+			if interrupted, ok := errors.AsType[*startupInterruptedError](err); !ok || interrupted.step != tt.step {
+				t.Errorf("serve error = %v, want an interrupt at %q", err, tt.step)
 			}
 			if listened {
 				t.Error("bound a listener for a startup an interrupt had already ended")
@@ -1515,7 +1515,7 @@ func TestServeDisposesTheSandboxScratchWhenNoSessionIsCreated(t *testing.T) {
 	deps.seedMarketplaces = func(context.Context) error { return nil }
 	provisionServeScratchThatMustBeDisposed(t, &deps, func() {})
 	deps.newSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
-		return nil, errors.New("no session today")
+		return nil, errNoSessionToday
 	}
 	deps.listen = func(context.Context, string, string) (net.Listener, error) {
 		t.Error("bound a listener for a startup that has no session")
@@ -1525,7 +1525,7 @@ func TestServeDisposesTheSandboxScratchWhenNoSessionIsCreated(t *testing.T) {
 	err := runServeWithDeps([]string{
 		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
 	}, deps)
-	if err == nil || !strings.Contains(err.Error(), "session creation") {
+	if !errors.Is(err, errNoSessionToday) {
 		t.Fatalf("serve error = %v, want the session-creation failure", err)
 	}
 }
@@ -1555,7 +1555,7 @@ func TestServeDisposesTheSandboxScratchWhenRestoreFails(t *testing.T) {
 		if err := launchScratchThatMustBeDisposed(t, local); err != nil {
 			return nil, err
 		}
-		return nil, errors.New("restore failed after the sandbox was provisioned")
+		return nil, errRestoreFailedAfterProvisioning
 	}
 	deps.listen = func(context.Context, string, string) (net.Listener, error) {
 		t.Error("bound a listener for a resume that never restored")
@@ -1565,7 +1565,7 @@ func TestServeDisposesTheSandboxScratchWhenRestoreFails(t *testing.T) {
 	err := runServeWithDeps([]string{
 		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
 	}, deps)
-	if err == nil || !strings.Contains(err.Error(), "restore session") {
+	if !errors.Is(err, errRestoreFailedAfterProvisioning) {
 		t.Fatalf("serve error = %v, want the restore failure", err)
 	}
 }
@@ -1582,14 +1582,14 @@ func TestServeAgentsDocFlagReachesTheSessionConfig(t *testing.T) {
 	got := ""
 	deps.newSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		got = cfg.AgentsDocPath
-		return nil, errors.New("no session today")
+		return nil, errNoSessionToday
 	}
 
 	err := runServeWithDeps([]string{
 		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
 		"--agents-doc", wantPath,
 	}, deps)
-	if err == nil || !strings.Contains(err.Error(), "session creation") {
+	if !errors.Is(err, errNoSessionToday) {
 		t.Fatalf("serve error = %v, want the session-creation failure", err)
 	}
 	if got != wantPath {
@@ -1618,14 +1618,14 @@ func TestServeAgentsDocFlagReachesTheRestoredSessionConfig(t *testing.T) {
 	got := ""
 	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, restoreCfg agent.RestoreSessionConfig) (*agent.Session, error) {
 		got = restoreCfg.AgentsDocPath
-		return nil, errors.New("no session today")
+		return nil, errNoSessionToday
 	}
 
 	err := runServeWithDeps([]string{
 		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
 		"--agents-doc", wantPath,
 	}, deps)
-	if err == nil || !strings.Contains(err.Error(), "restore session") {
+	if !errors.Is(err, errNoSessionToday) {
 		t.Fatalf("serve error = %v, want the restore failure", err)
 	}
 	if got != wantPath {
@@ -1818,13 +1818,13 @@ func TestServeResumedSessionLifetimeIsTheShutdownContext(t *testing.T) {
 	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, restoreCfg agent.RestoreSessionConfig) (*agent.Session, error) {
 		lifetime = restoreCfg.LifetimeContext
 		liveAtRestore = lifetime != nil && lifetime.Err() == nil
-		return nil, errors.New("no session today")
+		return nil, errNoSessionToday
 	}
 
 	err := runServeWithDeps([]string{
 		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
 	}, deps)
-	if err == nil || !strings.Contains(err.Error(), "restore session") {
+	if !errors.Is(err, errNoSessionToday) {
 		t.Fatalf("serve error = %v, want the restore failure", err)
 	}
 	if lifetime == nil {
