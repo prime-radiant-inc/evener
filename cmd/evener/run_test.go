@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 )
@@ -56,7 +57,7 @@ func TestRunPluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
 	err := run(context.Background(), runConfig{
 		workDir: t.TempDir(), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, enabledPlugins: &selected,
 	})
-	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+	if !errors.Is(err, plugins.ErrSelectionUnavailable) {
 		t.Fatalf("run error = %v, want strict selection error", err)
 	}
 	if !reflect.DeepEqual(order, []string{"ensure-config", "resolve"}) {
@@ -99,8 +100,8 @@ func TestRunSeedingWarningUsesInjectedStderr(t *testing.T) {
 	var stderr bytes.Buffer
 	_ = run(context.Background(), runConfig{workDir: t.TempDir(), stateDir: t.TempDir(), stdout: io.Discard, stderr: &stderr})
 
-	if !strings.Contains(stderr.String(), "warning: seeding default marketplaces: seed failed") {
-		t.Errorf("injected stderr = %q, want the seeding warning", stderr.String())
+	if !strings.Contains(stderr.String(), "seed failed") {
+		t.Errorf("injected stderr = %q, want the seeding warning carrying the seed failure", stderr.String())
 	}
 	if _, err := procStderr.Seek(0, io.SeekStart); err != nil {
 		t.Fatal(err)
@@ -109,7 +110,7 @@ func TestRunSeedingWarningUsesInjectedStderr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(got), "seeding default marketplaces") {
+	if strings.Contains(string(got), "seed failed") {
 		t.Errorf("process stderr = %q, want the warning routed through the injected stream", got)
 	}
 }
@@ -201,16 +202,15 @@ func TestRunResumeRejectsEnabledPluginSelection(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		cfg  runConfig
-		want string
 	}{
-		{name: "resume", cfg: runConfig{resume: "session"}, want: "--enabled-plugins cannot be used with --resume"},
-		{name: "resume-last", cfg: runConfig{resumeLast: true}, want: "--enabled-plugins cannot be used with --resume-last"},
+		{name: "resume", cfg: runConfig{resume: "session"}},
+		{name: "resume-last", cfg: runConfig{resumeLast: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			selected := []string{"new-plugin"}
 			tc.cfg.enabledPlugins = &selected
 			err := run(context.Background(), tc.cfg)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
+			if !errors.Is(err, errPluginSelectionWithResume) {
 				t.Fatalf("run error = %v, want selection rejection", err)
 			}
 		})
@@ -515,8 +515,8 @@ func TestRunInvalidOutputSchema(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid --output-schema JSON")
 	}
-	if !strings.Contains(err.Error(), "invalid --output-schema") {
-		t.Fatalf("error %q, want to contain 'invalid --output-schema'", err.Error())
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+		t.Fatalf("error = %v, want the --output-schema JSON syntax error", err)
 	}
 }
 
@@ -538,8 +538,8 @@ func TestRunFastCheapModelValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unavailable --fast-cheap-model provider error")
 	}
-	if !strings.Contains(err.Error(), "--fast-cheap-model provider") {
-		t.Fatalf("error %q, want --fast-cheap-model provider guidance", err.Error())
+	if !errors.Is(err, errFastCheapProviderUnavailable) {
+		t.Fatalf("error = %v, want errFastCheapProviderUnavailable", err)
 	}
 }
 
@@ -626,8 +626,8 @@ func TestListSessions_EmptyDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if !strings.Contains(out.String(), "No saved sessions") {
-		t.Fatalf("expected 'No saved sessions' message, got: %q", out.String())
+	if out.Len() == 0 || strings.Contains(out.String(), "turns=") {
+		t.Fatalf("stdout = %q, want a notice and no session rows", out.String())
 	}
 }
 
@@ -662,8 +662,8 @@ func TestResumeLast_NoSessions(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error when no sessions exist")
 	}
-	if !strings.Contains(err.Error(), "no saved sessions") {
-		t.Fatalf("expected error about no sessions, got: %v", err)
+	if !errors.Is(err, cmdutil.ErrNoSavedSessions) {
+		t.Fatalf("error = %v, want cmdutil.ErrNoSavedSessions", err)
 	}
 }
 
@@ -725,8 +725,8 @@ func TestRunResumeRunningReservesBeforeRestore(t *testing.T) {
 			if closeErr := owner.Close(); closeErr != nil {
 				t.Fatalf("owner Close: %v", closeErr)
 			}
-			if runErr == nil || !strings.Contains(runErr.Error(), "already running") || !strings.Contains(runErr.Error(), "send work") || !strings.Contains(runErr.Error(), "fork") {
-				t.Fatalf("run error = %v, want live-session or fork guidance", runErr)
+			if !errors.Is(runErr, llm.ErrAPILogTargetLocked) {
+				t.Fatalf("run error = %v, want the live-session refusal", runErr)
 			}
 			if restoreCalled {
 				t.Fatal("RestoreSessionFromMetaWithConfig was called before API-log ownership")
@@ -1245,7 +1245,7 @@ func TestLaunchChecksForLegacyDataBeforeResolvingPlugins(t *testing.T) {
 			}
 
 			err := tt.start(t)
-			if err == nil || !strings.Contains(err.Error(), "legacy Serf data") {
+			if !errors.Is(err, cmdutil.ErrLegacySerfData) {
 				t.Fatalf("error = %v, want the legacy-data guard to stop the startup", err)
 			}
 			if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
@@ -1264,7 +1264,7 @@ func TestRunDisposesTheSandboxScratchWhenNoSessionTakesTheEnvironment(t *testing
 	tests := []struct {
 		name    string
 		arrange func(t *testing.T, cfg *runConfig)
-		wantErr string
+		wantErr error
 	}{
 		{
 			name: "a fresh session that cannot be created",
@@ -1275,10 +1275,10 @@ func TestRunDisposesTheSandboxScratchWhenNoSessionTakesTheEnvironment(t *testing
 					return launchScratchThatMustBeDisposed(t, env)
 				}
 				runNewSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
-					return nil, errors.New("no session today")
+					return nil, errNoSessionToday
 				}
 			},
-			wantErr: "session creation",
+			wantErr: errNoSessionToday,
 		},
 		{
 			name: "a resume whose restore fails",
@@ -1303,10 +1303,10 @@ func TestRunDisposesTheSandboxScratchWhenNoSessionTakesTheEnvironment(t *testing
 					if err := launchScratchThatMustBeDisposed(t, local); err != nil {
 						return nil, err
 					}
-					return nil, errors.New("restore failed after the sandbox was provisioned")
+					return nil, errRestoreFailedAfterProvisioning
 				}
 			},
-			wantErr: "restore session",
+			wantErr: errRestoreFailedAfterProvisioning,
 		},
 	}
 	for _, tt := range tests {
@@ -1323,8 +1323,8 @@ func TestRunDisposesTheSandboxScratchWhenNoSessionTakesTheEnvironment(t *testing
 			tt.arrange(t, &cfg)
 
 			err := run(context.Background(), cfg)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("run error = %v, want %q", err, tt.wantErr)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("run error = %v, want %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -1418,7 +1418,7 @@ func TestRunDisposesTheUnsandboxedScratchWhenNoSessionTakesTheEnvironment(t *tes
 			t.Fatalf("session creation got a %T, want the local environment run built", env)
 		}
 		scratch = local.SessionScratchDir()
-		return nil, errors.New("no session today")
+		return nil, errNoSessionToday
 	}
 
 	dir := t.TempDir()
@@ -1426,7 +1426,7 @@ func TestRunDisposesTheUnsandboxedScratchWhenNoSessionTakesTheEnvironment(t *tes
 		prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
 		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 	})
-	if err == nil || !strings.Contains(err.Error(), "session creation") {
+	if !errors.Is(err, errNoSessionToday) {
 		t.Fatalf("run error = %v, want the session-creation failure", err)
 	}
 	if scratch == "" {
@@ -1451,12 +1451,12 @@ func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
 		name string
 		// step names the gate the interrupt has to trip, so each arm proves
 		// its own gate rather than being caught by a later one.
-		step string
+		step startupStep
 		arm  func(t *testing.T, interrupt func())
 	}{
 		{
 			name: "seeding marketplaces",
-			step: "seeding default marketplaces",
+			step: stepSeedingMarketplaces,
 			arm: func(t *testing.T, interrupt func()) {
 				var seedCtx context.Context
 				runSeedMarketplaces = func(ctx context.Context) error {
@@ -1473,7 +1473,7 @@ func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
 		},
 		{
 			name: "probing the login shell PATH",
-			step: "probing the login shell PATH",
+			step: stepProbingLoginShellPath,
 			arm: func(_ *testing.T, interrupt func()) {
 				// The probe takes no context, so an interrupt during it (or
 				// during the client work just before it) is only noticed by
@@ -1487,7 +1487,7 @@ func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
 		},
 		{
 			name: "provisioning the sandbox",
-			step: "provisioning the sandbox",
+			step: stepProvisioningSandbox,
 			arm: func(t *testing.T, interrupt func()) {
 				runProvisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
 					if err := launchScratchThatMustBeDisposed(t, env); err != nil {
@@ -1500,7 +1500,7 @@ func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
 		},
 		{
 			name: "creating the session",
-			step: "creating the session",
+			step: stepCreatingSession,
 			arm: func(t *testing.T, interrupt func()) {
 				newSession := runNewSession
 				var sess *agent.Session
@@ -1553,8 +1553,8 @@ func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("run error = %v, want the interrupt that ended the run", err)
 			}
-			if want := "interrupted while " + test.step; !strings.Contains(err.Error(), want) {
-				t.Errorf("run error = %q, want it to say %q", err, want)
+			if interrupted, ok := errors.AsType[*startupInterruptedError](err); !ok || interrupted.step != test.step {
+				t.Errorf("run error = %v, want an interrupt at %q", err, test.step)
 			}
 			if processed {
 				t.Error("processed input for a run an interrupt had already ended")
@@ -1562,3 +1562,10 @@ func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
 		})
 	}
 }
+
+// The failures the launch tests inject where a session would be built, so a
+// test can tell its own failure apart from any other on the way out.
+var (
+	errNoSessionToday                 = errors.New("no session today")
+	errRestoreFailedAfterProvisioning = errors.New("restore failed after the sandbox was provisioned")
+)

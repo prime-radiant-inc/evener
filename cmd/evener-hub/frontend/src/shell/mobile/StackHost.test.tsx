@@ -129,7 +129,7 @@ beforeAll(async () => {
   // same tripwire as App.test.tsx's warmRoute.
   await warmPane(
     () => {}, // nothing focused: StackHost's own fallback opens welcome
-    (timeout) => screen.findByText("No session open", undefined, { timeout }),
+    (timeout) => findStackedEmptyState("welcome", timeout),
   );
   await warmPane(
     () => workspaceStore.getState().openPane("doc", { ref: "ref_warm" }),
@@ -145,6 +145,21 @@ beforeAll(async () => {
 // for a hung render, not a responsiveness budget. Same value and reasoning as App.test.tsx's own
 // WARM_ROUTE_TRIPWIRE_MS.
 const PANE_WARMUP_TRIPWIRE_MS = 10_000;
+
+// Waits until the stack shows a pane of `paneType` whose body has rendered
+// its empty state: welcome's "nothing open" landing, or a session panel still
+// loading its model. The pane type comes from the stack body's own marker, so
+// this proves which pane is on screen without reading its copy.
+async function findStackedEmptyState(paneType: string, timeout?: number): Promise<HTMLElement> {
+  return waitFor(
+    () => {
+      const body = document.querySelector(`[data-stacked-pane-type="${paneType}"]`);
+      if (!(body instanceof HTMLElement)) throw new Error(`No stacked ${paneType} pane`);
+      return within(body).getByTestId("empty-state");
+    },
+    { timeout },
+  );
+}
 
 // Renders StackHost once with `open`'s pane focused and awaits its landmark,
 // so both halves of that pane's lazy-loading cost are already paid by the
@@ -179,13 +194,13 @@ afterEach(() => {
 
 test("falls back to opening welcome when nothing is focused at mount", async () => {
   render(<StackHost />);
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("opens the mobile panel when nothing is focused", async () => {
   render(<StackHost />);
   // Welcome pane mounts behind the panel; the panel opens over it
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
   // The panel's Sheet title "Sessions" is the dialog's accessible name
   expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
 });
@@ -445,7 +460,7 @@ test("a restored cascade renders only its selected reader on mobile and restores
 test("does not flash the panel during routeDeferred", async () => {
   render(<StackHost routeDeferred />);
   // Wait for welcome to appear behind the (closed) panel
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
   // Panel should NOT be open while routeDeferred
   expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
 });
@@ -562,7 +577,7 @@ test("hosts the tree drawer trigger in the top bar, regardless of which pane is 
 
 test("the back affordance is hidden while welcome (the stack's root) is focused", async () => {
   render(<StackHost />);
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
   expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
 });
 
@@ -586,7 +601,7 @@ test("a session panel pane's top-bar Back returns to the parent session, not the
   act(() => {
     workspaceStore.getState().openPane("sessionDetails", { ref: "local:ref_panel" });
   });
-  expect(await screen.findByText("Loading session panel…")).toBeTruthy();
+  await findStackedEmptyState("sessionDetails");
 
   await user.click(screen.getByRole("button", { name: "Back" }));
 
@@ -768,7 +783,7 @@ test("back falls all the way to welcome when this component never observed an ea
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
 
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("back walks multiple levels deep, one pane per tap", async () => {
@@ -792,7 +807,7 @@ test("back walks multiple levels deep, one pane per tap", async () => {
   expect(await screen.findByText(/doc pane: ref_a/)).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
   expect(screen.queryByRole("button", { name: "Back" })).toBeNull(); // welcome: nothing further behind it
 });
 
@@ -813,7 +828,7 @@ test("a back tap does not push the pane it left onto the stack (no ping-pong)", 
   // ref_a - see the "falls all the way to welcome" test above) - a second
   // tap must go straight to welcome, not bounce forward to ref_b.
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("retained-parent Back: valid observed history wins over a retained transcript parent", async () => {
@@ -830,7 +845,7 @@ test("retained-parent Back: valid observed history wins over a retained transcri
   expect(workspaceStore.getState().focusedPaneId).toBe(previous);
   expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test.each([
@@ -854,7 +869,7 @@ test.each([
   expect(workspaceStore.getState().focusedPaneId).toBe(leaf);
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
   const state = workspaceStore.getState();
   expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
   expect(state.panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
@@ -869,7 +884,7 @@ test("retained-parent Back: a non-transcript's parentRef does not override the W
   await screen.findByText(/doc pane: document/);
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test.each([false, true])(
@@ -904,7 +919,7 @@ test.each([false, true])(
       slot: "main",
     });
     await user.click(screen.getByRole("button", { name: "Back" }));
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await findStackedEmptyState("welcome");
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
 );
@@ -969,7 +984,7 @@ test.each([
       );
       visited.add(next);
     }
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await findStackedEmptyState("welcome");
     const state = workspaceStore.getState();
     expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
     expect(state.panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
@@ -997,7 +1012,7 @@ test.each([false, true])(
       expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
     }
     await user.click(screen.getByRole("button", { name: "Back" }));
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await findStackedEmptyState("welcome");
     expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
@@ -1019,7 +1034,7 @@ test("retained-parent cycle safety: valid observed history wins even when retain
   expect(workspaceStore.getState().panes).toEqual(retained);
   expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 // --- real browser back/forward composing with the in-app Back button -----
@@ -1063,7 +1078,7 @@ test("a REAL back/forward gesture does not stack the pane it left, unlike an ord
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
 
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("an ORDINARY (untrusted) synthetic popstate - routing.ts's own navigate() - still stacks normally", async () => {
@@ -1178,7 +1193,7 @@ test("back skips a stacked pane that has since been closed, falling to welcome w
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
 
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("back skips a stale MIDDLE stack entry and lands on the next valid one behind it", async () => {
@@ -1279,7 +1294,7 @@ test("resetChromeStoreForTests clears a published paneBack handler", () => {
 
 test("the URL updates to a deep-linked pane's URL once it becomes focused", async () => {
   render(<StackHost />);
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
 
   act(() => {
     workspaceStore.getState().openPane("session", { ref: "local:ref_x" });
@@ -1339,7 +1354,7 @@ test("a deferred route keeps the address bar - the fallback pane does not publis
   window.history.pushState({}, "", "/s/local%3Aref_deferred");
 
   render(<StackHost routeDeferred />);
-  await screen.findByText("No session open"); // the fallback pane is up and focused
+  await findStackedEmptyState("welcome"); // the fallback pane is up and focused
 
   expect(window.location.pathname).toBe("/s/local%3Aref_deferred");
 });
@@ -1349,7 +1364,7 @@ test("a deferred route keeps the address bar - the fallback pane does not publis
 test("the sync resumes on the pane that lands once the route is no longer deferred", async () => {
   window.history.pushState({}, "", "/s/local%3Aref_deferred");
   const { rerender } = render(<StackHost routeDeferred />);
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
 
   act(() => {
     workspaceStore.getState().openPane("session", { ref: "local:ref_placed" });
@@ -1495,7 +1510,7 @@ test.each(["exact cycle", "mixed cycle", "session origin", "missing farther ance
       expect(workspaceStore.getState().panes).toEqual(retained);
       await user.click(screen.getByRole("button", { name: "Back" }));
     }
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await findStackedEmptyState("welcome");
     expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
     expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
@@ -1519,5 +1534,5 @@ test("exact Open origin Back: valid local history wins over a recorded origin", 
   expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
   expect(workspaceStore.getState().panes).toEqual(retained);
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });

@@ -1123,5 +1123,5 @@ func (r LaunchPluginResolution) ValidateSelection() error {
 	for _, item := range errs {
 		parts = append(parts, fmt.Sprintf("%s: %s", item.Name, item.Reason))
 	}
-	return fmt.Errorf("enabled plugin selection is unavailable: %s", strings.Join(parts, "; "))
+	return fmt.Errorf("%w: %s", ErrSelectionUnavailable, strings.Join(parts, "; "))
 }

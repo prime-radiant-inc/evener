@@ -12,6 +12,7 @@ import { sessionControls } from "@evener/appwire-client";
 import { READ_ITEM_LIMIT } from "../../../mobile/src/services/conversation";
 import { createNativeMutationHost, type NativeMutationHost } from "../nativeMutationHost";
 import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
+import type { ToastMessage } from "../Toast";
 
 /** "stopped": the interrupt is durably admitted, the Session's "Stopped"
  * moment. "notWorking": a fresh read shows no turn to stop, so nothing was
@@ -20,8 +21,12 @@ import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMu
  * (phase 6 ruling 18), so nothing was sent. */
 export type StopOutcome = "stopped" | "notWorking" | "unavailable" | "dropped";
 
-/** What the Board's toast says after a Stop (spec 8.3 for "Stopped"). */
-export function stopToast(outcome: StopOutcome, title: string): string {
+/** The Board's toast after a Stop (spec 8.3 for "Stopped"), of kind `stop:<outcome>`. */
+export function stopToast(outcome: StopOutcome, title: string): ToastMessage {
+	return { kind: `stop:${outcome}`, text: stopToastText(outcome, title) };
+}
+
+function stopToastText(outcome: StopOutcome, title: string): string {
 	if (outcome === "stopped") return "Stopped";
 	if (outcome === "notWorking") return "Nothing to stop: its turn had already ended.";
 	if (outcome === "dropped") return "The turn you stopped ended before you were back online";

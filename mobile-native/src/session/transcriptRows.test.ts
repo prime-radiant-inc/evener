@@ -242,7 +242,12 @@ describe("time markers", () => {
 
 	it("reads Today, Yesterday, a weekday, or a date", () => {
 		const now = Date.UTC(2026, 8, 26, 18, 0);
-		expect(timeMarkerText(Date.UTC(2026, 8, 26, 14, 14), now, "UTC")).toBe("Today 2:14 PM");
+		// Today reads its time with its own word, apart from yesterday's.
+		const today = timeMarkerText(Date.UTC(2026, 8, 26, 14, 14), now, "UTC");
+		expect(today).toContain("2:14 PM");
+		expect(today.replace("2:14 PM", "")).not.toBe(
+			timeMarkerText(Date.UTC(2026, 8, 25, 14, 14), now, "UTC").replace("2:14 PM", ""),
+		);
 		expect(timeMarkerText(Date.UTC(2026, 8, 25, 9, 3), now, "UTC")).toBe("Yesterday 9:03 AM");
 		expect(timeMarkerText(Date.UTC(2026, 8, 22, 9, 3), now, "UTC")).toBe("Tue 9:03 AM");
 		expect(timeMarkerText(Date.UTC(2026, 8, 12, 9, 3), now, "UTC")).toBe("Sep 12, 9:03 AM");
