@@ -13,6 +13,9 @@ changes; keep implementation history in Git and pull requests.
   points, dependencies, and recovery ownership across the product.
 - [Session activity](session-activity.md): scoped delegate, job and watch reads,
   navigation boundaries, pagination and shared recovery ownership.
+- [Device pairing protocol](../device-pairing.md): self-hosted invitations, device comparison, encrypted credential delivery, QR and acoustic wire formats.
+- [Playdate client](playdate-client.md): direct session browsing, chat transcripts,
+  voice review, acoustic setup, native enrollment and device-owned draft recovery.
 - [Memory](memory.md): host-owned personal/project files, lower-trust indexes,
   scoped tools, gardening, recovery and per-session opt-out.
 - [Friction punchlist](friction.md): open, evidence-backed gaps, with unresolved
