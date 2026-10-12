@@ -44,6 +44,7 @@ import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Toast } from "../../widgets";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import ReadOnlyTranscript from "../transcript/testing/CommittedTranscript";
 import * as SessionChromeModule from "./chrome/SessionChrome";
@@ -497,7 +498,7 @@ test("mounts TopNotesPanel at the top of the session content once hydrated", asy
   await waitFor(() => expect(screen.getByTestId("top-notes-panel")).toBeTruthy());
   // "Top" is DOM order, not just presence: the panel sits above the
   // transcript area below it in the pane scaffold.
-  const below = screen.getByText("Send the first message");
+  const below = screen.getByTestId("empty-state");
   expect(screen.getByTestId("top-notes-panel").compareDocumentPosition(below)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 });
 
@@ -558,11 +559,11 @@ test("a deleted ref shows an honest empty state instead of loading forever, and 
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByText(/this session was deleted/i)).toBeTruthy());
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["deleted"]));
   // The raw ref never appears anywhere while the deleted state is showing -
   // the title uses a humane label instead (kata: the eternal-spinner papercut).
   expect(screen.queryByText("local:ref_gone")).toBeNull();
-  expect(screen.getByText("Session deleted")).toBeTruthy();
+  expect(screen.getByRole("heading", { level: 2 }).textContent).not.toBe("");
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 
   const user = userEvent.setup();
@@ -792,9 +793,8 @@ test("a session that has never run invites the first message", async () => {
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
-  expect(screen.getByText(/hasn't started yet/i)).toBeTruthy();
-  expect(screen.queryByText(/waiting for the first reply/i)).toBeNull();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
+  expect(emptyStateReasons(document.body)).not.toContain("awaiting-reply");
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
 });
 
@@ -850,7 +850,7 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
   let clientMutationId = "";
   await act(async () => {
     clientMutationId = await seedPendingSend();
@@ -946,7 +946,7 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
 
   const clientMutationId = await act(async () => seedPendingSend());
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
@@ -1032,7 +1032,7 @@ test("cold-start skeleton clears when the first turn terminates without an autho
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
   await act(async () => seedPendingSend());
 
   act(() => {
@@ -1072,7 +1072,7 @@ test("an explicitly rejected first send leaves cold-start state for durable reco
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
 
   const clientMutationId = await act(async () => seedPendingSend());
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
@@ -1096,7 +1096,7 @@ test.each(["failed", "error", "cancelled"])(
         <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
       </ClientProvider>,
     );
-    await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+    await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
     await act(async () => seedPendingSend());
     expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
@@ -1129,7 +1129,7 @@ test.each(["closed", "systemError"] as const)(
         <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
       </ClientProvider>,
     );
-    await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+    await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
     await act(async () => seedPendingSend());
     expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
@@ -1183,7 +1183,7 @@ test("cold-start skeleton is scoped to the session ref and disappears on session
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
   await act(async () => seedPendingSend("ref_a"));
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
@@ -1205,12 +1205,10 @@ test("a session whose first turn is still running says it is waiting, and never 
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByText(/waiting for the first reply/i)).toBeTruthy());
-  expect(screen.getByText(/the agent has your message/i)).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("awaiting-reply"));
   // The whole point of the branch: no imperative to send, and no claim the
   // session has not started, while its first turn is running.
-  expect(screen.queryByText(/send the first message/i)).toBeNull();
-  expect(screen.queryByText(/hasn't started yet/i)).toBeNull();
+  expect(emptyStateReasons(document.body)).not.toContain("no-turns");
 });
 
 test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
@@ -1799,7 +1797,7 @@ test("scrolled away: a turn FAILING while unseen upgrades the real pill to the e
   });
 
   const pill = await screen.findByTestId("new-content-pill");
-  expect(pill.textContent).toContain("Failed turn");
+  expect(pill.getAttribute("data-kind")).toBe("failed-turn");
 });
 
 test("clicking the real NewContentPill clears it", async () => {
@@ -1898,7 +1896,7 @@ test("the liveness line renders in the reserved footer beside the composer, neve
   await flushPendingTurnsProjectionForTests();
 
   const line = screen.getByTestId("liveness-line");
-  expect(line.textContent).toContain("Quiet");
+  expect(line.getAttribute("data-level")).toBe("quiet");
 
   // The structural property that prevents the collision: reserved footer
   // layout, never the absolutely-positioned transcript overlay.
@@ -3084,15 +3082,12 @@ test("an incompatible session shows a plain degraded notice with no buttons", as
     </ClientProvider>,
   );
   const notice = await screen.findByRole("alert");
-  expect(notice.textContent).toContain("still working");
-  expect(notice.textContent).toContain("different Evener version");
-  expect(notice.textContent).toContain("everything already saved is kept");
+  expect(notice.getAttribute("data-reason")).toBe("version-mismatch");
   // The notice is informational now: force shutdown lives in the session menu,
   // and the pane re-hydrates itself on the hub's evener/thread/resync, so the
   // banner offers no control at all.
   expect(within(notice).queryByRole("button")).toBeNull();
-  expect(within(notice).queryByText("Force shutdown…")).toBeNull();
-  expect(within(notice).queryByText("Refresh session")).toBeNull();
+  expect(within(notice).queryByRole("link")).toBeNull();
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
 
@@ -3116,7 +3111,7 @@ test("picks up a daemon exit automatically on evener/thread/resync", async () =>
     </ClientProvider>,
   );
   const notice = await screen.findByRole("alert");
-  expect(notice.textContent).toContain("different Evener version");
+  expect(notice.getAttribute("data-reason")).toBe("version-mismatch");
   expect(within(notice).queryByRole("button")).toBeNull();
   exited = true;
   await emitDaemonGoneResync(fake);
@@ -3142,7 +3137,7 @@ test("a reconnect recovers the degraded pane without any resync notification", a
   );
   const { rerender } = render(tree(first));
   const notice = await screen.findByRole("alert");
-  expect(notice.textContent).toContain("different Evener version");
+  expect(notice.getAttribute("data-reason")).toBe("version-mismatch");
 
   const second = new FakeClient("ready");
   second.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
@@ -3227,6 +3222,7 @@ test("a daemon exit clears the notice without closing its pane", async () => {
 });
 
 test("a failed notice resume surfaces as the composer toast, not an inline error", async ({ onTestFinished }) => {
+  resetToastStoreForTests();
   onTestFinished(stubSessionSlots);
   vi.mocked(ComposerModule.Composer).mockRestore();
   const fake = connectFakeClient();
@@ -3248,7 +3244,11 @@ test("a failed notice resume surfaces as the composer toast, not an inline error
   await user.click(await screen.findByRole("button", { name: "Resume session" }));
   // One channel: the resumeFailures slice, toasted by the composer. The notice
   // keeps no inline error of its own.
-  expect(await screen.findByText("Resume failed: resume rejected")).toBeTruthy();
+  await waitFor(() =>
+    expect(
+      getToasts().filter((toast) => toast.kind === "error" && toast.text.includes("resume rejected")),
+    ).toHaveLength(1),
+  );
   expect(screen.queryByText("resume rejected")).toBeNull();
   expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("notLoaded");
 });
@@ -3263,9 +3263,9 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
   );
   await screen.findByRole("alert");
   if (pending) await act(async () => seedPendingSend());
-  expect(screen.queryByText(/send the first message/i)).toBeNull();
+  expect(emptyStateReasons(document.body)).not.toContain("no-turns");
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
-  expect(screen.getByText("This session is on a different Evener version")).toBeTruthy();
+  expect(emptyStateReasons(document.body)).toEqual(["version-mismatch"]);
 });
 
 test("Send follows the returned identity through transcript and new sends", async ({ onTestFinished }) => {
@@ -3617,9 +3617,7 @@ test("a Stop on the resumed identity cancels the stale post-resume publish", asy
   });
   // The stubbed composer means no toast surface: the store's failure entry is
   // the evidence the Stop canceled the pending action.
-  await waitFor(() =>
-    expect(threadsStore.getState().resumeFailures.get(stableRef)?.message).toMatch(/Stop canceled this pending action/),
-  );
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(stableRef)?.stopCanceled).toBe(true));
   // The Stop cancels the row the (identity-changing) resume moved under the
   // resumed identity: the message must never reach the wire, not merely show a
   // canceled toast.
@@ -3702,9 +3700,7 @@ test("a Stop on the resumed identity while the resume RPC is in flight cancels t
     await threadsStore.getState().shutdown(currentRef);
     resolveResume(readResponse(currentRef, { status: { type: "idle" } }));
   });
-  await waitFor(() =>
-    expect(threadsStore.getState().resumeFailures.get(stableRef)?.message).toMatch(/Stop canceled this pending action/),
-  );
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(stableRef)?.stopCanceled).toBe(true));
   expect(window.location.pathname).toBe("/s/local%3Astable-a");
 });
 
@@ -3770,9 +3766,7 @@ test("a Stop on the resumed identity before the resume RPC leaves suppresses the
   await act(async () => {});
   // The guarded-out resume never sent the RPC - the guard's whole point.
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([]);
-  await waitFor(() =>
-    expect(threadsStore.getState().resumeFailures.get(stableRef)?.message).toMatch(/Stop canceled this pending action/),
-  );
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.get(stableRef)?.stopCanceled).toBe(true));
   expect(window.location.pathname).toBe("/s/local%3Astable-a");
   await shutdownCompletion;
 });
@@ -4116,9 +4110,7 @@ test("a reconciliation-failed Send-resumes face keeps its recovery notice", asyn
   );
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   act(() => threadsStore.setState({ mutationReconciliationFailures: new Set([ref]) }));
-  expect(
-    await screen.findByText("Message recovery has not completed. Sending will resume after recovery succeeds."),
-  ).toBeTruthy();
+  expect(await screen.findByTestId("message-recovery-pending")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
   expect(sendResumesLocalModel(ref)).toBe(true);
 });

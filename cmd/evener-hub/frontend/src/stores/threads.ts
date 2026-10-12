@@ -134,6 +134,15 @@ export class ConflictError extends Error {
   }
 }
 
+/** A user's Stop landed while a resume was pending, so the resume and the
+ * send it carried were canceled rather than delivered. */
+export class StopCanceledError extends Error {
+  constructor() {
+    super("Stop canceled this pending action; send again when ready.");
+    this.name = "StopCanceledError";
+  }
+}
+
 // The ghost's display input (steering-ghost spec §3): the row's full text
 // - or the daemon's own preview placeholder when the row is image-only -
 // plus its canonical skill selections, so the optimistic promote record
@@ -188,7 +197,8 @@ export interface ThreadsStoreState {
   // the observer toasts each failure exactly once; cleared when a drive
   // succeeds, and the composer seeds its dedup from the seq on mount so a
   // remount never re-toasts a failure that predates it.
-  resumeFailures: ReadonlyMap<string, { seq: number; message: string }>;
+  // stopCanceled marks the failure a user's Stop caused (StopCanceledError).
+  resumeFailures: ReadonlyMap<string, { seq: number; message: string; stopCanceled: boolean }>;
   clearResumedIdentity(ref: string): void;
   // Refs with a Force stop RPC this page started still in flight. The hub holds
   // Stopping > 0 for exactly that window and refuses even turn/start for the
@@ -1708,13 +1718,11 @@ export function resumeStopBaseline(): (ref?: string) => void {
   return (ref?: string) => {
     if (ref === undefined) {
       for (const [stoppedRef, generation] of userIntentStopGenerations) {
-        if (generation > (generations.get(stoppedRef) ?? 0))
-          throw new Error("Stop canceled this pending action; send again when ready.");
+        if (generation > (generations.get(stoppedRef) ?? 0)) throw new StopCanceledError();
       }
       return;
     }
-    if ((userIntentStopGenerations.get(ref) ?? 0) !== (generations.get(ref) ?? 0))
-      throw new Error("Stop canceled this pending action; send again when ready.");
+    if ((userIntentStopGenerations.get(ref) ?? 0) !== (generations.get(ref) ?? 0)) throw new StopCanceledError();
   };
 }
 
@@ -1853,7 +1861,11 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     resumeFailureSeq += 1;
     threadsStore.setState((state) => ({
-      resumeFailures: new Map(state.resumeFailures).set(ref, { seq: resumeFailureSeq, message }),
+      resumeFailures: new Map(state.resumeFailures).set(ref, {
+        seq: resumeFailureSeq,
+        message,
+        stopCanceled: error instanceof StopCanceledError,
+      }),
     }));
   }
 }
