@@ -4,7 +4,8 @@ import { beforeAll, beforeEach, expect, test } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { Toast } from "../../../widgets";
-import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { DisplaySection } from "./display";
 
 beforeAll(() => {
@@ -40,5 +41,5 @@ test("toggling Enter sends persists to the pinned key and toasts Settings saved"
 
   expect(prefsStore.getState().enterToSend).toBe(true);
   expect(localStorage.getItem("evener.prefs.enterToSend")).toBe("1");
-  await waitFor(() => expect(getToasts().map((toast) => toast.kind)).toEqual(["success"]));
+  await waitFor(() => expect(toastKinds()).toEqual(["success"]));
 });

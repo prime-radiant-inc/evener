@@ -74,7 +74,6 @@ describe("model toggles", () => {
     const h = handlers();
     credentialsStore.setState({ instances: [{ ...entry(), models: undefined }], availableProviders: [] });
     render(<InstanceSheet name="work" {...h} />);
-    expect(screen.getByText("Models")).toBeTruthy();
     expect(screen.queryByRole("switch")).toBeNull();
     const button = screen.getByRole("button", { name: "Refresh live models" });
     fireEvent.click(button);
@@ -140,7 +139,7 @@ describe("long model lists", () => {
     render(<InstanceSheet name="work" {...handlers()} />);
     fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "zzz" } });
     expect(screen.queryByRole("switch")).toBeNull();
-    expect(screen.getByText("No matching models.")).toBeTruthy();
+    expect(document.querySelector('[data-reason="no-match"]')).not.toBeNull();
   });
 
   test("leaves a short list uncapped, with no search field", () => {

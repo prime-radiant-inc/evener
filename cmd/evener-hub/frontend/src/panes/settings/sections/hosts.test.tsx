@@ -14,7 +14,8 @@ import { hostOpsStore } from "../../../stores/hostOps";
 import { hostsStore } from "../../../stores/hosts";
 import { enterText } from "../../../textEntryTestUtils";
 import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
-import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { HOST_POLL_MS, HostsSection, OPERATION_POLL_MS } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
@@ -1252,7 +1253,7 @@ test("a dedup hit that is still running does not toast a fresh start", async () 
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
   // An informational replay notice, never the success toast of a fresh start.
-  expect(getToasts().map((toast) => toast.kind)).toEqual(["info"]);
+  expect(toastKinds()).toEqual(["info"]);
   // The row renders the running operation it adopted.
   expect(operationState(betaRow)).toBe("running");
 });

@@ -25,7 +25,8 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
 import { Toast } from "../../../../widgets";
-import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { LaunchConfigForm } from "./LaunchConfigForm";
 
 afterEach(() => {
@@ -115,7 +116,7 @@ describe("issue #199 — toast store leak across tests", () => {
     );
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
     await waitFor(() => expect(screen.getByTestId("launch-config-status").getAttribute("data-state")).toBe("error"));
-    expect(getToasts().map((toast) => toast.kind)).toEqual(["error"]);
+    expect(toastKinds()).toEqual(["error"]);
     expect(screen.getByRole("region", { name: "Notifications" }).children).toHaveLength(1);
   });
 });

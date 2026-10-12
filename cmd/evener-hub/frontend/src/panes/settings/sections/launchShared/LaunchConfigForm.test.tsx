@@ -11,7 +11,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { Toast } from "../../../../widgets";
-import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { LaunchConfigForm } from "./LaunchConfigForm";
 
 afterEach(() => {
@@ -368,7 +369,7 @@ describe("successful save", () => {
     );
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
     await waitFor(() => expect(saveStatus().getAttribute("data-state")).toBe("saved"));
-    expect(getToasts().map((toast) => toast.kind)).toEqual(["success"]);
+    expect(toastKinds()).toEqual(["success"]);
   });
 
   test("calls onSaved with the resolved config the store returned", async () => {
@@ -417,7 +418,7 @@ describe("failed save", () => {
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
     await waitFor(() => expect(saveStatus().getAttribute("data-state")).toBe("error"));
     expect(saveStatus().textContent).toContain("disk full");
-    expect(getToasts().map((toast) => toast.kind)).toEqual(["error"]);
+    expect(toastKinds()).toEqual(["error"]);
   });
 
   test("an env-credential-shaped backend error additionally attaches inline to the env field", async () => {

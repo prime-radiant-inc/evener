@@ -4,7 +4,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { Toast } from "../../../widgets";
-import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { NotificationsSection } from "./notifications";
 
 beforeAll(() => {
@@ -36,10 +37,6 @@ afterEach(() => {
   // @ts-expect-error undo the stand-in so other test files see no Notification global (matches jsdom's own default)
   delete globalThis.Notification;
 });
-
-function toastKinds(): string[] {
-  return getToasts().map((toast) => toast.kind);
-}
 
 function renderWithToasts() {
   render(

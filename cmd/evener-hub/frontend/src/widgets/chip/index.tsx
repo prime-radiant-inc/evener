@@ -9,7 +9,7 @@ export interface ChipProps {
   tone?: ChipTone;
   onRemove?: () => void;
   /** What the chip marks, rendered as `data-kind` so callers and tests can
-   * tell chips apart without reading their labels. */
+   * tell one chip from another without reading its label. */
   kind?: string;
 }
 

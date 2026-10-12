@@ -85,15 +85,15 @@ test("the remove button activates on Space", async () => {
   expect(onRemove).toHaveBeenCalledOnce();
 });
 
-test("exposes its kind as data-kind, and omits it when not given", () => {
-  const { container, rerender } = render(<Chip kind="update-available">backend</Chip>);
-  expect(container.firstElementChild?.getAttribute("data-kind")).toBe("update-available");
-  rerender(<Chip>backend</Chip>);
-  expect(container.firstElementChild?.hasAttribute("data-kind")).toBe(false);
-});
-
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "chip.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
+});
+
+test("marks its kind as data-kind when one is given", () => {
+  const { container, rerender } = render(<Chip kind="default">backend</Chip>);
+  expect(container.firstElementChild?.getAttribute("data-kind")).toBe("default");
+  rerender(<Chip>backend</Chip>);
+  expect(container.firstElementChild?.hasAttribute("data-kind")).toBe(false);
 });
