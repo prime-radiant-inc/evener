@@ -256,7 +256,7 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 	// announce each change there; Android reads the polite region on its own, and
 	// announcing too would say it twice. The first render is skipped: the line
 	// starts as the note's standing explanation, not a change to speak (#2903).
-	const status = noteStatusLine(note.phase, working);
+	const { kind: statusKind, text: status } = noteStatusLine(note.phase, working);
 	const announced = useRef(status);
 	useEffect(() => {
 		if (status === announced.current) return;
@@ -307,7 +307,7 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 				}}
 			/>
 			<Text
-				testID={`note-status:${note.phase}`}
+				testID={`note-status:${statusKind}`}
 				allowFontScaling={allowFontScaling}
 				accessibilityLiveRegion="polite"
 				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}

@@ -238,7 +238,7 @@ describe("your note (spec 8.8)", () => {
 	it("says under the editor what saving will do, following the phase", () => {
 		provide(session());
 		const tree = sheet();
-		expect(markers(tree, "note-status")).toEqual(["clean"]);
+		expect(markers(tree, "note-status")).toEqual(["wakesAgent"]);
 		act(() => editor(tree)?.props.onChangeText("draft"));
 		act(() => editor(tree)?.props.onBlur());
 		expect(markers(tree, "note-status")).toEqual(["scheduled"]);
@@ -267,7 +267,7 @@ describe("your note (spec 8.8)", () => {
 		controller?.dispose();
 		provide(session({ status: { type: "active" } as ThreadModel["status"] }));
 		const tree = sheet();
-		expect(markers(tree, "note-status")).toEqual(["clean"]);
+		expect(markers(tree, "note-status")).toEqual(["tellsAgent"]);
 		expect(statusText(tree)).not.toBe(idle);
 	});
 
