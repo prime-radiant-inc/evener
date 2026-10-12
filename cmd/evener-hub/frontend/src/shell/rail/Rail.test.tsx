@@ -2397,9 +2397,13 @@ describe("resource-backed Rail", () => {
     fireEvent.change(input, { target: { value: "   " } });
     fireEvent.click(screen.getByRole("button", { name: "Rename section" }));
     const alert = screen.getByRole("alert");
-    expect(alert.textContent).toBe("Section name is required");
     expect(input.getAttribute("aria-describedby")).toBe(alert.id);
     expect(client.calls).toEqual([]);
+    expect(screen.getByRole("textbox", { name: "Section name" })).toBe(input);
+    expect((input as HTMLInputElement).value).toBe("   ");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(input.hasAttribute("aria-describedby")).toBe(false);
   });
   test("shows a project root retry while retaining the summary row after a load error", async () => {
     const loadProject = vi.fn().mockRejectedValue(new Error("offline"));
