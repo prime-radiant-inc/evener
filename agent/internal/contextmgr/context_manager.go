@@ -1203,8 +1203,8 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			}
 			// Old-format checkpoint/summary stored as TurnUserInput — carry it
 			// just like a typed compaction turn.
-			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-				data.collectCompaction(text, strings.HasPrefix(text, "[CONTEXT SUMMARY]"))
+			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart) {
+				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
 				continue
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
@@ -2008,8 +2008,7 @@ func checkSummaryReply(reply, instructions string) error {
 		return nil
 	}
 	// Once a section heading appears, any later line is content — subheadings,
-	// bold labels and "#3978" lines included — except another section heading
-	// and the summary's own framing markers.
+	// bold labels and "#3978" lines included — except another section heading.
 	// The permissions section restates the human partner's own words, so
 	// content there alone carries none of the folded work: a reply that is
 	// only "## Permissions and Holds\nNone." is no summary.
@@ -2023,23 +2022,20 @@ func checkSummaryReply(reply, instructions string) error {
 		}
 		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() {
 			inSection = !strings.EqualFold(section, permissionsSection)
-			if inSection && isSummaryContent(rest) {
+			if inSection && rest != "" {
 				return nil
 			}
 			continue
 		}
-		if inSection && isSummaryContent(line) {
+		// A line of framing markers is not content either: the stripper drops
+		// such a line outside a fence (stripSummaryFraming), and one inside a
+		// fence is the model quoting the framing, which is no summary of the
+		// folded history.
+		if inSection && line != "" && !markerOnly(line) {
 			return nil
 		}
 	}
 	return errors.New("summarizer reply has no summary section with content")
-}
-
-// isSummaryContent reports whether trimmed text under or beside a section
-// heading carries content: it is not empty and not one of the summary's own
-// framing markers.
-func isSummaryContent(text string) bool {
-	return text != "" && text != "[CONTEXT SUMMARY]" && text != "[END SUMMARY]"
 }
 
 // summarySectionHeading reports whether line is a heading naming one of the
@@ -2401,13 +2397,17 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
 	sumProfile := cm.currentProfile()
-	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply llm.Response) error {
-		if err := checkSummaryReply(reply.Text(), instructions); err != nil {
+	// A model sometimes echoes the framing the prompt shows it: it is stripped
+	// before the reply is validated and stored, so the turn carries the framing
+	// once and the check reads what the model actually said.
+	var reply string
+	if _, err := cm.completeSummarization(ctx, sumProfile, prompt, func(r llm.Response) error {
+		reply = stripSummaryFraming(r.Text())
+		if err := checkSummaryReply(reply, instructions); err != nil {
 			return err
 		}
-		return checkNotCutOff(reply)
-	})
-	if err != nil {
+		return checkNotCutOff(r)
+	}); err != nil {
 		return nil, err
 	}
 
@@ -2417,7 +2417,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// the reply or shedding partner messages below the cap the #4173 ruling
 	// chose for them.
 	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
-		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryTurnEnd
+		renderCompactionModelText(summaryModelTextHeading, reply) + carry + summaryMarkerEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

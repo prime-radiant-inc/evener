@@ -280,9 +280,13 @@ summarization failed" warning and the checkpoint stands. Not a summary means
 empty, or, under the default prompt, holding no section with content: a
 heading (`#` markup or `**bold**`) naming one of the prompt's `##` sections,
 with text after the name on its line (`## Progress: fixed it`) or on a later
-line other than another section heading. The `[CONTEXT SUMMARY]` and
-`[END SUMMARY]` markers never count as content, whether on the heading's line
-or below it.
+line other than another section heading. The framing markers a model echoes
+back (`[CONTEXT SUMMARY]`, `[END SUMMARY]`) are stripped from the reply before
+it is validated and stored, so they never count as content, whether on the
+heading's line or below it, and the stored turn carries the framing once. A
+line holding nothing but markers is framing and is dropped, and a marker sharing
+a heading's line comes off with it; anywhere else the markers are the model's
+own words — prose that names them, a fenced or indented block — and stay.
 Subheadings and bold labels inside a section are content. Weak models sometimes
 answer in character ("I'll read the plan, then...") instead of summarizing.
 Under caller instructions, which replace the sections, only an empty reply is

@@ -85,15 +85,101 @@ func extractCheckpointEarlierSummaries(text string) []string {
 	return summaries
 }
 
+// summaryMarkerStart and summaryMarkerEnd frame a summary turn. A model
+// sometimes echoes them back around its own text, so everything that writes,
+// looks for, or strips the framing compares against these two, and the turn's
+// opening adds the newline the format wants after the start marker.
+const (
+	summaryMarkerStart = "[CONTEXT SUMMARY]"
+	summaryMarkerEnd   = "[END SUMMARY]"
+)
+
 // summaryTurnStart opens a summary turn.
-const summaryTurnStart = "[CONTEXT SUMMARY]\n"
+const summaryTurnStart = summaryMarkerStart + "\n"
+
+// stripSummaryFraming removes the framing a model sometimes echoes back around
+// its summary, and nothing else. A line holding nothing but markers is framing
+// and is dropped. A marker at a line's edge comes off when the rest of that line
+// is a section heading, so an echoed marker cannot hide the heading the model
+// wrote beside it. Anywhere else the markers are the model's own words — prose
+// that names them, a fenced quote, an indented block, a heading the summary's
+// own sections do not name — and stay, as does every line the framing did not
+// touch. A line the framing touched is written trimmed.
+func stripSummaryFraming(reply string) string {
+	if !strings.Contains(reply, summaryMarkerStart) && !strings.Contains(reply, summaryMarkerEnd) {
+		return strings.TrimSpace(reply) // no framing to strip: the copy below would be a no-op
+	}
+	var b strings.Builder
+	var fence fenceTracker
+	for line := range strings.Lines(reply) {
+		trimmed := strings.TrimSpace(line)
+		if fence.step(trimmed) || fence.inside() || indentedCode(line) {
+			b.WriteString(line)
+			continue
+		}
+		if markerOnly(trimmed) {
+			continue
+		}
+		if heading, cut := framingBesideHeading(trimmed); cut {
+			b.WriteString(heading)
+			b.WriteString("\n")
+			continue
+		}
+		b.WriteString(line)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// markerOnly reports whether a trimmed line holds at least one framing marker
+// and nothing else.
+func markerOnly(line string) bool {
+	if !strings.Contains(line, summaryMarkerStart) && !strings.Contains(line, summaryMarkerEnd) {
+		return false
+	}
+	rest := strings.ReplaceAll(strings.ReplaceAll(line, summaryMarkerStart, ""), summaryMarkerEnd, "")
+	return strings.TrimSpace(rest) == ""
+}
+
+// indentedCode reports whether a line is Markdown-indented code, whose text is
+// the model's content even when it names the framing.
+func indentedCode(line string) bool {
+	return strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t")
+}
+
+// framingBesideHeading takes a framing marker off a line's edge and reports
+// whether the rest of the line is a section heading. A marker beside anything
+// else is that text's own word and is left in place.
+func framingBesideHeading(line string) (rest string, cut bool) {
+	for _, edge := range []struct {
+		marker string
+		atEnd  bool
+	}{
+		{summaryMarkerStart, false},
+		{summaryMarkerEnd, false},
+		{summaryMarkerEnd, true},
+		{summaryMarkerStart, true},
+	} {
+		var remainder string
+		var found bool
+		if edge.atEnd {
+			remainder, found = strings.CutSuffix(line, edge.marker)
+		} else {
+			remainder, found = strings.CutPrefix(line, edge.marker)
+		}
+		if !found {
+			continue
+		}
+		remainder = strings.TrimSpace(remainder)
+		if _, _, ok := summarySectionHeading(remainder); ok {
+			return remainder, true
+		}
+	}
+	return line, false
+}
 
 // summaryPointerLead begins the compaction pointer line a summary turn opens
 // with (CompactionMeta.compactionPointer("summary")).
 const summaryPointerLead = "Earlier history was compacted into this summary "
-
-// summaryTurnEnd closes a summary turn.
-const summaryTurnEnd = "[END SUMMARY]"
 
 // summaryModelTextHeading heads the model's own text in a summary turn.
 const summaryModelTextHeading = "## Summary"
@@ -128,7 +214,7 @@ func carriesPartnerMessages(text string) bool {
 	// with a trailing newline ensured, which soleFencedText strips once, so
 	// re-rendering it with that newline restored reproduces any model text,
 	// trailing blank lines included.
-	return text[start:] == renderCompactionModelText(summaryModelTextHeading, modelText+"\n")+renderCheckpointConversation(entries)+summaryTurnEnd
+	return text[start:] == renderCompactionModelText(summaryModelTextHeading, modelText+"\n")+renderCheckpointConversation(entries)+summaryMarkerEnd
 }
 
 // isSummaryTurnOpening reports whether prefix is what the renderer writes

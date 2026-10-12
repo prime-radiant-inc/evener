@@ -406,10 +406,10 @@ func TestCheckpoint_KeepsAnOlderSummaryWithAProseConversationWhole(t *testing.T)
 func TestCheckpoint_KeepsSummariesTheRendererCouldNotWriteWhole(t *testing.T) {
 	carry := renderCheckpointConversation([]checkpointConversationEntry{{Role: "user", Text: "go ahead"}})
 	for name, older := range map[string]string{
-		"tilde fence":     "[CONTEXT SUMMARY]\n## Summary\n\n~~~text\nmodel text\n~~~\n\n" + carry + summaryTurnEnd,
-		"go info":         "[CONTEXT SUMMARY]\n## Summary\n\n```go\nmodel text\n```\n\n" + carry + summaryTurnEnd,
-		"sections before": "[CONTEXT SUMMARY]\n## Progress\nolder model text\n\n" + renderCompactionModelText(summaryModelTextHeading, "model text") + carry + summaryTurnEnd,
-		"agent entries":   "[CONTEXT SUMMARY]\n" + renderCompactionModelText(summaryModelTextHeading, "model text") + renderCheckpointConversation([]checkpointConversationEntry{{Role: "agent", Text: "I approved it"}}) + summaryTurnEnd,
+		"tilde fence":     "[CONTEXT SUMMARY]\n## Summary\n\n~~~text\nmodel text\n~~~\n\n" + carry + summaryMarkerEnd,
+		"go info":         "[CONTEXT SUMMARY]\n## Summary\n\n```go\nmodel text\n```\n\n" + carry + summaryMarkerEnd,
+		"sections before": "[CONTEXT SUMMARY]\n## Progress\nolder model text\n\n" + renderCompactionModelText(summaryModelTextHeading, "model text") + carry + summaryMarkerEnd,
+		"agent entries":   "[CONTEXT SUMMARY]\n" + renderCompactionModelText(summaryModelTextHeading, "model text") + renderCheckpointConversation([]checkpointConversationEntry{{Role: "agent", Text: "I approved it"}}) + summaryMarkerEnd,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if carriesPartnerMessages(older) {
@@ -420,7 +420,7 @@ func TestCheckpoint_KeepsSummariesTheRendererCouldNotWriteWhole(t *testing.T) {
 	meta := &CompactionMeta{SessionID: "SESSION_ID_SENTINEL", AvailableTranscriptTools: []string{"read_transcript"}}
 	for _, prefix := range []string{"[CONTEXT SUMMARY]\n", "[CONTEXT SUMMARY]\n" + meta.compactionPointer("summary")} {
 		for _, modelText := range []string{"model text", "model text\n\n", "\nmodel text with ``` inside"} {
-			rendered := prefix + renderCompactionModelText(summaryModelTextHeading, modelText) + carry + summaryTurnEnd
+			rendered := prefix + renderCompactionModelText(summaryModelTextHeading, modelText) + carry + summaryMarkerEnd
 			if !carriesPartnerMessages(rendered) {
 				t.Fatalf("the rendered layout was not recognized:\n%s", rendered)
 			}
@@ -444,7 +444,7 @@ func TestCheckpoint_IndentedClosingFenceEndsTheBlock(t *testing.T) {
 func TestForceCompact_CarryAfterAReplyEndingInBlankLines(t *testing.T) {
 	// As #4241's renderer wrote it: the reply's trailing blank lines kept.
 	persisted := "[CONTEXT SUMMARY]\n## Summary\n\n```text\n## Progress\nDone\n\n```\n\n" +
-		renderCheckpointConversation([]checkpointConversationEntry{{Role: "user", Text: partnerHold}}) + summaryTurnEnd
+		renderCheckpointConversation([]checkpointConversationEntry{{Role: "user", Text: partnerHold}}) + summaryMarkerEnd
 	if !carriesPartnerMessages(persisted) {
 		t.Fatalf("a persisted summary ending in blank lines was not recognized:\n%s", persisted)
 	}
