@@ -355,7 +355,20 @@ func truncateContextLine(text string, keep int) string {
 	if len(text) <= keep {
 		return text
 	}
-	marker := fmt.Sprintf(format, len(text)-keep+len(fmt.Sprintf(format, 0)))
+	// The tail is sliced with the final marker's length, so the reported count
+	// must be the fixed point of n = len(text)-keep+len(marker(n)): a count
+	// computed from a shorter placeholder would under-report by the digits the
+	// marker grew. Iterate; the count rises by at most one digit per step and
+	// settles there.
+	omitted := len(text) - keep + len(fmt.Sprintf(format, 0))
+	for {
+		next := len(text) - keep + len(fmt.Sprintf(format, omitted))
+		if next == omitted {
+			break
+		}
+		omitted = next
+	}
+	marker := fmt.Sprintf(format, omitted)
 	if len(marker) >= keep {
 		// No room for any of the line: the marker alone, disclosing all of it.
 		return fmt.Sprintf(format, len(text))
