@@ -11,11 +11,17 @@
 //                           ranges within a one-pixel tolerance, and the
 //                           SELECTED GLYPHS must remain visible.
 //   case nested-scroll    - a genuine wheel over a pending reference nested in a
+//                          scrollable note stack scrolls the stack, never the
+//                          document, and exposes the final reference.
 //                           long scrollable note stack must scroll THAT
 //                           reference, leave the outer stack and document
 //                           unmoved, and not cancel the wheel. The outer stack
 //                           must also reach its independently computed maximum
 //                           through genuine wheel input.
+//   case touch-scroll     - under a coarse-pointer (touch) viewport, a genuine
+//                          emulated swipe over an overflowing revealed note pans
+//                          the note stack itself and exposes its final lines,
+//                          never the underlying document.
 //   case selection        - genuine forward and reverse drags across a saved band.
 //   case selection-shift  - genuine Shift+Arrow adjustment of the selection.
 //   case copy             - genuine Ctrl+C, read back at the clipboard boundary.
@@ -223,6 +229,80 @@ async function emulatedTouchTap(send, point) {
   } finally {
     await send("Emulation.setTouchEmulationEnabled", { enabled: false });
   }
+}
+
+// Touch gestures for a case whose viewport already carries touch emulation
+// (applyViewport's touch flag), so the (pointer: coarse) rules stay live for
+// the whole case instead of toggling per gesture.
+async function touchTap(send, point) {
+  await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
+  await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await nextPaint(send);
+}
+
+async function touchSwipe(send, from, to) {
+  await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x, y: from.y }] });
+  for (let step = 1; step <= 10; step += 1) {
+    const x = from.x + ((to.x - from.x) * step) / 10;
+    const y = from.y + ((to.y - from.y) * step) / 10;
+    await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y }] });
+  }
+  await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await nextPaint(send);
+}
+
+async function noteStackMetrics(send, id) {
+  return evaluate(
+    send,
+    `(() => {
+      const stack = document.querySelector('[data-case="${id}"] [data-annotation-note]')?.parentElement;
+      if (!stack) return null;
+      return { scrollTop: stack.scrollTop, scrollHeight: stack.scrollHeight, clientHeight: stack.clientHeight };
+    })()`,
+  );
+}
+
+async function noteStackTail(send, id) {
+  return evaluate(
+    send,
+    `(() => {
+      const stack = document.querySelector('[data-case="${id}"] [data-annotation-note]')?.parentElement;
+      if (!stack) return null;
+      const notes = stack.querySelectorAll('[data-annotation-note]');
+      const last = notes[notes.length - 1];
+      if (!last) return null;
+      const noteRect = last.getBoundingClientRect();
+      const stackRect = stack.getBoundingClientRect();
+      return {
+        visible: noteRect.bottom <= stackRect.bottom + 1,
+        noteBottom: noteRect.bottom,
+        stackBottom: stackRect.bottom,
+      };
+    })()`,
+  );
+}
+
+// A point over a note body VISIBLE in the stack's current clip. The first
+// note scrolls up as the swipes advance, so a fixed first-note point would
+// leave the visible area; the pending reference re-enables its own pointer
+// events even on the fine-pointer rules, so a swipe over it would pan the
+// stack without proving anything about the note surface itself.
+async function noteBodyPoint(send, id) {
+  return evaluate(
+    send,
+    `(() => {
+      const stack = document.querySelector('[data-case="${id}"] [data-annotation-note]')?.parentElement;
+      if (!stack) return null;
+      const clip = stack.getBoundingClientRect();
+      for (const note of stack.querySelectorAll('[data-annotation-note]')) {
+        const rect = note.getBoundingClientRect();
+        const top = Math.max(rect.top, clip.top);
+        const bottom = Math.min(rect.bottom, clip.bottom);
+        if (bottom - top > 24) return { x: rect.left + rect.width / 2, y: top + (bottom - top) / 2 };
+      }
+      return null;
+    })()`,
+  );
 }
 
 // --- independent geometry + paint oracle ------------------------------------
@@ -1027,9 +1107,124 @@ async function commentControlsCase(send, record) {
   throwFindings(findings);
 }
 
+// A coarse-pointer (touch) surface case: the revealed note stack must accept
+// the gesture itself, because a phone has no wheel for the component's
+// forwarded scroll. A genuine emulated swipe pans the stack - never the
+// underlying document - until the overflowing applied note's final lines are
+// exposed inside the stack's own clip.
+async function caseTouchScroll(send, record, ctx) {
+  // Reuses the nested-scroll section's page: describeLiteral resolves a
+  // literal by the FIRST text node that contains it document-wide, so a
+  // duplicate fixture section could never describe its own passage. Every
+  // case reloads and drives its own fresh state, so sharing the section is
+  // honest; the nested-scroll wheel case has already finished by now.
+  const id = "nested-scroll";
+  const findings = [];
+  // Touch emulation is what makes (pointer: coarse) match (see applyViewport),
+  // so this is the phone's note surface, not the fine-pointer one.
+  await applyViewport(send, { ...VIEWPORT, touch: true });
+  try {
+    await ctx.reload();
+    await settle(send, `document.querySelectorAll('[data-case="${id}"] [data-document-highlight]').length > 0`, {
+      label: "touch-scroll: bands painted",
+    });
+    const described = await describeLiteral(send, id, NESTED_FIRST, NESTED_RANGE);
+    check(
+      described && described.nodeData === NESTED_FIRST,
+      "touch-scroll: the fixture passage rendered",
+      described ? "ok" : "missing",
+    );
+    const points = dragPoints(described);
+    const center = { x: (points.start.x + points.end.x) / 2, y: points.start.y };
+    const readingPositionBefore = await evaluate(
+      send,
+      `(() => { const o = document.querySelector('[data-case="${id}"] [data-pane-scaffold]'); return o ? o.scrollTop : null; })()`,
+    );
+    await touchTap(send, center);
+    const revealed = await settle(
+      send,
+      `(() => { const n = document.querySelectorAll('[data-case="${id}"] [data-annotation-note]'); return n.length >= 3 ? n.length : 0; })()`,
+      { label: "touch-scroll: overlapping notes revealed" },
+    );
+    check(
+      revealed.value >= 3,
+      "touch-scroll: an emulated tap reveals every overlapping note",
+      `revealed ${revealed.value}`,
+    );
+    const stack = await noteStackMetrics(send, id);
+    check(stack, "touch-scroll: the revealed note stack is present", "missing stack");
+    require_(
+      findings,
+      stack.scrollHeight > stack.clientHeight + 4,
+      "overflow",
+      "the revealed note stack overflows its own scroll clip",
+      `scrollHeight ${stack.scrollHeight}, clientHeight ${stack.clientHeight}`,
+    );
+    const tail = await noteStackTail(send, id);
+    require_(
+      findings,
+      !!tail && !tail.visible,
+      "tail-clipped",
+      "the overflowing note's final lines start clipped below the stack's clip",
+      tail ? `note bottom ${tail.noteBottom}, stack clip ${tail.stackBottom}` : "missing",
+    );
+    // Bounded swipes toward the stack's independently computed maximum, the
+    // touch counterpart of the nested-scroll wheel's reachability pass.
+    const attempts = Math.ceil((stack.scrollHeight - stack.clientHeight) / 120) + 6;
+    let progress = 0;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const point = await noteBodyPoint(send, id);
+      if (!point) break;
+      await touchSwipe(send, { x: point.x, y: point.y }, { x: point.x, y: point.y - 160 });
+      const next = await noteStackMetrics(send, id);
+      if (!next || next.scrollTop >= next.scrollHeight - next.clientHeight - 1 || next.scrollTop === progress) {
+        progress = next ? next.scrollTop : progress;
+        break;
+      }
+      progress = next.scrollTop;
+    }
+    const panned = await noteStackMetrics(send, id);
+    require_(
+      findings,
+      !!panned && panned.scrollTop > 0,
+      "swipe-pans-stack",
+      "the emulated swipe pans the note stack instead of the document",
+      `scrollTop ${panned ? panned.scrollTop : "missing"}`,
+    );
+    const tailAfter = await noteStackTail(send, id);
+    require_(
+      findings,
+      !!tailAfter && tailAfter.visible,
+      "tail-reachable",
+      "the swiped note stack exposes the applied note's final lines",
+      tailAfter ? `note bottom ${tailAfter.noteBottom}, stack clip ${tailAfter.stackBottom}` : "missing",
+    );
+    const readingPositionAfter = await evaluate(
+      send,
+      `(() => { const o = document.querySelector('[data-case="${id}"] [data-pane-scaffold]'); return o ? o.scrollTop : null; })()`,
+    );
+    require_(
+      findings,
+      readingPositionBefore !== null && readingPositionAfter === readingPositionBefore,
+      "reading-position",
+      "the swipe over the note never scrolls the underlying document",
+      `scrollTop ${readingPositionAfter} vs ${readingPositionBefore}`,
+    );
+    record.evidence.push(saveEvidence("touch-scroll.json", { stack: panned, tail: tailAfter }));
+    throwFindings(findings);
+  } finally {
+    // Restore the shared fine-pointer viewport for the remaining cases. The
+    // clear is explicit: applyViewport only ENABLES touch when asked, so the
+    // global re-apply alone would leave touch emulation on for later cases.
+    await clearViewportOverride(send);
+    await applyViewport(send, VIEWPORT);
+  }
+}
+
 const CASES = [
   { name: "pane-resize", expects: "PASS", run: casePaneResize },
   { name: "nested-scroll", expects: "PASS", run: caseNestedScroll },
+  { name: "touch-scroll", expects: "PASS", run: caseTouchScroll },
   { name: "selection", expects: "PASS", run: selectionCase },
   { name: "selection-shift", expects: "PASS", run: selectionShiftCase },
   { name: "copy", expects: "PASS", run: copyCase },
