@@ -390,30 +390,58 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	meta, metaErr := schema.LoadSessionMeta(stateDir, sessionID)
 	rootID := activityRootIDFromMeta(sessionID, meta)
 	jobsPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	// This session's COMPLETE job history loads unconditionally here —
-	// historicalJobFoldCache makes that O(events appended since the
-	// last read of this path in this process), not O(file size), so
-	// there is no reason to cap it at the traversal's remaining
-	// work-unit budget. That budget still bounds how many SESSIONS get
-	// visited (buildActivityFullSnapshot's per-child
-	// activityConsumeWorkUnit), just not how much of any ONE session's
-	// own journal gets read. How much of THIS session's jobs actually
-	// get RENDERED is purely projectActivitySessionAt's call, backed
-	// by a real, advancing continuation rather than a load-time
-	// truncation with nothing to resume into. The fold reports whether the
-	// journal was there at all, from the same stat it reads through, so
-	// nothing here can see the file appear or vanish between a presence
-	// check and the read.
-	jobs, jobsEpoch, jobsAbsent, err := loadCachedJobRecords(cache.ctx, jobsPath)
+	// This session's retained job history loads unconditionally here. The
+	// incremental fold cache still supplies this journal's generation
+	// (JobsEpoch) and presence for continuation fencing and absence
+	// reporting; the records themselves come from loadRetainedJobHistory so
+	// an owner's jobs surface even when they were forwarded into an
+	// ancestor's journal and the owner's own journal is gone.
+	_, jobsEpoch, jobsAbsent, err := loadCachedJobRecords(cache.ctx, jobsPath)
 	if err != nil {
 		return activityLoadedBase{}, err
 	}
 	if jobsAbsent && required {
 		return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
 	}
+	jobRecords, authorityDiagnostics, err := loadRetainedJobHistory(stateDir, sessionID)
+	if err != nil {
+		return activityLoadedBase{}, err
+	}
+	jobs := make([]*jobstore.JobRecord, 0, len(jobRecords))
+	for _, record := range jobRecords {
+		jobs = append(jobs, record)
+	}
+	sort.SliceStable(jobs, func(i, j int) bool {
+		return activityRecordBefore(jobs[i], jobs[j])
+	})
 	stable, delegates, diagnostics, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
+	}
+	activityDiagnostics := make([]string, 0, len(authorityDiagnostics.Mismatches)+len(authorityDiagnostics.TornTails)+len(authorityDiagnostics.CorruptBranches)+len(authorityDiagnostics.InvalidOwners)+len(authorityDiagnostics.LifecycleErrors)+len(authorityDiagnostics.MissingOwners)+len(authorityDiagnostics.Compatibility)+len(authorityDiagnostics.TruncatedSources))
+	for _, id := range authorityDiagnostics.Mismatches {
+		activityDiagnostics = append(activityDiagnostics, "job_authority_mismatch:"+id)
+	}
+	for _, id := range authorityDiagnostics.TornTails {
+		activityDiagnostics = append(activityDiagnostics, "job_branch_torn_tail:"+id)
+	}
+	for _, id := range authorityDiagnostics.CorruptBranches {
+		activityDiagnostics = append(activityDiagnostics, "job_branch_corrupt:"+id)
+	}
+	for _, id := range authorityDiagnostics.InvalidOwners {
+		activityDiagnostics = append(activityDiagnostics, "job_invalid_owner:"+id)
+	}
+	for _, reason := range authorityDiagnostics.LifecycleErrors {
+		activityDiagnostics = append(activityDiagnostics, "job_lifecycle_invalid:"+reason)
+	}
+	for _, id := range authorityDiagnostics.MissingOwners {
+		activityDiagnostics = append(activityDiagnostics, "job_owner_missing:"+id)
+	}
+	for _, id := range authorityDiagnostics.Compatibility {
+		activityDiagnostics = append(activityDiagnostics, "job_owner_compatibility:"+id)
+	}
+	for _, id := range authorityDiagnostics.TruncatedSources {
+		activityDiagnostics = append(activityDiagnostics, "job_history_truncated:"+id)
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
 		SessionID:       sessionID,
@@ -425,7 +453,7 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		LiveJobs:        map[string]*jobstore.JobRecord{},
 		StableDelegates: stable,
 		Usage:           historicalActivityUsage(stateDir, sessionID, meta),
-		Diagnostics:     diagnostics,
+		Diagnostics:     append(diagnostics, activityDiagnostics...),
 		JobsEpoch:       jobsEpoch,
 		DelegatesEpoch:  delegates.epoch,
 
