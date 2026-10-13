@@ -724,7 +724,11 @@ func (s *sandboxFS) listDirBudgeted(ctx context.Context, tool, abs string, depth
 	}
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_DIRECTORY)
 	if err != nil {
-		return nil, err
+		// The resolver's raw errno does not say which path was wrong, and the
+		// legacy walk returns it just as bare — but this walk is the one the
+		// tool calls, so it names the requested path the way the off-sandbox
+		// arm's errors do, with the underlying error preserved.
+		return nil, &fs.PathError{Op: "open", Path: abs, Err: err}
 	}
 	var out []DirEntry
 	if err := s.walkDirFdBudgeted(ctx, fd, "", abs, depth, false, &out, budget); err != nil { // walkDirFdBudgeted closes fd

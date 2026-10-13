@@ -511,3 +511,56 @@ func TestSandboxedListDirBudgetClampsModelSuppliedDepth(t *testing.T) {
 		t.Fatalf("depth 1000 = %d entries, want the clamped depth-%d confined listing of %d", len(got), MaxListDirDepth, len(want))
 	}
 }
+
+// TestListDirBudgetNamesTheRequestedPathInRootErrors pins the fix-round
+// finding for #2375: the budgeted unconfined walk is fs-rooted, so its
+// listing failures arrive carrying the fs path — "open .: no such file or
+// directory" — which tells the model nothing about which of its paths was
+// wrong. The legacy walk read absolute paths and its errors named them; the
+// budgeted walk must name the requested path the same way, with the
+// underlying error (here fs.ErrNotExist) preserved for errors.Is.
+func TestListDirBudgetNamesTheRequestedPathInRootErrors(t *testing.T) {
+	t.Parallel()
+	const missing = "/definitely-not-here-xyz"
+	env := NewLocalExecutionEnvironment(t.TempDir())
+
+	_, err := env.ListDirectoryWithBudget(t.Context(), missing, 1, NewDirListBudget(0, 1000))
+	if err == nil {
+		t.Fatal("listing a missing directory succeeded")
+	}
+	var perr *fs.PathError
+	if !errors.As(err, &perr) || perr.Path != missing {
+		t.Fatalf("missing-root error = %q, want a *fs.PathError naming the requested path %q", err, missing)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing-root error = %q, want fs.ErrNotExist preserved through the rewritten path", err)
+	}
+	_, legacyErr := env.ListDirectory(missing, 1)
+	if legacyErr == nil || err.Error() != legacyErr.Error() {
+		t.Fatalf("missing-root error = %q, want exactly the legacy walk's %q", err, legacyErr)
+	}
+}
+
+// TestSandboxedListDirBudgetNamesTheRequestedPathInRootErrors pins the same
+// contract for the confined arm: the model must see which path it got wrong.
+// The legacy confined walk returns the resolver's bare errno for a missing
+// root; the budgeted walk — the only one the tool calls — wraps it with the
+// requested path, matching the unconfined arm's message shape, while the
+// underlying error stays inspectable.
+func TestSandboxedListDirBudgetNamesTheRequestedPathInRootErrors(t *testing.T) {
+	t.Parallel()
+	const missing = "/definitely-not-here-xyz"
+	env, _, _ := sandboxedEnv(t, sandbox.ModeReadOnly)
+
+	_, err := env.ListDirectoryWithBudget(t.Context(), missing, 1, NewDirListBudget(0, 1000))
+	if err == nil {
+		t.Fatal("confined listing of a missing directory succeeded")
+	}
+	var perr *fs.PathError
+	if !errors.As(err, &perr) || perr.Path != missing {
+		t.Fatalf("confined missing-root error = %q, want a *fs.PathError naming the requested path %q", err, missing)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("confined missing-root error = %q, want fs.ErrNotExist preserved through the wrap", err)
+	}
+}

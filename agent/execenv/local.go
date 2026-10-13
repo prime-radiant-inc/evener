@@ -1959,7 +1959,7 @@ func (e *LocalExecutionEnvironment) ListDirectoryWithBudget(ctx context.Context,
 	root := e.resolve(path)
 	fsys := cancelFS{ctx: ctx, fsys: listDirBaseFS(ctx, root, budget.glob)}
 	var out []DirEntry
-	if err := listDirWalk(ctx, fsys, ".", "", depth, &out, budget); err != nil {
+	if err := listDirWalk(ctx, fsys, root, ".", "", depth, &out, budget); err != nil {
 		return nil, err
 	}
 	return out, nil

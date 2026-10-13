@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path"
@@ -145,13 +146,13 @@ var listDirBaseFS = func(ctx context.Context, dir string, budget *GlobBudget) fs
 // costs work proportional to the page plus one entry, not the subtree.
 // Cancellation outranks the cap, matching glob's convention, and every entry
 // passes the glob budget's per-directory and live-entry bounds on its way in.
-func listDirWalk(ctx context.Context, fsys fs.FS, rel, prefix string, depth int, out *[]DirEntry, budget *DirListBudget) error {
+func listDirWalk(ctx context.Context, fsys fs.FS, absRoot, rel, prefix string, depth int, out *[]DirEntry, budget *DirListBudget) error {
 	if berr := budget.glob.listing(true); berr != nil {
 		return berr
 	}
 	ents, err := fs.ReadDir(fsys, rel)
 	if err != nil {
-		return err
+		return listDirListingErr(err, absRoot, prefix)
 	}
 	budget.listings++
 	if budget.onListing != nil {
@@ -187,10 +188,28 @@ func listDirWalk(ctx context.Context, fsys fs.FS, rel, prefix string, depth int,
 		*out = append(*out, de)
 		budget.collect()
 		if ent.IsDir() && depth > 1 {
-			if err := listDirWalk(ctx, fsys, path.Join(rel, name), relName, depth-1, out, budget); err != nil {
+			if err := listDirWalk(ctx, fsys, absRoot, path.Join(rel, name), relName, depth-1, out, budget); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// listDirListingErr restores the legacy walk's error path. The fs walk names
+// directories the way os.DirFS sees them — "." for the requested root, a
+// slash-relative path beneath — so a listing failure arrives as "open .: no
+// such file or directory", which tells the model nothing about which of its
+// paths was wrong. The legacy walk read absolute paths and its errors named
+// them; rewriting the fs path to the resolved absolute one (absRoot, or the
+// subdirectory prefix names beneath it) reproduces that, for the root and
+// descendants alike. Non-PathError failures — the budget's refusals,
+// cancellation — pass through untouched, and the underlying error rides
+// along so errors.Is still answers for it.
+func listDirListingErr(err error, absRoot, prefix string) error {
+	var perr *fs.PathError
+	if !errors.As(err, &perr) {
+		return err
+	}
+	return &fs.PathError{Op: perr.Op, Path: filepath.Join(absRoot, prefix), Err: perr.Err}
 }
