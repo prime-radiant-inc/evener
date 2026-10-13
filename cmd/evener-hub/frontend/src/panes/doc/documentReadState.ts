@@ -60,6 +60,12 @@ export function getDocumentAnnotationPorts(): DocumentAnnotationPorts {
   return ports;
 }
 
+// Tests install real fixture ports as the application-owned singleton so a
+// retry pass reaches them exactly as production reaches the real singleton.
+export function setDocumentAnnotationPortsForTests(ports: DocumentAnnotationPorts | undefined): void {
+  browserPorts = ports;
+}
+
 type ReaderEntry = { work: DocumentReaderWork; listeners: Set<() => void>; unsubscribe: () => void };
 
 // The ONE retained-work map, keyed by viewer id. Hosts subscribe and unsubscribe
@@ -162,6 +168,10 @@ export function disposeDocumentAnnotationPorts(): void {
 
 export async function retryDocumentReaders(reason: AnnotationRetryReason): Promise<void> {
   const runtimes = new Set([...readers.values()].map((entry) => entry.work.ports.runtime));
+  // The application-owned runtime outlives every open reader: a persisted
+  // pending handoff must stay reachable by composer-open and foreground
+  // retries after the last document pane closed.
+  if (browserPorts) runtimes.add(browserPorts.runtime);
   await Promise.all([...runtimes].map((runtime) => runtime.retryPending(reason)));
   await Promise.all([...readers.values()].map((entry) => refreshSavedAttempt(entry.work)));
 }
