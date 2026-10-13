@@ -427,8 +427,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
-		if len(s.history) > len(historyTurns) {
-			appended = append(appended, s.history[len(historyTurns):]...)
+		// Measure against the snapshot this request projected (presentedTurns),
+		// not the round snapshot (historyTurns): a leased delegate round
+		// projects the controller's later snapshot, which can already hold the
+		// turns that landed in between and would otherwise be appended again.
+		if len(s.history) > len(presentedTurns) {
+			appended = append(appended, s.history[len(presentedTurns):]...)
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
