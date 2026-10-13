@@ -1,4 +1,10 @@
-import type { AnyNotification, ThreadItem, ThreadReadResponse } from "@evener/appwire-client";
+import type {
+  AnyNotification,
+  OverlayItem,
+  ThreadItem,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+} from "@evener/appwire-client";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -214,6 +220,139 @@ test("repeated ends share a fresh disposition and fixed off-window page coverage
   reader.dispose();
 });
 
+test.each(["stream", "preview", "tool"] as const)(
+  "unanchored %s waits for its off-window replacement",
+  async (kind) => {
+    const value = fixture();
+    const page = deferred<ThreadTurnsListResponse>();
+    const replacement: ThreadItem =
+      kind === "tool"
+        ? {
+            id: "old-tool",
+            type: "commandExecution",
+            turnId: "turn_1",
+            transcriptKey: "old-tool",
+            position: { entry: 2, item: 0 },
+            version: 50,
+            completedAtEntry: 50,
+            status: "completed",
+            output: "completed-tool",
+          }
+        : {
+            ...recorded("completed-message"),
+            position: { entry: 2, item: 0 },
+            version: 50,
+            ...(kind === "preview" ? { callId: "communicate-1" } : {}),
+          };
+    const slot: OverlayItem =
+      kind === "tool"
+        ? { ...tool.params.item, anchor: undefined }
+        : {
+            key: `${kind}:old`,
+            kind,
+            roundId: "r1",
+            turnId: "turn_1",
+            ...(kind === "preview" ? { callId: "communicate-1" } : { streamId: "s1" }),
+            item: { id: "provisional", type: "agentMessage", text: "provisional-message" },
+          };
+    const readPage = vi.fn(() => page.promise);
+    const repo = repoOf(value.cache, {
+      readHistory: async () => ({
+        ...readOf(
+          [
+            {
+              ...recorded("unrelated"),
+              id: "unrelated",
+              transcriptKey: "unrelated",
+              roundId: "r2",
+              position: { entry: 49, item: 0 },
+              version: 50,
+            },
+          ],
+          50,
+        ),
+        overlay: [],
+        olderCursor: "fixed-50",
+        requestGeneration: 2,
+      }),
+      readHistoryPage: readPage,
+      retryScheduler: () => () => {},
+    });
+    const reader = repo.attachReader();
+    repo.acceptRead({ ...readOf(), overlay: [] }, { lifetime: 1, readId: "initial", boundary: "initial" });
+    await repo.settled();
+    repo.accept({ method: "overlay/upserted", params: { ref, threadId, item: slot } }, { lifetime: 1 });
+    const gaps: boolean[] = [];
+    const unlisten = repo.subscribe(() => {
+      const snapshot = reader.getSnapshot();
+      gaps.push(
+        !snapshot?.overlay?.[slot.key] &&
+          !snapshot?.turns
+            .flatMap((turn) => turn.items)
+            .some((item) => item.output === "completed-tool" || item.text === "completed-message"),
+      );
+    });
+    repo.accept(end, { lifetime: 1 });
+    try {
+      await vi.waitFor(() => expect(readPage).toHaveBeenCalledTimes(1));
+      expect(readPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          snapshot: { incarnation: "inc-1", length: 50 },
+          cursor: "fixed-50",
+          before: { entry: 49, item: 0 },
+        }),
+      );
+      expect(reader.getSnapshot()?.overlay?.[slot.key]).toBeDefined();
+      page.resolve({
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 50 },
+        data: [{ id: "turn_1", status: "completed", itemsView: "full", version: 50, items: [replacement] }],
+      });
+      await repo.settled();
+      expect(reader.getSnapshot()?.overlay?.[slot.key]).toBeUndefined();
+      expect(
+        reader
+          .getSnapshot()
+          ?.turns.flatMap((turn) => turn.items)
+          .some((item) => item.output === "completed-tool" || item.text === "completed-message"),
+      ).toBe(true);
+      expect(gaps.length).toBeGreaterThan(0);
+      expect(gaps).not.toContain(true);
+    } finally {
+      unlisten();
+      page.resolve({ bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 50 }, data: [] });
+      reader.dispose();
+    }
+  },
+);
+
+test.each([false, true])("unestablished end coverage remains stale, foreground=%s", async (foreground) => {
+  const value = fixture();
+  const retries: Array<() => void> = [];
+  const repo = repoOf(value.cache, {
+    readHistory: async () => ({ ...readOf([], 50), overlay: [], requestGeneration: 2 }),
+    retryScheduler: (_attempt, retry) => {
+      retries.push(retry);
+      return () => {};
+    },
+  });
+  const reader = foreground ? repo.attachReader() : undefined;
+  repo.acceptRead(readOf(), { lifetime: 1, readId: "initial", boundary: "initial" });
+  await repo.settled();
+  repo.accept(
+    { ...tool, params: { ...tool.params, item: { ...tool.params.item, anchor: undefined } } },
+    { lifetime: 1 },
+  );
+  repo.accept(end, { lifetime: 1 });
+  await repo.settled();
+  expect(repo.getSnapshot()?.history?.invalidatedAtGeneration).toBeDefined();
+  expect(repo.getSnapshot()?.overlay?.["tool:old"] !== undefined).toBe(foreground);
+  expect(repo.getSnapshot()?.overlay?.["stream:s1:agentMessage"] !== undefined).toBe(foreground);
+  expect(retries).toHaveLength(1);
+  reader?.dispose();
+});
+
 test("multi-page end disposition retains distinct connected page certificates", async () => {
   const value = fixture();
   const client = new FakeClient("ready");
@@ -338,7 +477,9 @@ test("an interrupted end retries automatically after pacing and clears truly unr
   const read = vi
     .fn()
     .mockRejectedValueOnce(new Error("interrupted"))
-    .mockResolvedValue({ ...readOf([], 50), overlay: [], requestGeneration: 2 });
+    // Amendment 1: exhaust the interval. The old cursor without a page source
+    // could not establish that these slots were truly unrecorded.
+    .mockResolvedValue({ ...readOf([], 50), overlay: [], olderCursor: undefined, requestGeneration: 2 });
   const retries: Array<() => void> = [];
   const repo = repoOf(value.cache, {
     readHistory: read,

@@ -1420,6 +1420,28 @@ export class TranscriptRepository {
         item.kind !== "notice" && item.roundId && rounds.has(item.roundId) && item.anchor ? [item.anchor] : [],
       )
       .sort(comparePosition);
+    let unresolved = Object.values(model.overlay ?? {})
+      .filter((item) => item.kind !== "notice" && item.roundId && rounds.has(item.roundId) && !item.anchor)
+      .map(({ kind, roundId, callId, historyKey }) => ({ kind, roundId, callId, historyKey }));
+    // Match pruneCoveredOverlay's identities, but only against this attempt's
+    // accepted fixed-snapshot content, not later traffic in the live model.
+    const cover = (items: ThreadItem[]) => {
+      unresolved = unresolved.filter(
+        (slot) =>
+          !items.some((item) => {
+            switch (slot.kind) {
+              case "stream":
+                return !!slot.roundId && item.roundId === slot.roundId;
+              case "preview":
+                return !!slot.callId && item.type === "agentMessage" && item.callId === slot.callId;
+              case "tool":
+                return !!slot.historyKey && item.transcriptKey === slot.historyKey && !!item.completedAtEntry;
+              default:
+                return false;
+            }
+          }),
+      );
+    };
     const held = model.history?.incarnation
       ? { incarnation: model.history.incarnation, length: model.history.length }
       : undefined;
@@ -1432,14 +1454,17 @@ export class TranscriptRepository {
       !this.acceptRead(response, { lifetime: this.#binding.lifetime, readId: boundary, boundary, preserveEnded: true })
     )
       throw new Error("end disposition read was discarded");
+    cover(this.#readItems(response));
     const minimum = anchors[0];
     let cursor = response.olderCursor;
     let before = this.#rowsFromWindow(response)
       .map((row) => row.position)
       .sort(comparePosition)[0];
     const seen = new Set<string>();
-    while (minimum && before && comparePosition(minimum, before) < 0 && cursor) {
-      if (!this.#binding.readHistoryPage || seen.has(cursor)) throw new Error("end disposition coverage is incomplete");
+    const needsCoverage = () => unresolved.length > 0 || (minimum && before && comparePosition(minimum, before) < 0);
+    while (needsCoverage() && cursor) {
+      if (!before || !this.#binding.readHistoryPage || seen.has(cursor))
+        throw new Error("end disposition coverage is incomplete");
       seen.add(cursor);
       const page = await this.#binding.readHistoryPage({ snapshot: fixed, cursor, before, signal });
       if (!current()) return;
@@ -1462,14 +1487,16 @@ export class TranscriptRepository {
         })
       )
         throw new Error("end disposition page was discarded");
+      cover(page.data.flatMap((turn) => turn.items ?? []));
       const positions = page.data
         .flatMap((turn) => (turn.items ?? []).flatMap((item) => (item.position ? [item.position] : [])))
         .sort(comparePosition);
       before = positions[0] ?? before;
       cursor = page.nextCursor;
     }
-    if (minimum && before && comparePosition(minimum, before) < 0 && cursor !== undefined)
-      throw new Error("end disposition coverage is incomplete");
+    // Exhausting the authoritative interval proves discard for unmatched slots.
+    // A missing anchor or an unreceived continuation cannot supply that proof.
+    if (needsCoverage() && cursor !== undefined) throw new Error("end disposition coverage is incomplete");
     this.#dropEnded(rounds);
     this.#recoveryNeeded = this.#model?.history?.invalidatedAtGeneration !== undefined;
     this.#publish();
