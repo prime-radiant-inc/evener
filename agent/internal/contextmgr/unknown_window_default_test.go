@@ -504,3 +504,30 @@ func TestDisclosureClaimRejectsKnownWindowArrival(t *testing.T) {
 		t.Fatalf("announced an unknown window for a model whose current profile knows it: %d disclosures, want 0", len(emitted))
 	}
 }
+
+// TestEstimateUsageMarksAssumedWindow pins the meter's honesty (#4596): the
+// assumed window reaches clients as plain fact unless the flag rides with it.
+// EstimateUsage is the wire's source (Session.ContextMetrics feeds the hub
+// envelope), so Assumed must be true exactly while the budgeting window is the
+// assumption — and flip false the moment a real window arrives, the same
+// assumptionStillGoverns discipline the tripwire and the disclosure follow.
+func TestEstimateUsageMarksAssumedWindow(t *testing.T) {
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("hello world"))}
+
+	cm := NewManager(unknownGatewayProfile(), nil, cheapmodel.New(nil))
+	if got := cm.EstimateUsage(history, 0); got.Window != AssumedContextWindow || !got.Assumed {
+		t.Fatalf("EstimateUsage() = %+v, want window %d with Assumed true", got, AssumedContextWindow)
+	}
+
+	known := NewManager(testProfile("anthropic", "claude-opus-4-6", 1_000_000), nil, cheapmodel.New(nil))
+	if got := known.EstimateUsage(history, 0); got.Window != 1_000_000 || got.Assumed {
+		t.Fatalf("EstimateUsage() = %+v, want the known window with Assumed false", got)
+	}
+
+	// A live listing can enrich the same model mid-session; the assumption
+	// must not survive the arrival.
+	cm.SetProfile(knownWindowArrival())
+	if got := cm.EstimateUsage(history, 0); got.Window != 1_000_000 || got.Assumed {
+		t.Fatalf("EstimateUsage() = %+v, want the arrived window with Assumed false", got)
+	}
+}

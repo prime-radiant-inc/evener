@@ -554,19 +554,20 @@ func (cm *Manager) EstimatePressure(history []schema.Turn, sysPromptChars int) f
 	return cm.estimatePressure(history, sysPromptChars)
 }
 
-// EstimateUsage returns the estimated used, total, and remaining context tokens.
-// Like estimatePressure, one profile snapshot covers the window, the
-// measurement, and the estimate.
+// EstimateUsage returns the estimated used, total, and remaining context
+// tokens, with Assumed marking a Window that is the unknown-window assumption
+// rather than a size anything vouches for. Like estimatePressure, one profile
+// snapshot covers the window, the measurement, and the estimate.
 func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) schema.ContextMetrics {
 	prof, lastTokens, measuredLen := cm.profileSnapshot()
-	cw, _ := effectiveWindowOf(prof)
+	cw, assumed := effectiveWindowOf(prof)
 	if cw <= 0 {
 		return schema.ContextMetrics{}
 	}
 
 	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
 	remaining := max(cw-used, 0)
-	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining}
+	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining, Assumed: assumed}
 }
 
 // ApplyThresholdScale scales all compaction thresholds on cm by the given
