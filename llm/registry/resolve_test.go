@@ -208,6 +208,27 @@ func TestResolve_AliasOfDerivedEffortRow(t *testing.T) {
 	}
 }
 
+// A cross-protocol alias carries no shape verdict — its target resolved under
+// a protocol that has none — so it derives from the catalog controls it
+// inherited, exactly like a directly named row (roborev round 4).
+func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
+	// The openai-chat target carries no shape of its own, but its catalog
+	// row records budget_tokens — the alias derives from those inherited
+	// controls, not from the target's (absent) verdict.
+	r := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.or-pro]\nalias_of = \"openrouter/google/gemini-2.5-pro\"\n")
+	target := mustResolve(t, r, "openrouter/google/gemini-2.5-pro")
+	if target.Protocol != ProtocolOpenAIChat || target.Caps.ThinkingShape != nil {
+		t.Fatalf("the openai-chat target carries no shape: %+v", target.Caps.ThinkingShape)
+	}
+	alias := mustResolve(t, r, "google/or-pro")
+	if alias.Protocol != ProtocolGoogle {
+		t.Fatalf("alias protocol = %s", alias.Protocol)
+	}
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("cross-protocol alias must derive budget from the inherited catalog controls: %+v", alias.Caps.ThinkingShape)
+	}
+}
+
 // TestResolve_Opus45OneMStillBeta pins Opus 4.5's [1m] rows as beta-gated,
 // unlike Sonnet 4.5's [1m] rows above (TestResolve_AliasSeeding), which
 // became plain GA aliases. Live evidence against api.anthropic.com on

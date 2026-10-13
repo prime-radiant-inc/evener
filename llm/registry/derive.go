@@ -11,13 +11,17 @@ type deriveInput struct {
 	Synthesized     bool
 	ProviderSurface string
 	ProviderFamily  string
-	// Aliased marks a row seeded from an alias target: the target's
-	// derivation already settled the thinking-shape question, so the alias
-	// inherits the verdict through the seeded ThinkingShape and never
-	// re-derives one from the copied controls — a copied effort control the
-	// target's own derivation invented would otherwise read as catalog
-	// evidence.
-	Aliased bool
+	// Aliased marks a row seeded from an alias target. AliasTargetProtocol is
+	// the protocol that target resolved under: a same-protocol alias's target
+	// already settled the thinking-shape question (even when the verdict was
+	// "no shape"), so the alias inherits it through the seeded ThinkingShape
+	// and never re-derives one from copied controls — a copied effort control
+	// the target's own derivation invented would otherwise read as catalog
+	// evidence. A cross-protocol alias's target never asked the question
+	// (its protocol has no shape), so the alias derives from the inherited
+	// catalog controls like any directly named row.
+	Aliased             bool
+	AliasTargetProtocol string
 }
 
 const provDerived = "derived"
@@ -74,8 +78,13 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 	// recorded no reasoning_options, and a 2.5-era row in that state rejects
 	// the level field — so it, a toggle-only row, and a synthesized or
 	// live-only row all leave the shape unset rather than guess a spelling
-	// the model may reject.
-	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized && !in.Aliased {
+	// the model may reject. An alias inherits its target's vouched shape, so
+	// a same-protocol alias never re-derives one from the copied controls; a
+	// cross-protocol alias carries no verdict (its target's protocol has no
+	// shape) and derives from the inherited catalog controls like any
+	// directly named row.
+	shapeSettledByAlias := in.Aliased && in.AliasTargetProtocol == ProtocolGoogle
+	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized && !shapeSettledByAlias {
 		var shape string
 		switch {
 		case slices.Contains(c.ReasoningControls, "budget_tokens"):

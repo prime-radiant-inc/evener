@@ -753,6 +753,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	aliasLockstep := false
 	var aliasDisabled *bool
 	var aliasDefault *bool
+	aliasTargetProtocol := ""
 	if row.AliasOf != "" {
 		target, same, err := r.resolveAliasTarget(rec, row.AliasOf, includeLive)
 		if err != nil {
@@ -760,6 +761,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 			// it says itself.
 			warnings = append(warnings, "dangling alias: "+err.Error())
 		} else {
+			aliasTargetProtocol = target.Protocol
 			seedFromAlias(&caps, &row, target, prov)
 			if same {
 				// Lockstep: a same-provider alias follows its target's
@@ -911,7 +913,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		warnings = append(warnings, cw...)
 	}
 
-	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != ""}, prov)
+	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol}, prov)
 
 	if hit.synthesized {
 		warnings = append(warnings, "model not in catalog")
