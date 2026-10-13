@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -428,6 +429,63 @@ func TestRefusingCatchUpRefusesEachRebuildTrigger(t *testing.T) {
 		requireRefusal(t, err, want)
 		assertSameSidecar(t, "window-path restoreBuilder refusal", before, snapshotSidecar(t, dir, false))
 	})
+}
+
+// A sidecar whose CURRENT pointer cannot be read is an access problem, not a
+// missing build and not a rebuild trigger: a refusing handle answers the
+// ordinary error, so the hub treats the read as transient instead of arming
+// a repair that cannot fix permissions.
+func TestARefusingWindowReadOverAnUnreadableCurrentAnswersTheOrdinaryError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix file permission to make CURRENT unreadable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the file permission this test relies on")
+	}
+	path, dir := openCommittedSidecar(t, preludeFixture())
+	if err := os.Chmod(filepath.Join(dir, currentFileName), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, currentFileName), 0o644) })
+
+	x := openRefusing(t, path, dir)
+	_, err := x.Latest(5)
+	if err == nil {
+		t.Fatal("a read whose CURRENT is unreadable should fail")
+	}
+	if errors.Is(err, ErrRebuildRequired) {
+		t.Fatalf("window read over an unreadable CURRENT = %v, want the ordinary access error, not a rebuild refusal", err)
+	}
+	if errors.Is(err, errNoLiveBuild) {
+		t.Fatalf("window read over an unreadable CURRENT = %v, want the access error kept ordinary, not a missing build", err)
+	}
+}
+
+// The exclusive paths classify too: a refusing CatchUp whose refresh cannot
+// read CURRENT must answer the same ordinary error — its extend step would
+// only refuse, so without the classification the access failure masquerades
+// as a rebuild refusal and arms a doomed repair.
+func TestARefusingCatchUpOverAnUnreadableCurrentAnswersTheOrdinaryError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix file permission to make CURRENT unreadable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the file permission this test relies on")
+	}
+	path, dir := openCommittedSidecar(t, preludeFixture())
+	if err := os.Chmod(filepath.Join(dir, currentFileName), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, currentFileName), 0o644) })
+
+	x := openRefusing(t, path, dir)
+	err := x.CatchUp()
+	if err == nil {
+		t.Fatal("a catch-up whose CURRENT is unreadable should fail")
+	}
+	if errors.Is(err, ErrRebuildRequired) {
+		t.Fatalf("catch-up over an unreadable CURRENT = %v, want the ordinary access error, not a rebuild refusal", err)
+	}
 }
 
 func TestRefusingHandleExtendsIncrementallyWithoutRebuilding(t *testing.T) {

@@ -372,10 +372,13 @@ func (x *Index) locked(exclusive bool, fn func() error) error {
 		return fmt.Errorf("lock transcript index: %w", err)
 	}
 	defer func() { _ = unlockFile(x.lock) }()
-	if err := x.refresh(); err != nil && !exclusive {
+	if err := x.refresh(); err != nil && (!exclusive || x.refusing) {
 		// Only an extender may rebuild; a reader with no usable index has
 		// nothing to read. A refusing reader names the sidecar a rebuild
-		// would fix as a refusal, so its repair registers immediately.
+		// would fix as a refusal, so its repair registers immediately — on
+		// the exclusive paths it takes as well, whose own step would only
+		// refuse anyway: classifying there keeps an access failure an
+		// ordinary error instead of a masquerading rebuild refusal.
 		if x.refusing && rebuildFixes(err) {
 			return x.refuseRebuild()
 		}
@@ -399,7 +402,14 @@ func (x *Index) refresh() error {
 	current, err := os.ReadFile(filepath.Join(x.dir, currentFileName))
 	if err != nil {
 		_ = x.closeBuild()
-		return errNoLiveBuild
+		// Only a CURRENT that is not there says no build exists. One that
+		// cannot be read is an access problem: keep it ordinary, so a
+		// refusing reader reports it as transient instead of a rebuild a
+		// permission change cannot fix.
+		if os.IsNotExist(err) {
+			return errNoLiveBuild
+		}
+		return fmt.Errorf("read current build: %w", err)
 	}
 	name := strings.TrimSpace(string(current))
 	if name != x.build {
