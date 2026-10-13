@@ -7,8 +7,19 @@
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
 
-import type { CommandDescriptor, NavigationSessionSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
-import { errorText, groupSearchResults, isHubLaunchError, sessionPluginNames } from "@evener/appwire-client";
+import type {
+  CommandDescriptor,
+  GroupedSearchRow,
+  NavigationSessionSummary,
+  SearchResponse,
+} from "@evener/appwire-client";
+import {
+  countSearchMatches,
+  errorText,
+  groupSearchResults,
+  isHubLaunchError,
+  sessionPluginNames,
+} from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
@@ -139,11 +150,11 @@ const HELP_ROWS: HelpRow[] = [
 
 // A single navigable row in the results list.
 type PaletteItem =
-  | { kind: "live"; result: SearchResult }
-  // nested marks a matching subagent rendering indented under its group's
-  // anchor; indirect marks a synthesized anchor whose own session has no row
-  // in the response, greyed but still a normal activatable row.
-  | { kind: "past"; result: SearchResult; nested?: boolean; indirect?: boolean }
+  // A search row: the shared grouped row carried whole, `kind` naming its
+  // section. nested (a matching subagent) indents into its group; indirect
+  // (a synthesized anchor whose own session has no row in the response)
+  // recedes greyed — both stay ordinary activatable rows.
+  | { kind: "live" | "past"; row: GroupedSearchRow }
   | { kind: "insession"; match: InSessionMatch }
   | { kind: "command"; command: ScopedCommand }
   | { kind: "arg"; item: CommandArgsEnumItem }
@@ -543,7 +554,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // The AppWire SearchResult contract carries the qualified ref every row
       // uses to open a session. A bare-id URL does not route, and naming a
       // session differently from the rail can open it twice in two panes.
-      const url = `/s/${encodeURIComponent(item.result.ref)}`;
+      const url = `/s/${encodeURIComponent(item.row.result.ref)}`;
       // openInNewTab keeps the new tab from copying this tab's sessionStorage -
       // which carries the per-client mutation identity, and a shared identity
       // would let both tabs claim each other's durable sends.
@@ -779,21 +790,13 @@ function buildView(args: {
     if (grouped.live.length) {
       entries.push({ type: "header", section: "live", label: "Live" });
       for (const row of grouped.live) {
-        push(row.nested ? { kind: "past", result: row.result, nested: true } : { kind: "live", result: row.result });
+        push(row.nested ? { kind: "past", row } : { kind: "live", row });
       }
     }
     if (grouped.past.length) {
-      // The count answers "how many sessions matched" — synthesized anchors
-      // are context for their subagents' matches, not matches themselves.
-      const matches = grouped.past.filter((row) => !row.indirect).length;
-      entries.push({ type: "header", section: "past", label: `Past · ${matches}` });
+      entries.push({ type: "header", section: "past", label: `Past · ${countSearchMatches(grouped.past)}` });
       for (const row of grouped.past) {
-        push({
-          kind: "past",
-          result: row.result,
-          nested: row.nested || undefined,
-          indirect: row.indirect || undefined,
-        });
+        push({ kind: "past", row });
       }
     }
     if (inSession.length) {
@@ -957,19 +960,21 @@ function Row({
   const unavailable =
     (item.kind === "command" && item.command.unavailableReason !== undefined) ||
     (item.kind === "handoff" && !item.hasFocusedSession);
-  // Grouped search rows: a nested subagent indents into its group; an
-  // indirect anchor recedes because its own session did not match. Both stay
-  // ordinary activatable rows.
-  const nested = item.kind === "past" && item.nested === true;
-  const indirect = item.kind === "past" && item.indirect === true;
-  let className = CLASS.row;
-  if (nested) className += ` ${CLASS.rowNested}`;
-  if (indirect) className += ` ${CLASS.rowIndirect}`;
+  const nested = item.kind === "past" && item.row.nested;
+  const indirect = item.kind === "past" && item.row.indirect;
+  const className = [
+    CLASS.row,
+    nested && CLASS.rowNested,
+    indirect && CLASS.rowIndirect,
+    unavailable && CLASS.rowUnavailable,
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <button
       type="button"
       id={`palette-row-${index}`}
-      className={unavailable ? `${CLASS.row} ${CLASS.rowUnavailable}` : className}
+      className={className}
       role="option"
       data-kind={item.kind}
       data-nested={nested || undefined}
@@ -1052,7 +1057,7 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
       </>
     );
   }
-  if (item.kind === "past" && item.nested) {
+  if (item.kind === "past" && item.row.nested) {
     // A matching subagent: indented under its group's anchor, labelled so the
     // family reads at a glance. Its state dot would always be the neutral
     // ended one, so the nesting glyph speaks instead.
@@ -1062,10 +1067,10 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
           ↳
         </span>
         <span className={CLASS.title}>
-          <Highlighted parts={highlightParts(item.result.title, query)} />
+          <Highlighted parts={highlightParts(item.row.result.title, query)} />
         </span>
         <span className={CLASS.hint}>subagent</span>
-        {item.result.age && <span className={CLASS.age}>{item.result.age}</span>}
+        {item.row.result.age && <span className={CLASS.age}>{item.row.result.age}</span>}
       </>
     );
   }
@@ -1075,18 +1080,18 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
     <>
       <StatusDot
         state={cadenceStateFor(
-          displayState({ state: item.result.state, approval_pending: item.result.approvalPending }),
+          displayState({ state: item.row.result.state, approval_pending: item.row.result.approvalPending }),
         )}
       />
       <span className={CLASS.title}>
-        <Highlighted parts={highlightParts(item.result.title, query)} />
+        <Highlighted parts={highlightParts(item.row.result.title, query)} />
       </span>
-      {item.result.project && (
+      {item.row.result.project && (
         <span className={CLASS.project}>
-          <Highlighted parts={highlightParts(item.result.project, query)} />
+          <Highlighted parts={highlightParts(item.row.result.project, query)} />
         </span>
       )}
-      {item.result.age && <span className={CLASS.age}>{item.result.age}</span>}
+      {item.row.result.age && <span className={CLASS.age}>{item.row.result.age}</span>}
     </>
   );
 }

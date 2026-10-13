@@ -227,7 +227,9 @@ section — and when the response carries no row for that session, a greyed
 anchor is synthesized from the child's `topLevel` (a session that matched but
 was cut from the page included). Each returned `GroupedSearchRow` says
 `nested` (render indented) or `indirect` (grey it; the match came from its
-subagents, and the row stays activatable). Groups render contiguously at their
+subagents, and the row stays activatable). `countSearchMatches(rows)` answers
+how many of the rows are the response's own matches: an indirect anchor is
+context for its subagents' matches, not a match itself. Groups render contiguously at their
 first member's position, children in match order; rows without `topLevel`
 render flat exactly as before, and the helper resolves nothing and dedups
 nothing — lineage is the hub's, and an older hub's response must render

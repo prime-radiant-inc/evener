@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { type GroupedSearchRow, groupSearchResults } from "./searchGrouping";
+import { countSearchMatches, type GroupedSearchRow, groupSearchResults } from "./searchGrouping";
 import type { SearchResult } from "./types.gen";
 
 function liveRow(id: string, title = id): SearchResult {
@@ -130,5 +130,20 @@ describe("groupSearchResults", () => {
     const grouped = groupSearchResults([only], [pastRow("plain", "Plain match")]);
 
     expect(grouped.live).toEqual([{ result: only, nested: false, indirect: false }]);
+  });
+});
+
+describe("countSearchMatches", () => {
+  it("counts every row but the indirect anchors, whose matches are their subagents'", () => {
+    const parent = pastRow("root", "Alpha root");
+    const child = childOf(parent, "sub");
+    const goneSub = childOf({ id: "gone", title: "Gone root", state: "ended", age: "3h" }, "goneSub");
+    const grouped = groupSearchResults([], [child, goneSub, parent]);
+    const flat = groupSearchResults([], [pastRow("plain", "Plain match")]).past;
+
+    // The greyed synthesized anchor is context for its subagent's match,
+    // not a match of its own; the real anchor and both children are.
+    expect(countSearchMatches(grouped.past)).toBe(3);
+    expect(countSearchMatches(flat)).toBe(1);
   });
 });

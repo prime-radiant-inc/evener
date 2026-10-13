@@ -1,6 +1,8 @@
 package hubcore
 
 import (
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -41,7 +43,7 @@ func TestWalkToTopLevelResolvesNestedChainsToTheRoot(t *testing.T) {
 		"C": {ID: "C", IsSubagent: true, ParentSessionID: "B"},
 	}
 	parentOf, isSubagent, known := metaPredicates(metas)
-	walk, ok := NewRootIndex(rootMetas(metas)).WalkToTopLevel("C", parentOf, isSubagent, known)
+	walk, ok := NewRootIndex(slices.Collect(maps.Values(metas))).WalkToTopLevel("C", parentOf, isSubagent, known)
 	if !ok {
 		t.Fatal("walk failed, want the chain to reach A")
 	}
@@ -63,7 +65,7 @@ func TestWalkToTopLevelCarriesForkSupersession(t *testing.T) {
 		"S": {ID: "S", IsSubagent: true, ParentSessionID: "O"},
 	}
 	parentOf, isSubagent, known := metaPredicates(metas)
-	walk, ok := NewRootIndex(rootMetas(metas)).WalkToTopLevel("S", parentOf, isSubagent, known)
+	walk, ok := NewRootIndex(slices.Collect(maps.Values(metas))).WalkToTopLevel("S", parentOf, isSubagent, known)
 	if !ok {
 		t.Fatal("walk failed, want the fork continuation")
 	}
@@ -84,7 +86,7 @@ func TestWalkToTopLevelStopsOnParentCycles(t *testing.T) {
 		"Y": {ID: "Y", IsSubagent: true, ParentSessionID: "X"},
 	}
 	parentOf, isSubagent, known := metaPredicates(metas)
-	if _, ok := NewRootIndex(rootMetas(metas)).WalkToTopLevel("X", parentOf, isSubagent, known); ok {
+	if _, ok := NewRootIndex(slices.Collect(maps.Values(metas))).WalkToTopLevel("X", parentOf, isSubagent, known); ok {
 		t.Fatal("walk resolved a parent cycle, want failure")
 	}
 }
@@ -99,7 +101,7 @@ func TestWalkToTopLevelReportsOrphans(t *testing.T) {
 		"inner": {ID: "inner", IsSubagent: true, ParentSessionID: "mid"},
 	}
 	parentOf, isSubagent, known := metaPredicates(metas)
-	roots := NewRootIndex(rootMetas(metas))
+	roots := NewRootIndex(slices.Collect(maps.Values(metas)))
 	for _, id := range []string{"end", "inner"} {
 		if _, ok := roots.WalkToTopLevel(id, parentOf, isSubagent, known); ok {
 			t.Fatalf("walk resolved %q without a known root, want failure", id)
@@ -116,14 +118,8 @@ func TestWalkToTopLevelHonorsTheKnownPredicate(t *testing.T) {
 		"A":   {ID: "A"},
 		"sub": {ID: "sub", IsSubagent: true, ParentSessionID: "A"},
 	}
-	_, isSubagent, known := metaPredicates(metas)
-	parentOf := func(id string) string {
-		if metas[id].IsSubagent && metas[id].ParentSessionID != "" {
-			return metas[id].ParentSessionID
-		}
-		return ""
-	}
-	roots := NewRootIndex(rootMetas(metas))
+	parentOf, isSubagent, known := metaPredicates(metas)
+	roots := NewRootIndex(slices.Collect(maps.Values(metas)))
 	if _, ok := roots.WalkToTopLevel("sub", parentOf, isSubagent, known); !ok {
 		t.Fatal("walk failed with the ancestor known, want it to resolve")
 	}
@@ -214,12 +210,4 @@ func TestWalkToTopLevelAgreesWithTheTreeRollup(t *testing.T) {
 		case "A", "K", "R":
 		}
 	}
-}
-
-func rootMetas(metas map[string]schema.SessionMeta) []schema.SessionMeta {
-	out := make([]schema.SessionMeta, 0, len(metas))
-	for _, m := range metas {
-		out = append(out, m)
-	}
-	return out
 }

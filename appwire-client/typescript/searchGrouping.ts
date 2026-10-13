@@ -29,6 +29,12 @@ export interface GroupedSearch {
   past: GroupedSearchRow[];
 }
 
+/** How many of the rows are the response's own matches: an indirect anchor
+ *  is context for its group's matched subagents, not a match of its own. */
+export function countSearchMatches(rows: GroupedSearchRow[]): number {
+  return rows.filter((row) => !row.indirect).length;
+}
+
 /** The row a synthesized anchor renders as: the wire's anchor fields on a
  * SearchResult shape, so every renderer treats it like any other row. */
 function topLevelRow(topLevel: SearchTopLevel): SearchResult {
@@ -87,8 +93,9 @@ export function groupSearchResults(live: SearchResult[], past: SearchResult[]): 
 
   const pastRows: GroupedSearchRow[] = [];
   const openedGroups = new Set<string>();
-  const emittedChildren = new Set<string>();
   const openGroup = (ref: string, topLevel: SearchTopLevel | undefined) => {
+    // One group renders once: the first member opens it, and this guard also
+    // turns the group's later child rows into no-ops.
     if (openedGroups.has(ref)) return;
     openedGroups.add(ref);
     const anchorRow = anchorRowByRef.get(ref);
@@ -98,13 +105,11 @@ export function groupSearchResults(live: SearchResult[], past: SearchResult[]): 
       pastRows.push({ result: topLevelRow(topLevel), nested: false, indirect: true });
     }
     for (const child of childrenByAnchor.get(ref) ?? []) {
-      emittedChildren.add(child.ref);
       pastRows.push({ result: child, nested: true, indirect: false });
     }
   };
   for (const row of past) {
     if (row.topLevel && liveRefs.has(row.topLevel.ref)) continue; // renders under its live anchor
-    if (emittedChildren.has(row.ref)) continue; // already nested inside its group
     if (row.topLevel) {
       openGroup(row.topLevel.ref, row.topLevel);
       continue;

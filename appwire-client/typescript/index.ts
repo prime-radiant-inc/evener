@@ -505,7 +505,7 @@ export {
   threadModelFromCache,
 } from "./reducer";
 export type { GroupedSearch, GroupedSearchRow } from "./searchGrouping";
-export { groupSearchResults } from "./searchGrouping";
+export { countSearchMatches, groupSearchResults } from "./searchGrouping";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export type { QuietState } from "./sessionActivity";

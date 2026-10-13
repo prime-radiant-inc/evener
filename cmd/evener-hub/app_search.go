@@ -64,12 +64,6 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	if cfg.Past != nil {
 		roots = cfg.Past.RootIndex()
 	}
-	liveByID := make(map[string]hubcore.LiveEntry, len(entries))
-	for _, le := range entries {
-		if le.SessionID != "" {
-			liveByID[le.SessionID] = le
-		}
-	}
 	// A live session's meta sits in the past index too, so a prompt or
 	// working-directory match there lists it here, live. Resolve every live
 	// session's own past-index match in one lookup, ahead of the bounded Past
@@ -85,10 +79,12 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 		}
 		pastMatched = cfg.Past.MatchIDs(ids, q)
 	}
-	// Every live session's result, in the Live order, built once for both
-	// the Live group and the In sessions group.
+	// Every live session's result, in the Live order, built once for the
+	// Live group, the In sessions group, and any grouped subagent's live
+	// anchor.
 	var live []appwire.SearchResult
 	isLive := map[string]bool{}
+	liveResultByID := map[string]appwire.SearchResult{}
 	if cfg.Roster != nil {
 		// A subagent is not a navigation row: the roots-only tree gives one no
 		// top-level row and lets an orphan (its parent not live) vanish (#3082).
@@ -107,6 +103,7 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			isLive[le.SessionID] = true
 			result := liveSearchResult(cfg, le, decisions, now)
 			live = append(live, result)
+			liveResultByID[le.SessionID] = result
 			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(result.Title), q) && !pastMatched[le.SessionID] {
 				continue
 			}
@@ -136,7 +133,7 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			// result. Unresolvable ancestry keeps today's flat row: the
 			// match is never lost to the grouping.
 			if roots.IsSubagent(e.Meta.ID) {
-				if tl, ok := searchTopLevelFor(cfg, roots, liveByID, e.Meta.ID, decisions, now); ok {
+				if tl, ok := searchTopLevelFor(cfg, roots, isLive, liveResultByID, e.Meta.ID, decisions, now); ok {
 					result.TopLevel = tl
 				}
 			}
@@ -286,39 +283,42 @@ func pastArchived(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool, no
 // the Live group already excludes) and a known ancestor being either indexed
 // or live on the roster — so a roster-only ancestor resolves here where the
 // tree's meta-only known check would not. The anchor's data is the
-// ancestor's own search result — live from the roster entry when it is
-// running, ended from the past index otherwise — so a client renders the
+// ancestor's own search result — live from the row the Live group already
+// built, ended from the past index otherwise — so a client renders the
 // anchor exactly as that session's row.
-func searchTopLevelFor(cfg hubcore.WebConfig, roots *hubcore.RootIndex, liveByID map[string]hubcore.LiveEntry, id string, decisions map[hubcore.ArchiveKey]bool, now time.Time) (*appwire.SearchTopLevel, bool) {
+func searchTopLevelFor(cfg hubcore.WebConfig, roots *hubcore.RootIndex, isLive map[string]bool, liveResultByID map[string]appwire.SearchResult, id string, decisions map[hubcore.ArchiveKey]bool, now time.Time) (*appwire.SearchTopLevel, bool) {
+	// The Past fetch that calls here has already run, so an absent index is
+	// not a state the walk's steps need to handle.
+	if cfg.Past == nil {
+		return nil, false
+	}
+	// Lookup, not Find: the walk is asked about ids it will never resolve —
+	// an orphan's missing parent, on every debounced query — and Find's
+	// cache-miss path disk-probes, while Lookup is a pure map read of what
+	// the index already folded in.
 	parentOf := func(aid string) string {
-		if cfg.Past == nil {
-			return ""
-		}
-		if pe, ok := cfg.Past.Find(aid); ok && pe.Meta.IsSubagent && pe.Meta.ParentSessionID != "" {
+		if pe, ok := cfg.Past.Lookup(aid); ok && pe.Meta.IsSubagent && pe.Meta.ParentSessionID != "" {
 			return pe.Meta.ParentSessionID
 		}
 		return ""
 	}
 	known := func(aid string) bool {
-		if cfg.Past != nil {
-			if _, ok := cfg.Past.Find(aid); ok {
-				return true
-			}
+		if _, ok := cfg.Past.Lookup(aid); ok {
+			return true
 		}
-		_, isLive := liveByID[aid]
-		return isLive
+		return isLive[aid]
 	}
 	walk, ok := roots.WalkToTopLevel(id, parentOf, roots.IsSubagent, known)
 	if !ok {
 		return nil, false
 	}
-	var result appwire.SearchResult
-	if le, isLive := liveByID[walk.Top]; isLive {
-		result = liveSearchResult(cfg, le, decisions, now)
-	} else if pe, ok := cfg.Past.Find(walk.Top); ok {
+	result, ok := liveResultByID[walk.Top]
+	if !ok {
+		pe, indexed := cfg.Past.Lookup(walk.Top)
+		if !indexed {
+			return nil, false
+		}
 		result = pastSearchResult(pe, decisions, now)
-	} else {
-		return nil, false
 	}
 	return topLevelFromResult(result), true
 }

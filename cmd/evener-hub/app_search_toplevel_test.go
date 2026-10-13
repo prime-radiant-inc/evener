@@ -212,3 +212,108 @@ func TestHubSearchKeepsMatchingParentUnannotatedBesideAnnotatedChild(t *testing.
 		t.Fatalf("child topLevel=%+v, want the parent %q", tl, parentID)
 	}
 }
+
+// The real search rules and the tree's rollup agree on one corpus: the same
+// metas, disk index and roster drive hubSearch's annotations and
+// BuildTreeAt's attribution, so the two lineage views cannot drift apart.
+// (hubcore's agreement test walks with injected predicates; this one runs
+// the production searchTopLevelFor through hubSearch.)
+func TestHubSearchGroupingAgreesWithTheTreeRollup(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	chainDir, forkDir, brokenDir := t.TempDir(), t.TempDir(), t.TempDir()
+	// Valid session ids throughout: the disk lister silently drops a
+	// hand-seeded meta whose id is not a UUIDv7 payload, so plausible-looking
+	// ids never reach the index.
+	rootID, midID, leafID, grindID := hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t)
+	origID, contID, forkSubID, forkWorkID := hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t)
+	idleID, cycleXID, cycleYID, ghostID := hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t)
+	metas := []schema.SessionMeta{
+		// A live chain root with an ended delegate chain under it, plus a
+		// live working child whose activity the tree attributes to A.
+		{ID: rootID, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: chainDir}},
+		{ID: midID, IsSubagent: true, ParentSessionID: rootID, UpdatedAt: now.Add(-30 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: chainDir}},
+		{ID: leafID, IsSubagent: true, ParentSessionID: midID, UpdatedAt: now.Add(-time.Hour), Name: "delegate frobnitz", EnvInfo: schema.EnvironmentInfo{WorkingDir: chainDir}},
+		{ID: grindID, IsSubagent: true, ParentSessionID: rootID, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: chainDir}},
+		// A live fork original superseded by an ended continuation: the
+		// ended delegate groups under the continuation, and the live child's
+		// activity attributes there too.
+		{ID: origID, ForkLabel: "old branch", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: forkDir}},
+		{ID: contID, ParentSessionID: origID, UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: forkDir}},
+		{ID: forkSubID, IsSubagent: true, ParentSessionID: origID, UpdatedAt: now.Add(-2*time.Hour - time.Minute), Name: "delegate frobnitz", EnvInfo: schema.EnvironmentInfo{WorkingDir: forkDir}},
+		{ID: forkWorkID, IsSubagent: true, ParentSessionID: origID, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: forkDir}},
+		// Unresolvable: a live parent cycle and a live orphan keep the
+		// project idle (live work that attributes to nothing), and an ended
+		// orphan stays a flat search row.
+		{ID: idleID, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: brokenDir}},
+		{ID: cycleXID, IsSubagent: true, ParentSessionID: cycleYID, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: brokenDir}},
+		{ID: cycleYID, IsSubagent: true, ParentSessionID: cycleXID, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: brokenDir}},
+		{ID: ghostID, IsSubagent: true, ParentSessionID: "01GONE", UpdatedAt: now.Add(-3 * time.Hour), Name: "ghost frobnitz", EnvInfo: schema.EnvironmentInfo{WorkingDir: brokenDir}},
+	}
+	live := []hubcore.LiveEntry{
+		{PID: 1, SessionID: rootID, WorkingDir: chainDir, Status: appwire.ThreadStatusIdle},
+		{PID: 2, SessionID: grindID, WorkingDir: chainDir, Status: appwire.ThreadStatusActive},
+		{PID: 3, SessionID: origID, WorkingDir: forkDir, Status: appwire.ThreadStatusIdle},
+		{PID: 4, SessionID: forkWorkID, WorkingDir: forkDir, Status: appwire.ThreadStatusActive},
+		{PID: 5, SessionID: idleID, WorkingDir: brokenDir, Status: appwire.ThreadStatusIdle},
+		{PID: 6, SessionID: cycleXID, WorkingDir: brokenDir, Status: appwire.ThreadStatusActive},
+		{PID: 7, SessionID: cycleYID, WorkingDir: brokenDir, Status: appwire.ThreadStatusActive},
+	}
+
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+	for _, meta := range metas {
+		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(live...)
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Search: the chain's leaf anchors to the live root, the fork's delegate
+	// to the continuation, the ended orphan stays flat — and nothing else
+	// matches.
+	if len(resp.Live) != 0 {
+		t.Fatalf("live=%+v, want nothing: no live session matches the query", resp.Live)
+	}
+	if got := searchIDs(resp.Past); !reflect.DeepEqual(got, []string{leafID, forkSubID, ghostID}) {
+		t.Fatalf("past=%v, want the chain leaf, the fork delegate and the ended orphan", got)
+	}
+	if tl := resp.Past[0].TopLevel; tl == nil || tl.ID != rootID {
+		t.Fatalf("chain leaf topLevel=%+v, want the live root", tl)
+	}
+	if tl := resp.Past[1].TopLevel; tl == nil || tl.ID != contID {
+		t.Fatalf("fork delegate topLevel=%+v, want the continuation", tl)
+	}
+	if resp.Past[2].TopLevel != nil {
+		t.Fatalf("ended orphan topLevel=%+v, want nil for unresolvable ancestry", resp.Past[2].TopLevel)
+	}
+
+	// Tree over the same corpus: the working children attribute to the same
+	// roots search resolved to, and the unresolvable project stays idle.
+	tree := hubcore.BuildTreeAt(metas, live, nil, now)
+	rollups := map[string]string{}
+	for _, project := range tree.Projects {
+		rollups[project.WorkingDir] = project.RollupState
+	}
+	if rollups[chainDir] != "active" || rollups[forkDir] != "active" {
+		t.Fatalf("rollups=%v, want the chain's and the fork continuation's projects working", rollups)
+	}
+	if rollups[brokenDir] == "active" {
+		t.Fatalf("rollups=%v, want the unresolvable project idle: its live work attributes to no row", rollups)
+	}
+	for _, row := range tree.Live {
+		switch row.ID {
+		case midID, leafID, grindID, forkSubID, forkWorkID, cycleXID, cycleYID, ghostID:
+			t.Fatalf("subagent %q has a top-level row", row.ID)
+		case rootID, contID, origID, idleID:
+		}
+	}
+}
