@@ -16,22 +16,29 @@ type GatewayCapabilities struct {
 }
 
 // GatewayInputModalities is the input modality list a /models row advertises:
-// architecture.input_modalities when that list is non-empty, else text plus
-// image for an advertised vision capability, else nil. The protocol readers
-// share it so they cannot disagree about the precedence, and the estimate of
-// what a row accepts follows one rule.
+// architecture.input_modalities when that list carries any entry, else text
+// plus image for an advertised vision capability, else nil. The protocol
+// readers share it so they cannot disagree about the precedence. The result is
+// nil, never an empty slice, when the row advertises nothing: mergeCaps would
+// otherwise replay the live layer's empty list over a curated one.
 func GatewayInputModalities(arch GatewayArchitecture, caps GatewayCapabilities) []string {
-	if len(arch.InputModalities) > 0 {
-		out := make([]string, 0, len(arch.InputModalities))
-		for _, m := range arch.InputModalities {
-			if m != "" && !slices.Contains(out, m) {
-				out = append(out, m)
-			}
-		}
-		return out
+	if mods := advertisedModalities(arch.InputModalities); len(mods) > 0 {
+		return mods
 	}
 	if caps.Vision != nil && *caps.Vision {
 		return []string{"text", "image"}
 	}
 	return nil
+}
+
+// advertisedModalities drops empty entries and duplicates from an advertised
+// modality list, in first-seen order.
+func advertisedModalities(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, m := range in {
+		if m != "" && !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out
 }

@@ -2,7 +2,7 @@
 
 Date: 2026-10-13
 Issue: [#4508](https://github.com/prime-radiant-inc/evener/issues/4508)
-Status: revised after spec review; awaiting implementation
+Status: implemented; both review rounds applied
 
 ## Problem
 
@@ -28,7 +28,8 @@ listing yields no image input.
 - `llm/providers/responses/models.go`: the platform entry reads both objects.
 - `llm/providers/chatcompletions/models.go`: uses the shared types and function;
   behavior unchanged.
-- `docs/llm-providers.md`: keeps the live-layer statement true for both readers.
+- `docs/llm-providers.md`: names every source the live-layer modality statement
+  covers, including the Codex listing's own list.
 
 ## Non-goals
 
@@ -66,6 +67,7 @@ listing yields no image input.
 
 - A gateway that advertises vision for a model that cannot see images marks it
   image-capable; this is the risk #4489's chat fix already carries.
-- A malformed (non-boolean) `vision` value fails the whole `/models` parse, so
-  the instance falls back to its catalog facts. That is pre-existing chat
-  behavior, kept for consistency.
+- A malformed (non-boolean) `vision` value, or a `capabilities`/`architecture`
+  value that is not an object, fails the whole `/models` parse, so the instance
+  falls back to its catalog facts. That is pre-existing chat behavior, kept for
+  consistency rather than adding a lenient parse.
