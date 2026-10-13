@@ -104,12 +104,20 @@ export function floatingWitnessExpr() {
 }
 
 // Counts the polls that produced no reading while `driver`'s send is wrapped,
-// and records the last failure. A poll produces no reading when the page never
-// answered OR the expression itself threw - both are "not held yet" to
-// `Driver.waitPage`, which says nothing about either, so without this a page
+// and records the last failure. A poll produces no reading when its
+// `Runtime.evaluate` REJECTED (the transport did not answer) or RESOLVED
+// carrying `exceptionDetails` (the expression threw) - both are "not held yet"
+// to `Driver.waitPage`, which says nothing about either, so without this a page
 // that stopped answering is indistinguishable from a live page whose state is
-// simply absent. Composable with the wrapper measureDelayedFloatingDock already
-// installs: it calls through and restores exactly what it found.
+// simply absent. The exception case is easy to miss: it is a SUCCESSFUL CDP
+// response, so a transport-only catch counts nothing.
+//
+// A request that never returns at all is bounded by `evaluate`'s own 30s
+// tripwire, which is longer than any of these waits, so it cannot be counted
+// here; the witness's own bounded read reports that page as unreadable instead.
+//
+// Composable with the wrapper measureDelayedFloatingDock already installs: it
+// calls through and restores exactly what it found.
 export function watchEvaluateFailures(driver) {
   const page = driver.page;
   const originalSend = typeof page?.send === "function" ? page.send : null;
@@ -118,14 +126,19 @@ export function watchEvaluateFailures(driver) {
   }
   let failedPolls = 0;
   let lastPollError = null;
+  const failed = (detail) => {
+    failedPolls += 1;
+    lastPollError = detail;
+  };
   page.send = async (method, params) => {
     try {
-      return await originalSend(method, params);
-    } catch (error) {
-      if (method === "Runtime.evaluate") {
-        failedPolls += 1;
-        lastPollError = messageOf(error);
+      const response = await originalSend(method, params);
+      if (method === "Runtime.evaluate" && response?.result?.exceptionDetails) {
+        failed(`page eval threw: ${JSON.stringify(response.result.exceptionDetails)}`);
       }
+      return response;
+    } catch (error) {
+      if (method === "Runtime.evaluate") failed(messageOf(error));
       throw error;
     }
   };

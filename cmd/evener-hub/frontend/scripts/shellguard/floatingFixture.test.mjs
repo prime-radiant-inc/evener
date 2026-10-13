@@ -110,11 +110,25 @@ afterEach(() => {
 });
 
 describe("floating fixture panel-wait witness", () => {
-  test("the labels and conditions are the ones the guard uses", () => {
-    expect(FLOATING_PANEL_LABEL).toBe("real floating fixture's workspace panel");
-    expect(DOCKVIEW_READY_LABEL).toBe("real Dockview api ready");
-    expect(PANEL_EXPR).toBe("window.shellguardFloat.getDockviewApi()?.getPanel(window.shellguardFloat.paneId) != null");
-    expect(READY_EXPR).toBe("window.shellguardFloat.getDockviewApi() != null");
+  test("the predicates read the live api and store, not a fixed answer", () => {
+    // The four states the two conditions can be in, read through the REAL
+    // expression: a green page cannot look like the failing one.
+    installFixture({ panes: [SETTINGS_PANE], panels: [], paneId: SETTINGS_PANE.id });
+    let witness = evaluateInPage(floatingWitnessExpr());
+    expect(witness.apiReady).toBe(true);
+    expect(witness.panelPresent).toBe(false);
+
+    installFixture({ panes: [SETTINGS_PANE], panels: [SETTINGS_PANE.id], paneId: SETTINGS_PANE.id });
+    witness = evaluateInPage(floatingWitnessExpr());
+    expect(witness.apiReady).toBe(true);
+    expect(witness.panelPresent).toBe(true);
+
+    installFixture({ panes: [SETTINGS_PANE], panels: [], paneId: SETTINGS_PANE.id });
+    window.shellguardFloat.getDockviewApi = () => null;
+    witness = evaluateInPage(floatingWitnessExpr());
+    expect(witness.apiReady).toBe(false);
+    expect(witness.panels).toBeNull();
+    expect(witness.panelPresent).toBe(false);
   });
 
   test("the waited-on condition and options are the guard's own", async () => {
@@ -142,6 +156,13 @@ describe("floating fixture panel-wait witness", () => {
     expect(failure).toBeInstanceOf(Error);
     expect(failure.cause).toBeInstanceOf(Error);
     expect(failure.cause.message).toContain(FLOATING_PANEL_LABEL);
+    // The operator-facing message is pinned whole: the wait's own line, then
+    // the witness. Nothing here is a substring of the text under test.
+    expect(
+      failure.message.startsWith(
+        "timed out after 15000ms (waited 15035ms) waiting for real floating fixture's workspace panel; witness ",
+      ),
+    ).toBe(true);
     const witness = witnessOf(failure, PANEL_TIMEOUT);
     expect(witness.fixture).toBe(FLOATING_PANEL_LABEL);
     expect(witness.stage).toBe("first measurement");
@@ -215,6 +236,29 @@ describe("floating fixture panel-wait witness", () => {
     const witness = witnessOf(failure, PANEL_TIMEOUT);
     expect(witness.failedPolls).toBe(3);
     expect(witness.lastPollError).toContain("Runtime.evaluate transport lost");
+    expect(witness.unreadable).toEqual(["witness"]);
+  });
+
+  test("a poll whose expression threw is counted, not reported as a healthy zero", async () => {
+    // A page exception comes back as a SUCCESSFUL CDP response carrying
+    // exceptionDetails, so a transport-only watcher counts nothing while no
+    // predicate poll produced a reading.
+    installFixture({ panes: [SETTINGS_PANE], panels: [], paneId: SETTINGS_PANE.id });
+    const send = vi.fn(async () => ({
+      result: {
+        result: { type: "object" },
+        exceptionDetails: { text: "ReferenceError: shellguardFloat is not defined" },
+      },
+    }));
+    const driver = fakeDriver(send);
+    const failure = await waitForFloatingState(driver, PANEL_EXPR, {
+      label: FLOATING_PANEL_LABEL,
+      stage: "first measurement",
+    }).catch((error) => error);
+
+    const witness = witnessOf(failure, PANEL_TIMEOUT);
+    expect(witness.failedPolls).toBe(3);
+    expect(witness.lastPollError).toContain("ReferenceError");
     expect(witness.unreadable).toEqual(["witness"]);
   });
 
