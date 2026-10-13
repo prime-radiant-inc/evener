@@ -24,11 +24,16 @@ declare module "node:fs" {
 }
 
 declare module "node:child_process" {
-  export function execFileSync(file: string, args: string[], options: { encoding: "utf8"; maxBuffer?: number }): string;
+  export function execFileSync(
+    file: string,
+    args: string[],
+    options: { encoding: "utf8"; maxBuffer?: number; env?: Record<string, string | undefined> },
+  ): string;
 }
 
 declare module "node:process" {
   export const argv: string[];
+  export const env: Record<string, string | undefined>;
   export const stdout: { write(chunk: string): boolean };
 }
 

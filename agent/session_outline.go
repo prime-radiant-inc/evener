@@ -348,8 +348,11 @@ func anyLineWiderThan(s string, limit int) bool {
 	return false
 }
 
-// outlineRoleLabel maps a turn kind to its capitalized outline role label,
-// matching the markdown renderer's headings (User/Assistant/Steering/…).
+// outlineRoleLabel maps a turn kind to its capitalized outline role label. The
+// conversational roles match the markdown renderer's headings
+// (User/Assistant/Steering/…); the harness context kinds use their CamelCase
+// kind token (Environment, NotesContext, MemoryContext) rather than the
+// renderer's prose heading.
 func outlineRoleLabel(kind schema.TurnKind) string {
 	switch kind {
 	case schema.TurnUserInput:
@@ -366,6 +369,8 @@ func outlineRoleLabel(kind schema.TurnKind) string {
 		return "Environment"
 	case schema.TurnNotesContext:
 		return "NotesContext"
+	case schema.TurnMemoryContext:
+		return "MemoryContext"
 	case schema.TurnSystem:
 		return "System"
 	case schema.TurnToolResults, schema.TurnTool:
