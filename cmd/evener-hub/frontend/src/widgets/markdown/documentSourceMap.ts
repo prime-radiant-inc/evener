@@ -74,7 +74,12 @@ function slice(value: Trace, start = 0, end = value.text.length): Trace {
     spans: { data: value.spans.data, start: value.spans.start + a, end: value.spans.start + b },
   };
 }
-function concat(...values: Trace[]): Trace {
+// The array-taking form is the real implementation: the transformations
+// assemble piece lists whose length grows with the document (expandTabs
+// emits one piece per character of a giant line), and spreading those pieces
+// into a function call would exceed the engine's argument limit and throw
+// while rendering a document that is itself within the size limit.
+function concatAll(values: readonly Trace[]): Trace {
   if (values.length === 0) return empty();
   // A zero-length piece contributes no text and no spans, so it must not
   // break the shared-storage chain either: otherwise a merge that stitches
@@ -99,6 +104,9 @@ function concat(...values: Trace[]): Trace {
   if (shared) return { text, spans: { data: first.spans.data, start: first.spans.start, end: last.spans.end } };
   const data = pieces.flatMap((v) => spansOf(v));
   return { text, spans: { data, start: 0, end: data.length } };
+}
+function concat(...values: Trace[]): Trace {
+  return concatAll(values);
 }
 const empty = (): Trace => ({ text: "", spans: { data: NO_SPANS, start: 0, end: 0 } });
 function spelling(value: Trace, text: string): Trace {
@@ -135,7 +143,7 @@ function replace(value: Trace, regex: RegExp, replacement: (match: Trace, captur
     if (!match[0].length) throw new Error("Unverified empty Marked transformation");
   }
   pieces.push(slice(value, cursor));
-  return concat(...pieces);
+  return concatAll(pieces);
 }
 function remove(value: Trace, re: RegExp): Trace {
   return replace(value, re, () => empty());
@@ -195,7 +203,7 @@ function joinLines(values: Trace[]): Trace {
       pieces.push(value.newline);
     }
   }
-  return concat(...pieces);
+  return concatAll(pieces);
 }
 function expandTabs(value: Trace, column = 0): Trace {
   const pieces: Trace[] = [];
@@ -214,7 +222,7 @@ function expandTabs(value: Trace, column = 0): Trace {
       column++;
     }
   }
-  return concat(...pieces);
+  return concatAll(pieces);
 }
 function splitCells(value: Trace, count?: number): Trace[] {
   // Same splitCells transformation as Marked 18.0.6, retaining the escaped
