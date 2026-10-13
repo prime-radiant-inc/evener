@@ -54,34 +54,36 @@ func hubEntryRepairRetryCmd(delay time.Duration, ref appwire.Ref, seq int) tea.C
 // isHubTranscriptIndexRebuilding reports whether err is the hub's typed
 // answer for a daemonless read whose sidecar is being repaired in the
 // background: retrying is the right response, and the read that follows
-// the repair's commit succeeds. Matched on the wire-stamped and raw data
-// shapes alike.
+// the repair's commit succeeds. wireErrorInfo reads both data shapes —
+// the typed struct an in-process error carries and the map the client's
+// JSON decode produces — so a real wire error matches, not just a
+// constructed one.
 func isHubTranscriptIndexRebuilding(err error) bool {
-	info, ok := hubWireErrorInfo(err)
-	return ok && info == appwire.ErrorTranscriptIndexRebuilding
+	return wireErrorInfo(err) == appwire.ErrorTranscriptIndexRebuilding
 }
 
 // isHubTranscriptHistoryFailed reports whether err is the repair budget's
 // terminal answer: no retry converges it, so the entry shows the error.
 func isHubTranscriptHistoryFailed(err error) bool {
-	info, ok := hubWireErrorInfo(err)
-	return ok && info == appwire.ErrorTranscriptHistoryFailed
+	return wireErrorInfo(err) == appwire.ErrorTranscriptHistoryFailed
 }
 
-// hubWireErrorInfo reads the evener discriminant out of a wire error, in
-// either data shape a history read's error carries.
-func hubWireErrorInfo(err error) (appwire.ErrorInfo, bool) {
-	var wire appwire.WireError
-	if !errors.As(err, &wire) {
-		return "", false
+// retryHubSessionRead re-issues the entry read for the armed retry,
+// tagging its landing with the retry's generation (the livecycle wrapping
+// pattern): a response that lands after the model moved on is discarded
+// whole by the hubSessionMsg guard — its success must not enter abandoned
+// navigation, its error must not rearm it.
+func (m *hubModel) retryHubSessionRead(ref appwire.Ref) tea.Cmd {
+	read := fetchHubSession(m.frames, m.client, ref)
+	seq := m.entryRepairSeq
+	return func() tea.Msg {
+		msg := read()
+		if sessionMsg, ok := msg.(hubSessionMsg); ok {
+			sessionMsg.entryRetrySeq = seq
+			return sessionMsg
+		}
+		return msg
 	}
-	switch data := wire.Data.(type) {
-	case appwire.HistoryReadErrorData:
-		return data.EvenerErrorInfo, true
-	case appwire.ErrorData:
-		return data.EvenerErrorInfo, true
-	}
-	return "", false
 }
 
 // entryRepairRetire ends the pending entry-repair retry and its status.
@@ -91,19 +93,27 @@ func (m *hubModel) entryRepairRetire() {
 	m.entryRepairSeq = 0
 }
 
-// updateHubEntryRepairTick lands an armed retry. The intent it was armed
-// under has stood — the armed ref is still the armed retry, no session
-// switch or cycling pick has bumped the generation, and the user has not
-// left for the spawn surface — so the entry read re-issues and the pace
-// grows for the round after; or the intent has departed, and the retry
-// retires entering nothing. A session may well be displayed while the
-// retry stands (the palette can pick a session from inside another): the
-// displayed ref is not the intent; the generation is.
+// updateHubEntryRepairTick lands an armed retry. A tick for a superseded
+// retry — another pick armed its own, or a landing retired this one — is
+// ignored: retiring here would clear the standing retry's status out from
+// under the session the user just picked. The matching retry's intent
+// stands while its armed ref is still the armed retry, no session switch
+// or cycling pick has bumped the generation, and the user has not left
+// for the spawn surface — so the entry read re-issues, tagged, and the
+// pace grows for the round after; or the intent has departed, and the
+// retry retires entering nothing. A session may well be displayed while
+// the retry stands (the palette can pick a session from inside another):
+// the displayed ref is not the intent; the generation is.
 func (m *hubModel) updateHubEntryRepairTick(msg hubEntryRepairTickMsg) (tea.Model, tea.Cmd) {
-	if m.entryRepairRef != msg.ref || m.entryRepairSeq != msg.seq || m.entryRepairSeq != m.liveNavSeq || m.mode == hubModeSpawn {
+	if m.entryRepairRef != msg.ref || m.entryRepairSeq != msg.seq {
+		// A tick belonging to another retry: the newer navigation owns the
+		// model. Ignore it, never retire the standing one for it.
+		return *m, nil
+	}
+	if m.entryRepairSeq != m.liveNavSeq || m.mode == hubModeSpawn {
 		m.entryRepairRetire()
 		return *m, nil
 	}
 	m.entryRepairDelay = min(m.entryRepairDelay*2, hubEntryRepairCapDelay)
-	return *m, fetchHubSession(m.frames, m.client, msg.ref)
+	return *m, m.retryHubSessionRead(msg.ref)
 }

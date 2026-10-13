@@ -60,6 +60,23 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only a read that replaces the transcript takes a capture, so the
 		// early returns below are all reached with nothing held.
 		msg.capture.Release()
+		// A read re-issued by a pending entry-repair retry (#4343) carries
+		// the retry's generation. One whose retry the model no longer holds
+		// — a fresh pick armed another, or a landing retired this one — is
+		// superseded: discard it whole. Its success must not enter the
+		// abandoned navigation (the different-ref branch below would apply
+		// it as a user-driven switch, clearing the newer surface's pending
+		// attachments and composer with it), and its rejection must not
+		// rearm it or surface on a session the user moved to. The read's
+		// subscribe+replace still re-pointed the connection's subscription
+		// server-side, so when a session is displayed its subscription is
+		// re-established — the same obligation the live-nav guards carry.
+		if msg.entryRetrySeq > 0 && (m.entryRepairRef.String() != msg.ref || m.entryRepairSeq != msg.entryRetrySeq) {
+			if m.mode == hubModeSession {
+				return m.reestablishDisplayedSubscription()
+			}
+			return m, nil
+		}
 		// A refresh read (the /details panel, a clear's re-read, the resync
 		// re-read — tagLiveNavRefresh) targets the session displayed at
 		// issue time and never switches sessions: a current response applies
@@ -305,6 +322,15 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch {
 				case refErr == nil && isHubTranscriptIndexRebuilding(msg.err):
 					if m.entryRepairRef != ref {
+						// The failed entry is a navigation event exactly
+						// as its success would have been (the plain-entry
+						// bump below): the retry now owns the pick's
+						// intent, so it takes the generation. This also
+						// keeps the armed generation nonzero, without
+						// which the tagged re-read's landing guard could
+						// not tell its own tagged response from an
+						// untagged one.
+						m.liveNavSeq++
 						m.entryRepairRef = ref
 						m.entryRepairDelay = hubEntryRepairBaseDelay
 						m.entryRepairSeq = m.liveNavSeq

@@ -41,8 +41,15 @@ type hubSessionMsg struct {
 	// semantics do not apply to it — its response refreshes the transcript
 	// and re-arms child subscriptions, then drops, never switching sessions
 	// (roborev PR #1044 round-12 medium 2).
-	liveNavRecovery       bool
-	liveNavRefresh        bool
+	liveNavRecovery bool
+	liveNavRefresh  bool
+	// entryRetrySeq tags a read re-issued by a pending entry-repair retry
+	// (#4343): the armed retry's generation. Update discards a tagged read
+	// whose retry the model no longer holds — its success must not enter
+	// abandoned navigation, its error must not rearm it — re-establishing
+	// the displayed session's subscription when one is displayed, since
+	// the read's subscribe+replace re-pointed it at the departed ref.
+	entryRetrySeq         int
 	liveNavRefreshReplace bool
 	err                   error
 	// beforeCut carries the frames the connection delivered ahead of this
