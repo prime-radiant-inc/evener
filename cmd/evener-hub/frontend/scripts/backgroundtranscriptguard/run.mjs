@@ -853,7 +853,8 @@ async function main() {
       startupDeadline.clear();
     }
 
-    const page = await connectPage(cdpEndpoint);
+    const opened = await openPage(cdpEndpoint, "about:blank");
+    const page = await connectPage(cdpEndpoint, opened.id);
     driver.page = page;
     driver.endpoint = cdpEndpoint;
     await page.send("Page.enable").catch(() => {});
