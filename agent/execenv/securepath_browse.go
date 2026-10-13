@@ -366,6 +366,52 @@ func grepReadFileCapped(fsys fs.FS, name string) ([]byte, error) {
 	return grepCappedRead(f)
 }
 
+// grepAdmitFS is the filesystem the off arm's grep walk reads through: it
+// answers Open itself with a nonblocking, type-checked open of the file
+// under root, following symlinks as the off arm always has, so a FIFO or
+// socket entry — or a device reached during a walk — is refused instead of
+// blocking the open until a peer appears (#4574 round 1's HIGH finding: a
+// readerless FIFO hung a path=/ search indefinitely, because no context
+// check can interrupt a blocked open). Everything else — ReadDir, Stat, the
+// listing budgets — stays the wrapped filesystem's job.
+type grepAdmitFS struct {
+	fs.FS
+	// root is the absolute directory the wrapped filesystem is rooted at; a
+	// direct open needs it because os.DirFS's own Open is blocking.
+	root string
+	// ctx is checked before an open: this layer replaces cancelFS's Open for
+	// reads, so it inherits that check.
+	ctx context.Context
+	// admitDevice lets the search's own named target be a device, which is
+	// still read, bounded by grepMaxFileBytes. Naming /dev/zero is a
+	// deliberate request; a FIFO or socket is never admitted, deliberate or
+	// not, because reading one needs a peer that may never appear.
+	admitDevice bool
+}
+
+func (f grepAdmitFS) Open(name string) (fs.File, error) {
+	if err := f.ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !fs.ValidPath(name) {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
+	}
+	return openRegularFollow(filepath.Join(f.root, filepath.FromSlash(name)), f.admitDevice)
+}
+
+// ReadDir and Stat forward to the wrapped filesystem rather than letting
+// fs.ReadDir fall back to Open plus the directory's own ReadDir — the same
+// trap boundedDirFS.Stat documents for its own embedding: the fallback would
+// bypass boundedDirFS's chunked, budgeted listing, and a directory large
+// enough to matter would materialize whole before any budget could refuse.
+func (f grepAdmitFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	return fs.ReadDir(f.FS, name)
+}
+
+func (f grepAdmitFS) Stat(name string) (fs.FileInfo, error) {
+	return fs.Stat(f.FS, name)
+}
+
 // grepNamedFileOverReadCap reports whether the resolved grep target names a
 // single file whose size already exceeds the per-file read cap. ripgrep
 // ignores --max-filesize for a file named on its command line, so such a

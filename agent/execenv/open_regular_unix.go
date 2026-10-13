@@ -41,3 +41,47 @@ func OpenRegularNoFollow(path string) (*os.File, error) {
 	}
 	return file, nil
 }
+
+// openRegularFollow opens path for reading through a single nonblocking
+// descriptor whose type is confirmed before any read, following a symlink at
+// the final component the way the off arm's reads always have. A FIFO or
+// socket is refused — a read-only open of one would otherwise block until a
+// peer appears, and nothing bounds that wait (#4574 round 1: a readerless
+// FIFO under /tmp or /run hung a path=/ search indefinitely, because the
+// read cap only applies after a successful open) — and so is any other
+// non-regular entry except a device when admitDevice is set: a device named
+// as a search target is still read, bounded by the caller's cap. O_NONBLOCK
+// is cleared once the type is admitted, so callers get the ordinary blocking
+// descriptor they expect.
+func openRegularFollow(path string, admitDevice bool) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open %q: no file for descriptor", path)
+	}
+	info, serr := file.Stat()
+	if serr != nil {
+		_ = file.Close()
+		return nil, serr
+	}
+	mode := info.Mode()
+	admit := mode.IsRegular() || info.IsDir() || (admitDevice && mode&os.ModeDevice != 0)
+	if !admit {
+		_ = file.Close()
+		return nil, fmt.Errorf("open %q: not a regular file", path)
+	}
+	flags, ferr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if ferr != nil {
+		_ = file.Close()
+		return nil, ferr
+	}
+	if _, ferr := unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags&^unix.O_NONBLOCK); ferr != nil {
+		_ = file.Close()
+		return nil, ferr
+	}
+	return file, nil
+}

@@ -2374,13 +2374,27 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 	// secureDirFS policy on the sandboxed arm while retaining file-symlink
 	// behavior for the unsandboxed fallback.
 	budget := newGlobBudget("grep")
-	fsys := cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget, ctx: ctx}}
+	// Reads go through grepAdmitFS rather than os.DirFS's blocking Open;
+	// cancellation and the listing budgets stay wrapped underneath it. A
+	// named target is the walk root's own file, so only that arm admits a
+	// device (see grepAdmitFS.admitDevice).
+	fsys := grepAdmitFS{
+		FS:          cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget, ctx: ctx}},
+		root:        path,
+		ctx:         ctx,
+		admitDevice: singleFile,
+	}
 	// No masking concept off the sandboxed path: no-op skip.
 	ignoreFS := fsys
 	if singleFile {
 		// Preserve the old single-file behavior: ignore rules are rooted at the
 		// file argument, which cannot contain a .gitignore tree of its own.
-		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}}
+		ignoreFS = grepAdmitFS{
+			FS:          cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}},
+			root:        filepath.Join(path, walkRoot),
+			ctx:         ctx,
+			admitDevice: true,
+		}
 	}
 	ignores, err := loadIgnoreSet(ctx, ignoreFS, func(rel string) bool {
 		return walkSkipsPseudoDir(path, filepath.Join(path, rel))
