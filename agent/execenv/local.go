@@ -2172,6 +2172,13 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	if skip != nil {
 		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
 	}
+	// A search root that reaches a pseudo-filesystem root — / itself, in
+	// practice — is never handed to ripgrep: rg has no per-file read bound,
+	// so /proc/kcore, a regular file of ~128TB, streams into it and its match
+	// output grows without bound (#4480). The native walk skips those roots.
+	if grepReachesPseudoRoot(dir) {
+		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
+	}
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
@@ -2364,7 +2371,9 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 		// file argument, which cannot contain a .gitignore tree of its own.
 		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}}
 	}
-	ignores, err := loadIgnoreSet(ctx, ignoreFS, nil, budget, wholeBaseIgnoreScope())
+	ignores, err := loadIgnoreSet(ctx, ignoreFS, func(rel string) bool {
+		return walkSkipsPseudoDir(path, filepath.Join(path, rel))
+	}, budget, wholeBaseIgnoreScope())
 	if err != nil {
 		return "", err
 	}
@@ -2404,6 +2413,9 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 					excludedByIgnore++
 					return filepath.SkipDir
 				}
+					if walkSkipsPseudoDir(path, filepath.Join(path, p)) {
+						return filepath.SkipDir
+					}
 			}
 			// fs.WalkDir never follows a directory symlink, so this walk
 			// cannot cycle back into itself the way the glob pattern walk's

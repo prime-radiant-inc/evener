@@ -646,7 +646,9 @@ func eachIgnoreLine(data []byte, visit func(line []byte)) {
 // masked directory's contents or reads a .gitignore inside one — a policy
 // this walk otherwise has no other way to honor, since fsys itself (a
 // symlink-refusing, root-confined secureDirFS) enforces confinement but not
-// masking. The off-path caller (no masking concept) passes a no-op skip.
+// masking. The off-path glob caller (no masking concept) passes a no-op
+// skip; the off-path grep caller passes the pseudo-filesystem skip so rule
+// discovery never lists the trees its own walk refuses to enter.
 //
 // budget is the same one the caller's glob walk spends listings from, so
 // ignore discovery and pattern matching together are bounded as one call's

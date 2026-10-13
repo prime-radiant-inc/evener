@@ -272,6 +272,57 @@ func grepTruncationNote(maxResults int) string {
 	return fmt.Sprintf("[results truncated at %d; narrow the path or glob_filter, or raise max_results]", maxResults)
 }
 
+// pseudoFsRoots are the pseudo-filesystem mount points a file-tree walk must
+// not descend into from outside: their contents are runtime state — process
+// tables, kernel parameters, device streams — rather than files to search,
+// and some are effectively unbounded (/proc/kcore presents as a regular file
+// of ~128TB, so a search of / that reaches it reads without limit, #4480). A
+// search explicitly rooted inside one still searches it, the way a file
+// named as the target under one is still read; the skip applies to a walk
+// entering the tree from outside.
+var pseudoFsRoots = []string{"/proc", "/sys", "/dev"}
+
+// isPseudoFsPath reports whether path names pseudo-filesystem content: one of
+// the pseudoFsRoots, or anything under one. Only an absolute path can — a
+// relative path resolves under the environment root, a real tree — so on a
+// platform without these mount points nothing is ever pseudo.
+func isPseudoFsPath(path string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	path = filepath.Clean(path)
+	for _, root := range pseudoFsRoots {
+		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// walkSkipsPseudoDir reports whether a walk rooted at the absolute path root
+// must refuse to descend into the directory at the absolute path dir: only a
+// pseudo-filesystem directory reached from outside the pseudo tree is
+// skipped. A search rooted inside /proc searches it — naming that tree is a
+// deliberate request, like naming /dev/zero as the path target.
+func walkSkipsPseudoDir(root, dir string) bool {
+	return isPseudoFsPath(dir) && !isPseudoFsPath(root)
+}
+
+// grepReachesPseudoRoot reports whether a walk from the absolute directory
+// dir would reach one of the pseudoFsRoots: dir is the filesystem root —
+// every absolute path's ancestor — or a proper ancestor of one of them. A
+// dir that is itself a pseudo root reaches nothing: it is searched, with
+// each file's read bounded, rather than refused.
+func grepReachesPseudoRoot(dir string) bool {
+	dir = filepath.Clean(dir)
+	for _, root := range pseudoFsRoots {
+		if dir == string(filepath.Separator) || strings.HasPrefix(filepath.Clean(root), dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // sortPathStat is the stat the glob result ordering runs on; a variable so
 // tests can observe how many times each path is stat'ed.
 var sortPathStat = os.Stat

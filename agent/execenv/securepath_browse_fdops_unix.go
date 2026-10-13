@@ -210,7 +210,8 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	// Never list or read into a masked subtree while collecting .gitignore
 	// rules — see the matching comment in glob above.
 	ignores, err := loadIgnoreSet(ctx, fsys, func(relPath string) bool {
-		return s.underMasked(filepath.Join(canonical, relPath))
+		abs := filepath.Join(canonical, relPath)
+		return s.underMasked(abs) || walkSkipsPseudoDir(canonical, abs)
 	}, budget, wholeBaseIgnoreScope())
 	if err != nil {
 		return "", err
@@ -250,6 +251,9 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 				}
 				if ignores.matches(rel, true) {
 					excludedByIgnore++
+					return fs.SkipDir
+				}
+				if walkSkipsPseudoDir(canonical, abs) {
 					return fs.SkipDir
 				}
 			}
