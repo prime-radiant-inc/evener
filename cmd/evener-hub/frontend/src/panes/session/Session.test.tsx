@@ -528,15 +528,39 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
 
 // #4343's client-visible half: a daemonless read whose transcript index is
 // being rebuilt in the background answers the typed transcriptIndexRebuilding
-// discriminant. The store owns the paced retry (threads.test.ts pins the flag
-// and retry lifecycle); this pane's loading surface reads the per-ref flag
-// and shows the agreed concise status instead of an eternal "Loading
-// transcript…", and never the deleted state — a repair is not a deletion.
-test("a ref whose index is being rebuilt shows the repairing status, not a stall or a deletion", async () => {
+// discriminant. The store owns the paced retry, the flag, and the label the
+// loading surface reads from it (threads.test.ts pins that lifecycle); this
+// pane pins what the copy is FOR: the repair window shows a loading status —
+// never the deleted surface, a repair is not a deletion — and recovery
+// replaces it with the transcript once a read lands (Copy Is Not a Test
+// Oracle: no assertion pins the label's wording).
+test("a ref whose index is being rebuilt shows a loading status that recovers with the repair, never a deletion", async () => {
   const fake = connectFakeClient();
+  let reads = 0;
   fake.on("thread/read", () => {
-    throw new WireError("thread history is being rebuilt in the background", -32000, {
-      evenerErrorInfo: "transcriptIndexRebuilding",
+    reads += 1;
+    if (reads === 1) {
+      throw new WireError("thread history is being rebuilt in the background", -32000, {
+        evenerErrorInfo: "transcriptIndexRebuilding",
+      });
+    }
+    return readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_repaired",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_repaired",
+              turnId: "turn_repaired",
+              type: "agentMessage",
+              text: "the repaired payload",
+              status: "completed",
+            },
+          ],
+        },
+      ],
     });
   });
 
@@ -546,9 +570,16 @@ test("a ref whose index is being rebuilt shows the repairing status, not a stall
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByText("Repairing session history")).toBeTruthy());
-  expect(screen.queryByText(/loading/i)).toBeNull();
-  expect(screen.queryByText(/deleted/i)).toBeNull();
+  // The repair window: the loading surface is showing, and the pane is not
+  // showing the deleted surface.
+  await waitFor(() => expect(screen.getByTestId("loader-label")).toBeTruthy());
+  expect(document.querySelectorAll('[data-testid="empty-state"][data-reason="deleted"]')).toHaveLength(0);
+
+  // A resync re-reads the ref; the read now lands, and recovery replaces
+  // the loading surface with the transcript's own content.
+  fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+  await waitFor(() => expect(screen.queryByTestId("loader-label")).toBeNull());
+  expect(screen.getByText("the repaired payload")).toBeTruthy();
 });
 
 // The daemon fences every request against a target it has actually deleted
