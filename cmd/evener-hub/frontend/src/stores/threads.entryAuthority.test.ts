@@ -98,6 +98,177 @@ async function openTab(hydrate = true) {
   return tab;
 }
 
+it("keeps replayed overlay deltas exactly once when live history preserves the read snapshot length", async () => {
+  const tab = await openTab();
+  const slot = {
+    key: "stream:live:agentMessage",
+    kind: "stream" as const,
+    streamId: "live",
+    roundId: "round_live",
+    turnId: "turn_live",
+    item: { id: "item_live", turnId: "turn_live", type: "agentMessage" as const, text: "start" },
+  };
+  tab.client.emitNotification({ method: "overlay/upserted", params: { ref, threadId: read().thread.id, item: slot } });
+  const authority = deferred<number>();
+  const entered = deferred<void>();
+  vi.spyOn(tab.cache, "getHistoryGeneration").mockImplementationOnce(() => {
+    entered.resolve();
+    return authority.promise;
+  });
+  const response = read();
+  response.overlay = [slot];
+  tab.client.on("thread/read", (params) => ({ ...response, requestGeneration: params.requestGeneration }));
+  const hydrations = tab.threads.threadsStore.getState().hydrations.get(ref)!;
+  tab.client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: response.thread.id } });
+  await entered.promise;
+  tab.client.emitNotification({
+    method: "overlay/delta",
+    params: { ref, threadId: response.thread.id, key: slot.key, field: "text", delta: " tail" },
+  });
+  tab.client.emitNotification(suffix(2));
+  const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+  expect(repository.getSnapshot()?.overlay?.[slot.key]?.item.text).toBe("start tail");
+  // Live recorded input merges bodies but does not advance the read cursor's
+  // snapshot length. This is an invariant, not a rejected-read regression.
+  expect(repository.getSnapshot()?.history?.length).toBe(1);
+  expect(
+    repository
+      .getSnapshot()
+      ?.history?.turns.flatMap((turn) => turn.items)
+      .some((item) => item.text === "body-2"),
+  ).toBe(true);
+  const frames = tab.threads.threadsStore.getState().frameTimes.get(ref)?.length;
+  authority.resolve(0);
+  await vi.waitFor(() => expect(tab.threads.threadsStore.getState().hydrations.get(ref)).toBe(hydrations + 1));
+  expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBe(repository);
+  expect(repository.getSnapshot()?.overlay?.[slot.key]?.item.text).toBe("start tail");
+  expect(tab.threads.threadsStore.getState().threads.get(ref)?.overlay?.[slot.key]?.item.text).toBe("start tail");
+  expect(tab.threads.threadsStore.getState().frameTimes.get(ref)?.length).toBe(frames);
+});
+
+it("does not replay an accepted delta after an end read advances history during hydration authorities", async () => {
+  const tab = await openTab();
+  const slot = {
+    key: "stream:live:agentMessage",
+    kind: "stream" as const,
+    streamId: "live",
+    roundId: "round_live",
+    turnId: "turn_live",
+    item: { id: "item_live", turnId: "turn_live", type: "agentMessage" as const, text: "start" },
+  };
+  const ending = {
+    ...slot,
+    key: "stream:ending:agentMessage",
+    streamId: "ending",
+    roundId: "round_ending",
+    turnId: "turn_ending",
+    item: { ...slot.item, id: "item_ending", turnId: "turn_ending", text: "ending" },
+  };
+  for (const item of [slot, ending]) {
+    tab.client.emitNotification({ method: "overlay/upserted", params: { ref, threadId: read().thread.id, item } });
+  }
+  const authority = deferred<number>();
+  const entered = deferred<void>();
+  vi.spyOn(tab.cache, "getHistoryGeneration").mockImplementationOnce(() => {
+    entered.resolve();
+    return authority.promise;
+  });
+  let reads = 0;
+  tab.client.on("thread/read", (params) => {
+    const response = read(++reads === 1 ? 1 : 2);
+    response.overlay = reads === 1 ? [slot, ending] : [{ ...slot, item: { ...slot.item, text: "start tail" } }];
+    return { ...response, requestGeneration: params.requestGeneration };
+  });
+  const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+  const accepts = vi.spyOn(repository, "acceptRead");
+  const hydrations = tab.threads.threadsStore.getState().hydrations.get(ref)!;
+  tab.client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: read().thread.id } });
+  await entered.promise;
+  try {
+    tab.client.emitNotification({
+      method: "overlay/delta",
+      params: { ref, threadId: read().thread.id, key: slot.key, field: "text", delta: " tail" },
+    });
+    tab.client.emitNotification({
+      method: "overlay/end",
+      params: { ref, threadId: read().thread.id, roundId: ending.roundId },
+    });
+    await vi.waitFor(() => expect(repository.getSnapshot()?.history?.length).toBe(2));
+    expect(reads).toBe(2);
+    expect(accepts.mock.results.map((result) => result.value)).toEqual([true]);
+    expect(repository.getSnapshot()?.overlay?.[slot.key]?.item.text).toBe("start tail");
+    const frames = tab.threads.threadsStore.getState().frameTimes.get(ref)?.length;
+    authority.resolve(0);
+    await vi.waitFor(() => expect(tab.threads.threadsStore.getState().hydrations.get(ref)).toBe(hydrations + 1));
+    expect(accepts.mock.results.map((result) => result.value)).toEqual([true, false]);
+    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBe(repository);
+    expect(repository.getSnapshot()?.overlay?.[slot.key]?.item.text).toBe("start tail");
+    expect(tab.threads.threadsStore.getState().threads.get(ref)?.overlay?.[slot.key]?.item.text).toBe("start tail");
+    expect(tab.threads.threadsStore.getState().frameTimes.get(ref)?.length).toBe(frames);
+  } finally {
+    authority.resolve(0);
+  }
+});
+
+it("unsubscribes after background release and pane close before initial hydration settles", async () => {
+  const tab = await openTab(false);
+  const held = deferred<number>();
+  const entered = deferred<void>();
+  // Wire acquisition must finish before unsubscribe can run. Hold the initial
+  // hydration at its authority lookup, still before repository creation.
+  vi.spyOn(tab.cache, "getHistoryGeneration").mockImplementationOnce(() => {
+    entered.resolve();
+    return held.promise;
+  });
+  const pane = tab.threads.threadsStore.getState().ensureThread(ref);
+  await entered.promise;
+  const background = tab.threads.acquireBackgroundThread(ref);
+  try {
+    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+    await background.release();
+    expect(tab.client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+    tab.threads.threadsStore.getState().releaseThread(ref);
+    expect(tab.client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
+  } finally {
+    held.resolve(0);
+    await pane;
+    await background.ready;
+  }
+});
+
+it("reacquisition cancels real-route retirement without leaving a phantom owner or clearing a newer release", async () => {
+  const tab = await openTab();
+  const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+  const cancel = vi.spyOn(repository, "cancelRetirement");
+  const held = [deferred<ThreadReadResponse>(), deferred<ThreadReadResponse>()];
+  const entered = [deferred<void>(), deferred<void>()];
+  let reads = 0;
+  tab.client.on("thread/read", async (params) => {
+    const index = reads++;
+    entered[index]!.resolve();
+    return { ...(await held[index]!.promise), requestGeneration: params.requestGeneration };
+  });
+  const firstRelease = tab.threads.threadsStore.getState().releaseThreadAndWait(ref);
+  await entered[0]!.promise;
+  try {
+    const replacement = tab.threads.acquireBackgroundThread(ref);
+    await replacement.ready;
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBe(repository);
+    const secondRelease = replacement.release();
+    held[0]!.resolve(read());
+    expect(await firstRelease).toEqual({ kind: "cancelled" });
+    await entered[1]!.promise;
+    expect(tab.client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+    held[1]!.resolve(read());
+    await secondRelease;
+    expect(tab.client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
+    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+  } finally {
+    for (const gate of held) gate.resolve(read());
+  }
+});
+
 it("replaces an overflowed background hydration when its retry fires before the held response", async () => {
   const tab = await openTab(false);
   const held = deferred<ThreadReadResponse>();
