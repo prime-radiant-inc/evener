@@ -33,8 +33,9 @@ listing yields no image input.
 
 ## Non-goals
 
-- The Codex entry is unchanged: the Codex backend states `input_modalities`
-  itself.
+- The Codex entry reads its own `input_modalities`, but routes the list through
+  the same normalizer as the other two sources, so a raw or empty list cannot
+  merge wholesale over a curated one.
 - Only `vision` is read from the capability object; its other keys (tools,
   reasoning) do not affect resolution today.
 - No lenient parsing. A non-boolean `vision` fails the whole listing, exactly as

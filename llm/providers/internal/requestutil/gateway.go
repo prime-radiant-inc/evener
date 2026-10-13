@@ -18,11 +18,9 @@ type GatewayCapabilities struct {
 // GatewayInputModalities is the input modality list a /models row advertises:
 // architecture.input_modalities when that list carries any entry, else text
 // plus image for an advertised vision capability, else nil. The protocol
-// readers share it so they cannot disagree about the precedence. The result is
-// nil, never an empty slice, when the row advertises nothing: mergeCaps would
-// otherwise replay the live layer's empty list over a curated one.
+// readers share it so they cannot disagree about the precedence.
 func GatewayInputModalities(arch GatewayArchitecture, caps GatewayCapabilities) []string {
-	if mods := advertisedModalities(arch.InputModalities); len(mods) > 0 {
+	if mods := DedupStrings(arch.InputModalities); len(mods) > 0 {
 		return mods
 	}
 	if caps.Vision != nil && *caps.Vision {
@@ -31,13 +29,16 @@ func GatewayInputModalities(arch GatewayArchitecture, caps GatewayCapabilities) 
 	return nil
 }
 
-// advertisedModalities drops empty entries and duplicates from an advertised
-// modality list, in first-seen order.
-func advertisedModalities(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, m := range in {
-		if m != "" && !slices.Contains(out, m) {
-			out = append(out, m)
+// DedupStrings drops empty entries and duplicates from an advertised list, in
+// first-seen order, and returns nil when nothing survives. Every live-listing
+// modality or effort list goes through it: a raw list a gateway publishes would
+// otherwise merge wholesale over a curated one, and an empty one would erase it
+// (llm/registry/merge.go).
+func DedupStrings(in []string) []string {
+	var out []string
+	for _, s := range in {
+		if s != "" && !slices.Contains(out, s) {
+			out = append(out, s)
 		}
 	}
 	return out

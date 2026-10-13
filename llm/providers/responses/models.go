@@ -41,9 +41,7 @@ func (m openAIModelListEntry) row() registry.Model {
 	if o := requestutil.FirstPositiveInt(m.MaxOutputTokens, m.OutputTokens); o > 0 {
 		caps.MaxOutputTokens = new(o)
 	}
-	if mods := requestutil.GatewayInputModalities(m.Architecture, m.Capabilities); len(mods) > 0 {
-		caps.InputModalities = mods
-	}
+	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
 	return registry.Model{ID: m.ID, Caps: caps}
 }
 
@@ -103,9 +101,7 @@ func (m codexModelListEntry) row() registry.Model {
 	if d := strings.TrimSpace(m.DefaultReasoningLevel); d != "" && !strings.EqualFold(d, "ultra") {
 		caps.DefaultEffort = new(d)
 	}
-	if len(m.InputModalities) > 0 {
-		caps.InputModalities = m.InputModalities
-	}
+	caps.InputModalities = requestutil.DedupStrings(m.InputModalities)
 	return registry.Model{ID: m.id(), Caps: caps}
 }
 

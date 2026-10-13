@@ -23,11 +23,31 @@ func TestGatewayInputModalities(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// A non-nil empty slice would clobber a curated modality list when
-			// mergeCaps replays the live layer, so "nothing" must read as nil.
+			// Nil, not an empty slice, is what "advertises nothing" must mean:
+			// anything else would erase a curated list on the live replay.
 			got := GatewayInputModalities(tc.arch, tc.caps)
-			if !slices.Equal(got, tc.want) || (tc.want == nil && got != nil) {
+			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
 				t.Fatalf("GatewayInputModalities = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDedupStrings(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"drops duplicates and empties in first-seen order", []string{"low", "", "low", "high"}, []string{"low", "high"}},
+		{"nothing survives", []string{"", ""}, nil},
+		{"nil stays nil", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DedupStrings(tc.in)
+			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
+				t.Fatalf("DedupStrings(%#v) = %#v, want %#v", tc.in, got, tc.want)
 			}
 		})
 	}

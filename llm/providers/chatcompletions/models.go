@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,11 +82,9 @@ func (m modelEntry) row() registry.Model {
 		if m.Reasoning.Mandatory != nil && *m.Reasoning.Mandatory {
 			caps.ThinkingAlwaysOn = new(true)
 		}
-		caps.EffortValues = dedupStrings(m.Reasoning.SupportedEfforts)
+		caps.EffortValues = requestutil.DedupStrings(m.Reasoning.SupportedEfforts)
 	}
-	if mods := requestutil.GatewayInputModalities(m.Architecture, m.Capabilities); len(mods) > 0 {
-		caps.InputModalities = mods
-	}
+	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {
 			caps.Cost = &registry.Cost{Input: in, Output: out}
@@ -119,16 +116,6 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		return nil, nil
 	})
 	return rows, err
-}
-
-func dedupStrings(in []string) []string {
-	var out []string
-	for _, s := range in {
-		if s != "" && !slices.Contains(out, s) {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // perTokenCostToPerMillion converts OpenRouter's per-token price strings
