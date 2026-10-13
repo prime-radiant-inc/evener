@@ -1190,6 +1190,41 @@ async function installLateAncestryHold() {
   return installed.result.identifier;
 }
 
+// #3704: the restored unrelated pane is INACTIVE, so the app does not
+// re-derive its tab label from a live reader - its saved display name has to
+// survive the reload on its own. The journey's one CI failure compared the
+// whole dockview panel object and got a bare deep-equal (title 'local:<id>'
+// where 'Fake Session' was saved) that named neither the pane nor the label
+// that diverged. Keep the strict comparison, but when BOTH panels are present
+// and only the title differs, fail by naming the state a recurrence needs: the
+// pane, the label it restored against the label it saved, every live tab
+// label, the mounted session headings, and how long ago the reload was. A
+// missing panel or layout is left to the strict deep-equal below, so it is
+// never misreported as a title divergence.
+async function assertRestoredPanel(restored, paneId, expected, label, reloadedAt) {
+  const actual = restored?.panels?.[paneId];
+  if (actual && expected && actual.title !== expected.title) {
+    // A session pane's body is marked `session:<ref>`; its rendered heading is
+    // in the header sibling just before that body (PaneScaffold), not inside it.
+    const observed = await read(`(() => {
+      const bodies = [...document.querySelectorAll('[data-pane-scaffold^="session:"]')];
+      return {
+        tabs: [...document.querySelectorAll('.dv-tab')].map(node => node.textContent),
+        sessionScaffolds: bodies.map(body => body.dataset.paneScaffold),
+        sessionHeadings: bodies.map(body => body.previousElementSibling?.querySelector('h2')?.textContent ?? null),
+      };
+    })()`);
+    assert.fail(
+      `${label}: pane ${paneId} carries title ${JSON.stringify(actual.title)} where its saved layout had ${JSON.stringify(expected.title)}`
+      + `; every live tab label ${JSON.stringify(observed.tabs)}`
+      + `, mounted session scaffolds ${JSON.stringify(observed.sessionScaffolds)}`
+      + `, their headings ${JSON.stringify(observed.sessionHeadings)}`
+      + `, ${Date.now() - reloadedAt}ms since the reload`,
+    );
+  }
+  assert.deepEqual(actual, expected, label);
+}
+
 async function reloadAndMobileJourney() {
   await driver.clearComposerDraft(fixture.rootRef);
   await driver.focusComposer(fixture.rootRef);
@@ -1277,6 +1312,7 @@ async function reloadAndMobileJourney() {
   assert.equal(JSON.stringify(saved).includes("data:image"), false, "layout never stores source image bytes");
   writeFileSync(path.join(fixture.artifactDir, "before-reload-layout.json"), JSON.stringify(saved, null, 2));
   const holdScriptId = await installLateAncestryHold();
+  const reloadedAt = Date.now();
   try {
     await driver.send("Page.reload", { ignoreCache: true });
     await wait(`document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelector(${q(inspectorRoot)}).textContent.includes('Earlier ancestry is incomplete')`, "saved path paints before actual ancestry delivery");
@@ -1305,7 +1341,7 @@ async function reloadAndMobileJourney() {
   assert.deepEqual(restored.panels[fixture.sourcePaneId], sourcePanel);
   assert.deepEqual(placement(restored, fixture.inspectorPaneId), inspectorPlacement);
   assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs);
-  assert.deepEqual(restored.panels[unrelatedId], unrelatedPanel);
+  await assertRestoredPanel(restored, unrelatedId, unrelatedPanel, "restored unrelated pane keeps the identity its saved layout had", reloadedAt);
   assert.deepEqual(placement(restored, unrelatedId), unrelatedPlacement);
   // Inactive secondary tabs retain their work under normal mounting rules.
   // Activate the actual saved tab before observing its recovered composer.
@@ -1331,7 +1367,7 @@ async function reloadAndMobileJourney() {
   const desktopReturned = await driver.composerState(fixture.rootRef);
   assert.equal(desktopReturned.text, source.text);
   assert.deepEqual(desktopReturned.chips, source.chips);
-  assert.deepEqual((await read(layoutExpr)).panels[unrelatedId], unrelatedPanel);
+  await assertRestoredPanel(await read(layoutExpr), unrelatedId, unrelatedPanel, "returned unrelated pane keeps the identity its saved layout had", reloadedAt);
   assert.deepEqual(placement(await read(layoutExpr), unrelatedId), baselinePlacement);
   await capture("desktop-source-return-after-reload");
   await driver.click(sourceAgents);
@@ -1421,7 +1457,7 @@ async function reloadAndMobileJourney() {
   })()`, "the mobile Agents row opens the child's live conversation without a cascade");
   await wait("document.body.textContent.includes('CASCADE_ROLE_1_SENTINEL')", "real ordinary phone child transcript");
   assert.equal(await read('document.querySelectorAll("[data-testid=cascade-column], [data-testid=cascade-spine]").length'), 0);
-  assert.deepEqual((await read(layoutExpr)).panels[unrelatedId], unrelatedPanel, "phone action retains independent pane identity");
+  await assertRestoredPanel(await read(layoutExpr), unrelatedId, unrelatedPanel, "phone action retains independent pane identity", reloadedAt);
   driver.milestone("mobile-agents-transcript", { childRef: fixture.childRef, unrelatedPaneId: unrelatedId });
   await capture("mobile-agents-transcript");
 }
