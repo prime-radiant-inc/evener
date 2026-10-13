@@ -653,6 +653,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         );
         return { state: "expiry-pending" };
       }
+    } catch (error) {
+      // A fault after this invocation installed its provisional suppression — a
+      // storage fault inside validation, or a fault in the outside-transaction
+      // observation boundary — must release that still-owned UNCONFIRMED entry
+      // on the way out: the finally below only retires the ticket, and a leaked
+      // unconfirmed entry would hide an unchanged epoch's annotations and
+      // cancel their handoffs forever. Confirmed suppression (an expiry this or
+      // an earlier read proved) is never released here.
+      finishValidation(false);
+      throw error;
     } finally {
       this.#issuedReads.delete(ticket.requestId);
     }

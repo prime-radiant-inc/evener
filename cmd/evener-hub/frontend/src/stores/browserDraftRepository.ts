@@ -548,7 +548,14 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         } else {
           value = appendLiteralReference(row, reference);
         }
-        const nextRow = nextSessionRow(row, preparation.backing.kind === "draft" ? value : undefined);
+        const appended = nextSessionRow(row, preparation.backing.kind === "draft" ? value : undefined);
+        // An ordinary-draft append changes the draft's text, so it stamps its
+        // actual edit time like every genuine draft write: the resume carry
+        // orders drafts by this stamp, and keeping the pre-annotation stamp
+        // would let an older-edited destination drop the new reference. A
+        // recovery-backed append leaves the ordinary draft untouched and keeps
+        // its stamp.
+        const nextRow = preparation.backing.kind === "draft" ? { ...appended, editedAt: Date.now() } : appended;
         // Every asynchronous prerequisite and construction precedes this guard.
         input.beforeFinalGuard?.();
         if (!input.documentStillEligible()) return { state: "cancelled" };
