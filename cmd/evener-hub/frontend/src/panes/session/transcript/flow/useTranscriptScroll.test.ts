@@ -4305,6 +4305,37 @@ describe("native key scrolling that begins a frame later", () => {
   });
 });
 
+// A frame marker cannot bound the key's smooth scroll: the first scroll event
+// can arrive after the marker's frames (#4065: 37.8ms late once, 54.4ms
+// another time, about 20ms usually), and then the reader's movement is never
+// recorded and VirtualList's size-change rule is never armed. The key knows its
+// direction at keydown, so the rule is armed there instead of waiting for the
+// event.
+describe("a native backward key arms the reading-point rule at keydown", () => {
+  test("a row measurement between the key and its smooth scroll leaves the reading point in place", async () => {
+    const scene = mountReaderScene("shift-space-arms-backward", [1600, 1000], {
+      estimate: 500,
+      viewportHeight: 400,
+    });
+    try {
+      await scene.start(900);
+      const port = scene.port();
+      expect(port.scrollTop).toBe(900);
+      // A row above the reading point grows on the key's own commit, and the
+      // smooth scroll has delivered no scroll event yet.
+      scene.geometry.rowHeights[0] = 1700;
+      await act(async () => {
+        port.dispatchEvent(new KeyboardEvent("keydown", { key: " ", shiftKey: true, bubbles: true, cancelable: true }));
+        scene.external.notify((target) => target.dataset.index === "0");
+      });
+      await act(async () => scene.frames.release());
+      expect(port.scrollTop).toBe(900);
+    } finally {
+      scene.dispose();
+    }
+  });
+});
+
 describe("no-model / not-yet-mounted safety", () => {
   test("model undefined (thread still loading): no crash, empty result", () => {
     const { ref } = makeListHandle();
