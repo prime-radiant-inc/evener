@@ -218,6 +218,25 @@ decoding; each application owns its read cadence, retained windows and recovery.
 The [output guide](../../docs/product/session-activity.md#job-output-pages)
 defines snapshot selection, floor/EOF semantics and the current protocol.
 
+## Search grouping
+
+The root exports `groupSearchResults(live, past)`, which orders a
+`evener/search` response's rows for grouped rendering: a Past result carrying
+`topLevel` (a matching subagent) nests under its top-level session's own row —
+in the live section when that session is a matched live row, else in the past
+section — and when the response carries no row for that session, a greyed
+anchor is synthesized from the child's `topLevel` (a session that matched but
+was cut from the page included). Each returned `GroupedSearchRow` says
+`nested` (render indented) or `indirect` (grey it; the match came from its
+subagents, and the row stays activatable). `countSearchMatches(rows)` answers
+how many of the rows are the response's own matches: an indirect anchor is
+context for its subagents' matches, not a match itself. Groups render contiguously at their
+first member's position, children in match order; rows without `topLevel`
+render flat exactly as before, and the helper resolves nothing and dedups
+nothing — lineage is the hub's, and an older hub's response must render
+unchanged. The web command palette and the native Board search both render
+from this one implementation.
+
 ## Older-history demand
 
 `HistoryPaging` retains a requested older page until history advances. Attach

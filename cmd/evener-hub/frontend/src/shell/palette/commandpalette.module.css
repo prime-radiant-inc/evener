@@ -126,6 +126,20 @@
   color: var(--ink-low);
 }
 
+/* A nested subagent row: indented into its group so the top-level session's
+ * row reads as the family's head (the tree's one-level --space-2 indent, one
+ * step wider so the glyph lands clear of the anchor's dot column). */
+.rowNested {
+  padding-left: calc(var(--space-2) + var(--space-4));
+}
+
+/* An indirect anchor: the session itself did not match — its subagents did —
+ * so it recedes like an unavailable row while staying a normal, activatable
+ * row that opens the session. */
+.rowIndirect {
+  color: var(--ink-low);
+}
+
 .unavailable {
   flex: none;
   color: var(--ink-low);

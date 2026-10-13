@@ -211,6 +211,13 @@ assert.deepEqual(
   ["review"],
 );
 assert.equal(client.evaluateSlashLabel("review", "rev").embedding.longestRun, 3);
+// groupSearchResults probes both synthesized paths in one call: an anchor
+// greyed for a session with no row of its own, and the nested child under it.
+const groupedSearch = client.groupSearchResults([], [
+  { id: "sub", ref: "local:sub", title: "Delegate", project: "", state: "ended", age: "1h", topLevel: { id: "root", ref: "local:root", title: "Root", state: "ended" } },
+]);
+assert.deepEqual([groupedSearch.past[0].indirect, groupedSearch.past[1].nested], [true, true]);
+assert.equal(client.countSearchMatches(groupedSearch.past), 1);
 assert.deepEqual(client.spliceSlashCommand("say /rev", slashToken, "/acme:review"), {
   text: "say /acme:review ",
   caret: 17,

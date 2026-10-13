@@ -7,8 +7,19 @@
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
 
-import type { CommandDescriptor, NavigationSessionSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
-import { errorText, isHubLaunchError, sessionPluginNames } from "@evener/appwire-client";
+import type {
+  CommandDescriptor,
+  GroupedSearchRow,
+  NavigationSessionSummary,
+  SearchResponse,
+} from "@evener/appwire-client";
+import {
+  countSearchMatches,
+  errorText,
+  groupSearchResults,
+  isHubLaunchError,
+  sessionPluginNames,
+} from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
@@ -68,6 +79,8 @@ const CLASS = {
   sectionHeader: requireClass(styles.sectionHeader, "commandpalette.module.css", "sectionHeader"),
   row: requireClass(styles.row, "commandpalette.module.css", "row"),
   rowUnavailable: requireClass(styles.rowUnavailable, "commandpalette.module.css", "rowUnavailable"),
+  rowNested: requireClass(styles.rowNested, "commandpalette.module.css", "rowNested"),
+  rowIndirect: requireClass(styles.rowIndirect, "commandpalette.module.css", "rowIndirect"),
   unavailable: requireClass(styles.unavailable, "commandpalette.module.css", "unavailable"),
   glyph: requireClass(styles.glyph, "commandpalette.module.css", "glyph"),
   title: requireClass(styles.title, "commandpalette.module.css", "title"),
@@ -139,8 +152,11 @@ const HELP_ROWS: ShortcutListItem[] = [
 
 // A single navigable row in the results list.
 type PaletteItem =
-  | { kind: "live"; result: SearchResult }
-  | { kind: "past"; result: SearchResult }
+  // A search row: the shared grouped row carried whole, `kind` naming its
+  // section. nested (a matching subagent) indents into its group; indirect
+  // (a synthesized anchor whose own session has no row in the response)
+  // recedes greyed — both stay ordinary activatable rows.
+  | { kind: "live" | "past"; row: GroupedSearchRow }
   | { kind: "insession"; match: InSessionMatch }
   | { kind: "command"; command: ScopedCommand }
   | { kind: "arg"; item: CommandArgsEnumItem }
@@ -540,7 +556,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // The AppWire SearchResult contract carries the qualified ref every row
       // uses to open a session. A bare-id URL does not route, and naming a
       // session differently from the rail can open it twice in two panes.
-      const url = `/s/${encodeURIComponent(item.result.ref)}`;
+      const url = `/s/${encodeURIComponent(item.row.result.ref)}`;
       // openInNewTab keeps the new tab from copying this tab's sessionStorage -
       // which carries the per-client mutation identity, and a shared identity
       // would let both tabs claim each other's durable sends.
@@ -767,17 +783,23 @@ function buildView(args: {
       for (const node of needsYouNodes) push({ kind: "needsYou", node });
       return { entries, items };
     }
-    const live = searchResp?.live ?? [];
-    const past = searchResp?.past ?? [];
+    // Subagent hits group under their top-level session (shared client
+    // rule): a matched live anchor nests its family inline, an absent anchor
+    // arrives greyed, and a topLevel-less (older-hub) response stays flat.
+    const grouped = groupSearchResults(searchResp?.live ?? [], searchResp?.past ?? []);
     const model = focusedModel(ctx.sessionRef);
     const inSession = model && query.trim() ? findInSessionMatches(model, query.trim()) : [];
-    if (live.length) {
+    if (grouped.live.length) {
       entries.push({ type: "header", section: "live", label: "Live" });
-      for (const result of live) push({ kind: "live", result });
+      for (const row of grouped.live) {
+        push(row.nested ? { kind: "past", row } : { kind: "live", row });
+      }
     }
-    if (past.length) {
-      entries.push({ type: "header", section: "past", label: `Past · ${past.length}` });
-      for (const result of past) push({ kind: "past", result });
+    if (grouped.past.length) {
+      entries.push({ type: "header", section: "past", label: `Past · ${countSearchMatches(grouped.past)}` });
+      for (const row of grouped.past) {
+        push({ kind: "past", row });
+      }
     }
     if (inSession.length) {
       entries.push({ type: "header", section: "in-session", label: `In session · ${inSession.length}` });
@@ -912,13 +934,25 @@ function Row({
   const unavailable =
     (item.kind === "command" && item.command.unavailableReason !== undefined) ||
     (item.kind === "handoff" && !item.hasFocusedSession);
+  const nested = item.kind === "past" && item.row.nested;
+  const indirect = item.kind === "past" && item.row.indirect;
+  const className = [
+    CLASS.row,
+    nested && CLASS.rowNested,
+    indirect && CLASS.rowIndirect,
+    unavailable && CLASS.rowUnavailable,
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <button
       type="button"
       id={`palette-row-${index}`}
-      className={unavailable ? `${CLASS.row} ${CLASS.rowUnavailable}` : CLASS.row}
+      className={className}
       role="option"
       data-kind={item.kind}
+      data-nested={nested || undefined}
+      data-indirect={indirect || undefined}
       aria-selected={active}
       aria-disabled={unavailable || undefined}
       onClick={() => onActivate(index)}
@@ -997,24 +1031,41 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
       </>
     );
   }
+  if (item.kind === "past" && item.row.nested) {
+    // A matching subagent: indented under its group's anchor, labelled so the
+    // family reads at a glance. Its state dot would always be the neutral
+    // ended one, so the nesting glyph speaks instead.
+    return (
+      <>
+        <span className={CLASS.glyph} aria-hidden="true">
+          ↳
+        </span>
+        <span className={CLASS.title}>
+          <Highlighted parts={highlightParts(item.row.result.title, query)} />
+        </span>
+        <span className={CLASS.hint}>subagent</span>
+        {item.row.result.age && <span className={CLASS.age}>{item.row.result.age}</span>}
+      </>
+    );
+  }
   // live / past: the title and project get <mark> around the query match
   // (§2.3, search.js:994-1013).
   return (
     <>
       <StatusDot
         state={cadenceStateFor(
-          displayState({ state: item.result.state, approval_pending: item.result.approvalPending }),
+          displayState({ state: item.row.result.state, approval_pending: item.row.result.approvalPending }),
         )}
       />
       <span className={CLASS.title}>
-        <Highlighted parts={highlightParts(item.result.title, query)} />
+        <Highlighted parts={highlightParts(item.row.result.title, query)} />
       </span>
-      {item.result.project && (
+      {item.row.result.project && (
         <span className={CLASS.project}>
-          <Highlighted parts={highlightParts(item.result.project, query)} />
+          <Highlighted parts={highlightParts(item.row.result.project, query)} />
         </span>
       )}
-      {item.result.age && <span className={CLASS.age}>{item.result.age}</span>}
+      {item.row.result.age && <span className={CLASS.age}>{item.row.result.age}</span>}
     </>
   );
 }

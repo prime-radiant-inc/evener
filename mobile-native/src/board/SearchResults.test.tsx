@@ -64,6 +64,10 @@ const textWith = (within: ReactTestRenderer | ReactTestInstance, content: string
 	);
 const resultRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "search-result");
 const projectRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "project-result");
+// The Sessions band's caption: its words are copy, its trailing count is the
+// behavior, so tests match the count alone.
+const bandText = (tree: ReactTestRenderer) =>
+	String(tree.root.find((node) => node.props.testID === "band-header").props.children ?? "");
 const evener: NavigationProjectSummary = {
 	key: "evener",
 	name: "evener",
@@ -122,6 +126,90 @@ it("opens a result when it's tapped", () => {
 	const { tree, props } = mount();
 	act(() => resultRows(tree)[1].props.onPress());
 	expect(props.onOpen).toHaveBeenCalledWith(asking);
+});
+
+// --- grouped subagent hits ---
+
+const subagent = result("sub1", {
+	title: "Delegate",
+	state: "ended",
+	age: "2h",
+	topLevel: { id: "root1", ref: "local:root1", title: "Alpha root", state: "ended", age: "3h" },
+});
+const grouped: SearchSnapshot = {
+	query: "fix",
+	results: { live: [], past: [subagent] },
+	searching: false,
+	failed: false,
+};
+
+it("groups a matching subagent under a greyed anchor that still opens its session", () => {
+	const { tree, props } = mount({ search: grouped });
+	const rows = resultRows(tree);
+	expect(rows).toHaveLength(2);
+	// The anchor greys — its own session did not match — but stays pressable.
+	expect(flatten(textWith(rows[0], "Alpha root").props.style).color).toBe(palette.inkLow);
+	// The subagent indents into its group and reads subordinate.
+	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
+	expect(flatten(textWith(rows[1], "Delegate").props.style).fontWeight).toBe("400");
+	// The band counts matches, not synthesized anchors.
+	expect(bandText(tree)).toMatch(/1$/);
+	act(() => rows[0].props.onPress());
+	expect(props.onOpen).toHaveBeenCalledWith(expect.objectContaining({ ref: "local:root1" }));
+	act(() => rows[1].props.onPress());
+	expect(props.onOpen).toHaveBeenCalledWith(expect.objectContaining({ ref: "local:sub1" }));
+});
+
+it("nests a matched live parent's subagent hit under its row, one row per session", () => {
+	const parent = result("root1", { title: "Live root", state: "active" });
+	const child = result("sub1", {
+		title: "Delegate",
+		state: "ended",
+		age: "2h",
+		topLevel: { id: "root1", ref: "local:root1", title: "Live root", state: "active", age: "now" },
+	});
+	const liveParent: SearchSnapshot = {
+		query: "fix",
+		results: { live: [parent], past: [child] },
+		searching: false,
+		failed: false,
+	};
+	const { tree } = mount({ search: liveParent });
+	const rows = resultRows(tree);
+	expect(rows).toHaveLength(2);
+	// The live parent keeps its own row, still working.
+	expect(rows[0].findByType(StateMark).props.state).toBe("working");
+	expect(bandText(tree)).toMatch(/2$/);
+	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
+});
+
+it("keeps past children out of the Live scope", () => {
+	const { tree } = mount({ search: { ...grouped, results: { live: [], past: [subagent] } }, scope: "live" });
+	expect(resultRows(tree)).toHaveLength(0);
+	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
+});
+
+it("greys an unmatched live parent's anchor without hiding that it is live", () => {
+	const endedChildOfLiveParent = result("sub1", {
+		title: "Delegate",
+		state: "ended",
+		age: "2h",
+		topLevel: { id: "root1", ref: "local:root1", title: "Live root", state: "active", age: "now" },
+	});
+	const { tree } = mount({
+		search: {
+			query: "fix",
+			results: { live: [], past: [endedChildOfLiveParent] },
+			searching: false,
+			failed: false,
+		},
+	});
+	const rows = resultRows(tree);
+	expect(rows).toHaveLength(2);
+	const [anchor] = rows;
+	expect(flatten(textWith(anchor, "Live root").props.style).color).toBe(palette.inkLow);
+	expect(anchor.findByType(StateMark).props.state).toBe("working");
+	expect(bandText(tree)).toMatch(/1$/);
 });
 
 it("says so when nothing matches", () => {
