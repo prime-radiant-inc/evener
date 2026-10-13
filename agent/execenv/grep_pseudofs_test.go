@@ -221,8 +221,12 @@ func TestGrepNeverHandsAPseudoFsReachingRootToRipgrep(t *testing.T) {
 	if _, err := env.Grep(t.Context(), "needle", filepath.Join(root, "real"), "", false, 100, "files_with_matches"); err != nil {
 		t.Fatal(err)
 	}
-	if rec.argvCalls != 1 {
-		t.Fatalf("a root reaching no pseudo root must use ripgrep: argv calls = %d, want 1", rec.argvCalls)
+	// The rg arm also runs rg --files listings for its oversize disclosure
+	// (#4574 round 5), so the pin is that ripgrep was used at all, and that
+	// the pseudo-rooted search below adds no further call to it.
+	afterRgSearch := rec.argvCalls
+	if afterRgSearch == 0 {
+		t.Fatalf("a root reaching no pseudo root must use ripgrep: argv calls = %d", rec.argvCalls)
 	}
 
 	// A file named inside the pseudo tree is still searched — naming it is a
@@ -233,8 +237,8 @@ func TestGrepNeverHandsAPseudoFsReachingRootToRipgrep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.argvCalls != 1 {
-		t.Fatalf("a file named inside the pseudo tree must not go to ripgrep: argv calls = %d, want 1 (the earlier call only)", rec.argvCalls)
+	if rec.argvCalls != afterRgSearch {
+		t.Fatalf("a file named inside the pseudo tree must not go to ripgrep: argv calls = %d, want %d (the earlier call only)", rec.argvCalls, afterRgSearch)
 	}
 	if want := "1:needle"; got != want {
 		t.Fatalf("file named inside the pseudo tree = %q, want %q", got, want)

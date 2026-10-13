@@ -1,0 +1,104 @@
+//go:build linux || darwin
+
+package execenv
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// writeFakeRg writes a shell-script ripgrep whose --files listings honor
+// --max-filesize exactly the way the real one does — one candidate file
+// under any size filter, two without — and whose search prints one content
+// match in rg's --null shape, or nothing at all for the nomatch pattern, so
+// the rg arm's oversize disclosure can be tested without the real binary
+// (the same deterministic-rg technique TestGrepRipgrepStopsWhenContextIsCanceled
+// uses).
+func writeFakeRg(t *testing.T, root string) string {
+	t.Helper()
+	rg := filepath.Join(root, "rg")
+	script := `#!/bin/sh
+capped=0
+files=0
+nomatch=0
+dir=
+for arg in "$@"; do
+	case "$arg" in
+	--files) files=1 ;;
+	--max-filesize) capped=1 ;;
+	nomatch) nomatch=1 ;;
+	*) dir="$arg" ;;
+	esac
+done
+if [ "$files" = 1 ]; then
+	printf 'small.txt\000'
+	if [ "$capped" = 0 ]; then printf 'big.log\000'; fi
+	exit 0
+fi
+if [ "$nomatch" = 1 ]; then
+	exit 1
+fi
+printf '%s/small.txt\0001:needle small\n' "$dir"
+`
+	if err := os.WriteFile(rg, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return rg
+}
+
+// A directory search on the rg arm leaves over-cap files out just as the
+// native walk does — rg skips them by --max-filesize without a trace in its
+// output — so the rg arm discloses the same omission note finishWalk
+// composes, from ripgrep's own two views of the tree (#4574 round 5, medium
+// 3): the files it lists without the size filter minus the ones it lists
+// with it.
+func TestRgArmDisclosesFilesPastTheReadCap(t *testing.T) {
+	// Not parallel: stubGrepMaxFileBytes swaps the package's read cap.
+	root := t.TempDir()
+	rg := writeFakeRg(t, root)
+	if err := os.WriteFile(filepath.Join(root, "small.txt"), []byte("needle small\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "big.log"), make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubGrepMaxFileBytes(t, 64)
+	env := NewLocalExecutionEnvironment(root)
+	defer env.Cleanup()
+	env.lookPath = func(string) (string, error) { return rg, nil }
+
+	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
+	got, err := env.Grep(t.Context(), "needle", root, "", false, 100, "content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "small.txt:1:needle small\n\n" + note; got != want {
+		t.Fatalf("rg-arm directory search with an over-cap file = %q, want %q", got, want)
+	}
+}
+
+// The no-match path discloses too: a directory whose only matching files are
+// over-cap must not return an unexplained empty just because ripgrep is
+// installed.
+func TestRgArmDisclosesFilesPastTheReadCapOnNoMatches(t *testing.T) {
+	// Not parallel: stubGrepMaxFileBytes swaps the package's read cap.
+	root := t.TempDir()
+	rg := writeFakeRg(t, root)
+	if err := os.MkdirAll(filepath.Join(root, "onlybig"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stubGrepMaxFileBytes(t, 64)
+	env := NewLocalExecutionEnvironment(root)
+	defer env.Cleanup()
+	env.lookPath = func(string) (string, error) { return rg, nil }
+
+	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
+	got, err := env.Grep(t.Context(), "nomatch", root, "", false, 100, "content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "\n\n" + note; got != want {
+		t.Fatalf("rg-arm search with no matches and an over-cap file = %q, want %q", got, want)
+	}
+}

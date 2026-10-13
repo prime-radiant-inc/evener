@@ -2302,16 +2302,76 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
 		// context_lines a cut can fall inside a match's context.
 		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir), outputMode == "files_with_matches")
+		var notes []string
 		if len(lines) > maxResults {
-			return searchresult.WithNotes(strings.Join(lines[:maxResults], "\n"), grepTruncationNote(maxResults)), nil
+			notes = append(notes, grepTruncationNote(maxResults))
+		}
+		// rg skips over-cap files by --max-filesize without a trace in its
+		// output, so the same omission note the native walk's finishWalk
+		// composes is composed here, from ripgrep's own views of the tree.
+		if oversized := e.grepRgOversizeCount(ctx, rg, dir, globFilters); oversized > 0 {
+			notes = append(notes, grepOversizeNote(oversized))
+		}
+		if len(notes) > 0 {
+			return searchresult.WithNotes(strings.Join(lines[:min(len(lines), maxResults)], "\n"), notes...), nil
 		}
 		return strings.Join(lines, "\n"), nil
 	}
 	// Exit code 1 means "no matches" for rg.
 	if res.ExitCode == 1 {
+		// A directory whose only matching files were over-cap was not
+		// searched to its end: the empty says so rather than reading as
+		// "genuinely no matches".
+		if oversized := e.grepRgOversizeCount(ctx, rg, dir, globFilters); oversized > 0 {
+			return searchresult.WithNotes("", grepOversizeNote(oversized)), nil
+		}
 		return "", nil
 	}
 	return res.Stdout + res.Stderr, err
+}
+
+// grepRgOversizeCount reports how many candidate files ripgrep leaves out of
+// a directory search by --max-filesize, so the rg arm can disclose the same
+// omissions the native walk's finishWalk does: the difference between the
+// files rg lists without the size filter and with it. Both listings run
+// through the same ripgrep with the same glob filters, so the count is rg's
+// own view of the tree — its ignore rules included — not a guess about which
+// files it would search. A named file never needs the count (an over-cap one
+// routes to the native arm), and any listing that fails returns none: the
+// disclosure is best-effort and never fails the search it describes.
+func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg, dir string, globFilters []string) int {
+	if grepTargetsOneFile(dir) {
+		return 0
+	}
+	all := e.grepRgListFiles(ctx, rg, dir, globFilters, false)
+	under := e.grepRgListFiles(ctx, rg, dir, globFilters, true)
+	if all < 0 || under < 0 || under > all {
+		return 0
+	}
+	return all - under
+}
+
+// grepRgListFiles counts one rg --files listing of dir: --null keeps the
+// paths separable and only their number matters, and --max-filesize — when
+// capped — is the same filter the search itself passes. rg exits 1 for a
+// listing that found no file, so both 0 and 1 are a listing's answers and
+// only anything else is a failure.
+func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir string, globFilters []string, capped bool) int {
+	args := []string{"--files", "--null"}
+	if capped {
+		args = append(args, "--max-filesize", strconv.Itoa(grepMaxFileBytes))
+	}
+	for _, globFilter := range globFilters {
+		if strings.TrimSpace(globFilter) != "" {
+			args = append(args, "-g", globFilter)
+		}
+	}
+	args = append(args, "--", dir)
+	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
+	if err != nil && res.ExitCode != 0 && res.ExitCode != 1 {
+		return -1
+	}
+	return strings.Count(res.Stdout, "\x00")
 }
 
 // grepTargetsOneFile reports whether a grep's resolved target names a single
