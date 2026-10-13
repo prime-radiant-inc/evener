@@ -3,10 +3,11 @@
 // Test Oracle" tooling (the Go half, and the `evener dev copy-oracle`
 // command that runs both, live in internal/devtool/copyonly).
 //
-// copyonlyAudit.test.ts runs scanRepo over the repository and fails on any
-// target missing from allowlist.tsv. A target is a test whose name says its
-// subject is wording (it shows, renders, labels, says, ...) and whose every
-// check is a copy claim. A check is an expect(...) chain or a getBy*/findBy*
+// copyonlyAudit.test.ts audits the tracked TypeScript test files one slice per
+// case (one openRepo snapshot) and fails on any target in a slice missing from
+// allowlist.tsv. A target is a test whose name says its subject is wording (it
+// shows, renders, labels, says, ...) and whose every check is a copy claim. A
+// check is an expect(...) chain or a getBy*/findBy*
 // query. It is a copy claim when it compares output with a copy literal and
 // with nothing else: a count, an attribute or state read, a spy assertion or a
 // role query makes it a behavior check. A copy literal also appears in
@@ -72,14 +73,85 @@ const TEST_FILE = /\.(test|spec)\./;
 /** Test support: never production copy. */
 const TEST_SUPPORT = /(\/__tests__\/|TestUtils\.|\/testing\/|\/src\/dev\/)/;
 
+/** The TypeScript files git tracks under root, in git's order. */
+function trackedFiles(root: string): string[] {
+  return execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 1 << 28 })
+    .split("\0")
+    .filter(
+      (f) =>
+        f !== "" &&
+        !f.includes("node_modules/") &&
+        TS_TREES.some((tree) => f.startsWith(tree)) &&
+        TS_SOURCE.test(f) &&
+        !f.endsWith(".d.ts"),
+    );
+}
+
+/** A tracked file's text, or null when it is tracked but deleted in the working tree. */
+function readTracked(root: string, f: string): string | null {
+  try {
+    return readFileSync(join(root, f), "utf8");
+  } catch (err) {
+    if ((err as { code?: string }).code === "ENOENT") return null; // tracked but deleted
+    throw err;
+  }
+}
+
+/** The corpus a test's literals are looked up in: every tracked non-test, non-support source, joined. */
+function productionCorpus(root: string, files: readonly string[]): string {
+  return files
+    .filter((f) => !TEST_FILE.test(f) && !TEST_SUPPORT.test(f))
+    .map((f) => readTracked(root, f))
+    .join("\n");
+}
+
+/** One checkout's TypeScript inventory, read once so slices of one audit share it. */
+export interface RepoScan {
+  /** The tracked TypeScript test files, in git's order. */
+  testFiles: string[];
+  /** Every target among the given tracked test files, sorted by file and line. */
+  scan(files: readonly string[]): Target[];
+}
+
+/**
+ * Reads root's tracked TypeScript files and production corpus once, and returns
+ * a snapshot of that checkout: scan() answers from the text read here, so a
+ * change to the working tree after openRepo returns is not seen, and the next
+ * audit needs a fresh snapshot. A caller that audits the checkout in slices
+ * takes one snapshot and scans each slice with it, sharing the reads instead of
+ * re-reading per slice (issue #4608).
+ */
+export function openRepo(root: string): RepoScan {
+  const files = trackedFiles(root);
+  const scanner = new Scanner(productionCorpus(root, files));
+  const testFiles = files.filter((f) => TEST_FILE.test(f));
+  const contents = new Map<string, string>();
+  for (const f of testFiles) {
+    const text = readTracked(root, f);
+    if (text !== null) contents.set(f, text);
+  }
+  return {
+    testFiles,
+    scan(files: readonly string[]): Target[] {
+      const targets: Target[] = [];
+      for (const f of files) {
+        const text = contents.get(f);
+        if (text === undefined) continue;
+        targets.push(...scanner.scanFile(f, text));
+      }
+      targets.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1));
+      return targets;
+    },
+  };
+}
+
 /**
  * Every target among the TypeScript tests git tracks under root, sorted by
  * file and line.
  */
 export function scanRepo(root: string): Target[] {
-  return inventoryRepo(root, "", false)
-    .copyOnly.filter((t) => t.purpose === "copy")
-    .map(({ file, test, line }) => ({ file, test, line }));
+  const repo = openRepo(root);
+  return repo.scan(repo.testFiles);
 }
 
 /**
@@ -91,32 +163,11 @@ export function scanRepo(root: string): Target[] {
  * the audit doesn't need.
  */
 export function inventoryRepo(root: string, prefix: string, withHits = true): Inventory {
-  const files = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 1 << 28 })
-    .split("\0")
-    .filter(
-      (f) =>
-        f !== "" &&
-        !f.includes("node_modules/") &&
-        TS_TREES.some((tree) => f.startsWith(tree)) &&
-        TS_SOURCE.test(f) &&
-        !f.endsWith(".d.ts"),
-    );
-  const read = (f: string): string | null => {
-    try {
-      return readFileSync(join(root, f), "utf8");
-    } catch (err) {
-      if ((err as { code?: string }).code === "ENOENT") return null; // tracked but deleted
-      throw err;
-    }
-  };
-  const prod = files
-    .filter((f) => !TEST_FILE.test(f) && !TEST_SUPPORT.test(f))
-    .map(read)
-    .join("\n");
-  const scanner = new Scanner(prod);
+  const files = trackedFiles(root);
+  const scanner = new Scanner(productionCorpus(root, files));
   const inventory: Inventory = { hits: [], fixtures: {}, copyOnly: [] };
   for (const f of files.filter((f) => TEST_FILE.test(f) && f.startsWith(prefix))) {
-    const text = read(f);
+    const text = readTracked(root, f);
     if (text === null) continue;
     const found = scanner.inventoryFile(f, text, withHits);
     inventory.hits.push(...found.hits);
