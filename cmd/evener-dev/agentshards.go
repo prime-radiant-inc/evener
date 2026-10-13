@@ -552,12 +552,6 @@ func runShards(cfg shardsConfig) int {
 			return 1
 		}
 		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel)}
-		if jsonShards {
-			// -test.v is what puts each test's own verdict line in the log,
-			// which `go tool test2json` needs to recover per-test durations
-			// from it offline (issue #144).
-			args = append(args, "-test.v")
-		}
 		// The skip reaches the shards, not just the survey: a cached survey
 		// means no survey runs at all, and the shards would then run the very
 		// test the operator asked to skip.
@@ -565,6 +559,17 @@ func runShards(cfg shardsConfig) int {
 			args = append(args, "-test.skip", cfg.skip)
 		}
 		args = append(args, extraFlags...)
+		// The capture's -test.v goes AFTER the caller's flags so it wins: it is
+		// what puts each test's own verdict line in the log, which `go tool
+		// test2json` needs to recover per-test durations from it offline (issue
+		// #144). A forwarded `-v=false` before it would otherwise switch
+		// verbosity back off, and the shard logs would carry no per-test
+		// verdict — the package terminal events still satisfy the timing
+		// check's completeness oracle, so no sharded test's per-test ceiling
+		// would be enforced and nothing would say so (issue #144 review).
+		if jsonShards {
+			args = append(args, "-test.v")
+		}
 		log, err := os.Create(shardLogPath(i))
 		if err != nil {
 			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)

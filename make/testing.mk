@@ -226,7 +226,8 @@ test-short:
 ## requires: Does not run fuzz search, race testing, provider calls, or
 ##   browser guards; those have separate owners. The timing check reads the
 ##   gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is
-##   strict where the ratchet's own policy is (CI) and warn-only on a local run.
+##   strict where the ratchet's own policy is (CI) and warn-only on a local run;
+##   the per-test ceiling is warn-only in every mode until #4601 clears.
 ## fails-when: The first failing phase stops the gate and returns nonzero;
 ##   do not infer a verdict from partial logs.
 merge-approval-gate:
@@ -283,7 +284,8 @@ vet:
 # testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
 # a flat per-test ceiling, so an unexamined timing regression cannot silently
 # erode the wins docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md
-# recorded. CHECK=1 enforces (strict in CI, warn-only on a local run); bare
+# recorded. CHECK=1 enforces the ratios (strict in CI, warn-only on a local run)
+# while the per-test ceiling stays warn-only everywhere until #4601 clears; bare
 # invocation measures by running the suite itself. Companion to coverage-floor.
 ## Ratchet per-package test wall time against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
@@ -291,8 +293,9 @@ vet:
 ##   per-test ceiling. While the budget file's metric marker is absent (the
 ##   checked-in pre-#172 baseline, until a rebaseline rewrites it under package
 ##   wall time), the Go-package ratio check is suspended to a warning; the
-##   frontend ("web") row and the per-test ceiling keep their unchanged metrics
-##   and stay enforced.
+##   frontend ("web") row keeps its unchanged metric and stays enforced; the
+##   per-test ceiling is warn-only in every mode, CHECK=1 included, until #4601
+##   clears its pre-existing breaches.
 ## trigger: Local/on-demand. merge-approval-gate runs the check through
 ##   --measured over the rows its own ROOT_FULL=1 make test run captured, so
 ##   enforcing the budget no longer needs a second full test run (issue #144);
@@ -309,8 +312,9 @@ vet:
 ##   reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x
 ##   its budget is nonzero once the budget file carries the wall-time metric
 ##   marker; while the marker is absent those ratios are warnings. The "web" row
-##   and any per-test ceiling breach are metric-independent and nonzero
-##   regardless, and a missing or empty budget file always exits zero.
+##   is metric-independent and nonzero regardless; a per-test ceiling breach is
+##   reported and named but nonzero in no mode until #4601 clears. A missing or
+##   empty budget file always exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 

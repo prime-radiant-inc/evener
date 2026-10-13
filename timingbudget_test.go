@@ -181,19 +181,30 @@ func TestTimingBudgetStillEnforcesTheWebRowWithoutTheMarker(t *testing.T) {
 	}
 }
 
-// TestTimingBudgetStillEnforcesTheCeilingWithoutTheMarker pins that the per-test
-// ceiling stays enforced while the Go-package ratios are suspended: its seconds
-// come from the same field on both sides of issue #172, so a breach is a defect
-// regardless of the budget's metric.
-func TestTimingBudgetStillEnforcesTheCeilingWithoutTheMarker(t *testing.T) {
+// TestTimingBudgetWarnsOnThePreExistingCeilingBreach pins the landing posture
+// (ruling, 2026-10-13). The flat per-test ceiling has never run in CI, #4601
+// records the pre-existing breaches, and a 50-second install test is a ceiling
+// that never met an install test rather than a defect. So even under the
+// CI-strict policy a breach is reported and named but does not fail the gate;
+// the package-ratio check and the missing-measurement refusal keep their
+// strictness (see TestTimingBudgetFailsOnWallTimeBudgets and
+// TestTimingBudgetFailsWhenTheMeasuredFileIsMissing). The exit status is the
+// assertion.
+func TestTimingBudgetWarnsOnThePreExistingCeilingBreach(t *testing.T) {
 	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestSlow\t9.00\n"
 	budget := `{"perTestCeilingSeconds":3,"packages":{"pkg":100}}`
 	out, err := runTimingBudgetCompare(t, measured, budget)
-	if err == nil {
-		t.Fatalf("the per-test ceiling is metric-independent; a breach must still fail:\n%s", out)
+	if err != nil {
+		t.Fatalf("a per-test ceiling breach must warn, not fail, until #4601 clears:\n%s", out)
 	}
 	if !strings.Contains(out, "per-test ceiling") {
-		t.Fatalf("no ceiling FAIL while the metric marker is absent:\n%s", out)
+		t.Fatalf("the ceiling breach was not reported at all:\n%s", out)
+	}
+	if !strings.Contains(out, "#4601") {
+		t.Fatalf("the ceiling warning does not name the #4601 backlog that holds it:\n%s", out)
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Fatalf("a warn-only ceiling breach was enforced as a failure:\n%s", out)
 	}
 }
 

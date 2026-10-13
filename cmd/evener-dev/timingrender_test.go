@@ -36,6 +36,34 @@ func TestRenderGoTestJSONPrintsOutputEvents(t *testing.T) {
 	}
 }
 
+// TestRenderGoTestJSONPrintsBuildOutputEvents pins issue #144 review finding 1:
+// the pinned toolchain reports a package's compiler diagnostics as
+// `build-output` events, which carry an ImportPath rather than a Package and
+// which `go test` writes nowhere else — stderr stays empty for them. A
+// timing-enabled gate captures the `-json` stream in place of the console, so
+// those events are the only copy of the compiler error; a renderer that reads
+// only `output` turns a build failure into a bare `[build failed]` line with no
+// explanation.
+func TestRenderGoTestJSONPrintsBuildOutputEvents(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"ImportPath":"example.com/mod [example.com/mod.test]","Action":"build-output","Output":"# example.com/mod [example.com/mod.test]\n"}`,
+		`{"ImportPath":"example.com/mod [example.com/mod.test]","Action":"build-output","Output":"./broken_test.go:6:6: undefined: undefinedSymbol\n"}`,
+		`{"ImportPath":"example.com/mod [example.com/mod.test]","Action":"build-fail"}`,
+		`{"Time":"2026-01-01T00:00:00Z","Action":"output","Package":"example.com/mod","Output":"FAIL\texample.com/mod [build failed]\n"}`,
+	}, "\n") + "\n"
+
+	var got strings.Builder
+	if err := renderGoTestJSON(strings.NewReader(stream), &got); err != nil {
+		t.Fatalf("renderGoTestJSON: %v", err)
+	}
+	want := "# example.com/mod [example.com/mod.test]\n" +
+		"./broken_test.go:6:6: undefined: undefinedSymbol\n" +
+		"FAIL\texample.com/mod [build failed]\n"
+	if got.String() != want {
+		t.Fatalf("rendered build-failure log =\n%q\nwant\n%q", got.String(), want)
+	}
+}
+
 // TestRenderGoTestJSONSkipsMalformedLines pins that one unreadable line costs
 // one log line, not the whole log: a truncated stream still renders the events
 // around it, because a lost line is no worse than a malformed one and the run

@@ -22,7 +22,11 @@
 #   - Per-test ceiling (testing-budget.json's perTestCeilingSeconds, currently
 #     3s; 2s when a budget file does not name one at all):
 #     any single test or subtest over the ceiling is flagged regardless of its
-#     package's budget — one runaway test is a defect on its own.
+#     package's budget — one runaway test is a defect on its own. It is WARN-ONLY
+#     in every mode, --strict included, until #4601 clears the ceiling's backlog
+#     of pre-existing breaches (ruling, 2026-10-13): the ceiling has never run in
+#     CI, so enforcing it today would red the gate on tests that were always over
+#     it. #144's "done when" is strict enforcement, so the issue stays open.
 #
 # A package the budget file does not mention is a WARN, not silently skipped —
 # see kata b6rv's stop condition. When the budget file is missing or its
@@ -63,11 +67,12 @@
 #
 # --check's exit policy: CI is strict (a $CI-set environment, or --strict);
 # everywhere else is warn-only (--local, or --check with $CI unset). Strict
-# fails on a per-package ratio over 1.5x or any ceiling breach; warn-only
-# prints the identical diagnostics, labeled, and always exits 0. Bare
-# measurement (no --check) fails only on a broken measurement; its ratio and
-# ceiling verdicts are a report, like `evener dev coverage-floor` with neither
-# --check nor --bless.
+# fails on a per-package ratio over 1.5x and on a broken measurement; the
+# per-test ceiling is warn-only in every mode until #4601 clears (see above).
+# Warn-only prints the identical diagnostics, labeled, and always exits 0 except
+# for a broken measurement. Bare measurement (no --check) fails only on a broken
+# measurement; its ratio and ceiling verdicts are a report, like `evener dev
+# coverage-floor` with neither --check nor --bless.
 #
 # The budget file is a hand-reviewed artifact: raising a package's number is an
 # edit to testing-budget.json in the same commit as whatever earned it, exactly
@@ -369,8 +374,13 @@ for pkg in sorted(sums):
 
 for pkg, name, secs in tests:
 	if secs > ceiling:
-		lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling")
-		raise_worst("fail")
+		# The flat per-test ceiling is warn-only in EVERY mode, --strict
+		# included (ruling, 2026-10-13): it has never run in CI, #4601 records
+		# the pre-existing breaches, and enforcing it today would red the gate
+		# for everyone on tests that were always over it. The breaches stay
+		# reported and named until that backlog clears.
+		lines.append(f"WARN  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling (warn-only until #4601 clears)")
+		raise_worst("warn")
 
 # no_baseline is the ONE place the "tree must stay green" rule is enforced
 # (below, in exit_code): severity above is computed the same way regardless of
@@ -428,8 +438,10 @@ if check:
 		exit_code = 1 if worst == "fail" else 0
 	else:
 		exit_code = 0
-		if worst != "ok":
+		if worst == "fail":
 			lines.append(f"warn-only run: would exit non-zero under --strict/CI ({worst})")
+		elif worst == "warn":
+			lines.append("warn-only run: the warnings above are reported but not enforced")
 
 with open(out_path, "w") as fh:
 	fh.write("\n".join(lines) + ("\n" if lines else ""))

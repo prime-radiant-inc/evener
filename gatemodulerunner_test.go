@@ -169,6 +169,14 @@ type moduleRunnerResult struct {
 // location.
 func runModuleRunner(t *testing.T, workDir string, env ...string) moduleRunnerResult {
 	t.Helper()
+	return runModuleRunnerWithFlags(t, workDir, []string{"-short", "-count=1"}, env...)
+}
+
+// runModuleRunnerWithFlags is runModuleRunner with the caller's own gate flags
+// spelled out, so a case can drive the runner with a build flag (-tags) whose
+// effect on the package inventory is exactly what it is pinning.
+func runModuleRunnerWithFlags(t *testing.T, workDir string, flags []string, env ...string) moduleRunnerResult {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the module runner is a bash script")
 	}
@@ -179,7 +187,7 @@ func runModuleRunner(t *testing.T, workDir string, env ...string) moduleRunnerRe
 	if _, err := os.Stat(script); err != nil {
 		t.Fatalf("stat %s: %v", moduleRunnerScript, err)
 	}
-	cmd := exec.Command("bash", script, "-short", "-count=1")
+	cmd := exec.Command("bash", append([]string{script}, flags...)...)
 	cmd.Dir = workDir
 	cmd.Env = runnerEnv(t, env...)
 	out, err := cmd.CombinedOutput()
@@ -460,5 +468,62 @@ func TestModuleRunnerCapturesTheTimingRowsItAlreadyRan(t *testing.T) {
 		if !strings.Contains(string(rows), want) {
 			t.Fatalf("timing rows missing %q:\n%s", want, rows)
 		}
+	}
+}
+
+// writeRunnerFixtureFile writes one file into a fixture's module tree, creating
+// the directories it needs.
+func writeRunnerFixtureFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, path, []byte(content), 0o644)
+}
+
+// TestModuleRunnerEnumerationHonorsTheCallersBuildFlags pins issue #144 review
+// finding 2: the plain-module package inventory must be enumerated with the
+// caller's package-selection flags, exactly as the root and sharded-agent paths
+// already do. `-tags` can drop a whole package from `./...`; a flagless
+// `go list ./...` still reports it, and the completeness oracle then rejects an
+// otherwise green run as missing that package's terminal event. The fixture's
+// `legacy` package exists only without the `special` tag.
+func TestModuleRunnerEnumerationHonorsTheCallersBuildFlags(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	mod := filepath.Join(modules, "tagmod")
+	writeRunnerFixtureFile(t, filepath.Join(mod, "go.mod"), "module example.com/tagmod\n\ngo 1.21\n")
+	writeRunnerFixtureFile(t, filepath.Join(mod, "plain", "plain_test.go"), `package plain
+
+import "testing"
+
+func TestPlain(t *testing.T) {}
+`)
+	writeRunnerFixtureFile(t, filepath.Join(mod, "legacy", "legacy.go"), "//go:build !special\n\npackage legacy\n")
+	writeRunnerFixtureFile(t, filepath.Join(mod, "legacy", "legacy_test.go"), `//go:build !special
+
+package legacy
+
+import "testing"
+
+func TestLegacy(t *testing.T) {}
+`)
+
+	tsv := filepath.Join(root, "measured.tsv")
+	res := runModuleRunnerWithFlags(t, modules, []string{"-short", "-count=1", "-tags", "special"},
+		append(controlledScratchEnv(ctrl),
+			"MODULES=tagmod",
+			"EVENER_GATE_TIMING_TSV="+tsv)...)
+	if res.exitCode != 0 {
+		t.Fatalf("runner exit = %d for a green run whose -tags excludes a package; the inventory ignored the caller's flags:\n%s", res.exitCode, res.output)
+	}
+	rows, err := os.ReadFile(tsv)
+	if err != nil {
+		t.Fatalf("no timing rows written: %v\n%s", err, res.output)
+	}
+	if !strings.Contains(string(rows), "PKG\texample.com/tagmod/plain\n") {
+		t.Fatalf("timing rows do not record the package the run measured:\n%s", rows)
+	}
+	if strings.Contains(string(rows), "legacy") {
+		t.Fatalf("the inventory still names a package -tags excluded from the run:\n%s", rows)
 	}
 }

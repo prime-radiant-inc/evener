@@ -1,7 +1,9 @@
 package dev
 
 // timing-render prints the human `go test` text that a `go test -json` stream
-// carries in its Output events. It exists so the gate's single measured run
+// carries in its `output` and `build-output` events — the second is where the
+// pinned toolchain reports compiler diagnostics for a package that fails to
+// build, and they reach nowhere else. It exists so the gate's single measured run
 // (issue #144) can capture durations from `-json` — which forces verbose test
 // output — while the module log the gate keeps for its failure dump still
 // reads the way a plain `go test` run's would: the JSON must not erase the
@@ -42,8 +44,8 @@ func runTimingRender(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, "usage: evener-dev timing-render --json FILE\n\n"+
 			"Print the human go test text a go test -json stream carries in its\n"+
-			"Output events, so a run that captures durations from -json still leaves\n"+
-			"the readable log a plain go test run would.\n")
+			"output and build-output events, so a run that captures durations from\n"+
+			"-json still leaves the readable log a plain go test run would.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -65,16 +67,25 @@ func runTimingRender(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// renderGoTestJSON writes the Output text of every event in a `go test -json`
-// stream. A truncated or malformed line is skipped rather than failing the
-// render: it is one lost log line, not a reason to lose the rest of the log.
+// renderableActions are the `go test -json` actions whose Output text belongs to
+// the human log. "output" carries a test's own lines; "build-output" carries the
+// compiler's diagnostics when a package fails to build — the pinned toolchain
+// reports them only there, and writes nothing to stderr for them, so a renderer
+// that read only "output" turned a build failure into a bare `[build failed]`
+// line with no explanation (issue #144 review).
+var renderableActions = map[string]bool{"output": true, "build-output": true}
+
+// renderGoTestJSON writes the Output text of every renderable event in a
+// `go test -json` stream. A truncated or malformed line is skipped rather than
+// failing the render: it is one lost log line, not a reason to lose the rest of
+// the log.
 func renderGoTestJSON(r io.Reader, w io.Writer) error {
 	reader := bufio.NewReaderSize(r, 64*1024)
 	for {
 		line, readErr := reader.ReadString('\n')
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			var ev renderEvent
-			if err := json.Unmarshal([]byte(trimmed), &ev); err == nil && ev.Action == "output" && ev.Output != "" {
+			if err := json.Unmarshal([]byte(trimmed), &ev); err == nil && renderableActions[ev.Action] && ev.Output != "" {
 				if _, werr := io.WriteString(w, ev.Output); werr != nil {
 					return fmt.Errorf("writing rendered output: %w", werr)
 				}

@@ -620,7 +620,16 @@ run_module() {
 		return "$shardStatus"
 	fi
 	if [ "$timing_enabled" -eq 1 ]; then
-		go list ./... >"$timing_rows_dir/$(timing_slug "$m").packages" || return 1
+		# The inventory must use the caller's package-selection flags, exactly as
+		# the root and sharded-agent paths do: -tags, -race or -overlay can add or
+		# drop whole packages from ./..., and a flagless `go list` would then name
+		# a package this run never built. The completeness oracle reads that as a
+		# dropped package and fails an otherwise green module (issue #144 review).
+		local pkg_file
+		pkg_file="$logdir/$(timing_slug "$m").packages"
+		derive_list_flags "$m" || return $?
+		run_enumeration "$m" "$pkg_file" || return $?
+		cp "$pkg_file" "$timing_rows_dir/$(timing_slug "$m").packages" || return 1
 	fi
 	run_go_test_capture "$m" "$timing_rows_dir/$(timing_slug "$m").packages" ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
 }
