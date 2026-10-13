@@ -49,13 +49,13 @@ func (s *Session) retirementEvidence() ([]RetirementBlocker, error) {
 	return blockers, nil
 }
 
-// retirementNonBlockingEvidence reads only this Session's obligations whose owner
-// locks cannot be held across admitted durable I/O, so a claim attempt may call it
-// while work is admitted without ever waiting. It is the subset of
-// retirementEvidence that omits retirementDelegateBlockers (the delivery and
-// child-manager locks), the attention registry (attentionMu, which a durable
-// transcript append holds across that append's read), and the job journal
-// (jobs.jsonl filesystem I/O).
+// retirementNonBlockingEvidenceWithNaming reads only this Session's obligations
+// whose owner locks cannot be held across admitted durable I/O, so a claim
+// attempt may call it while work is admitted without ever waiting. It is the
+// subset of retirementEvidence that omits retirementDelegateBlockers (the
+// delivery and child-manager locks), the attention registry (attentionMu, which
+// a durable transcript append holds across that append's read), and the job
+// journal (jobs.jsonl filesystem I/O).
 //
 // It is deliberately partial, not a claim that the omitted work is always covered
 // by a live lease: a durable watch registration, a deferred delegate delivery, a
@@ -63,8 +63,14 @@ func (s *Session) retirementEvidence() ([]RetirementBlocker, error) {
 // the lease that created them. An early return that takes this read can therefore
 // under-report those; it never over-reports, and the full read that gates the
 // actual retire/refuse decision runs only once nothing is admitted.
-func (s *Session) retirementNonBlockingEvidence() []RetirementBlocker {
-	blockers := s.retirementLocalBlockers()
+//
+// includeNaming keeps this Session's namer's own naming.pending contribution
+// (#4055): the claim snapshot passes true; the manual retire's wait pre-check
+// passes false, because it waits for a namer and nothing else, and naming.pending
+// reports the same "autonomous" category as an active goal, so the namer's
+// contribution has to be dropped by identity rather than filtered by category.
+func (s *Session) retirementNonBlockingEvidenceWithNaming(includeNaming bool) []RetirementBlocker {
+	blockers := s.retirementLocalBlockersWithNaming(includeNaming)
 	if state, ok := s.getOrCreateGoalStore().Snapshot(); ok && state.Status == goal.StatusActive {
 		blockers = append(blockers, RetirementBlocker{Category: "autonomous", SessionID: s.id})
 	}
@@ -76,6 +82,14 @@ func (s *Session) retirementNonBlockingEvidence() []RetirementBlocker {
 // stateMu, pendingJobNotifsMu, the goal store) is held only for an in-memory read
 // and never across durable I/O, so a caller may invoke it while work is admitted.
 func (s *Session) retirementLocalBlockers() []RetirementBlocker {
+	return s.retirementLocalBlockersWithNaming(true)
+}
+
+// retirementLocalBlockersWithNaming is retirementLocalBlockers with the
+// naming.pending contribution optionally omitted; see
+// RetirementController.nonBlockingEvidenceRead for why the manual retire's
+// pre-check omits it.
+func (s *Session) retirementLocalBlockersWithNaming(includeNaming bool) []RetirementBlocker {
 	blockers := s.retirementInputBlockers()
 	s.mu.Lock()
 	if len(s.envWork) != 0 || len(s.disposeRetirement) != 0 || len(s.pendingReLock) != 0 {
@@ -84,7 +98,7 @@ func (s *Session) retirementLocalBlockers() []RetirementBlocker {
 	if len(s.askPending) != 0 {
 		blockers = append(blockers, RetirementBlocker{Category: "question", SessionID: s.id})
 	}
-	if s.naming.pending != 0 {
+	if includeNaming && s.naming.pending != 0 {
 		blockers = append(blockers, RetirementBlocker{Category: "autonomous", SessionID: s.id})
 	}
 	s.mu.Unlock()

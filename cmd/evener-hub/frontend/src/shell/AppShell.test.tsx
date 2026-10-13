@@ -67,6 +67,7 @@ import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { holdNextWriteTransaction } from "../stores/testing/stalledIndexedDB";
 import * as threadsModule from "../stores/threads";
 import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "../stores/threads";
+import { emptyStateReasons } from "../widgets/emptystate/emptyStateTestUtils";
 import { AppShell } from "./AppShell";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { ClientProvider } from "./clientContext";
@@ -939,7 +940,7 @@ test("a real session URL wins over an Activity-only saved layout", async () => {
 
 test("mounts and renders the welcome pane", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-session"));
 });
 
 test("wires the injected client into connectionStore (connects on mount)", async () => {
@@ -2677,8 +2678,8 @@ test("an unknown path renders NotFound instead of the workspace", async () => {
   window.history.pushState({}, "", "/not/a/real/route");
   render(<AppShell client={new FakeClient("ready")} />);
 
-  expect(await screen.findByText("Page not found")).toBeTruthy();
-  expect(screen.queryByText("No session open")).toBeNull();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["not-found"]));
+  expect(screen.queryByTestId("workspace-host")).toBeNull();
 });
 
 test("clicking Go home from NotFound returns to the welcome pane", async () => {
@@ -4461,13 +4462,6 @@ test.each([
       },
       '"mixed-origin"',
     );
-    // wireSnapshot's location convenience branch defaults top_level to true even
-    // when its input says otherwise. Correct the external snapshot metadata,
-    // not the navigation store, so the real decoder places a nested session.
-    if (response.status === "ok" && response.representation === "snapshot") {
-      const snapshot = response.data as { metadata: { top_level: boolean } };
-      snapshot.metadata.top_level = params.ref === "local:owner";
-    }
     return response;
   });
   client.on("thread/read", ({ ref }) => {

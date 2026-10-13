@@ -136,6 +136,14 @@ func (s scriptedProbeSystem) goos() string { return s.osName }
 
 func (s scriptedProbeSystem) getenv(name string) string { return s.env[name] }
 
+func (s scriptedProbeSystem) environ() []string {
+	out := make([]string, 0, len(s.env))
+	for name, value := range s.env {
+		out = append(out, name+"="+value)
+	}
+	return out
+}
+
 func (s scriptedProbeSystem) userHomeDir() (string, error) { return s.home, s.homeErr }
 
 func (s scriptedProbeSystem) lookPath(name string) (string, error) {

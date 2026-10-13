@@ -794,6 +794,32 @@ type SearchResult struct {
 	// carries them (S14).
 	Hits     []SearchHit `json:"hits,omitempty"`
 	HitCount int         `json:"hitCount,omitempty"`
+	// TopLevel names the top-level session this hit groups under when the
+	// hit is a subagent session: its first non-subagent ancestor, then
+	// through fork supersessions to the row the navigation tree would show.
+	// Present only on a Past result whose session is a subagent and whose
+	// ancestry resolves; absent from an older hub and from every Live
+	// result, and ignored by clients that do not group.
+	TopLevel *SearchTopLevel `json:"topLevel,omitempty"`
+}
+
+// SearchTopLevel describes the top-level session a matching subagent groups
+// under: the fields of its own search result a client needs to render the
+// group's anchor row, including when the session itself has no row in the
+// response. The hub owns lineage resolution; clients only group by Ref. ID,
+// Ref, Title and State always carry values; Project and Age may be empty.
+type SearchTopLevel struct {
+	ID      string `json:"id"`
+	Ref     string `json:"ref"`
+	Title   string `json:"title"`
+	Project string `json:"project,omitempty"`
+	State   string `json:"state"`
+	Age     string `json:"age,omitempty"`
+	// AskPending and ApprovalPending carry the flags of the anchor's own
+	// navigation row, so a live anchor renders its real marks. Absent from
+	// an older hub and from an ended anchor.
+	AskPending      bool `json:"askPending,omitempty"`
+	ApprovalPending bool `json:"approvalPending,omitempty"`
 }
 
 // SearchHit is one message that matches a search (S14).

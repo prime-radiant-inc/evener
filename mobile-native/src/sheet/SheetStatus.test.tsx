@@ -50,9 +50,9 @@ it.each([1, 1.5])(
 it.each(["connecting", "reconnecting"])("says a never-loaded page is connecting while %s", (state) => {
 	status.fatal = false;
 	status.state = state;
-	expect(renderedText(render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />))).toBe(
-		"Connecting to magic-kingdom…",
-	);
+	const tree = render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />);
+	expect(tree.root.findAllByProps({ testID: "first-load-connecting" })).not.toHaveLength(0);
+	expect(renderedText(tree)).toContain("magic-kingdom");
 });
 
 it.each(["ready", "idle", "closed"])(

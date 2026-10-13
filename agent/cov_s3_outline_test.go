@@ -127,16 +127,18 @@ func TestS3Cov_AnyLineWiderThan(t *testing.T) {
 func TestS3Cov_OutlineRoleLabel(t *testing.T) {
 	t.Parallel()
 	cases := map[schema.TurnKind]string{
-		schema.TurnUserInput:   "User",
-		schema.TurnAssistant:   "Assistant",
-		schema.TurnSteering:    "Steering",
-		schema.TurnSummary:     "Summary",
-		schema.TurnCheckpoint:  "Checkpoint",
-		schema.TurnEnvironment: "Environment",
-		schema.TurnSystem:      "System",
-		schema.TurnToolResults: "ToolResults",
-		schema.TurnTool:        "ToolResults",
-		schema.TurnKind("odd"): "odd",
+		schema.TurnUserInput:     "User",
+		schema.TurnAssistant:     "Assistant",
+		schema.TurnSteering:      "Steering",
+		schema.TurnSummary:       "Summary",
+		schema.TurnCheckpoint:    "Checkpoint",
+		schema.TurnEnvironment:   "Environment",
+		schema.TurnNotesContext:  "NotesContext",
+		schema.TurnMemoryContext: "MemoryContext",
+		schema.TurnSystem:        "System",
+		schema.TurnToolResults:   "ToolResults",
+		schema.TurnTool:          "ToolResults",
+		schema.TurnKind("odd"):   "odd",
 	}
 	for kind, want := range cases {
 		if got := outlineRoleLabel(kind); got != want {

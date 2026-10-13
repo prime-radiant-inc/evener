@@ -139,6 +139,13 @@ type HostFacts struct {
 	// default GOCACHE; empty when unset.
 	XDGCacheHome string
 
+	// NpmConfigCache and CargoHome are $npm_config_cache and $CARGO_HOME, which
+	// move npm's and cargo's cache directories; empty when unset. They are read
+	// from the environment alone: cargo keeps no file for CARGO_HOME, and npm's
+	// .npmrc `cache=` is not consulted (a cache moved only there stays unserved).
+	NpmConfigCache string
+	CargoHome      string
+
 	// GoEnvFile is the go env file the probe read GoPath from ("" when none).
 	// The env floor reads it again at each spawn whose go reads the same file,
 	// since go reads it at every run.
@@ -187,6 +194,7 @@ type RealProber struct {
 type probeSystem interface {
 	goos() string
 	getenv(string) string
+	environ() []string
 	userHomeDir() (string, error)
 	lookPath(string) (string, error)
 	nonDirectoryFile(string) bool
@@ -204,6 +212,8 @@ var probeUserHomeDir = os.UserHomeDir
 func (hostProbeSystem) goos() string { return runtime.GOOS }
 
 func (hostProbeSystem) getenv(name string) string { return os.Getenv(name) }
+
+func (hostProbeSystem) environ() []string { return os.Environ() }
 
 func (hostProbeSystem) userHomeDir() (string, error) { return probeUserHomeDir() }
 
@@ -299,6 +309,8 @@ func probeHost(system probeSystem) HostFacts {
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
 	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
+	facts.NpmConfigCache = envValueFold(system.environ(), npmConfigCacheEnv)
+	facts.CargoHome = system.getenv(envvars.CargoHome.Name)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -316,6 +328,20 @@ func probeHost(system probeSystem) HostFacts {
 	}
 
 	return facts
+}
+
+// envValueFold returns the value of key in environ, matched case-insensitively:
+// npm reads its environment configuration through a lowercased key, so
+// NPM_CONFIG_CACHE and npm_config_cache name the same setting. A later entry
+// wins, as npm's own last-assignment-wins map does.
+func envValueFold(environ []string, key string) string {
+	value := ""
+	for _, kv := range environ {
+		if name, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(name, key) {
+			value = v
+		}
+	}
+	return value
 }
 
 // probeGitGlobalConfigPaths returns the user's global git config files that

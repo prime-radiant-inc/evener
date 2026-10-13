@@ -193,11 +193,12 @@ describe("session results", () => {
 	const past = [result("past-1")];
 
 	it("lists live results, then past ones, in All", () => {
-		expect(sessionResults({ live, past }, "all").map((row) => row.id)).toEqual(["live-1", "live-2", "past-1"]);
+		expect(sessionResults({ live, past }, "all").map((row) => row.result.id)).toEqual(["live-1", "live-2", "past-1"]);
+		expect(sessionResults({ live, past }, "all").every((row) => !row.nested && !row.indirect)).toBe(true);
 	});
 
 	it("lists only live results in Live", () => {
-		expect(sessionResults({ live, past }, "live").map((row) => row.id)).toEqual(["live-1", "live-2"]);
+		expect(sessionResults({ live, past }, "live").map((row) => row.result.id)).toEqual(["live-1", "live-2"]);
 	});
 
 	it("lists a live session once, when the past index has it too", () => {
@@ -205,8 +206,34 @@ describe("session results", () => {
 		// doesn't leave them out of its past results.
 		const livePast = result("live-2", { state: "ended", age: "5m" });
 		const rows = sessionResults({ live, past: [livePast, ...past] }, "all");
-		expect(rows.map((row) => row.id)).toEqual(["live-1", "live-2", "past-1"]);
-		expect(rows[1]).toBe(live[1]);
+		expect(rows.map((row) => row.result.id)).toEqual(["live-1", "live-2", "past-1"]);
+		expect(rows[1]?.result).toBe(live[1]);
+	});
+
+	it("groups a matching subagent under a greyed anchor for a session with no row", () => {
+		const child = result("sub", {
+			state: "ended",
+			age: "2h",
+			topLevel: { id: "root", ref: "local:root", title: "Root", state: "ended", age: "3h" },
+		});
+		const rows = sessionResults({ live: [], past: [child, ...past] }, "all");
+		expect(rows.map((row) => row.result.ref)).toEqual(["local:root", "local:sub", "local:past-1"]);
+		expect(rows[0]?.indirect).toBe(true);
+		expect(rows[0]?.result.title).toBe("Root");
+		expect(rows[1]?.nested).toBe(true);
+		expect(rows[2]?.nested).toBe(false);
+	});
+
+	it("nests a matched live parent's ended subagent hits under its row", () => {
+		const child = result("sub", {
+			state: "ended",
+			age: "2h",
+			topLevel: { id: "live-1", ref: "local:live-1", title: "live-1", state: "active", age: "now" },
+		});
+		const rows = sessionResults({ live, past: [child, ...past] }, "all");
+		expect(rows.map((row) => row.result.id)).toEqual(["live-1", "sub", "live-2", "past-1"]);
+		expect(rows[1]?.nested).toBe(true);
+		expect(rows[1]?.indirect).toBe(false);
 	});
 });
 

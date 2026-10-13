@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/sessionlog"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -262,5 +263,60 @@ func TestSessionStartDispatchOnNotesContextOnlyHistoryIsNotFlaggedAsReinjection(
 	}
 	if len(entry.Failures) != 0 {
 		t.Fatalf("failures = %v, want none for a notes-context-only session", entry.Failures)
+	}
+}
+
+// A restored session whose only history is a harness memory projection must not
+// look like prior conversation to the re-injection detector. The projected
+// MEMORY_CONTEXT turn is harness news, not something the user or the model said,
+// so a resume dispatch delivering hook context into a memory-only history is not
+// a re-injection.
+func TestSessionStartDispatchOnMemoryContextOnlyHistoryIsNotFlaggedAsReinjection(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	s.stateDir = t.TempDir()
+
+	// The real producer appends the boundary's memory news as one MEMORY_CONTEXT
+	// turn. Guard against a vacuous pass: a session with no projection could
+	// never trip the detector, so its silence would prove nothing.
+	before := memoryContextCount(s)
+	s.appendMemoryContext([]memoryContextSection{func() string { return "memory news" }})
+	if got := memoryContextCount(s); got != before+1 {
+		t.Fatalf("memory contexts = %d, want %d — the projection must land for this test to mean anything", got, before+1)
+	}
+
+	s.logSessionStartHookDispatch(plugin.SessionStartKindStartup, 1)
+	entry := sessionStartHookDispatchEntry(t, s.stateDir, s.ID())
+	if entry.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success — a harness memory projection is not prior conversation; failures = %v", entry.Outcome, entry.Failures)
+	}
+	if len(entry.Failures) != 0 {
+		t.Fatalf("failures = %v, want none for a memory-context-only session", entry.Failures)
+	}
+	if turns, _ := s.conversationSignals(); turns != 0 {
+		t.Fatalf("conversation turns = %d, want 0 — the memory projection must not count as conversation", turns)
+	}
+}
+
+// The other half of the detector's contract: a real user/assistant exchange
+// still counts, so excluding memory context cannot silently widen into excluding
+// conversation.
+func TestSessionStartDispatchOnRealHistoryStillFlaggedAsReinjection(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	s.stateDir = t.TempDir()
+	s.appendTurn(schema.TurnUserInput, llm.User("prior user task"))
+	s.appendTurn(schema.TurnAssistant, llm.Assistant("prior assistant answer"))
+
+	s.logSessionStartHookDispatch(plugin.SessionStartKindStartup, 1)
+	entry := sessionStartHookDispatchEntry(t, s.stateDir, s.ID())
+	if entry.Outcome != "failure" {
+		t.Fatalf("outcome = %q, want failure — a real user/assistant exchange is prior conversation; failures = %v", entry.Outcome, entry.Failures)
+	}
+	if turns, _ := s.conversationSignals(); turns != 2 {
+		t.Fatalf("conversation turns = %d, want 2", turns)
+	}
+	if len(entry.Failures) != 1 {
+		t.Fatalf("failures = %v, want one re-injection diagnostic", entry.Failures)
 	}
 }

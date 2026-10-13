@@ -79,6 +79,36 @@ func TestS3Cov_RenderOutline_ErrorStatus(t *testing.T) {
 	}
 }
 
+// TestS3Cov_RenderOutline_ContextRoleLabels pins the outline's role labels for
+// the harness context kinds. The outline uses the CamelCase kind token
+// (Environment, NotesContext) rather than the markdown renderer's prose heading,
+// and every context turn keeps its own line, its absolute seq, its order and its
+// visible first line. Memory context must not fall through to the raw kind.
+func TestS3Cov_RenderOutline_ContextRoleLabels(t *testing.T) {
+	t.Parallel()
+
+	entries := s3cov_entries(
+		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
+		schema.NewTurn(schema.TurnEnvironment, llm.User("env text")),
+		schema.NewTurn(schema.TurnNotesContext, llm.User("notes text")),
+		schema.NewTurn(schema.TurnMemoryContext, llm.User("memory news")),
+	)
+
+	content, truncated, elided := renderOutline(entries, 0, len(entries)-1)
+	if truncated || elided != 0 {
+		t.Fatalf("unexpected truncation: truncated=%v elided=%d", truncated, elided)
+	}
+	want := strings.Join([]string{
+		"0 · User · hello",
+		"1 · Environment · env text",
+		"2 · NotesContext · notes text",
+		"3 · MemoryContext · memory news",
+	}, "\n")
+	if content != want {
+		t.Fatalf("outline =\n%s\nwant\n%s", content, want)
+	}
+}
+
 // s3cov_twoResults builds a single TOOL_RESULTS message answering two calls.
 func s3cov_twoResults(id1, c1 string, e1 bool, id2, c2 string, e2 bool) llm.Message {
 	m := llm.ToolResult(id1, c1, e1)

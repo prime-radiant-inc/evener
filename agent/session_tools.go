@@ -567,7 +567,6 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		mediaPart = llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{
 			Data:      r.ImageData,
 			MediaType: mt,
-			Detail:    "original",
 		}}
 	}
 

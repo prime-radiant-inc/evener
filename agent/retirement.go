@@ -80,10 +80,10 @@ type RetirementController struct {
 	lastAttempt       *RetirementAttempt
 	claim             *RetirementClaim
 	// evidenceGate is a test-only observation seam: when set it runs inside
-	// nonBlockingEvidence, with the caller's captured root and generation already
-	// fixed, so a test can change the controller identity while that read is in
-	// flight. It is nil in production and is installed before the controller is
-	// used concurrently, so it needs no lock of its own.
+	// nonBlockingEvidenceRead, with the caller's captured root and generation
+	// already fixed, so a test can change the controller identity while that read
+	// is in flight. It is nil in production and is installed before the controller
+	// is used concurrently, so it needs no lock of its own.
 	evidenceGate func()
 	// namingHeld counts the active leases that are a session namer naming its
 	// session: work that settles on its own within sessionNameTimeout, which
@@ -218,10 +218,15 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 // are the only work holding the process waits for them to release, up to
 // sessionNameTimeout, before claiming, rather than being refused over them
 // (#3921). With any other lease held the retire is refused at once, as
-// TryClaim does, since waiting would end in the same refusal. Work that holds
-// no lease (an open question, an active goal between turns) is not seen
-// here, so a retire beside it still waits out the namer before TryClaim
-// refuses it (#4055).
+// TryClaim does, since waiting would end in the same refusal. An obligation
+// that holds no lease but appears in the non-blocking evidence read (an open
+// question, an in-memory job notification, an active goal between turns, the
+// shared tree's in-memory owner state) cannot end the wait on its own, and
+// TryClaim refuses over it while it is present, so awaitNaming reads those
+// directly and skips the wait when one exists (#4055). Evidence whose read has
+// to block (a
+// running job, a watch, the job journal, the attention registry) is not
+// pre-checked, so a retire beside only that work still waits out the namer.
 func (c *RetirementController) TryManualClaim(ctx context.Context) (*RetirementClaim, RetirementSnapshot, error) {
 	c.awaitNaming(ctx, sessionNameTimeout)
 	if err := ctx.Err(); err != nil {
@@ -232,12 +237,20 @@ func (c *RetirementController) TryManualClaim(ctx context.Context) (*RetirementC
 }
 
 // awaitNaming returns once namers are no longer the only work holding the
-// process, ctx is done or bound has passed on the controller's clock.
+// process, ctx is done or bound has passed on the controller's clock. It
+// returns at once, without arming the timer, when non-blocking evidence other
+// than the namer's own naming holds the process, because TryClaim then refuses
+// either way (#4055): namingHeld sees only naming leases, so the wait decision
+// reads that evidence too (namingExcludedEvidence).
 func (c *RetirementController) awaitNaming(ctx context.Context, bound time.Duration) {
 	c.mu.Lock()
-	waiting := c.onlyNamingLocked()
+	if !c.onlyNamingLocked() {
+		c.mu.Unlock()
+		return
+	}
+	root, generation := c.root, c.generation
 	c.mu.Unlock()
-	if !waiting {
+	if c.namingExcludedEvidence(root, generation) {
 		return
 	}
 	timer := c.clock.NewTimer(bound)
@@ -258,6 +271,29 @@ func (c *RetirementController) awaitNaming(ctx context.Context, bound time.Durat
 			return
 		}
 	}
+}
+
+// namingExcludedEvidence reports whether a non-blocking obligation other than a
+// namer's own naming.pending holds the process. It is the manual retire's wait
+// pre-check (#4055): a retire that arrives while such an obligation exists
+// beside the namer would wait the namer out only to be refused, so awaitNaming
+// skips the wait instead. root and generation are the controller identity the
+// caller captured under c.mu; the read runs without c.mu, and a read of a
+// superseded root is discarded, so it cannot skip a wait on an obligation the
+// current root no longer holds. It is consulted only to skip a wait, never to
+// decide the retire, which TryClaim alone decides. It must be called without
+// c.mu.
+func (c *RetirementController) namingExcludedEvidence(root *Session, generation uint64) bool {
+	if root == nil {
+		return false
+	}
+	if len(c.nonBlockingEvidenceRead(root, false)) == 0 {
+		return false
+	}
+	c.mu.Lock()
+	stale := c.root != root || c.generation != generation
+	c.mu.Unlock()
+	return !stale
 }
 
 // wakeNamingWaitersLocked wakes a retire waiting on naming leases, if any
@@ -445,7 +481,7 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 func (c *RetirementController) claimSnapshotCurrent(root *Session, generation uint64, manual bool, held ...RetirementBlocker) RetirementSnapshot {
 	var evidence []RetirementBlocker
 	if manual {
-		evidence = c.nonBlockingEvidence(root)
+		evidence = c.nonBlockingEvidenceRead(root, true)
 	}
 	// held carries the leases captured under the admission predicate's own lock.
 	// claimSnapshotCurrent assembles its snapshot after this read, and re-reads
@@ -462,9 +498,15 @@ func (c *RetirementController) claimSnapshotCurrent(root *Session, generation ui
 	return c.snapshotWithBlockersLocked(evidence)
 }
 
-// nonBlockingEvidence reads the obligations that cannot wait on admitted work,
-// mirroring the full read's root-vs-tree split. It must be called without c.mu.
-func (c *RetirementController) nonBlockingEvidence(root *Session) []RetirementBlocker {
+// nonBlockingEvidenceRead reads the obligations that cannot wait on admitted
+// work, mirroring the full read's root-vs-tree split. includeNaming keeps each
+// namer's own naming.pending contribution: true for the claim snapshot, whose
+// refusal must name the namer, and false for the manual retire's wait pre-check
+// (#4055), which waits for a namer and nothing else and so must drop it by
+// identity. The tree reads an unreadable owner as no evidence when includeNaming
+// is false, so the pre-check never skips a wait it cannot justify. It must be
+// called without c.mu.
+func (c *RetirementController) nonBlockingEvidenceRead(root *Session, includeNaming bool) []RetirementBlocker {
 	if root == nil {
 		return nil
 	}
@@ -472,9 +514,9 @@ func (c *RetirementController) nonBlockingEvidence(root *Session) []RetirementBl
 		c.evidenceGate()
 	}
 	if tree := root.delegateController; tree != nil {
-		return tree.retirementNonBlockingEvidence()
+		return tree.retirementNonBlockingEvidenceRead(includeNaming)
 	}
-	return root.retirementNonBlockingEvidence()
+	return root.retirementNonBlockingEvidenceWithNaming(includeNaming)
 }
 
 // snapshotWithBlockersLocked builds a snapshot from live controller state plus

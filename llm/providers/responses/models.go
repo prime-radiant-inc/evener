@@ -16,14 +16,16 @@ import (
 
 // openAIModelListEntry is one /v1/models row from the public OpenAI API.
 type openAIModelListEntry struct {
-	ID              string `json:"id"`
-	OwnedBy         string `json:"owned_by"`
-	ContextWindow   int    `json:"context_window"`
-	MaxContext      int    `json:"max_context_window"`
-	MaxInputTokens  int    `json:"max_input_tokens"`
-	InputTokenLimit int    `json:"input_token_limit"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-	OutputTokens    int    `json:"output_token_limit"`
+	ID              string                          `json:"id"`
+	OwnedBy         string                          `json:"owned_by"`
+	ContextWindow   int                             `json:"context_window"`
+	MaxContext      int                             `json:"max_context_window"`
+	MaxInputTokens  int                             `json:"max_input_tokens"`
+	InputTokenLimit int                             `json:"input_token_limit"`
+	MaxOutputTokens int                             `json:"max_output_tokens"`
+	OutputTokens    int                             `json:"output_token_limit"`
+	Architecture    requestutil.GatewayArchitecture `json:"architecture"`
+	Capabilities    requestutil.GatewayCapabilities `json:"capabilities"`
 }
 
 // row keeps only advertised facts (registry.Model carries no field this
@@ -39,6 +41,7 @@ func (m openAIModelListEntry) row() registry.Model {
 	if o := requestutil.FirstPositiveInt(m.MaxOutputTokens, m.OutputTokens); o > 0 {
 		caps.MaxOutputTokens = new(o)
 	}
+	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
 	return registry.Model{ID: m.ID, Caps: caps}
 }
 
@@ -98,9 +101,7 @@ func (m codexModelListEntry) row() registry.Model {
 	if d := strings.TrimSpace(m.DefaultReasoningLevel); d != "" && !strings.EqualFold(d, "ultra") {
 		caps.DefaultEffort = new(d)
 	}
-	if len(m.InputModalities) > 0 {
-		caps.InputModalities = m.InputModalities
-	}
+	caps.InputModalities = requestutil.DedupStrings(m.InputModalities)
 	return registry.Model{ID: m.id(), Caps: caps}
 }
 

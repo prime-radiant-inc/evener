@@ -9,7 +9,6 @@ import { SIGN_IN_PROMPT_MESSAGE } from "../auth";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { connectionStore } from "../stores/connection";
 import { ConnectionBanner } from "./ConnectionBanner";
-import { NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 import * as pageReload from "./pageReload";
 
 // The "defaults to constructing a real AppwireClient..." test below (and any
@@ -183,8 +182,7 @@ describe('state "closed" - unauthenticated (401)', () => {
 
   test("shows the sign-in prompt instead of the generic closed message", async () => {
     render(<ConnectionBanner state="closed" delayMs={0} />);
-    await screen.findByText(SIGN_IN_PROMPT_MESSAGE);
-    expect(screen.queryByText("Connection closed.")).toBeNull();
+    await waitFor(() => expect(screen.getByRole("status").getAttribute("data-reason")).toBe("auth"));
   });
 
   test("still offers Retry - the user may authorize in another tab and come back", async () => {
@@ -201,8 +199,7 @@ describe('state "closed" - web app not built (503)', () => {
 
   test("shows the not-built message instead of the generic closed message", async () => {
     render(<ConnectionBanner state="closed" delayMs={0} />);
-    await screen.findByText(NOT_BUILT_MESSAGE);
-    expect(screen.queryByText("Connection closed.")).toBeNull();
+    await waitFor(() => expect(screen.getByRole("status").getAttribute("data-reason")).toBe("not-built"));
   });
 });
 

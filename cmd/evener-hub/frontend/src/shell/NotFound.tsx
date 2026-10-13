@@ -14,6 +14,7 @@ export function NotFound() {
   return (
     <EmptyState
       title="Page not found"
+      reason="not-found"
       hint="This link doesn't match anything in evener."
       action={
         <Button variant="quiet" onClick={goHome}>
