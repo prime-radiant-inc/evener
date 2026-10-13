@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -473,6 +474,12 @@ func TestALegacyTranscriptAnswersHistoryFailedDirectly(t *testing.T) {
 // permissions here — answers an ordinary retriable error, never the terminal
 // history-failed, and the read converges once the condition clears.
 func TestAHeaderCheckFailureStaysRetriable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix file permission to make the header check fail transiently")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the file permission this test relies on")
+	}
 	wireRepairsForTest(t)
 	feed, completions, calls := installRepairSeam(t)
 	cfg, entry, path := seedIndexedPastSession(t,
@@ -551,6 +558,12 @@ func TestARepairThatLosesTheTranscriptToDeletionLeavesNoSidecar(t *testing.T) {
 // transcript still exists leaves the sidecar directory exactly as the
 // in-place failure path always has.
 func TestAFailedRepairKeepsTheSidecarWhenTheTranscriptSurvives(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix file permission to force a real rebuild failure")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the file permission this test relies on")
+	}
 	_, _, path := seedIndexedPastSession(t,
 		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
 	)
