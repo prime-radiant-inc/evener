@@ -1727,8 +1727,21 @@ function armShutdownDispatchGate(ref: string): () => void {
     released = true;
     const count = shutdownDispatchGates.get(ref);
     if (count === undefined) return;
-    if (count > 1) shutdownDispatchGates.set(ref, count - 1);
-    else shutdownDispatchGates.delete(ref);
+    if (count > 1) {
+      shutdownDispatchGates.set(ref, count - 1);
+      return;
+    }
+    shutdownDispatchGates.delete(ref);
+    // The ref's dispatch was fenced for the gate's window, and a dispatch
+    // scheduled inside it (a Send admitted during the shutdown, say) was
+    // refused. Re-schedule on the way out rather than leave the row parked
+    // until the next discovery scan finds it.
+    // The ref's dispatch was fenced for the gate's window, and a dispatch
+    // scheduled inside it (a Send admitted during the shutdown, say) was
+    // refused. Re-schedule on the way out rather than leave the row parked for
+    // whatever later scan happens to find it.
+    const runtime = getMutationRuntime();
+    if (runtime) scheduleMutationDispatch(runtime, [ref]);
   };
 }
 

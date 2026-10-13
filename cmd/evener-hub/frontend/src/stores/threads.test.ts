@@ -17574,8 +17574,9 @@ test("a graceful shutdown gates dispatch without refusing a Send made during the
   } finally {
     hold.release();
   }
-  // The gate is released with the shutdown, so the row dispatches afterwards.
-  notifyReadyForMutationDispatch([ref]);
+  // The gate is released with the shutdown, so the row dispatches afterwards
+  // with no manual readiness nudge (RoboRev Low on the first revision: release
+  // must reschedule, or the row waits for the next discovery scan).
   await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 });
@@ -17608,8 +17609,8 @@ test("the shutdown dispatch gate is released when the shutdown rejects", async (
   } finally {
     hold.release();
   }
-  // The gate did not leak: the row dispatches once the shutdown has returned.
-  notifyReadyForMutationDispatch([ref]);
+  // The gate did not leak: the row dispatches once the shutdown has returned,
+  // with no manual readiness nudge.
   await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 });
