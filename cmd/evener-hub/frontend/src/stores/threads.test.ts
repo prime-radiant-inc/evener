@@ -3035,6 +3035,48 @@ describe("useThreadsStore.ensureThread", () => {
       expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
       void watching.catch(() => undefined);
     });
+
+    test("an older watched read's late success does not clear the repair status the newer tracked read owns", async () => {
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => readResponse("ref_a", { name: "Open" }));
+      await threadsStore.getState().ensureThread("ref_a");
+
+      // The watcher's read hangs on the wire.
+      const hungWatch: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+      fake.on(
+        "thread/read",
+        () =>
+          new Promise<ThreadReadResponse>((resolve) => {
+            hungWatch.resolve = resolve;
+          }),
+      );
+      const watching = threadsStore.getState().watchThread("ref_a");
+      await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length === 2);
+
+      // The pane's newer refresh answers rebuilding: the flag is the newer
+      // read's outcome. The watched pending is still current in its own map,
+      // so pending-entry currency alone cannot order the two.
+      fake.on("thread/read", () => {
+        throw rebuildingRejection();
+      });
+      const refresh = threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      await flushUntil(() => threadsStore.getState().repairingRefs.has("ref_a"));
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      // The older watched read resolves late with success: it must not
+      // publish the newer read's outcome away.
+      hungWatch.resolve?.(readResponse("ref_a", { name: "Late" }));
+      await settleCallerContinuations();
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+      await refresh;
+
+      threadsStore.getState().releaseThread("ref_a");
+      threadsStore.getState().releaseWatchedThread("ref_a");
+      void watching.catch(() => undefined);
+    });
   });
 
   // ensureThread's client-swap re-arm waits for the replacement client to reach

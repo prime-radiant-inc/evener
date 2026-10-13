@@ -599,12 +599,21 @@ type PendingThreadHydration = {
   // (ThreadReadParams.requestGeneration), echoed by the response and used to
   // discard a superseded ErrorTranscriptHistoryFailed rejection.
   requestGeneration?: number;
+  // The per-ref read sequence both hydration kinds stamp from
+  // (threadReadSequences): pending-entry currency is per-kind, so only this
+  // shared counter orders reads across the tracked and watched maps — an
+  // older read of one kind cannot publish over a newer read of the other.
+  readSequence: number;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
 // therefore arrive in the gap between the source subscription and snapshot
 // response. Keep the newest hydration's notifications out of the old model,
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
+// The per-ref read sequence both hydration kinds stamp their pendings from:
+// each map keeps its own current entry, so pending-entry currency alone
+// cannot order a tracked read against a watched one. Monotonic per ref.
+const threadReadSequences = new Map<string, number>();
 // Tracked-hydration attempts: one monotonically increasing counter per ref,
 // stamped onto each tracked pending and never reset. This is the currency the
 // Stop-cancellation unwind requires: only the ref's NEWEST attempt may unwind
@@ -2356,12 +2365,14 @@ function setThreadRepairing(ref: string, repairing: boolean): void {
 }
 
 // publishThreadRepairing is setThreadRepairing behind the same ownership fence
-// publishThreadHydration and scheduleOwnedHydrationRetry use: only the ref's
-// CURRENT pending hydration may publish its read's repair outcome. A late
-// resolution from an attempt a newer one superseded, or from a lifetime its
-// owner released (the releases delete the pending entry first), must not
-// clear a flag the newer read set or recreate one a newer read already
-// answered.
+// publishThreadHydration and scheduleOwnedHydrationRetry use, plus what that
+// fence cannot see across kinds: only the ref's CURRENT pending hydration,
+// on the current client and ready epoch, whose read is the ref's newest of
+// EITHER kind, may publish its repair outcome. A late resolution from an
+// attempt a newer one superseded, from a lifetime its owner released (the
+// releases delete the pending entry first), or from an older read of the
+// other kind — still current in its own map — must not clear a flag a newer
+// read set or recreate one a newer read already answered.
 function publishThreadRepairing(
   kind: HydrationOwnerKind,
   ref: string,
@@ -2370,6 +2381,8 @@ function publishThreadRepairing(
 ): void {
   const pendingHydrations = kind === "watched" ? pendingWatchedHydrations : pendingThreadHydrations;
   if (pendingHydrations.get(ref) !== pending) return;
+  if (wiredClient !== pending.client || readyEpoch !== pending.epoch) return;
+  if ((threadReadSequences.get(ref) ?? 0) !== pending.readSequence) return;
   setThreadRepairing(ref, repairing);
 }
 
@@ -3767,6 +3780,8 @@ function beginThreadHydration(
   ensureCacheLease(ref);
   const attempt = (trackedHydrationAttempts.get(ref) ?? 0) + 1;
   trackedHydrationAttempts.set(ref, attempt);
+  const readSequence = (threadReadSequences.get(ref) ?? 0) + 1;
+  threadReadSequences.set(ref, readSequence);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putThreadModel(ref, baseModel);
   const pending = {
@@ -3777,6 +3792,7 @@ function beginThreadHydration(
     attempt,
     baseModel,
     requestGeneration,
+    readSequence,
   };
   pendingThreadHydrations.set(ref, pending);
   return pending;
@@ -3788,6 +3804,8 @@ function beginWatchedHydration(
   model: ThreadModel | undefined,
   epoch: number,
 ): PendingThreadHydration {
+  const readSequence = (threadReadSequences.get(ref) ?? 0) + 1;
+  threadReadSequences.set(ref, readSequence);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putWatchedThreadModel(ref, baseModel);
   const pending = {
@@ -3797,6 +3815,7 @@ function beginWatchedHydration(
     routing: pendingHydrationRouting(ref, baseModel ?? model),
     baseModel,
     requestGeneration,
+    readSequence,
   };
   pendingWatchedHydrations.set(ref, pending);
   return pending;
