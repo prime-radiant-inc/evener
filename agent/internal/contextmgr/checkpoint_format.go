@@ -575,6 +575,11 @@ func fenceRunAt(line string, base int) (char byte, n int, after string) {
 	if n < 3 {
 		return 0, 0, ""
 	}
+	// A backtick fence's info string may not contain a backtick, so a line like
+	// "- ```status=done```" is an inline code span, not a fence (#4435).
+	if char == '`' && strings.Contains(rest, "`") {
+		return 0, 0, ""
+	}
 	return char, n, rest
 }
 

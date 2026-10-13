@@ -62,6 +62,9 @@ func TestSummarizeWithLLM_StoresTheReplyAsWritten(t *testing.T) {
 		"quoted in a fence": "## Progress\n~~~\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n~~~",
 		"indented marker":   "## Progress\n    " + summaryMarkerEnd + "\nFixed the auth bug.",
 		"list-item fence":   "## Progress\nSTATE\n- ~~~text\n  " + summaryMarkerEnd + "\n  ~~~",
+		// A backtick fence's info string may not contain a backtick, so this is
+		// an inline code span on a list item, not a fence (#4435).
+		"inline code span": "## Progress\n- ```status=done```",
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
