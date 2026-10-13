@@ -527,33 +527,53 @@ func TestTimingBudgetFailsWhenThePackagesValueIsNotAnObject(t *testing.T) {
 // TestTimingBudgetFailsOnANonObjectPackagesValueInEveryMode pins that a
 // non-object packages value fails in every posture, not only strict: a broken
 // config is not a ratio warning, so bare (no --check), warn-only --check
-// --local, and --bless must each exit 1. The fixture uses the FALSY value `[]`,
-// which on the unfixed runner exits 0 in all three postures (the silent disarm);
-// a truthy value already exits 1 there via a traceback and so would not
-// discriminate a fix. On --bless the file is left byte-for-byte untouched,
-// because failing before the bless write is the observable behavior that
-// matters.
+// --local, a CI-shaped --check ($CI set, no --strict), and --bless must each
+// exit 1. It runs several values rather than `[]` alone: a guard that fired for
+// `[]` only, or only under --strict, would pass a single-value test while the
+// silent disarm (`false`, `null`) or traceback (`5`) reappeared in the other
+// postures. `[]` is the issue's example; `false`/`null` disarm silently (exit 0
+// before the fix), and `5` exits 1 there only via a traceback, so the no
+// traceback assertion is what makes the truthy case non-vacuous. On --bless the
+// file is left byte-for-byte untouched, because failing before the bless write
+// is the observable behavior that matters.
 func TestTimingBudgetFailsOnANonObjectPackagesValueInEveryMode(t *testing.T) {
-	const budget = `{"packages":[]}`
 	const measured = "SUM\tpkg\t100.00\n"
-
-	t.Run("bare", func(t *testing.T) {
-		out, err := runTimingBudgetScript(t, measured, budget, nil, nil)
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-			t.Fatalf("a bare run must exit 1 on a non-object packages value: exit = %v\n%s", err, out)
+	for _, value := range []string{`[]`, `false`, `null`, `5`} {
+		budget := `{"packages":` + value + `}`
+		postures := []struct {
+			name string
+			run  func(t *testing.T) (string, error)
+		}{
+			{"bare", func(t *testing.T) (string, error) {
+				return runTimingBudgetScript(t, measured, budget, nil, nil)
+			}},
+			{"warn-only", func(t *testing.T) (string, error) {
+				return runTimingBudgetCompareMode(t, measured, budget, false)
+			}},
+			{"ci-env", func(t *testing.T) (string, error) {
+				return runTimingBudgetScript(t, measured, budget, []string{"--check"}, []string{"CI=1"})
+			}},
+			{"bless", func(t *testing.T) (string, error) {
+				out, _, err := runBlessCommand(t, budget, "--modules", "no-such-module")
+				return out, err
+			}},
 		}
-	})
-
-	t.Run("warn-only", func(t *testing.T) {
-		out, err := runTimingBudgetCompareMode(t, measured, budget, false)
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-			t.Fatalf("a warn-only --check must exit 1 on a non-object packages value: exit = %v\n%s", err, out)
+		for _, p := range postures {
+			t.Run(value+"/"+p.name, func(t *testing.T) {
+				out, err := p.run(t)
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+					t.Fatalf("a non-object packages value (%s) must exit 1 in the %s posture: exit = %v\n%s", value, p.name, err, out)
+				}
+				if strings.Contains(out, "Traceback") {
+					t.Fatalf("a non-object packages value (%s) crashed with a traceback in the %s posture:\n%s", value, p.name, out)
+				}
+			})
 		}
-	})
+	}
 
-	t.Run("bless", func(t *testing.T) {
+	t.Run("bless-leaves-the-file-untouched", func(t *testing.T) {
+		const budget = `{"packages":[]}`
 		out, got, err := runBlessCommand(t, budget, "--modules", "no-such-module")
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {

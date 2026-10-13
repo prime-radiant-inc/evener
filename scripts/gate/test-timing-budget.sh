@@ -368,8 +368,10 @@ except ValueError as exc:
 # ("x", 5, true) with a traceback. Test the KEY, not the value: `budget.get`
 # cannot tell an absent key from an explicit `null`, and `{"packages": null}`
 # disarms the same way. Route it through the same malformed-config path as a
-# parse error above (#4609), which fails in every mode naming the file.
-if "packages" in budget and not isinstance(budget["packages"], dict):
+# parse error above (#4609), which fails in every mode naming the file. The
+# `isinstance(budget, dict)` guard keeps a non-object TOP-level budget on its
+# existing path (a traceback), which #4609 deliberately left alone.
+if isinstance(budget, dict) and "packages" in budget and not isinstance(budget["packages"], dict):
 	fail_malformed("packages must be an object mapping each package to its budget seconds (got "
 		+ type(budget["packages"]).__name__ + ")")
 packages = budget.get("packages") or {}
