@@ -644,7 +644,13 @@ func runShards(cfg shardsConfig) int {
 			}
 		}
 		_, _ = fmt.Fprintln(cfg.stdout)
-		_, _ = fmt.Fprintf(cfg.stdout, "full logs: %s\n", logdir)
+		fullLogs := logdir
+		if jsonShards {
+			// The shard logs moved out of the scratch dir, so point the reader
+			// at where they actually are.
+			fullLogs = cfg.jsonDir
+		}
+		_, _ = fmt.Fprintf(cfg.stdout, "full logs: %s\n", fullLogs)
 		return 1
 	}
 	green = true

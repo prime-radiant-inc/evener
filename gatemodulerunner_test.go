@@ -399,3 +399,66 @@ func TestModuleRunnerRefusesAZeroTestRun(t *testing.T) {
 		t.Errorf("runner did not explain the silent no-op:\n%s", result.output)
 	}
 }
+
+// countingModuleSrc is a fixture test that appends one line per execution to
+// $EVENER_RUNNER_TEST_COUNT, so a case can count how many times the gate ran
+// it: the measured form of issue #144's "no test executes twice".
+func countingModuleSrc() string {
+	return `package fixture
+
+import (
+	"os"
+	"testing"
+)
+
+func TestCounted(t *testing.T) {
+	f, err := os.OpenFile(os.Getenv("EVENER_RUNNER_TEST_COUNT"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("run\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+`
+}
+
+// TestModuleRunnerCapturesTheTimingRowsItAlreadyRan pins issue #144's whole
+// point: with EVENER_GATE_TIMING_TSV set, one gate run both proves the tests and
+// writes the ratchet's rows for them, and the fixture's test executes exactly
+// once -- the capture adds no second run. The count file is the measurement; the
+// rows are asserted structurally.
+func TestModuleRunnerCapturesTheTimingRowsItAlreadyRan(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "timingmod", countingModuleSrc())
+	counts := filepath.Join(root, "counts")
+	tsv := filepath.Join(root, "measured.tsv")
+	res := runModuleRunner(t, modules, append(controlledScratchEnv(ctrl),
+		"MODULES=timingmod",
+		"EVENER_GATE_TIMING_TSV="+tsv,
+		"EVENER_RUNNER_TEST_COUNT="+counts)...)
+	if res.exitCode != 0 {
+		t.Fatalf("runner exit = %d, want 0\n%s", res.exitCode, res.output)
+	}
+	ran, err := os.ReadFile(counts)
+	if err != nil {
+		t.Fatalf("the fixture test did not run: %v\n%s", err, res.output)
+	}
+	if got := strings.Count(string(ran), "run\n"); got != 1 {
+		t.Fatalf("the fixture test executed %d times, want exactly 1 (issue #144: no test may run twice):\n%s", got, res.output)
+	}
+	rows, err := os.ReadFile(tsv)
+	if err != nil {
+		t.Fatalf("no timing rows written: %v\n%s", err, res.output)
+	}
+	for _, want := range []string{
+		"PKG\texample.com/timingmod\n",
+		"SUM\texample.com/timingmod\t",
+		"TEST\texample.com/timingmod\tTestCounted\t",
+	} {
+		if !strings.Contains(string(rows), want) {
+			t.Fatalf("timing rows missing %q:\n%s", want, rows)
+		}
+	}
+}

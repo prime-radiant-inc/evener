@@ -53,6 +53,11 @@ for suite in report.get("testResults", []):
 		secs = a.get("duration") or 0
 		secs = secs / 1000.0
 		name = a.get("fullName") or a.get("title") or "(unnamed)"
+		# The row is tab-separated and one line: a name carrying a tab or a
+		# newline would split the row and make the comparator read a truncated
+		# line (a bare ValueError, not a verdict). Flatten it so a test name can
+		# never corrupt the measurement.
+		name = " ".join(str(name).split())
 		print(f"TEST\tweb\t{name}\t{secs}")
 		total += secs
 print(f"SUM\tweb\t{total}")

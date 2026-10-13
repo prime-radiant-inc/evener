@@ -365,6 +365,9 @@ run_go_test_capture() {
 	# error) after it, exactly where /usr/bin/time leaves it today.
 	if ! "$EVENER_DEV_BIN" dev timing-render --json "$jsonl"; then
 		printf 'run-module-tests.sh: could not render the log for %s (see %s)\n' "$label" "$jsonl" >&2
+		# Keep the test's own nonzero status when it has one: a red module must
+		# still read as the test's failure, not as a rendering accident.
+		[ "$rc" -ne 0 ] && return "$rc"
 		return 1
 	fi
 	cat "$stderrlog" || :
@@ -396,7 +399,9 @@ capture_shard_rows() {
 		[ -f "$f" ] || continue
 		go tool test2json -t -p "$pkg" <"$f" >>"$jsonl" || return 1
 	done
-	if ! go_test_json_to_tsv "$jsonl" "$pkglist" | grep -v '^SUM' >"$rows"; then
+	# awk, not `grep -v`: under `set -o pipefail` a grep that selects no line
+	# exits 1 and would read as a parse failure.
+	if ! go_test_json_to_tsv "$jsonl" "$pkglist" | awk '!/^SUM/' >"$rows"; then
 		printf 'run-module-tests.sh: timing rows for %s could not be parsed (see %s)\n' "$label" "$jsonl" >&2
 		return 1
 	fi
