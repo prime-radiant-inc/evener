@@ -1410,8 +1410,12 @@ export function useTranscriptScroll({
       )
         return;
       markGesture(true, undefined, 3);
+      // markGesture's reader intent supersedes the pending capture - and, with
+      // it, the movement record - so the key's own backward direction has to be
+      // armed AFTER it. A forward key keeps waiting for its event, as before.
+      if (direction === -1 && listRef.current?.getScrollElement() === port) listRef.current.noteBackwardMovement?.();
     },
-    [markGesture, measure],
+    [listRef, markGesture, measure],
   );
   useEffect(
     () => () => {
