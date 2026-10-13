@@ -24,7 +24,7 @@
 import type { PreparedAnnotation } from "@evener/appwire-client";
 import * as docContentModule from "@evener/appwire-client/docContent";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBObjectStore as FDBObjectStore } from "fake-indexeddb";
 import { beforeEach, expect, type MockInstance, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
@@ -642,13 +642,13 @@ test("a confirmed source change deletes the expired epoch's payload and evidence
   await act(async () => {
     await ports.runtime.whenIdle();
     await settleReaderRefreshes(listReads);
+    const expiry = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
+    expect(expiry.map((row) => row.receipt.phase)).toEqual(["deleted"]);
+    const payloads = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
+    expect(payloads.filter((row) => row.epoch === oldEpoch)).toEqual([]);
+    const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
+    expect(evidence.filter((row) => row.evidenceKey === oldEvidenceKey)).toEqual([]);
   });
-  const expiry = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
-  expect(expiry.map((row) => row.receipt.phase)).toEqual(["deleted"]);
-  const payloads = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
-  expect(payloads.filter((row) => row.epoch === oldEpoch)).toEqual([]);
-  const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
-  expect(evidence.filter((row) => row.evidenceKey === oldEvidenceKey)).toEqual([]);
 });
 
 test("a faulted expiry deletion keeps the receipt and the next retry pass completes it", async () => {
@@ -687,6 +687,10 @@ test("a faulted expiry deletion keeps the receipt and the next retry pass comple
     await ports.runtime.whenIdle();
     await settleReaderRefreshes(listReads);
   });
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
 
   // The reader's opportunistic deletion faulted: the receipt must stay
   // persisted unfinished, and the expired epoch's rows must survive it.
@@ -705,13 +709,13 @@ test("a faulted expiry deletion keeps the receipt and the next retry pass comple
   await act(async () => {
     await f.repo.retryPending("reader-open");
     await settleReaderRefreshes(listReads);
+    const expiryAfter = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
+    expect(expiryAfter.map((row) => row.receipt.phase)).toEqual(["deleted"]);
+    const payloads = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
+    expect(payloads.filter((row) => row.epoch === oldEpoch)).toEqual([]);
+    const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
+    expect(evidence.filter((row) => row.evidenceKey === oldEvidenceKey)).toEqual([]);
   });
-  const expiryAfter = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
-  expect(expiryAfter.map((row) => row.receipt.phase)).toEqual(["deleted"]);
-  const payloads = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
-  expect(payloads.filter((row) => row.epoch === oldEpoch)).toEqual([]);
-  const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
-  expect(evidence.filter((row) => row.evidenceKey === oldEvidenceKey)).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -780,18 +784,72 @@ test("an epoch changed by another reader's fence retires the retained capture wh
   const fresh = await waitForFreshAcceptedMap(acceptances, maps, work, acceptBase, mapBase);
   if (fresh.state !== "accepted") throw new Error("reread was not accepted");
   expect(fresh.lease.epoch).not.toBe(oldEpoch);
-  await act(async () => {
-    await ports.runtime.whenIdle();
-    await settleReaderRefreshes(listReads);
-  });
 
   // The stale capture is retired - the exact note preserved - so Send can
   // never build an operation from old-epoch evidence, and a fresh selection
-  // captures again on the replacement epoch.
-  expect(work.comment.capture).toBeUndefined();
-  expect(work.attempted).toBeNull();
-  expect(work.comment.note).toBe("Keep this scope.");
-  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Keep this scope.");
+  // captures again on the replacement epoch. The wake-driven tail stays
+  // inside act so no reader update escapes the scope.
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+    expect(work.comment.capture).toBeUndefined();
+    expect(work.attempted).toBeNull();
+    expect(work.comment.note).toBe("Keep this scope.");
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Keep this scope.");
+  });
   await selectFirstPassage();
   expect(work.comment.capture).toBeDefined();
+});
+
+// ---------------------------------------------------------------------------
+// Stale-ticket recovery (roborev: a stale ticket silently ended the read
+// without recovery, leaving a concurrently mounted pane on its loading
+// skeleton forever).
+// ---------------------------------------------------------------------------
+
+test("a concurrently mounted pane recovers from its superseded ticket with a fresh reread", async () => {
+  const f = await fixture("reader-stale-recovery");
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+  // Pane A's raw read is held on a deferred so pane B's ticket is issued
+  // while A's read is still in flight: B's issuance alone supersedes A's
+  // ticket, whatever A's raw read then returns.
+  let releaseA: (() => void) | undefined;
+  mockRead.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        releaseA = () => resolve(docContent(SOURCE, "rev-A"));
+      }),
+  );
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { beginReads, acceptances } = observeReadOwners(f.repo);
+
+  const hostA = mountAnnotated(f, ports, client, "doc-stale-a");
+  const workA = documentReaderWork("doc-stale-a", f.document, ports);
+  await waitFor(() => expect(beginReads.length).toBe(1));
+  mountAnnotated(f, ports, client, "doc-stale-b");
+  const workB = documentReaderWork("doc-stale-b", f.document, ports);
+  await waitFor(() => expect(beginReads.length).toBe(2));
+  await act(async () => {
+    releaseA?.();
+    await Promise.resolve();
+  });
+
+  await waitFor(() => {
+    expect(acceptances.some((a) => a.state === "stale-ticket")).toBe(true);
+    expect(acceptances.some((a) => a.state === "accepted")).toBe(true);
+  });
+  await waitForCurrentBoundMap(workB, maps);
+  expect(workB.lease).not.toBeNull();
+
+  // The superseded pane recovers instead of staying on its loading skeleton:
+  // one fresh reread whose ticket is the newest issued accepts, and a
+  // lease-holding pane never retries (its stale foreground rereads keep the
+  // rendered lease).
+  await waitFor(() => expect(workA.lease).not.toBeNull());
+  expect(workA.phase).toBe("reading");
+  expect(within(hostA.container).getByText("First occurrence: same")).toBeTruthy();
+  expect(beginReads.length).toBe(3);
 });
