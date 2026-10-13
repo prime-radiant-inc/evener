@@ -718,7 +718,7 @@
       "turnId": "turn_1",
       "toolName": "list_dir",
       "callId": "call_list_dir_page",
-      "output": "drain_test.go\t14\ntree.go\t32\n\n2 of 3 entries (offset 0) — more with list_dir(offset=2)",
+      "output": "drain_test.go\t14\ntree.go\t32\n\n2 entries (offset 0) — more with list_dir(offset=2)\nThe listing stopped after visiting its cap of 3 entries; there may be more beyond the cap. Narrow the path or reduce depth to see the rest.",
       "status": "completed",
       "completedAt": 1790625602000
     },
