@@ -20,6 +20,12 @@ interface Membership {
   holders: number;
   subscribed: boolean;
   transition: Promise<void> | null;
+  // The acquisition whose transition is pending, and the one whose last
+  // holder departed while it was still pending. A fresh epoch supersedes a
+  // retired one; a held transition (its holders never all departed) keeps
+  // joining regardless, preserving the concurrent-mount dedup.
+  transitionEpoch: number;
+  retiredEpoch: number;
   metadata: ThreadSubscriptionMetadata | null;
 }
 
@@ -47,7 +53,15 @@ class ThreadSubscriptions {
   acquire(ref: string): ThreadSubscriptionLease {
     let member = this.members.get(ref);
     if (!member) {
-      member = { ref, holders: 0, subscribed: false, transition: null, metadata: null };
+      member = {
+        ref,
+        holders: 0,
+        subscribed: false,
+        transition: null,
+        transitionEpoch: 0,
+        retiredEpoch: 0,
+        metadata: null,
+      };
       this.members.set(ref, member);
     }
     const held = member;
@@ -59,7 +73,11 @@ class ThreadSubscriptions {
     };
     const read = async (params: ThreadSubscriptionReadParams): Promise<ThreadReadResponse> => {
       active();
-      if (held.transition) {
+      // A held transition joins (concurrent first reads share one subscribe);
+      // a retired one — whose last holder departed while it was pending — is
+      // skipped: this read issues its own subscribe rather than waiting out a
+      // request nobody remains to answer for.
+      if (held.transition && held.transitionEpoch !== held.retiredEpoch) {
         await held.transition;
         return read(params);
       }
@@ -85,7 +103,14 @@ class ThreadSubscriptions {
         if (released) return;
         released = true;
         held.holders -= 1;
-        if (held.holders === 0) held.metadata = null;
+        if (held.holders === 0) {
+          held.metadata = null;
+          // The last holder departed while the acquisition is still on the
+          // wire: no one remains to consume it, and a reopened reader must
+          // not queue behind a request whose owner is gone — it supersedes
+          // the dead acquisition with its own subscribe instead.
+          if (held.transition) held.retiredEpoch = held.transitionEpoch;
+        }
         this.releaseEmpty(held);
       },
     };
@@ -103,6 +128,7 @@ class ThreadSubscriptions {
 
   private acquireWire(member: Membership, params: ThreadSubscriptionReadParams): Promise<ThreadReadResponse> {
     const generation = this.generation;
+    const epoch = ++member.transitionEpoch;
     const response = this.client.request("thread/read", {
       ...params,
       ref: member.ref,
@@ -110,7 +136,10 @@ class ThreadSubscriptions {
       replaceSubscription: false,
     });
     const transition = response.then((result) => {
-      if (generation === this.generation) {
+      // Only the CURRENT acquisition may flip membership state: a request
+      // superseded by a fresh subscribe (its owner departed, or a newer
+      // acquisition replaced it) settles into nothing.
+      if (generation === this.generation && epoch === member.transitionEpoch) {
         member.subscribed = true;
         this.admitMetadata(member, result, generation);
       }

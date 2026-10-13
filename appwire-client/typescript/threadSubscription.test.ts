@@ -170,6 +170,40 @@ test.each([
     expect(callsTo(client, "thread/unsubscribe")).toBe(1);
   },
 );
+// A departed holder's still-pending acquisition must not block a fresh
+// lease: the last holder released while the subscribing request hung, so the
+// reopened reader supersedes the dead acquisition with its own subscribe
+// instead of queueing behind a request whose owner departed. A held
+// transition (holders > 0) still joins — the concurrent-mount dedup.
+test("a reopened lease's read does not queue behind a departed holder's pending acquisition", async () => {
+  const client = activityClient(),
+    hung = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  client.on("thread/read", () => {
+    entered.resolve();
+    return hung.promise;
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  const departed = acquireThreadSubscription(client, activityRef);
+  const departedRead = departed.read({ includeTurns: false }).catch(() => undefined);
+  await entered.promise;
+  departed.release();
+
+  // The fresh lease's read must answer from its OWN subscribe request,
+  // while the departed one is still unresolved on the wire.
+  const fresh = acquireThreadSubscription(client, activityRef);
+  client.on("thread/read", () => ({ thread: { ...threadFixture().thread, id: "wire-fresh" } }));
+  const response = await fresh.read({ includeTurns: false });
+  expect(response.thread.id).toBe("wire-fresh");
+
+  // The departed request settles whenever it settles; nothing waited on it,
+  // and its late response never rewrites the fresh acquisition's state.
+  hung.resolve(threadFixture());
+  await departedRead;
+  expect(fresh.metadata()?.threadId).toBe("wire-fresh");
+  fresh.release();
+});
+
 test("reacquiring during pending subscribe preserves active membership", async () => {
   const client = activityClient(),
     pending = deferred<ThreadReadResponse>(),
