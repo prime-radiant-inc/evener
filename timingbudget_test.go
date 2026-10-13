@@ -499,6 +499,94 @@ func TestTimingBudgetFailsWhenTheClassMapIsNotAnObject(t *testing.T) {
 	}
 }
 
+// TestTimingBudgetFailsWhenThePackagesValueIsNotAnObject pins issue #4614. The
+// budget's packages value feeds every ratio and, through it, the class
+// ceilings. A value that is present but not an object is a hand-edit mistake
+// (`[]` instead of `{}`, a stray `null`) that a plain `packages or {}` swallows
+// into the NO BASELINE warn state — --check exits 0 with the whole ratchet
+// silently disarmed — while the truthy values crash with a traceback. It must
+// fail loudly in every mode instead. The fixture measurement is valid, so only
+// the packages value can make the run nonzero: the exit status and the absence
+// of a traceback are the assertions, never the diagnostic wording
+// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
+func TestTimingBudgetFailsWhenThePackagesValueIsNotAnObject(t *testing.T) {
+	for _, value := range []string{`[]`, `0`, `false`, `""`, `null`, `"x"`, `5`, `true`} {
+		t.Run(value, func(t *testing.T) {
+			out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", `{"packages":`+value+`}`)
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+				t.Fatalf("a present non-object packages value (%s) must fail --check --strict with exit 1: exit = %v\n%s", value, err, out)
+			}
+			if strings.Contains(out, "Traceback") {
+				t.Fatalf("a non-object packages value (%s) crashed with a traceback instead of failing structurally:\n%s", value, out)
+			}
+		})
+	}
+}
+
+// TestTimingBudgetFailsOnANonObjectPackagesValueInEveryMode pins that a
+// non-object packages value fails in every posture, not only strict: a broken
+// config is not a ratio warning, so bare (no --check), warn-only --check
+// --local, and --bless must each exit 1. The fixture uses the FALSY value `[]`,
+// which on the unfixed runner exits 0 in all three postures (the silent disarm);
+// a truthy value already exits 1 there via a traceback and so would not
+// discriminate a fix. On --bless the file is left byte-for-byte untouched,
+// because failing before the bless write is the observable behavior that
+// matters.
+func TestTimingBudgetFailsOnANonObjectPackagesValueInEveryMode(t *testing.T) {
+	const budget = `{"packages":[]}`
+	const measured = "SUM\tpkg\t100.00\n"
+
+	t.Run("bare", func(t *testing.T) {
+		out, err := runTimingBudgetScript(t, measured, budget, nil, nil)
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("a bare run must exit 1 on a non-object packages value: exit = %v\n%s", err, out)
+		}
+	})
+
+	t.Run("warn-only", func(t *testing.T) {
+		out, err := runTimingBudgetCompareMode(t, measured, budget, false)
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("a warn-only --check must exit 1 on a non-object packages value: exit = %v\n%s", err, out)
+		}
+	})
+
+	t.Run("bless", func(t *testing.T) {
+		out, got, err := runBlessCommand(t, budget, "--modules", "no-such-module")
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("--bless must exit 1 on a non-object packages value: exit = %v\n%s", err, out)
+		}
+		if got != budget {
+			t.Fatalf("--bless overwrote a non-object-packages budget instead of refusing it:\n%s", got)
+		}
+	})
+}
+
+// TestTimingBudgetKeepsThePackagesFallbacks pins the values the #4614 guard
+// must NOT reject: an absent packages key and an empty object keep the
+// deliberate NO BASELINE warn state (exit 0), and a real map is compared as
+// before. These are the "present but not an object" rule's boundary — the fix
+// closes the malformed values without disarming a budget that legitimately has
+// no packages yet.
+func TestTimingBudgetKeepsThePackagesFallbacks(t *testing.T) {
+	cases := map[string]string{
+		"absent key":   `{"perTestCeilingSeconds":3}`,
+		"empty object": `{}`,
+		"real map":     `{"packages":{"pkg":100}}`,
+	}
+	for name, budget := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", budget)
+			if err != nil {
+				t.Fatalf("a %s budget must keep exiting 0, not fail the run: %v\n%s", name, err, out)
+			}
+		})
+	}
+}
+
 // TestTimingBudgetFailsOnAMalformedBudget pins issue #4609.
 // json.JSONDecodeError is a ValueError, and the comparer's
 // `except (FileNotFoundError, ValueError)` used to treat a syntax error exactly
