@@ -246,6 +246,101 @@ test("last release cleans a subscription that completes late", async () => {
   await removed.promise;
   expect(callsTo(client, "thread/unsubscribe")).toBe(1);
 });
+
+// A superseded acquisition still owns its teardown: when its replacement
+// fails and that holder departs, the membership must survive the original
+// request's outstanding flight — its late success is then the only thing
+// holding the wire subscription, and the settle must unsubscribe it
+// (round-20 medium 2's superseded sibling of the test above).
+test("a superseded acquisition's late success tears down the subscription nobody owns", async () => {
+  const client = activityClient(),
+    original = deferred<ThreadReadResponse>(),
+    entered = deferred<void>(),
+    removed = deferred<void>();
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) {
+      entered.resolve();
+      return original.promise;
+    }
+    return Promise.reject(new Error("the replacement acquisition failed"));
+  });
+  client.on("thread/unsubscribe", () => {
+    removed.resolve();
+    return {};
+  });
+  const first = acquireThreadSubscription(client, activityRef),
+    firstRead = first.read({ includeTurns: false }).catch(() => undefined);
+  await entered.promise;
+  first.release();
+
+  // The fresh lease's read supersedes the original; its request fails, and
+  // its holder departs: nothing may delete the membership while the
+  // original acquisition is still outstanding on the wire.
+  const second = acquireThreadSubscription(client, activityRef);
+  await second.read({ includeTurns: false }).catch(() => undefined);
+  second.release();
+
+  // The original request succeeds late: it is the only thing holding the
+  // wire subscription — its settle must unsubscribe it.
+  original.resolve(threadFixture());
+  await firstRead;
+  await removed.promise;
+  expect(callsTo(client, "thread/unsubscribe")).toBe(1);
+});
+
+// The outstanding gate prevents a two-member split: without it, the failed
+// replacement's last release deletes the membership while the original
+// request is still on the wire, a fresh lease builds a second member, and
+// the original's late settle would unsubscribe the new member's live
+// subscription.
+test("a late superseded success does not tear down a reopened membership's subscription", async () => {
+  const client = activityClient(),
+    original = deferred<ThreadReadResponse>(),
+    entered = deferred<void>(),
+    removed = deferred<void>();
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) {
+      entered.resolve();
+      return original.promise;
+    }
+    if (reads === 2) {
+      return Promise.reject(new Error("the replacement acquisition failed"));
+    }
+    return { thread: { ...threadFixture().thread, id: "wire-third" } };
+  });
+  client.on("thread/unsubscribe", () => {
+    removed.resolve();
+    return {};
+  });
+  const first = acquireThreadSubscription(client, activityRef),
+    firstRead = first.read({ includeTurns: false }).catch(() => undefined);
+  await entered.promise;
+  first.release();
+  const second = acquireThreadSubscription(client, activityRef);
+  await second.read({ includeTurns: false }).catch(() => undefined);
+  second.release();
+
+  // A third lease reopens and its acquisition subscribes while the original
+  // is still outstanding on the wire.
+  const third = acquireThreadSubscription(client, activityRef);
+  await third.read({ includeTurns: false });
+
+  // The original's late success is superseded by the third's live
+  // subscription: no orphan, no teardown of the reopened membership's
+  // subscription.
+  original.resolve(threadFixture());
+  await firstRead;
+  expect(callsTo(client, "thread/unsubscribe")).toBe(0);
+
+  // The third's own release tears down its subscription.
+  third.release();
+  await removed.promise;
+  expect(callsTo(client, "thread/unsubscribe")).toBe(1);
+});
 test("reacquiring during pending unsubscribe waits then resubscribes", async () => {
   const client = activityClient(),
     pending = deferred<Record<string, never>>(),
