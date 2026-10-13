@@ -30,6 +30,7 @@ import { beforeEach, expect, type MockInstance, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { createDocumentAnnotationRepository } from "../../stores/documentAnnotationIndexedDB";
 import { createDocumentAnnotationRuntime, type DocumentAnnotationPorts } from "../../stores/documentAnnotationRuntime";
 import {
   ANNOTATION_EVIDENCE_STORE,
@@ -711,4 +712,86 @@ test("a faulted expiry deletion keeps the receipt and the next retry pass comple
   expect(payloads.filter((row) => row.epoch === oldEpoch)).toEqual([]);
   const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
   expect(evidence.filter((row) => row.evidenceKey === oldEvidenceKey)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// Epoch-change capture retirement (roborev: acceptance invalidated retained
+// captures only when the incarnation changed, so another reader's fence left
+// this reader holding a frozen old-epoch capture its Send could never
+// validate and a fresh selection could not replace).
+// ---------------------------------------------------------------------------
+
+test("an epoch changed by another reader's fence retires the retained capture while preserving the exact note", async () => {
+  const f = await fixture("reader-epoch-retire");
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { beginReads, acceptances } = observeReadOwners(f.repo);
+  const listReads = observeListAnnotations(f.repo);
+  mountAnnotated(f, ports, client, "doc-epoch-retire");
+  const work = documentReaderWork("doc-epoch-retire", f.document, ports);
+  await waitForCurrentBoundMap(work, maps);
+  const oldEpoch = work.lease?.epoch;
+  if (!oldEpoch) throw new Error("baseline lease missing");
+
+  // A frozen capture and note from the old epoch, never sent.
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+  expect(work.comment.capture).toBeDefined();
+  expect(work.comment.note).toBe("Keep this scope.");
+
+  // ANOTHER adapter fences the changed source first. This reader's own next
+  // read never sees expiry-pending: the head is already the replacement
+  // epoch under the SAME incarnation.
+  const second = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => null,
+  });
+  cleanupAfterTest(() => second.close());
+  const beginBase = beginReads.length;
+  const fenced = await second.acceptRead(await second.beginRead(f.document), docContent(`${SOURCE}CHANGED`, "rev-B"));
+  expect(fenced.state).toBe("expiry-pending");
+  if (fenced.state !== "expiry-pending" || !fenced.receipt) throw new Error("other adapter did not fence");
+
+  // The fence's wake reaches this pane as an empty list with an unchanged
+  // incarnation: no reset is proven, so the pane keeps its old-epoch lease
+  // and capture until its own reread adopts the replacement.
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  await waitFor(() => expect(beginReads.length).toBe(beginBase + 1));
+  expect(work.lease?.epoch).toBe(oldEpoch);
+  expect(work.comment.capture).toBeDefined();
+
+  // The pane's foreground reread accepts the replacement epoch directly.
+  const acceptBase = acceptances.length;
+  const mapBase = maps.length;
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+    await ports.runtime.whenIdle();
+  });
+  const fresh = await waitForFreshAcceptedMap(acceptances, maps, work, acceptBase, mapBase);
+  if (fresh.state !== "accepted") throw new Error("reread was not accepted");
+  expect(fresh.lease.epoch).not.toBe(oldEpoch);
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+
+  // The stale capture is retired - the exact note preserved - so Send can
+  // never build an operation from old-epoch evidence, and a fresh selection
+  // captures again on the replacement epoch.
+  expect(work.comment.capture).toBeUndefined();
+  expect(work.attempted).toBeNull();
+  expect(work.comment.note).toBe("Keep this scope.");
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Keep this scope.");
+  await selectFirstPassage();
+  expect(work.comment.capture).toBeDefined();
 });
