@@ -822,13 +822,29 @@ if [ "$timing_enabled" -eq 1 ]; then
 	while IFS= read -r row_file; do
 		[ -n "$row_file" ] && row_files+=("$row_file")
 	done < <(ls "$timing_rows_dir"/*.rows 2>/dev/null | sort)
+	# Publish atomically: write beside the destination and rename it into place.
+	# A later --measured replay reads the destination, so a partial file there
+	# would read as a complete but truncated measurement; the rename keeps the
+	# file absent or whole. An export that fails keeps the scratch holding the
+	# rows — they are the expensive part, and cleanup would otherwise delete
+	# them and force another full run.
+	timing_tmp="${EVENER_GATE_TIMING_TSV}.tmp-$$"
 	if [ "$fail" -ne 0 ]; then
 		:
 	elif [ "${#row_files[@]}" -eq 0 ]; then
 		printf 'run-module-tests.sh: the timing capture produced no rows; not writing %s\n' "$EVENER_GATE_TIMING_TSV" >&2
 		fail=1
-	elif ! cat "${row_files[@]}" >"$EVENER_GATE_TIMING_TSV"; then
+	elif ! cat "${row_files[@]}" >"$timing_tmp"; then
+		rm -f "$timing_tmp"
+		keep_failed_logs=1
 		printf 'run-module-tests.sh: could not write the timing rows to %s\n' "$EVENER_GATE_TIMING_TSV" >&2
+		printf 'run-module-tests.sh: the captured rows are retained in %s\n' "$logdir" >&2
+		fail=1
+	elif ! mv "$timing_tmp" "$EVENER_GATE_TIMING_TSV"; then
+		rm -f "$timing_tmp"
+		keep_failed_logs=1
+		printf 'run-module-tests.sh: could not publish the timing rows to %s\n' "$EVENER_GATE_TIMING_TSV" >&2
+		printf 'run-module-tests.sh: the captured rows are retained in %s\n' "$logdir" >&2
 		fail=1
 	fi
 fi

@@ -47,6 +47,13 @@ func runnerEnv(t *testing.T, overrides ...string) []string {
 	controlled := map[string]bool{
 		"MODULES": true, "WAVE1": true, "WAVE2": true, "WEB": true,
 		"TMPDIR": true, "EVENER_RUNNER_TEST_OBSERVE": true,
+		// The timing capture's controls. An enclosing measured run exports
+		// EVENER_GATE_TIMING_TSV, and a fixture runner that inherited it would
+		// write fixture-package rows over the real --measured destination — and
+		// leave them there even if the enclosing run failed. The others steer
+		// the same capture, so they are stripped for the same reason.
+		"EVENER_GATE_TIMING_TSV": true, "EVENER_SHARD_JSON_DIR": true,
+		"EVENER_SHARD_JSON_PACKAGE": true, "EVENER_WEB_VITEST_JSON": true,
 		"GOFLAGS": true, "GOCACHE": true, "GOMODCACHE": true, "GOPATH": true,
 		"GOENV": true, "GOTOOLCHAIN": true, "GOPROXY": true, "GOSUMDB": true,
 		"GOPRIVATE": true, "GONOPROXY": true, "GONOSUMDB": true, "GOTMPDIR": true,
@@ -525,5 +532,78 @@ func TestLegacy(t *testing.T) {}
 	}
 	if strings.Contains(string(rows), "legacy") {
 		t.Fatalf("the inventory still names a package -tags excluded from the run:\n%s", rows)
+	}
+}
+
+// TestModuleRunnerLeavesAnEnclosingTimingDestinationUntouched pins the review
+// finding on runnerEnv: it must strip the timing-control variables an enclosing
+// measured run exports, or a fixture runner the root suite starts inherits
+// EVENER_GATE_TIMING_TSV and writes its fixture-package rows over the real
+// `--measured` destination. A later replay would then read the fixture rows as
+// the enclosing run's measurement, and read them even when that run failed —
+// the opposite of the green-run-only contract the capture rests on.
+func TestModuleRunnerLeavesAnEnclosingTimingDestinationUntouched(t *testing.T) {
+	_, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "plainmod", `package fixture
+
+import "testing"
+
+func TestPlain(t *testing.T) {}
+`)
+
+	// The destination an enclosing measured run would have exported.
+	dest := filepath.Join(t.TempDir(), "enclosing-timing.tsv")
+	const sentinel = "ENCLOSING MEASUREMENT\n"
+	writeTestFile(t, dest, []byte(sentinel), 0o644)
+	t.Setenv("EVENER_GATE_TIMING_TSV", dest)
+
+	res := runModuleRunner(t, modules, append(controlledScratchEnv(ctrl), "MODULES=plainmod")...)
+	if res.exitCode != 0 {
+		t.Fatalf("runner exit = %d, want 0:\n%s", res.exitCode, res.output)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("the enclosing timing destination is gone: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("a fixture run wrote over the enclosing timing destination:\n%s", got)
+	}
+}
+
+// TestModuleRunnerKeepsItsRowsWhenTheTimingExportFails pins the review finding
+// on the timing export: it runs after the failure-log retention block, so a
+// write failure used to let cleanup delete the scratch directory holding the
+// successful measurements and force the whole lane to run again. The run must
+// fail, leave nothing at the destination, and keep the captured rows.
+func TestModuleRunnerKeepsItsRowsWhenTheTimingExportFails(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
+
+import "testing"
+
+func TestTimed(t *testing.T) {}
+`)
+
+	// A destination whose parent directory does not exist: the export cannot land.
+	dest := filepath.Join(root, "no-such-dir", "measured.tsv")
+	res := runModuleRunner(t, modules, append(controlledScratchEnv(ctrl),
+		"MODULES=timingmod",
+		"EVENER_GATE_TIMING_TSV="+dest)...)
+	if res.exitCode == 0 {
+		t.Fatalf("a timing export to an unwritable destination must fail the run:\n%s", res.output)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("a timing file was left at %s (stat err = %v); the destination must stay untouched", dest, err)
+	}
+	if !strings.Contains(res.output, "captured rows are retained") {
+		t.Errorf("the run did not point at the retained rows:\n%s", res.output)
+	}
+	leftovers := runnerScratchDirs(t, ctrl)
+	if len(leftovers) == 0 {
+		t.Fatalf("a failed timing export deleted the scratch holding the captured rows")
+	}
+	rows, err := filepath.Glob(filepath.Join(leftovers[0], "json", "*.rows"))
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("the retained scratch holds no timing rows (glob err = %v)", err)
 	}
 }
