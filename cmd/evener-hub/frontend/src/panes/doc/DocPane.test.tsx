@@ -11,6 +11,7 @@ import {
   type DocFileContent,
   DocFileError,
   displayedFingerprint,
+  type ExpiryReceipt,
   formatAnnotationReference,
   type PreparedAnnotation,
 } from "@evener/appwire-client";
@@ -1515,6 +1516,90 @@ test("a peer fence and save keeps foreign offsets off the retained display, then
   await waitFor(() =>
     expect(highlightBands().map((band) => band.getAttribute("data-operation-id"))).toEqual(["peer-op"]),
   );
+});
+
+test("a peer's committed source-change fence with no replacement annotations still recovers the stranded authority", async () => {
+  const f = await fixture("reader-peer-fence-empty");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  mountAnnotated(f, ports, client, "doc-peer-fence-empty");
+  const work = documentReaderWork("doc-peer-fence-empty", f.document, ports);
+  await screen.findByText("First occurrence: same");
+  // A pending note against the retained epoch: the recovery must preserve it.
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+  expect(work.comment.capture?.selectedRenderedText).toBe("same");
+
+  // Hold every later raw read: each recovery read stays in flight until the
+  // test releases it with the replacement content.
+  const CHANGED = `${SOURCE}\nCHANGED`;
+  const heldReads: Array<(content: DocFileContent) => void> = [];
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((resolve) => {
+        heldReads.push(resolve);
+      }),
+  );
+
+  // A peer fences the changed source and adopts the replacement epoch while
+  // saving NO annotation: the committed wake lists nothing — this reader's
+  // expired epoch is suppressed and the replacement epoch carries no rows of
+  // its own.
+  const beginReads = vi.spyOn(f.repo, "beginRead");
+  const beginReadsBeforeFence = beginReads.mock.calls.length;
+  let peerEpoch: string | undefined;
+  let fencedReceipt: ExpiryReceipt | undefined;
+  await act(async () => {
+    const fenced = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(CHANGED, "rev-B"));
+    if (fenced.state !== "expiry-pending") throw new Error("peer fence did not expire the epoch");
+    fencedReceipt = fenced.receipt;
+  });
+  // The fence's committed wake also issued the pane's revalidation ticket
+  // (the empty-list reset proof): let that pass finish before the peer reads
+  // again, or the peer's reread races a superseded ticket.
+  await waitFor(() => expect(beginReads.mock.calls.length).toBeGreaterThan(beginReadsBeforeFence + 1));
+  await act(async () => {
+    const peerRead = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(CHANGED, "rev-B"));
+    if (peerRead.state !== "accepted") throw new Error("peer reread was not accepted");
+    peerEpoch = peerRead.lease.epoch;
+  });
+  if (!peerEpoch) throw new Error("peer lease missing");
+
+  // The empty-list wake itself must schedule the recovery read: no foreground
+  // event, no remount and no peer save. Unfixed, nothing ever fetches.
+  await waitFor(() => expect(heldReads.length).toBeGreaterThan(0));
+
+  // That read's ticket predates the peer's reread, so its acceptance is stale:
+  // the pane keeps its rendered authority (the pinned stale contract). The
+  // peer then completes its fence's deletion exactly as its own pane would,
+  // and the deletion's committed wake lists empty again — the second scheduled
+  // read carries a current ticket and adopts the replacement epoch.
+  await act(async () => {
+    heldReads[0]?.(docContent(CHANGED, "rev-B"));
+  });
+  if (!fencedReceipt) throw new Error("fence receipt missing");
+  const expiryReceipt = fencedReceipt;
+  await act(async () => {
+    await f.repo.finishExpiry(expiryReceipt);
+  });
+  await waitFor(() => expect(heldReads.length).toBeGreaterThan(1));
+  await act(async () => {
+    heldReads[1]?.(docContent(CHANGED, "rev-B"));
+  });
+
+  // The pane adopts the replacement epoch and retires the stale authority
+  // while preserving the exact editable note; the stale capture is honestly
+  // cleared, Send stays unavailable without it, and the shared status says
+  // the passage needs reselection.
+  await screen.findByText("CHANGED");
+  await waitFor(() => expect(work.lease?.epoch).toBe(peerEpoch));
+  expect(work.comment.note).toBe("Keep this scope.");
+  expect(work.comment.capture).toBeUndefined();
+  const send = screen.getByRole("button", { name: "Send" });
+  expect(send.hasAttribute("disabled")).toBe(true);
+  expect(screen.getByRole("status").textContent).toBe("reselect the passage");
 });
 
 test("two leaseless readers with interleaved fetches stop superseding each other and both render the document", async () => {

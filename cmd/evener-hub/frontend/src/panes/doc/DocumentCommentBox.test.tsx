@@ -171,6 +171,31 @@ test("a blank or whitespace-only note cannot Send", async () => {
   expect(onSend).not.toHaveBeenCalled();
 });
 
+test("a preserved note without a capture cannot Send, and the status says the passage needs reselection", async () => {
+  const onNote = vi.fn();
+  const onSend = vi.fn();
+  const onCancel = vi.fn();
+
+  render(
+    <DocumentCommentBox
+      work={{ note: "Keep this scope.", captureFrozen: false }}
+      onNote={onNote}
+      onSend={onSend}
+      onCancel={onCancel}
+      saving={false}
+      status="reselect the passage"
+    />,
+  );
+  // Source expiry preserved the note but cleared its capture: the save would
+  // silently return without one, so Send must stay unavailable instead of
+  // accepting a click that does nothing.
+  const send = screen.getByRole("button", { name: "Send" });
+  fireEvent.click(send);
+  expect(onSend).not.toHaveBeenCalled();
+  expect(send.hasAttribute("disabled")).toBe(true);
+  expect(screen.getByRole("status").textContent).toBe("reselect the passage");
+});
+
 test("a valid Send fires the observer exactly once", async () => {
   const f = await fixture("comment-send");
   const capture = f.operation.capture;

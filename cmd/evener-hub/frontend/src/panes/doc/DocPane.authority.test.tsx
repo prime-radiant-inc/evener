@@ -768,38 +768,34 @@ test("an epoch changed by another reader's fence retires the retained capture wh
   });
   cleanupAfterTest(() => second.close());
   const beginBase = beginReads.length;
+  const acceptBase = acceptances.length;
+  const mapBase = maps.length;
+  // The raw source has changed for everyone: serve the replacement from here
+  // on, so the reread the fence's wake schedules adopts it directly.
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
   const fenced = await second.acceptRead(await second.beginRead(f.document), docContent(`${SOURCE}CHANGED`, "rev-B"));
   expect(fenced.state).toBe("expiry-pending");
   if (fenced.state !== "expiry-pending" || !fenced.receipt) throw new Error("other adapter did not fence");
 
   // The fence's wake reaches this pane as an empty list with an unchanged
-  // incarnation: no reset is proven, so the pane keeps its old-epoch lease
-  // and capture until its own reread adopts the replacement.
+  // incarnation: no reset is proven, but the wake itself now schedules the
+  // adopting reread — the pane never strands its expired authority waiting
+  // for a foreground event, a remount or a peer save.
   await act(async () => {
     await ports.runtime.whenIdle();
     await settleReaderRefreshes(listReads);
   });
-  await waitFor(() => expect(beginReads.length).toBe(beginBase + 1));
-  expect(work.lease?.epoch).toBe(oldEpoch);
-  expect(work.comment.capture).toBeDefined();
+  await waitFor(() => expect(beginReads.length).toBeGreaterThan(beginBase + 1));
 
-  // The pane's foreground reread accepts the replacement epoch directly.
-  const acceptBase = acceptances.length;
-  const mapBase = maps.length;
-  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
-  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-  await act(async () => {
-    fireEvent(document, new Event("visibilitychange"));
-    await ports.runtime.whenIdle();
-  });
+  // The scheduled reread accepts the replacement epoch directly, and the
+  // stale capture is retired - the exact note preserved - so Send can never
+  // build an operation from old-epoch evidence, and a fresh selection
+  // captures again on the replacement epoch. The wake-driven tail stays
+  // inside act so no reader update escapes the scope.
   const fresh = await waitForFreshAcceptedMap(acceptances, maps, work, acceptBase, mapBase);
   if (fresh.state !== "accepted") throw new Error("reread was not accepted");
   expect(fresh.lease.epoch).not.toBe(oldEpoch);
-
-  // The stale capture is retired - the exact note preserved - so Send can
-  // never build an operation from old-epoch evidence, and a fresh selection
-  // captures again on the replacement epoch. The wake-driven tail stays
-  // inside act so no reader update escapes the scope.
+  await waitFor(() => expect(work.lease?.epoch).not.toBe(oldEpoch));
   await act(async () => {
     await ports.runtime.whenIdle();
     await settleReaderRefreshes(listReads);

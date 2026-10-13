@@ -198,10 +198,16 @@ function evidenceProvesChange(content: DocFileContent, evidence: CapturedPassage
 
 // The status the pane-level indicator and the comment box share. `saved` and
 // `saved, pending draft` come from ACTUAL annotation views; a retained attempt
-// or a newer unsaved comment keeps the honest `unsaved` state.
+// or a newer unsaved comment keeps the honest `unsaved` state. A preserved
+// note whose capture a source expiry retired cannot Send until a fresh passage
+// is selected: say so instead of the misleading `unsaved` (a retained attempt
+// carries its own frozen capture and stays honestly `unsaved`).
 function commentStatus(work: DocumentReaderWork, views: readonly AnnotationView[]): DocumentCommentStatus {
   if (work.phase === "expiry-pending") return "expiry-pending";
-  if (work.attempted || work.comment.note.trim() !== "") return "unsaved";
+  if (work.attempted || work.comment.note.trim() !== "") {
+    if (!work.attempted && !work.comment.capture) return "reselect the passage";
+    return "unsaved";
+  }
   const hasApplied = views.some((v) => v.handoff.state === "applied" || v.handoff.state === "already-applied");
   const hasPending = views.some((v) => v.handoff.state === "pending");
   if (hasApplied) return hasPending ? "saved, pending draft" : "saved";
@@ -336,14 +342,18 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // A committed wake whose views all name a foreign epoch is a peer's fence
   // committed while this reader still displays the retained snapshot: the
   // expired epoch's rows are already suppressed, so the replacement's
-  // operations are the only evidence left. Schedule the current read that
-  // adopts the replacement epoch (or restores the retained one); the read
-  // itself never wakes, so this cannot loop.
+  // operations are the only evidence left. An EMPTY list under retained
+  // authority is the same peer fence whose replacement epoch carries no
+  // annotations of its own: the suppressed rows are gone and nothing names
+  // the new epoch yet, so waiting for epoch evidence would strand the expired
+  // authority until some later foreground or remount trigger. Either way,
+  // schedule the current read that adopts the replacement epoch (or restores
+  // the retained one); the read itself never wakes, so this cannot loop.
   const recoverReplacedEpochOnWake = useCallback(
     (next: readonly AnnotationView[]): void => {
       const authority = work.lease ?? work.attempted?.lease ?? null;
-      if (!authority || next.length === 0) return;
-      if (next.some((view) => view.receipt.epoch === authority.epoch)) return;
+      if (!authority) return;
+      if (next.length > 0 && next.some((view) => view.receipt.epoch === authority.epoch)) return;
       setReadNonce((value) => value + 1);
     },
     [work],
