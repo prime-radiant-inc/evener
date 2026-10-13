@@ -51,7 +51,14 @@ type hubSessionMsg struct {
 	// the read's subscribe+replace re-pointed it at the departed ref.
 	entryRetrySeq         int
 	liveNavRefreshReplace bool
-	err                   error
+	// liveNavEntry marks a navigation read issued by a pick — the dashboard
+	// list, the command palette, a fork or spawn landing — as distinct from
+	// the cycling and recovery reads that also carry liveNavSeq: a pick may
+	// land on a dashboard (its success enters the picked session there), and
+	// a superseded pick is discarded whole rather than reconciled as a
+	// cycling read.
+	liveNavEntry bool
+	err          error
 	// beforeCut carries the frames the connection delivered ahead of this
 	// read's response, and capture holds the ones it delivered after. The
 	// response is an exact cut, so the two go on opposite sides of the

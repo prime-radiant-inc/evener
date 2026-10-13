@@ -205,9 +205,12 @@ func (m hubModel) activateDashboardRow(rows []hubRow) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	// The new pick is the newer navigation intent: retire any pending
-	// entry-repair retry so its re-read cannot race this pick's read.
+	// entry-repair retry so its re-read cannot race this pick's read, and
+	// issue the read tagged with the generation this pick takes, so a
+	// response a newer navigation supersedes is discarded whole.
 	m.entryRepairRetire()
-	return m, fetchHubSession(m.frames, m.client, row.ref)
+	read := m.issuePickedSessionRead(row.ref)
+	return m, read
 }
 
 func (m *hubModel) enterHubFilter() {
@@ -255,9 +258,11 @@ func (m hubModel) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// The picked session is the newer navigation intent: retire any
-		// pending entry-repair retry so its re-read cannot race this pick.
+		// pending entry-repair retry so its re-read cannot race this pick,
+		// and issue the read tagged with the generation this pick takes.
 		m.entryRepairRetire()
-		return m, fetchHubSession(m.frames, m.client, entry.Ref)
+		read := m.issuePickedSessionRead(entry.Ref)
+		return m, read
 	default:
 		return m, cmd
 	}

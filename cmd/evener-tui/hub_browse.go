@@ -74,6 +74,11 @@ func (m *hubModel) returnToDashboard() {
 	m.authLoginFlowID = ""
 	m.clearSessionQueue()
 	m.mode = hubModeDashboard
+	// Departing to the dashboard is the amendment's "opening another pane"
+	// (#4343): the pending entry-repair retry and its status retire with
+	// it — the automatic entry its tick would drive must not follow the
+	// user here.
+	m.entryRepairRetire()
 	m.clampSelection()
 }
 

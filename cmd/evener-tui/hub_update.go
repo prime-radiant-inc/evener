@@ -67,15 +67,23 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// abandoned navigation (the different-ref branch below would apply
 		// it as a user-driven switch, clearing the newer surface's pending
 		// attachments and composer with it), and its rejection must not
-		// rearm it or surface on a session the user moved to. The read's
+		// rearm it or surface on a session the user moved to. A landing
+		// whose armed pair matches but whose generation has moved — a
+		// cycling press, any newer navigation that bumped it while this read
+		// was in flight — proves THIS retry's intent departed: the read is
+		// discarded and the retry retires with it, so its status does not
+		// stand on the surface the user moved to. Either way, the read's
 		// subscribe+replace still re-pointed the connection's subscription
 		// server-side, so when a session is displayed its subscription is
 		// re-established — the same obligation the live-nav guards carry.
-		if msg.entryRetrySeq > 0 && (m.entryRepairRef.String() != msg.ref || m.entryRepairSeq != msg.entryRetrySeq) {
-			if m.mode == hubModeSession {
-				return m.reestablishDisplayedSubscription()
+		if msg.entryRetrySeq > 0 {
+			if m.entryRepairRef.String() != msg.ref || m.entryRepairSeq != msg.entryRetrySeq {
+				return m.discardSupersededSessionRead()
 			}
-			return m, nil
+			if m.entryRepairSeq != m.liveNavSeq {
+				m.entryRepairRetire()
+				return m.discardSupersededSessionRead()
+			}
 		}
 		// A refresh read (the /details panel, a clear's re-read, the resync
 		// re-read — tagLiveNavRefresh) targets the session displayed at
@@ -126,6 +134,18 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the pending target is not its concern: a navigation in flight
 			// when it issued keeps its stepping base.
 		}
+		// A pick's read (the dashboard list, the palette, a fork or spawn
+		// landing) carries the generation it was issued under. One that
+		// lands after a newer navigation — a second pick, a cycling press, a
+		// reconnect — is superseded: its success must not yank the user into
+		// abandoned navigation, and its rebuilding rejection must not arm a
+		// retry for it (round-12 high). Its ThreadRead already replaced the
+		// connection's subscriptions server-side, so a displayed session's
+		// subscription is re-established — the same obligation the live-nav
+		// guards carry.
+		if msg.liveNavEntry && msg.liveNavSeq != m.liveNavSeq {
+			return m.discardSupersededSessionRead()
+		}
 		// A live-session cycling read a newer press has superseded is dropped
 		// here, after Release: the superseding read's capture already adopted
 		// the frames this one's was holding (hub_frames.go's takeLocked), and
@@ -137,7 +157,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// its concern — clearing the pending target here would break a
 		// concurrent navigation's stepping base), and a stale one was
 		// already dropped above.
-		if msg.liveNavSeq > 0 && !msg.liveNavRefresh {
+		//
+		// A picked entry read never enters either: its landing guards ran
+		// above, and a current one falls through to enter the picked
+		// session even from a dashboard — the cycling block's session-mode
+		// expectations are not its.
+		if msg.liveNavSeq > 0 && !msg.liveNavRefresh && !msg.liveNavEntry {
 			// Also dropped when session mode was exited (ctrl+o) while the read
 			// was in flight: applying it would yank the dashboard back into
 			// the fetched session (roborev PR #1044 round-3 medium 2).
@@ -301,8 +326,10 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// A refresh read takes the ordinary error path instead — an
 			// errored /details or clear re-read must surface as the model's
 			// error, not silently trigger a repair (roborev PR #1044
-			// round-18 medium).
-			if msg.liveNavSeq > 0 && !msg.liveNavRefresh {
+			// round-18 medium). A picked entry read also passes through: a
+			// current pick's rebuilding rejection must arm the paced retry
+			// below, not stop at a re-establish meant for cycling reads.
+			if msg.liveNavSeq > 0 && !msg.liveNavRefresh && !msg.liveNavEntry {
 				return m.reestablishDisplayedSubscription()
 			}
 			m.sessionDetailsRequested = false
@@ -313,10 +340,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// retires and the error shows. An ordinary transient while the
 			// retry stands (mid-repair lock contention with no repair in
 			// flight) keeps it armed: the status stands and the transient
-			// rides after it. Only the plain entry path arms — the
-			// already-open surfaces above keep their existing re-entry
-			// points.
-			if msg.expectedState == "" && msg.liveNavSeq == 0 && !msg.liveNavRefresh {
+			// rides after it.
+			// The plain entry path arms — the tagged pick whose guard above
+			// proved it current, or the retry's own re-read (whose landing
+			// guard did) — and the already-open surfaces above keep their
+			// existing re-entry points.
+			if msg.expectedState == "" && !msg.liveNavRefresh && (msg.liveNavSeq == 0 || msg.liveNavEntry) {
 				ref, refErr := appwire.ParseRef(msg.ref)
 				armedFor := refErr == nil && m.entryRepairRef == ref
 				switch {
@@ -413,15 +442,17 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clearNoticesByCategory("action-unavailable")
 		m.clearPendingAttachments(true)
 		// Reaching here with a different detail.Ref is a session switch the
-		// user drove by some path. If it was not itself a live-nav read, it is
-		// newer intent than any cycling read still in flight: invalidate the
-		// pending target so that read drops when it lands (roborev PR #1044
-		// round-2 medium 3). Status refreshes and same-ref resyncs took the
-		// early returns above and never invalidate.
+		// user drove by some path. A read that was not itself a live-nav read
+		// is newer intent than any cycling read still in flight (roborev
+		// PR #1044 round-2 medium 3): it takes the generation it did not
+		// take at issue time — the tagged flavors already did — and any
+		// pending cycling target it superseded, or resolved, is gone.
+		// Status refreshes and same-ref resyncs took the early returns above
+		// and never invalidate.
 		if msg.liveNavSeq == 0 {
 			m.liveNavSeq++
-			m.liveNavPendingRef = ""
 		}
+		m.liveNavPendingRef = ""
 		// Entering any session is the newer intent: a pending entry-repair
 		// retry — whose own successful re-read lands here too — retires
 		// with it, and its status with it.
@@ -790,9 +821,11 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// The fork's landing is the newer navigation intent: retire any
-		// pending entry-repair retry so its re-read cannot race it.
+		// pending entry-repair retry so its re-read cannot race it, and
+		// issue the read tagged with the generation this entry takes.
 		m.entryRepairRetire()
-		return m, fetchHubSession(m.frames, m.client, ref)
+		read := m.issuePickedSessionRead(ref)
+		return m, read
 	case hubSpawnMsg:
 		m.spawnSubmitting = false
 		if msg.err != nil {
@@ -813,7 +846,8 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.spawnLaunchOverrides = nil // one-shot overrides are consumed only after success
-		return m, fetchHubSession(m.frames, m.client, ref)
+		read := m.issuePickedSessionRead(ref)
+		return m, read
 	case hubSessionModelsMsg:
 		if msg.err != nil {
 			m.removeTrailingSessionSystem("Fetching available models...")

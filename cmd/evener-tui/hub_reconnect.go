@@ -101,6 +101,16 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 	m.clearNoticesByCategory(noticeCategoryConnection)
 
 	cmds := []tea.Cmd{waitHubNotification(m.frames), fetchHubTree(m.client)}
+	// A pending entry repair (#4343) is navigation intent, not connection
+	// state: the connection dying is not the user departing. Rebind the
+	// armed retry to the replacement connection's generation — the dead
+	// connection's in-flight response and pending tick then land as
+	// superseded — and issue a fresh tick on the new generation, so the
+	// paced read resumes on the replacement connection.
+	if m.entryRepairRef != (appwire.Ref{}) {
+		m.entryRepairSeq = m.liveNavSeq
+		cmds = append(cmds, hubEntryRepairRetryCmd(m.entryRepairDelay, m.entryRepairRef, m.entryRepairSeq))
+	}
 	// A replacement connection carries no subscriptions: every one the dead
 	// connection held died with it. Re-read the viewed session through the
 	// tagged recovery path (round-13 medium 1): the read re-subscribes it

@@ -47,6 +47,41 @@ func adjacentLiveRef(refs []appwire.Ref, current string, step int) (appwire.Ref,
 	return refs[len(refs)-1], true
 }
 
+// issuePickedSessionRead issues a session read for a navigation pick — the
+// dashboard list, the command palette, a fork or spawn landing — as the
+// newest navigation intent: the bump supersedes any read still in flight,
+// and the tag lets Update judge a late response against the generation it
+// was issued under, so a superseded pick's success cannot yank the user
+// into abandoned navigation and its rebuilding rejection cannot arm a retry
+// for it. The cycling read's issuance below carries the same discipline for
+// its own flavor.
+func (m *hubModel) issuePickedSessionRead(ref appwire.Ref) tea.Cmd {
+	m.liveNavSeq++
+	seq := m.liveNavSeq
+	read := fetchHubSession(m.frames, m.client, ref)
+	return func() tea.Msg {
+		msg := read()
+		if sessionMsg, ok := msg.(hubSessionMsg); ok {
+			sessionMsg.liveNavSeq = seq
+			sessionMsg.liveNavEntry = true
+			return sessionMsg
+		}
+		return msg
+	}
+}
+
+// discardSupersededSessionRead drops a response whose read already
+// re-pointed the connection's subscriptions server-side: when a session is
+// displayed, its subscription is re-established, since nothing else will;
+// otherwise there is nothing to repair. The obligation the live-nav guards
+// carry, shared by every navigation read that lands superseded.
+func (m hubModel) discardSupersededSessionRead() (hubModel, tea.Cmd) {
+	if m.mode == hubModeSession {
+		return m.reestablishDisplayedSubscription()
+	}
+	return m, nil
+}
+
 // switchToAdjacentLiveSession switches the session view to the adjacent live
 // session through the ordinary entry path (fetchHubSession's thread/read
 // cut), so the switch lands with the same transcript hydration and

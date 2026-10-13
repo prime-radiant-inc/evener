@@ -467,3 +467,287 @@ func TestTheAlreadyOpenSurfacesArmNoRetry(t *testing.T) {
 		t.Fatalf("model error = %v, want the refresh's own error", after.err)
 	}
 }
+
+// newEntryPickModel builds a dashboard-mode model over the test feed with a
+// two-live-session tree — the way a user actually arrives at a session — so
+// the pick tests drive the real dashboard key path, including the read the
+// pick issues and the tag that read carries.
+func newEntryPickModel(t *testing.T, reads *liveCycleReads) (hubModel, func()) {
+	t.Helper()
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	m := newHubModel(client, "")
+	m.frames = feed
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:  "p1",
+		Name: "One",
+		Sessions: []hubTreeNode{
+			{Ref: "local:01A", SessionID: "sess_a", Title: "A", State: "active", Live: true, UpdatedAt: 300},
+			{Ref: "local:01B", SessionID: "sess_b", Title: "B", State: "active", Live: true, UpdatedAt: 200},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	return m, cleanup
+}
+
+// A pick is a navigation intent another pick can supersede before its read
+// answers: the user picks A, then enters B, and A's rebuilding rejection
+// arrives late. Arming a retry for A then would stand the repair status on
+// B's surface and eventually drive the user into abandoned navigation. The
+// superseded rejection must arm nothing and surface nothing; B's re-pointed
+// subscription (A's read replaced it server-side) is re-established.
+func TestASupersededPickRejectionArmsNoRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{wireErrorByRef: map[string]appwire.WireError{
+		"local:01A": appwire.WithHistoryReadIdentity(appwire.TranscriptIndexRebuilding(), appwire.DaemonlessBootGeneration, 0),
+	}}
+	m, cleanup := newEntryPickModel(t, reads)
+	defer cleanup()
+
+	// The user picks A, then B, before either read answers.
+	m.selected = dashboardRowIndex(m.dashboardRows(), "A")
+	pickedA, cmdA := m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEnter})
+	afterA := pickedA.(hubModel)
+	afterA.selected = dashboardRowIndex(afterA.dashboardRows(), "B")
+	pickedB, cmdB := afterA.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// B's read lands first: B is displayed with unsent work in its composer.
+	entered, _ := pickedB.Update(cmdB())
+	shown := entered.(hubModel)
+	if shown.mode != hubModeSession || shown.detail.Ref != "local:01B" {
+		t.Fatalf("mode = %v detail = %v, want session B displayed", shown.mode, shown.detail.Ref)
+	}
+	shown.session.input.SetValue("unsent work for B")
+
+	// A's rebuilding rejection lands late, its pick superseded by B's.
+	afterLate, reestablish := shown.Update(cmdA())
+	late := afterLate.(hubModel)
+	if late.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("a superseded pick's rebuilding rejection armed a retry for abandoned navigation")
+	}
+	if late.err != nil {
+		t.Fatalf("a superseded pick's rejection surfaced %v on the newer surface", late.err)
+	}
+	if late.mode != hubModeSession || late.detail.Ref != "local:01B" {
+		t.Fatalf("a superseded pick's rejection moved the model: mode = %v detail = %v", late.mode, late.detail.Ref)
+	}
+	if got := late.session.input.Value(); got != "unsent work for B" {
+		t.Fatalf("composer draft = %q, want the newer surface's unsent work preserved", got)
+	}
+	if reestablish == nil {
+		t.Fatal("a superseded pick's rejection re-pointed the subscription but re-established nothing")
+	}
+	recovery, ok := reestablish().(hubSessionMsg)
+	if !ok || !recovery.liveNavRecovery {
+		t.Fatalf("the re-establish command produced %T, want a recovery-tagged session read", reestablish())
+	}
+	if got := reads.get(); got[len(got)-1] != "local:01B" {
+		t.Fatalf("re-establish read %v, want the displayed session re-read", got)
+	}
+}
+
+// A superseded pick's success is the same fence: it answers late, after B's
+// entry already moved the user, and applying it would yank the user into
+// abandoned navigation and clear the newer surface's composer.
+func TestASupersededPickSuccessEntersNothing(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	m, cleanup := newEntryPickModel(t, reads)
+	defer cleanup()
+
+	m.selected = dashboardRowIndex(m.dashboardRows(), "A")
+	pickedA, cmdA := m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEnter})
+	afterA := pickedA.(hubModel)
+	afterA.selected = dashboardRowIndex(afterA.dashboardRows(), "B")
+	pickedB, cmdB := afterA.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	entered, _ := pickedB.Update(cmdB())
+	shown := entered.(hubModel)
+	if shown.mode != hubModeSession || shown.detail.Ref != "local:01B" {
+		t.Fatalf("mode = %v detail = %v, want session B displayed", shown.mode, shown.detail.Ref)
+	}
+	shown.session.input.SetValue("unsent work for B")
+
+	afterLate, reestablish := shown.Update(cmdA())
+	late := afterLate.(hubModel)
+	if late.mode != hubModeSession || late.detail.Ref != "local:01B" {
+		t.Fatalf("a superseded pick's success entered abandoned navigation: mode = %v detail = %v", late.mode, late.detail.Ref)
+	}
+	if got := late.session.input.Value(); got != "unsent work for B" {
+		t.Fatalf("composer draft = %q, want the newer surface's unsent work preserved", got)
+	}
+	if reestablish == nil {
+		t.Fatal("a superseded pick's success re-pointed the subscription but re-established nothing")
+	}
+}
+
+// ctrl+o is the amendment's "opening another pane": departing to the
+// dashboard retires the pending retry and its status, and the retired
+// retry's late tick must enter nothing.
+func TestCtrlODepartsAndRetiresThePendingEntryRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m := newHubModel(nil, "http://hub.test")
+	ref := mustParseRef(t, "local:01EVENER")
+
+	updated, cmd := m.Update(hubSessionMsg{ref: ref.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	tick := executeEntryRepairCmd(t, cmd)
+
+	afterCtrlO, _ := armed.updateKey(tea.KeyMsg{Type: tea.KeyCtrlO})
+	left := afterCtrlO.(hubModel)
+	if left.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("ctrl+o left the pending entry retry armed")
+	}
+	if errs := left.prominentErrors(); len(errs) != 0 {
+		t.Fatalf("prominent errors = %v, want the repair status gone with the departure", errs)
+	}
+
+	afterTick, lateCmd := left.Update(tick)
+	if lateCmd != nil {
+		t.Fatal("a retired retry's tick issued a read")
+	}
+	if afterTick.(hubModel).entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("a retired retry's tick rearmed it")
+	}
+}
+
+// A live-session cycling press is a newer navigation intent: its issuance
+// takes the generation while the retry's re-read is in flight, and that
+// re-read's late success must not override it — applying it would switch the
+// user into the abandoned ref and clear the newer surface's composer.
+func TestANewerCyclingPressSupersedesTheRetryReadInFlight(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+
+	// The user is watching session C when A's pick fails with the rebuilding
+	// code: the retry arms with C still displayed (the palette-from-inside-a-
+	// session shape).
+	enteredC, _ := m.Update(hubSessionMsg{
+		ref:    "local:01C",
+		detail: hubSessionDetail{Ref: "local:01C", SessionID: "sess_c", State: appwire.ThreadStatusIdle},
+	})
+	watching := enteredC.(hubModel)
+	updated, cmd := watching.Update(hubSessionMsg{ref: refA.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	armedSeq := armed.entryRepairSeq
+	armed.Update(executeEntryRepairCmd(t, cmd)) // the retry's re-read in flight
+	armed.session.input.SetValue("unsent work for C")
+
+	// The cycling press is the newer intent: its issuance takes the
+	// generation (livecycle's bump) while the retry's re-read is in flight.
+	cycled := armed
+	cycled.liveNavSeq++
+
+	// The retry's re-read succeeds late, tagged with the superseded
+	// generation: discarded whole, C's re-pointed subscription re-established.
+	late := hubSessionMsg{
+		ref:           refA.String(),
+		detail:        hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	}
+	afterLate, reestablish := cycled.Update(late)
+	kept := afterLate.(hubModel)
+	if kept.mode != hubModeSession || kept.detail.Ref != "local:01C" {
+		t.Fatalf("the retry's superseded read overrode the newer cycling intent: mode = %v detail = %v", kept.mode, kept.detail.Ref)
+	}
+	if got := kept.session.input.Value(); got != "unsent work for C" {
+		t.Fatalf("composer draft = %q, want the newer surface's unsent work preserved", got)
+	}
+	if kept.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the superseded read's landing left the retry armed")
+	}
+	if reestablish == nil {
+		t.Fatal("the superseded read re-pointed the subscription but re-established nothing")
+	}
+	recovery, ok := reestablish().(hubSessionMsg)
+	if !ok || !recovery.liveNavRecovery {
+		t.Fatalf("the re-establish command produced %T, want a recovery-tagged session read", reestablish())
+	}
+	if got := reads.get(); got[len(got)-1] != "local:01C" {
+		t.Fatalf("re-establish read %v, want the displayed session re-read", got)
+	}
+}
+
+// A hub reconnect is not a departure: the pending entry intent survives it.
+// The armed retry rebinds to the replacement connection's generation, the
+// dead connection's pending tick and late response land as superseded, and
+// the paced read resumes on the replacement connection.
+func TestAReconnectPreservesThePendingEntryRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	ref := mustParseRef(t, "local:01EVENER")
+
+	updated, _ := m.Update(hubSessionMsg{ref: ref.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	oldSeq := armed.entryRepairSeq
+
+	// The connection dies and dials back: a fresh client and frames.
+	freshClient, freshFeed, cleanup2 := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup2()
+	after, _ := armed.Update(hubReconnectMsg{client: freshClient, frames: freshFeed})
+	rebound := after.(hubModel)
+	if rebound.entryRepairRef != ref {
+		t.Fatal("a reconnect dropped the pending entry retry")
+	}
+	if rebound.entryRepairSeq != rebound.liveNavSeq {
+		t.Fatalf("the retry did not rebind: armed generation %d, model generation %d", rebound.entryRepairSeq, rebound.liveNavSeq)
+	}
+
+	// The dead connection's pending tick lands as superseded: it neither
+	// re-reads nor drops the rebound retry.
+	afterOldTick, oldTickCmd := rebound.Update(hubEntryRepairTickMsg{ref: ref, seq: oldSeq})
+	if oldTickCmd != nil {
+		t.Fatal("the dead connection's pending tick re-issued a read")
+	}
+	if afterOldTick.(hubModel).entryRepairRef != ref {
+		t.Fatal("the dead connection's pending tick dropped the rebound retry")
+	}
+
+	// The dead connection's late read response is fenced by the rebind.
+	afterOldRead, oldReadCmd := afterOldTick.(hubModel).Update(hubSessionMsg{
+		ref:           ref.String(),
+		detail:        hubSessionDetail{Ref: ref.String(), SessionID: "sess", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: oldSeq,
+	})
+	if oldReadCmd != nil || afterOldRead.(hubModel).detail.Ref != "" {
+		t.Fatal("the dead connection's late read entered abandoned navigation")
+	}
+
+	// The replacement connection's tick — the rebound generation — re-reads
+	// through the fresh client, tagged with the rebound generation.
+	_, reread := afterOldRead.(hubModel).Update(hubEntryRepairTickMsg{ref: ref, seq: rebound.entryRepairSeq})
+	if reread == nil {
+		t.Fatal("the rebound retry's tick re-issued no read")
+	}
+	msg, ok := reread().(hubSessionMsg)
+	if !ok {
+		t.Fatalf("the re-read produced %T, want a session read", reread())
+	}
+	if msg.entryRetrySeq != rebound.entryRepairSeq || msg.ref != ref.String() {
+		t.Fatalf("the re-read landed tagged %d for %v, want the rebound generation %d for %v", msg.entryRetrySeq, msg.ref, rebound.entryRepairSeq, ref)
+	}
+}
