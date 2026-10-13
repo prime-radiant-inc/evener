@@ -236,8 +236,10 @@ export {
   isUpgradeRequiredError,
   mutationErrorData,
   RequestTimeoutError,
+  StoreMessageError,
   sessionActionError,
   sessionActionHeadline,
+  storeErrorText,
   WireError,
   wireRejectionPayload,
 } from "./errors";

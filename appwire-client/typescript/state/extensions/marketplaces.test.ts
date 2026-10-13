@@ -220,11 +220,27 @@ describe("fetches never throw, mutations reject", () => {
     expect(store.getState().marketplacesError).toBe(friendlyErrorMessage(err));
   });
 
+  // A browse failure is cached in its friendly form for the same reason.
+  test.each([
+    ["a hub-reported WireError", new WireError("catalog clone is locked", -32000)],
+    ["a client-side Error", new Error("AppwireClient internal detail")],
+  ])("a failed browse caches %s in its friendly form", async (_label, err) => {
+    const { fake, store } = storeWithFake();
+    fake.on(BROWSE, () => {
+      throw err;
+    });
+    await store.getState().browseMarketplace("acme");
+    expect(store.getState().browseCatalogs.get("acme")).toEqual({ status: "error", error: friendlyErrorMessage(err) });
+  });
+
   test("a failed browse is cached as status:error and resolves", async () => {
     const { fake, store } = storeWithFake();
     fake.on(BROWSE, failing("no catalog"));
     await expect(store.getState().browseMarketplace("acme")).resolves.toBeUndefined();
-    expect(store.getState().browseCatalogs.get("acme")).toEqual({ status: "error", error: "no catalog" });
+    expect(store.getState().browseCatalogs.get("acme")).toEqual({
+      status: "error",
+      error: friendlyErrorMessage(new Error("no catalog")),
+    });
   });
 
   test.each([
@@ -447,7 +463,10 @@ describe("browse cache", () => {
     const { fake, store } = storeWithFake();
     fake.on(BROWSE, failing("first try"));
     await store.getState().browseMarketplace("acme");
-    expect(store.getState().browseCatalogs.get("acme")).toEqual({ status: "error", error: "first try" });
+    expect(store.getState().browseCatalogs.get("acme")).toEqual({
+      status: "error",
+      error: friendlyErrorMessage(new Error("first try")),
+    });
 
     fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "linter" }] }));
     await store.getState().reloadCatalog("acme");

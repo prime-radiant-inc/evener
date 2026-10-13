@@ -688,8 +688,8 @@ const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;
 const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void pluginsState;
 const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void layerState;`,
       // Stores built over a client that rejects everything: each list fetch
-      // records the rejection as state (the list errors in their friendly
-      // form) and resolves, a mutation rejects, and
+      // records the rejection as state (in its friendly form, never the raw
+      // text) and resolves, a mutation rejects, and
       // a browse caches the failure - the two conventions the layer keeps. A
       // promise chain rather than await: the CommonJS consumer has no
       // top-level await, and a failure inside exits the consumer non-zero.
@@ -727,7 +727,10 @@ marketplacesStore
   })
   .then(() => marketplacesStore.getState().browseMarketplace("acme"))
   .then(() => {
-    assert.deepEqual(marketplacesStore.getState().browseCatalogs.get("acme"), { status: "error", error: "offline" });
+    const browsed = marketplacesStore.getState().browseCatalogs.get("acme");
+    assert.equal(browsed?.status, "error");
+    assert.equal(typeof browsed.error, "string");
+    assert.notEqual(browsed.error, "offline");
     marketplacesStore.dispose();
     return pluginsStore.getState().fetchPlugins();
   })
@@ -743,7 +746,8 @@ marketplacesStore
     return layerStore.getState().fetchLaunchLayer();
   })
   .then(() => {
-    assert.equal(layerStore.getState().launchLayerError, "offline");
+    assert.equal(typeof layerStore.getState().launchLayerError, "string");
+    assert.notEqual(layerStore.getState().launchLayerError, "offline");
     return assert.rejects(layerStore.getState().setLaunchLayer({ pluginDirs: [] }), /offline/);
   })
   .then(() => layerStore.dispose())

@@ -409,11 +409,24 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	d.releaseKickSend(t)
 
 	// The confirming pass finds the edge clear and the stall persisting: NOW it
-	// gives up, with the one warning.
+	// gives up, with the one warning. This select names the state if it does not:
+	// returned, re-ran, or neither. The giving-up pass only continues instead of
+	// returning by consuming a fresh wake edge in its own stall-branch re-check
+	// (nothing else can skip it here), so a re-run names a wake that landed
+	// between this pass's top-of-loop take and that re-check — where the old
+	// handshake could only report a bare 30s timeout (#4204).
 	select {
 	case <-d.done:
+	case <-d.top:
+		// The drain re-ran the confirming pass instead of returning. Hand the
+		// unexpected pass its release (the same bounded rendezvous every other
+		// step of this driver uses) so the drain goroutine is not left parked on
+		// <-d.release, then report the named state rather than the ambiguous
+		// timeout the old handshake gave.
+		d.releaseKickSend(t)
+		t.Fatal("drain re-ran the confirming pass instead of giving up: a wake landed between its top-of-loop take and its stall check")
 	case <-time.After(stallHandshakeTimeout):
-		t.Fatal("drain did not return on the confirming pass")
+		t.Fatal("drain neither returned nor re-ran on the confirming pass: it is parked in waitDrainWake or blocked inside the pass")
 	}
 	if d.err != nil {
 		t.Fatalf("give-up must return nil error, got %v", d.err)

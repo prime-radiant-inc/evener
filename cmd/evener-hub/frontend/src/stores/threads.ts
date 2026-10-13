@@ -1167,10 +1167,6 @@ function currentDispatchClient(
   // needs durable storage. With no runtime there is nothing to reconcile, so the
   // wired ready client IS the dispatch generation: a send must still reach the
   // daemon when the tab has no IndexedDB at all (#4194).
-  // The dispatch-ready generation is the reconciled one, and reconciliation
-  // needs durable storage. With no runtime there is nothing to reconcile, so the
-  // wired ready client IS the dispatch generation: a send must still reach the
-  // daemon when the tab has no IndexedDB at all (#4194).
   if (getMutationRuntime() !== null && (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch))
     return null;
   if (targetRef && requireArmed && !dispatchableMutationRefs.has(targetRef)) return null;

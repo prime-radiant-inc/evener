@@ -8,6 +8,7 @@ import type {
   NavigationSessionSummary,
   NavigationSnapshot,
 } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import {
   keyID,
   type NormalizedResource,
@@ -3326,7 +3327,9 @@ describe("archived rows come from evener/archived/list", () => {
     await act(async () => undefined);
     await act(async () => undefined);
     expect(requests).toBe(2);
-    expect(archivedListStore.getState().lists[archivedListKey("projects", "p")]?.error).toBe("hub down");
+    expect(archivedListStore.getState().lists[archivedListKey("projects", "p")]?.error).toBe(
+      friendlyErrorMessage(new Error("hub down")),
+    );
     restoreScroll();
   });
 

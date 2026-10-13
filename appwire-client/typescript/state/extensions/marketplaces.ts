@@ -16,7 +16,7 @@
 // the current client on each call.
 
 import type { AppwireClientLike, RequestPort } from "../../clientLike";
-import { ErrorMarketplaceRemoveApplied, errorText, friendlyErrorMessage, WireError } from "../../errors";
+import { ErrorMarketplaceRemoveApplied, friendlyErrorMessage, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
   HostRequestMethod,
@@ -383,7 +383,7 @@ export function createMarketplacesStore(client: MarketplacesClient, gate: HubWri
           // Fenced the same way a success is: an error from a catalog that has
           // since been retired says nothing about the one that replaced it.
           if (!browses.current(name, revision)) return;
-          setCatalog(name, { status: "error", error: errorText(err) });
+          setCatalog(name, { status: "error", error: friendlyErrorMessage(err) });
         } finally {
           settled(browses.settle(name, read));
         }
