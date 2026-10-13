@@ -1,96 +1,79 @@
-// The read-only transcript pane (wave 8 T6). It renders ANOTHER thread's
-// transcript for open-beside viewing (a subagent "open transcript" row, floor
-// §3.7) - the M4 transcript engine in read-only mode: the SAME useTranscript /
-// TurnBlock / item + tool renderers the live session pane uses, with NO
-// composer, NO pending chips, NO session chrome. It is a DISTINCT surface from
-// /thread/{ref}'s single-pane mode (which renders the live SESSION pane); this
-// one has no URL (routing.ts's paneToURL returns null for it) and is reached
-// only contextually via openBeside.
-//
-// It hydrates through the SAME refcounted threads store as the session pane
-// (ensureThread/releaseThread, thread/read - no new data path), so a session
-// pane and a transcript pane open on the same ref share one ThreadModel.
-//
-// Both live and read-only panes now hand their hydrated model to the shared
-// TranscriptBody. The read-only surface injects only its older-row affordance
-// and deliberately omits live flow-overlay/new-content-pill machinery - but it
-// runs the SAME scroll coordinator (useTranscriptScroll) the live pane does,
-// so landing at the latest, near-top paging, following a prepend, and the
-// geometry fill behind a too-short page all behave identically on both
-// surfaces instead of drifting apart in a second implementation.
+// The job-log pane. A "job:<id>" ref is a shell job's output log, not a
+// thread: it renders through the job-log surface, which never touches the
+// thread engine (no thread/read, no ensureThread). The read-only session
+// transcript this pane once rendered is gone — the session pane is the
+// conversation view and the zoom cascade embeds it — so a legacy session-ref
+// transcript pane (a stale saved layout or a URL the workspace migration
+// could not rewrite) recovers as the live conversation rather than losing
+// the view.
+import { useEffect } from "react";
 import { useStore } from "zustand";
-import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { ScopeCrumbs } from "../../shell/statusbar/ScopeCrumbs";
-import { deriveScope } from "../../shell/statusbar/statusScope";
-import { workspaceStore } from "../../shell/workspace";
-import { navigationStore } from "../../stores/navigation/store";
-import { useSessionActivity } from "../../stores/sessionActivity";
-import { useThreadsStore } from "../../stores/threads";
-import { Loader, PaneScaffold } from "../../widgets";
-import { requireClass } from "../../widgets/internal/requireClass";
-import { TranscriptSourcePaneContext } from "../session/transcript/TranscriptBody";
-import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
+import { refParam } from "../../shell/routing";
+import { recordConversationOpenParent, workspaceStore } from "../../shell/workspace";
+import Session from "../session/Session";
 import { JobLog } from "./JobLog";
-import { ReadOnlyThreadContent } from "./ReadOnlyThreadContent";
-import styles from "./transcript.module.css";
-
-const CLASS = {
-  body: requireClass(styles.body, "transcript.module.css", "body"),
-  list: requireClass(styles.list, "transcript.module.css", "list"),
-  scope: requireClass(styles.scope, "transcript.module.css", "scope"),
-};
 
 export interface TranscriptParams {
   ref: string;
-  // The enclosing session's ref, when this pane was opened from a subagent
-  // row (subagentModule.tsx's openTranscript - the only producer today).
-  // Carried in the pane's OWN params - not passed around as a one-off
+  // The enclosing session's ref, when this pane was opened from a job row.
+  // Carried in the pane's own params - not passed around as a one-off
   // argument - so it survives a layout restore/reload. A "job:<id>" ref
   // resolves its owning session from it (JobLog fetches output through the
-  // owner, never through thread/read). Undefined for a hypothetical future
-  // producer with no enclosing session.
+  // owner, never through thread/read).
   parentRef?: string;
 }
 
-export default function Transcript({ params, paneId }: PaneProps<TranscriptParams>) {
-  // A "job:<id>" ref is a shell job's output log, not a thread: it renders
-  // through the job-log surface, which never touches the thread engine (no
-  // thread/read, no ensureThread). Refs never change for a mounted pane, so
-  // this dispatch is stable for the component's lifetime.
-  if (params.ref.startsWith("job:")) {
+export default function Transcript({ params, paneId, focused }: PaneProps<TranscriptParams>) {
+  const job = params.ref.startsWith("job:");
+
+  // Session resolves its lifetime — the composer, the retained reader, the
+  // pane-owned scroll — only from a workspace record typed "session". A
+  // session-ref record can still arrive typed "transcript": a stale saved
+  // layout the migration could not rewrite, or a cascade Return that retypes
+  // its pane back to its legacy source. When this pane is the ref's only
+  // conversation view it is the view that must carry the live surfaces, so
+  // migrate the record before Session reads it, so the conversation recovers
+  // live rather than as dead history. A conversation pane's identity is its ref
+  // alone, so migrating beside a surviving session pane for the same ref would
+  // put two panes on one conversation — the duplicate the restore-time
+  // reconciliation exists to prevent; leave it to that pane in that case.
+  //
+  // "Alone" is a SUBSCRIPTION, not a one-time read: a legacy cascade can Return
+  // onto a ref that is already open elsewhere, and the conflicting pane can
+  // leave the workspace afterwards (the user closes it). Re-evaluating against
+  // the current membership is what recovers the selected view's composer then;
+  // a mount-time read would strand it typed transcript with no composer. The
+  // selector returns only this boolean, so unrelated pane changes do not
+  // re-render the pane.
+  const alone = useStore(
+    workspaceStore,
+    (state) =>
+      !state.panes.some(
+        (pane) =>
+          pane.id !== paneId &&
+          (pane.type === "session" || pane.type === "transcript") &&
+          refParam(pane.params) === params.ref,
+      ),
+  );
+
+  // Runs after commit (never during render, which would update the subscribing
+  // host mid-render) and is guarded on the record still being a transcript, so
+  // it migrates once and cannot loop. The parent context the legacy params
+  // carried moves to the conversation edge the saved-layout migration records
+  // it on.
+  useEffect(() => {
+    if (job || !alone) return;
+    const workspace = workspaceStore.getState();
+    const record = workspace.panes.find((pane) => pane.id === paneId);
+    if (record?.type !== "transcript") return;
+    workspace.retypePane(record, "session", { ref: params.ref });
+    const migrated = workspaceStore.getState().panes.find((pane) => pane.id === paneId);
+    if (migrated) recordConversationOpenParent(migrated, params.parentRef);
+  }, [job, alone, paneId, params.ref, params.parentRef]);
+
+  if (job) {
     return <JobLog jobRef={params.ref} parentRef={params.parentRef} paneId={paneId} />;
   }
-  return <ThreadTranscript params={params} paneId={paneId} />;
-}
-
-function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId?: string }) {
-  const { ref } = params;
-  const pane = useStore(workspaceStore, (state) =>
-    state.panes.find(
-      (record) =>
-        record.id === paneId && record.type === "transcript" && (record.params as TranscriptParams).ref === ref,
-    ),
-  );
-  const view = pane ? retainedTranscriptReadView(conversationPaneLifetime(pane), ref, "transcript") : undefined;
-  const model = useThreadsStore((state) => state.threads.get(ref));
-  const { snapshot: activity } = useSessionActivity(ref);
-  // Only the crumbs are shown here, so no subagent count is read.
-  const scope = deriveScope(navigationStore.getState(), ref, activity, null);
-  return (
-    <PaneScaffold title={model?.name || ref}>
-      <div className={CLASS.body}>
-        {scope.ancestryKnown && scope.path.length > 1 && (
-          <div className={CLASS.scope}>
-            <ScopeCrumbs path={scope.path} hierarchy />
-          </div>
-        )}
-        <div className={CLASS.list}>
-          <TranscriptSourcePaneContext.Provider value={paneId}>
-            {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <Loader label="Loading transcript" />}
-          </TranscriptSourcePaneContext.Provider>
-        </div>
-      </div>
-    </PaneScaffold>
-  );
+  return <Session focused={focused} params={{ ref: params.ref }} paneId={paneId} />;
 }

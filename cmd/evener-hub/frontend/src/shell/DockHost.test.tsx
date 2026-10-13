@@ -574,7 +574,7 @@ test("promoting a real delegate conversation keeps both conversation lifetimes, 
   });
   const workspace = workspaceStore.getState();
   const parentId = workspace.openPane("session", { ref: parentRef });
-  const sourceId = workspace.openPane("transcript", { ref: childRef, parentRef }, { slot: "secondary" });
+  const sourceId = workspace.openPane("session", { ref: childRef }, { slot: "secondary" });
   const parentPane = workspaceStore.getState().panes.find((pane) => pane.id === parentId);
   const childPane = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
   if (!parentPane || !childPane) throw new Error("conversation pane missing");
@@ -1518,7 +1518,13 @@ test.each([
     if (!restored) throw new Error("Missing restored Dockview API");
     expect(threadsStore.getState().threads.has(ref)).toBe(false);
     expect(restored.activePanel?.id).toBe(activeId);
-    expect(restored.toJSON().panels[neighborId]).toEqual(saved.panels[neighborId]);
+    // A saved session-ref transcript pane reopens as the conversation pane it
+    // always was - the workspace's documented restore migration - so its panel
+    // records the migrated pane type; every other fixture restores verbatim.
+    const savedPanel = saved.panels[neighborId]!;
+    const expectedPanel =
+      type === "transcript" ? { ...savedPanel, params: { paneType: "session", paneParams: { ref } } } : savedPanel;
+    expect(restored.toJSON().panels[neighborId]).toEqual(expectedPanel);
     expect(document.querySelector(`[data-pane-scaffold="session:${ref}"]`)).toBeNull();
 
     await act(async () => {
@@ -1529,7 +1535,7 @@ test.each([
       threadsStore.setState({ threads: new Map([[ref, fixtureThread(ref, { name: "" })]]) });
     });
     expect(restored.getPanel(neighborId)?.title).toBe(unnamedTitle);
-    expect(restored.getPanel(neighborId)?.params).toEqual(saved.panels[neighborId]?.params);
+    expect(restored.getPanel(neighborId)?.params).toEqual(expectedPanel.params);
     expect(restored.activePanel?.id).toBe(activeId);
     await act(async () => {
       expect(workspaceStore.getState().retypePane(inspectionRecord(neighborId), type, { ref: "ref_changed" })).toBe(
@@ -1551,7 +1557,7 @@ test.each([false, true])(
       const intent = inspectorPanel(saved, inspectorId).params?.paneParams;
       expect(parseZoomParams(intent)).toMatchObject({
         ref: "child",
-        source: { type: "transcript", params: { ref: "root" } },
+        source: { type: "session", params: { ref: "root" } },
         edges: [{ ownerRef: "root", childRef: "child", delegateId: "edge-child" }],
         inspection: { origin: { paneId: mainId, type: "session", ref: "root" } },
       });
@@ -1680,7 +1686,7 @@ test("secondary inspector saves a retired locator before host reconciliation and
 
 test.each([
   { name: "missing target", locator: { paneId: "absent-pane", type: "session", ref: "root" } },
-  { name: "wrong type", locator: { paneId: "pane_session_1", type: "transcript", ref: "root" } },
+  { name: "wrong pane kind", locator: { paneId: "pane_doc_2", type: "session", ref: "root" } },
   { name: "empty ID", locator: { paneId: "", type: "session", ref: "root" } },
   { name: "invalid type", locator: { paneId: "pane_session_1", type: "doc", ref: "root" } },
   { name: "invalid ref", locator: { paneId: "pane_session_1", type: "session", ref: 42 } },
@@ -1701,11 +1707,55 @@ test.each([
     expect(parseZoomParams(inspector.params)?.inspection).toEqual({ origin: null });
     expect(cascadeOrigin(inspector)).toBeNull();
     expect(associatedCascade(main)).toBeNull();
-    expect(conversationPaneLifetime(inspector).composer).toBeNull();
+    // The recovered inspector embeds the conversation, so it owns its own
+    // composer state for the source ref - never the surviving source pane's.
+    const composer = conversationPaneLifetime(inspector).composer;
+    expect(composer?.ref).toBe("root");
+    expect(composer).not.toBe(conversationPaneLifetime(main).composer);
     await act(async () => returnFromAgentCascade(inspectorId));
     expect(inspectionRecord(mainId)).toBe(main);
     expect(workspaceStore.getState().focusedPaneId).not.toBe(mainId);
     expect(consumePaneFocus(mainId)).toBe(false);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("a legacy transcript locator restores its origin binding against the surviving conversation pane", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, neighborId, inspectorId } = fixture;
+    const saved = workspaceStore.getState().layoutJSON() as SerializedDockview;
+    const panel = inspectorPanel(saved, inspectorId);
+    panel.params = {
+      ...panel.params,
+      paneParams: {
+        ...panel.params?.paneParams,
+        inspection: { origin: { paneId: mainId, type: "transcript", ref: "root" } },
+      },
+    };
+    fixture.view.unmount();
+    resetWorkspaceStoreForTests();
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+    await act(async () => fixture.mount());
+    const api = getDockviewApi();
+    if (!api) throw new Error("Missing restored Dockview API");
+    const main = inspectionRecord(mainId);
+    const inspector = inspectionRecord(inspectorId);
+    expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId, inspectorId]);
+    // The locator names the pane the origin restored as: its legacy
+    // transcript claim reads as the session it always was, so the binding
+    // survives the restore instead of being recovered away.
+    expect(parseZoomParams(inspector.params)?.inspection).toEqual({
+      origin: { paneId: mainId, type: "session", ref: "root" },
+    });
+    expect(cascadeOrigin(inspector)).toBe(main);
+    expect(associatedCascade(main)).toBe(inspector);
+    await act(async () => returnFromAgentCascade(inspectorId));
+    expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId]);
+    expect(inspectionRecord(mainId)).toBe(main);
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    expect(api.activePanel?.id).toBe(mainId);
   } finally {
     fixture.dispose();
   }
@@ -1865,7 +1915,11 @@ test.each([
         return;
       }
       await screen.findByRole("button", { name: "Return to previous view" });
-      expect(workspaceStore.getState().panes.find((pane) => pane.id === id)?.params).toEqual(intent);
+      // A promoted legacy transcript restores with its saved source migrated
+      // to the conversation descriptor; the session fixture restores verbatim.
+      expect(workspaceStore.getState().panes.find((pane) => pane.id === id)?.params).toEqual(
+        sourceType === "transcript" ? { ...intent, source: { ...intent.source, type: "session" } } : intent,
+      );
       expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
       expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
         "child",

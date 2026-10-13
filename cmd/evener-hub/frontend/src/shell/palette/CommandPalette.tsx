@@ -504,8 +504,8 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
     // "prefix": a slash command only parses at the draft's very start - see
     // the historical note on requestQuoteInsert's own "append" default,
     // right for SelectionQuote's "Quote in reply" but wrong here.
-    requestQuoteInsert(ctx.sessionRef, text, "prefix");
-    requestComposerFocus(ctx.sessionRef);
+    requestQuoteInsert(ctx.sessionRef, text, "prefix", ctx.sessionPaneId);
+    requestComposerFocus(ctx.sessionRef, ctx.sessionPaneId);
     closePalette();
   }
 

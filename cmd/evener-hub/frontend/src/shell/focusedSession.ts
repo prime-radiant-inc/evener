@@ -5,8 +5,9 @@
 // their owning ref directly instead.
 //
 // focusedSessionRef is AppShell's original strict reading: the focused pane
-// IS a session pane, else null (Mod+I's "no-op when the focused pane isn't a
-// session" contract, Mod+J's cycle starting point). The activity surfaces
+// IS a session pane - or a cascade, whose column is a live conversation seat
+// - else null (Mod+I's "no-op when the focused pane isn't a session"
+// contract, Mod+J's cycle starting point). The activity surfaces
 // read the workspace's OWN currentSessionRef instead of a parallel mechanism:
 // the session the workspace is showing (a transcript pane's subject, a job
 // log's parent, a doc's session, falling back to the main pane's session when
@@ -15,14 +16,30 @@
 // and a pure focus switch re-renders the hook's readers (the workspace store
 // subscription does it; nothing reads a stale imperative value).
 
+import { parseZoomParams } from "../panes/zoom/intent";
 import { refParam } from "./routing";
 import { currentSessionRef, useWorkspaceStore, workspaceStore } from "./workspace";
 
 export function focusedSessionRef(): string | null {
   const state = workspaceStore.getState();
   const pane = state.panes.find((p) => p.id === state.focusedPaneId);
-  if (pane?.type !== "session") return null;
-  return refParam(pane.params);
+  if (pane?.type === "session") return refParam(pane.params);
+  // A focused cascade is showing its leaf conversation, under the pane that
+  // hosts its column (Zoom's seats carry viewFallbackId: pane.id) - the same
+  // scope the workspace shows for that pane.
+  if (pane?.type === "sessionZoom") return parseZoomParams(pane.params)?.ref ?? null;
+  return null;
+}
+
+// The same strict reading as focusedSessionRef, for callers that address a
+// seat-scoped request (a composer focus or quote insert) and must name the
+// pane, not just the ref: the embedded cascade column means one ref can
+// have composers under more than one pane.
+export function focusedSessionPaneId(): string | null {
+  const state = workspaceStore.getState();
+  const pane = state.panes.find((p) => p.id === state.focusedPaneId);
+  if (pane?.type !== "session" && pane?.type !== "sessionZoom") return null;
+  return pane.id;
 }
 
 export function focusedActivityScopeRef(): string | null {

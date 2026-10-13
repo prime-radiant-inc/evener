@@ -52,7 +52,9 @@ export async function measureEditorialTranscript() {
         await document.fonts.ready;
         const box = host.getBoundingClientRect();
         const tools = Array.from(host.querySelectorAll<HTMLElement>('[data-testid="tool-call-item"]'));
-        const opens = Array.from(host.querySelectorAll<HTMLElement>('button[aria-label="Open transcript"]'));
+        // The row control names the view it opens: the conversation for a
+        // session ref (the read-only transcript surface is gone).
+        const opens = Array.from(host.querySelectorAll<HTMLElement>('button[aria-label="Open conversation"]'));
         // A delegate's status line is the card's merged stats line while the
         // body is expanded and the standalone lifecycle div once collapsed;
         // data-status-line marks both, so one selector finds the line

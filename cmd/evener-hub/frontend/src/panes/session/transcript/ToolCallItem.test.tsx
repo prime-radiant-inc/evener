@@ -131,7 +131,7 @@ test.each(["running", "completed"])(
     expect(screen.getByTestId("subagent-stats").dataset.kind).toBe("unknown");
     expect(screen.getByTestId("subagent-row").dataset.kind).toBe("unknown");
     expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Open transcript" }).closest("button[aria-expanded]")).toBeNull();
+    expect(screen.getByRole("button", { name: "Open conversation" }).closest("button[aria-expanded]")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show recent activity" }));
     expect(screen.getByTestId("subagent-receipt").textContent).toContain(`Launch receipt: ${status}`);
     expect(receipt.output).toBe(output);
@@ -139,7 +139,7 @@ test.each(["running", "completed"])(
     fireEvent.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${body.id}"]`)!);
     expect(screen.queryByTestId("tool-call-body")).toBeNull();
     expect(screen.getByTestId("delegate-lifecycle").dataset.kind).toBe("unknown");
-    expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open conversation" })).toBeTruthy();
   },
 );
 
@@ -1544,9 +1544,9 @@ test("a delegate card never carries the hook: its lifecycle line or open card al
 });
 
 // A delegate card is intent-only by design - its descriptor deliberately puts
-// the Open transcript control on the intent line ("visible folded or not"), so
+// the Open conversation control on the intent line ("visible folded or not"), so
 // the intent-level gate must not swallow it (the phone editorial gate needs it).
-test("a delegate card at intent level keeps its Open transcript control", () => {
+test("a delegate card at intent level keeps its Open conversation control", () => {
   resetThreadsStoreForTests();
   const card = item({
     toolName: "delegate",
@@ -1555,12 +1555,12 @@ test("a delegate card at intent level keeps its Open transcript control", () => 
   });
   renderIntentLevel(<ToolCallItem item={card} turn={turn} live={false} sessionRef="ref_a" />);
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Inspect the independent child");
-  expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Open conversation" })).toBeTruthy();
   // Collapsing the card's body leaves the intent line alone - the control is
   // there whether the card is folded or not, so it must survive.
   fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
   expect(screen.queryByTestId("tool-call-body")).toBe(null);
-  expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Open conversation" })).toBeTruthy();
 });
 
 // An image read auto-expands its body, so the tool (its picture) is visible
@@ -1596,10 +1596,10 @@ test("an auto-expanded image read at intent level keeps Open beside", () => {
   );
 });
 
-// A delegate_send row's Open transcript control rides INLINE between the
+// A delegate_send row's Open conversation control rides INLINE between the
 // delegate target and the running-state meta - next to the item it opens,
 // not off after the status words.
-test("a delegate_send card's Open transcript control rides inline between the delegate target and the status meta", () => {
+test("a delegate_send card's Open conversation control rides inline between the delegate target and the status meta", () => {
   const delegateSendItem = item({
     toolName: "delegate_send",
     argumentsJSON: JSON.stringify({ to: "dlg_abc123", message: "status?" }),
@@ -1611,7 +1611,7 @@ test("a delegate_send card's Open transcript control rides inline between the de
   // collapsed or expanded: assert the control's siblings in both states.
   renderTools(<ToolCallItem item={delegateSendItem} turn={turn} live={false} sessionRef="ref_a" />);
   const trailing = screen.getByTestId("tool-row-trailing");
-  expect(trailing.contains(screen.getByRole("button", { name: "Open transcript" }))).toBe(true);
+  expect(trailing.contains(screen.getByRole("button", { name: "Open conversation" }))).toBe(true);
   const [before, after] = textAround(trailing);
   expect(before).toContain("dlg_abc123");
   expect(after).toContain("running");
@@ -1749,7 +1749,7 @@ test("delegate controls require stable delegate_id and reject activation-only jo
   // headless - assert the kind, and that exactly one row (the stable one)
   // earned the open control.
   expect(rows[0]?.getAttribute("data-kind")).toBe("running");
-  expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Open conversation" })).toHaveLength(1);
 });
 
 test("malformed delegate arguments keep status without inventing an intent", () => {

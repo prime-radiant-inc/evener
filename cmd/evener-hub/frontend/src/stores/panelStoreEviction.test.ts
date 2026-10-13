@@ -91,4 +91,36 @@ describe("panel store eviction", () => {
     await settle();
     expect(tasksPanelStore.getState().entries.has("ref_a")).toBe(true);
   });
+
+  test("retains a cascade scope while a sessionZoom pane holds the path", async () => {
+    // The parent scope is still a readable column, but it is no longer the
+    // pane's own params.ref (the drill leaf is). The default keep-alive set
+    // must include every retained scope of the cascade, not just the leaf.
+    tasksPanelStore.getState().setRows("ref_child", []);
+    workspaceStore.setState({
+      panes: [
+        {
+          id: "cascade_a",
+          type: "sessionZoom",
+          params: {
+            ref: "ref_grandchild",
+            source: { type: "session", params: { ref: "ref_root" } },
+            edges: [
+              { ownerRef: "ref_root", childRef: "ref_child", delegateId: "d1" },
+              { ownerRef: "ref_child", childRef: "ref_grandchild", delegateId: "d2" },
+            ],
+          },
+          slot: "main",
+        },
+      ],
+      focusedPaneId: "cascade_a",
+    });
+    await settle();
+    expect(tasksPanelStore.getState().entries.has("ref_child")).toBe(true);
+
+    // Closing the cascade still evicts the scope.
+    workspaceStore.getState().closePane("cascade_a");
+    await settle();
+    expect(tasksPanelStore.getState().entries.has("ref_child")).toBe(false);
+  });
 });

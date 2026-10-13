@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
 import { popAgentCascade } from "../../panes/zoom/actions";
-import { cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
+import { cascadeOrigin, cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
 import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
@@ -18,15 +18,15 @@ import { CloseIcon, FocusScope, IconButton, SegmentedControl } from "../../widge
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { tabbable } from "../../widgets/focusscope/tabbable";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
-import { useWorkspaceStore } from "../workspace";
+import { useWorkspaceStore, workspaceStore } from "../workspace";
 import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import {
   activitySidebarReturnFocusTarget,
   activitySidebarStore,
+  useActivitySidebarScopeRef,
   useActivitySidebarStore,
 } from "./activitySidebarStore";
 import { ACTIVITY_TABS, activityTabSpec } from "./activityTabs";
@@ -71,7 +71,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   // Narrow subscriptions: re-render on the resources map (nav data) or the
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
-  const ref = useFocusedActivityScopeRef();
+  const ref = useActivitySidebarScopeRef();
   const focusedPane = useWorkspaceStore((state) => state.panes.find((pane) => pane.id === state.focusedPaneId));
   useEffect(() => {
     if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
@@ -98,16 +98,30 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     if (focusedPane?.type !== "sessionZoom" || !derived.ancestryKnown) return derived;
     const params = parseZoomParams(focusedPane.params);
     if (!params) return derived;
-    const { scopes } = deriveCascadePath(params, snapshot?.context ?? null);
-    // The origin conversation never renders in the cascade, so the breadcrumb
-    // cannot offer it: the rendered scopes are the clickable path.
+    // The crumb rebase covers any held column of the focused cascade, not only
+    // its leaf: an embedded conversation's Overview holds a parent column, so
+    // that scope keeps its own ancestry while each crumb is rebound to the
+    // cascade's requested ref for the column it names. The leaf's proven
+    // activity context describes the full path; a held parent is only covered
+    // by the cascade's recorded edge suffix, which begins at the cascade's own
+    // source, so the suffix is aligned to the held scope's own last crumb
+    // (deriveScope appends it) before rebasing: everything above the chain's
+    // start keeps its authoritative ref.
+    const leaf = params.ref === ref;
+    const scopes = deriveCascadePath(params, leaf ? (snapshot?.context ?? null) : null).scopes;
+    const held = scopes.findIndex((scope) => scope.requestedRef === ref);
+    if (held < 0) return derived;
+    const offset = derived.path.length - 1 - held;
+    if (offset < 0) return derived;
     const originRef = cascadeOriginRef(focusedPane);
-    return {
-      ...derived,
-      path: derived.path
-        .map((crumb, index) => ({ ...crumb, ref: scopes[index]?.requestedRef ?? crumb.ref }))
-        .filter((crumb) => crumb.ref !== originRef),
-    };
+    const path = derived.path.map((crumb, index) =>
+      index < offset ? crumb : { ...crumb, ref: scopes[index - offset]?.requestedRef ?? crumb.ref },
+    );
+    // The origin conversation never renders in the cascade, so the leaf's
+    // breadcrumb cannot offer it: the rendered scopes are the clickable path.
+    // A held parent column keeps its whole ancestry, whose origin crumb routes
+    // to the retained origin pane instead.
+    return { ...derived, path: leaf ? path.filter((crumb) => crumb.ref !== originRef) : path };
   }, [open, resources, ref, snapshot, subagents, focusedPane]);
   const Body = scope === null ? null : activityTabSpec(tab).Body;
   // Resolved once per mount: spatialTransition reads getComputedStyle (a
@@ -153,7 +167,19 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                     hierarchy
                     onNavigate={
                       focusedPane?.type === "sessionZoom"
-                        ? (ancestor) => popAgentCascade(focusedPane.id, ancestor)
+                        ? (ancestor) => {
+                            // The origin conversation never renders inside a
+                            // separated inspector's cascade, and selecting it
+                            // there is refused: its crumb routes to the
+                            // retained origin pane instead of doing nothing.
+                            const origin =
+                              cascadeOriginRef(focusedPane) === ancestor ? cascadeOrigin(focusedPane) : null;
+                            if (origin) {
+                              workspaceStore.getState().focusPane(origin.id);
+                              return;
+                            }
+                            popAgentCascade(focusedPane.id, ancestor);
+                          }
                         : undefined
                     }
                   />

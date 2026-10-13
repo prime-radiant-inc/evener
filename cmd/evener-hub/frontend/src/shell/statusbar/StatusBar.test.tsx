@@ -175,6 +175,55 @@ test("closing after a transient opener disappears returns to the selected activi
   expect(document.activeElement).toBe(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
 });
 
+test("a footer chip releases a held column scope and describes the focused conversation", async () => {
+  const user = userEvent.setup();
+  const client = activityClient();
+  const context = (ref: string) => ({ ...activityContext(ref), sessionId: `sess-${ref}` });
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: context(ref),
+  }));
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: context(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ ownerRef: ref, description: `job owned by ${ref}` })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope("remote:leaf");
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: {
+          ref: "remote:leaf",
+          source: { type: "session", params: { ref: "remote:root" } },
+          edges: [{ ownerRef: "remote:root", childRef: "remote:leaf", delegateId: "d1" }],
+        },
+        slot: "main",
+      },
+    ],
+    focusedPaneId: "zoom",
+  });
+  // The inspector's footer names the focused leaf; a parent column's Overview
+  // holds its scope first.
+  render(
+    <MotionProvider>
+      <StatusBar sessionRef="remote:leaf" paneId="zoom" leading={null} />
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+  act(() => activitySidebarStore.getState().openFor("remote:column", "jobs"));
+  const sidebar = () => within(screen.getByTestId("activity-sidebar"));
+  await sidebar().findByRole("button", { name: /job owned by remote:column/ });
+  // The footer chip is a focus-based request: it releases the held column
+  // and describes the focused conversation instead.
+  await user.click(await screen.findByRole("button", { name: /Jobs,/ }));
+  await sidebar().findByRole("button", { name: /job owned by remote:leaf/ });
+  expect(sidebar().queryByRole("button", { name: /job owned by remote:column/ })).toBeNull();
+});
+
 test("selected child gets authoritative counts before its navigation location exists", async () => {
   const ref = "remote:deep-child",
     client = activityClient();

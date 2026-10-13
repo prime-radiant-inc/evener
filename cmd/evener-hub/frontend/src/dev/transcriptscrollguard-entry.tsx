@@ -140,9 +140,11 @@ const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) =
 
 // ?paged=1: the read answers with a page plus an olderCursor, so the paging row
 // mounts - the open-with-history shape the other passes lack.
-// ?readonly=1: render the READ-ONLY transcript pane instead of the live Session.
-// It runs the same useTranscriptScroll coordinator (#2963), so its paging and
-// landing must behave identically - the pass the guard lacked.
+// ?readonly=1: render the transcript pane for a session ref instead of the
+// live Session. The read-only surface is gone from the product, so it
+// recovers as the live conversation - the same ConversationBody and
+// useTranscriptScroll coordinator (#2963) - and its paging and landing must
+// behave identically, with the conversation's pane footer rendered.
 const PAGED = new URLSearchParams(window.location.search).get("paged") === "1";
 const DOCK = new URLSearchParams(window.location.search).get("dock") === "1";
 const READONLY = new URLSearchParams(window.location.search).get("readonly") === "1";
@@ -384,10 +386,11 @@ interface TranscriptScrollMetrics extends TranscriptGeometry {
    */
   pagingRow: boolean;
   /**
-   * Whether the live Session's pane-footer (its SessionChrome slot) is mounted.
-   * The read-only Transcript pane passes no footer, so this distinguishes the
-   * two surfaces from the DOM itself: a pass that claims to exercise the
-   * read-only pane while the live Session rendered would read `true` here.
+   * Whether the live conversation's pane-footer (its SessionChrome slot) is
+   * mounted. The read-only surface is gone, so both entries - the live
+   * Session and the session-ref transcript pane recovered as the conversation -
+   * render it: a pass that lands on a footer-less view is exercising the
+   * wrong surface.
    */
   paneFooter: boolean;
   errors: string[];

@@ -1,18 +1,15 @@
 import { asJsonObject, type SessionActivityContext } from "@evener/appwire-client";
 import type { SessionPaneParams } from "../session/Session";
-import type { TranscriptParams } from "../transcript/Transcript";
 
 export interface DelegateEdgeIntent {
   ownerRef: string;
   childRef: string;
   delegateId: string;
 }
-export type ConversationReturnDescriptor =
-  | { type: "session"; params: SessionPaneParams }
-  | { type: "transcript"; params: TranscriptParams };
+export type ConversationReturnDescriptor = { type: "session"; params: SessionPaneParams };
 export interface CascadeReturnOrigin {
   paneId: string;
-  type: "session" | "transcript";
+  type: "session";
   ref: string;
 }
 export interface SessionZoomParams {
@@ -73,7 +70,9 @@ function inspectionOrigin(value: unknown, sourceRef: string): CascadeReturnOrigi
     raw.ref !== sourceRef
   )
     return null;
-  return { paneId: raw.paneId, type: raw.type, ref: raw.ref };
+  // A legacy origin may name a read-only transcript pane; those restored as
+  // conversation panes keep their pane id, so the origin reads as session.
+  return { paneId: raw.paneId, type: "session", ref: raw.ref };
 }
 
 export function parseZoomParams(value: unknown): SessionZoomParams | null {
@@ -82,21 +81,16 @@ export function parseZoomParams(value: unknown): SessionZoomParams | null {
   const source = object(raw.source);
   const params = object(source?.params);
   if (!source || !params || !sessionRef(params.ref)) return null;
-  let descriptor: ConversationReturnDescriptor;
-  if (source.type === "session") descriptor = { type: "session", params: { ref: params.ref } };
-  else if (source.type === "transcript") {
-    if (params.parentRef !== undefined && (typeof params.parentRef !== "string" || params.parentRef.trim() === ""))
-      return null;
-    descriptor = {
-      type: "transcript",
-      params: { ref: params.ref, ...(params.parentRef === undefined ? {} : { parentRef: params.parentRef }) },
-    };
-  } else return null;
+  // Every zoom source is a session ref (sessionRef rejects job refs), so a
+  // legacy source naming a read-only transcript reads as the session it
+  // always was — the session pane is the only thread view.
+  if (source.type !== "session" && source.type !== "transcript") return null;
+  const descriptor: ConversationReturnDescriptor = { type: "session", params: { ref: params.ref } };
   const edges = edgeSegment(raw.edges, raw.ref);
   if (!Object.hasOwn(raw, "inspection")) return { ref: raw.ref, source: descriptor, edges };
   return {
     ref: raw.ref,
-    source: { type: "transcript", params: descriptor.params },
+    source: descriptor,
     edges,
     inspection: { origin: inspectionOrigin(raw.inspection, descriptor.params.ref) },
   };

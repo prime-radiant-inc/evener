@@ -7,9 +7,7 @@ import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { Button } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { refParam } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
-import { workspaceStore } from "../workspace";
 import styles from "./scopeCrumbs.module.css";
 import type { ScopeCrumb } from "./statusScope";
 
@@ -50,14 +48,9 @@ function ScopeCrumbLabel({
       onNavigate(crumb.ref);
       return;
     }
-    const workspace = workspaceStore.getState();
-    const transcript = workspace.panes.find(
-      (pane) => pane.type === "transcript" && refParam(pane.params) === crumb.ref,
-    );
-    // Ancestor navigation preserves the selected read-only context;
-    // the rail and other session links still request live session chrome.
-    if (transcript) workspace.focusPane(transcript.id);
-    else openSessionByRef(crumb.ref);
+    // An ancestor is always its live conversation: reuse an open session
+    // pane for it, else open one at its route.
+    openSessionByRef(crumb.ref);
   };
   return (
     <span
