@@ -52,19 +52,20 @@ func TestProtocolBuildBody(t *testing.T) {
 	req.WebSearch = true
 	req.Temperature = new(0.2)
 	req.ProviderOptions = map[string]any{"google": map[string]any{"safetySettings": []any{map[string]any{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}}}}
-	body := protoBuild(t, req, protoRes(nil))
+	levelShape := func(c *registry.Caps) { c.ThinkingShape = new("level") }
+	body := protoBuild(t, req, protoRes(levelShape))
 	if _, has := body["model"]; has {
 		t.Fatal("the model rides in the URL, never the body")
 	}
 	gen := body["generationConfig"].(map[string]any)
 	thinking := gen["thinkingConfig"].(map[string]any)
-	// protoRes carries an effort-only ladder with no levels, so the builder
-	// spells the requested effort as a thinkingLevel, not a budget.
+	// The row is level-shaped with no ladder, so the builder spells the
+	// requested effort as a thinkingLevel, not a budget.
 	if gen["temperature"] != 0.2 || thinking["thinkingLevel"] != "high" {
 		t.Fatalf("generationConfig = %v", gen)
 	}
 	if _, has := thinking["thinkingBudget"]; has {
-		t.Fatalf("an effort-shaped row never sends thinkingBudget: %v", gen)
+		t.Fatalf("a level-shaped row never sends thinkingBudget: %v", gen)
 	}
 	if tools := body["tools"].([]map[string]any); len(tools) != 1 || tools[0]["google_search"] == nil {
 		t.Fatalf("google_search expected without function tools: %v", body["tools"])
@@ -93,8 +94,8 @@ func TestProtocolBuildBody(t *testing.T) {
 }
 
 // Gemini has two thinking wire shapes: thinkingLevel (Gemini 3.x) and
-// thinkingBudget (2.5 era). The catalog says which a row takes through
-// ReasoningControls; sending a budget to a level-only model is a wire 400.
+// thinkingBudget (2.5 era). The registry derives a row's ThinkingShape from
+// its catalog facts; sending a budget to a level-only model is a wire 400.
 func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 	level := func(t *testing.T, body map[string]any) any {
 		t.Helper()
@@ -108,11 +109,19 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 		}
 		return thinking["thinkingLevel"]
 	}
+	levelRow := func(mutate func(c *registry.Caps)) registry.Resolved {
+		return protoRes(func(c *registry.Caps) {
+			c.ThinkingShape = new("level")
+			if mutate != nil {
+				mutate(c)
+			}
+		})
+	}
 
-	// An effort-only row with a ladder sends the vouched level. ShapeRequest
+	// A level-shaped row with a ladder sends the vouched level. ShapeRequest
 	// clamps the request to the ladder first, so the builder spells what the
 	// row lists.
-	row := protoRes(func(c *registry.Caps) { c.EffortValues = []string{"low", "medium", "high"} })
+	row := levelRow(func(c *registry.Caps) { c.EffortValues = []string{"low", "medium", "high"} })
 	if got := level(t, protoBuild(t, protoReq("medium"), row)); got != "medium" {
 		t.Fatalf("thinkingLevel = %v", got)
 	}
@@ -120,8 +129,29 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 		t.Fatalf("xhigh must clamp down to the ladder's top level, got %v", got)
 	}
 
-	// A budget-only row (gemini-2.5-pro) keeps the numeric budget.
-	budget := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.ReasoningControls = []string{"budget_tokens"} }))
+	// A cataloged level-shaped row with no ladder spells the requested effort
+	// as-is: there is no ladder to clamp against and the row vouches the
+	// shape.
+	if got := level(t, protoBuild(t, protoReq("high"), levelRow(nil))); got != "high" {
+		t.Fatalf("level row without a ladder thinkingLevel = %v", got)
+	}
+
+	// A configured model can vouch the level shape itself, with its own
+	// ladder, without a cataloged Reasoning verdict.
+	configured := protoRes(func(c *registry.Caps) {
+		c.Reasoning = nil
+		c.ThinkingShape = new("level")
+		c.EffortValues = []string{"low", "high"}
+	})
+	if got := level(t, protoBuild(t, protoReq("high"), configured)); got != "high" {
+		t.Fatalf("configured level row thinkingLevel = %v", got)
+	}
+
+	// A budget-shaped row (gemini-2.5 family) keeps the numeric budget.
+	budget := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) {
+		c.ReasoningControls = []string{"budget_tokens"}
+		c.ThinkingShape = new("budget")
+	}))
 	thinking := budget["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
 	if thinking["thinkingBudget"] != llm.ReasoningBudget("high") {
 		t.Fatalf("thinkingBudget = %v", thinking)
@@ -130,28 +160,55 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 		t.Fatalf("a budget-shaped row never sends thinkingLevel: %v", thinking)
 	}
 
-	// A cataloged reasoning row whose catalog recorded no reasoning_options
-	// still reaches the builder with the derived effort control (derive.go
-	// defaults empty controls to ["effort"]); it spells the level.
-	derived := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.EffortValues = nil }))
-	if got := level(t, derived); got != "high" {
-		t.Fatalf("cataloged row with a derived control thinkingLevel = %v", got)
+	// A row with no vouched shape — toggle-only, or an uncataloged live
+	// listing — sends no thinking object at all.
+	for name, mutate := range map[string]func(*registry.Caps){
+		"toggle-only": func(c *registry.Caps) { c.ReasoningControls = []string{"toggle"} },
+		"uncataloged": func(c *registry.Caps) { c.Reasoning = nil; c.ReasoningControls = []string{"effort"} },
+	} {
+		body := protoBuild(t, protoReq("high"), protoRes(mutate))
+		if _, has := body["generationConfig"].(map[string]any)["thinkingConfig"]; has {
+			t.Fatalf("%s row must not send thinkingConfig: %v", name, body["generationConfig"])
+		}
 	}
+}
 
-	// A row that names no control the builder maps — a toggle-only row —
-	// sends no thinking object at all: neither spelling is vouched.
-	toggle := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.ReasoningControls = []string{"toggle"} }))
-	if _, has := toggle["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-		t.Fatalf("a toggle-only row has no mappable control: %v", toggle)
+// A catalog row resolved through the real registry drives the shape: the
+// 2.5-era computer-use row records reasoning with no reasoning_options, so it
+// must not spell a level the model rejects (roborev round 2).
+func TestProtocolBuildBody_CatalogRowThinkingShape(t *testing.T) {
+	r, err := registry.Load(registry.WithNoUserLayer(), registry.WithoutCache(), registry.WithOffline(true))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// An uncataloged row — a live-listed model with no catalog facts, where
-	// Reasoning is unset — spells no level: the effort control is derived,
-	// not vouched, and a legacy budget-era model in that state 400'd on the
-	// level field before.
-	uncataloged := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.Reasoning = nil }))
-	if _, has := uncataloged["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-		t.Fatalf("an uncataloged row sends no thinking object: %v", uncataloged["generationConfig"])
+	for _, ref := range []string{
+		"google/gemini-2.5-computer-use-preview-10-2025", // reasoning, options unrecorded
+		"google/gemini-2.5-flash",                        // budget_tokens
+		"google/gemini-3.1-pro-preview",                  // effort ladder
+	} {
+		res, err := r.Resolve(ref)
+		if err != nil {
+			t.Fatalf("%s: %v", ref, err)
+		}
+		body, err := (&Protocol{}).BuildBody(llm.ShapeRequest(protoReq("high"), res), res)
+		if err != nil {
+			t.Fatalf("%s: %v", ref, err)
+		}
+		thinking, _ := body["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
+		switch ref {
+		case "google/gemini-2.5-computer-use-preview-10-2025":
+			if thinking != nil {
+				t.Fatalf("%s must send no thinking object, got %v", ref, thinking)
+			}
+		case "google/gemini-2.5-flash":
+			if thinking["thinkingBudget"] != llm.ReasoningBudget("high") {
+				t.Fatalf("%s thinkingBudget = %v", ref, thinking)
+			}
+		case "google/gemini-3.1-pro-preview":
+			if thinking["thinkingLevel"] != "high" {
+				t.Fatalf("%s thinkingLevel = %v", ref, thinking)
+			}
+		}
 	}
 }
 

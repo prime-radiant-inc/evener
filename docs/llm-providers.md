@@ -302,9 +302,8 @@ allowlist — an unknown id there is a resolve error, not a synthesized row.
 `Reasoning = false` empties `ReasoningControls`/`EffortValues`, sends no
 reasoning field on any protocol, and drops replayed thinking from history.
 Otherwise `ReasoningControls` says what the model accepts, `ThinkingShape`
-says how the anthropic protocol spells it, `ThinkingFormat` says how the
-openai-chat protocol spells it, and on the google protocol `ReasoningControls`
-itself selects the `thinkingConfig` shape (see the google subsection below).
+says how the anthropic and google protocols spell it, and `ThinkingFormat`
+says how the openai-chat protocol spells it.
 A row is *effort-capable* when `effort` is
 in its `ReasoningControls` — every row gets this unless it explicitly lists
 controls without `effort` (a toggle-only or budget-only row).
@@ -355,17 +354,21 @@ budget_tokens}`, only when an effort is set; `budget+effort` (Opus 4.5, Kimi
 K3) → both. An unset shape sends no thinking object at all.
 
 **google.** Gemini has two thinking wire shapes: `thinkingLevel` (Gemini 3.x
-and later) and `thinkingBudget` (2.5 era); sending a budget to a level-only
-model is a wire 400. The builder picks from `ReasoningControls`: a row listing
-`budget_tokens` sends `generationConfig.thinkingConfig.thinkingBudget` with
-the effort mapped to a token budget; anything else — an effort-only row, an
-effort row with no ladder, or an uncataloged row — sends
-`generationConfig.thinkingConfig.thinkingLevel`, since Gemini's current
-generation is level-shaped and the budget is the legacy form. A ladder on the
-row gates the spelled level through the vouch rule above. Either shape carries
-`includeThoughts: true`. Clearing `fields."generationConfig.thinkingConfig"`
-on a row prunes the object entirely, for a model that takes no thinking fields
-at all.
+and later) and `thinkingBudget` (2.5 era); sending one shape to a model that
+takes the other is a wire 400. The registry derives a row's `ThinkingShape`
+from its catalog facts: a row recording `budget_tokens` is `budget`, a row
+whose catalog itself records `effort` is `level`, and anything else — a
+toggle-only row, a reasoning row whose catalog recorded no
+`reasoning_options`, or an uncataloged live listing — has no vouched shape and
+sends no thinking object at all, since the field it would guess at is exactly
+the one such a model may reject. The builder then spells
+`generationConfig.thinkingConfig.thinkingLevel` or `.thinkingBudget` from the
+shape; a ladder on the row gates the spelled level through the vouch rule
+above, and a level row with no ladder spells the requested effort as-is. A
+model row may also set `thinking_shape` directly (a custom level-model needs
+no catalog entry). Either shape carries `includeThoughts: true`. Clearing
+`fields."generationConfig.thinkingConfig"` on a row prunes the object
+entirely, for a model that takes no thinking fields at all.
 
 **Replay.** Prior thinking on the openai-chat protocol writes back to
 whichever field it arrived on — `reasoning_content`, `reasoning`, or

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -108,15 +107,16 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 }
 
 // thinkingConfig builds the generationConfig.thinkingConfig object for a
-// reasoning effort, or nil when the effort names no thinking. Gemini has two
-// thinking wire shapes: thinkingLevel (Gemini 3.x, catalog rows whose
-// ReasoningControls list effort) and thinkingBudget (2.5 era, rows listing
-// budget_tokens). Sending a budget to a level-only model is a wire 400.
-// A row that lists effort but no ladder, and an uncataloged row, take the
-// level: Gemini's current generation is level-shaped, and the budget form is
-// the legacy one. includeThoughts asks Gemini to return thought summaries;
-// without it the model thinks internally but streams no thought parts, so the
-// live-thinking backend has nothing to render.
+// reasoning effort, or nil when the row vouches no thinking shape. Gemini has
+// two wire shapes, selected by the row's derived ThinkingShape: "level"
+// (Gemini 3.x, catalog rows that vouch effort) spells thinkingLevel, and
+// "budget" (the 2.5 family, rows recording budget_tokens) spells the numeric
+// thinkingBudget. Sending one shape to a model that takes the other is a wire
+// 400, so a row with no vouched shape — a toggle-only row, or an uncataloged
+// live listing — sends no thinking object at all. includeThoughts asks Gemini
+// to return thought summaries; without it the model thinks internally but
+// streams no thought parts, so the live-thinking backend has nothing to
+// render.
 func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 	// Normalize first: a non-canonical off ("NONE", " off ") or an empty
 	// effort names no thinking on either shape, where before the shape split
@@ -125,19 +125,18 @@ func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 	if effort == "" || effort == llm.ReasoningEffortNone {
 		return nil
 	}
-	shape := map[string]any{"includeThoughts": true}
-	if slices.Contains(caps.ReasoningControls, "budget_tokens") {
+	shape := registry.StringValue(caps.ThinkingShape)
+	if shape == "" {
+		return nil
+	}
+	thinking := map[string]any{"includeThoughts": true}
+	if shape == "budget" {
 		budget := llm.ReasoningBudget(effort)
 		if budget <= 0 {
 			return nil
 		}
-		shape["thinkingBudget"] = budget
-		return shape
-	}
-	if !slices.Contains(caps.ReasoningControls, "effort") {
-		// A row whose catalog names controls but not effort — a toggle-only
-		// row — vouches for neither spelling, so no thinking object is sent.
-		return nil
+		thinking["thinkingBudget"] = budget
+		return thinking
 	}
 	level := effort
 	if len(caps.EffortValues) > 0 {
@@ -147,17 +146,10 @@ func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 			return nil
 		}
 	}
-	if caps.Reasoning == nil {
-		// An uncataloged row — a live-listed model with no catalog facts —
-		// carries a derived effort control, not a vouched one, and a legacy
-		// budget-era model in that state rejects the level field. Send nothing.
-		return nil
-	}
-	// A cataloged effort row with no ladder spells the requested effort
-	// as-is: there is no ladder to clamp against, and the row vouches that
-	// the model takes levels.
-	shape["thinkingLevel"] = level
-	return shape
+	// A level row with no ladder spells the requested effort as-is: there is
+	// no ladder to clamp against and the row vouches the shape.
+	thinking["thinkingLevel"] = level
+	return thinking
 }
 
 func reconcileOutputField(body map[string]any, admitted, outputCap *int) error {

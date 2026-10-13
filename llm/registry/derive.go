@@ -59,6 +59,29 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		prov["Surface"] = provDerived
 	}
 
+	// Google's thinking shape mirrors the anthropic rule at its one decision:
+	// a cataloged row (not synthesized) that records budget_tokens is
+	// budget-shaped (the 2.5 family), and a cataloged row whose catalog
+	// itself records effort is level-shaped (3.x and later). An effort control
+	// that derivation added for an empty list is not evidence — the catalog
+	// recorded no reasoning_options, and a 2.5-era row in that state rejects
+	// the level field — so it, a toggle-only row, and a synthesized or
+	// live-only row all leave the shape unset rather than guess a spelling
+	// the model may reject.
+	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized {
+		var shape string
+		switch {
+		case slices.Contains(c.ReasoningControls, "budget_tokens"):
+			shape = "budget"
+		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty:
+			shape = "level"
+		}
+		if shape != "" {
+			c.ThinkingShape = &shape
+			prov["ThinkingShape"] = provDerived
+		}
+	}
+
 	if in.Protocol != ProtocolAnthropic || reasoningOff {
 		return
 	}

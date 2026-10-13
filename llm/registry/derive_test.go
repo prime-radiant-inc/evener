@@ -9,6 +9,41 @@ func anth(fam string, controls ...string) (Caps, Model, deriveInput) {
 	return Caps{ReasoningControls: controls}, Model{Family: fam}, deriveInput{Protocol: ProtocolAnthropic, ProviderSurface: SurfaceAnthropic, ProviderFamily: "claude"}
 }
 
+func TestDerive_GoogleThinkingShapes(t *testing.T) {
+	cases := []struct {
+		name     string
+		controls []string
+		synth    bool
+		want     string
+	}{
+		{"cataloged 3.x effort-only", []string{"effort"}, false, "level"},
+		{"cataloged 2.5 budget", []string{"budget_tokens"}, false, "budget"},
+		{"cataloged 2.5 budget+toggle", []string{"budget_tokens", "toggle"}, false, "budget"},
+		{"cataloged reasoning, options unrecorded", nil, false, ""},
+		{"toggle-only row", []string{"toggle"}, false, ""},
+		{"uncataloged live-listed", nil, true, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			caps := Caps{Reasoning: new(true), ReasoningControls: c.controls}
+			m := Model{Family: "gemini"}
+			in := deriveInput{Protocol: ProtocolGoogle, ProviderSurface: SurfaceGoogle, Synthesized: c.synth}
+			prov := map[string]string{}
+			derive(&caps, &m, in, prov)
+			got := ""
+			if caps.ThinkingShape != nil {
+				got = *caps.ThinkingShape
+			}
+			if got != c.want {
+				t.Fatalf("shape = %q, want %q (controls %v)", got, c.want, caps.ReasoningControls)
+			}
+			if got != "" && prov["ThinkingShape"] != "derived" {
+				t.Fatalf("provenance = %v", prov)
+			}
+		})
+	}
+}
+
 func TestDerive_ThinkingShapes(t *testing.T) {
 	type want struct {
 		shape, display string
