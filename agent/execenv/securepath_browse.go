@@ -59,6 +59,13 @@ type grepAccum struct {
 	// truncated records that the walk found a result past maxResults, so
 	// finish adds grepTruncationNote as a note.
 	truncated bool
+	// retained is the byte size of the results held so far; emit stops at
+	// grepRetainedBytes.
+	retained int
+	// retainedTruncated records that a result line crossed the
+	// retained-byte budget, which emit leaves out with everything after it,
+	// so finishNotes adds the byte-truncation note.
+	retainedTruncated bool
 	// overlongSkipped counts lines the named-file streaming path left out
 	// because a line longer than grepMaxFileBytes cannot be searched without
 	// holding it whole; the walk never streams, so it stays zero there.
@@ -224,7 +231,11 @@ func (a *grepAccum) emit(line string) (stop bool) {
 	if len(a.results) >= a.maxResults {
 		return a.cutAtCap()
 	}
+	if a.retained+len(line) > grepRetainedBytes {
+		return a.cutAtRetainedCap()
+	}
 	a.results = append(a.results, line)
+	a.retained += len(line)
 	return false
 }
 
@@ -232,6 +243,13 @@ func (a *grepAccum) emit(line string) (stop bool) {
 // out, and returns feed's stop.
 func (a *grepAccum) cutAtCap() (stop bool) {
 	a.truncated = true
+	return true
+}
+
+// cutAtRetainedCap records that a result line crossed grepRetainedBytes,
+// which emit leaves out with everything after it, and returns feed's stop.
+func (a *grepAccum) cutAtRetainedCap() (stop bool) {
+	a.retainedTruncated = true
 	return true
 }
 
@@ -319,10 +337,30 @@ func (s *grepStream) remember(i int, text string) {
 	if s.a.contextLines <= 0 {
 		return
 	}
-	s.recent = append(s.recent, streamLine{idx: i, text: text})
+	share := grepRetainedBytes / (s.a.contextLines + 1)
+	s.recent = append(s.recent, streamLine{idx: i, text: truncateContextLine(text, share)})
 	if len(s.recent) > s.a.contextLines {
 		s.recent = s.recent[len(s.recent)-s.a.contextLines:]
 	}
+}
+
+// truncateContextLine keeps the tail of a before-context line longer than
+// keep — the tail is the end adjacent to the match the context orients —
+// headed by a marker disclosing how much was left out, so the cut shows in
+// the output itself. The share a caller passes keeps the whole ring within
+// the retained budget while the match it exists to orient keeps room of its
+// own.
+func truncateContextLine(text string, keep int) string {
+	const format = "[... %d bytes omitted ...]"
+	if len(text) <= keep {
+		return text
+	}
+	marker := fmt.Sprintf(format, len(text)-keep+len(fmt.Sprintf(format, 0)))
+	if len(marker) >= keep {
+		// No room for any of the line: the marker alone, disclosing all of it.
+		return fmt.Sprintf(format, len(text))
+	}
+	return marker + text[len(text)-keep+len(marker):]
 }
 
 // eof finishes the file: count mode emits its one row, exactly as the
@@ -363,11 +401,15 @@ func (a *grepAccum) finish() string {
 }
 
 // finishNotes renders the accumulated results and the notes the search owes
-// about them: the truncation note when the results cap left some out.
+// about them: the truncation notes when a cap — results or retained bytes —
+// left some out.
 func (a *grepAccum) finishNotes() (out string, notes []string) {
 	out = strings.Join(a.results, "\n")
 	if a.truncated {
 		notes = append(notes, grepTruncationNote(a.maxResults))
+	}
+	if a.retainedTruncated {
+		notes = append(notes, grepRetainedTruncationNote())
 	}
 	if a.overlongSkipped > 0 {
 		notes = append(notes, grepOverlongNote(a.overlongSkipped))
@@ -517,6 +559,13 @@ func grepTruncationNote(maxResults int) string {
 	return fmt.Sprintf("[results truncated at %d; narrow the path or glob_filter, or raise max_results]", maxResults)
 }
 
+// grepRetainedTruncationNote is the note on a search whose retained output
+// crossed the byte budget: the results it returned are not all there are,
+// and the ones missing were cut for their size, not for lack of matches.
+func grepRetainedTruncationNote() string {
+	return fmt.Sprintf("[results truncated at the %d-byte retained-output cap; later matches omitted]", grepRetainedBytes)
+}
+
 // grepOversizeNote is the note on a walk that left files larger than the
 // read cap out of the search: the matches it returned are not all there
 // are, and the way to search one of the files it skipped is to name it.
@@ -608,6 +657,15 @@ func grepReachesPseudoRoot(dir string) bool {
 // transient bytes a rounding error against the process's memory. A variable
 // so a test can exercise the skip with a fixture-sized file.
 var grepMaxFileBytes = 16 << 20
+
+// grepRetainedBytes bounds the bytes of result lines a search retains across
+// every file: an emitted line can be as long as the read cap, so a hundred
+// matching lines of that shape retain gigabytes before the join doubles
+// them. 8 MiB matches the tool output channel's own capture cap
+// (cappedOutputBuffer), so the search never retains more than the channel
+// delivers anyway, and an ordinary search's output sits far below it. A
+// variable so a test can exercise the cut with fixture-sized lines.
+var grepRetainedBytes = 8 << 20
 
 // errGrepFileTooLarge reports a source with more bytes than grepMaxFileBytes;
 // the walk's unreadable-file handling skips the file and keeps walking.
