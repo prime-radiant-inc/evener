@@ -669,16 +669,11 @@ func (cm *Manager) MaybeCompact(
 	// a model switch landing mid-compaction would otherwise bill one layer's
 	// numbers by another model's thinking rule and image family.
 	prof, _, _ := cm.profileSnapshot()
-	cw, assumed := effectiveWindowOf(prof)
+	cw, _ := effectiveWindowOf(prof)
 	if cw <= 0 {
 		return
 	}
-	if assumed && cm.claimAssumedWindowDisclosure() {
-		// The budget this fold runs against is an assumption, not a fact
-		// (issue #4564); the session hears that once, at the point the
-		// assumption starts governing its folds.
-		emitFn(events.EventWarning, assumedWindowWarning(prof))
-	}
+	discloseAssumedWindow(cm, prof, emitFn)
 
 	// Each phase reads pressure and its before/after diagnostics from ONE
 	// snapshot (see pressureWithProfile), so a concurrent SetProfile cannot decide
@@ -785,6 +780,16 @@ func assumedWindowWarning(prof *provider.Profile) events.WarningData {
 		Title:   "Context window unknown",
 		Hint:    "Compaction stays live against a conservative assumed window. Declare context_window on the model's row in providers.toml to budget against the real size.",
 		Code:    events.WarningCodeContextWindowAssumed,
+	}
+}
+
+// discloseAssumedWindow emits the unknown-window disclosure when prof budgets
+// against the assumed window and this manager has not disclosed it yet
+// (issue #4564): the window the caller's layers run against is an assumption,
+// not a fact, and the session hears that once per model.
+func discloseAssumedWindow(cm *Manager, prof *provider.Profile, emitFn func(events.EventKind, events.EventData)) {
+	if _, assumed := effectiveWindowOf(prof); assumed && cm.claimAssumedWindowDisclosure() {
+		emitFn(events.EventWarning, assumedWindowWarning(prof))
 	}
 }
 

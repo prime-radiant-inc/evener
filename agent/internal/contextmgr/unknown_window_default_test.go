@@ -23,13 +23,11 @@ import (
 // emitSpy records what MaybeCompact emits across one or more calls. The
 // manager calls emitFn synchronously, so no locking is needed.
 type emitSpy struct {
-	kinds      []events.EventKind
 	warnings   []events.WarningData
 	compaction []events.ContextCompactionData
 }
 
-func (s *emitSpy) fn(kind events.EventKind, data events.EventData) {
-	s.kinds = append(s.kinds, kind)
+func (s *emitSpy) fn(_ events.EventKind, data events.EventData) {
 	if w, ok := data.(events.WarningData); ok {
 		s.warnings = append(s.warnings, w)
 	}

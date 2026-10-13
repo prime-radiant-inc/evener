@@ -59,15 +59,11 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// a model switch landing mid-compaction would otherwise bill one layer's
 	// numbers by another model's thinking rule and image family.
 	prof, _, _ := s.cm.profileSnapshot()
-	cw, assumed := effectiveWindowOf(prof)
+	cw, _ := effectiveWindowOf(prof)
 	if cw <= 0 {
 		return nil
 	}
-	if assumed && s.cm.claimAssumedWindowDisclosure() {
-		// The budget the layers below run against is an assumption, not a
-		// fact (issue #4564); the session hears that once per manager.
-		emitFn(events.EventWarning, assumedWindowWarning(prof))
-	}
+	discloseAssumedWindow(s.cm, prof, emitFn)
 
 	// Each phase reads pressure and its before/after diagnostics from ONE
 	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
