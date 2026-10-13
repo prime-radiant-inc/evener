@@ -734,6 +734,11 @@ describe("remote search results", () => {
     const live = paletteRowsOfKind("live");
     expect(live).toHaveLength(1);
     expect(live[0]?.compareDocumentPosition(nested[0] as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    // The pulled-into-Live layout is keyboard-walked: ArrowDown lands on the
+    // nested child, and Enter opens the subagent's own session.
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
+    expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:sub1");
   });
 
   // An older hub answers without topLevel: rows render exactly as before,

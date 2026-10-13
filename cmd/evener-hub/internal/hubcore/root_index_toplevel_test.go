@@ -133,23 +133,48 @@ func TestWalkToTopLevelHonorsTheKnownPredicate(t *testing.T) {
 	}
 }
 
-// Agreement with the tree: on a corpus of a live root, a live mid-delegate
-// and a live sub-delegate, the walk and BuildTree must attribute the
-// sub-delegate's activity to the same root — the helper through Top, the
-// tree through the project rollup its working-roots walk raises.
+// Agreement with the tree, over the spec's whole corpus. Each shape sits in
+// its own project so its rollup is observable alone: a live chain and a
+// fork-superseded parent both attribute their live subagent's activity to the
+// same root the helper resolves to, while a parent cycle and an orphan
+// resolve nothing — the helper reports failure and the tree raises no
+// working root, so a project whose only live work is unresolvable stays idle.
 func TestWalkToTopLevelAgreesWithTheTreeRollup(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
-	dir := t.TempDir()
+	chainDir, forkDir, brokenDir := t.TempDir(), t.TempDir(), t.TempDir()
 	metas := []schema.SessionMeta{
-		{ID: "A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: dir}},
-		{ID: "B", IsSubagent: true, ParentSessionID: "A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: dir}},
-		{ID: "C", IsSubagent: true, ParentSessionID: "B", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: dir}},
+		// A live delegate chain: C under B under A, all live.
+		{ID: "A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: chainDir}},
+		{ID: "B", IsSubagent: true, ParentSessionID: "A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: chainDir}},
+		{ID: "C", IsSubagent: true, ParentSessionID: "B", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: chainDir}},
+		// A fork original superseded by K, with a live subagent under the
+		// original: the activity belongs to K's task tree. The original is
+		// live too — the tree's working-roots walk attributes a live child
+		// only through an ancestor that is not ended (ended is sticky down
+		// the chain), which is what makes this the fork path it exists for.
+		{ID: "O", ForkLabel: "old branch", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: forkDir}},
+		{ID: "K", ParentSessionID: "O", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: forkDir}},
+		{ID: "S", IsSubagent: true, ParentSessionID: "O", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: forkDir}},
+		// Unresolvable: a parent cycle (X and Y each the other's subagent),
+		// an orphan whose parent has no meta, and an unrelated live root to
+		// give the project a row at all.
+		{ID: "R", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: brokenDir}},
+		{ID: "X", IsSubagent: true, ParentSessionID: "Y", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: brokenDir}},
+		{ID: "Y", IsSubagent: true, ParentSessionID: "X", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: brokenDir}},
+		{ID: "O2", IsSubagent: true, ParentSessionID: "gone", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: brokenDir}},
 	}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "A", WorkingDir: dir, Status: appwire.ThreadStatusIdle},
-		{PID: 2, SessionID: "B", WorkingDir: dir, Status: appwire.ThreadStatusActive},
-		{PID: 3, SessionID: "C", WorkingDir: dir, Status: appwire.ThreadStatusActive},
+		{PID: 1, SessionID: "A", WorkingDir: chainDir, Status: appwire.ThreadStatusIdle},
+		{PID: 2, SessionID: "B", WorkingDir: chainDir, Status: appwire.ThreadStatusActive},
+		{PID: 3, SessionID: "C", WorkingDir: chainDir, Status: appwire.ThreadStatusActive},
+		{PID: 4, SessionID: "K", WorkingDir: forkDir, Status: appwire.ThreadStatusIdle},
+		{PID: 5, SessionID: "S", WorkingDir: forkDir, Status: appwire.ThreadStatusActive},
+		{PID: 6, SessionID: "O", WorkingDir: forkDir, Status: appwire.ThreadStatusIdle},
+		{PID: 7, SessionID: "R", WorkingDir: brokenDir, Status: appwire.ThreadStatusIdle},
+		{PID: 8, SessionID: "X", WorkingDir: brokenDir, Status: appwire.ThreadStatusActive},
+		{PID: 9, SessionID: "Y", WorkingDir: brokenDir, Status: appwire.ThreadStatusActive},
+		{PID: 10, SessionID: "O2", WorkingDir: brokenDir, Status: appwire.ThreadStatusActive},
 	}
 
 	metaMap := map[string]schema.SessionMeta{}
@@ -157,18 +182,36 @@ func TestWalkToTopLevelAgreesWithTheTreeRollup(t *testing.T) {
 		metaMap[m.ID] = m
 	}
 	parentOf, isSubagent, known := metaPredicates(metaMap)
-	walk, ok := NewRootIndex(metas).WalkToTopLevel("C", parentOf, isSubagent, known)
-	if !ok || walk.Top != "A" {
-		t.Fatalf("walk=%+v ok=%t, want the live chain to resolve to A", walk, ok)
+	roots := NewRootIndex(metas)
+
+	if walk, ok := roots.WalkToTopLevel("C", parentOf, isSubagent, known); !ok || walk.Top != "A" {
+		t.Fatalf("chain walk=%+v ok=%t, want C to resolve to A", walk, ok)
+	}
+	if walk, ok := roots.WalkToTopLevel("S", parentOf, isSubagent, known); !ok || walk.Ancestor != "O" || walk.Top != "K" {
+		t.Fatalf("fork walk=%+v ok=%t, want S to resolve through O to the continuation K", walk, ok)
+	}
+	for _, id := range []string{"X", "Y", "O2"} {
+		if _, ok := roots.WalkToTopLevel(id, parentOf, isSubagent, known); ok {
+			t.Fatalf("walk resolved %q, want failure for the unresolvable shapes", id)
+		}
 	}
 
 	tree := BuildTreeAt(metas, live, nil, now)
-	if len(tree.Projects) != 1 || tree.Projects[0].RollupState != "active" {
-		t.Fatalf("projects=%+v, want C's activity to roll up to A's project as working", tree.Projects)
+	rollups := map[string]string{}
+	for _, project := range tree.Projects {
+		rollups[project.WorkingDir] = project.RollupState
+	}
+	if rollups[chainDir] != "active" || rollups[forkDir] != "active" {
+		t.Fatalf("rollups=%v, want the chain's and the fork continuation's projects working", rollups)
+	}
+	if rollups[brokenDir] == "active" {
+		t.Fatalf("rollups=%v, want the unresolvable project to stay idle: nothing working resolves to a row", rollups)
 	}
 	for _, row := range tree.Live {
-		if row.ID == "B" || row.ID == "C" {
+		switch row.ID {
+		case "B", "C", "S", "X", "Y", "O2":
 			t.Fatalf("subagent %q has a top-level row", row.ID)
+		case "A", "K", "R":
 		}
 	}
 }

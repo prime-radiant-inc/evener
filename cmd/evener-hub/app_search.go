@@ -279,13 +279,16 @@ func pastArchived(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool, no
 // searchTopLevelFor resolves the top-level session a matching subagent groups
 // under, as the wire's SearchTopLevel anchor data. The lineage walk is
 // RootIndex.WalkToTopLevel, the one implementation the tree's rollup shares,
-// so search and the rail cannot disagree about which session is top-level;
-// search's own rules are meta-only lineage (a past match's meta is indexed by
-// definition, and the live-reported fallback exists only for live children the
-// Live group already excludes) and a known ancestor being either indexed or
-// live on the roster. The anchor's data is the ancestor's own search result —
-// live from the roster entry when it is running, ended from the past index
-// otherwise — so a client renders the anchor exactly as that session's row.
+// so the walk's own rules — chain, cycle guard, fork supersession — cannot
+// drift between the rail and search; the caller-owned rules are search's own,
+// stated here: meta-only lineage (a past match's meta is indexed by
+// definition, and the live-reported fallback exists only for live children
+// the Live group already excludes) and a known ancestor being either indexed
+// or live on the roster — so a roster-only ancestor resolves here where the
+// tree's meta-only known check would not. The anchor's data is the
+// ancestor's own search result — live from the roster entry when it is
+// running, ended from the past index otherwise — so a client renders the
+// anchor exactly as that session's row.
 func searchTopLevelFor(cfg hubcore.WebConfig, roots *hubcore.RootIndex, liveByID map[string]hubcore.LiveEntry, id string, decisions map[hubcore.ArchiveKey]bool, now time.Time) (*appwire.SearchTopLevel, bool) {
 	parentOf := func(aid string) string {
 		if cfg.Past == nil {

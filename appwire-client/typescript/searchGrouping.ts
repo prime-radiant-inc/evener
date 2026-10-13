@@ -53,7 +53,12 @@ function topLevelRow(topLevel: SearchTopLevel): SearchResult {
  * session that matched but was cut from the page included). A group renders
  * contiguously at the position of its first member, children in match order.
  * Rows without `topLevel` — unannotated subagents included — render flat,
- * exactly as before the grouping. */
+ * exactly as before the grouping.
+ *
+ * Inputs are the hub's response shape, whose refs are unique per response.
+ * (No hub — current or older — can send two rows sharing a ref alongside a
+ * child grouping under it; a garbage input that does keeps only the later row
+ * as the anchor and drops the earlier, rather than nesting a duplicate.) */
 export function groupSearchResults(live: SearchResult[], past: SearchResult[]): GroupedSearch {
   // A row with topLevel is a subagent; the hub only ever resolves anchors
   // to non-subagent sessions, so only topLevel-less rows can be anchors.

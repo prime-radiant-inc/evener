@@ -192,6 +192,29 @@ it("keeps past children out of the Live scope", () => {
 	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
 });
 
+it("greys an unmatched live parent's anchor without hiding that it is live", () => {
+	const endedChildOfLiveParent = result("sub1", {
+		title: "Delegate",
+		state: "ended",
+		age: "2h",
+		topLevel: { id: "root1", ref: "local:root1", title: "Live root", state: "active", age: "now" },
+	});
+	const { tree } = mount({
+		search: {
+			query: "fix",
+			results: { live: [], past: [endedChildOfLiveParent] },
+			searching: false,
+			failed: false,
+		},
+	});
+	const [anchor, nested] = resultRows(tree);
+	expect(anchor.props.accessibilityLabel).toBe("Live root, Working, now");
+	expect(flatten(textWith(anchor, "Live root").props.style).color).toBe(palette.inkLow);
+	expect(anchor.findByType(StateMark).props.state).toBe("working");
+	expect(nested.props.accessibilityLabel).toBe("Delegate, subagent, evener, 2 hours");
+	expect(textWith(tree, "SESSIONS · 1")).toBeTruthy();
+});
+
 it("says so when nothing matches", () => {
 	const { tree } = mount({ search: { ...answered, results: { live: [], past: [past] } }, scope: "live" });
 	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
