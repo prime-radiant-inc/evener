@@ -87,7 +87,13 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 	// A same-protocol alias inherits the target's settled verdict only while
 	// its controls remain purely inherited; the alias's own layers restating
 	// the controls means the verdict is stale and derivation must run.
+	// When the verdict is stale and the shape arrived through the alias (not
+	// an explicit override), clear it so derivation can re-derive from the
+	// alias's own evidence.
 	shapeSettledByAlias := in.Aliased && in.AliasTargetProtocol == ProtocolGoogle && prov["ReasoningControls"] == provAlias
+	if in.Aliased && !shapeSettledByAlias && prov["ThinkingShape"] == provAlias {
+		c.ThinkingShape = nil
+	}
 	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized && !shapeSettledByAlias {
 		var shape string
 		switch {

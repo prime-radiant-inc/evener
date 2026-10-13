@@ -177,11 +177,14 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 		t.Fatalf("a budget-shaped row never sends thinkingLevel: %v", thinking)
 	}
 
-	// A row with no vouched shape — toggle-only, or an uncataloged live
-	// listing — sends no thinking object at all.
+	// A row with no vouched shape — toggle-only, an uncataloged live
+	// listing, or a shape from another protocol's vocabulary — sends no
+	// thinking object at all.
 	for name, mutate := range map[string]func(*registry.Caps){
-		"toggle-only": func(c *registry.Caps) { c.ReasoningControls = []string{"toggle"} },
-		"uncataloged": func(c *registry.Caps) { c.Reasoning = nil; c.ReasoningControls = []string{"effort"} },
+		"toggle-only":   func(c *registry.Caps) { c.ReasoningControls = []string{"toggle"} },
+		"uncataloged":   func(c *registry.Caps) { c.Reasoning = nil; c.ReasoningControls = []string{"effort"} },
+		"adaptive":      func(c *registry.Caps) { c.ThinkingShape = new("adaptive") },
+		"budget+effort": func(c *registry.Caps) { c.ThinkingShape = new("budget+effort") },
 	} {
 		body := protoBuild(t, protoReq("high"), protoRes(mutate))
 		if _, has := body["generationConfig"].(map[string]any)["thinkingConfig"]; has {

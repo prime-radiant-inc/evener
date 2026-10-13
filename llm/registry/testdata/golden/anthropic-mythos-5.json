@@ -89,7 +89,7 @@
     "Surface": "alias",
     "ThinkingAlwaysOn": "derived",
     "ThinkingDisplay": "derived",
-    "ThinkingShape": "alias",
+    "ThinkingShape": "derived",
     "Tools": "alias",
     "WebSearch": "overlay/provider",
     "model": "row:claude-mythos-5"

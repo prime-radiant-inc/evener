@@ -125,8 +125,10 @@ func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 	if effort == "" || effort == llm.ReasoningEffortNone {
 		return nil
 	}
+	// Only "budget" and "level" are google wire shapes; a shape from another
+	// protocol's vocabulary (adaptive, budget+effort) sends nothing.
 	shape := registry.StringValue(caps.ThinkingShape)
-	if shape == "" {
+	if shape != "budget" && shape != "level" {
 		return nil
 	}
 	thinking := map[string]any{"includeThoughts": true}

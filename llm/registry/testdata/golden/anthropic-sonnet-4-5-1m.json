@@ -73,7 +73,7 @@
     "ReasoningControls": "alias",
     "StructuredOutput": "alias",
     "Surface": "alias",
-    "ThinkingShape": "alias",
+    "ThinkingShape": "derived",
     "Tools": "alias",
     "WebSearch": "overlay/provider",
     "model": "row:claude-sonnet-4-5[1m]"

@@ -250,6 +250,24 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 		t.Fatalf("alias with its own budget controls must derive budget: %+v", alias.Caps.ThinkingShape)
 	}
 
+	// A same-protocol alias whose own config changes the controls also
+	// invalidates the target's inherited shape: overriding a level-shaped
+	// target with budget controls must produce budget, not level
+	// (roborev round 11).
+	r8 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.level-to-budget]\nalias_of = \"gemini-3.1-pro-preview\"\nreasoning_controls = [\"budget_tokens\"]\n")
+	alias = mustResolve(t, r8, "google/level-to-budget")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("alias overriding level to budget must derive budget: %+v", alias.Caps.ThinkingShape)
+	}
+
+	// An explicit thinking_shape on the alias always wins over both
+	// inheritance and derivation.
+	r9 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.explicit-budget]\nalias_of = \"gemini-3.1-pro-preview\"\nthinking_shape = \"budget\"\n")
+	alias = mustResolve(t, r9, "google/explicit-budget")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("explicit thinking_shape must win: %+v", alias.Caps.ThinkingShape)
+	}
+
 	// A cross-protocol alias of a target whose catalog recorded the effort
 	// control still derives no shape: the evidence belongs to the target's
 	// protocol, and a third-party gateway may record effort for a
