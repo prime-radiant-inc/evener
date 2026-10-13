@@ -347,13 +347,20 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      otherwise carry the entry failure: "Repairing session history"
      instead of the error, standing while the retry stands. Any other
      outcome replaces it: a successful read enters the session; a
-     history-failed answer ends the paced retry and shows the error on
-     the same line (the TUI's own rule — its error line is the
-     diagnostic; the budget's terminal answer deserves it); an
-     ordinary transient failure keeps the paced retry armed with the
-     status standing, mirroring the browser owner — mid-repair lock
-     contention with no repair in flight answers an ordinary transient,
-     and the entry must not strand on it. Navigating away — entering
+     history-failed answer — or one of the web owner's permanent
+     answers, upgradeRequired or a target deletion — ends the paced
+     retry and shows the error on the same line (the TUI's own rule —
+     its error line is the diagnostic; the budget's terminal answer
+     deserves it); an ordinary transient failure keeps the paced retry
+     armed with the status standing, mirroring the browser owner —
+     mid-repair lock contention with no repair in flight answers an
+     ordinary transient, and the entry must not strand on it. The
+     automatic completion holds for the displayed session's unsent
+     work exactly as the cycling switch does: a successful re-read
+     that would switch away from a composer draft or pending
+     attachments retires the retry instead, restores the displayed
+     session's subscription, and leaves the entry for the user to
+     re-pick. Navigating away — entering
      another session, opening another pane, leaving the hub surface —
      retires the pending retry and its status, and a late-landing retry
      for a departed intent enters nothing. Picks are fenced the same way
