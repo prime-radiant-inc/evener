@@ -124,6 +124,19 @@ func memoryEvalGoModCache() string {
 	return filepath.Join(entries[0], "pkg", "mod")
 }
 
+// memoryEvalPathGoSupportsToolchainSelection reports whether the PATH Go a
+// fallback test would run knows GOTOOLCHAIN at all (Go 1.21 and newer). A
+// pre-1.21 bootstrap ignores the setting, so the fallback cannot materialize a
+// newer toolchain through it and a failure there would be the machine's, not the
+// code's. `go env GOTOOLCHAIN` is the probe: a command without the variable
+// fails rather than printing it.
+func memoryEvalPathGoSupportsToolchainSelection() bool {
+	cmd := exec.Command("go", "env", "GOTOOLCHAIN")
+	cmd.Env = append(os.Environ(), "GOENV=off", "GOTOOLCHAIN=local")
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "local"
+}
+
 // memoryEvalToolchainDownloadPresent reports whether cache holds the compiling
 // toolchain in a shape the file proxy can serve offline: the extracted
 // installation, or a download record with both its zip and its ziphash (an

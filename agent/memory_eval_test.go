@@ -87,6 +87,10 @@ func TestMemoryEvalToolchainNoCompiledRoot(t *testing.T) {
 		// No PATH Go left to run; keep the full PATH rather than fail on this.
 		t.Setenv("PATH", original)
 	}
+	if !memoryEvalPathGoSupportsToolchainSelection() {
+		t.Setenv("PATH", original)
+		t.Skip("PATH Go predates toolchain selection (GOTOOLCHAIN, Go 1.21); it could not materialize the pin even with a complete cache")
+	}
 	root, err := memoryEvalResolveToolchain("")
 	if err != nil {
 		t.Fatal(err)
@@ -203,6 +207,10 @@ func TestMemoryEvalFallbackResolvesThroughACommaCachePath(t *testing.T) {
 	t.Setenv("PATH", strings.Join(lane, string(filepath.ListSeparator)))
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Setenv("PATH", original)
+	}
+	if !memoryEvalPathGoSupportsToolchainSelection() {
+		t.Setenv("PATH", original)
+		t.Skip("PATH Go predates toolchain selection (GOTOOLCHAIN, Go 1.21); it could not materialize the pin even with a complete cache")
 	}
 	// Report which Go the fallback will actually run: `go version` alone
 	// auto-switches to the pin, so ask with GOTOOLCHAIN=local to see the binary.
