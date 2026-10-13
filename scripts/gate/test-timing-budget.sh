@@ -282,7 +282,7 @@ fi
 # the fixture IS the input this step reads.
 compare_out="$work/compare.txt"
 python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" "$bless_full" <<'PY'
-import json, sys
+import json, math, sys
 
 measured_path, budget_path, bless, check, strict, out_path, bless_full = sys.argv[1:8]
 bless = bless == "true"
@@ -391,6 +391,7 @@ for class_name, spec in ceiling_classes.items():
 	if (not isinstance(spec, dict)
 			or isinstance(spec.get("ceilingSeconds"), bool)
 			or not isinstance(spec.get("ceilingSeconds"), (int, float))
+			or not math.isfinite(spec.get("ceilingSeconds"))
 			or not isinstance(spec.get("tests"), list)
 			or not spec.get("tests")
 			or not all(isinstance(t, str) for t in spec.get("tests"))):

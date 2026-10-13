@@ -320,11 +320,13 @@ func TestTimingBudgetPassesAClassifiedTestUnderItsClassCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a classified test under its class ceiling must pass:\n%s", out)
 	}
-	if strings.Contains(out, "FAIL") {
-		t.Fatalf("a classified test under its class ceiling was failed:\n%s", out)
-	}
-	if !strings.Contains(out, "class 'retirement'") {
-		t.Fatalf("the class the test was compared under is not named:\n%s", out)
+	// 9.00s is over the flat 3s ceiling, so an UNCLASSIFIED test of this name
+	// would warn; no warning or failure line proves the class ceiling was
+	// applied and cleared it. Asserting the wording of the class line instead
+	// would pin copy (docs/developing-evener/testing.md's "Copy Is Not a Test
+	// Oracle").
+	if strings.Contains(out, "WARN") || strings.Contains(out, "FAIL") {
+		t.Fatalf("a classified test under its class ceiling was not cleared:\n%s", out)
 	}
 }
 
@@ -340,7 +342,7 @@ func TestTimingBudgetKeepsUnclassifiedBreachesWarnOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an unclassified breach must warn, not fail, under --strict:\n%s", out)
 	}
-	for _, want := range []string{"WARN", "TestUnclassed", "unclassified"} {
+	for _, want := range []string{"WARN", "TestUnclassed"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("unclassified-breach output missing %q:\n%s", want, out)
 		}
@@ -391,13 +393,14 @@ func TestTimingBudgetFailsWhenATestIsListedInTwoClasses(t *testing.T) {
 // ceiling. Every one must FAIL naming the class.
 func TestTimingBudgetFailsAMalformedClassSpec(t *testing.T) {
 	cases := map[string]string{
-		"no ceiling":      `{"tests":["TestClassed"]}`,
-		"bool ceiling":    `{"ceilingSeconds":true,"tests":["TestClassed"]}`,
-		"no tests":        `{"ceilingSeconds":10}`,
-		"empty tests":     `{"ceilingSeconds":10,"tests":[]}`,
-		"string tests":    `{"ceilingSeconds":10,"tests":"TestClassed"}`,
-		"non-string test": `{"ceilingSeconds":10,"tests":[7]}`,
-		"not an object":   `"deploy-host integration"`,
+		"no ceiling":        `{"tests":["TestClassed"]}`,
+		"bool ceiling":      `{"ceilingSeconds":true,"tests":["TestClassed"]}`,
+		"no tests":          `{"ceilingSeconds":10}`,
+		"empty tests":       `{"ceilingSeconds":10,"tests":[]}`,
+		"string tests":      `{"ceilingSeconds":10,"tests":"TestClassed"}`,
+		"nonfinite ceiling": `{"ceilingSeconds":1e309,"tests":["TestClassed"]}`,
+		"non-string test":   `{"ceilingSeconds":10,"tests":[7]}`,
+		"not an object":     `"deploy-host integration"`,
 	}
 	for name, spec := range cases {
 		t.Run(name, func(t *testing.T) {
