@@ -1042,12 +1042,14 @@ export function renderDocument(
       codespan(token) {
         const html = markdownRenderer.codespan?.call(this, token);
         if (typeof html !== "string") throw new Error("Missing shared codespan renderer");
-        return html.replace(`>${escapeHtml(token.text)}</code>`, `>${run(token)}</code>`);
+        // A callback replacement returns its string verbatim; a replacement
+        // string would interpret $$ and $& in authored code.
+        return html.replace(`>${escapeHtml(token.text)}</code>`, () => `>${run(token)}</code>`);
       },
       code(token) {
         const html = markdownRenderer.code?.call(this, token);
         if (typeof html !== "string") throw new Error("Missing shared code renderer");
-        return html.replace(`>${escapeHtml(token.text)}</code>`, `>${run(token)}</code>`);
+        return html.replace(`>${escapeHtml(token.text)}</code>`, () => `>${run(token)}</code>`);
       },
     },
   });
