@@ -825,6 +825,23 @@ func TestEstimateMessagesInputTokensForResolved_ChatRowAppliesTheRowsImageDetail
 	}
 }
 
+// A Responses row whose cap is "omit" drops the detail even when the part names
+// one, so the estimate bills the full-detail formula the wire will use, not the
+// part's low-detail one.
+func TestEstimateMessagesInputTokensForResolved_ResponsesOmitDropsAPartDetail(t *testing.T) {
+	omit := "omit"
+	row := registry.Resolved{
+		Instance: "gateway", ModelID: "gpt-5.5", Protocol: registry.ProtocolOpenAIResponses,
+		Caps: registry.Caps{ImageDetail: &omit},
+	}
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png", Detail: "low"}},
+	}}}
+	if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, 765; got != want {
+		t.Fatalf("responses omit row image history = %d, want %d: the wire drops the detail", got, want)
+	}
+}
+
 // A tool-result image is billed only where the adapter puts one on the wire. The
 // chat builder emits the tool text alone -- Chat Completions has no portable
 // image-bearing tool-message representation, so its cap only decides whether the

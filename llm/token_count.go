@@ -752,20 +752,11 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 }
 
 // effectiveImageDetail is the detail the target's adapter puts on the wire for
-// the image, so the estimate bills what the request sends. The Chat Completions
-// builder normalizes the part's detail together with the row's image_detail
-// (ChatImageDetail); the Responses builder keeps the image's own detail or, when
-// it names none, the row's configured image_detail (its builder defaults that to
-// "high"). Other builders send the image's own detail alone.
+// the image, so the estimate bills what the request sends. It reads the same
+// resolver the protocol's builder reads (ImageDetail), so the precedence rule
+// lives in one place.
 func effectiveImageDetail(t targetInfo, img *ImageData) string {
-	if t.protocol == registry.ProtocolOpenAIChat {
-		return ChatImageDetail(img.Detail, t.imageDetail)
-	}
-	detail := img.Detail
-	if strings.TrimSpace(detail) == "" && t.protocol == registry.ProtocolOpenAIResponses {
-		detail = t.imageDetail
-	}
-	return detail
+	return ImageDetail(t.protocol, img.Detail, t.imageDetail)
 }
 
 func imageDimensions(img *ImageData) (int, int, bool) {

@@ -1,8 +1,11 @@
 package responses
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -207,6 +210,33 @@ func TestBuildBody_CodexLite(t *testing.T) {
 	empty := userReq("hi")
 	if first := build(t, empty, res)["input"].([]any)[0].(map[string]any); len(first["tools"].([]any)) != 0 {
 		t.Fatal("additional_tools is always present, even empty")
+	}
+}
+
+// TestBuildBody_ToolResultImageDetail pins the builder's second image block: a
+// tool-result image carries the same resolved detail as a user-message image,
+// and a row set to "omit" drops it there too. The two blocks inline the rule
+// separately, so each needs its own guard.
+func TestBuildBody_ToolResultImageDetail(t *testing.T) {
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	req := llm.Request{Model: "gpt-5.5", Messages: []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+			ToolCallID: "call1", Name: "shot", Content: "ok",
+			ImageData: encoded.Bytes(), ImageMediaType: "image/png",
+		}},
+	}}}}
+	detailOf := func(body map[string]any) any {
+		output := body["input"].([]any)[0].(map[string]any)["output"].([]any)
+		return output[1].(map[string]any)["detail"]
+	}
+	if d := detailOf(build(t, req, resolved(nil))); d != "high" {
+		t.Fatalf("baseline tool-result detail = %v", d)
+	}
+	if d := detailOf(build(t, req, resolved(func(c *registry.Caps) { c.ImageDetail = new("omit") }))); d != nil {
+		t.Fatalf("omit must drop the tool-result detail, got %v", d)
 	}
 }
 
