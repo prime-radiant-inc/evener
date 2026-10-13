@@ -346,6 +346,65 @@ it.each(["release", "delete", "Clear"] as const)(
   },
 );
 
+it.each(["evicted", "failed-write"] as const)(
+  "opening a background model recovers bodies after %s",
+  async (failure) => {
+    let now = 1_000;
+    const storage = new SessionEntryCache({
+      databaseName: SESSION_CACHE_DATABASE_NAME,
+      indexedDB: factory,
+      keyRange: IDBKeyRange,
+      ttlMs: 100,
+      now: () => now,
+    });
+    caches.push(storage);
+    setProductionEntryCacheForTests(storage);
+    const writes =
+      failure === "failed-write"
+        ? vi
+            .spyOn(storage, "commitBatch")
+            .mockResolvedValue({ outcome: "failed", error: new Error("disk unavailable") })
+        : undefined;
+    const client = connect();
+    client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+    const background = acquireBackgroundThread("local:a");
+    await background.hydrated;
+    if (failure === "failed-write") {
+      await expect(settleEntryTranscriptForTests("local:a")).rejects.toThrow("transcript recovery failed");
+    } else {
+      await settleEntryTranscriptForTests("local:a");
+    }
+    writes?.mockRestore();
+    if (failure === "evicted") {
+      const key = entryHistoryKey({ ...identity, clientId: location.origin });
+      const rows = await storage.getLatest(key, 10);
+      expect(rows).toHaveLength(1);
+      now += 1_000;
+      expect(
+        (
+          await storage.commitBatch({
+            historyKey: "other-history",
+            clearEpoch: 0,
+            items: rows.map((row) => ({ ...row, historyKey: "other-history" })),
+          })
+        ).outcome,
+      ).toBe("committed");
+      expect(await storage.getLatest(key, 10)).toEqual([]);
+    }
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    await threadsStore.getState().ensureThread("local:a");
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["recorded"]);
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+    background.release();
+  },
+);
+
 it("ordinary disk-only lookup deadline starts the source opening and a late lookup cannot replace it", async () => {
   await seedDiskOnlyOpening();
   const original = SessionEntryCache.prototype.getSessionForRequestedRef;

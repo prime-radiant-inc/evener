@@ -872,9 +872,9 @@ function publishEntryTranscriptModel(ref: string): void {
   putThreadModel(ref, isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(snapshot) : snapshot);
 }
 
-async function openEntryTranscript(ref: string): Promise<void> {
+async function openEntryTranscript(ref: string): Promise<boolean> {
   const fixture = entryTranscriptRoute(ref);
-  if (!fixture || fixture.ref !== ref || !fixture.repository) return;
+  if (!fixture || fixture.ref !== ref || !fixture.repository) return false;
   const repository = fixture.repository;
   const openingToken = beginEntryTranscriptLocalOpening(ref);
   try {
@@ -898,6 +898,7 @@ async function openEntryTranscript(ref: string): Promise<void> {
     ) {
       putThreadModel(ref, result.model);
     }
+    return result.status !== "recovery-needed";
   } finally {
     settleEntryTranscriptLocalOpening(ref, openingToken);
   }
@@ -6509,8 +6510,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
-      if (usesEntryTranscripts(ref)) await openEntryTranscript(ref);
-      return;
+      if (!usesEntryTranscripts(ref) || (await openEntryTranscript(ref))) return;
+      if (ensureGenerations.get(ref) !== generation || (refCounts.get(ref) ?? 0) <= 0) return;
+      // Missing or unwritten backing rows cannot establish the captured view.
+      // Retire the held source proof so recovery asks for a complete baseline.
+      entryTranscriptRoute(ref)?.repository?.beginFreshBaseline();
+      publishEntryTranscriptModel(ref);
     }
 
     const claimEpoch = readyEpoch;
