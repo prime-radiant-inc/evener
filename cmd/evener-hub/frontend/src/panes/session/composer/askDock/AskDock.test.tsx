@@ -977,6 +977,52 @@ test("activation while off-screen steals no focus; becoming visible focuses the 
   }
 });
 
+// One conversation can now be mounted in two seats at once (an ordinary
+// pane and a cascade column embedding it), so a ref can have two docks
+// on screen. Both install a visibility callback that captured
+// pendingGreeted=false before either ran; when a question activates only
+// ONE seat may claim the shared activation and take focus - the second
+// must not steal keyboard focus from the first.
+test("of two visible docks sharing a ref, only one claims the activation and focuses", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+  vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
+  try {
+    render(
+      <>
+        <AskDock ref="ref_a" paneId="pane_a" />
+        <AskDock ref="ref_a" paneId="pane_b" />
+      </>,
+    );
+    const [first, second] = ControlledIntersectionObserver.instances;
+    if (!first || !second) throw new Error("both docks must install an IntersectionObserver");
+
+    // The race the finding names: both callbacks fire before either store
+    // update re-renders the pair, so both closures still see the old
+    // pendingGreeted. The claim must be re-checked inside the callback.
+    act(() => {
+      first.report(true);
+      second.report(true);
+    });
+
+    const docks = Array.from(document.querySelectorAll<HTMLElement>("[data-ask-response-dock]"));
+    expect(docks).toHaveLength(2);
+    const [dockA, dockB] = docks;
+    if (!dockA || !dockB) throw new Error("expected two mounted docks");
+    // Exactly one seat received the activation auto-focus...
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+    // ...and it is the first claimant, so the second seat did not steal it.
+    expect(dockA.contains(document.activeElement)).toBe(true);
+    expect(dockB.contains(document.activeElement)).toBe(false);
+    expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted).toBe(true);
+  } finally {
+    focusSpy.mockRestore();
+    vi.unstubAllGlobals();
+    ControlledIntersectionObserver.instances = [];
+  }
+});
+
 // The dock's row is virtualized: any aria-live region inside it re-inserts
 // on every scroll-away/scroll-back remount and re-announces unchanged text.
 // The row's own text (the prompt caption, the answered count) is visual

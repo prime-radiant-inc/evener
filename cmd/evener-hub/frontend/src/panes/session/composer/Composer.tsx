@@ -1541,9 +1541,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       {(!ended || showFollowUpCard) && (
         // data-composer is the hold-hints overlay's anchor (shell/holdhints):
         // the composer.focus chip positions itself above this wrapper. The
-        // value carries this pane's session ref so the overlay can anchor to
-        // the FOCUSED pane's composer when several are mounted.
-        <div className={CLASS.formAnchor} data-composer={ref}>
+        // value carries this pane's session ref, and data-composer-pane its
+        // owning pane id, so the overlay can anchor to the FOCUSED pane's
+        // composer when several are mounted - including an ordinary pane and a
+        // cascade column showing the same conversation.
+        <div className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only

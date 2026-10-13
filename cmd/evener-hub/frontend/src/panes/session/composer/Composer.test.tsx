@@ -1423,6 +1423,27 @@ test("goal editing focuses only the requesting seat's composer when two share a 
   expect(seatAFocused).not.toHaveBeenCalled();
 });
 
+test("the composer anchor carries its owning ref and pane id for the hold-hint overlay", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_anchor"));
+  await threadsStore.getState().ensureThread("ref_anchor");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="ref_anchor" paneId="pane_anchor" source={createTestComposerSource("ref_anchor")} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_anchor");
+  await flushPendingTurnsProjectionForTests();
+
+  // The hold-hint resolver (shell/holdhints) matches an anchor by BOTH its ref
+  // and its pane id, so the anchor must expose the owning pane id alongside the
+  // session ref.
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
+  expect(anchor?.getAttribute("data-composer")).toBe("ref_anchor");
+  expect(anchor?.getAttribute("data-composer-pane")).toBe("pane_anchor");
+});
+
 test("the current-task control opens this column's tasks without stealing cascade focus", async () => {
   const user = userEvent.setup();
   const overrides = { evener: currentWorkEvener({ task: true }) };

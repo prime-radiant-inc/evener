@@ -61,7 +61,7 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activ
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { resetDockChunkForTests } from "./DockRegion";
-import { focusedSessionRef } from "./focusedSession";
+import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { resolveFocusedComposer } from "./holdhints/HoldHints";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
@@ -1150,6 +1150,45 @@ test("the composer hold-hint targets a focused cascade's leaf composer, not the 
   } finally {
     parent.remove();
     child.remove();
+  }
+});
+
+test("the composer hold-hint targets the focused pane's composer when a pane and a cascade show the same conversation", () => {
+  // An ordinary pane and a cascade column can both show the SAME conversation.
+  // composer.focus addresses the focused session's ref AND pane id
+  // (focusedSessionPaneId), so with the cascade focused the chip must anchor to
+  // the cascade's composer, not the ordinary pane's - even though both anchors
+  // carry the same ref and the ordinary pane's anchor comes first in document
+  // order.
+  const ordinary = document.createElement("div");
+  ordinary.setAttribute("data-composer", "local:same");
+  ordinary.setAttribute("data-composer-pane", "pane_ordinary");
+  const cascade = document.createElement("div");
+  cascade.setAttribute("data-composer", "local:same");
+  cascade.setAttribute("data-composer-pane", "pane_cascade");
+  document.body.append(ordinary, cascade);
+  const cascadeParams: SessionZoomParams = {
+    ref: "local:same",
+    source: { type: "session", params: { ref: "local:same" } },
+    edges: [],
+  };
+  workspaceStore.setState({
+    panes: [
+      { id: "pane_ordinary", type: "session", params: { ref: "local:same" }, slot: "main" },
+      { id: "pane_cascade", type: "sessionZoom", params: cascadeParams, slot: "secondary" },
+    ],
+    focusedPaneId: "pane_cascade",
+  });
+  try {
+    // The shortcut addresses the cascade's ref AND pane ...
+    expect(focusedSessionRef()).toBe("local:same");
+    expect(focusedSessionPaneId()).toBe("pane_cascade");
+    // ... and the hint resolves to the cascade's composer, not the ordinary
+    // pane's (the pre-fix resolver matched the ref alone and took the first).
+    expect(resolveFocusedComposer()).toBe(cascade);
+  } finally {
+    ordinary.remove();
+    cascade.remove();
   }
 });
 

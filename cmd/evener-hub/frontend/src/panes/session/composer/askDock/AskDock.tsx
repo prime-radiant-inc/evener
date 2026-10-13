@@ -76,7 +76,13 @@ import { Button, Card, useToasts, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { requestComposerFocus } from "../composerFocus";
 import { AskQuestionCard } from "./AskQuestionCard";
-import { type AskAnswerState, askDockStore, nextUnansweredKey, useAskDockStore } from "./askDockStore";
+import {
+  type AskAnswerState,
+  askDockStore,
+  claimPendingGreeting,
+  nextUnansweredKey,
+  useAskDockStore,
+} from "./askDockStore";
 import styles from "./askdock.module.css";
 
 const CLASS = {
@@ -520,7 +526,15 @@ export function AskDock({ ref: sessionRef, paneId }: AskDockProps) {
     const dock = dockRef.current;
     if (!dock) return;
     const focusFirst = () => {
-      askDockStore.markPendingGreeted(sessionRef);
+      // Re-check and CLAIM the shared activation here, inside the callback:
+      // one conversation can mount two docks for the same ref (an ordinary
+      // pane and a cascade column embedding it), and both visibility
+      // callbacks capture pendingGreeted=false before either runs. The first
+      // to claim focuses its OWN seat (paneId - the seat this dock answers
+      // for); the second sees the claim taken and must not steal focus.
+      // claimPendingGreeting's synchronous check-and-mark is atomic, so
+      // exactly one seat takes the activation auto-focus.
+      if (!claimPendingGreeting(sessionRef)) return;
       dock.querySelector<HTMLElement>(FIRST_CONTROL_SELECTOR)?.focus();
     };
     if (typeof IntersectionObserver !== "function") {
