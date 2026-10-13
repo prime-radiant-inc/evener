@@ -348,6 +348,122 @@ it.each(["release", "delete", "Clear"] as const)(
   },
 );
 
+it.each(["evicted", "failed-write"] as const)(
+  "opening a background model recovers bodies after %s",
+  async (failure) => {
+    let now = 1_000;
+    const storage = new SessionEntryCache({
+      databaseName: SESSION_CACHE_DATABASE_NAME,
+      indexedDB: factory,
+      keyRange: IDBKeyRange,
+      ttlMs: 100,
+      now: () => now,
+    });
+    caches.push(storage);
+    setProductionEntryCacheForTests(storage);
+    const writes =
+      failure === "failed-write"
+        ? vi
+            .spyOn(storage, "commitBatch")
+            .mockResolvedValue({ outcome: "failed", error: new Error("disk unavailable") })
+        : undefined;
+    const client = connect();
+    client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    if (failure === "failed-write") {
+      await expect(settleEntryTranscriptForTests("local:a")).rejects.toThrow("transcript recovery failed");
+    } else {
+      await settleEntryTranscriptForTests("local:a");
+    }
+    writes?.mockRestore();
+    if (failure === "evicted") {
+      const key = entryHistoryKey({ ...identity, clientId: location.origin });
+      const rows = await storage.getLatest(key, 10);
+      expect(rows).toHaveLength(1);
+      now += 1_000;
+      expect(
+        (
+          await storage.commitBatch({
+            historyKey: "other-history",
+            clearEpoch: 0,
+            items: rows.map((row) => ({ ...row, historyKey: "other-history" })),
+          })
+        ).outcome,
+      ).toBe("committed");
+      expect(await storage.getLatest(key, 10)).toEqual([]);
+    }
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    await threadsStore.getState().ensureThread("local:a");
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["recorded"]);
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+    background.release();
+  },
+);
+
+it("existing background opening deadline releases paging hold and fences a late local result", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const entered = deferred<void>();
+  const released = deferred<void>();
+  const original = storage.getLatestWindow.bind(storage);
+  const lookup = vi.spyOn(storage, "getLatestWindow").mockImplementationOnce(async (...args) => {
+    const window = await original(...args);
+    entered.resolve();
+    await released.promise;
+    return window;
+  });
+  client.on("thread/read", (params) => ({
+    ...response("local:a", [turn("recovered", 2)]),
+    authoritative: true,
+    requestGeneration: params.requestGeneration,
+  }));
+  let settled = false;
+  const opening = threadsStore
+    .getState()
+    .ensureThread("local:a")
+    .then(() => {
+      settled = true;
+    });
+  try {
+    await entered.promise;
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(true);
+    await vi.waitFor(() => expect(settled).toBe(true));
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["recovered"]);
+    released.resolve();
+    await lookup.mock.results[0]?.value;
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["recovered"]);
+  } finally {
+    released.resolve();
+    await opening;
+    background.release();
+  }
+});
+
 it("ordinary disk-only lookup deadline starts the source opening and a late lookup cannot replace it", async () => {
   await seedDiskOnlyOpening();
   const original = SessionEntryCache.prototype.getSessionForRequestedRef;
@@ -525,6 +641,31 @@ it("ordinary disk-only restore refuses a captured body after a silent durable hi
     finishRead?.();
     await opening;
   }
+});
+
+it("includeTurns watches preserve recorded snapshot and notification bodies", async () => {
+  const client = connect();
+  await threadsStore.getState().watchThread("local:a", { includeTurns: true });
+  const texts = () =>
+    threadsStore
+      .getState()
+      .watchedThreads.get("local:a")
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text);
+  expect(texts()).toEqual(["recorded"]);
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("live-recorded", 2).items,
+    },
+  });
+  expect(texts()).toEqual(["recorded", "live-recorded"]);
+  threadsStore.getState().releaseWatchedThread("local:a");
 });
 
 it("production cache writes and reopens keyed entries on the real database", async () => {
@@ -1048,6 +1189,38 @@ it("ordinary reconnect keeps a same-turn tail outside the recovered window witho
   expect(persisted).toContain("fresh-window");
   expect(persisted).not.toContain("missing-48");
   expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("missing-48");
+});
+
+it("a fresh foreground lifetime with a surviving background owner caches the cleared epoch", async () => {
+  const storage = cache();
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(await clearCachedSessions()).toEqual({ committed: true });
+  expect(await storage.getClearEpoch()).toBe(1);
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+  background.release();
+});
+
+it("automatic hydration observes a missed sibling Clear without recaching a continuously held pane", async () => {
+  const storage = cache();
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(await storage.clear()).toEqual({ committed: true, epoch: 1 });
+  await threadsStore.getState().refreshThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(threadsStore.getState().cacheLifetimes.get("local:a")?.suppressed).toBe(true);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 10)).toEqual([]);
 });
 
 it("ordinary sibling Clear permits a genuinely fresh explicit acquisition to cache the new epoch", async () => {

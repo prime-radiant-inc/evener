@@ -838,11 +838,12 @@ function publishEntryTranscriptModel(ref: string): void {
   putThreadModel(ref, isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(snapshot) : snapshot);
 }
 
-async function openEntryTranscript(ref: string): Promise<void> {
+async function openEntryTranscript(ref: string): Promise<boolean> {
   const fixture = entryTranscriptRoute(ref);
-  if (!fixture || fixture.ref !== ref || !fixture.repository) return;
+  if (!fixture || fixture.ref !== ref || !fixture.repository) return true;
   const repository = fixture.repository;
   const openingToken = beginEntryTranscriptLocalOpening(ref);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     fixture.reader ??= fixture.repository.attachReader();
     // Ongoing repository publication: every accepted recorded update republishes
@@ -851,7 +852,21 @@ async function openEntryTranscript(ref: string): Promise<void> {
     // below is one such publication; this is the subscription that outlives it.
     fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptModel(ref));
     publishEntryTranscriptModel(ref);
-    const result = await fixture.reader.openLocal(200);
+    const reader = fixture.reader;
+    const result = await Promise.race([
+      reader.openLocal(200),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => {
+          reader.dispose();
+          if (fixture.reader === reader) fixture.reader = undefined;
+          resolve(undefined);
+        }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
+      }),
+    ]);
+    if (!result) {
+      fixture.lastLocalOpenStatus = "recovery-needed";
+      return false;
+    }
     fixture.lastLocalOpenStatus = result.status;
     if (
       result.model &&
@@ -863,7 +878,17 @@ async function openEntryTranscript(ref: string): Promise<void> {
     ) {
       putThreadModel(ref, result.model);
     }
+    if (result.status !== "recovery-needed") return true;
+    // Cache proof can be unavailable while the live model already carries the
+    // complete requested window. Recover missing bodies, not merely a missing
+    // certificate, which would replace usable paged history with a latest read.
+    const displayed = new Set(
+      result.model?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey ?? item.id)),
+    );
+    const requested = result.model?.history?.turns.flatMap((turn) => turn.items).slice(-200) ?? [];
+    return requested.every((item) => displayed.has(item.transcriptKey ?? item.id));
   } finally {
+    if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
   }
 }
@@ -1192,9 +1217,27 @@ async function acceptEntryTranscriptHydration(
     (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref))
   )
     return;
-  const state = threadsStore.getState();
   const productionRoute = productionEntryRoutes.get(ref) === fixture;
-  const lifetimeSuppressed = state.cacheLifetimes.get(ref)?.suppressed === true;
+  if (productionRoute && authorities) {
+    // A first unpublished claim may capture the observed epoch. Existing
+    // holders instead pass through the same suppression as a Clear broadcast.
+    if (
+      !claimedRepository &&
+      !threadsStore.getState().threads.has(ref) &&
+      !threadsStore.getState().cacheLifetimes.get(ref)?.suppressed
+    ) {
+      threadsStore.setState((state) => ({
+        cacheLifetimes: new Map(state.cacheLifetimes).set(ref, {
+          ...state.cacheLifetimes.get(ref),
+          leaseEpoch: authorities.clearEpoch,
+        }),
+      }));
+    }
+    onCacheEpochObserved(authorities.clearEpoch);
+  }
+  const state = threadsStore.getState();
+  const lifetime = state.cacheLifetimes.get(ref);
+  const lifetimeSuppressed = lifetime?.suppressed === true;
   const retired =
     state.deletedRefs.has(ref) ||
     (entryRouteRetirements.get(ref) ?? 0) !== claimedRetirement ||
@@ -1211,7 +1254,7 @@ async function acceptEntryTranscriptHydration(
   // than adopting unread authorities; a brand-new route falls back to the
   // epoch-0/generation-0 baseline and lets the durable fence decide.
   const clearEpoch =
-    productionRoute && lifetimeSuppressed
+    productionRoute && lifetimeSuppressed && !lifetime?.freshForegroundLifetime
       ? (fixture.clearEpoch ?? 0)
       : (authorities?.clearEpoch ?? fixture.clearEpoch ?? 0);
   const historyGeneration = authorities?.historyGeneration ?? fixture.historyGeneration ?? 0;
@@ -1243,6 +1286,7 @@ async function acceptEntryTranscriptHydration(
   fixture.cachedUnverified = false;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
   if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
+  if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
   repository.acceptRead(response, {
     lifetime: fixture.lifetime,
     readId: `fixture-read-${++fixture.readSequence}`,
@@ -5329,7 +5373,7 @@ function handleNotification(n: AnyNotification): void {
     let projected: Map<string, ThreadModel> | undefined;
     for (const ref of changedWatchedThreads) {
       const model = nextWatchedThreads.get(ref);
-      if (!model) continue;
+      if (!model || watchIncludeTurns.get(ref)) continue;
       projected ??= new Map(nextWatchedThreads);
       projected.set(ref, pruneBackgroundHistoryBodies(model));
     }
@@ -5447,7 +5491,7 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
   invalidateGoalResponseFallback(ref);
   invalidateNotesResponseFallback(ref);
-  putWatchedThreadModel(ref, pruneBackgroundHistoryBodies(model));
+  putWatchedThreadModel(ref, !includeTurns ? pruneBackgroundHistoryBodies(model) : model);
 }
 
 function ownedHydrationsFor(kind: HydrationOwnerKind): Map<string, OwnedHydration> {
@@ -6218,8 +6262,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
-      await openEntryTranscript(ref);
-      return;
+      if (await openEntryTranscript(ref)) return;
+      if (count > 0) return; // Another mounted reader already owns the live bodies.
+      if (ensureGenerations.get(ref) !== generation || (refCounts.get(ref) ?? 0) <= 0) return;
+      // Missing or unwritten backing rows cannot establish the captured view.
+      // Retire the held source proof so recovery asks for a complete baseline.
+      entryTranscriptRoute(ref)?.repository?.beginFreshBaseline();
+      publishEntryTranscriptModel(ref);
     }
 
     const claimEpoch = readyEpoch;

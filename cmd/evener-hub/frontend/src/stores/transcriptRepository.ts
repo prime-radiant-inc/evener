@@ -907,6 +907,8 @@ export class TranscriptRepository {
     // when the client and source identity are unchanged: never publish rows a
     // cleared epoch no longer owns.
     if (!(await this.#durableAuthoritiesUnchanged())) return { kind: "reconcile" };
+    if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
+    if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
     // Only a connected-but-unverified chain is genuine uncertainty. Empty
     // coverage below the oldest row is an ordinary network continuation.
     if (window.stale) return window.coverage.length > 0 ? { kind: "reconcile" } : { kind: "server" };
@@ -921,6 +923,7 @@ export class TranscriptRepository {
     }
     const turnIds = this.#turnIDsForRows(window.rows, []);
     const turnMetadata = await this.#readTurnMetadata(turnIds);
+    if (!(await this.#durableAuthoritiesUnchanged())) return { kind: "reconcile" };
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
     if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
     // Merge into the newest model, not the one captured before the awaits, so a

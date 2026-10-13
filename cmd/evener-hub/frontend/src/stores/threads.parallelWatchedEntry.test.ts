@@ -384,10 +384,9 @@ describe("useThreadsStore.watchThread", () => {
 
     const model = threadsStore.getState().watchedThreads.get("ref_a");
     expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_m5", "turn_m6"]);
-    // R36: ordinary watches publish an identity-only recorded-history projection.
-    // The turn completion survives, but completed recorded bodies do not reside here.
-    expect(model?.turns[1]?.items[0]?.text).toBeUndefined();
-    expect(model?.turns[1]?.items).toHaveLength(0);
+    // This watch explicitly requested turns, including their recorded bodies.
+    expect(model?.turns[1]?.items[0]?.text).toBe("skillguard watched turn complete");
+    expect(model?.turns[1]?.items).toHaveLength(1);
     expect(model?.turns[1]?.status).toBe("completed");
     expect(model?.activeTurnId).toBeUndefined();
   });
