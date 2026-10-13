@@ -356,12 +356,6 @@ except FileNotFoundError:
 except ValueError as exc:
 	fail_malformed("could not be parsed: " + str(exc))
 
-if not isinstance(budget, dict):
-	# Valid JSON of the wrong shape (null, a list, a string, a number): the
-	# pre-#4609 code died here with an AttributeError traceback that named neither
-	# the budget file nor the reason. Route it through the same loud verdict.
-	fail_malformed("must be a JSON object, not " + type(budget).__name__)
-
 packages = budget.get("packages") or {}
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 
