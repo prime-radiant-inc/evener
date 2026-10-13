@@ -75,7 +75,7 @@ func TestListDirToolSurfacesTheWalkBudgetNote(t *testing.T) {
 	if !descriptionMentions(footer, 3) {
 		t.Fatalf("footer must report the walk's cap of 3 entries (page of 2 plus the one that proves more exist):\n%s", footer)
 	}
-	if strings.Contains(footer, " of 6") {
+	if descriptionMentions(footer, 6) {
 		t.Fatalf("footer claimed an exhaustive total of 6 from a walk the budget stopped at 3:\n%s", footer)
 	}
 }
@@ -114,10 +114,12 @@ func TestListDirToolPagesCoherentlyUnderTheBudget(t *testing.T) {
 			}
 			continue
 		}
-		// The final page's walk completes: an exact total, and no cap to
-		// report — a wrong cap here would carry this page's own need of 7.
-		if !strings.Contains(footer, "of 6 entries (offset 4)") {
-			t.Fatalf("completed page must report the exact total:\n%s", footer)
+		// The final page's walk completes, so its footer states the exhaustive
+		// total of 6 — asserted as a count read, not footer wording — and no
+		// cap to report: a wrong cap here would carry this page's own need
+		// of 7.
+		if !descriptionMentions(footer, 6) {
+			t.Fatalf("completed page must state the exact total of 6:\n%s", footer)
 		}
 		if descriptionMentions(footer, 7) {
 			t.Fatalf("completed page reported a walk cap it never hit:\n%s", footer)
