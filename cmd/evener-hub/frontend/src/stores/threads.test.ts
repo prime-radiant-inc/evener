@@ -13742,6 +13742,26 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     };
   }
 
+  // The storage-fallback tests' shared opening: build the outbox on the
+  // caller's own factory and database, install it for the store, connect the
+  // client, and hydrate ref_a. The caller keeps the factory and the name - it
+  // needs both to wedge the database afterwards and to open a reader connection
+  // over the same rows, and two callers need them before this runs to seed a
+  // row through their own adapter first.
+  async function hydratedFallbackTarget({
+    indexedDB,
+    databaseName,
+  }: {
+    indexedDB: IDBFactory;
+    databaseName: string;
+  }): Promise<{ storage: MutationOutboxIndexedDB; fake: FakeClient }> {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    return { storage, fake };
+  }
+
   // §9 item 2 - the §2 reload hazard, end to end. The old mechanism kept the
   // cancellation fact in per-tab memory, and a reload's hydration is the one
   // moment restoreProvenAbsent reopens rows, armed with an empty in-memory
@@ -14140,13 +14160,10 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a send whose storage never answers still reaches the daemon and leaves no durable row", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
     // Hydrate on working storage first: the mutation runtime is created and its
     // connection opened here, so it is the SEND that meets the wedge below
     // rather than the hydration's own reconciliation reads.
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
@@ -14211,10 +14228,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a send whose browser denies IndexedDB access still reaches the daemon", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-denied";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
@@ -14292,10 +14306,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a send whose outbox upgrade another tab blocks still reaches the daemon", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-blocked";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
@@ -14324,10 +14335,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a fallback send retries a wire failure under the same clientMutationId", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-retry";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     // The first attempt fails on the wire; the second answers.
     let attempts = 0;
     fake.on("turn/start", (params) => {
@@ -14372,10 +14380,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a fallback send does not retry a settled WireError refusal", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-conflict";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", () => {
       throw new WireError("turn is not active", -32013, { evenerErrorInfo: "conflict" });
     });
@@ -14405,10 +14410,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a send survives a reconciliation that the same storage wedge failed", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-reconcile-wedge";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
@@ -14578,10 +14580,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a send survives a wedged reconcile that has not yet rejected", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-pending-wedge";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
@@ -14645,10 +14644,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a fallback send does not retry a non-conflict WireError", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-invalid-params";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", () => {
       throw new WireError("bad params", -32602);
     });
@@ -14674,10 +14670,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a fallback send surfaces when the ready wait times out", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-ready-timeout";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", () => {
       fake.emitStateChange("reconnecting");
       throw new Error("AppwireClient: socket closed");
@@ -14707,10 +14700,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a fallback send surfaces a transport failure after both attempts", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-exhausted";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", () => {
       throw new Error("FakeClient: socket closed");
     });
@@ -14736,10 +14726,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a fallback send waits out a reconnect before retrying", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-reconnect";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     // The first attempt drops the socket and fails; the second answers.
     let attempts = 0;
     fake.on("turn/start", (params) => {
@@ -14785,10 +14772,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a fallback send retries against a replacement client after the failed one closes", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-rewire";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     const replacement = new FakeClient("ready");
     // The first attempt dies with the client closed and a healthy replacement
     // wired in the same window, exactly what requireClient()'s rewire path is
@@ -14833,10 +14817,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a fallback send waits out a wired-but-connecting replacement client", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-send-fallback-connecting";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     const replacement = new FakeClient("connecting");
     fake.on("turn/start", () => {
       fake.close();
@@ -14886,10 +14867,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a fallback send refuses to jump an earlier undelivered durable send for the ref", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-fallback-order";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
       receipt: mutationReceipt(params.clientMutationId),
@@ -14973,12 +14951,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     await seeder.cancelUnattempted("ref_a");
     seeder.close();
 
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
     // Hydrating reconciles the store's view: the ref is retained (a canceled
     // row) but has no undelivered work.
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     await threadsStore.getState().refreshThread("ref_a");
     await nextMacrotask();
@@ -15012,10 +14987,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a hydration pending at the commit keeps the dispatch gate closed", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-commit-rearm";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15084,10 +15056,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     await seeder.cancelUnattempted("ref_a");
     seeder.close();
 
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     await threadsStore.getState().refreshThread("ref_a");
     await nextMacrotask();
@@ -15190,10 +15159,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a Queue whose storage never answers still reaches the daemon and leaves no durable row", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-queue-fallback";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     storage.close();
@@ -15218,10 +15184,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a Drain whose storage never answers still reaches the daemon and leaves no durable row", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-drain-fallback";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     storage.close();
@@ -15246,10 +15209,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a Promote whose storage never answers stays fail-closed with no wire call", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-promote-fenced";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
 
     storage.close();
     const openSpy = wedgeDatabaseOpens(indexedDB, databaseName);
@@ -15279,10 +15239,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a settled send whose clearing refresh cannot read does not block the fallback", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-stale-marker";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15340,10 +15297,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a stale refresh failure does not clobber a marker a commit wrote mid-read", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-stale-read-clobber";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15445,10 +15399,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a failed refresh read retains the marker for a committed but undelivered row", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-general-refresh";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15501,10 +15452,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a refresh that fails one read changes nothing about the ref's rows", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-partial-read";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15551,10 +15499,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a settle that lands during a refresh read is not undone by its snapshot", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-settle-during-read";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15656,10 +15601,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a settle of a row this tab never registered is not undone by a parked read", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-unregistered-settle";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15711,10 +15653,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a cancel that lands during a parked read is not undone by its snapshot", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-unregistered-cancel";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15768,10 +15707,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a Stop that cancels a durably committed row does not refuse the next send", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-stop-names-canceled-ids";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15824,10 +15760,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a discarded recovery row does not leave its id blocking the fallback", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-discard-recovery-id";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15875,10 +15808,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a successful read seeds the ref's committed rows from the outbox", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-seed-on-read";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15918,10 +15848,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a settle re-enables the fallback with no read involved", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-settle-clears";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -15974,10 +15901,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a failed read preserves a row a reload left queued", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-reload-failed-read";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     await nextMacrotask();
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_1", status: "inProgress", itemsView: "" },
@@ -16164,12 +16088,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a Stop whose storage never answers stays fail-closed: no interrupt reaches the daemon and no durable row is written", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-stop-wedged";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
     // Hydrate on working storage first, exactly like the send case: the
     // runtime's connection opens here, so it is the Stop that meets the wedge.
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     // Retire the connection, then make the factory's next open never answer.
@@ -16203,10 +16124,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a Clear whose storage never answers stays fail-closed: no thread/clear reaches the daemon and no durable row is written", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-clear-wedged";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a")));
 
     storage.close();
@@ -16234,10 +16152,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   test("a note save whose storage never answers stays fail-closed: no notes/human/set reaches the daemon and no durable row is written", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-note-wedged";
-    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_a");
+    const { storage, fake } = await hydratedFallbackTarget({ indexedDB, databaseName });
     fake.on("notes/human/set", (params) => ({ note: "a note", receipt: mutationReceipt(params.clientMutationId) }));
 
     storage.close();

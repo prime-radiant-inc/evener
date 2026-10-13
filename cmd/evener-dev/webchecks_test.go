@@ -152,8 +152,9 @@ func TestWebChecksFailureReplaysOnlyTheFailingLog(t *testing.T) {
 }
 
 // Each check is `npm run <check>` in the frontend, contained in private roots
-// under its own scratch directory, with Node's compile cache off. Nothing is
-// built first and nothing needs a private Go home.
+// under its own scratch directory, with Node's compile cache off and Vite's dep
+// cache pointed at that root rather than the checkout. Nothing is built first
+// and nothing needs a private Go home.
 func TestWebChecksLaunchEachCheckContained(t *testing.T) {
 	launcher := newFakeLauncher()
 	tg := startWebChecks(t, launcher)
@@ -182,6 +183,12 @@ func TestWebChecksLaunchEachCheckContained(t *testing.T) {
 			if !strings.HasPrefix(env[name], root+string(os.PathSeparator)) {
 				t.Errorf("%s %s = %q, want inside %s", check, name, env[name], root)
 			}
+		}
+		// Vite's dep optimizer would otherwise write the checkout's .vite-cache,
+		// which a read-only checkout denies (issue #4193). The gate points it at
+		// the check's own private root instead.
+		if got, want := env["EVENER_FRONTEND_VITE_CACHE_DIR"], filepath.Join(root, "vite-cache"); got != want {
+			t.Errorf("%s EVENER_FRONTEND_VITE_CACHE_DIR = %q, want %q", check, got, want)
 		}
 	}
 }
