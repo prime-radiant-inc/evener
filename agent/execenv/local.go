@@ -1483,7 +1483,7 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 		// to the returned bytes, so the output is unchanged from the off path.
 		b, err = sfs.readFile("read_file", abs)
 	} else {
-		b, err = afero.ReadFile(e.filesystem(), abs)
+		b, err = readFileCapped(e.filesystem(), abs)
 	}
 	if err != nil {
 		// Best-effort "did you mean" suggestion for a genuine missing-file miss
@@ -1660,7 +1660,7 @@ func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, 
 		if err != nil {
 			return "", err
 		}
-		b, err = afero.ReadFile(e.filesystem(), abs)
+		b, err = readFileCapped(e.filesystem(), abs)
 	}
 	if err != nil {
 		return "", err
