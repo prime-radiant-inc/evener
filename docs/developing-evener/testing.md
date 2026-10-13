@@ -1270,9 +1270,10 @@ ceiling.
 Two classes are deliberately absent. **bounded-wait unit** has no ceiling of its
 own yet: a wall ceiling on a test whose whole job is to sit out a wait mostly
 measures the runner, so its members stay unclassified on the flat number below.
-The **web repo-audit** test (`no new copy-only TypeScript tests`) is a class of
-one — a class with one member is a smell — so it is split or sped up rather than
-blessed.
+The **web repo-audit** test (`no new copy-only TypeScript tests`) was a class of
+one — a class with one member is a smell — so #4608 split it into one case per
+slice of the tracked TypeScript test files rather than blessing it; its cases
+stay unclassified on the flat number.
 
 A test named in a class is compared **strictly**: a breach is nonzero under
 `CHECK=1` in a CI-shaped environment. A test in **no** class keeps the flat
