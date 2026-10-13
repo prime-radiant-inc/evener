@@ -227,6 +227,7 @@ const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
     model_name: "optional",
     dormant: "optional",
     offline: "optional",
+    archived: "optional",
     updated_at: "optional",
     turn_ended_at: "optional",
     unseen: "optional",
@@ -387,6 +388,7 @@ function sessionFieldsValue(value: unknown): value is Record<string, unknown> & 
     optional(value.model_name, (item) => boundedString(item, 512) && item !== "") &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
+    optional(value.archived, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&
     optional(value.turn_ended_at, rfc3339Timestamp) &&
     optional(value.unseen, bool) &&

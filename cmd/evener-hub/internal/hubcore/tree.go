@@ -437,7 +437,13 @@ type TreeNode struct {
 	// is also what leaves rollup state, AttentionRank and NeedsYouBand
 	// untouched — none of them gains a case to learn.
 	Dormant bool
-	Kind    string // "session" | "fork"
+	// Archived is true when the rail files the session as archived: the
+	// decision SessionArchived makes for the source that owns the row — its own
+	// archive decision, its project's, or the two-week age rule (S14). It rides
+	// the row so a consumer that shows an archived-but-still-running session (a
+	// pin keeps one reachable) can tell it is archived (#4199).
+	Archived bool
+	Kind     string // "session" | "fork"
 	// RunningJobs and CompletedJobs are the non-delegate jobs owned by this
 	// session. Delegates are counted in Subagents, never listed as rows.
 	RunningJobs   []appwire.EvenerJobInfo
@@ -1423,12 +1429,33 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			}
 		}
 
+		// The project's wire key is its canonical ID, or the shared
+		// "no-project" key for sessions that resolve to no project. It is
+		// resolved here, before the tier split, because a row's own archived
+		// flag consults its project decision.
+		projectKey := acc.project.ID
+		if projectKey == "" {
+			projectKey = "no-project"
+			acc.workingDir = ""
+		}
+
 		// Split the project's rows into activity tiers. A session's
 		// tier is its effective-archived classification: a user decision overrides
-		// the auto rule, otherwise inactivity > 2 weeks auto-archives.
+		// the auto rule, otherwise inactivity > 2 weeks auto-archives. The same
+		// facts set each row's Archived flag, so a consumer reading a row that
+		// appears while archived (a live session kept reachable by a pin) can
+		// see it (#4199): SessionArchived is the tier rule OR the owning
+		// source's project decision, and a live row consults its live entry for
+		// the source that owns it.
 		var current, recent, archived []TreeNode
 		for _, row := range sessions {
-			switch classifySession(decisionFor(decisions, row.ID), row.UpdatedAt, now) {
+			tier := classifySession(decisionFor(decisions, row.ID), row.UpdatedAt, now)
+			source := sessionSourceFromID(row.ID)
+			if entry, live := liveMap[row.ID]; live {
+				source = liveEntrySource(entry)
+			}
+			row.Archived = SessionArchived(decisions, row.ID, projectKey, source, row.UpdatedAt, now)
+			switch tier {
 			case "current":
 				current = append(current, row)
 			case "recent":
@@ -1445,11 +1472,6 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// own rows, so one host archiving a shared canonical ID/path must not
 		// move the merged row — and the other host's still-live rows under it —
 		// into the archived catalog.
-		projectKey := acc.project.ID
-		if projectKey == "" {
-			projectKey = "no-project"
-			acc.workingDir = ""
-		}
 		projectSources := sortedDecisionSources(acc.sources)
 		isArchived := projectArchivedByEverySource(decisions, projectKey, projectSources) ||
 			(len(current) == 0 && len(recent) == 0)
@@ -1643,6 +1665,19 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			node.UpdatedAt = le.StartedAt
 			node.Age = AgeString(le.StartedAt)
 		}
+		// A Needs you row carries the same archive decision the Live filter and
+		// search report (#4199), because an age-archived live session still
+		// reaches Needs you (tierEligible clears only an explicit decision) and
+		// the Board must be able to suppress its unread dot. A session with no
+		// meta has no last activity to age, so now is its last activity, the same
+		// way the Live filter reads it.
+		lastActivity := now
+		projectPath := le.WorkingDir
+		if meta != nil {
+			lastActivity = node.UpdatedAt
+			projectPath = EffectiveWorkingDir(*meta)
+		}
+		node.Archived = SessionArchived(decisions, le.SessionID, projectKeyForPath(projectPath, resolvedProjects), liveEntrySource(le), lastActivity, now)
 		needsYou = append(needsYou, node)
 	}
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
