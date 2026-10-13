@@ -508,16 +508,18 @@ var pseudoFsRoots = []string{"/proc", "/sys", "/dev"}
 // carved back out: it is a tmpfs of ordinary bounded files — the RAM staging
 // area even the test gates mint their scratch under — not a device tree, so
 // a search rooted there is a search of real files and must not be rerouted.
+// The carve is keyed on the production /dev entry itself, so a list that
+// names its own roots (the tests' stubs) never has it applied.
 func isPseudoFsPath(path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
 	path = filepath.Clean(path)
-	if path == "/dev/shm" || strings.HasPrefix(path, "/dev/shm/") {
-		return false
-	}
 	for _, root := range pseudoFsRoots {
 		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+			if root == "/dev" && (path == "/dev/shm" || strings.HasPrefix(path, "/dev/shm/")) {
+				return false
+			}
 			return true
 		}
 	}
