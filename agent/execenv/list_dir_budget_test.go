@@ -207,8 +207,12 @@ func TestListDirBudgetPagesCoherentlyAcrossCalls(t *testing.T) {
 		if !slices.Equal(got, legacy[:end]) {
 			t.Fatalf("page (offset=%d, limit=%d) = %v, want the canonical listing through %d entries", page.offset, page.limit, got, end)
 		}
-		if want := map[bool]int{true: end, false: 0}[end < len(legacy)]; budget.TruncatedAt() != want {
-			t.Fatalf("page (offset=%d, limit=%d) reported truncatedAt=%d, want %d", page.offset, page.limit, budget.TruncatedAt(), want)
+		wantTruncatedAt := 0
+		if end < len(legacy) {
+			wantTruncatedAt = end
+		}
+		if budget.TruncatedAt() != wantTruncatedAt {
+			t.Fatalf("page (offset=%d, limit=%d) reported truncatedAt=%d, want %d", page.offset, page.limit, budget.TruncatedAt(), wantTruncatedAt)
 		}
 	}
 }
