@@ -102,7 +102,7 @@ func backUpMemoryIndex(env *execenv.LocalExecutionEnvironment, root string, raw 
 // backUpMemoryIndexCtx is backUpMemoryIndex with the caller's context threaded
 // to each read.
 func backUpMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root string, raw []byte, backup string) error {
-	if repeated, err := memoryBackupHoldsCtx(ctx, env, root, raw); err != nil || repeated {
+	if repeated, err := memoryBackupHolds(ctx, env, root, raw); err != nil || repeated {
 		return err
 	}
 	copied := filepath.Join(root, memoryBackupCopyPrefix+rand.Text())
@@ -116,7 +116,7 @@ func backUpMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnviro
 			return err
 		}
 		// Another migration may have just backed up the same bytes.
-		if repeated, err := memoryBackupHoldsCtx(ctx, env, root, raw); err != nil || repeated {
+		if repeated, err := memoryBackupHolds(ctx, env, root, raw); err != nil || repeated {
 			return err
 		}
 		if backup, err = freeMemoryBackupPath(env, root); err != nil {
@@ -171,14 +171,8 @@ func removeMigratedMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecuti
 
 // memoryBackupHolds reports whether a regular file in root named like a
 // backup (memoryLegacyIndexBackup, numbered or not, in any case) holds
-// exactly raw.
-func memoryBackupHolds(env *execenv.LocalExecutionEnvironment, root string, raw []byte) (bool, error) {
-	return memoryBackupHoldsCtx(context.Background(), env, root, raw)
-}
-
-// memoryBackupHoldsCtx is memoryBackupHolds with the caller's context threaded
-// to each backup read.
-func memoryBackupHoldsCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root string, raw []byte) (bool, error) {
+// exactly raw. ctx is threaded to each backup read.
+func memoryBackupHolds(ctx context.Context, env *execenv.LocalExecutionEnvironment, root string, raw []byte) (bool, error) {
 	entries, err := env.ListDirectory(root, 1)
 	if err != nil {
 		return false, err

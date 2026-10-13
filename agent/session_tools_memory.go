@@ -313,7 +313,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	defer release()
 	if isMemoryIndexPath(file) {
 		var rendered memoryProjection
-		if err := s.renderMemoryScopeCtx(ctx, env, &rendered); err != nil {
+		if err := s.renderMemoryScope(ctx, env, &rendered); err != nil {
 			return nil, err
 		}
 		if rendered.Status == "missing" {
