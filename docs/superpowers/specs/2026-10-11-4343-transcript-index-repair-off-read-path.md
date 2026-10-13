@@ -356,12 +356,21 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      and the entry must not strand on it. Navigating away — entering
      another session, opening another pane, leaving the hub surface —
      retires the pending retry and its status, and a late-landing retry
-     for a departed intent enters nothing. The TUI's already-open
-     surfaces keep their existing re-entry points (the C03-class
-     already-open gap the native section records): the displayed
-     session's /details and clear re-reads and the raw transcript
-     viewer's past-session reads surface their one-shot errors as
-     today, arming no retry and showing no status.
+     for a departed intent enters nothing. Picks are fenced the same way
+     from the issuing side: an entry read a navigation pick issues
+     carries the generation it was issued under, and a response that lands
+     after a newer navigation — a second pick, a cycling press, a
+     reconnect — is discarded whole, entering nothing and arming nothing,
+     with the displayed session's subscription re-established when one is
+     displayed. A hub reconnect is not a departure: the pending retry
+     survives it, rebound to the replacement connection's generation, so
+     its paced read resumes on the new connection while the dead
+     connection's late responses land as superseded. The TUI's
+     already-open surfaces keep their existing re-entry points (the
+     C03-class already-open gap the native section records): the
+     displayed session's /details and clear re-reads and the raw
+     transcript viewer's past-session reads surface their one-shot errors
+     as today, arming no retry and showing no status.
 
 7. Message-search refresher (`hubcore/message_search.go`):
    `readTranscriptItems` opens its own refusing handle (not the hub's
