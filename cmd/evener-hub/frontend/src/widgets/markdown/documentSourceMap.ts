@@ -76,22 +76,28 @@ function slice(value: Trace, start = 0, end = value.text.length): Trace {
 }
 function concat(...values: Trace[]): Trace {
   if (values.length === 0) return empty();
-  const first = values[0];
-  const last = values.at(-1);
+  // A zero-length piece contributes no text and no spans, so it must not
+  // break the shared-storage chain either: otherwise a merge that stitches
+  // an empty separator between two contiguous views would materialize the
+  // accumulated spans on every merge, quadratic across a document's blocks.
+  const pieces = values.filter((value) => value.text.length > 0);
+  if (pieces.length === 0) return empty();
+  const first = pieces[0];
+  const last = pieces.at(-1);
   if (!first || !last) throw new Error("Unverified concat inputs");
-  if (values.length === 1) return first;
+  if (pieces.length === 1) return first;
   let shared = true;
-  for (let i = 1; i < values.length; i++) {
-    const previous = values[i - 1]?.spans;
-    const current = values[i]?.spans;
+  for (let i = 1; i < pieces.length; i++) {
+    const previous = pieces[i - 1]?.spans;
+    const current = pieces[i]?.spans;
     if (!previous || !current || previous.data !== current.data || previous.end !== current.start) {
       shared = false;
       break;
     }
   }
-  const text = values.map((v) => v.text).join("");
+  const text = pieces.map((v) => v.text).join("");
   if (shared) return { text, spans: { data: first.spans.data, start: first.spans.start, end: last.spans.end } };
-  const data = values.flatMap((v) => spansOf(v));
+  const data = pieces.flatMap((v) => spansOf(v));
   return { text, spans: { data, start: 0, end: data.length } };
 }
 const empty = (): Trace => ({ text: "", spans: { data: NO_SPANS, start: 0, end: 0 } });
@@ -161,6 +167,24 @@ function traceLines(value: Trace): Trace[] {
     }
   result.push(slice(value, start));
   return result;
+}
+// The first line and its newline provenance, without splitting the remaining
+// text: a list-continuation check needs only the first line, and traceLines
+// here scanned and allocated a Trace for EVERY later line of the document on
+// each check, quadratic over the whole render. The scan walks by index like
+// traceLines does - a substring search over the sliced remainder can cost the
+// whole remainder again. (Named ...Trace to stay clear of the list
+// tokenizer's own local firstLine variable.)
+function firstLineTrace(value: Trace): Trace {
+  let newline = -1;
+  for (let i = 0; i < value.text.length; i++)
+    if (value.text[i] === "\n") {
+      newline = i;
+      break;
+    }
+  const line = newline < 0 ? slice(value, 0) : slice(value, 0, newline);
+  if (newline >= 0) line.newline = slice(value, newline, newline + 1);
+  return line;
 }
 function joinLines(values: Trace[]): Trace {
   const pieces: Trace[] = [];
@@ -766,7 +790,7 @@ class ProvenanceTokenizer extends Tokenizer {
           // Check if following lines should be included in List Item
           while (src) {
             const rawLine = src.split("\n", 1)[0] ?? "";
-            const rawLineTrace = traceLines(sourceTrace)[0] ?? empty();
+            const rawLineTrace = firstLineTrace(sourceTrace);
             let nextLineTrace = rawLineTrace;
             let nextLineWithoutTabs: string;
             nextLine = rawLine;
