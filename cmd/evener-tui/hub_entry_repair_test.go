@@ -462,6 +462,58 @@ func TestNavigationRetiresTheRetryAndALateTickEntersNothing(t *testing.T) {
 	}
 }
 
+// Focusing a project from the palette is a navigation departure like ctrl+O's
+// dashboard return: the standing entry-repair retry retires and the
+// navigation generation advances, so a re-read already on the wire enters
+// nothing over the project dashboard (round-20 medium 3).
+func TestAFocusedProjectRetiresTheStandingEntryRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m := newHubModel(nil, "http://hub.test")
+	ref := mustParseRef(t, "local:01EVENER")
+	updated, cmd := m.Update(hubSessionMsg{ref: ref.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	if armed.entryRepairRef != ref {
+		t.Fatal("setup: the rebuilding answer did not arm the retry")
+	}
+	armedSeq := armed.entryRepairSeq
+	before := armed.liveNavSeq
+
+	// The retry's re-read is already on the wire when the user focuses a
+	// project: the departure retires the abandoned session's retry and
+	// advances the generation.
+	tick := executeEntryRepairCmd(t, cmd)
+	afterTick, rereadCmd := armed.Update(tick)
+	flying := afterTick.(hubModel)
+	if rereadCmd == nil {
+		t.Fatal("setup: the tick re-issued no entry read")
+	}
+	flying.focusDashboardProject("proj")
+	if flying.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("focusing a project left the abandoned session's retry armed")
+	}
+	if flying.liveNavSeq <= before {
+		t.Fatal("focusing a project did not advance the navigation generation")
+	}
+
+	// The in-flight re-read's response lands: nothing enters over the
+	// project dashboard.
+	u2, entered := flying.Update(hubSessionMsg{
+		ref:           ref.String(),
+		detail:        hubSessionDetail{Ref: ref.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	})
+	ended := u2.(hubModel)
+	if ended.mode != hubModeDashboard {
+		t.Fatalf("the in-flight re-read entered the abandoned session over the project dashboard: mode = %v detail = %v", ended.mode, ended.detail.Ref)
+	}
+	if ended.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the superseded re-read's landing rearmed the departed ref's retry")
+	}
+	if entered != nil {
+		t.Fatalf("the superseded re-read's landing issued a follow-up: %T", entered)
+	}
+}
+
 func TestTheAlreadyOpenSurfacesArmNoRetry(t *testing.T) {
 	captureEntryRepairWaits(t)
 	m := newHubModel(nil, "http://hub.test")
@@ -764,8 +816,9 @@ func TestAReconnectPreservesThePendingEntryRetry(t *testing.T) {
 	}
 
 	// The replacement connection's tick — the rebound generation — re-reads
-	// through the fresh client, tagged with the rebound generation.
-	_, reread := afterOldRead.(hubModel).Update(hubEntryRepairTickMsg{ref: ref, seq: rebound.entryRepairSeq})
+	// through the fresh client, tagged with the retry's generation as the
+	// tick fences it (round-20 medium 1's fresh generation).
+	afterBound, reread := afterOldRead.(hubModel).Update(hubEntryRepairTickMsg{ref: ref, seq: rebound.entryRepairSeq})
 	if reread == nil {
 		t.Fatal("the rebound retry's tick re-issued no read")
 	}
@@ -773,8 +826,8 @@ func TestAReconnectPreservesThePendingEntryRetry(t *testing.T) {
 	if !ok {
 		t.Fatalf("the re-read produced %T, want a session read", reread())
 	}
-	if msg.entryRetrySeq != rebound.entryRepairSeq || msg.ref != ref.String() {
-		t.Fatalf("the re-read landed tagged %d for %v, want the rebound generation %d for %v", msg.entryRetrySeq, msg.ref, rebound.entryRepairSeq, ref)
+	if msg.entryRetrySeq != afterBound.(hubModel).entryRepairSeq || msg.ref != ref.String() {
+		t.Fatalf("the re-read landed tagged %d for %v, want the fenced generation %d for %v", msg.entryRetrySeq, msg.ref, afterBound.(hubModel).entryRepairSeq, ref)
 	}
 }
 
@@ -1177,11 +1230,10 @@ func TestASpawnLandingEntryMayRetryWhileTheFormStands(t *testing.T) {
 	if reread == nil {
 		t.Fatal("the spawn's entry retry died at its first tick: the standing form was read as a departure")
 	}
-	armedSeq := armedModel.entryRepairSeq
 	success := hubSessionMsg{
 		ref:           refS.String(),
 		detail:        hubSessionDetail{Ref: refS.String(), SessionID: "sess_s", State: appwire.ThreadStatusIdle},
-		entryRetrySeq: armedSeq,
+		entryRetrySeq: afterTick.(hubModel).entryRepairSeq,
 	}
 	entered, _ := afterTick.(hubModel).Update(success)
 	shown := entered.(hubModel)
@@ -1853,5 +1905,77 @@ func TestATerminalRetryRereadSettlesTheDeferredReconciliation(t *testing.T) {
 	}
 	if wireMutationOutcome(ended.err) != appwire.MutationOutcomeTargetDeleted {
 		t.Fatalf("model error = %v, want the deletion answer still shown", ended.err)
+	}
+}
+
+// A recovery read issued during the retry's backoff shares the armed
+// generation: the retry's own re-read must fence it with a fresh one, or the
+// recovery's late landing is accepted as current and the retry enters its
+// target with the server-side subscriptions still pointing where the
+// recovery left them (round-20 medium 1).
+func TestTheRetryRereadFencesARecoveryIssuedDuringBackoff(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m, _, cleanup := newLiveCycleModel(t, "local:01C", liveCycleTree())
+	defer cleanup()
+	refA := mustParseRef(t, "local:01A")
+
+	// A's pick answers rebuilding: the retry arms over the displayed C,
+	// its tick pending — the backoff window.
+	updated, retryCmd := m.Update(hubSessionMsg{ref: refA.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	if armed.entryRepairRef != refA {
+		t.Fatal("setup: the rebuilding answer did not arm the retry")
+	}
+
+	// During the backoff, a displayed-session recovery read issues (the
+	// stale-read reconciliation path): it shares the armed generation.
+	armedRecovery, recoveryCmd := armed.reestablishDisplayedSubscription()
+	if recoveryCmd == nil {
+		t.Fatal("setup: the recovery read issued nothing")
+	}
+
+	// The retry's tick re-issues the entry read — fencing the in-flight
+	// recovery with a fresh generation.
+	tick := executeEntryRepairCmd(t, retryCmd)
+	afterTick, rereadCmd := armedRecovery.Update(tick)
+	flying := afterTick.(hubModel)
+	if rereadCmd == nil {
+		t.Fatal("setup: the tick re-issued no entry read")
+	}
+
+	// The recovery's response lands first: superseded by the re-read's
+	// generation, discarded, and its reconciliation DEFERS on the re-read's
+	// flight — it must not be accepted as current over the retry.
+	recoveryMsg := recoveryCmd().(hubSessionMsg)
+	afterRecovery, recoveryFollow := flying.Update(recoveryMsg)
+	deferred := afterRecovery.(hubModel)
+	if recoveryFollow != nil {
+		t.Fatal("the recovery's landing was accepted as current and issued follow-ups that race the retry's re-read")
+	}
+	if !deferred.liveNavNeedsReconcile {
+		t.Fatal("the superseded recovery's landing recorded no reconciliation obligation")
+	}
+
+	// The re-read succeeds: A enters, and the settle point restores the
+	// displayed session's subscription.
+	rereadMsg := rereadCmd().(hubSessionMsg)
+	entered, settleCmd := deferred.Update(rereadMsg)
+	shown := entered.(hubModel)
+	if shown.mode != hubModeSession || shown.detail.Ref != refA.String() {
+		t.Fatalf("the re-read did not enter its target: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	if shown.liveNavNeedsReconcile {
+		t.Fatal("the re-read's landing did not settle the recorded obligation")
+	}
+	settled := false
+	if settleCmd != nil {
+		for _, c := range flattenBatch(t, settleCmd) {
+			if recovery, ok := c().(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == refA.String() {
+				settled = true
+			}
+		}
+	}
+	if !settled {
+		t.Fatal("the landing issued no tagged reconcile for the entered session")
 	}
 }

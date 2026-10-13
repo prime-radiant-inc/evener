@@ -141,6 +141,15 @@ func (m *hubModel) updateHubEntryRepairTick(msg hubEntryRepairTickMsg) (tea.Mode
 		return *m, nil
 	}
 	m.entryRepairDelay = min(m.entryRepairDelay*2, hubEntryRepairCapDelay)
+	// A recovery read issued during the backoff shares the armed
+	// generation, so its landing would be accepted as current over this
+	// flight — while its wire request re-pointed the server's
+	// subscriptions after this re-read's cut. The re-read takes a fresh
+	// generation: the recovery lands superseded, its reconciliation
+	// obligation defers on this flight, and the landing below settles it
+	// (roborev PR #1044 round-20 medium 1).
+	m.liveNavSeq++
+	m.entryRepairSeq = m.liveNavSeq
 	// The re-read is a flight reconciliation must respect: a superseded
 	// response landing while it runs defers to it (#4343 round-17 medium 3).
 	m.entryRepairReadInFlight = true
