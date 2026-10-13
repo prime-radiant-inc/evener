@@ -24,7 +24,7 @@ import { getToasts } from "../../../../widgets/toast/store";
 import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
-import { UserMessageItem, UserMessageView } from "./UserMessageItem";
+import { resetForkRetentionForTests, UserMessageItem, UserMessageView } from "./UserMessageItem";
 import styles from "./usermessageitem.module.css";
 
 beforeAll(() => {
@@ -337,6 +337,7 @@ describe("per-message fork affordance", () => {
     connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
     resetThreadsStoreForTests();
     resetWorkspaceStoreForTests();
+    resetForkRetentionForTests();
     localStorage.clear();
   });
 
@@ -514,6 +515,68 @@ describe("per-message fork affordance", () => {
       await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
       // The second press finished the RETAINED child; the fork RPC never ran
       // again, so no second child was created.
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the retained fork child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+    } finally {
+      faultArmed = false;
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
+  });
+
+  test("the retained child survives row virtualization: a retry after unmount and remount still never repeats the fork RPC", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return {
+        thread: forkWireThread({
+          id: `child_${forkCalls}`,
+          sessionId: `child_${forkCalls}`,
+          evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+        }),
+        originalInput: "literal /same\nsecond line",
+      };
+    });
+    let faultArmed = true;
+    const repository = createBrowserDraftRepository({
+      beforeCommit(operation) {
+        if (faultArmed && operation === "seedDraft") throw new Error("real fork seed transaction fault");
+      },
+    });
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    try {
+      const row = item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" });
+      const { unmount } = render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await userEvent.setup().click(button);
+      await waitFor(() => expect(button.disabled).toBe(false));
+      // The fork RPC created the child; only its local seeding faulted.
+      expect(forkCalls).toBe(1);
+      expect(
+        getToasts().some(
+          (toast) =>
+            toast.kind === "error" &&
+            toast.text ===
+              "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
+        ),
+      ).toBe(true);
+
+      // The transcript virtualizes its rows: scrolling this message away and
+      // back unmounts the row and remounts it, discarding any row-local state.
+      unmount();
+      render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+
+      faultArmed = false;
+      const remountedButton = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await userEvent.setup().click(remountedButton);
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      // The retry finished the child the FIRST press created; the fork RPC never
+      // ran again, so no duplicate child exists.
       expect(forkCalls).toBe(1);
       const pane = workspaceStore.getState().panes[0];
       if (!pane) throw new Error("the retained fork child did not open");
