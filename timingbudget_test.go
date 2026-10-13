@@ -12,11 +12,20 @@ import (
 // timingBudgetScript is the runner under test.
 const timingBudgetScript = "scripts/gate/test-timing-budget.sh"
 
-// runTimingBudgetCompare drives the runner's comparison half through the
-// --measured fixture seam: the fixture IS the measurement the comparator reads,
-// so no go test or vitest run is involved and no toolchain is faked
-// (docs/developing-evener/testing.md's ban on PATH stubs).
+// runTimingBudgetCompare drives the runner's comparison half under the CI-strict
+// policy through the --measured fixture seam: the fixture IS the measurement the
+// comparator reads, so no go test or vitest run is involved and no toolchain is
+// faked (docs/developing-evener/testing.md's ban on PATH stubs).
 func runTimingBudgetCompare(t *testing.T, measured, budget string) (string, error) {
+	t.Helper()
+	return runTimingBudgetCompareMode(t, measured, budget, true)
+}
+
+// runTimingBudgetScript drives the comparison over --measured fixtures with the
+// given extra flags and environment. The fixture IS the measurement the
+// comparator reads, so no go test or vitest run is involved and no toolchain is
+// faked (docs/developing-evener/testing.md's ban on PATH stubs).
+func runTimingBudgetScript(t *testing.T, measured, budget string, flags, extraEnv []string) (string, error) {
 	t.Helper()
 	dir := t.TempDir()
 	measuredPath := filepath.Join(dir, "measured.tsv")
@@ -27,11 +36,24 @@ func runTimingBudgetCompare(t *testing.T, measured, budget string) (string, erro
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", tmpDir, err)
 	}
-	cmd := exec.Command("bash", timingBudgetScript,
-		"--measured", measuredPath, "--budget", budgetPath, "--no-web", "--check", "--strict")
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
+	args := append([]string{timingBudgetScript,
+		"--measured", measuredPath, "--budget", budgetPath, "--no-web"}, flags...)
+	cmd := exec.Command("bash", args...)
+	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// runTimingBudgetCompareMode drives the comparison with an explicit posture, so a
+// test can pin both CI's enforcement (--strict) and the local warn-only run
+// (--local): the two differ only in the exit status, never in the diagnostics.
+func runTimingBudgetCompareMode(t *testing.T, measured, budget string, strict bool) (string, error) {
+	t.Helper()
+	mode := "--local"
+	if strict {
+		mode = "--strict"
+	}
+	return runTimingBudgetScript(t, measured, budget, []string{"--check", mode}, nil)
 }
 
 // TestTimingBudgetWarnsOnBudgetsInThePreWallTimeUnits pins issue #172 review
@@ -189,13 +211,14 @@ func TestTimingBudgetWarnsOnTheWebRowWithoutTheMarker(t *testing.T) {
 	}
 }
 
-// TestTimingBudgetWarnsOnThePreExistingCeilingBreach pins the landing posture
-// (ruling, 2026-10-13). The flat per-test ceiling has never run in CI, #4601
-// records the pre-existing breaches, and a 50-second install test is a ceiling
-// that never met an install test rather than a defect. So even under the
-// CI-strict policy a breach is reported and named but does not fail the gate;
-// the package-ratio check and the missing-measurement refusal keep their
-// strictness (see TestTimingBudgetFailsOnWallTimeBudgets and
+// TestTimingBudgetWarnsOnThePreExistingCeilingBreach pins the posture for a
+// test in NO class (ruling, 2026-10-13, #4601). The flat per-test ceiling has
+// never run in CI and the unclassified backlog was always over it, so even under
+// the CI-strict policy a breach is reported and named but does not fail the
+// gate; only a test named in a class is enforced (see
+// TestTimingBudgetFailsABlessedClassBreach). The package-ratio check and the
+// missing-measurement refusal keep their strictness (see
+// TestTimingBudgetFailsOnWallTimeBudgets and
 // TestTimingBudgetFailsWhenTheMeasuredFileIsMissing). The exit status is the
 // assertion.
 func TestTimingBudgetWarnsOnThePreExistingCeilingBreach(t *testing.T) {
@@ -260,5 +283,197 @@ func TestTimingBudgetRecordsAPackageWithNoDuration(t *testing.T) {
 	}
 	if !strings.Contains(out, "example.com/empty: 0.00s") {
 		t.Fatalf("a no-duration package was not recorded, so a full rebaseline would drop it:\n%s", out)
+	}
+}
+
+// TestTimingBudgetFailsABlessedClassBreach pins the #4601 enforcement ruling:
+// once a test is named in a class, a breach of that class's ceiling is a FAIL —
+// nonzero under the strict (CI) policy — unlike an unclassified test, which
+// only warns. The exit status and the named class are the assertions.
+func TestTimingBudgetFailsABlessedClassBreach(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"deploy-host integration":{"ceilingSeconds":30,"tests":["TestClassed"]}},` +
+		`"packages":{"pkg":100}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err == nil {
+		t.Fatalf("a blessed-class ceiling breach must fail under --strict:\n%s", out)
+	}
+	for _, want := range []string{"FAIL", "TestClassed", "deploy-host integration"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("class-breach output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestTimingBudgetPassesAClassifiedTestUnderItsClassCeiling is the other half of
+// the class map: the same 9s test the flat 3s ceiling would flag is OK — no
+// FAIL — once it is named in a class whose ceiling is above it. Without this, a
+// map that merely silenced tests would look the same as one that re-ceilings
+// them.
+func TestTimingBudgetPassesAClassifiedTestUnderItsClassCeiling(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t9.00\n"
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"retirement":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
+		`"packages":{"pkg":100}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err != nil {
+		t.Fatalf("a classified test under its class ceiling must pass:\n%s", out)
+	}
+	// 9.00s is over the flat 3s ceiling, so an UNCLASSIFIED test of this name
+	// would warn; no warning or failure line proves the class ceiling was
+	// applied and cleared it. Asserting the wording of the class line instead
+	// would pin copy (docs/developing-evener/testing.md's "Copy Is Not a Test
+	// Oracle").
+	if strings.Contains(out, "WARN") || strings.Contains(out, "FAIL") {
+		t.Fatalf("a classified test under its class ceiling was not cleared:\n%s", out)
+	}
+}
+
+// TestTimingBudgetKeepsUnclassifiedBreachesWarnOnly pins the other posture: a
+// test in no class keeps the flat ceiling and warns — never fails, even under
+// --strict — so the unclassified backlog cannot red the gate (#4601).
+func TestTimingBudgetKeepsUnclassifiedBreachesWarnOnly(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestUnclassed\t9.00\n"
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"retirement":{"ceilingSeconds":20,"tests":["TestOther"]}},` +
+		`"packages":{"pkg":100}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err != nil {
+		t.Fatalf("an unclassified breach must warn, not fail, under --strict:\n%s", out)
+	}
+	for _, want := range []string{"WARN", "TestUnclassed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unclassified-breach output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Fatalf("an unclassified breach was enforced as a failure:\n%s", out)
+	}
+}
+
+// TestTimingBudgetComparesASubtestUnderItsParentsClass pins membership for a
+// subtest. The mechanism checks every subtest (a slow subtest a parent-only view
+// would hide), so a subtest of a classified parent must be compared strictly
+// against the parent's class ceiling, not left on the flat warn-only default.
+func TestTimingBudgetComparesASubtestUnderItsParentsClass(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed/shadow\t31.00\n"
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"deploy-host integration":{"ceilingSeconds":30,"tests":["TestClassed"]}},` +
+		`"packages":{"pkg":100}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err == nil || !strings.Contains(out, "FAIL") {
+		t.Fatalf("a subtest over its parent's class ceiling must fail:\n%s", out)
+	}
+}
+
+// TestTimingBudgetFailsWhenATestIsListedInTwoClasses pins the exactly-one-class
+// rule. The map is hand-edited, and silently picking the first class would
+// enforce the wrong number, so a name matched by two classes is a config error
+// the check FAILs on. The fixture is otherwise valid — the package is well
+// under its budget and 1.00s is under both classes' ceilings — so under the
+// strict policy the exit status is the assertion: only the duplicate can make
+// it nonzero.
+func TestTimingBudgetFailsWhenATestIsListedInTwoClasses(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"a":{"ceilingSeconds":10,"tests":["TestClassed"]},` +
+		`"b":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
+		`"packages":{"pkg":100}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err == nil {
+		t.Fatalf("a test listed in two classes must make an otherwise-valid fixture fail under --strict:\n%s", out)
+	}
+}
+
+// TestTimingBudgetFailsAMalformedClassSpec pins the map's own shape. Each case
+// is a hand-edit mistake that would otherwise crash the comparison or silently
+// drop the class's enforcement — a string `tests` iterates as characters and
+// matches nothing, so its members would quietly fall back to the warn-only flat
+// ceiling. Every one must FAIL naming the class.
+func TestTimingBudgetFailsAMalformedClassSpec(t *testing.T) {
+	cases := map[string]string{
+		"no ceiling":        `{"tests":["TestClassed"]}`,
+		"bool ceiling":      `{"ceilingSeconds":true,"tests":["TestClassed"]}`,
+		"no tests":          `{"ceilingSeconds":10}`,
+		"empty tests":       `{"ceilingSeconds":10,"tests":[]}`,
+		"string tests":      `{"ceilingSeconds":10,"tests":"TestClassed"}`,
+		"nonfinite ceiling": `{"ceilingSeconds":1e309,"tests":["TestClassed"]}`,
+		"non-string test":   `{"ceilingSeconds":10,"tests":[7]}`,
+		"not an object":     `"deploy-host integration"`,
+	}
+	for name, spec := range cases {
+		t.Run(name, func(t *testing.T) {
+			measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+			budget := `{"perTestCeilingSeconds":3,"perTestCeilingClasses":{"broken":` + spec + `},"packages":{"pkg":100}}`
+			out, err := runTimingBudgetCompare(t, measured, budget)
+			if err == nil || !strings.Contains(out, "broken") {
+				t.Fatalf("a malformed class spec (%s) must FAIL naming the class:\n%s", name, out)
+			}
+		})
+	}
+}
+
+// TestTimingBudgetFailsABlessedClassBreachUnderTheCIEnvOnly pins the CI-shaped
+// enforcement path the other tests do not: strictness comes from $CI being set,
+// with no --strict/--local flag at all (the way the gate's own lanes call it).
+func TestTimingBudgetFailsABlessedClassBreachUnderTheCIEnvOnly(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"deploy-host integration":{"ceilingSeconds":30,"tests":["TestClassed"]}},` +
+		`"packages":{"pkg":100}}`
+	out, err := runTimingBudgetScript(t, measured, budget, []string{"--check"}, []string{"CI=1"})
+	if err == nil {
+		t.Fatalf("$CI set with no --strict must enforce a blessed-class breach:\n%s", out)
+	}
+}
+
+// TestTimingBudgetBlessPreservesTheClassMap pins that a rebaseline does not drop
+// the class map: --bless rewrites package numbers, not the segmentation, and a
+// class map silently lost on --bless would turn every classified test back into
+// a warn-only one.
+func TestTimingBudgetBlessPreservesTheClassMap(t *testing.T) {
+	got := runBless(t,
+		`{"perTestCeilingSeconds":3,`+
+			`"perTestCeilingClasses":{"retirement":{"ceilingSeconds":20,"tests":["TestClassed"]}},`+
+			`"packages":{"example.com/other":1}}`,
+		"--modules", "no-such-module")
+	if !strings.Contains(got, `"perTestCeilingClasses"`) || !strings.Contains(got, "retirement") {
+		t.Fatalf("a bless dropped the class map:\n%s", got)
+	}
+}
+
+// TestTimingBudgetWarnsOnAClassBreachOnALocalRun pins the non-CI posture: with
+// no $CI and no --strict (--local), a blessed-class breach is a FAIL severity
+// but the warn-only run still exits 0, exactly like the package ratios; the
+// class and its number are named so the local report says what to fix.
+func TestTimingBudgetWarnsOnAClassBreachOnALocalRun(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"deploy-host integration":{"ceilingSeconds":30,"tests":["TestClassed"]}},` +
+		`"packages":{"pkg":100}}`
+	out, err := runTimingBudgetCompareMode(t, measured, budget, false)
+	if err != nil {
+		t.Fatalf("a local warn-only run must not fail on a class breach:\n%s", out)
+	}
+	if !strings.Contains(out, "FAIL") || !strings.Contains(out, "deploy-host integration") {
+		t.Fatalf("the local report should name the class breach:\n%s", out)
+	}
+}
+
+// TestTimingBudgetFailsWhenTheClassMapIsNotAnObject pins the outer shape of the
+// map: a perTestCeilingClasses that is present but not an object is a config
+// error, not a crash and not a silent empty map — including the falsy values
+// (an empty list, false, 0, "") that a plain `or {}` would quietly accept.
+func TestTimingBudgetFailsWhenTheClassMapIsNotAnObject(t *testing.T) {
+	for _, value := range []string{`["nope"]`, `[]`, `false`, `0`, `""`, `"a string"`} {
+		t.Run(value, func(t *testing.T) {
+			measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+			budget := `{"perTestCeilingSeconds":3,"perTestCeilingClasses":` + value + `,"packages":{"pkg":100}}`
+			out, err := runTimingBudgetCompare(t, measured, budget)
+			if err == nil {
+				t.Fatalf("a present non-object class map (%s) must fail under --strict, not read as no classes:\n%s", value, out)
+			}
+		})
 	}
 }

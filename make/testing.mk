@@ -227,8 +227,8 @@ test-short:
 ##   browser guards; those have separate owners. The timing check reads the
 ##   gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is
 ##   strict where the ratchet's own policy is (CI) and warn-only on a local run;
-##   the per-test ceiling is warn-only in every mode until it is segmented by
-##   test class and enforced (#4601).
+##   a blessed-class per-test ceiling breach is nonzero there, while an
+##   unclassified test over the flat ceiling only warns (#4601).
 ## fails-when: The first failing phase stops the gate and returns nonzero;
 ##   do not infer a verdict from partial logs.
 merge-approval-gate:
@@ -283,24 +283,29 @@ vet:
 
 # test-timing-budget ratchets per-package test wall time against
 # testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
-# a flat per-test ceiling, so an unexamined timing regression cannot silently
-# erode the wins docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md
-# recorded. CHECK=1 enforces the ratios (strict in CI, warn-only on a local run)
-# while the per-test ceiling stays warn-only everywhere until it is segmented by
-# test class and enforced (#4601); bare invocation measures by running the suite
-# itself. Companion to coverage-floor.
+# a per-test ceiling segmented by test class (#4601), so an unexamined timing
+# regression cannot silently erode the wins
+# docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md recorded. CHECK=1
+# enforces the ratios (strict in CI, warn-only on a local run); a test named in
+# a class is enforced against its class ceiling, while a test in no class keeps
+# the flat perTestCeilingSeconds and stays warn-only in every mode. Bare
+# invocation measures by running the suite itself. Companion to coverage-floor.
 ## Ratchet per-package test wall time against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
-##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat
-##   per-test ceiling. While the budget file's metric marker is absent (the
-##   checked-in pre-#172 baseline, until a rebaseline rewrites it under package
-##   wall time), the Go-package ratio check is suspended to a warning; the
+##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a per-test
+##   ceiling segmented by test class: a test named in a class is compared
+##   strictly against that class's ceiling (a breach is nonzero under CHECK=1 in
+##   a CI-shaped environment), while a test in no class keeps the flat
+##   perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so
+##   the unclassified backlog cannot red the gate (#4601). While the budget
+##   file's metric marker is absent (the checked-in pre-#172 baseline, until a
+##   rebaseline rewrites it under package wall time), the Go-package ratio check
+##   is suspended to a warning; the
 ##   frontend ("web") row warns with them: its metric did not change, but the
 ##   checked-in number was blessed on a quiet workstation and a four-core CI
 ##   runner measures the same suite 2.6x-3.9x higher, so it is not comparable to
 ##   a CI run either. While the file carries no wall-time marker every ratio
-##   warns with its numbers; the per-test ceiling is warn-only in every mode,
-##   CHECK=1 included, until it is segmented by test class and enforced (#4601).
+##   warns with its numbers.
 ## trigger: Local/on-demand. merge-approval-gate runs the check through
 ##   --measured over the rows its own ROOT_FULL=1 make test run captured, so
 ##   enforcing the budget no longer needs a second full test run (issue #144);
@@ -317,9 +322,9 @@ vet:
 ##   reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x
 ##   its budget is nonzero once the budget file carries the wall-time metric
 ##   marker; while the marker is absent those ratios warn, the "web" row among
-##   them. A per-test ceiling breach is reported and named but nonzero in no mode
-##   until the ceiling is segmented by test class and enforced (#4601). A missing
-##   or empty budget file always exits zero.
+##   them. A blessed-class per-test ceiling breach is nonzero under CHECK=1; an
+##   unclassified test over the flat ceiling is reported and named but nonzero in
+##   no mode. A missing or empty budget file always exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 

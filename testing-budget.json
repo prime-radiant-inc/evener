@@ -1,6 +1,111 @@
 {
- "_": "Per-package test-duration budget for the CI timing gate (kata b6rv, see docs/developing-evener/testing.md). A Go package's value is its own wall time, read from the package-level terminal event of go test -json (issue #172) on the same non-fuzz gate surface run-module-tests.sh proves; for the frontend, the vitest JSON reporter's assertion durations rolled up under the single key \"web\". scripts/gate/test-timing-budget.sh compares a fresh measurement against these numbers: fail at 1.5x the budget, warn at 1.1x (strict in CI, warn-only on a local run) plus a flat per-test ceiling regardless of package. Raise a budget by editing this file in the same commit as the change that earned the increase, or run `make test-rebaseline` to reset every listed package to what a clean-host run just measured. The numbers below are the first blessed clean-host baseline (kata b6rv) and predate issue #172's switch to package wall time, so a rebaseline regenerates them under the new metric (#141). Emptying \"packages\" puts the ratchet back in its no-baseline state, where every package reads as having no budget yet and the gate stays warn-only everywhere, CI included.",
+ "_": "Per-package test-duration budget for the CI timing gate (kata b6rv, see docs/developing-evener/testing.md). A Go package's value is its own wall time, read from the package-level terminal event of go test -json (issue #172) on the same non-fuzz gate surface run-module-tests.sh proves; for the frontend, the vitest JSON reporter's assertion durations rolled up under the single key \"web\". scripts/gate/test-timing-budget.sh compares a fresh measurement against these numbers: fail at 1.5x the budget, warn at 1.1x (strict in CI, warn-only on a local run) plus a per-test ceiling: strict by class for a test named in perTestCeilingClasses, warn-only flat for a test in no class (#4601). Raise a budget by editing this file in the same commit as the change that earned the increase, or run `make test-rebaseline` to reset every listed package to what a clean-host run just measured. The numbers below are the first blessed clean-host baseline (kata b6rv) and predate issue #172's switch to package wall time, so a rebaseline regenerates them under the new metric (#141). Emptying \"packages\" puts the ratchet back in its no-baseline state, where every package reads as having no budget yet and the gate stays warn-only everywhere, CI included.",
  "perTestCeilingSeconds": 3,
+ "_perTestCeilingClasses": "Per-test ceilings segmented by test class (#4601, Jesse's ruling 2026-10-13). A test whose name is listed in a class - or a subtest of one (Name/sub) - is compared STRICTLY against that class's ceiling, and a breach FAILs the check under --check in a CI-shaped environment or --strict. A test named in no class keeps the flat perTestCeilingSeconds above and stays warn-only in every mode, --strict included, so the unclassified backlog cannot red the gate. ceilingSeconds = the union of the class's largest CI observations across run 38458180180 and run 38468494246 (jobs tests / root, tests / nonroot, web-unit) + 25%, rounded up to a multiple of five seconds (#4601). The first run set the original ceilings; the first strict run (the second) breached install, transcript large-fixture and retirement, and brought live-stack E2E and dev-tool compile/CLI within 12% of theirs, so those five are the two runs' union max + 25%. Two classes are deliberately absent: bounded-wait unit gets no ceiling of its own yet (a wall ceiling there mostly measures the runner, so its members stay unclassified and warn-only on the flat 3s), and the web repo-audit test is a class of one that must be split or sped up rather than blessed. A test may be listed in only ONE class; a name matched by two classes is a config error the check FAILs on.",
+ "perTestCeilingClasses": {
+  "install": {
+   "ceilingSeconds": 80,
+   "tests": [
+    "TestInstallHomeGeneratedHome",
+    "TestInstallFailsWhenABinaryCopyFails"
+   ]
+  },
+  "transcript large-fixture": {
+   "ceilingSeconds": 95,
+   "tests": [
+    "TestAppendEntryByEntryMatchesTheReference",
+    "TestChangedSinceReturnsWhatLaterEntriesChanged",
+    "TestCorruptSidecarRebuilds",
+    "TestItemTurnsFromEntriesAvoidsFileScanAndDecode"
+   ]
+  },
+  "delegate-attention & idle": {
+   "ceilingSeconds": 40,
+   "tests": [
+    "TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented",
+    "TestAcceptedDelegateAttentionTriggerSurvivesCompactionBeforeItsFirstRequest",
+    "TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently",
+    "TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten",
+    "TestDisposeUnadoptedSubagentSession_RemovesArtifactsDir"
+   ]
+  },
+  "deploy-host integration": {
+   "ceilingSeconds": 30,
+   "tests": [
+    "TestHostDeployFilesystemSafety",
+    "TestHubRPCThreadListServesRemoteHostWhoseAttachOutlastsLocalBudget",
+    "TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact"
+   ]
+  },
+  "session-activity": {
+   "ceilingSeconds": 30,
+   "tests": [
+    "TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates",
+    "TestSessionActivityReportCaptureBudgetPreservesPageContinuation",
+    "TestSessionActivityWarmSummaryIssuesRespectResponseBudget"
+   ]
+  },
+  "retirement": {
+   "ceilingSeconds": 30,
+   "tests": [
+    "TestDaemonRetirementProcessAdmittedWorkResetsInterval",
+    "TestDaemonRetirementProcessDirectPositiveExits",
+    "TestDaemonRetirementProcessDirectZeroStaysResident",
+    "TestDaemonRetirementProcessHelperExitsWithItsFixture",
+    "TestDaemonRetirementProcessHubZeroStaysResident",
+    "TestDaemonRetirementProcessReadsDoNotResetInterval",
+    "TestDaemonRetirementProcessRestartedHubRediscoversOrResumes"
+   ]
+  },
+  "eval harness": {
+   "ceilingSeconds": 20,
+   "tests": [
+    "TestMemoryEvalIsolation",
+    "TestPromptEvalTasks",
+    "TestOriginalTestsPassAllowsAddedTestsAndRefusesWeakenedOnes"
+   ]
+  },
+  "plugin-git integration": {
+   "ceilingSeconds": 15,
+   "tests": [
+    "TestGitCloneSurvivesAHookThatOrphansAPipeHolder",
+    "TestMaterializeBundledPlugin_SweepsOnlyUnderTheBundledLock"
+   ]
+  },
+  "gate-runner integration": {
+   "ceilingSeconds": 15,
+   "tests": [
+    "TestModuleRunnerRunsSelectedModulesWithPrivateHomes",
+    "TestModuleRunnerRefusesAZeroTestRun",
+    "TestModuleRunnerPropagatesAModuleFailure",
+    "TestModuleRunnerHonorsWaveOverrides",
+    "TestModuleRunnerEnumerationHonorsTheCallersBuildFlags",
+    "TestModuleRunnerCapturesTheTimingRowsItAlreadyRan"
+   ]
+  },
+  "live-stack E2E": {
+   "ceilingSeconds": 15,
+   "tests": [
+    "TestE2E_StopIsOfferedWheneverTheWireSaysActive",
+    "TestE2E_SendPromptToARetiredSession",
+    "TestE2E_SendPromptAfterDaemonDiedMidTurn",
+    "TestE2E_RetireOverlappedByAnotherOwnershipAction",
+    "TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn",
+    "TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary",
+    "TestTUITmuxE2E_APIErrorsRenderInPlace",
+    "TestTUITmuxE2E_BrowseAndFork",
+    "TestTUITmuxE2E_CaptureStableDuringStream",
+    "TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit"
+   ]
+  },
+  "dev-tool compile/CLI": {
+   "ceilingSeconds": 15,
+   "tests": [
+    "TestCrossCompileWindows",
+    "TestServeDevUsageAndUnknownSubcommand"
+   ]
+  }
+ },
  "packages": {
   "primeradiant.com/evener": 68.73,
   "primeradiant.com/evener/appwire": 0.14,

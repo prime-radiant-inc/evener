@@ -47,7 +47,7 @@ Operate on a relative path in the bound personal or project memory wiki. Replace
 
 ## memory_search
 
-Operate on a relative path in the bound personal or project memory wiki. Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search.
+Operate on a relative path in the bound personal or project memory wiki. Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search. Files larger than the read cap are left out of directory searches; name one directly as the path to search it.
 
 - `case_insensitive`: Match the pattern case-insensitively.
 - `context_lines`: Lines of context to include before and after each match, 0-10 (default 0).

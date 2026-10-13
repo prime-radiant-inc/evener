@@ -5,7 +5,6 @@ package execenv
 import (
 	"context"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -21,7 +20,7 @@ import (
 
 var (
 	secureBrowseWalkDir  = fs.WalkDir
-	secureBrowseReadFile = fs.ReadFile
+	secureBrowseReadFile = grepReadFileCapped
 )
 
 // secureDirFS is an fs.FS rooted at a base directory fd that refuses symlink
@@ -55,11 +54,17 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: toFsErr(err)}
 	}
-	file, err := admitReadFD(fd, name, true)
+	// A regular file whose resolved path sits inside a pseudo root is a
+	// stream (it stats regular; its read can block), so it keeps the flag,
+	// and the grepCtxFile wrapper lets the capped read arm its deadline.
+	// openBeneathRoot refuses symlinks beneath the root, but the anchored
+	// root itself may have been reached through an alias, so fdStreamed also
+	// asks the descriptor's mount.
+	file, err := admitReadFD(fd, name, true, fdStreamed(fd, isPseudoFsPath(filepath.Join(f.basePath, name))))
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 	}
-	return file, nil
+	return &grepCtxFile{File: file, ctx: f.ctx}, nil
 }
 
 // ReadDir lists name through readDirChunked, the same helper boundedDirFS
@@ -98,6 +103,18 @@ func toFsErr(err error) error {
 	default:
 		return err
 	}
+}
+
+// fdStreamed classifies an admitted regular file for the streamed read path,
+// from the descriptor the open actually produced: the base a browse anchors
+// on may be reached through an alias the open policy tolerated, leaving the
+// spelled path looking non-pseudo while the descriptor itself sits on a
+// pseudo mount — admitting that as an ordinary file clears O_NONBLOCK, and
+// a blocked read on it sits past both the deadline and cancellation. The
+// spelled check stays alongside the mount magic so a masked (stub-backed)
+// test root keeps its authority where the descriptor's mount cannot be faked.
+func fdStreamed(fd int, spelled bool) bool {
+	return spelled || fdOnPseudoMount(fd)
 }
 
 // glob resolves matches for pattern beneath a policy-checked base directory,
@@ -210,12 +227,14 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	// Never list or read into a masked subtree while collecting .gitignore
 	// rules — see the matching comment in glob above.
 	ignores, err := loadIgnoreSet(ctx, fsys, func(relPath string) bool {
-		return s.underMasked(filepath.Join(canonical, relPath))
+		abs := filepath.Join(canonical, relPath)
+		return s.underMasked(abs) || walkSkipsPseudoDir(canonical, abs)
 	}, budget, wholeBaseIgnoreScope())
 	if err != nil {
 		return "", err
 	}
 	excludedByIgnore := 0
+	oversized := 0
 	err = secureBrowseWalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
 		if cancelErr := ctx.Err(); cancelErr != nil {
 			return cancelErr
@@ -252,6 +271,9 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 					excludedByIgnore++
 					return fs.SkipDir
 				}
+				if walkSkipsPseudoDir(canonical, abs) {
+					return fs.SkipDir
+				}
 			}
 			// fs.WalkDir never follows a directory symlink, so this walk
 			// cannot cycle back into itself the way the glob pattern walk's
@@ -281,6 +303,9 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				return cancelErr
 			}
+			if errors.Is(rerr, errGrepFileTooLarge) {
+				oversized++
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files
 		}
 		if a.feed(rel, data) {
@@ -294,7 +319,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return a.finishWalk(excludedByIgnore), nil
+	return a.finishWalk(excludedByIgnore, oversized), nil
 }
 
 // grepNamedFile searches the one file a grep's path names, given its
@@ -303,7 +328,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 // out, non-regular files, and binary files (grepAccum.feed) are skipped. Its
 // output path is ".", the unsandboxed walk's name for a named file.
 func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globFilters []string, skip func(rel string) bool) (string, error) {
-	f, err := admitReadFD(fd, path, false)
+	f, err := admitReadFD(fd, path, false, fdStreamed(fd, isPseudoFsPath(path)))
 	if err != nil {
 		return "", nil //nolint:nilerr // best-effort grep: a non-regular file is skipped, as in the walk
 	}
@@ -315,9 +340,26 @@ func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globF
 	if selected, err := grepFileSelected(name, ".", globFilters, skip); !selected {
 		return "", err
 	}
-	data, err := io.ReadAll(f)
+	data, err := grepCappedRead(&grepCtxFile{File: f, ctx: ctx})
 	if cancelErr := ctx.Err(); cancelErr != nil {
 		return "", cancelErr
+	}
+	if errors.Is(err, errGrepFileTooLarge) {
+		// A file named as the target is a deliberate request: search the
+		// over-cap regular behind it in bounded windows. admitReadFD admits
+		// only regular files here, so the target cannot be a device stream.
+		if _, serr := a.feedLargeFile(ctx, f); serr != nil {
+			// A cancellation that landed mid-scan is the search's error, not
+			// an empty success; anything else is the unreadable-file skip.
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
+			return "", nil //nolint:nilerr // best-effort grep: a stalled or failed stream is skipped, like an unreadable file
+		}
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return "", cancelErr
+		}
+		return a.finish(), nil
 	}
 	if err != nil {
 		return "", nil //nolint:nilerr // best-effort grep: an unreadable file is skipped, as in the walk
