@@ -392,3 +392,39 @@ func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 		t.Fatalf("search of a missing root index: %q", got)
 	}
 }
+
+// What a memory write or edit tells the model about its page is prompt-facing
+// text, pinned whole per case in testdata/memorywritenotes; regenerate after
+// an intended wording change with
+//
+//	go test ./agent -run 'TestMemoryWriteNotesGoldens$' -count=1 -update-prompt
+func TestMemoryWriteNotesGoldens(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		// seed is a page left outside the tools; the case edits it when set,
+		// else writes a page with when and body.
+		seed string
+	}{
+		{"complete", ""},
+		{"missing-when", "---\ndescription: has one\n---\n# Page\nold\n"},
+		{"unreadable-frontmatter", "---\ndescription: Fix: use cents\ntags: [money\n---\n# Page\nold\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, scope := memoryWritesSession(t)
+			args, tool := map[string]any{"scope": "personal", "file_path": "page.md", "when": "Writing a commit message", "body": "# Page\nfact\n"}, "memory_write"
+			if tc.seed != "" {
+				seedMemoryPage(t, scope, "page.md", tc.seed)
+				args, tool = map[string]any{"scope": "personal", "file_path": "page.md", "old_string": "old", "new_string": "new"}, "memory_edit"
+			}
+			res := memoryExec(t, s, tool, args)
+			if res.IsError {
+				t.Fatalf("%+v", res)
+			}
+			agenttest.CheckGolden(t, filepath.Join("testdata", "memorywritenotes", tc.name+".md"), []byte(res.Output+"\n"), *updatePromptGoldens,
+				"Regenerate with `go test ./agent -run 'TestMemoryWriteNotesGoldens$' -count=1 -update-prompt` and read the diff.")
+		})
+	}
+}
