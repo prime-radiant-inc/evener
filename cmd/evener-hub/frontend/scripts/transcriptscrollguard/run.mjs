@@ -382,8 +382,13 @@ async function main() {
           await window.waitForPagedOpenSettled();
           ${setup ?? ""}
           const outcome = window.${call}().then(
-            () => ({ rejected: false, message: null }),
-            error => ({ rejected: true, message: error && error.message ? error.message : String(error) }),
+            () => ({ rejected: false, code: null, wait: null, message: null }),
+            error => ({
+              rejected: true,
+              code: error && typeof error.code === "string" ? error.code : null,
+              wait: error && typeof error.wait === "string" ? error.wait : null,
+              message: error && error.message ? error.message : String(error),
+            }),
           );
           // Unmount while the wait is suspended at its first frame: waiting a
           // frame first would race appendLargeTurns' one-frame completion.
@@ -391,13 +396,16 @@ async function main() {
           const gone = document.querySelector('[data-testid="transcript-virtual-list"] > div') === null;
           return JSON.stringify({ gone, ...(await outcome) });
         })()`));
-        const named = `unmounted during ${wait}`;
         if (!unmounted.gone) {
           failures.push(`unmounting the pane left the transcript mounted (the ${wait})`);
         } else if (!unmounted.rejected) {
           failures.push(`the ${wait} completed after its transcript pane unmounted`);
-        } else if (!unmounted.message.includes(named)) {
-          failures.push(`a mid-pass unmount was not named by the ${wait}: ${unmounted.message}`);
+        } else if (unmounted.code !== "transcript-scroll-unmounted" || unmounted.wait !== wait) {
+          failures.push(
+            `a mid-pass unmount was not reported by the wait itself: expected transcript-scroll-unmounted ` +
+              `during ${wait}, got code=${JSON.stringify(unmounted.code)} wait=${JSON.stringify(unmounted.wait)} ` +
+              `(message: ${unmounted.message})`,
+          );
         }
       }
 

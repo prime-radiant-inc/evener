@@ -327,13 +327,24 @@ function findScrollElement(): HTMLElement | null {
   return el instanceof HTMLElement ? el : null;
 }
 
+// The machine-checkable identity of the state a post-settle wait reports when
+// the pane under it unmounts mid-pass: unlike the message, these fields are not
+// wording, so the browser guard can assert the state without pinning prose
+// (docs/developing-evener/testing.md, "Copy Is Not a Test Oracle").
+const UNMOUNTED_CODE = "transcript-scroll-unmounted";
+
 // A post-settle wait reads the scroll element through this pair. When the pane
 // under it unmounts mid-pass, the wait names itself ("unmounted during the
 // scroll-away wait") instead of throwing the internal "not mounted" that the
 // reads used to - over CDP that internal error reads as a harness crash rather
 // than the state this guard exists to report.
 function unmountedError(wait: string): Error {
-  return new Error(`transcript harness: ${describeTranscriptSettleBlocker({ kind: "unmounted", during: wait })}`);
+  const error = new Error(
+    `transcript harness: ${describeTranscriptSettleBlocker({ kind: "unmounted", during: wait })}`,
+  ) as Error & { code: string; wait: string };
+  error.code = UNMOUNTED_CODE;
+  error.wait = wait;
+  return error;
 }
 
 function requireScrollElement(wait: string): HTMLElement {
