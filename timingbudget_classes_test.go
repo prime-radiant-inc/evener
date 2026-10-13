@@ -42,9 +42,11 @@ func classMapNames(t *testing.T) []string {
 // files and returns, per class-member name, the set of files defining it.
 //
 // The audit forces git's output shape on the command line: a developer's
-// grep.column/color/break/heading settings would otherwise turn
-// "<file>:<line>:<content>" into "<file>:<line>:<column>:<content>" and every
-// declaration would look missing. -n pins line numbers on regardless of
+// grep.column setting would turn "<file>:<line>:<content>" into
+// "<file>:<line>:<column>:<content>", and color.grep=always wraps the line in
+// ANSI escapes (color.ui=false does not override the more specific color.grep),
+// so either way every declaration would look missing. --no-color and the -c
+// overrides outrank a config file, and -n pins line numbers on regardless of
 // grep.lineNumber. extraEnv is the test seam that proves that override.
 func classDeclarations(t *testing.T, names, extraEnv []string) map[string]map[string]bool {
 	t.Helper()
@@ -54,11 +56,10 @@ func classDeclarations(t *testing.T, names, extraEnv []string) map[string]map[st
 	}
 	pattern := `^func (` + strings.Join(alternates, "|") + `)\(t \*testing\.T\)`
 	cmd := exec.Command("git",
-		"-c", "color.ui=false",
 		"-c", "grep.column=false",
 		"-c", "grep.break=false",
 		"-c", "grep.heading=false",
-		"grep", "-n", "-E", pattern, "--", "*_test.go")
+		"grep", "--no-color", "-n", "-E", pattern, "--", "*_test.go")
 	cmd.Env = append([]string{"LC_ALL=C"}, append(os.Environ(), extraEnv...)...)
 	out, err := cmd.Output()
 	if err != nil {
@@ -120,29 +121,42 @@ func TestTimingBudgetClassMapNamesMatchTheTree(t *testing.T) {
 	}
 }
 
-// TestTimingBudgetClassMapAuditIgnoresGrepColumnConfig pins RoboRev's finding on
-// PR #4610: the audit must not read a developer's grep output formatting. With
-// grep.column=true a plain `git grep -n` prints "<file>:<line>:<column>:<content>",
-// which the file:line:content parser would reject, reporting every class member
-// as missing and reddening a valid checkout. The audit forces those settings off
-// on the command line (higher precedence than a config file), so it finds the
-// same declarations with the setting on as off.
-func TestTimingBudgetClassMapAuditIgnoresGrepColumnConfig(t *testing.T) {
+// TestTimingBudgetClassMapAuditIgnoresGrepFormattingConfig pins RoboRev's
+// findings on PR #4610: the audit must not read a developer's grep output
+// formatting. With grep.column=true a plain `git grep -n` prints
+// "<file>:<line>:<column>:<content>"; with color.grep=always it wraps the line
+// in ANSI escapes (color.ui=false does not override the more specific
+// color.grep). Either makes the file:line:content parser reject the line and
+// report every class member as missing, reddening a valid checkout. The audit
+// disables both on the command line, which outranks a config file, so it finds
+// the same declarations with the settings on as off.
+func TestTimingBudgetClassMapAuditIgnoresGrepFormattingConfig(t *testing.T) {
 	names := classMapNames(t)
 	want := classDeclarations(t, names, nil)
-
-	cfg := filepath.Join(t.TempDir(), "gitconfig")
-	writeAuditScriptFixture(t, cfg, "[grep]\n\tcolumn = true\n")
-	got := classDeclarations(t, names, []string{"GIT_CONFIG_GLOBAL=" + cfg, "GIT_CONFIG_NOSYSTEM=1"})
-
-	if len(got) != len(want) {
-		t.Fatalf("with grep.column=true the audit found %d of %d names; it is reading git's column output", len(got), len(want))
+	if len(want) != len(names) {
+		t.Fatalf("fixture check: the audit found %d of %d class names with no formatting config", len(want), len(names))
 	}
 	first := names[0]
 	if len(want[first]) != 1 {
 		t.Fatalf("fixture check: %s should be defined in exactly one file, got %v", first, want[first])
 	}
-	if len(got[first]) != 1 {
-		t.Fatalf("with grep.column=true, %s resolved to %v, want exactly one file", first, got[first])
+
+	cases := map[string]string{
+		"column":         "[grep]\n\tcolumn = true\n",
+		"color.grep":     "[color]\n\tgrep = always\n",
+		"column + color": "[grep]\n\tcolumn = true\n[color]\n\tgrep = always\n",
+	}
+	for name, cfgBody := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := filepath.Join(t.TempDir(), "gitconfig")
+			writeAuditScriptFixture(t, cfg, cfgBody)
+			got := classDeclarations(t, names, []string{"GIT_CONFIG_GLOBAL=" + cfg, "GIT_CONFIG_NOSYSTEM=1"})
+			if len(got) != len(want) {
+				t.Fatalf("with %s set the audit found %d of %d names; it is reading git's formatted output", name, len(got), len(want))
+			}
+			if len(got[first]) != 1 {
+				t.Fatalf("with %s set, %s resolved to %v, want exactly one file", name, first, got[first])
+			}
+		})
 	}
 }
