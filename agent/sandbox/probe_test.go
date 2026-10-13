@@ -70,6 +70,84 @@ func TestBwrapOverlayLowerWorksReportsTheProbeResult(t *testing.T) {
 	}
 }
 
+// scriptedOverlaySystem answers every command with the error its hook returns,
+// so a test can change what the host can overlay between probes.
+type scriptedOverlaySystem struct {
+	stubProbeSystem
+	runErr func() error
+}
+
+func (s scriptedOverlaySystem) run(context.Context, string, ...string) error { return s.runErr() }
+
+// A cache root can be retargeted under a session (a symlinked parent moved onto
+// another filesystem), so a remembered verdict is keyed by the root's resolved
+// location: a retarget is a new key and is probed again. A stale "fine" would
+// put the bad overlay back in the argv and abort every spawn (#4220).
+func TestOverlayLowerProbeReJudgesARetargetedRoot(t *testing.T) {
+	t.Parallel()
+	dir := overlayFixtureDir(t)
+	first, second := filepath.Join(dir, "first"), filepath.Join(dir, "second")
+	for _, d := range []string{first, second} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(first, link); err != nil {
+		t.Fatal(err)
+	}
+	unoverlayable := false
+	probe := memoizedOverlayLower(scriptedOverlaySystem{runErr: func() error {
+		if unoverlayable {
+			return errors.New("EINVAL")
+		}
+		return nil
+	}}, "/usr/bin/bwrap")
+	if !probe(link) {
+		t.Fatal("a symlinked root on a filesystem the overlay takes must probe fine")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(second, link); err != nil {
+		t.Fatal(err)
+	}
+	unoverlayable = true
+	if probe(link) {
+		t.Error("a root retargeted onto an un-overlayable filesystem must be probed again")
+	}
+}
+
+// A root that is not a directory yet is not overlaid, and its failure must not
+// be remembered: once its storage appears on a filesystem the overlay takes, it
+// is judged afresh and served (#4220).
+func TestOverlayLowerProbeDoesNotMemoizeAnUnavailableRoot(t *testing.T) {
+	t.Parallel()
+	dir := overlayFixtureDir(t)
+	drive := filepath.Join(dir, "unmounted", "drive")
+	link := filepath.Join(dir, "cache")
+	if err := os.Symlink(drive, link); err != nil {
+		t.Fatal(err)
+	}
+	unoverlayable := true
+	probe := memoizedOverlayLower(scriptedOverlaySystem{runErr: func() error {
+		if unoverlayable {
+			return errors.New("EINVAL")
+		}
+		return nil
+	}}, "/usr/bin/bwrap")
+	if probe(link) {
+		t.Fatal("a root that is not a directory must probe as un-overlayable")
+	}
+	if err := os.MkdirAll(drive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unoverlayable = false
+	if !probe(link) {
+		t.Error("a root that appears after being unavailable must be judged afresh, not answered from the memo")
+	}
+}
+
 // overlayProbeSystem is stubProbeSystem whose bwrap reports (or does not report)
 // overlay support, with a settable per-command result.
 type overlayProbeSystem struct {

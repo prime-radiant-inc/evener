@@ -159,9 +159,11 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 		// filesystem (#4220): it is not overlaid at all, so what names it — the
 		// spawn's own value or its HOME default — must go to the scratch rather
 		// than write into a read-only tree. A root dropped for sharing storage
-		// with a writable directory keeps today's "leave it alone".
+		// with a writable directory keeps today's "leave it alone", even when it
+		// is also un-overlayable: those writes persist where the user granted.
 		for _, name := range []string{npmConfigCacheEnv, envvars.CargoHome.Name} {
-			if dir := dirs[name]; filepath.IsAbs(dir) && !servedByOverlay(roots, dir) && underUnoverlayableRoot(policy, dir) {
+			if dir := dirs[name]; filepath.IsAbs(dir) && !servedByOverlay(roots, dir) &&
+				!overlapsAnyRoot(dir, writeRoots) && underUnoverlayableRoot(policy, dir) {
 				out[name] = true
 			}
 		}

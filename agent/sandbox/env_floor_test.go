@@ -455,6 +455,24 @@ func TestEnvFloorRedirectsNpmAndCargoCachesUnderADegradedRoot(t *testing.T) {
 	}
 }
 
+// A cache inside a directory the user made writable on purpose is left alone,
+// even when its root is also one the overlay cannot mount: those writes land
+// where the user granted, and redirecting them would override that (#4220).
+func TestEnvFloorLeavesNpmCachesInAPersistentWriteRootAlone(t *testing.T) {
+	home := servedHome(t)
+	tmp := "/tmp/evener-session-xyz"
+	dir := home + "/.npm"
+	policy := ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{dir},
+		Spawned:     AccessScope{Read: ReadAnywhere, WriteRoots: []string{dir}},
+		resolveHost: HostFacts{OS: "linux", Home: home, OverlayLowerOK: func(string) bool { return false }},
+	}
+	out := ApplyEnvFloor([]string{"HOME=" + home}, policy, tmp)
+	if v, ok := envValue(out, "npm_config_cache"); ok {
+		t.Errorf("an npm cache the user made writable on purpose must be left alone, got %q", v)
+	}
+}
+
 // A Go cache that cannot be a directory (an existing file, or one below a
 // file) is not served by an overlaid ancestor: go would fail on it, so it
 // goes to the scratch instead.

@@ -663,9 +663,21 @@ func bwrapOverlayLowerWorks(system probeSystem, path, root string) bool {
 }
 
 // memoizedOverlayLower returns bwrapOverlayLowerWorks, remembering each root's
-// verdict so the probe runs once per root per session. The filesystem a root
-// sits on does not change mid-session, so a remembered verdict is as good as a
-// fresh one. The probe is asked from more than one spawn site, so the memo is
+// verdict so the probe runs once per root per session. A cache root can be
+// retargeted under a session (a symlinked parent moved onto another filesystem),
+// so a verdict is keyed by the root's RESOLVED location, not its spelling: a
+// retarget is a new key and is probed again.
+//
+// A root that is not a directory is never remembered: it is not overlaid now,
+// and remembering that would keep it unserved for good once its storage appears
+// (its caller judges it afresh, servableCacheRoot).
+//
+// Accepted residual, and inherent to the issue's once-per-session shape: a
+// DIFFERENT filesystem mounted over the same path (not through a link) keeps the
+// key, so its verdict stands for the session. A user who remounts a cache root's
+// storage mid-session gets the next session's judgment.
+//
+// The probe is asked from more than one spawn site, so the memo is
 // mutex-guarded; the lock is released while the subprocess runs, so concurrent
 // spawns do not queue behind it (a root probed twice concurrently stores the
 // same answer). The closure is shared by every copy of the HostFacts it was
@@ -674,17 +686,21 @@ func memoizedOverlayLower(system probeSystem, path string) func(root string) boo
 	var mu sync.Mutex
 	seen := map[string]bool{}
 	return func(root string) bool {
+		if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+			return bwrapOverlayLowerWorks(system, path, root)
+		}
+		key := resolveExistingPrefix(root)
 		mu.Lock()
-		ok, found := seen[root]
+		over, found := seen[key]
 		mu.Unlock()
 		if found {
-			return ok
+			return over
 		}
-		ok = bwrapOverlayLowerWorks(system, path, root)
+		over = bwrapOverlayLowerWorks(system, path, root)
 		mu.Lock()
-		seen[root] = ok
+		seen[key] = over
 		mu.Unlock()
-		return ok
+		return over
 	}
 }
 
