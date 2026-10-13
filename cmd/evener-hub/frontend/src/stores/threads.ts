@@ -1356,9 +1356,27 @@ async function acceptEntryTranscriptHydration(
     (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref))
   )
     return;
-  const state = threadsStore.getState();
   const productionRoute = productionEntryRoutes.get(ref) === fixture;
-  const lifetimeSuppressed = state.cacheLifetimes.get(ref)?.suppressed === true;
+  if (productionRoute && authorities) {
+    // A first unpublished claim may capture the observed epoch. Existing
+    // holders instead pass through the same suppression as a Clear broadcast.
+    if (
+      !claimedRepository &&
+      !threadsStore.getState().threads.has(ref) &&
+      !threadsStore.getState().cacheLifetimes.get(ref)?.suppressed
+    ) {
+      threadsStore.setState((state) => ({
+        cacheLifetimes: new Map(state.cacheLifetimes).set(ref, {
+          ...state.cacheLifetimes.get(ref),
+          leaseEpoch: authorities.clearEpoch,
+        }),
+      }));
+    }
+    onCacheEpochObserved(authorities.clearEpoch);
+  }
+  const state = threadsStore.getState();
+  const lifetime = state.cacheLifetimes.get(ref);
+  const lifetimeSuppressed = lifetime?.suppressed === true;
   const retired =
     state.deletedRefs.has(ref) ||
     (entryRouteRetirements.get(ref) ?? 0) !== claimedRetirement ||
@@ -1375,7 +1393,7 @@ async function acceptEntryTranscriptHydration(
   // than adopting unread authorities; a brand-new route falls back to the
   // epoch-0/generation-0 baseline and lets the durable fence decide.
   const clearEpoch =
-    productionRoute && lifetimeSuppressed
+    productionRoute && lifetimeSuppressed && !lifetime?.freshForegroundLifetime
       ? (fixture.clearEpoch ?? 0)
       : (authorities?.clearEpoch ?? fixture.clearEpoch ?? 0);
   const historyGeneration = authorities?.historyGeneration ?? fixture.historyGeneration ?? 0;
@@ -1407,6 +1425,7 @@ async function acceptEntryTranscriptHydration(
   fixture.cachedUnverified = false;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
   if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
+  if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
   repository.acceptRead(response, {
     lifetime: fixture.lifetime,
     readId: `fixture-read-${++fixture.readSequence}`,

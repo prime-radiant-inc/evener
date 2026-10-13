@@ -1269,6 +1269,38 @@ it("ordinary reconnect keeps a same-turn tail outside the recovered window witho
   expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("missing-48");
 });
 
+it("a fresh foreground lifetime with a surviving background owner caches the cleared epoch", async () => {
+  const storage = cache();
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.hydrated;
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(await clearCachedSessions()).toEqual({ committed: true });
+  expect(await storage.getClearEpoch()).toBe(1);
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+  background.release();
+});
+
+it("automatic hydration observes a missed sibling Clear without recaching a continuously held pane", async () => {
+  const storage = cache();
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(await storage.clear()).toEqual({ committed: true, epoch: 1 });
+  await threadsStore.getState().refreshThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(threadsStore.getState().cacheLifetimes.get("local:a")?.suppressed).toBe(true);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+});
+
 it("ordinary sibling Clear permits a genuinely fresh explicit acquisition to cache the new epoch", async () => {
   const storage = cache();
   connect();
