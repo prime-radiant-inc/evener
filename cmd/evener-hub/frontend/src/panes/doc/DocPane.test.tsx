@@ -59,6 +59,7 @@ import {
   disposeDocumentReaderWork,
   documentReaderWork,
   publishReader,
+  setDocumentAnnotationPortsForTests,
   subscribeDocumentReaderWork,
 } from "./documentReadState";
 // Side-effect import: registers the real "doc" pane type (index.tsx), needed
@@ -842,6 +843,14 @@ for (const reason of RETRY_REASONS) {
         await retainedRuntime.whenIdle();
       });
       cleanupAfterTest(() => disposeDocumentReaderWork("doc-first-send"));
+      // The foreground retry arrives through the listener documentReadState
+      // installs with the ports singleton. These fixture ports stand in for
+      // that singleton exactly as production's single ports object does, so
+      // the real visibilitychange below reaches this runtime.
+      if (reason === "foreground") {
+        setDocumentAnnotationPortsForTests(ports);
+        cleanupAfterTest(() => setDocumentAnnotationPortsForTests(undefined));
+      }
       const client = new FakeClient("ready");
       const previousConnection = connectionStore.getState();
       cleanupAfterTest(() => {
@@ -2333,6 +2342,11 @@ test("Cancel after a failed first Send retires only that operation, and another 
   });
   await settleBaseline(f);
   const { ports } = annotationRuntimePorts(f);
+  // The real foreground event below reaches this runtime only through the
+  // listener installed with the ports singleton; stand in for that singleton
+  // exactly as production's single ports object does.
+  setDocumentAnnotationPortsForTests(ports);
+  cleanupAfterTest(() => setDocumentAnnotationPortsForTests(undefined));
   const client = connectFakeClient();
   mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
   const { maps } = observeBoundMaps();
@@ -2647,6 +2661,11 @@ test("Cancel at the real precommit boundary of a foreground retry leaves no canc
   });
   await settleBaseline(f);
   const { ports } = annotationRuntimePorts(f);
+  // The real foreground event below reaches this runtime only through the
+  // listener installed with the ports singleton; stand in for that singleton
+  // exactly as production's single ports object does.
+  setDocumentAnnotationPortsForTests(ports);
+  cleanupAfterTest(() => setDocumentAnnotationPortsForTests(undefined));
   const client = connectFakeClient();
   mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
   const { maps } = observeBoundMaps();
