@@ -181,8 +181,7 @@ func TestBuildTreeNeedsYouRowCarriesTheArchivedDecision(t *testing.T) {
 		return schema.SessionMeta{ID: id, CreatedAt: activity, UpdatedAt: activity, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
 	}
 	entry := func(id string) LiveEntry {
-		live := LiveEntry{SessionID: id, Status: "awaiting", Entry: rendezvous.Entry{SessionID: id, StartedAt: now, WorkingDir: "/w"}}
-		return live
+		return LiveEntry{SessionID: id, Status: "awaiting", Entry: rendezvous.Entry{SessionID: id, StartedAt: now, WorkingDir: "/w"}}
 	}
 	for _, tc := range []struct {
 		name      string
@@ -203,5 +202,44 @@ func TestBuildTreeNeedsYouRowCarriesTheArchivedDecision(t *testing.T) {
 				t.Errorf("Needs you row Archived = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A nested fork original carries the archived fact too (#4199): a location
+// summary and the archived list serve a nested row in its own right, so a
+// consumer must be able to see that it is archived.
+func TestBuildTreeNestedRowCarriesTheArchivedDecision(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	env := schema.EnvironmentInfo{WorkingDir: "/w"}
+	metas := []schema.SessionMeta{
+		{ID: "orig", ForkLabel: "before edit", CreatedAt: now, UpdatedAt: now, EnvInfo: env},
+		{ID: "cont", ParentSessionID: "orig", CreatedAt: now, UpdatedAt: now, EnvInfo: env},
+	}
+	decisions := map[ArchiveKey]bool{{Kind: "session", ID: "orig"}: true}
+	tree := BuildTreeAtWithProjects(metas, nil, decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
+
+	rows := map[string]bool{}
+	var walk func([]TreeNode)
+	walk = func(nodes []TreeNode) {
+		for _, node := range nodes {
+			if _, seen := rows[node.ID]; !seen {
+				rows[node.ID] = node.Archived
+			}
+			walk(node.Children)
+		}
+	}
+	for _, project := range append(append([]TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+		walk(project.Current)
+		walk(project.Recent)
+		walk(project.Archived)
+	}
+	if _, present := rows["orig"]; !present {
+		t.Fatal("the nested fork original has no row")
+	}
+	if !rows["orig"] {
+		t.Error("a nested fork original archived by its own decision reads Archived false")
+	}
+	if rows["cont"] {
+		t.Error("the continuation of an archived fork original reads Archived true")
 	}
 }
