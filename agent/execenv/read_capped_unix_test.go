@@ -3,9 +3,11 @@
 package execenv
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -136,4 +138,53 @@ func TestReadFileRawOffArmRefusesFIFOWithoutBlocking(t *testing.T) {
 	if !errors.Is(err, errNotRegularFile) {
 		t.Fatalf("ReadFileRaw(FIFO) err = %v, want the not-regular refusal", err)
 	}
+}
+
+// Not parallel: the allocation measurement must exclude sibling test activity.
+// TestReadFileOffArmRefusesOversizeBeforeReadingIt pins the off arm's refusal
+// BEFORE any ingest: the fixture is dense NUL-free bytes past the cap, so a
+// regression that reads first would both stream content past the cap and
+// allocate for it, where the sparse fixtures cannot tell refusal-before-read
+// from read-then-refuse (issue #4556).
+func TestReadFileOffArmRefusesOversizeBeforeReadingIt(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	path := filepath.Join(env.WorkingDirectory(), "oversize-dense.log")
+	if err := writeDenseOversize(t, path); err != nil {
+		t.Fatal(err)
+	}
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, _, err := env.ReadFileAndBytes(path, nil, nil)
+	runtime.ReadMemStats(&after)
+	rle, capped := errors.AsType[*ReadLimitError](err)
+	if !capped {
+		t.Fatalf("ReadFileAndBytes(oversize) err = %v, want the read-limit refusal", err)
+	}
+	if rle.Limit != MaxWholeFileReadBytes {
+		t.Fatalf("ReadLimitError.Limit = %d, want %d", rle.Limit, MaxWholeFileReadBytes)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<20 {
+		t.Fatalf("refusing an oversize file allocated %d bytes, want the refusal before any read", allocated)
+	}
+}
+
+// writeDenseOversize writes a real (non-sparse) file of NUL-free bytes one
+// past the whole-file read cap, so no later NUL-byte or truncation check can
+// masquerade as the cap's refusal.
+func writeDenseOversize(t *testing.T, path string) error {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	chunk := bytes.Repeat([]byte("a"), 1<<20)
+	for written := int64(0); written < MaxWholeFileReadBytes; written += 1 << 20 {
+		if _, err := f.Write(chunk); err != nil {
+			return err
+		}
+	}
+	_, err = f.WriteString("a")
+	return err
 }

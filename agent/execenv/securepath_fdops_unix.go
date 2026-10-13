@@ -459,6 +459,16 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
 	defer func() { _ = f.Close() }()
+	// Refuse at the stat size before reading a byte, matching the off arm's
+	// fstat refusal; readAllCapped still bounds the read for a file that grows
+	// past the cap after this check.
+	info, serr := f.Stat()
+	if serr != nil {
+		return nil, fmt.Errorf("read %q: %w", abs, serr)
+	}
+	if info.Size() > MaxWholeFileReadBytes {
+		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
+	}
 	return readAllCapped(f, MaxWholeFileReadBytes)
 }
 
