@@ -421,19 +421,61 @@ func probeGitGlobalReferencedPaths(system probeSystem, configPaths []string) []s
 	return out
 }
 
-// gitConfigReferencedPath returns the absolute path a global-config pathname value
-// names, or "" when the value names no single file a grant could cover: a bare `~`
-// (the home directory itself) or `~user` (another user's home, which the host facts
-// cannot resolve), and a relative value, which git resolves against the working
-// directory of the git command rather than to any stable file.
+// gitConfigReferencedPath returns the path a global-config pathname value names, or
+// "" when the value names no single file a grant could cover: a bare `~` (the home
+// directory itself) or `~user` (another user's home, which the host facts cannot
+// resolve), and a relative value, which git resolves against the working directory of
+// the git command rather than to any stable file.
+//
+// The `~` is joined by hand and an absolute value is returned AS WRITTEN, never
+// lexically cleaned: git hands the pathname to the kernel, so a `..` that follows a
+// symlink resolves through the link (`~/link/../ignore` where `~/link` is
+// /srv/dotfiles/subdir names /srv/dotfiles/ignore). Cleaning first would name a
+// different file from the one git opens — and grant it. The caller's confinement
+// check then compares this spelling against what it really resolves to.
 func gitConfigReferencedPath(value, home string) string {
 	if strings.HasPrefix(value, "~/") {
-		return filepath.Clean(filepath.Join(home, value[2:]))
+		return home + string(filepath.Separator) + value[2:]
 	}
 	if !filepath.IsAbs(value) {
 		return ""
 	}
-	return filepath.Clean(value)
+	return value
+}
+
+// confinedReferencedFiles drops the files a global git config names that the session
+// could retarget. bwrap binds a read root by its LITERAL name and follows symlinks
+// when it binds, so a granted name is only as good as what it resolves to AT SPAWN
+// TIME: a name that resolves through a symlink, or through a `..` the kernel resolves
+// after one, is a name the session may be able to re-point (a link whose target it
+// can write), and a name that sits inside a root the session may write can be swapped
+// for a link at any time. Either way the bind would materialize a DIFFERENT file at
+// the granted name — the retargeting the #4234 review demonstrated by replacing the
+// worktree file a config-named symlink pointed at.
+//
+// A path that resolves to its own cleaned spelling and lies outside every writable
+// root is fixed: the session cannot write the directories on it, so the file the
+// config names is the file the bind exposes.
+func confinedReferencedFiles(candidates, writable []string) []string {
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		clean := filepath.Clean(c)
+		// Resolved with EvalSymlinks directly rather than resolveExistingPrefix: that
+		// helper cleans first, which would collapse a `..` that follows a symlink before
+		// the kernel ever resolves it — the very confusion this check exists to catch.
+		resolved, err := filepath.EvalSymlinks(c)
+		if err != nil || StripDataVolumeAlias(resolved) != StripDataVolumeAlias(clean) {
+			continue
+		}
+		if isUnderAnyRoot(clean, writable) {
+			continue
+		}
+		out = append(out, clean)
+	}
+	return out
 }
 
 // evenerContentRoots returns the plugin store's installed plugin files and the

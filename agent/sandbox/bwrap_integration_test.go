@@ -647,9 +647,10 @@ func TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames(t *testing.T) {
 	}
 	gitHarness(t, repo, "add", "tracked.txt")
 
-	// runUnderFixtureHome writes config as the fixture's global git config, resolves
-	// a fresh restricted policy from it and runs script inside the real sandbox.
-	runUnderFixtureHome := func(config, script string, args ...string) (string, string, ResolvedPolicy, HostFacts) {
+	// resolveFixtureHome writes config as the fixture's global git config, probes the
+	// fixture home and resolves a restricted policy from it — the session-start step
+	// these subtests need to be able to do ONCE and then spawn from repeatedly.
+	resolveFixtureHome := func(config string) (ResolvedPolicy, HostFacts) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(config), 0o644); err != nil {
 			t.Fatal(err)
@@ -662,6 +663,13 @@ func TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
+		return rp, facts
+	}
+
+	// runWithPolicy spawns script inside the real sandbox under an already-resolved
+	// policy, exactly as a later tool call in a live session would.
+	runWithPolicy := func(rp ResolvedPolicy, facts HostFacts, script string, args ...string) (string, string) {
+		t.Helper()
 		sessionTmp := t.TempDir()
 		w, err := NewWrapper(rp, facts.BwrapPath, sessionTmp)
 		if err != nil {
@@ -676,7 +684,15 @@ func TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames(t *testing.T) {
 		if err := cmd.Run(); err != nil {
 			t.Fatalf("restricted sandbox command failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 		}
-		return stdout.String(), stderr.String(), rp, facts
+		return stdout.String(), stderr.String()
+	}
+
+	// runUnderFixtureHome resolves a fresh policy from config and runs script under it.
+	runUnderFixtureHome := func(config, script string, args ...string) (string, string, ResolvedPolicy, HostFacts) {
+		t.Helper()
+		rp, facts := resolveFixtureHome(config)
+		stdout, stderr := runWithPolicy(rp, facts, script, args...)
+		return stdout, stderr, rp, facts
 	}
 
 	t.Run("the config's files take effect and the grant stays file-exact", func(t *testing.T) {
@@ -719,6 +735,47 @@ printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
 		}
 		if strings.Contains(stdout, secretText) {
 			t.Errorf("a grant for a config-named symlink must not expose its masked target; stdout:\n%s", stdout)
+		}
+	})
+
+	t.Run("a session cannot retarget a granted name at a masked secret", func(t *testing.T) {
+		// The config names a SYMLINK whose target is a file inside the session's own
+		// worktree — a dotfile-managed excludes file pointing at a file in the repo.
+		// bwrap binds the granted NAME afresh at every spawn, so between two commands
+		// the session can replace that target with a symlink to a masked secret and the
+		// next bind would materialize the key's content at the granted name. The policy
+		// is resolved ONCE here, like a session's, so the two spawns share it.
+		target := filepath.Join(repo, "inner-ignore")
+		alias := filepath.Join(home, "gitignore-alias")
+		writeFixtureFile(t, target, "inner.txt\n")
+		if err := os.Symlink(target, alias); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Remove(target) }()
+		config := "[core]\n\texcludesFile = ~/gitignore-alias\n"
+		rp, facts := resolveFixtureHome(config)
+		if !slices.Contains(facts.GitGlobalReferencedPaths, alias) {
+			t.Fatalf("the probe must admit a config-named symlink whose target exists, %q; got %v", alias, facts.GitGlobalReferencedPaths)
+		}
+		if slices.Contains(rp.Spawned.ReadRoots, alias) {
+			t.Fatalf("a name the session can retarget must not be granted; read roots: %v", rp.Spawned.ReadRoots)
+		}
+		before, _ := runWithPolicy(rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, alias)
+		if strings.Contains(before, secretText) {
+			t.Fatalf("unexpected secret content before the retarget; stdout:\n%s", before)
+		}
+
+		// The session writes to its own worktree: replace the target with a link to the
+		// masked secret, then run the next command under the SAME policy.
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(secret, target); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := runWithPolicy(rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, alias)
+		if strings.Contains(after, secretText) {
+			t.Errorf("a session must not be able to retarget a granted name at a masked secret; stdout:\n%s", after)
 		}
 	})
 }

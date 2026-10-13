@@ -174,6 +174,26 @@ func TestProbeGitGlobalReferencedPaths(t *testing.T) {
 			},
 		},
 		{
+			name: "a .. after a symlink keeps the spelling git hands the kernel",
+			setup: func(t *testing.T, home, ignore, attrs string) []string {
+				// ~/link -> <home>/subdir, so `~/link/../ignore` is the file git opens
+				// (<home>/ignore) — but only after the kernel resolves the link. Cleaning
+				// the value first would name <home>/ignore by a different route and could
+				// grant a file git never opened; the probe must report the value as
+				// written and let the resolver's confinement check judge it.
+				subdir := filepath.Join(home, "subdir")
+				if err := os.MkdirAll(subdir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				link := filepath.Join(home, "link")
+				if err := os.Symlink(subdir, link); err != nil {
+					t.Fatal(err)
+				}
+				writeFixtureFile(t, filepath.Join(home, ".gitconfig"), "[core]\n\texcludesFile = ~/link/../ignore\n")
+				return []string{home + string(filepath.Separator) + "link" + string(filepath.Separator) + ".." + string(filepath.Separator) + "ignore"}
+			},
+		},
+		{
 			name: "both keys naming one file yield one entry",
 			setup: func(t *testing.T, home, ignore, attrs string) []string {
 				writeFixtureFile(t, filepath.Join(home, ".gitconfig"),
@@ -468,12 +488,14 @@ func TestGlobalGitReferencedFileRefusesSharedTrees(t *testing.T) {
 	}
 }
 
-// TestGlobalGitReferencedSymlinkIsJudgedAtItsTarget pins the fix for the hole a
-// config-named symlink would otherwise open: bwrap's read-only bind of a symlink
-// follows it and materializes the TARGET's content at the literal name (verified on
-// the live kernel), so a referenced path whose resolved target is masked must never
-// become a read root — while a symlink whose target is ordinary is still granted.
-func TestGlobalGitReferencedSymlinkIsJudgedAtItsTarget(t *testing.T) {
+// TestGlobalGitReferencedSymlinkIsNeverGranted pins the hole a config-named symlink
+// would otherwise open: bwrap's read-only bind of a symlink follows it and
+// materializes the TARGET's content at the literal name (verified on the live
+// kernel), and the session can rewrite a target inside its own worktree between
+// spawns, so a referenced path that resolves through a symlink at all is refused —
+// whether the target is masked or ordinary. The live integration test drives the
+// retarget itself.
+func TestGlobalGitReferencedSymlinkIsNeverGranted(t *testing.T) {
 	t.Parallel()
 	home, _, _ := referencedFilesFixture(t)
 	cwd := mainRepo(t)
@@ -510,8 +532,55 @@ func TestGlobalGitReferencedSymlinkIsJudgedAtItsTarget(t *testing.T) {
 	if slices.Contains(rp.Spawned.ReadRoots, maskedLink) {
 		t.Errorf("a referenced symlink whose target is masked must not become a read root: %v", rp.Spawned.ReadRoots)
 	}
-	if !slices.Contains(rp.Spawned.ReadRoots, ordinaryLink) {
-		t.Errorf("a referenced symlink whose target is ordinary must still be granted: %v", rp.Spawned.ReadRoots)
+	if slices.Contains(rp.Spawned.ReadRoots, ordinaryLink) {
+		t.Errorf("a referenced symlink must not become a read root even with an ordinary target — the session can re-point a name inside its own worktree: %v", rp.Spawned.ReadRoots)
+	}
+}
+
+// TestConfinedReferencedFiles pins the admission the config-file grant does not need:
+// a file a global config NAMES is granted only when nothing about its name can
+// change, because bwrap binds that name afresh at every spawn. A name that resolves
+// through a symlink (or through a `..` the kernel resolves after one), or that sits
+// inside a root the session may write, is refused — the grant would otherwise be a
+// way to read whatever the session later points it at.
+func TestConfinedReferencedFiles(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	writable := filepath.Join(home, "work")
+	subdir := filepath.Join(home, "subdir")
+	for _, dir := range []string{writable, subdir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plain := filepath.Join(home, "plain")
+	writeFixtureFile(t, plain, "plain\n")
+	link := filepath.Join(home, "link")
+	if err := os.Symlink(plain, link); err != nil {
+		t.Fatal(err)
+	}
+	inWritable := filepath.Join(writable, "swappable")
+	writeFixtureFile(t, inWritable, "writable\n")
+	linkIntoWritable := filepath.Join(home, "link-into-writable")
+	if err := os.Symlink(inWritable, linkIntoWritable); err != nil {
+		t.Fatal(err)
+	}
+	// A `..` after a symlink to a directory OUTSIDE the home: git opens the file where
+	// the kernel's resolution lands, not where lexical cleaning would put it.
+	elsewhere := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(elsewhere, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, filepath.Join(elsewhere, "ignore"), "elsewhere\n")
+	elseLink := filepath.Join(home, "else-link")
+	if err := os.Symlink(filepath.Join(elsewhere, "subdir"), elseLink); err != nil {
+		t.Fatal(err)
+	}
+	dotdot := elseLink + string(filepath.Separator) + ".." + string(filepath.Separator) + "ignore"
+
+	got := confinedReferencedFiles([]string{plain, link, inWritable, linkIntoWritable, dotdot}, []string{writable})
+	if want := []string{plain}; !slices.Equal(got, want) {
+		t.Errorf("confinedReferencedFiles = %v, want %v", got, want)
 	}
 }
 

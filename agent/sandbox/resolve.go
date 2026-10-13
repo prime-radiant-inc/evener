@@ -873,8 +873,16 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// anywhere-minus-the-denylist, which covers any hook/MCP/toolchain path that
 		// is not masked — and a masked one must stay masked in every mode.
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
-		gitConfig := guardedHostRoots(slices.Concat(host.GitGlobalConfigPaths, host.GitGlobalReferencedPaths), host.Home, worktree)
-		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots))
+		gitConfig := guardedHostRoots(host.GitGlobalConfigPaths, host.Home, worktree)
+		// The files a global config NAMES can be re-pointed by the session itself: a
+		// write inside its own worktree changes what a granted name resolves to, and
+		// bwrap binds that name afresh at every spawn. So they are the one grant that
+		// must be fixed — admitted only when nothing about the name can change — rather
+		// than merely guarded; see confinedReferencedFiles.
+		gitReferenced := confinedReferencedFiles(
+			guardedHostRoots(host.GitGlobalReferencedPaths, host.Home, worktree),
+			slices.Concat(writeFile, layout.WritablePaths))
+		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, gitReferenced, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}

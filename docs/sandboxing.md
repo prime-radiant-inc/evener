@@ -296,26 +296,38 @@ unsandboxed root's `TMPDIR` is not in the tree.
     single-valued variable — and the later of the two config files wins, which is
     git's own order.
   - **git's own path rules.** `~/x` is expanded against your home the way git
-    expands it, and an absolute path is granted as written. A value the sandbox
-    cannot resolve to one file is refused rather than guessed: a relative path
-    (git resolves it against the working directory of the git command, not to a
-    stable file), `~user/...` (another user's home), a bare `~` (the home directory),
-    a directory, and a path that does not exist (git ignores a missing file
-    silently, so there is nothing to grant).
+    expands it, and an absolute path is granted as written — never lexically
+    cleaned, because git hands the pathname to the kernel, so a `..` that follows a
+    symlink resolves *through* the link. A value the sandbox cannot resolve to one
+    file is refused rather than guessed: a relative path (git resolves it against the
+    working directory of the git command, not to a stable file), `~user/...` (another
+    user's home), a bare `~` (the home directory), a directory, and a path that does
+    not exist (git ignores a missing file silently, so there is nothing to grant).
   - **Only the bare `[core]` section is read**, matching git: a `[core "x"]`
     subsection or the legacy `[core.excludesfile]` header names a different key, and
     a file named there is never opened by git.
-  - **The denylist still wins, including through a symlink.** A referenced path
-    whose *resolved target* is masked is never granted. That check is load-bearing:
-    bubblewrap's read-only bind of a symlink follows the link and materializes the
-    target's content at the literal name, so a config naming `~/link` →
-    `~/.ssh/id_rsa` would otherwise expose the key at `~/link` (verified against the
-    live kernel).
+  - **The granted name is fixed, never re-pointable**, and the denylist still wins. A
+    name that resolves through a symlink — or through a `..` the kernel resolves
+    after one — is not granted at all, and neither is a name inside a root the
+    session may write. That rule is load-bearing: bubblewrap binds a read root by its
+    literal name, follows symlinks when it binds, and does so afresh at *every*
+    spawn, so a name the session can re-point would let it read whatever it points at
+    instead. A session can reach that state with ordinary workspace writes: replace
+    the worktree file a config-named link points at with a link to `~/.ssh/id_rsa`,
+    and the next bind materializes the key at the granted name (verified against the
+    live kernel; the live suite drives exactly that retarget between two sandboxed
+    commands). So a **symlinked `core.excludesFile`/`core.attributesFile` is not
+    granted**, which is a deliberate loss: it was equally ungranted before this
+    change, and the *config file* grant keeps its documented symlink support.
     Residual: a HARD link resolves to no other path, so a config naming a hard link
     to a masked file is granted and the mask does not catch it. Creating one is a
     deliberate act by the same user the session runs as, which is why it is recorded
     rather than closed, and it is tracked in
-    [#4473](https://github.com/prime-radiant-inc/evener/issues/4473).
+    [#4473](https://github.com/prime-radiant-inc/evener/issues/4473). The config-FILE
+    grant has the same retargeting exposure for a symlinked `~/.gitconfig` whose
+    target the session can write, left as-is because a dotfile-managed config is a
+    supported shape; tracked in
+    [#4479](https://github.com/prime-radiant-inc/evener/issues/4479).
   - **Read-only, spawned-layer only**, and it changes no write surface — the same
     anti-hook-planting argument as the config-file grant.
 
