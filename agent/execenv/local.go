@@ -75,15 +75,17 @@ type LocalExecutionEnvironment struct {
 	mainRoots   *gitRootCache // stable main repo root per cwd (ResolveMainRepoRoot)
 	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
 
-	// commandFactory, inheritedEnv, lookPath, sandboxTmpBase, and terminationGrace
-	// are instance-local test seams. Nil/empty values retain production os/exec,
-	// os.Environ, exec.LookPath, os.TempDir, and terminateGrace behavior. Keeping
-	// them on the environment avoids global swaps in deterministic fuzzers.
+	// commandFactory, inheritedEnv, lookPath, sandboxTmpBase, terminationGrace,
+	// and outputCaptureCap are instance-local test seams. Nil/empty values retain
+	// production os/exec, os.Environ, exec.LookPath, os.TempDir, terminateGrace,
+	// and maxCapturedOutputBytes behavior. Keeping them on the environment avoids
+	// global swaps in deterministic fuzzers.
 	commandFactory   commandRuntimeFactory
 	inheritedEnv     func() []string
 	lookPath         func(string) (string, error)
 	sandboxTmpBase   string
 	terminationGrace *time.Duration
+	outputCaptureCap *int
 
 	// Sandbox is the resolved sandbox policy for this environment, or nil for the
 	// default (off) — exactly today's behavior. M2 consults it in the FILE tools
@@ -466,6 +468,7 @@ func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) Exec
 		lookPath:         e.lookPath,
 		sandboxTmpBase:   e.sandboxTmpBase,
 		terminationGrace: e.terminationGrace,
+		outputCaptureCap: e.outputCaptureCap,
 		LoginPATH:        e.LoginPATH,
 		Sandbox:          e.Sandbox,
 		Wrapper:          e.Wrapper,
@@ -1146,6 +1149,7 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		lookPath:         e.lookPath,
 		sandboxTmpBase:   e.sandboxTmpBase,
 		terminationGrace: e.terminationGrace,
+		outputCaptureCap: e.outputCaptureCap,
 		LoginPATH:        e.LoginPATH,
 	}
 	if e.Sandbox != nil {
@@ -1246,6 +1250,15 @@ func (e *LocalExecutionEnvironment) terminationGraceDuration() time.Duration {
 		return *e.terminationGrace
 	}
 	return terminateGrace
+}
+
+// outputCaptureCapBytes is the per-stream capture bound for buffered commands:
+// the seam's value when a test sets one, else maxCapturedOutputBytes.
+func (e *LocalExecutionEnvironment) outputCaptureCapBytes() int {
+	if e.outputCaptureCap != nil && *e.outputCaptureCap > 0 {
+		return *e.outputCaptureCap
+	}
+	return maxCapturedOutputBytes
 }
 
 // Cleanup terminates any tracked processes by sending SIGTERM to each process
@@ -2296,6 +2309,15 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// escape on any platform.
 	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
 	if err == nil {
+		// A capped capture is head and tail fragments around an omission
+		// marker, not a record stream: parsed as ripgrep output it yields
+		// split lines, the marker as a bogus result row, and silently missing
+		// middle matches — a wrong answer from a successful search. Discard it
+		// and rerun through the native capped walker, whose retained-output
+		// note is the one byte-truncation disclosure both grep arms emit.
+		if res.StdoutTruncated {
+			return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
+		}
 		// Keep the first maxResults lines. In content mode that counts context
 		// lines and "--" separators too, which is what the grep tool's
 		// max_results promises ("lines, file paths, or count entries by output
@@ -2770,13 +2792,14 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	}
 
 	start := time.Now()
-	var stdout, stderr bytes.Buffer
+	stdout := newCappedOutputBuffer(e.outputCaptureCapBytes())
+	stderr := newCappedOutputBuffer(e.outputCaptureCapBytes())
 	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
 	config := commandRuntimeConfig{
 		Dir:              dir,
 		Env:              env,
-		Stdout:           &stdout,
-		Stderr:           &stderr,
+		Stdout:           stdout,
+		Stderr:           stderr,
 		Wrapper:          e.Wrapper,
 		TerminationGrace: e.terminationGraceDuration(),
 	}
@@ -2860,11 +2883,13 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	}
 
 	return ExecResult{
-		Stdout:     stdout.String(),
-		Stderr:     stderr.String(),
-		ExitCode:   exitCode,
-		TimedOut:   timedOut,
-		DurationMS: time.Since(start).Milliseconds(),
+		Stdout:          stdout.String(),
+		Stderr:          stderr.String(),
+		ExitCode:        exitCode,
+		TimedOut:        timedOut,
+		DurationMS:      time.Since(start).Milliseconds(),
+		StdoutTruncated: stdout.truncated(),
+		StderrTruncated: stderr.truncated(),
 	}, waitErr
 }
 

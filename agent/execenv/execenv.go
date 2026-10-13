@@ -18,6 +18,14 @@ type ExecResult struct {
 	ExitCode   int    `json:"exit_code"`
 	TimedOut   bool   `json:"timed_out"`
 	DurationMS int64  `json:"duration_ms"`
+	// StdoutTruncated and StderrTruncated report the per-stream capture cap
+	// tripping: that stream's text is the retained head and tail around an
+	// omission marker, not the full output. A caller that parses the text as
+	// records must treat it as corrupted — Grep's ripgrep arm reruns the search
+	// natively when it trips, so both grep arms disclose byte truncation the
+	// same way.
+	StdoutTruncated bool `json:"stdout_truncated,omitempty"`
+	StderrTruncated bool `json:"stderr_truncated,omitempty"`
 }
 
 // DirEntry describes a single entry returned when listing a directory.
