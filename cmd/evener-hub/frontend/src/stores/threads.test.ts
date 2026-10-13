@@ -12586,6 +12586,266 @@ test("a Stop during the trailing drain cancels the row the drain moved", async (
   }
 });
 
+// The swap registration must survive the drain's CONVERGENCE. An empty pass
+// proves only that no rows remain parked under the OLD ref - not that the rows
+// the drive already moved to the resumed ref have been delivered, and not that
+// the pane has followed the identity (that is a later React commit). With the
+// resumed ref itself fenced, the moved row sits unattempted under it. A Stop
+// pressed on the still-displayed old ref in that sliver must still reach the
+// moved row, or the message dispatches when the resumed ref clears despite the
+// Stop. The Stop lands AFTER the drain converged and BEFORE the pane's
+// identity-follow effect, which is the window issue #3947 records.
+test("a Stop after the drain converges still cancels the moved row before the pane follows the identity", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:converge-stop-from";
+  const toRef = "local:converge-stop-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  // The resumed ref stays fenced for the whole drive, so the moved row parks
+  // under it, unattempted, exactly as the issue describes.
+  let toFencedNow = true;
+  fake.on("thread/read", (params) => (params.ref === toRef ? (toFencedNow ? toFenced() : toIdle()) : fromShape()));
+  fake.on("thread/resume", () => toFenced());
+  fake.on("thread/shutdown", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  expect(threadsStore.getState().restartBlockingObligations.has(toRef)).toBe(true);
+  const seeded = await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "parked" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "parked" }] },
+  });
+  // Run the drive to completion: it moves the row to the resumed ref, publishes
+  // the resumed identity, and its trailing drain converges - the pass that moves
+  // nothing. No pane exists in this unit, so the identity-follow effect that
+  // would call clearResumedIdentity has not run.
+  await threadsStore.getState().resumeSession(fromRef);
+  await flushIndexedDBUntil(() => false);
+  // The pane still shows the old ref. The Stop lands here - after convergence,
+  // before the follow - and must reach the row the drive moved.
+  await threadsStore.getState().shutdown(fromRef);
+  // Now the resumed ref clears its own recovery obligation and the moved row is
+  // dispatchable: a Stop that reached it keeps it from dispatching.
+  toFencedNow = false;
+  await threadsStore.getState().refreshThread(toRef);
+  notifyReadyForMutationDispatch([toRef]);
+  await flushIndexedDBUntil(() => starts.length > 0);
+  expect(starts).toEqual([]);
+  const outbox = await storage.listOutbox(toRef);
+  expect(outbox.map((record) => ({ id: record.clientMutationId, state: record.state }))).toEqual([
+    { id: seeded.clientMutationId, state: "canceled" },
+  ]);
+});
+
+// The other side of the same contract: once the pane HAS followed the identity
+// (Session.tsx's effect calls clearResumedIdentity), the user is on the resumed
+// ref and a Stop there names it directly. The old ref's registration must
+// release then - otherwise it outlives the swap and keeps canceling rows that
+// are no longer the old ref's to cancel.
+test("a Stop on the old ref after the pane follows the identity does not cancel the moved row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:followed-stop-from";
+  const toRef = "local:followed-stop-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  let toFencedNow = true;
+  fake.on("thread/read", (params) => (params.ref === toRef ? (toFencedNow ? toFenced() : toIdle()) : fromShape()));
+  fake.on("thread/resume", () => toFenced());
+  fake.on("thread/shutdown", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "parked" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "parked" }] },
+  });
+  await threadsStore.getState().resumeSession(fromRef);
+  await flushIndexedDBUntil(() => false);
+  // The pane follows the identity, exactly as Session.tsx's effect does.
+  threadsStore.getState().clearResumedIdentity(fromRef);
+  // A Stop on the old ref now belongs to the resumed ref's own rows, which a
+  // Stop there names directly - it must not cancel this row.
+  await threadsStore.getState().shutdown(fromRef);
+  toFencedNow = false;
+  await threadsStore.getState().refreshThread(toRef);
+  notifyReadyForMutationDispatch([toRef]);
+  await flushIndexedDBUntil(() => starts.length > 0);
+  expect(starts).toEqual([toRef]);
+});
+
+// The Stop's own cancellation write is an await, and the pane's follow effect
+// can run inside it. A Stop pressed while the pane still showed the old ref must
+// still reach the rows the drive moved, even when the follow lands in that gap -
+// so the target is captured at the press, before the write.
+test("a Stop whose cancellation awaits while the pane follows the identity still cancels the moved row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:straddle-from";
+  const toRef = "local:straddle-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  let toFencedNow = true;
+  fake.on("thread/read", (params) => (params.ref === toRef ? (toFencedNow ? toFenced() : toIdle()) : fromShape()));
+  fake.on("thread/resume", () => toFenced());
+  fake.on("thread/shutdown", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  const seeded = await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "parked" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "parked" }] },
+  });
+  await threadsStore.getState().resumeSession(fromRef);
+  await flushIndexedDBUntil(() => false);
+  // The pane's follow effect lands inside the Stop's own cancellation await.
+  let followed = false;
+  const realCancel = MutationOutboxIndexedDB.prototype.cancelUnattempted;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "cancelUnattempted").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    target: string,
+  ) {
+    if (target === fromRef && !followed) {
+      followed = true;
+      threadsStore.getState().clearResumedIdentity(fromRef);
+    }
+    return realCancel.call(this, target);
+  });
+  try {
+    await threadsStore.getState().shutdown(fromRef);
+    expect(followed).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+  toFencedNow = false;
+  await threadsStore.getState().refreshThread(toRef);
+  notifyReadyForMutationDispatch([toRef]);
+  await flushIndexedDBUntil(() => starts.length > 0);
+  expect(starts).toEqual([]);
+  const outbox = await storage.listOutbox(toRef);
+  expect(outbox.map((record) => ({ id: record.clientMutationId, state: record.state }))).toEqual([
+    { id: seeded.clientMutationId, state: "canceled" },
+  ]);
+});
+
 // The registration carries a per-drive token: two drives can target the SAME
 // (old ref -> resumed ref) pair. inFlightResumes drops the first drive when its
 // promise resolves while its trailing drain still awaits storage, so a second
