@@ -982,6 +982,20 @@ func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
 // outside a test that asserts the line (which passes cfg.Logf).
 var navigationStatsLogfFor = hubLogfFor
 
+// concurrentForwardedRequest is the ConcurrentRequest policy newHubAppServer
+// installs: requests whose cost is a remote party's leave the connection's
+// serial worker, so a slow remote never head-of-line blocks the browser's
+// socket. forwardedHostRead admits a proxied host read; forwardedDaemonControl
+// admits a daemon retire forwarded to the local daemon, which can wait out the
+// session namer's timeout (#4080, #3921). Each half carries its own
+// order-safety argument where it is defined; the default is to stay inline.
+func concurrentForwardedRequest(method string, params json.RawMessage) (pool string, ok bool) {
+	if pool, ok := forwardedHostRead(method, params); ok {
+		return pool, true
+	}
+	return forwardedDaemonControl(method, params)
+}
+
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	return newHubAppServerWithNavigation(cfg, sources, nil, nil)
 }
@@ -1040,7 +1054,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		RequestAdmissionContext: func(ctx context.Context, message appwire.Message) context.Context {
 			return admitSessionRecovery(ctx, cfg, message)
 		},
-		ConcurrentRequest: forwardedHostRead,
+		ConcurrentRequest: concurrentForwardedRequest,
 		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
