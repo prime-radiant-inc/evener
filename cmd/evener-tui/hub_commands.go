@@ -1151,21 +1151,45 @@ func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expected
 	}
 }
 
-// sharedNotesDispatchRefusal returns the immediate refusal message for a
-// mutating shared-notes command on the cached session, or "" when dispatch may
-// proceed. It consults sharedNotesLiveAvailable — the predicate behind the
-// registry's Available hooks — so dispatch and availability cannot drift. A
-// source that does not advertise the capability says so; a session that only
-// cannot change notes keeps the command's existing session-level message.
-func (m *hubModel) sharedNotesDispatchRefusal(sessionMessage string) string {
+// sharedNotesRefusal says why a mutating shared-notes command on the cached
+// session must be refused immediately.
+type sharedNotesRefusal int
+
+const (
+	sharedNotesAllowed sharedNotesRefusal = iota
+	// sharedNotesNotAdvertised: the source does not advertise shared notes.
+	sharedNotesNotAdvertised
+	// sharedNotesSessionUnavailable: the source has shared notes, but this
+	// session cannot change them.
+	sharedNotesSessionUnavailable
+)
+
+// sharedNotesRefusal consults sharedNotesLiveAvailable, the predicate behind
+// the registry's Available hooks, so dispatch and availability cannot drift.
+func (m *hubModel) sharedNotesRefusal() sharedNotesRefusal {
 	ctx := hubCommandContext{mode: hubModeSession, caps: m.detail.Capabilities, live: m.detail.Live, state: m.detail.State}
 	if available, _ := sharedNotesLiveAvailable(ctx); available {
-		return ""
+		return sharedNotesAllowed
 	}
 	if !m.detail.Capabilities.SharedNotes {
-		return "This source does not advertise shared notes."
+		return sharedNotesNotAdvertised
 	}
-	return sessionMessage
+	return sharedNotesSessionUnavailable
+}
+
+// sharedNotesDispatchRefusal returns the immediate refusal message for a
+// mutating shared-notes command on the cached session, or "" when dispatch may
+// proceed. A source that does not advertise the capability says so; a session
+// that only cannot change notes keeps the command's existing session-level
+// message.
+func (m *hubModel) sharedNotesDispatchRefusal(sessionMessage string) string {
+	switch m.sharedNotesRefusal() {
+	case sharedNotesNotAdvertised:
+		return "This source does not advertise shared notes."
+	case sharedNotesSessionUnavailable:
+		return sessionMessage
+	}
+	return ""
 }
 
 // runHubNotes dispatches the /notes command: a bare `clear` (any case)

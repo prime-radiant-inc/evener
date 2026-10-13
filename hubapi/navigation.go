@@ -271,7 +271,15 @@ type NavigationSessionSummary struct {
 	//
 	// It sits BESIDE Dormant rather than reusing it: Dormant means the session
 	// has never run, and an offline row that ran must not read as "Not started".
-	Offline       bool       `json:"offline,omitempty"`
+	Offline bool `json:"offline,omitempty"`
+	// Archived says the rail files the session as archived: its own archive
+	// decision, its project's, or two weeks without activity (S14, the rule
+	// appwire.SearchResult.Archived reports for a live hit). It sits BESIDE Live
+	// rather than replacing it: a session archived while it is still running
+	// stays reachable through a pin, and this flag lets a client suppress the
+	// row's unread dot for it (#4199). Absent when it is not, and from an
+	// older hub.
+	Archived      bool       `json:"archived,omitempty"`
 	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
 	MoreSubagents int        `json:"more_subagents,omitempty"`
 	// Subagents is a live root's whole-tree subagent tally, counted by its

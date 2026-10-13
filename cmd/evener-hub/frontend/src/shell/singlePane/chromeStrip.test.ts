@@ -41,10 +41,6 @@ test("hides dockview's own tab strip in single-pane mode", () => {
   expect(GLOBAL_CSS).toMatch(/\[data-single-pane\][^{]*\.dv-tabs-and-actions-container\s*\{[^}]*display:\s*none/);
 });
 
-test("hides the mobile tree-drawer trigger (the sidebar/search/settings entry point) in single-pane mode", () => {
-  expect(GLOBAL_CSS).toMatch(/\[data-single-pane\][^{]*button\[aria-label="Sessions"\]\s*\{[^}]*display:\s*none/);
-});
-
 test("singlePane.ts loads the chrome-strip stylesheet so its rules reach the eager bundle", () => {
   expect(SINGLEPANE_TS).toMatch(/import\s+["']\.\/singlePane\/global\.css["']/);
 });

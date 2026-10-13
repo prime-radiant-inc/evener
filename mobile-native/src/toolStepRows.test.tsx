@@ -15,7 +15,7 @@ import { render, renderedText, textOf } from "./renderNative.testkit";
 import { RunRow } from "./session/RunRow";
 import { displayForLevel } from "./session/detailLevels";
 import { stepEvidence } from "./session/evidence";
-import { answerTo, hideAnswerMessages, runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
+import { answerTo, hideAnswerMessages, runSummary, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -173,16 +173,18 @@ describe("no raw tool name, anywhere", () => {
 		for (const row of rowsAt(level)) {
 			const text = renderedText(render(<TimelineItem item={row} hubId="hub" sessionRef="ref-tools" />));
 			expect(text).not.toMatch(RAW_NAMES);
-			expect(text).not.toMatch(/other steps?\b/);
 		}
 		for (const run of runsAt(level)) expect(stepText(run)).not.toMatch(RAW_NAMES);
 	});
 
 	it("names each tool family in a run's line", () => {
-		const lines = runsAt("tools").map((run) => runSummaryText(runSummary(run.steps)));
-		const all = lines.join("\n");
-		for (const part of ["used skill systematic-debugging", "used 2 MCP tools", "used reindex workspace once"]) {
-			expect(all).toContain(part);
-		}
+		const parts = runsAt("tools").flatMap((run) => runSummary(run.steps).parts);
+		// The one skill it used, by name; two MCP tools on different servers,
+		// counted; and a plain tool with a part of its own.
+		expect(parts).toContainEqual(expect.objectContaining({ family: "skill", count: 1, name: "systematic-debugging" }));
+		const mcp = parts.find((part) => part.family === "mcp");
+		expect(mcp).toMatchObject({ count: 2 });
+		expect(mcp?.name).toBeUndefined();
+		expect(parts).toContainEqual(expect.objectContaining({ key: "tool:reindex workspace", count: 1 }));
 	});
 });

@@ -84,6 +84,7 @@ describe("the demo fleet's subagents", () => {
 		expect(tallyActivity(rows)).toEqual({ total: 55, failed: 2, running: 32, done: 21 });
 		const settle = rows.find((row) => row.id === "g-settle");
 		expect(subagentWhy(settle as NonNullable<typeof settle>, NOW)).toEqual({
+			kind: "failed",
 			word: "Failed",
 			text: "go test exited 1 (3 times)",
 		});
@@ -93,6 +94,7 @@ describe("the demo fleet's subagents", () => {
 		});
 		expect(rows.find((row) => row.id === "g-settle-1")?.parentTitle).toBe("Fix race in tree settle");
 		expect(subagentWhy(rows.find((row) => row.id === "g-run-0") as NonNullable<(typeof rows)[number]>, NOW)).toEqual({
+			kind: "command",
 			text: "Running go test ./agent/...",
 		});
 	});
@@ -104,7 +106,7 @@ describe("the demo fleet's subagents", () => {
 		const tree = parseActivityTree(demoActivityTree(coordinator, NOW).data);
 		const rows = flattenSubagents(tree as NonNullable<typeof tree>);
 		const done = rows.find((row) => row.id === "g-done-0");
-		expect(subagentWhy(done as NonNullable<typeof done>, NOW)).toEqual({ text: "Tests pass." });
+		expect(subagentWhy(done as NonNullable<typeof done>, NOW)).toEqual({ kind: "report", text: "Tests pass." });
 	});
 
 	// The Activity list's shell jobs: the running command a subagent's line

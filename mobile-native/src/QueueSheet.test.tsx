@@ -3,6 +3,7 @@
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { paletteFor } from "./design/tokens";
+import { markers } from "./markerTestUtils";
 import { type QueueHost, QueueSheet, queueHosts } from "./QueueSheet";
 import { pressable, render, renderedText, settle, unmountMountedTrees } from "./renderNative.testkit";
 import type { Ghost } from "./session/ghosts";
@@ -78,9 +79,8 @@ function mountSheet(provided: QueueHost | undefined) {
 it("lists every queued message the session carries, not only the three the transcript shows", () => {
 	const tree = mountSheet(host());
 	const text = renderedText(tree);
-	expect(text).toContain("Queued messages");
+	expect(markers(tree, "ghost")).toEqual(["held", "held", "held", "held"]);
 	for (const n of [1, 2, 3, 4]) expect(text).toContain(`message ${n}`);
-	expect(text).not.toContain("more queued");
 	expect(pressable(tree, "Steer all now")).toBeUndefined();
 });
 

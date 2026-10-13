@@ -6,7 +6,8 @@
 import { createElement } from "react";
 import { expect, it, vi } from "vitest";
 import { PinAssignmentEditor, type PinAssignmentEditorProps } from "./PinAssignmentEditor";
-import { render, renderedText } from "./renderNative.testkit";
+import { markers } from "./markerTestUtils";
+import { render } from "./renderNative.testkit";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
 
@@ -37,12 +38,10 @@ function props(overrides: Partial<PinAssignmentEditorProps> = {}): PinAssignment
 
 it("blames the failed load, not a previous change, when there is no checkpoint", () => {
 	const tree = render(createElement(PinAssignmentEditor, props({ uncertain: true, previousChange: false })));
-	const text = renderedText(tree);
-	expect(text).toContain("Check this session's pins before editing.");
-	expect(text).not.toContain("previous pin change");
+	expect(markers(tree, "pin-status")).toEqual(["unread"]);
 });
 
-it("keeps the previous-change wording when a checkpoint is present", () => {
+it("names the previous change when a checkpoint is present", () => {
 	const tree = render(createElement(PinAssignmentEditor, props({ uncertain: true, previousChange: true })));
-	expect(renderedText(tree)).toContain("Check the previous pin change before editing it.");
+	expect(markers(tree, "pin-status")).toEqual(["previous-change"]);
 });

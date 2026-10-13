@@ -16,22 +16,22 @@
  * badge is allowlisted (src/styles/token-contract.test.ts) for its tone
  * prop - a count badge's whole purpose is to carry a status hue.
  */
-.neutral {
+.badgeNeutral {
   background: var(--surface-2);
   color: var(--ink-mid);
 }
 
-.attention {
+.badgeAttention {
   background: var(--attention-bg);
   color: var(--attention-ink);
 }
 
-.alive {
+.badgeAlive {
   background: var(--alive-bg);
   color: var(--alive-ink);
 }
 
-.danger {
+.badgeDanger {
   background: var(--danger-bg);
   color: var(--danger-ink);
 }

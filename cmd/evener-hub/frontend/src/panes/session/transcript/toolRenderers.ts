@@ -49,7 +49,12 @@ export interface ToolSummaryContext {
 
 export interface ToolRendererDescriptor {
   match: string | ((toolName: string) => boolean); // exact name or predicate (job_* family)
-  summary(item: ItemModel, ctx?: ToolSummaryContext): string; // one-line intent-first summary
+  // The row's one-line intent-first summary. OPTIONAL: a descriptor that wants
+  // exactly the default row words (the package's own step words, toolStepSummary)
+  // omits it and inherits DEFAULT_DESCRIPTOR's own rather than copying the lambda
+  // and drifting from it. toolRendererFor never returns the omission - see
+  // ResolvedToolRendererDescriptor.
+  summary?(item: ItemModel, ctx?: ToolSummaryContext): string;
   // The tool-FAMILY glyph riding inline at the start of the row's tool-use
   // line (widgets/toolicon), so the kind of work - shell vs file read vs
   // edit vs web - is scannable down a run of calls without reading the
@@ -208,6 +213,14 @@ export interface ToolRendererDescriptor {
   summaryLink?(item: ItemModel): string | undefined;
 }
 
+// The descriptor toolRendererFor hands back: summary() is present (the
+// DEFAULT_DESCRIPTOR's own when the registered descriptor omitted it, see
+// registerToolRenderer), so consumers (ToolCallItem, toolRuns) read it without
+// an optional guard.
+export interface ResolvedToolRendererDescriptor extends Omit<ToolRendererDescriptor, "summary"> {
+  summary: (item: ItemModel, ctx?: ToolSummaryContext) => string;
+}
+
 // A tool call is failed when the shared settled-item predicate says so, or
 // when the tool descriptor has a domain-specific failure signal of its own.
 // The shared half is the same rule the transcript projector and the native
@@ -219,27 +232,37 @@ export function toolCallFailed(item: ItemModel): boolean {
   return hasItemFailure(item) || (descriptor.failed?.(item) ?? false);
 }
 
-const registry: ToolRendererDescriptor[] = [];
-
-export function registerToolRenderer(d: ToolRendererDescriptor): void {
-  registry.push(d);
-}
-
 // DEFAULT_DESCRIPTOR mirrors legacy renderer-tools.js's own
 // toolRenderers.__default__ / defaultRenderer (renderer-tools.js:773-778):
-// used for any tool name with no registered descriptor.
-const DEFAULT_DESCRIPTOR: ToolRendererDescriptor = {
+// used for any tool name with no registered descriptor, and the source of the
+// summary a descriptor that omits one inherits (registerToolRenderer below).
+const DEFAULT_DESCRIPTOR: ResolvedToolRendererDescriptor = {
   match: () => true,
-  // A tool no descriptor covers reads in the package's words, as the
-  // phone's step lines do: its own where the package has them (a
-  // housekeeping tool's "Updated its note"), else the tool in words ("Used
-  // github: create issue"), never its raw name.
-  summary: (item, ctx) => toolStepSummary(item, ctx),
+  // A tool no descriptor covers reads in the package's words, as the phone's
+  // step lines do: its own where the package has them (a housekeeping tool's
+  // "Updated its note"), else the tool in words ("Used github: create issue"),
+  // never its raw name.
+  summary: toolStepSummary,
   // The generic tool glyph: MCP tools (and any other unregistered name) have
   // no family descriptor, so they all wear the wrench.
   icon: "wrench",
   body: defaultToolBody,
 };
+
+const registry: ResolvedToolRendererDescriptor[] = [];
+
+// The ONE place the default is resolved: a descriptor that omits summary
+// inherits DEFAULT_DESCRIPTOR's own here, at registration, so a summary-less
+// descriptor is normalized once (at import) and toolRendererFor returns the
+// same stored object on every call, with no per-call work. A descriptor that
+// carries its own summary is stored unchanged.
+export function registerToolRenderer(d: ToolRendererDescriptor): void {
+  registry.push(hasSummary(d) ? d : { ...d, summary: DEFAULT_DESCRIPTOR.summary });
+}
+
+function hasSummary(d: ToolRendererDescriptor): d is ResolvedToolRendererDescriptor {
+  return typeof d.summary === "function";
+}
 
 export function defaultToolBody(props: ToolRenderProps) {
   return createElement(Fragment, null, createElement(MCPToolArguments, props), createElement(RawToolOutput, props));
@@ -254,7 +277,7 @@ export function defaultToolBody(props: ToolRenderProps) {
 // first-registered one wins. Falls back to DEFAULT_DESCRIPTOR, never throws
 // - an unregistered tool name is an everyday case (most tools have no
 // dedicated descriptor until T3 lands), not a bug.
-export function toolRendererFor(toolName: string): ToolRendererDescriptor {
+export function toolRendererFor(toolName: string): ResolvedToolRendererDescriptor {
   const exact = registry.find((d) => d.match === toolName);
   if (exact) return exact;
   const predicate = registry.find((d) => typeof d.match === "function" && d.match(toolName));

@@ -241,7 +241,7 @@ export function ProviderEditor({
 										))}
 									</Group>
 								) : (
-									<GroupFooter>No providers match.</GroupFooter>
+									<GroupFooter testID="provider-picker-empty">No providers match.</GroupFooter>
 								)}
 							</>
 						) : null}
@@ -265,11 +265,11 @@ export function ProviderEditor({
 						{...chain("baseUrl")}
 					/>
 				</Group>
-				<GroupFooter>
-					{instance?.baseUrl && !draft.baseUrl.trim()
-						? "Resets the endpoint to the provider’s default."
-						: "Optional. Empty uses the provider’s default."}
-				</GroupFooter>
+				{instance?.baseUrl && !draft.baseUrl.trim() ? (
+					<GroupFooter testID="base-url-note:resets">Resets the endpoint to the provider’s default.</GroupFooter>
+				) : (
+					<GroupFooter testID="base-url-note:optional">Optional. Empty uses the provider’s default.</GroupFooter>
+				)}
 				{!instance && (
 					<>
 						{varFields.map(([template, environment]) => (

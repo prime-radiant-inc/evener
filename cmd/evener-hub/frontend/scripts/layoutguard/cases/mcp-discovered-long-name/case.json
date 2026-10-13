@@ -1,0 +1,27 @@
+{
+  "name": "mcp-discovered-long-name",
+  "description": "Settings -> MCP discovered-server row at phone widths: a long server name (hyphenated, or one unbroken token) wraps onto as many lines as it needs and is never clipped, since the row is read-only and a hover title is unreadable on touch; nothing spills out of the row.",
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/listrow/listrow.module.css",
+    "widgets/chip/chip.module.css",
+    "panes/settings/sections/mcp.module.css"
+  ],
+  "widthMatrix": [
+    { "width": 320, "name": "hyphenated" },
+    { "width": 320, "name": "unbroken" },
+    { "width": 390, "name": "hyphenated" }
+  ],
+  "mutation": {
+    "declaration": "panes/settings/sections/mcp.module.css: .serverName { white-space: normal } (deleted - the name inherits ListRow's nowrap label and every fixture fails as clipped); .serverName { overflow-wrap: anywhere } (deleted alone - fails the 320px unbroken-token fixture)",
+    "verified": "2026-10-12",
+    "expect": "fail"
+  }
+}

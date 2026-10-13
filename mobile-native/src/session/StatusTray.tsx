@@ -44,6 +44,7 @@ export function StatusTray({ line, perMinute, connected, canStop, stopping, onSt
 					allowFontScaling={allowFontScaling}
 					numberOfLines={1}
 					ellipsizeMode="tail"
+					testID="status-tray-line"
 					style={{
 						flexShrink: 1,
 						color: line.attention ? palette.attentionInk : palette.inkMid,

@@ -7,7 +7,7 @@ import type {
   InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
-import { CONNECTION_REPLACED_ERROR, WireError } from "@evener/appwire-client";
+import { CONNECTION_REPLACED_ERROR, friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
@@ -337,7 +337,7 @@ describe("fetch", () => {
     await credentialsStore.getState().fetch();
     const state = credentialsStore.getState();
     expect(state.loading).toBe(false);
-    expect(state.error).toBe("boom");
+    expect(state.error).toBe(friendlyErrorMessage(new Error("boom")));
     expect(state.instances).toEqual([ONE_INSTANCE]); // unchanged - not blanked
   });
 });
@@ -1556,7 +1556,9 @@ describe("host-partitioned instance lists (component 07b)", () => {
     await fetchHost("buildbox");
 
     const state = credentialsStore.getState();
-    expect(hostPartition(hostInstancesStore.getState(), "buildbox").error).toBe("remote hub unavailable");
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").error).toBe(
+      friendlyErrorMessage(new Error("remote hub unavailable")),
+    );
     expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(false);
     expect(state.error).toBeNull();
     expect(state.loading).toBe(false);

@@ -15,7 +15,12 @@ import { setMutationClientIdentityForTests } from "../../../../stores/mutationCl
 import { enterText } from "../../../../textEntryTestUtils";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
+
+// The dialogs' outcomes, read from their markers: the inline refusal by its
+// data-reason and the toasts by kind, never by the words either shows.
+const alertReason = (): string | null => screen.getByRole("alert").getAttribute("data-reason");
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -72,6 +77,8 @@ const VERTEX_EXPRESS = provider({
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  // Each test reads the toasts its own actions raised.
+  resetToastStoreForTests();
   // The auth mutations carry the page's identity on the wire now, so the
   // assertions that pin their exact params need one that cannot vary.
   setMutationClientIdentityForTests("test-tab");
@@ -191,10 +198,10 @@ describe("AddInstanceDialog", () => {
     const user = userEvent.setup();
     render(<AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />);
     await user.click(screen.getByRole("button", { name: "Create" }));
-    expect(screen.getByText("Base provider is required.")).toBeTruthy();
+    expect(alertReason()).toBe("base-required");
     await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.click(screen.getByRole("button", { name: "Create" }));
-    expect(screen.getByText("Name is required.")).toBeTruthy();
+    expect(alertReason()).toBe("name-required");
   });
 
   test("a credential header without $ is rejected client-side, with no RPC", async () => {
@@ -207,9 +214,7 @@ describe("AddInstanceDialog", () => {
     await user.type(screen.getByLabelText("Name"), "work");
     await enterText(user, screen.getByLabelText(/credential header/i), "Authorization=Bearer secret");
     await user.click(screen.getByRole("button", { name: "Create" }));
-    expect(
-      screen.getByText("Credential header must reference a $VARIABLE or run a $(command), never a literal secret."),
-    ).toBeTruthy();
+    expect(alertReason()).toBe("literal-header");
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -297,7 +302,7 @@ describe("AddInstanceDialog", () => {
     await enterText(user, screen.getByLabelText(/base url/i), "https://x");
     await user.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
-    expect(screen.getAllByText("Created instance work").length).toBeGreaterThan(0);
+    expect(toastKinds()).toEqual(["success"]);
   });
 
   // The listing a create answers with is only the truth if the store kept it.
@@ -406,7 +411,7 @@ describe("AddInstanceDialog", () => {
 
     await waitFor(() => expect(onUnconfirmedCreate).toHaveBeenCalledWith("work2"));
     expect(onSuccess).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Created instance work2/)).toBeNull();
+    expect(toastKinds()).not.toContain("success");
   });
 
   // A dropped connection must not silently dead-end the retry: handleSubmit
@@ -444,7 +449,7 @@ describe("AddInstanceDialog", () => {
     await act(async () => {
       resolveCreate(WITH_WORK2);
     });
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    await waitFor(() => expect(alertReason()).toBe("unconfirmed"));
 
     await act(async () => {
       connectionStore.setState({ state: "idle", client: null });
@@ -455,8 +460,7 @@ describe("AddInstanceDialog", () => {
     // (the row is not confirmed) rather than the store's internal failure
     // text, and it keeps the name so Check again still works once the host is
     // back.
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
-    expect(screen.queryByText(/no client connected/)).toBeNull();
+    await waitFor(() => expect(alertReason()).toBe("unconfirmed"));
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
@@ -482,7 +486,7 @@ describe("AddInstanceDialog", () => {
     await user.type(screen.getByLabelText("Name"), "work2");
     await user.click(screen.getByRole("button", { name: "Create" }));
 
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    await waitFor(() => expect(alertReason()).toBe("unconfirmed"));
     expect(onSuccess).not.toHaveBeenCalled();
   });
 
@@ -518,7 +522,7 @@ describe("AddInstanceDialog", () => {
 
     await waitFor(() => expect(onUnconfirmedCreate).toHaveBeenCalledWith("work2"));
     expect(onSuccess).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Created instance work2/)).toBeNull();
+    expect(toastKinds()).not.toContain("success");
   });
 
   // Without a consumer recovery callback, the unconfirmed implicit row leaves
@@ -540,7 +544,7 @@ describe("AddInstanceDialog", () => {
     await user.type(screen.getByLabelText("Name"), "work2");
     await user.click(screen.getByRole("button", { name: "Create" }));
 
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    await waitFor(() => expect(alertReason()).toBe("unconfirmed"));
     expect(onSuccess).not.toHaveBeenCalled();
   });
 
@@ -608,7 +612,7 @@ describe("AddInstanceDialog", () => {
       resolveCreate(WITH_IMPLICIT);
     });
 
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    await waitFor(() => expect(alertReason()).toBe("unconfirmed"));
     expect(onSuccess).not.toHaveBeenCalled();
   });
 
@@ -656,7 +660,7 @@ describe("AddInstanceDialog", () => {
       resolveCreate(WITH_WORK2);
     });
 
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    await waitFor(() => expect(alertReason()).toBe("unconfirmed"));
     expect(onSuccess).not.toHaveBeenCalled();
 
     // The host catches up; re-confirming reports the create without a second one.
@@ -760,8 +764,9 @@ describe("AddInstanceDialog", () => {
     await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.type(screen.getByLabelText("Name"), "work");
     await user.click(screen.getByRole("button", { name: "Create" }));
-    await screen.findByText("name already exists");
-    expect(screen.getAllByText("Create failed: name already exists").length).toBeGreaterThan(0);
+    await waitFor(() => expect(alertReason()).toBe("create-failed"));
+    expect(screen.getByRole("alert").textContent).toBe("name already exists");
+    expect(toastKinds()).toEqual(["error"]);
     expect(onSuccess).not.toHaveBeenCalled();
   });
 
@@ -809,9 +814,8 @@ describe("AddInstanceDialog", () => {
     expect(replacement.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(0);
     // ...the dialog names the change instead of the store's internals, and
     // reports no create failure...
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection changed"));
-    expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
-    expect(screen.queryByText(/Create failed/)).toBeNull();
+    await waitFor(() => expect(alertReason()).toBe("connection-replaced"));
+    expect(toastKinds()).not.toContain("error");
     expect(onSuccess).not.toHaveBeenCalled();
     // ...the draft survives, so the retry the message asks for is the same
     // create the user filled in...
@@ -898,7 +902,7 @@ describe("ApiKeyDialog", () => {
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
-    expect(screen.getAllByText("API key saved for work").length).toBeGreaterThan(0);
+    expect(toastKinds()).toEqual(["success"]);
   });
 
   // The dialog is opened against one row's endpoint, and the value typed into
@@ -931,7 +935,7 @@ describe("ApiKeyDialog", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    await waitFor(() => expect(alertReason()).toBe("endpoint-changed"));
     expect(setKey).not.toHaveBeenCalled();
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
   });
@@ -1014,7 +1018,7 @@ describe("ApiKeyDialog", () => {
     // Refused locally, before any RPC: the typed value asserted no endpoint
     // while the row now carries one.
     expect(setKey).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    await waitFor(() => expect(alertReason()).toBe("endpoint-changed"));
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
 
     // The refusal re-anchored the expectation to the row on screen: the
@@ -1055,9 +1059,7 @@ describe("ApiKeyDialog", () => {
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(setKey).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.getByRole("alert").textContent).toContain("can't check where this provider points"),
-    );
+    await waitFor(() => expect(alertReason()).toBe("fingerprint-unavailable"));
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("sk-secret");
   });
 
@@ -1085,9 +1087,7 @@ describe("ApiKeyDialog", () => {
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(setKey).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.getByRole("alert").textContent).toContain("can't check where this provider points"),
-    );
+    await waitFor(() => expect(alertReason()).toBe("fingerprint-unavailable"));
   });
 
   // The control: a row with no destination (baseUrl empty) and no fingerprint
@@ -1146,7 +1146,7 @@ describe("ApiKeyDialog", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    await waitFor(() => expect(alertReason()).toBe("endpoint-changed"));
     expect(setKey).not.toHaveBeenCalled();
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
   });
@@ -1193,7 +1193,7 @@ describe("ApiKeyDialog", () => {
       </>,
     );
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    await waitFor(() => expect(alertReason()).toBe("endpoint-changed"));
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
 
     // The error asks for the value again; entering it again saves against the
@@ -1257,9 +1257,9 @@ describe("ApiKeyDialog", () => {
 
     // The refusal is reported as the change it is, never as a save failure: the
     // hub's own words stay out of the alert and no "Save failed" toast goes up.
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    await waitFor(() => expect(alertReason()).toBe("endpoint-changed"));
     expect(screen.getByRole("alert").textContent).not.toContain("no longer resolves");
-    expect(screen.queryByText(/Save failed/)).toBeNull();
+    expect(toastKinds()).not.toContain("error");
     // The value belonged to the endpoint that is gone.
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
     // The write that was refused asserted the endpoint the dialog opened on...
@@ -1335,9 +1335,9 @@ describe("ApiKeyDialog", () => {
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("no longer in the provider list"));
+    await waitFor(() => expect(alertReason()).toBe("endpoint-vanished"));
     expect(screen.getByRole("alert").textContent).not.toContain("no longer resolves");
-    expect(screen.queryByText(/Save failed/)).toBeNull();
+    expect(toastKinds()).not.toContain("error");
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
     expect(fake.calls.filter((call) => call.method === "evener/instance/list")).toHaveLength(1);
     expect(onSuccess).not.toHaveBeenCalled();
@@ -1347,7 +1347,7 @@ describe("ApiKeyDialog", () => {
     // than saving unverified.
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("no longer in the provider list"));
+    await waitFor(() => expect(alertReason()).toBe("endpoint-vanished"));
     expect(fake.calls.filter((c) => c.method === "evener/auth/apiKey/set")[1]?.params).toEqual({
       provider: "work",
       value: "sk-secret-again",
@@ -1411,9 +1411,8 @@ describe("ApiKeyDialog", () => {
     // the row the re-anchor adopts.
     await waitFor(() => expect(replacement.calls.some((call) => call.method === "evener/instance/list")).toBe(true));
     await act(async () => finishRestore({ instances: [MOVED], availableProviders: [] }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection changed"));
-    expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
-    expect(screen.queryByText(/Save failed/)).toBeNull();
+    await waitFor(() => expect(alertReason()).toBe("connection-replaced"));
+    expect(toastKinds()).not.toContain("error");
     // The value was typed for the listing that is gone.
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
 
@@ -1480,7 +1479,7 @@ describe("ApiKeyDialog", () => {
       save({ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false }),
     );
     expect(onSuccess).toHaveBeenCalled();
-    expect(within(screen.getByRole("dialog")).queryByText(/no client connected/)).toBeNull();
+    expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
   });
 
   test("a failure shows an inline error and a 'Save failed' toast", async () => {
@@ -1502,8 +1501,9 @@ describe("ApiKeyDialog", () => {
     );
     await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-bad");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await screen.findByText("rejected");
-    expect(screen.getAllByText("Save failed: rejected").length).toBeGreaterThan(0);
+    await waitFor(() => expect(alertReason()).toBe("save-failed"));
+    expect(screen.getByRole("alert").textContent).toBe("rejected");
+    expect(toastKinds()).toEqual(["error"]);
   });
 
   test("the API key input is type=password", () => {
@@ -1566,7 +1566,7 @@ describe("CredentialJsonDialog", () => {
     await user.paste(json);
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
-    expect(screen.getAllByText("Credential JSON saved for vertex").length).toBeGreaterThan(0);
+    expect(toastKinds()).toEqual(["success"]);
   });
 
   test("a rejected paste shows the server's message inline", async () => {

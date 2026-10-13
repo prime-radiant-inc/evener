@@ -123,7 +123,7 @@ func TestAttachBridgeWrongTokenIsRefused(t *testing.T) {
 	defer cancel()
 
 	err := proxyAppWire(ctx, addr, "wrong-token", appwire.NewStreamTransport(bridgeEnd))
-	if err == nil || !strings.Contains(err.Error(), "no hub at "+addr) {
+	if !errors.Is(err, errNoHubAt) {
 		t.Fatalf("proxyAppWire with a wrong token = %v, want a refused dial", err)
 	}
 }
@@ -161,8 +161,8 @@ func TestAttachBridgeErrorWritesNothingToStdout(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("error path wrote to stdout: %q", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "no hub at "+addr) {
-		t.Fatalf("stderr missing no-hub diagnostic: %q", stderr.String())
+	if !errors.Is(err, errNoHubAt) || !strings.Contains(stderr.String(), addr) {
+		t.Fatalf("attach = %v, stderr = %q; want the no-hub refusal naming %s on stderr", err, stderr.String(), addr)
 	}
 }
 

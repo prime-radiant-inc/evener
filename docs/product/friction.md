@@ -67,6 +67,7 @@ and should not be presented as reproduced production incidents.
 | [T02](#t02-mcp-initial-discovery-recovery) | High | An initially unavailable MCP server never contributes tools to the session | S18, S19 |
 | [T04](#t04-read-only-directory-symlinks) | Medium (deferred) | A derived read-only delegate cannot browse an allowed target through a symlink | S12, S14 |
 | [T05](#t05-approval-scope-and-lifetime) | Medium (deferred) | Narrow one-call approval paths repeatedly interrupt authorized work | S12, S14 |
+| [T06](#t06-global-git-excludes-files-in-restricted-mode) | Medium (accepted limitation) | A global excludes or attributes file the config names does not apply in restricted mode | S14 |
 | [U01](#u01-tui-uncertain-submission) | High | A lost send acknowledgement becomes a manual new submission | S04, S05, S11 |
 | [U02](#u02-tui-failed-submission-attachments) | High | Preserving a newer draft discards the older failed submission's images | S04, S11 |
 | [D01](#d01-diagnostic-repair-authority) | Medium (deferred) | Bundled repair instructions prohibit product fixes and require byte-identical voting | S21 |
@@ -1419,6 +1420,59 @@ the policy is decided.
 **Acceptance.** An authorized, diagnosed defect yields a concrete reviewable
 repair with meaningful validation and preserved source evidence, without
 unnecessary repeated permission or duplicate implementation rituals.
+
+### T06 Global git excludes files in restricted mode
+
+**Accepted limitation (2026-10-13).** Not a work item; recorded so the promise is
+explicit. A resumed attempt would need a backend-verifiable way to keep a granted
+pathname from being re-pointed, which six review rounds did not find.
+
+**Current behavior.** `restricted` grants the user's global git config FILES
+read-only (`$XDG_CONFIG_HOME/git/config`, `~/.gitconfig`) so git can run at all on a
+host that has one. It grants nothing of its own for the files those configs NAME
+through `core.excludesFile` or `core.attributesFile`: such a file is readable only
+where it already sits under a root the mode grants — the project worktree, `/etc`,
+`/opt`, `/nix/store` and the other system read roots — and not elsewhere, typically
+under `$HOME`. git reads those files on ordinary commands (`status`, `add`, `commit`),
+so where one is not readable the effect differs by host: macOS/Seatbelt reports
+
+    warning: unable to access '<path>': Operation not permitted
+
+on every such command, while Linux/bubblewrap hides the ungranted path, so git applies
+no excludes or attributes file at all and says nothing. The project's own rules are
+unaffected: `.gitignore`, `.gitattributes` and `.git/info/exclude` live in the
+worktree and stay readable.
+
+**Evidence.** The owning guide's [modes section](../sandboxing.md#modes) and the
+restricted branch of [the resolver](../../agent/sandbox/resolve.go). Reached from
+[#4234](https://github.com/prime-radiant-inc/evener/issues/4234); PR #4474's history
+holds the retired design and every review round it went through.
+
+**Decision.** Do not grant the files a global git config names. Such a grant is a
+pathname a spawned process resolves by its literal name at every spawn, so anything
+the session can write along that path can re-point the name at another file. Six
+review rounds each closed one shape of that — a symlink, a `..` the kernel resolves
+after one, a writable alias, a letter case, a directory in place of the file — and each
+exposed another, and the last one is backend-specific: Seatbelt canonicalizes a read
+root when it builds its policy per spawn, so a file swapped for a directory would grant
+that directory's tree, and that path cannot be verified where CI runs (no macOS host).
+The honest end is to promise less: `restricted` reads the developer's git configuration
+and the project's own ignore and attribute files, not ignore files elsewhere on the
+host. A session that needs the global ones can run `--sandbox off` or move the rules
+into the repository. #4234 stays open as the record; three adjacent defects from the
+same route are filed: [#4467](https://github.com/prime-radiant-inc/evener/issues/4467)
+(an unreadable `include.path` is fatal rather than a warning),
+[#4468](https://github.com/prime-radiant-inc/evener/issues/4468)
+(`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` are ignored by the config grant) and
+[#4479](https://github.com/prime-radiant-inc/evener/issues/4479) (the config-FILE grant
+can be re-pointed the same way).
+
+**Acceptance.** A restricted session runs `git status` and `git commit` against the
+developer's real global configuration, and the
+[owning guide's modes section](../sandboxing.md#modes) states, where the readable set
+is described, that a global `core.excludesFile`/`core.attributesFile` outside the
+project does not apply inside the sandbox, naming both host behaviors. No grant code
+for the files a config names exists in the tree.
 
 ## Recovery that already works
 

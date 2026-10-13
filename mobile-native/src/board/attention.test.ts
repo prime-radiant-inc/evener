@@ -318,6 +318,23 @@ describe("Live bands (spec 7.1)", () => {
 		}
 	});
 
+	// A pinned, archived, still-running session still appears on the Board
+	// while it runs (its pin keeps it reachable), but the rail files it as
+	// archived, so it is new to no one: it gets no blue dot (#4199).
+	it("dots no session the rail files as archived, however new its output (issue #4199)", () => {
+		const classify = rowClassifier(
+			[],
+			() => false,
+			() => true,
+		);
+		expect(classify(row("pinned-archived", { state: "active", archived: true, turn_ended_at: at(1) })).unseen).toBe(
+			false,
+		);
+		// The same row without the archived fact still dots: the flag is what
+		// suppresses it, not the turn end or the motion alone.
+		expect(classify(row("pinned-live", { state: "active", turn_ended_at: at(1) })).unseen).toBe(true);
+	});
+
 	it("reads an active session's turn from the hub alone, with this phone's pending marks", () => {
 		const moved = () => false;
 		// The hub decides a row with a turn end: seen through this phone's mark.

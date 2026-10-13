@@ -1031,7 +1031,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             {route === null ? (
               <NotFound />
             ) : isMobile ? (
-              <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
+              <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} singlePane={singlePane} />
             ) : (
               // The workspace column carries the dock host's row flex share by
               // class, not by :last-child: the activity sidebar mounts as a

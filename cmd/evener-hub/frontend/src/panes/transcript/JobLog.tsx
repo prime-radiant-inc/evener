@@ -6,7 +6,16 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } fro
 import { useStore } from "zustand";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { workspaceStore } from "../../shell/workspace";
-import { Button, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import {
+  Button,
+  EmptyState,
+  InlineNotice,
+  Loader,
+  PaneScaffold,
+  ShellCommandBlock,
+  VirtualList,
+  type VirtualListHandle,
+} from "../../widgets";
 import { AnsiLineContent } from "../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isAtBottom } from "../session/transcript/flow/scrollMetrics";
@@ -19,6 +28,7 @@ const CLASS = {
   joblogCommand: requireClass(styles.joblogCommand, "transcript.module.css", "joblogCommand"),
   joblog: requireClass(styles.joblog, "transcript.module.css", "joblog"),
   joblogNote: requireClass(styles.joblogNote, "transcript.module.css", "joblogNote"),
+  joblogNotice: requireClass(styles.joblogNotice, "transcript.module.css", "joblogNotice"),
 };
 
 type JobLogDisplayRow =
@@ -134,7 +144,7 @@ export function JobLog({ jobRef, parentRef, paneId }: { jobRef: string; parentRe
   if (!pane)
     return (
       <PaneScaffold title={jobId} paneId={paneId}>
-        <EmptyState title="Loading job output…" />
+        <Loader label="Loading job output" />
       </PaneScaffold>
     );
   const lifetime = conversationPaneLifetime(pane);
@@ -337,23 +347,25 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
           </span>
         )}
         {command !== undefined && (
-          <code className={CLASS.joblogCommand} data-testid="joblog-command">
-            {command}
-          </code>
+          <div className={CLASS.joblogCommand} data-testid="joblog-command">
+            <ShellCommandBlock command={command} />
+          </div>
         )}
         {sourceBytes > 0 && sourceBytes < snapshot.windows.totalBytes && (
-          <span className={CLASS.joblogNote}>
+          <span className={CLASS.joblogNote} data-testid="joblog-partial">
             Loaded {sourceBytes.toLocaleString()} of {snapshot.windows.totalBytes.toLocaleString()} output bytes
           </span>
         )}
         {snapshot.outputError && (
-          <span className={CLASS.joblogNote} role="status">
-            {snapshot.outputError}
-          </span>
+          <div className={CLASS.joblogNotice}>
+            <InlineNotice tone="danger" live="status">
+              {snapshot.outputError}
+            </InlineNotice>
+          </div>
         )}
-        {live === null && older === null && !snapshot.outputError && <EmptyState title="Loading job output…" />}
+        {live === null && older === null && !snapshot.outputError && <Loader label="Loading job output" />}
         {live !== null && snapshot.windows.totalBytes === 0 && (
-          <EmptyState title="No output yet" hint="This job hasn't written anything." />
+          <EmptyState title="No output yet" hint="This job hasn't written anything." reason="empty" />
         )}
         <div
           className={CLASS.joblog}

@@ -236,8 +236,10 @@ export {
   isUpgradeRequiredError,
   mutationErrorData,
   RequestTimeoutError,
+  StoreMessageError,
   sessionActionError,
   sessionActionHeadline,
+  storeErrorText,
   WireError,
   wireRejectionPayload,
 } from "./errors";
@@ -551,11 +553,12 @@ export {
 export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSchema";
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
-export { stableDelegateDisplayStatus } from "./stableDelegate";
+export { delegateStatedIntent, delegateWorkText, stableDelegateDisplayStatus } from "./stableDelegate";
 export {
   isParentSteer,
   isSuppressedSteeringKind,
   type LabelledSteeringKind,
+  labelledSteeringKind,
   STEERING_KIND_LABELS,
   steeringLabel,
 } from "./steeringLabels";

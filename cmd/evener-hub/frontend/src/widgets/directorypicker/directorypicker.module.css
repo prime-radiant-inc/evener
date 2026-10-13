@@ -236,9 +236,6 @@
   .browse {
     padding: var(--space-3);
   }
-  .row {
-    min-height: var(--tap-min);
-  }
   .footer {
     flex-direction: column;
     align-items: stretch;
@@ -250,6 +247,12 @@
   }
   .footer .actions > button {
     flex: 1;
+  }
+}
+
+@media (max-width: 899px), (any-pointer: coarse) {
+  .row {
+    min-height: var(--tap-min);
   }
 }
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { friendlyErrorMessage, WireError } from "../../errors";
 import { FakeClient, failing } from "../../testing/fakeClient";
 import type { AuthStatusResponse } from "../../types.gen";
 import { AUTH_STATUSES_REFETCH_DEBOUNCE_MS, createAuthStatusesStore } from "./authStatuses";
@@ -38,7 +39,7 @@ describe("the hub's credential statuses (evener/auth/list)", () => {
     fake.on(LIST, failing("hub unavailable"));
     await expect(store.getState().fetchAuthStatuses()).resolves.toBeUndefined();
     expect(store.getState().authStatuses?.get("lunaroute")?.error).toBe(rejected.error);
-    expect(store.getState().authStatusesError).toBe("hub unavailable");
+    expect(store.getState().authStatusesError).toBe(friendlyErrorMessage(new Error("hub unavailable")));
   });
 
   test("a hub that sends no providers (Go's nil slice) reads as none", async () => {
@@ -131,7 +132,10 @@ describe("following the hub", () => {
     // The new hub was read, and its failure keeps nothing of the previous one.
     expect(previous.calls.filter((call) => call.method === LIST)).toHaveLength(1);
     expect(replacement.calls.filter((call) => call.method === LIST)).toHaveLength(1);
-    expect(store.getState()).toMatchObject({ authStatuses: null, authStatusesError: "hub unavailable" });
+    expect(store.getState()).toMatchObject({
+      authStatuses: null,
+      authStatusesError: friendlyErrorMessage(new Error("hub unavailable")),
+    });
   });
 
   // The hub announces every credential change and every rejection it records
@@ -148,4 +152,19 @@ describe("following the hub", () => {
     expect(store.getState().authStatuses?.get("lunaroute")?.error).toBe(rejected.error);
     expect(fake.calls.filter((call) => call.method === LIST)).toHaveLength(2);
   });
+});
+
+// The list error is translated while it still has its type: a hub's own
+// WireError explanation survives, and a client-side failure gets the shared
+// friendly form.
+test.each([
+  ["a hub-reported WireError", new WireError("auth store is locked", -32000)],
+  ["a client-side Error", new Error("AppwireClient internal detail")],
+])("a failed list stores %s in its friendly form", async (_label, err) => {
+  const { fake, store } = storeWithFake();
+  fake.on("evener/auth/list", () => {
+    throw err;
+  });
+  await store.getState().fetchAuthStatuses();
+  expect(store.getState().authStatusesError).toBe(friendlyErrorMessage(err));
 });

@@ -17,7 +17,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { effortLabel, effortOptionLevels, sessionActionError, sessionEffortLevels } from "@evener/appwire-client";
 import { threadsStore } from "../../../stores/threads";
-import { Chevron, Meter, useToasts } from "../../../widgets";
+import { Chevron, Meter, useToasts, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ModelSwitch } from "./ModelSwitch";
 import { contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
@@ -46,7 +46,6 @@ const CLASS = {
   effortValue: requireClass(styles.effortValue, "statusrow.module.css", "effortValue"),
   effortChevron: requireClass(styles.effortChevron, "statusrow.module.css", "effortChevron"),
   effortSelect: requireClass(styles.effortSelect, "statusrow.module.css", "effortSelect"),
-  srOnly: requireClass(styles.srOnly, "statusrow.module.css", "srOnly"),
 };
 
 // ReasoningEffortControl renders the reasoning-effort switcher as a quiet
@@ -104,9 +103,9 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
       <span className={CLASS.effortChevron} aria-hidden="true">
         <Chevron direction="down" />
       </span>
-      <label className={CLASS.srOnly} htmlFor="status-row-reasoning-effort">
-        Reasoning effort
-      </label>
+      <VisuallyHidden>
+        <label htmlFor="status-row-reasoning-effort">Reasoning effort</label>
+      </VisuallyHidden>
       {/* A native <select>, not widgets/select: that widget's own restyle is
           the bordered 32px box this row is shedding, and it forwards no
           className for an overlay variant. Rendered raw so this row can own
@@ -147,13 +146,14 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
       </span>
       {hasContext && (
         <>
-          <meter
-            className={CLASS.srOnly}
-            aria-label={contextLabel}
-            min={0}
-            value={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
-            max={model.contextWindow}
-          />
+          <VisuallyHidden>
+            <meter
+              aria-label={contextLabel}
+              min={0}
+              value={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
+              max={model.contextWindow}
+            />
+          </VisuallyHidden>
           <span className={CLASS.context} data-testid="status-row-context" aria-hidden="true" title={contextLabel}>
             <span className={CLASS.contextMeter} data-testid="status-row-context-meter">
               <Meter

@@ -172,7 +172,7 @@ func (m hubModel) sessionCapabilityStatusLabel() string {
 	case hubComposerModeReadOnly:
 		// sessionComposerMode returns read-only only when the capability
 		// checks in sessionComposerReadOnlyReason produce a concrete reason.
-		return "read-only: " + m.sessionComposerReadOnlyReason()
+		return "read-only: " + m.sessionComposerReadOnlyReason().text()
 	case hubComposerModeFork:
 		return "fork: draft"
 	default:

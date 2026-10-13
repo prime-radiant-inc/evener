@@ -3,6 +3,7 @@ import { Button } from "../button";
 import { IconButton } from "../iconbutton";
 import { Input } from "../input";
 import { requireClass } from "../internal/requireClass";
+import { VisuallyHidden } from "../visuallyhidden";
 import styles from "./collectioneditor.module.css";
 
 export type CollectionAddResult = { ok: true } | { ok: false; error: string };
@@ -40,18 +41,17 @@ export interface CollectionEditorProps<T> {
    * own placeholders then. */
   addPlaceholder?: string;
   addButtonLabel?: string;
-  /** Replaces the built-in plain-text add field (and its submit button)
-   * with the caller's own rendering - e.g. a PathField (dirListSetting.tsx)
-   * or a structured key/value pair (envMap - collectionFields.tsx).
-   * CollectionEditor still owns `draft`/`busy`/the submit `<form>`, so
+  /** Replaces the built-in plain-text add field with the caller's own
+   * rendering - e.g. a PathField (dirListSetting.tsx) or a structured
+   * key/value pair (envMap - collectionFields.tsx). CollectionEditor still
+   * owns `draft`/`busy`/the submit `<form>`, the Add button beside the field,
+   * and the row layout that gives the field the row's free width, so
    * `value`/`onChange` are that same draft state and Enter-to-submit keeps
-   * working as long as the caller's own markup stays inside a real
-   * `<input>` in the form; the caller's return value must include its own
-   * submit trigger (a `type="submit"` button) since none is rendered by
-   * default in this mode. Naming the field is the caller's own
-   * responsibility too - the built-in visually-hidden `label` wrapper is
-   * skipped in this mode (it only ever labels the single default input,
-   * which no longer renders). */
+   * working as long as the caller's own markup stays inside a real `<input>`
+   * in the form. Return only the field. Naming it is the caller's own
+   * responsibility - the built-in visually-hidden `label` wrapper is skipped
+   * in this mode (it only ever labels the single default input, which no
+   * longer renders). */
   renderAddField?: (props: { value: string; onChange: (value: string) => void; disabled: boolean }) => ReactNode;
   /** Runs the caller's own validate-then-persist step against the
    * trimmed, non-empty add value (blank/whitespace-only input never
@@ -74,7 +74,6 @@ const CLASS = {
   inheritedTag: requireClass(styles.inheritedTag, "collectioneditor.module.css", "inheritedTag"),
   addForm: requireClass(styles.addForm, "collectioneditor.module.css", "addForm"),
   addField: requireClass(styles.addField, "collectioneditor.module.css", "addField"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "collectioneditor.module.css", "visuallyHidden"),
   error: requireClass(styles.error, "collectioneditor.module.css", "error"),
 };
 
@@ -98,6 +97,19 @@ function RemoveIcon() {
  * arrow-key list navigation isn't part of this widget's contract (unlike
  * RadioGroup/Tree/Menu, nothing here cycles a fixed set of peer actions).
  */
+// Persisted lists can hold identical entries, so a row's key is its item key
+// plus which occurrence of that key it is: removing one duplicate then leaves
+// the remaining rows matched to the remaining items.
+function rowKeys<T>(items: readonly T[], getKey: (item: T) => string): [T, string][] {
+  const seen = new Map<string, number>();
+  return items.map((item) => {
+    const key = getKey(item);
+    const occurrence = seen.get(key) ?? 0;
+    seen.set(key, occurrence + 1);
+    return [item, JSON.stringify([key, occurrence])];
+  });
+}
+
 export function CollectionEditor<T>({
   label,
   items,
@@ -136,11 +148,13 @@ export function CollectionEditor<T>({
     <div className={CLASS.root}>
       <ul aria-label={label} className={CLASS.list}>
         {items.length === 0 && inheritedItems.length === 0 ? (
-          <li className={CLASS.empty}>{emptyMessage}</li>
+          <li className={CLASS.empty} data-reason="empty">
+            {emptyMessage}
+          </li>
         ) : (
           <>
-            {items.map((item) => (
-              <li key={getKey(item)} className={CLASS.row}>
+            {rowKeys(items, getKey).map(([item, key]) => (
+              <li key={key} className={CLASS.row} data-kind="local">
                 <div className={CLASS.content}>{renderItem(item)}</div>
                 <IconButton
                   label={removeLabel(item)}
@@ -152,7 +166,7 @@ export function CollectionEditor<T>({
               </li>
             ))}
             {inheritedItems.map((item) => (
-              <li key={`inherited:${getKey(item)}`} className={`${CLASS.row} ${CLASS.inherited}`}>
+              <li key={`inherited:${getKey(item)}`} className={`${CLASS.row} ${CLASS.inherited}`} data-kind="inherited">
                 <div className={CLASS.content}>{renderItem(item)}</div>
                 <span className={CLASS.inheritedTag}>(default)</span>
               </li>
@@ -162,23 +176,21 @@ export function CollectionEditor<T>({
       </ul>
       <form className={CLASS.addForm} onSubmit={(event) => void handleSubmit(event)}>
         {renderAddField ? (
-          renderAddField({ value: draft, onChange: setDraft, disabled: busy })
+          <div className={CLASS.addField}>{renderAddField({ value: draft, onChange: setDraft, disabled: busy })}</div>
         ) : (
-          <>
-            <label className={CLASS.addField}>
-              <span className={CLASS.visuallyHidden}>{label}</span>
-              <Input
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder={addPlaceholder}
-                disabled={busy}
-              />
-            </label>
-            <Button type="submit" variant="quiet" disabled={trimmed === "" || busy}>
-              {addButtonLabel}
-            </Button>
-          </>
+          <label className={CLASS.addField}>
+            <VisuallyHidden>{label}</VisuallyHidden>
+            <Input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder={addPlaceholder}
+              disabled={busy}
+            />
+          </label>
         )}
+        <Button type="submit" variant="quiet" disabled={trimmed === "" || busy}>
+          {addButtonLabel}
+        </Button>
       </form>
       {error !== null && (
         <p role="alert" className={CLASS.error}>

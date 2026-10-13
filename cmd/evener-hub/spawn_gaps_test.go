@@ -3,10 +3,12 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 )
@@ -153,27 +155,25 @@ func TestRendezvousWaitErrorTimeout(t *testing.T) {
 	}
 }
 
-// TestLaunchFailurePrefixTimeout covers the timeout prefix path.
-func TestLaunchFailurePrefixTimeout(t *testing.T) {
-	got := launchFailurePrefix("spawn", errRendezvousTimeout)
-	if got != "spawn timed out" {
-		t.Fatalf("expected 'spawn timed out', got %q", got)
+// TestLaunchFailurePrefixNamesTheOutcome: a timeout, a cancellation and any
+// other failure each get their own label, the label follows a wrapped
+// outcome, and a resume timeout keeps the label the hub-failure classifier
+// keys on.
+func TestLaunchFailurePrefixNamesTheOutcome(t *testing.T) {
+	timedOut := launchFailurePrefix("resume", errRendezvousTimeout)
+	canceled := launchFailurePrefix("resume", errRendezvousCanceled)
+	failed := launchFailurePrefix("resume", errors.New("some error"))
+	if timedOut == canceled || canceled == failed || timedOut == failed {
+		t.Fatalf("labels timed out=%q canceled=%q failed=%q, want three distinct labels", timedOut, canceled, failed)
 	}
-}
-
-// TestLaunchFailurePrefixCanceled covers the canceled prefix path.
-func TestLaunchFailurePrefixCanceled(t *testing.T) {
-	got := launchFailurePrefix("resume", errRendezvousCanceled)
-	if got != "resume canceled" {
-		t.Fatalf("expected 'resume canceled', got %q", got)
+	if other := launchFailurePrefix("resume", errors.New("another error")); other != failed {
+		t.Fatalf("another failure's label = %q, want the shared %q", other, failed)
 	}
-}
-
-// TestLaunchFailurePrefixDefault covers the default prefix path.
-func TestLaunchFailurePrefixDefault(t *testing.T) {
-	got := launchFailurePrefix("spawn", errors.New("some error"))
-	if got != "spawn failed" {
-		t.Fatalf("expected 'spawn failed', got %q", got)
+	if wrapped := launchFailurePrefix("resume", fmt.Errorf("wait: %w", errRendezvousTimeout)); wrapped != timedOut {
+		t.Fatalf("a wrapped timeout's label = %q, want %q", wrapped, timedOut)
+	}
+	if got := diagnostic.Classify(timedOut).Source; got != diagnostic.SourceHub {
+		t.Fatalf("Classify(%q).Source = %q, want %q", timedOut, got, diagnostic.SourceHub)
 	}
 }
 

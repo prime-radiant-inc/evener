@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"slices"
 	"unicode/utf8"
@@ -67,8 +66,14 @@ type navigationProjectAnchor struct {
 }
 
 func navigationSchemaError(category string) error {
-	return fmt.Errorf("navigation schema: %s", category)
+	return navigationSchemaViolationError{category: category}
 }
+
+// navigationSchemaViolationError is a navigation snapshot that breaks the schema;
+// category names the rule it breaks and never carries snapshot content.
+type navigationSchemaViolationError struct{ category string }
+
+func (e navigationSchemaViolationError) Error() string { return "navigation schema: " + e.category }
 
 func validateNavigationResourceSnapshot(
 	key navigationResourceKey,

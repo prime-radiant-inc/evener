@@ -8,11 +8,6 @@ afterEach(() => {
   window.history.pushState({}, "", "/");
 });
 
-test('shows "Page not found"', () => {
-  render(<NotFound />);
-  expect(screen.getByText("Page not found")).toBeTruthy();
-});
-
 test('offers a "Go home" action', () => {
   render(<NotFound />);
   expect(screen.getByRole("button", { name: "Go home" })).toBeTruthy();

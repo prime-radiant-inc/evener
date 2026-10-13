@@ -21,7 +21,90 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
+
+// The whole server journey for #4199: a live session the rail files as
+// archived, pinned, reaches the Board's pin section as a live row that says it
+// is archived. Without that flag the Board keeps its unread dot until the
+// session stops running.
+func TestPinnedArchivedLiveSessionReachesTheBoardAsArchived(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	metas := []schema.SessionMeta{{ID: "pinned", Name: "Pinned", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}}
+	live := []hubcore.LiveEntry{{SessionID: "pinned", Status: "active", Entry: rendezvous.Entry{SessionID: "pinned", StartedAt: now}}}
+	decisions := map[hubcore.ArchiveKey]bool{{Kind: "session", ID: "pinned"}: true}
+	tree := hubcore.BuildTreeAtWithProjects(metas, live, decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation",
+		Revision:     1,
+		Tree:         tree,
+		Live:         map[string]bool{"pinned": true},
+		PinSections:  []hubcore.PinSection{{ID: "pins", Name: "Pins"}},
+		PinAssignments: map[hubcore.ArchiveKey]hubcore.SessionPin{
+			hubcore.SessionPinKey("", "pinned"): {SessionID: "pinned", SectionID: "pins"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, ok := projection.PinSectionPage("pins", 0, 50)
+	if !ok {
+		t.Fatal(`pin section "pins" is missing`)
+	}
+	if len(page.Sessions) != 1 {
+		t.Fatalf("pin section served %d rows, want 1", len(page.Sessions))
+	}
+	row := page.Sessions[0]
+	if !row.Live {
+		t.Error("a still-running pinned archived session's row is not live")
+	}
+	if !row.Archived {
+		t.Error("a still-running pinned archived session's row is not marked archived")
+	}
+}
+
+// A pinned, archived, still-running session's pin-section row carries the
+// archived flag (#4199): the Board reads it to suppress the row's unread dot,
+// which no other navigation resource serves for an archived row.
+func TestPinSectionRowCarriesTheArchivedFlag(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	archived := hubcore.TreeNode{ID: "pinned", Title: "Pinned", Kind: "session", State: "active", Archived: true, UpdatedAt: at}
+	unarchived := hubcore.TreeNode{ID: "pinned-live", Title: "Live", Kind: "session", State: "active", UpdatedAt: at}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation",
+		Revision:     1,
+		Tree: hubcore.Tree{
+			Projects: []hubcore.TreeProject{{Key: "p", Name: "p", Current: []hubcore.TreeNode{archived, unarchived}}},
+		},
+		Live:        map[string]bool{"pinned": true, "pinned-live": true},
+		PinSections: []hubcore.PinSection{{ID: "pins", Name: "Pins"}},
+		PinAssignments: map[hubcore.ArchiveKey]hubcore.SessionPin{
+			hubcore.SessionPinKey("", "pinned"):      {SessionID: "pinned", SectionID: "pins"},
+			hubcore.SessionPinKey("", "pinned-live"): {SessionID: "pinned-live", SectionID: "pins"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, ok := projection.PinSectionPage("pins", 0, 50)
+	if !ok {
+		t.Fatal(`pin section "pins" is missing`)
+	}
+	if len(page.Sessions) != 2 {
+		t.Fatalf("pin section served %d rows, want 2", len(page.Sessions))
+	}
+	flag := map[string]bool{}
+	for _, row := range page.Sessions {
+		flag[row.SessionID] = row.Archived
+	}
+	if !flag["pinned"] {
+		t.Error("a pinned archived session's row reads Archived false")
+	}
+	if flag["pinned-live"] {
+		t.Error("a pinned unarchived session's row reads Archived true")
+	}
+}
 
 func TestNavigationSectionFlattensDeepTrees(t *testing.T) {
 	// A 40-deep subagent chain no longer costs the list anything: the row is

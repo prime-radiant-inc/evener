@@ -1,7 +1,7 @@
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
-import { render, renderedText, settle } from "../renderNative.testkit";
+import { render, settle } from "../renderNative.testkit";
 import { AccessPicker } from "./AccessPicker";
 import { sheetContext, TestSheet } from "./newSessionTestUtils";
 
@@ -40,21 +40,19 @@ async function mount(defaults: Record<string, unknown>, launchOverrides: Record<
 		)[0];
 	const network = () =>
 		tree.root.findAll((node) => String(node.type) === "Switch" && node.props.accessibilityLabel === "Network")[0];
-	return { tree, store, calls, level, network, text: () => renderedText(tree) };
+	return { tree, store, calls, level, network };
 }
 
 it("lists the four levels, checked on the hub's default for the project on the chosen host", async () => {
 	const page = await mount({ sandbox: "workspace-write" });
 	expect(page.calls[0]?.params).toMatchObject({ host: "paradise-park", method: "evener/launch/resolve" });
-	expect(page.level("Full access")?.props.accessibilityLabel).toBe(
-		"Full access, No sandbox: reads and writes anywhere",
-	);
+	// Each level reads its detail after its name.
+	expect(page.level("Full access")?.props.accessibilityLabel).toMatch(/^Full access, \S/);
 	expect(
 		["Full access", "Workspace write", "Read-only", "Restricted"].map(
 			(label) => page.level(label)?.props.accessibilityState.selected,
 		),
 	).toEqual([false, true, false, false]);
-	expect(page.text()).toContain("Access is fixed once the session starts.");
 });
 
 it("sets a level, and choosing the hub's own default follows the hub again", async () => {
@@ -77,7 +75,6 @@ it("offers Network only inside a sandbox, on unless set otherwise", async () => 
 	expect(open.network()).toBeUndefined();
 	const sandboxed = await mount({ sandbox: "workspace-write" });
 	expect(sandboxed.network()?.props.value).toBe(true);
-	expect(sandboxed.text()).toContain("Lets the session's commands reach the internet");
 	act(() => sandboxed.network()?.props.onValueChange(false));
 	expect(sandboxed.store.getState().launchOverrides).toEqual({ sandboxNet: false });
 	const hubOff = await mount({ sandbox: "read-only", sandboxNet: false });

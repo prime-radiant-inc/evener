@@ -11,7 +11,13 @@ import {
 } from "@evener/appwire-client";
 import { delegateTitle } from "./subagentLine";
 
+/** What a notification says happened: its outcome, or "reported" when it
+ * names none this client knows; a quiet subagent, an update, a watch that
+ * fired, or another notice. */
+export type NotificationKind = NotificationOutcome | "reported" | "quiet" | "update" | "watch" | "notice";
+
 export interface NotificationLine {
+	kind: NotificationKind;
 	headline: string;
 	detail?: string;
 	failed: boolean;
@@ -49,11 +55,15 @@ export function notificationLine(
 			const subject = notification.name || delegateTitle(subagent) || notification.description || "Subagent";
 			const ref = subagent?.transcriptRef ?? notification.transcriptRef;
 			const line: NotificationLine = notification.quiet
-				? { headline: `${subject} quiet · ${notification.quiet.window}`, failed }
+				? { kind: "quiet", headline: `${subject} quiet · ${notification.quiet.window}`, failed }
 				: notification.update
-					? { headline: `${subject} sent an update`, failed }
+					? { kind: "update", headline: `${subject} sent an update`, failed }
 					: // A report whose ending this client doesn't know still reported.
-						{ headline: said(subject, notification.outcome, "reported"), failed };
+						{
+							kind: notification.outcome ?? "reported",
+							headline: said(subject, notification.outcome, "reported"),
+							failed,
+						};
 			// The parser hands a report's message and retires the machinery stubs
 			// and a failure whose whole error is its ending (the delegate redesign,
 			// mockups 24-delegate-complete): a failed packet frame's cause rides as
@@ -74,7 +84,11 @@ export function notificationLine(
 		}
 		case "job": {
 			const subject = notification.intent || notification.description || "Background job";
-			const line: NotificationLine = { headline: said(subject, notification.outcome), failed };
+			const line: NotificationLine = {
+				kind: notification.outcome ?? "reported",
+				headline: said(subject, notification.outcome),
+				failed,
+			};
 			if (failed) {
 				// -1 is the daemon's signalled-not-exited sentinel, never an exit
 				// status; the title already says the command was killed.
@@ -92,12 +106,12 @@ export function notificationLine(
 			// A watch's prose opens with the sentence its title already says
 			// ("Timer fired after 300s."); what follows is the watch's own note.
 			const note = (notification.prose ?? "").split("\n").slice(1).join("\n").trim();
-			return { headline: notification.title, failed, ...(note ? { detail: note } : {}) };
+			return { kind: "watch", headline: notification.title, failed, ...(note ? { detail: note } : {}) };
 		}
 		default: {
 			// A watch delivery's secondary, or a replayed observer callback's body.
 			const detail = notification.secondary || notification.message || notification.excerpt;
-			return { headline: notification.title, failed, ...(detail ? { detail } : {}) };
+			return { kind: "notice", headline: notification.title, failed, ...(detail ? { detail } : {}) };
 		}
 	}
 }

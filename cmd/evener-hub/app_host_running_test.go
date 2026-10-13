@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,7 +109,7 @@ func TestHostRunningRefusesBrowserAndForwardedOrigins(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := m.HostRunning(tc.ctx, params)
 			assertWireCode(t, err, appwire.CodeUnavailable)
-			if !strings.Contains(err.Error(), "unauthenticated probe") {
+			if !errors.Is(err, errProbeUnauthenticated) {
 				t.Fatalf("refusal %q does not name the unauthenticated probe", err)
 			}
 		})
@@ -129,7 +128,7 @@ func TestHostRunningRequiresTheEpoch(t *testing.T) {
 	for _, epoch := range []appwire.FencingEpoch{{}, {BootID: "boot-1"}, {OpSeq: 3}} {
 		_, err := m.HostRunning(bridgeCtx(), appwire.HostRunningParams{FencingEpoch: epoch})
 		assertWireCode(t, err, appwire.CodeUnavailable)
-		if !strings.Contains(err.Error(), "no epoch presented") {
+		if !errors.Is(err, errProbeEpochMissing) {
 			t.Fatalf("epoch %+v refusal %q does not name the missing epoch", epoch, err)
 		}
 	}
@@ -164,7 +163,7 @@ func TestHostRunningPersistsAndRefusesStaleEpochs(t *testing.T) {
 	before := probed
 	if _, err := m.HostRunning(bridgeCtx(), appwire.HostRunningParams{FencingEpoch: appwire.FencingEpoch{BootID: "boot-1", OpSeq: 4}}); err == nil {
 		t.Fatal("a stale epoch was served")
-	} else if !strings.Contains(err.Error(), "stale fencing epoch") {
+	} else if !errors.Is(err, hostops.ErrStaleGuardEpoch) {
 		t.Fatalf("stale refusal = %q, want the stale-epoch refusal", err)
 	}
 	if probed != before {

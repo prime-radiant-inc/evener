@@ -14,7 +14,7 @@ func TestListMemoryScopePages(t *testing.T) {
 	t.Parallel()
 	scope := filepath.Join(t.TempDir(), "scope")
 	for rel, body := range map[string]string{
-		"a.md":      "---\ndescription: alpha   one\ntags: [Coupons]\nupdated: 2026-03-02\nby: seed-fixture\n---\n# A\n",
+		"a.md":      "---\ndescription: alpha   one\nwhen: Pricing a cart\ntags: [Coupons]\nupdated: 2026-03-02\nby: seed-fixture\n---\n# A\n",
 		"bad.md":    "---\ndescription: Cart rule 7: whole numbers\n---\n# Bad\n",
 		"MEMORY.md": "root index is never a page\n",
 		"crlf.md":   "---\r\ndescription: d\r\n---\r\n",
@@ -33,7 +33,7 @@ func TestListMemoryScopePages(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []MemoryScopePage{
-		{Path: "a.md", Description: "alpha one", HasDescription: true, Frontmatter: true, Tags: []string{"coupons"}, Updated: "2026-03-02", By: "seed-fixture"},
+		{Path: "a.md", Description: "alpha one", HasDescription: true, When: "Pricing a cart", Frontmatter: true, Tags: []string{"coupons"}, Updated: "2026-03-02", By: "seed-fixture"},
 		{Path: "bad.md", Description: "Bad " + memoryNoDescription, Frontmatter: true, Unreadable: true, Tags: []string{}},
 		{Path: "crlf.md", Description: "d", HasDescription: true, Frontmatter: true, Tags: []string{}},
 		{Path: "plain.md", Description: "no description " + memoryNoDescription, Frontmatter: true, Tags: []string{"x"}},

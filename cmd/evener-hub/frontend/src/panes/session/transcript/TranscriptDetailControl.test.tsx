@@ -63,6 +63,15 @@ function ControlledDetail({
   );
 }
 
+// Whose configuration the control is showing: "local" or "hub".
+function detailScope(): string | null {
+  return screen.getByTestId("transcript-detail-scope").getAttribute("data-scope");
+}
+
+function statusKinds(region: HTMLElement): (string | null)[] {
+  return [...region.querySelectorAll("[data-kind]")].map((message) => message.getAttribute("data-kind"));
+}
+
 beforeEach(() => {
   resetTranscriptDisplayStoreForTests();
   seedStore();
@@ -84,7 +93,7 @@ test("renders a controlled desktop Dialog with full editor, scope, reset, and hu
   expect(screen.getByRole("heading", { name: "Verbosity" })).toBeTruthy();
 
   expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
-  expect(screen.getByText("Using hub default")).toBeTruthy();
+  expect(detailScope()).toBe("hub");
   expect(screen.queryByRole("button", { name: "Use hub default" })).toBeNull();
 
   const editButton = screen.getByRole("button", { name: "Edit hub defaults" });
@@ -117,14 +126,14 @@ test("sets and clears only the browser-local value for the selected layout", asy
 
   expect(transcriptDisplayStore.getState().local.desktop).toEqual(config("activity"));
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual(hubDesktop);
-  expect(screen.getByText("Local Desktop view")).toBeTruthy();
+  expect(detailScope()).toBe("local");
   const useDefaultButton = screen.getByRole("button", { name: "Use hub default" });
   expect(useDefaultButton.className).toMatch(/secondary/);
 
   await user.click(screen.getByRole("button", { name: "Use hub default" }));
   expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual(hubDesktop);
-  expect(screen.getByText("Using hub default")).toBeTruthy();
+  expect(detailScope()).toBe("hub");
 });
 
 test("keeps Custom and Advanced extras truthful in the editor summary", () => {
@@ -134,8 +143,10 @@ test("keeps Custom and Advanced extras truthful in the editor summary", () => {
   );
   seedStore({ local: { desktop: custom } });
   render(<TranscriptDetailControl open onClose={() => {}} layout="desktop" onEditHubDefaults={() => {}} />);
-  expect(screen.getByText("Customize & advanced · Custom content · 2 extras")).toBeTruthy();
-  expect(screen.getByText("Local Desktop view")).toBeTruthy();
+  const summary = screen.getByTestId("transcript-detail-summary");
+  expect(summary.getAttribute("data-content")).toBe("custom");
+  expect(summary.getAttribute("data-extras")).toBe("2");
+  expect(detailScope()).toBe("local");
 });
 
 test("shows older-hub/loading/storage status without disabling local editing", async () => {
@@ -143,8 +154,7 @@ test("shows older-hub/loading/storage status without disabling local editing", a
   seedStore({ hubSupport: "unsupported", hubLoading: true, storageWarning: "Storage warning" });
   render(<TranscriptDetailControl open onClose={() => {}} layout="desktop" onEditHubDefaults={() => {}} />);
 
-  expect(screen.getByRole("status").textContent).toContain("Loading hub default");
-  expect(screen.getByText(/older hub does not support transcript display defaults/)).toBeTruthy();
+  expect(statusKinds(screen.getByRole("status"))).toEqual(["hub-loading", "hub-unsupported"]);
   expect(screen.getByRole("alert").textContent).toContain("Storage warning");
 
   const activityRadio = screen.getByRole("radio", { name: "Activity" });
@@ -164,8 +174,7 @@ test("consolidates passive status and failures into one announcement region each
 
   const statuses = screen.getAllByRole("status");
   expect(statuses).toHaveLength(1);
-  expect(statuses[0]?.textContent).toContain("Loading hub default");
-  expect(statuses[0]?.textContent).toContain("older hub does not support");
+  expect(statusKinds(statuses[0] as HTMLElement)).toEqual(["hub-loading", "hub-unsupported"]);
   expect(statuses[0]?.textContent).not.toContain("Hub unavailable");
 
   const alerts = screen.getAllByRole("alert");

@@ -374,7 +374,7 @@ describe("CSS contract", () => {
     expect(css).toMatch(/\.sm\s*\{[^}]*block-size:\s*28px/s);
     expect(css).toMatch(/\.md\s*\{[^}]*block-size:\s*32px/s);
     expect(css).toMatch(
-      /@media\s*\(max-width:\s*899px\)[^{]*\{[\s\S]*?\.option\s*\{[^}]*min-block-size:\s*var\(--tap-min\)/s,
+      /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.option\s*\{[^}]*min-block-size:\s*var\(--tap-min\)/s,
     );
     expect(css).toMatch(
       /@media\s*\(prefers-reduced-motion:\s*reduce\)[^{]*\{[\s\S]*?\.option\s*\{[^}]*transition:\s*none/s,

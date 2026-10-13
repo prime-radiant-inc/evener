@@ -77,8 +77,34 @@ const (
 type sessionControls struct {
 	stop, steer, drain, queue, send bool
 	// drainReason says why drain is false: the harness, the status, or the
-	// queue revision still syncing after a partial drain. Empty when true.
-	drainReason string
+	// queue revision still syncing after a partial drain. Zero when true.
+	drainReason drainRefusal
+}
+
+// drainRefusal says why Ctrl+S may not drain the queue as steering; the zero
+// value refuses nothing.
+type drainRefusal int
+
+const (
+	// drainNoSteer: the harness does not advertise steer.
+	drainNoSteer drainRefusal = iota + 1
+	// drainNoActiveTurn: no turn is running and no parked queue waits.
+	drainNoActiveTurn
+	// drainQueueSyncing: the queue revision is still syncing after a
+	// partial drain.
+	drainQueueSyncing
+)
+
+func (r drainRefusal) text() string {
+	switch r {
+	case drainNoSteer:
+		return "source does not advertise steer"
+	case drainNoActiveTurn:
+		return "no active turn"
+	case drainQueueSyncing:
+		return "the queue is syncing after the last force-steer; retry in a moment"
+	}
+	return ""
 }
 
 func (m hubModel) sessionControls() sessionControls {
@@ -98,11 +124,11 @@ func (m hubModel) sessionControls() sessionControls {
 	switch {
 	case c.drain:
 	case !caps.Steer:
-		c.drainReason = "source does not advertise steer"
+		c.drainReason = drainNoSteer
 	case !active && !parked:
-		c.drainReason = "no active turn"
+		c.drainReason = drainNoActiveTurn
 	default:
-		c.drainReason = "the queue is syncing after the last force-steer; retry in a moment"
+		c.drainReason = drainQueueSyncing
 	}
 	return c
 }
@@ -134,20 +160,41 @@ func (m hubModel) sessionCanDrainQueue() bool {
 	return m.sessionControls().drain
 }
 
-func (m hubModel) sessionComposerReadOnlyReason() string {
+// composerReadOnlyReason says why the session composer cannot take a message.
+type composerReadOnlyReason int
+
+const (
+	composerWritable composerReadOnlyReason = iota
+	// composerNoQueue: a turn is running and the source cannot queue behind it.
+	composerNoQueue
+	// composerNoSend: the source cannot start a turn.
+	composerNoSend
+)
+
+func (r composerReadOnlyReason) text() string {
+	switch r {
+	case composerNoQueue:
+		return "source does not advertise queue"
+	case composerNoSend:
+		return "source does not support send"
+	}
+	return ""
+}
+
+func (m hubModel) sessionComposerReadOnlyReason() composerReadOnlyReason {
 	controls := m.sessionControls()
 	if m.sessionTurnActionState() {
 		if !controls.queue {
 			if controls.send {
-				return ""
+				return composerWritable
 			}
-			return "source does not advertise queue"
+			return composerNoQueue
 		}
 	}
 	if !m.sessionCanStartTurn() {
-		return "source does not support send"
+		return composerNoSend
 	}
-	return ""
+	return composerWritable
 }
 
 func (m hubModel) sessionCanStartTurn() bool {
@@ -234,7 +281,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		}
 	case hubComposerModeReadOnly:
 		panel.Label = "read-only"
-		panel.ReadOnlyReason = m.sessionComposerReadOnlyReason()
+		panel.ReadOnlyReason = m.sessionComposerReadOnlyReason().text()
 	default:
 		// No section label in default compose mode — the chip strip
 		// already carries all the live context; an extra "message" line

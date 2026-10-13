@@ -2,14 +2,12 @@ package hub
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
-	"primeradiant.com/evener/llm"
 )
 
 type sessionDeleteHandler func(context.Context, appwire.SessionDeleteParams) (appwire.SessionDeleteResponse, error)
@@ -66,13 +64,7 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 		if err := ctx.Err(); err != nil {
 			return appwire.SessionDeleteResponse{}, err
 		}
-		var skipped []projectDeleteSkip
-		if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
-			skipped = appendProjectDeleteLiveSkip(nil, threadID)
-		} else {
-			skipped = []projectDeleteSkip{{ID: threadID, Reason: ownerErr.Error()}}
-		}
-		return s.sessionDeleteResponse(ctx, nil, skipped, projectKeyForStateDir(pe.StateDir))
+		return s.sessionDeleteResponse(ctx, nil, []projectDeleteSkip{ownershipSkip(threadID, ownerErr)}, projectKeyForStateDir(pe.StateDir))
 	}
 	defer func() {
 		if release != nil {

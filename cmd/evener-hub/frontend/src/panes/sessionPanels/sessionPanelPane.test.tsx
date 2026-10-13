@@ -9,6 +9,7 @@ import { activityClient } from "../../stores/sessionActivityTestUtils";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { NOW_TICK_MS } from "../session/liveness";
 import { sessionPanelTitle } from "./index";
 import { SessionPanelPane } from "./SessionPanelPane";
@@ -127,7 +128,7 @@ function readResponse(ref: string): ThreadReadResponse {
 test("renders a scaffold loading state before the session model hydrates", () => {
   render(<SessionPanelPane params={{ ref: "ref_a" }} paneId="panel-1" focused kind="tasks" />);
 
-  expect(screen.getByText("Loading session panel…")).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Loading session panel" })).toBeTruthy();
 });
 
 test("keeps the scaffold heading consistent with the registered title after rename", async () => {
@@ -190,7 +191,7 @@ test("renders daemon-gone state from the retained Tasks store result", async () 
 
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
 
-  expect(await screen.findByText("This session has ended")).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["ended"]));
 });
 
 test("Tasks pane does not install the Details clock", async () => {

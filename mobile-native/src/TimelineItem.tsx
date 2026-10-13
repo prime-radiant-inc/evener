@@ -388,6 +388,7 @@ function YourMessage({
 			{item.origin === "steered" ? (
 				<Text
 					allowFontScaling={allowFontScaling}
+					testID="steered-caption"
 					style={{ fontSize: 12 * scale, lineHeight: 16 * scale, color: palette.inkLow }}
 				>
 					Steered in mid-turn
@@ -409,6 +410,7 @@ function NoteRow({ text }: { text: string }) {
 		>
 			<Text
 				allowFontScaling={allowFontScaling}
+				testID={`note-caption:${text ? "updated" : "cleared"}`}
 				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
 			>
 				{text ? "You updated your note" : "You cleared your note"}
@@ -490,7 +492,9 @@ function Subagent({
 		() => (tree && finished ? subagentOutcome(tree, finished, now, ownerRef, line.runGeneration) : undefined),
 		[tree, finished, now, ownerRef, line.runGeneration],
 	);
-	return <SubagentRow line={outcome ? { ...line, activity: outcome } : line} onOpen={openSubagent} />;
+	return (
+		<SubagentRow line={outcome ? { ...line, activity: outcome, activityFrom: "tree" } : line} onOpen={openSubagent} />
+	);
 }
 
 function TimeMarker({ at }: { at: number }) {

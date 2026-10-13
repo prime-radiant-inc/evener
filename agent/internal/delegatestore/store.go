@@ -388,6 +388,10 @@ func cloneEvent(event Event) Event {
 		payload := *event.AttentionChanged
 		clone.AttentionChanged = &payload
 	}
+	if event.IntentStated != nil {
+		payload := *event.IntentStated
+		clone.IntentStated = &payload
+	}
 	if event.UpdatePosted != nil {
 		payload := *event.UpdatePosted
 		clone.UpdatePosted = &payload

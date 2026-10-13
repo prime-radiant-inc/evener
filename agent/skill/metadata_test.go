@@ -211,6 +211,16 @@ func TestSkillControlsRecoverThroughBOM(t *testing.T) {
 	if err != nil || descriptor.Unavailable || descriptor.CatalogName != "probe" || len(diagnostics) != 0 {
 		t.Fatalf("descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
 	}
+
+	// One mark is framing and is dropped; a second is content, exactly as
+	// frontmatter.Split reads it, so a two-mark skill is refused rather than
+	// read differently from every other caller.
+	twoMarks := []byte("\ufeff\ufeff---\nname: probe\ndescription: fixture\n---\nBODY_a3\n")
+	descriptor, diagnostics, err = Parse(twoMarks, filepath.Join(t.TempDir(), "SKILL.md"))
+	if err == nil || !descriptor.Unavailable {
+		t.Fatalf("a two-mark skill was accepted: descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
+	}
+	assertDiagnostic(t, diagnostics, "invalid_frontmatter", "")
 }
 
 // A frontmatter value that ends in dashes must not be mistaken for the closing

@@ -9,8 +9,8 @@
 // `LaunchConfigForm.test.tsx`'s afterEach called `cleanup()` and
 // `vi.useRealTimers()` but NEVER `resetToastStoreForTests()`, so the toast
 // survived into the next test. When `--sequence.shuffle` ran the env-credential
-// test before the status test, the status test's `getByText('Save failed')`
-// found 2 elements (the leaked toast + its own) and threw.
+// test before the status test, the status test's toast assertion found 2
+// toasts (the leaked one + its own) and threw.
 //
 // This file reproduces that leak DETERMINISTICALLY in the default (non-shuffled)
 // order by deliberately rendering the leaking test first and the asserting test
@@ -26,6 +26,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { LaunchConfigForm } from "./LaunchConfigForm";
 
 afterEach(() => {
@@ -114,7 +115,8 @@ describe("issue #199 — toast store leak across tests", () => {
       </>,
     );
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
-    await waitFor(() => expect(screen.getByText("Error: disk full")).toBeTruthy());
-    expect(screen.getAllByText("Save failed")).toHaveLength(1);
+    await waitFor(() => expect(screen.getByTestId("launch-config-status").getAttribute("data-state")).toBe("error"));
+    expect(toastKinds()).toEqual(["error"]);
+    expect(screen.getByRole("region", { name: "Notifications" }).children).toHaveLength(1);
   });
 });

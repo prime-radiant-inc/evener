@@ -150,8 +150,12 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		sources = append(sources, *roleSource)
 	}
 
-	// Skills
+	// Skills. A skill this session cannot follow is left out, so the catalog
+	// only offers usable skills.
 	for _, descriptor := range s.skills.ModelEntries() {
+		if !s.skillAvailableToSession(descriptor.CatalogName) {
+			continue
+		}
 		skillName, sm := descriptor.CatalogName, descriptor.Meta
 		data.Skills = append(data.Skills, skillEntry{
 			Name: sm.Name, CatalogName: skillName, Description: sm.Description,

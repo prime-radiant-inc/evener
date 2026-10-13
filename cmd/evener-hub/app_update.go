@@ -59,10 +59,17 @@ var hubUpdateMu sync.Mutex
 // shared "already in progress" error when the other one already holds it.
 func tryLockHubUpdate() error {
 	if !hubUpdateMu.TryLock() {
-		return errors.New("a hub update is already in progress")
+		return errHubUpdateInProgress
 	}
 	return nil
 }
+
+// The refusals the self-update RPCs give before installing anything.
+var (
+	errHubUpdateInProgress       = errors.New("a hub update is already in progress")
+	errDevBuildUpdate            = errors.New("this hub is a dev build; rebuild with make build-hub instead of self-updating")
+	errInPlaceRestartUnsupported = errors.New("in-place restart is not supported on this platform; use evener/upgrade and restart manually")
+)
 
 // isDevBuild reports whether this hub was built without a release channel
 // (a worktree build). Such a hub is never self-updated: replacing it with a
@@ -80,9 +87,13 @@ func validateUpdateChannel(requested string) (string, error) {
 	case "release", "snapshot":
 		return ch, nil
 	default:
-		return "", fmt.Errorf("unknown update channel %q", ch)
+		return "", fmt.Errorf("%w %q", errUnknownUpdateChannel, ch)
 	}
 }
+
+// errUnknownUpdateChannel refuses an update channel other than release or
+// snapshot.
+var errUnknownUpdateChannel = errors.New("unknown update channel")
 
 // hubUpdateCheck answers evener/update/check: compare the running build to
 // the channel's current commit. Dev builds answer locally.
@@ -118,7 +129,7 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 // then exec it in place once this response has gone out.
 func hubUpdateApply(ctx context.Context, params appwire.UpdateApplyParams) (appwire.UpdateApplyResponse, error) {
 	if isDevBuild() {
-		return appwire.UpdateApplyResponse{}, errors.New("this hub is a dev build; rebuild with make build-hub instead of self-updating")
+		return appwire.UpdateApplyResponse{}, errDevBuildUpdate
 	}
 	channel, err := validateUpdateChannel(params.Channel)
 	if err != nil {
@@ -129,7 +140,7 @@ func hubUpdateApply(ctx context.Context, params appwire.UpdateApplyParams) (appw
 	// then fail in the post-response goroutine -- leaving the frontend to
 	// poll a hub that never restarts. hubUpgrade (no exec) stays allowed.
 	if !hubRestartSupported() {
-		return appwire.UpdateApplyResponse{}, errors.New("in-place restart is not supported on this platform; use evener/upgrade and restart manually")
+		return appwire.UpdateApplyResponse{}, errInPlaceRestartUnsupported
 	}
 	// Re-check server-side before installing: the store refuses stale
 	// checks, but a direct RPC (or a check that went stale in flight)

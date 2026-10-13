@@ -1,7 +1,5 @@
 import { useState } from "react";
-import { Button, Dialog } from "../../widgets";
-import { requireClass } from "../../widgets/internal/requireClass";
-import styles from "./sessionmenu.module.css";
+import { ConfirmDialog } from "../../widgets";
 
 export function ForceStopDialog({
   open,
@@ -26,27 +24,18 @@ export function ForceStopDialog({
     }
   };
   return (
-    <Dialog
+    <ConfirmDialog
       open={open}
-      onClose={() => {
+      title="Force shutdown this session?"
+      confirmLabel="Force shutdown"
+      busy={busy}
+      onConfirm={() => void confirm()}
+      onCancel={() => {
         if (!busy) onClose();
       }}
-      title="Force shutdown this session?"
-      footer={
-        <div className={requireClass(styles.footer, "sessionmenu.module.css", "footer")}>
-          <Button variant="quiet" disabled={busy} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button variant="danger" disabled={busy} onClick={() => void confirm()}>
-            Force shutdown
-          </Button>
-        </div>
-      }
     >
-      <p className={requireClass(styles.body, "sessionmenu.module.css", "body")}>
-        Active turns and jobs may be interrupted. Saved transcripts are retained. You can resume the session after its
-        process stops.
-      </p>
-    </Dialog>
+      Active turns and jobs may be interrupted. Saved transcripts are retained. You can resume the session after its
+      process stops.
+    </ConfirmDialog>
   );
 }

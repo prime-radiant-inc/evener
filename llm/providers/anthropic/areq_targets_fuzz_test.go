@@ -139,7 +139,9 @@ func FuzzAreqToAnthropicMessages(f *testing.F) {
 	// nil and empty-raw.
 	f.Add([]byte{0x00, 0x12, 0x2a, 0x0b, 0x13, 0x3b, 0x4b, 0x5b, 0x6b, 0x73}, "id", "s", []byte(`{}`))
 	// Error branches (each short-circuits, so kept in its own seed): local-file
-	// image read failure (user/assistant) and unsupported audio/document parts.
+	// image read failure (user/assistant), unsupported audio parts, and an
+	// assistant-role document part (a user-role document now emits a document
+	// block, #4209).
 	f.Add([]byte{0x1a}, "id", "s", []byte(``))
 	f.Add([]byte{0x1b}, "id", "s", []byte(``))
 	f.Add([]byte{0x7b}, "id", "s", []byte(``))
@@ -173,7 +175,7 @@ func FuzzAreqToAnthropicMessages(f *testing.F) {
 			}
 		}
 		if err1 != nil {
-			return // a structured translation error (unsupported audio/document) is acceptable.
+			return // a structured translation error (unsupported audio, or an assistant-role document) is acceptable.
 		}
 
 		// Request-shape contract.

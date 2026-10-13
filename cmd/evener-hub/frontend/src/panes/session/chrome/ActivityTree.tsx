@@ -10,7 +10,9 @@ import {
   activityDelegateState,
   buildActivityRows,
   buildWatchRows,
+  delegateStatedIntent,
   delegateTiming,
+  delegateWorkText,
   jobIsFailed,
   watchMeta,
   watchName,
@@ -32,7 +34,7 @@ import {
 } from "react";
 import { WatchGlyph } from "../../../shell/rail/RailRow";
 import { armedWatchCount } from "../../../shell/rail/railNodes";
-import { Chevron } from "../../../widgets";
+import { Chevron, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
@@ -80,7 +82,6 @@ const CLASS = {
   rowToggle: requireClass(styles.rowToggle, "activitypanel.module.css", "rowToggle"),
   indentGuide: requireClass(styles.indentGuide, "activitypanel.module.css", "indentGuide"),
   watchGlyph: requireClass(styles.watchGlyph, "activitypanel.module.css", "watchGlyph"),
-  srOnly: requireClass(styles.srOnly, "activitypanel.module.css", "srOnly"),
   watchGroup: requireClass(styles.watchGroup, "activitypanel.module.css", "watchGroup"),
   watchGroupTitle: requireClass(styles.watchGroupTitle, "activitypanel.module.css", "watchGroupTitle"),
   watchGroupCount: requireClass(styles.watchGroupCount, "activitypanel.module.css", "watchGroupCount"),
@@ -156,13 +157,29 @@ function terminalSegment(durationMs: number | undefined, statusText: string): Me
 }
 
 // liveMetaSegments is the one place the live meta grammar is built (#1388): the
-// usage pair when the daemon sent one, else the row's status text, then the
-// quiet age when its anchor is known. Sharing it keeps the two row kinds
-// reading the same - a shell job's ActivityJob carries no usage field at all,
-// so it always takes the status branch, while a delegate takes it only until
-// usage arrives. Neither renders a placeholder dash: the empty token slot
-// carried no information and read as a value that failed to load.
-function liveMetaSegments(tokens: string | undefined, statusText: string, quietMs: number | undefined): MetaSegment[] {
+// leading segment is the delegate's standing intent when one states work,
+// else the usage pair when the daemon sent one, else the row's status text;
+// the quiet age follows when its anchor is known. Sharing it keeps the two row
+// kinds reading the same - a shell job's ActivityJob carries no usage field or
+// intent at all, so it always takes the status branch, while a delegate's
+// tokens displace only the bare status word, never a standing intent.
+// Neither renders a placeholder dash: the empty token slot carried no
+// information and read as a value that failed to load.
+function liveMetaSegments(
+  tokens: string | undefined,
+  statusText: string,
+  quietMs: number | undefined,
+  intent?: string,
+): MetaSegment[] {
+  // A standing intent leads the meta — the row's live action, which a token
+  // count must not displace. Without one, tokens keep displacing the bare
+  // status word exactly as before.
+  if (intent) {
+    const segments: MetaSegment[] = [{ key: "intent", text: intent }];
+    if (tokens) segments.push({ key: "tokens", text: tokens });
+    if (quietMs !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quietMs), tone: "quiet" });
+    return segments;
+  }
   const first: MetaSegment = tokens ? { key: "tokens", text: tokens } : { key: "status", text: statusText };
   const segments: MetaSegment[] = [first];
   if (quietMs !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quietMs), tone: "quiet" });
@@ -189,10 +206,15 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   // quietForMs while an anchor parses), the duration from the terminal run
   // window, else the snapshot.
   const timing = delegateTiming(delegate, now);
-  if (row.live) return liveMetaSegments(tokens ?? undefined, rowStatusText(row), timing.quietForMs);
+  // The visible meta is the one place the intent stands in for the status
+  // word: the row's aria-description and the glyph tone below keep reading
+  // the word itself, so the status stays reachable and the hue stays true.
+  const work = delegateWorkText(delegate, rowStatusText(row));
+  if (row.live)
+    return liveMetaSegments(tokens ?? undefined, work, timing.quietForMs, delegateStatedIntent(delegate) || undefined);
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
-  segments.push(terminalSegment(timing.durationMs, rowStatusText(row)));
+  segments.push(terminalSegment(timing.durationMs, work));
   return segments;
 }
 
@@ -421,6 +443,7 @@ const DenseRowView = memo(function DenseRowView({
         <span
           role="img"
           aria-label={KIND_STATE_LABEL[kindState] ?? kindState}
+          data-state={kindState}
           className={kindClass ? `${CLASS.denseKind} ${kindClass}` : CLASS.denseKind}
         >
           {row.kind === "delegate" ? "⌘" : "$"}
@@ -473,7 +496,7 @@ const WatchRowView = memo(function WatchRowView({
         registerRowRef={registerRowRef}
       >
         <WatchGlyph className={CLASS.watchGlyph} testId="watch-glyph" />
-        <span className={CLASS.srOnly}>Watch:</span>
+        <VisuallyHidden>Watch:</VisuallyHidden>
         <span className={CLASS.denseName}>{watchName(row.watch)}</span>
         {detailOpen ? (
           <OpenWatchMeta watch={row.watch} />
@@ -505,7 +528,7 @@ function OpenWatchMeta({ watch }: { watch: SessionWatch }): ReactNode {
 function WatchGroupHeader({ armed }: { armed: number | null }): ReactNode {
   const count = armed === null ? "Armed count unknown" : `${armed} armed`;
   return (
-    <div className={CLASS.watchGroup} data-testid="watch-group">
+    <div className={CLASS.watchGroup} data-testid="watch-group" data-armed={armed ?? "unknown"}>
       <span className={CLASS.watchGroupTitle}>Watches</span>
       <span className={CLASS.watchGroupCount}>{count}</span>
     </div>

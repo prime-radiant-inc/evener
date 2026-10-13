@@ -1062,8 +1062,8 @@ func TestTurnStartDoesNotRetryRecoveryRejectionAfterExplicitResume(t *testing.T)
 	if wire.Code != appwire.CodeUnavailable || evenerErrorInfoFromData(wire.Data) != string(appwire.ErrorActionUnavailable) {
 		t.Fatalf("recovery rejection lost wire classification: %+v", wire)
 	}
-	if wire.Message != stale.Error() {
-		t.Fatalf("wire message changed: %q vs %q", wire.Message, stale.Error())
+	if !errors.Is(err, stale) {
+		t.Fatalf("recovery rejection = %v, want the stale-admission refusal itself %v", err, stale)
 	}
 	if resumed != 0 || submitted != 0 || resolved != 1 {
 		t.Fatalf("stale input retried: resolutions=%d resumes=%d submissions=%d", resolved, resumed, submitted)

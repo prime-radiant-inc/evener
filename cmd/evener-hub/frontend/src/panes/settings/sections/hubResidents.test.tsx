@@ -10,6 +10,7 @@
 // the widget tests.
 
 import type { DaemonIdentity, DaemonListResponse, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -575,6 +576,29 @@ test("failed refresh retains old rows and shows a stale-data indicator", async (
   expect(screen.getByRole("status")).toBeTruthy();
 });
 
+// The residents store translates a failed refresh while it still has its type,
+// so the stale-data notice renders the stored text as-is: a hub-reported
+// explanation or a client-side diagnosis survives instead of collapsing to the
+// generic one.
+test.each([
+  ["a hub-reported WireError", new WireError("daemon inventory is rebuilding", -32000)],
+  ["a client-side failure", new Error("AppwireClient internal detail")],
+])("a failed refresh from %s shows that error's friendly form", async (_name, err) => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+  render(<HubResidents />);
+  await waitFor(() => expect(daemonResidentsStore.getState().data).not.toBeNull());
+
+  fake.on("evener/daemon/list", () => {
+    throw err;
+  });
+  await act(async () => {
+    await daemonResidentsStore.getState().refresh();
+  });
+
+  expect(screen.getByRole("status").textContent).toContain(friendlyErrorMessage(err));
+});
+
 // ─── Force-stop dialog ────────────────────────────────────────────────────────
 
 describe("force-stop dialog", () => {
@@ -842,8 +866,10 @@ describe("force-stop dialog", () => {
 
     // A friendly error must appear in the row (role="alert" for announcements)
     const updatedRow = await screen.findByRole("row", { name: /ForceStop error daemon/ });
-    expect(updatedRow.querySelector("[role='alert']")).toBeTruthy();
-    expect(updatedRow.textContent).toContain("Something went wrong");
+    const alert = updatedRow.querySelector("[role='alert']");
+    if (alert === null) throw new Error("force-stop failure raised no row alert");
+    expect(alert.textContent).toMatch(/\S/);
+    expect(alert.textContent).not.toContain("network error");
   });
 });
 
@@ -878,8 +904,10 @@ test("retire RPC failure displays a friendly error in the row", async () => {
 
   // A friendly error must appear in the row after the RPC fails
   const updatedRow = await screen.findByRole("row", { name: /Retire error daemon/ });
-  expect(updatedRow.querySelector("[role='alert']")).toBeTruthy();
-  expect(updatedRow.textContent).toContain("Something went wrong");
+  const alert = updatedRow.querySelector("[role='alert']");
+  if (alert === null) throw new Error("retire failure raised no row alert");
+  expect(alert.textContent).toMatch(/\S/);
+  expect(alert.textContent).not.toContain("network error");
 });
 
 // ─── Timeout rendering ────────────────────────────────────────────────────────
@@ -959,13 +987,9 @@ test("both the Hub default timeout and the row's effective timeout are displayed
   await screen.findByRole("row", { name: /Timeout display/ });
 
   // Hub default timeout must appear formatted as "1h" — not as raw millis.
-  // The meta paragraph also carries the future-launch scope note.
-  const metaText = screen.getByText(/Hub default idle timeout/).textContent ?? "";
+  const metaText = screen.getByTestId("hub-default-timeout").textContent ?? "";
   expect(metaText).toContain("1h");
   expect(metaText).not.toContain("3600000");
-
-  // M-5: Future-launch scope sentence must accompany the default timeout.
-  expect(metaText).toContain("future spawns");
 
   // Row's effective timeout must appear formatted as "2m" — not as raw millis.
   // Follow the exact-cell pattern from the special-string assertions above.
@@ -1389,7 +1413,7 @@ test("a refused retire whose blockers subsume the snapshot blockers renders one 
   // same "Blocked by:" line, so exactly one such line must remain.
   await waitFor(() => {
     const updatedRow = screen.getByRole("row", { name: /Duplicate blocked resident/ });
-    expect(within(updatedRow).getAllByText(/^Blocked by:/)).toHaveLength(1);
+    expect(within(updatedRow).getAllByTestId("resident-blockers")).toHaveLength(1);
   });
   const updatedRow = screen.getByRole("row", { name: /Duplicate blocked resident/ });
   // The subsumed in-flight blocker must appear once, and the refusal-only

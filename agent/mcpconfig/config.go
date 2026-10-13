@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -106,6 +107,10 @@ func parseServerMap(servers map[string]json.RawMessage, source string, expand fu
 		}
 		configs = append(configs, cfg)
 	}
+	// The servers map ranges in random order; sort by name so the MCP servers
+	// come out in the same order on every session build, and the tools they
+	// contribute follow that order.
+	sort.Slice(configs, func(i, j int) bool { return configs[i].Name < configs[j].Name })
 	return configs, nil
 }
 

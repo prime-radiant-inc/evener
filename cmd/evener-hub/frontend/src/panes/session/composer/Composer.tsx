@@ -93,6 +93,7 @@ import {
   SendIcon,
   Tooltip,
   useToasts,
+  VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome";
@@ -148,7 +149,6 @@ const CLASS = {
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
@@ -896,7 +896,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   //
   // `attachments` is accepted for signature symmetry but never restored: a
   // queued entry's edit keeps image attachments out of the composer per
-  // parity (contracts-composer-queue-pending.md:70, parity-m5-
+  // parity (contracts-composer-queue-pending.md:122, parity-m5-
   // composer.md:102) - dropped image attachments surface via QueueStrip's
   // own durable queue state. `skillNames` restores the entry's selections
   // as chips (union with the current draft's chips, deduped by name): a
@@ -1470,9 +1470,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           the textarea itself is visibly back, there is nothing left for a
           permanent "ready" line to usefully say (honest-liveness: only
           announce a real transition, never a static claim). */}
-      <div className={CLASS.visuallyHidden} role="status" aria-live="polite">
-        {readyAnnouncement}
-      </div>
+      <VisuallyHidden>
+        <span role="status" aria-live="polite" data-testid="composer-ready-announcement">
+          {readyAnnouncement}
+        </span>
+      </VisuallyHidden>
       {/* T3: queue strip - the queue preview (model.queue) above the input
           row; getComposerText/onRestoreToComposer/onDrainSuccess are this
           integration's own seam implementations, see each one's own doc
@@ -1545,7 +1547,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
               onSelect={commitSlashCompletion}
             />
           )}
-          <form ref={formRef} onSubmit={handleFormSubmit}>
+          <form
+            ref={formRef}
+            onSubmit={handleFormSubmit}
+            data-testid="composer-form"
+            data-mode={ended ? "follow-up" : "message"}
+          >
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
               <PromptCard
                 data-testid="composer-input-card"
@@ -1678,8 +1685,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                           // already gate this control's existence. The recovery
                           // fence gates the press the same way the Send button's
                           // does, and the tooltip says why (kata 2f41) instead of
-                          // describing an action the fence refuses.
-                          disabled={actionPending || steerRecoveryFenced}
+                          // describing an action the fence refuses. The fence is
+                          // an aria-disabled refusal, not the native attribute, so
+                          // the button keeps focus and hover and that reason
+                          // stays reachable.
+                          aria-disabled={steerRecoveryFenced || undefined}
+                          disabled={actionPending}
                         >
                           Steer
                         </Button>

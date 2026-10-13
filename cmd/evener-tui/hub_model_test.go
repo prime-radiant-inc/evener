@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,19 +29,6 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/transcriptindex"
 )
-
-// collapseViewWhitespace flattens a rendered Overlay/popup view (box-drawing
-// borders plus hard-wrapped content) into a single line of whitespace-
-// separated words. Model picker rows can carry a qualified ID, a catalog
-// Meta tail, and a disabled reason together; when that combination exceeds
-// the popup's fixed column width, the frame word-wraps the row across two
-// visual lines. Tests that need to assert a row's text content as one
-// contiguous string (rather than caring about exact line layout) should
-// search in the collapsed form so an incidental wrap point doesn't split an
-// otherwise-present, correct string in half.
-func collapseViewWhitespace(view string) string {
-	return strings.Join(strings.Fields(strings.ReplaceAll(view, "│", " ")), " ")
-}
 
 // collapseLabelPadding collapses each line's runs of whitespace to a single
 // space. The detail panes hand-maintain their column padding in the format
@@ -611,9 +599,12 @@ func TestHubModelDashboardSlashOpensCommandPalette(t *testing.T) {
 	if m.commandPalette == nil {
 		t.Fatal("dashboard slash did not open command palette")
 	}
+	if filter := m.commandPalette.panel.Filter(); filter != "beta" {
+		t.Fatalf("dashboard palette filter = %q, want beta", filter)
+	}
 	view := m.dashboardView()
-	if !strings.Contains(view, "Command palette") || !strings.Contains(view, "Filter: beta") || !strings.Contains(view, "beta task") {
-		t.Fatalf("filtered dashboard missing active filter/beta row:\n%s", view)
+	if !strings.Contains(view, "beta task") {
+		t.Fatalf("filtered dashboard missing beta row:\n%s", view)
 	}
 	if strings.Contains(view, "alpha task") {
 		t.Fatalf("dashboard palette still shows alpha row after filtering beta:\n%s", view)
@@ -1150,12 +1141,12 @@ func TestHubModelBrowseFooterStillShowsEnterSend(t *testing.T) {
 	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
 	m.enterSessionBrowse(false)
 
-	view := ansiPattern.ReplaceAllString(m.sessionView(), "")
-	if !strings.Contains(view, "esc: compose") {
-		t.Fatalf("browse footer should show the browse action bar:\n%s", view)
+	if !m.session.scrollMode {
+		t.Fatal("precondition: the session should be browsing")
 	}
-	if !strings.Contains(view, "enter send") {
-		t.Fatalf("browse footer should keep the composer panel's compose hints on screen:\n%s", view)
+	_, _, footer := m.sessionChromeText()
+	if panel := m.sessionComposerPanel().View(); !strings.HasSuffix(footer, panel) {
+		t.Fatalf("browse footer should keep the composer panel on screen:\n%s", footer)
 	}
 }
 
@@ -1460,12 +1451,11 @@ func TestHubModelSessionHeaderShowsProviderWhenModelUnknown(t *testing.T) {
 	m.width = 120
 	m.detail = hubDetailFromThread(thread)
 
-	got := m.sessionView()
-	if !strings.Contains(got, "provider: openai") {
-		t.Fatalf("session header missing provider metadata:\n%s", got)
+	if m.detail.Model != "" {
+		t.Fatalf("provider was mislabeled as model: detail.Model = %q", m.detail.Model)
 	}
-	if strings.Contains(got, "model: openai") || strings.Contains(got, "Model:    openai") {
-		t.Fatalf("provider was mislabeled as model:\n%s", got)
+	if got := m.sessionStatusLine(); !strings.Contains(got, "openai") {
+		t.Fatalf("status line missing provider metadata:\n%s", got)
 	}
 }
 
@@ -1481,11 +1471,7 @@ func TestHubModelSessionStatusLineUsesProfileWhenModelHasNoProviderPrefix(t *tes
 		Profile:     "openai",
 	}
 
-	got := m.sessionView()
-	if !strings.Contains(got, "provider: openai") {
-		t.Fatalf("status line missing provider profile:\n%s", got)
-	}
-	if strings.Contains(got, "auth: unknown") {
+	if got := m.sessionStatusLine(); !strings.Contains(got, "openai") {
 		t.Fatalf("status line ignored provider profile:\n%s", got)
 	}
 }
@@ -1549,13 +1535,16 @@ func TestHubModelSessionStatusLineShowsConnectionAuthBusyAndError(t *testing.T) 
 	m = updated.(hubModel)
 	m.err = errors.New("recoverable send failed")
 
-	got := m.sessionView()
-	for _, want := range []string{
-		"status: hub connected",
-		"auth: openai oauth",
-		"busy: turn_busy",
-		"error: recoverable send failed",
-	} {
+	disconnected := m
+	disconnected.client = nil
+	if m.sessionStatusLine() == disconnected.sessionStatusLine() {
+		t.Fatalf("status line does not tell a connected hub from a disconnected one:\n%s", m.sessionStatusLine())
+	}
+	if !m.authStatusSeen || m.authStatus.Provider != "openai" || m.authStatus.ActiveSource != "oauth" {
+		t.Fatalf("auth status = %+v (seen %v), want openai oauth", m.authStatus, m.authStatusSeen)
+	}
+	got := m.sessionStatusLine()
+	for _, want := range []string{"openai", "oauth", "turn_busy", "recoverable send failed"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("status line missing %q:\n%s", want, got)
 		}
@@ -1566,30 +1555,43 @@ func TestHubModelSessionStatusLineReflectsCapabilityChanges(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.width = 100
 
-	if got := m.sessionView(); !strings.Contains(got, "send: ready") {
-		t.Fatalf("send-ready status missing:\n%s", got)
+	if mode := m.sessionComposerMode(); mode != hubComposerModeSend {
+		t.Fatalf("idle composer mode = %v, want send", mode)
 	}
+	statuses := map[string]bool{m.sessionCapabilityStatusLabel(): true}
 
 	m.detail.State = "active"
 	m.detail.Capabilities.Send = true
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
 	m.detail.ActiveTurnID = "turn_busy"
-	if got := m.sessionView(); !strings.Contains(got, "queue: ready") {
-		t.Fatalf("queue-ready status missing:\n%s", got)
+	if mode := m.sessionComposerMode(); mode != hubComposerModeQueue {
+		t.Fatalf("busy composer mode = %v, want queue", mode)
 	}
+	statuses[m.sessionCapabilityStatusLabel()] = true
 
 	// Send is not offered while a turn runs (the status is applied to it, as the
 	// SDK's sessionControls does), so a running source without queue reads
 	// read-only whether or not it advertises send.
 	m.detail.Capabilities.Queue = false
-	if got := m.sessionView(); !strings.Contains(got, "read-only: source does not advertise queue") {
-		t.Fatalf("read-only active status missing:\n%s", got)
+	if mode, reason := m.sessionComposerMode(), m.sessionComposerReadOnlyReason(); mode != hubComposerModeReadOnly || reason != composerNoQueue {
+		t.Fatalf("busy send-only composer mode=%v reason=%v, want read-only for want of a queue", mode, reason)
 	}
+	readOnly := m.sessionCapabilityStatusLabel()
+	statuses[readOnly] = true
 
 	m.detail.Capabilities.Send = false
-	if got := m.sessionView(); !strings.Contains(got, "read-only: source does not advertise queue") {
-		t.Fatalf("read-only status missing:\n%s", got)
+	if mode, reason := m.sessionComposerMode(), m.sessionComposerReadOnlyReason(); mode != hubComposerModeReadOnly || reason != composerNoQueue {
+		t.Fatalf("busy no-send composer mode=%v reason=%v, want read-only for want of a queue", mode, reason)
+	}
+	if got := m.sessionCapabilityStatusLabel(); got != readOnly {
+		t.Fatalf("the same read-only reason reads %q, then %q", readOnly, got)
+	}
+	if len(statuses) != 3 {
+		t.Fatalf("send, queue and read-only statuses are not distinct: %v", statuses)
+	}
+	if got := m.sessionStatusLine(); !strings.Contains(got, readOnly) {
+		t.Fatalf("status line lacks the capability status %q:\n%s", readOnly, got)
 	}
 }
 
@@ -1802,8 +1804,15 @@ func TestHubModelSpawnRejectsHubUnsupportedEmptyTaskBeforeStart(t *testing.T) {
 	if form.mode != hubModeSpawn || form.session.input.Value() != "" {
 		t.Fatalf("spawn form should stay open with draft preserved: mode=%v draft=%q", form.mode, form.session.input.Value())
 	}
-	if view := form.spawnView(); !strings.Contains(view, "Start unavailable") || !strings.Contains(view, "task text is required") || !strings.Contains(view, "enter a task before spawning") {
-		t.Fatalf("spawn rejection was not structured:\n%s", view)
+	var unavailable spawnStartUnavailableError
+	if !errors.As(form.err, &unavailable) {
+		t.Fatalf("spawn rejection = %v, want a start-unavailable error", form.err)
+	}
+	if unavailable.notice.Reason != "task text is required by this hub" || unavailable.notice.NextAction != "enter a task before spawning" || unavailable.notice.Source != "evener" {
+		t.Fatalf("spawn rejection notice = %+v, want the hub's reason, next action and harness", unavailable.notice)
+	}
+	if view := form.spawnView(); !strings.Contains(view, "task text is required by this hub") {
+		t.Fatalf("spawn rejection reason missing from the form:\n%s", view)
 	}
 }
 
@@ -1855,10 +1864,15 @@ func TestHubModelSpawnDefaultsToEnabledModelWhenAuthRequired(t *testing.T) {
 	if form.spawnModelPicker == nil {
 		t.Fatalf("model field did not open picker:\n%s", form.spawnView())
 	}
-	view := form.spawnModelPicker.View()
-	unwrapped := collapseViewWhitespace(view)
-	if !strings.Contains(view, "openai/gpt-5") || !strings.Contains(unwrapped, "disabled: Login required") || !strings.Contains(view, "ollama/llama3") {
-		t.Fatalf("spawn picker missing disabled auth-required row:\n%s", view)
+	disabled := map[string]string{}
+	for _, item := range form.spawnModelPicker.Items() {
+		disabled[item.ID] = item.DisabledReason
+	}
+	if reason, ok := disabled["openai/gpt-5"]; !ok || !strings.Contains(reason, "Login required") {
+		t.Fatalf("spawn picker auth-required row reason = %q (listed %v), want it disabled with the diagnostic's title", reason, ok)
+	}
+	if reason, ok := disabled["ollama/llama3"]; !ok || reason != "" {
+		t.Fatalf("spawn picker ollama row reason = %q (listed %v), want it enabled", reason, ok)
 	}
 }
 
@@ -1896,8 +1910,11 @@ func TestHubModelDashboardSpawnOpensFormBeforePosting(t *testing.T) {
 	if posted {
 		t.Fatal("spawn key posted before form submission")
 	}
-	if !strings.Contains(got.View(), "evener / new session") || !strings.Contains(got.View(), "/tmp/evener") || !strings.Contains(got.View(), "openai/gpt-5") {
-		t.Fatalf("spawn form not rendered:\n%s", got.View())
+	if got.mode != hubModeSpawn || got.spawnDir != "/tmp/evener" || got.spawnModel != "openai/gpt-5" {
+		t.Fatalf("spawn form state: mode=%v dir=%q model=%q, want the spawn form on the project dir and the listed model", got.mode, got.spawnDir, got.spawnModel)
+	}
+	if view := got.View(); !strings.Contains(view, "/tmp/evener") || !strings.Contains(view, "openai/gpt-5") {
+		t.Fatalf("spawn form not rendered:\n%s", view)
 	}
 }
 
@@ -2405,12 +2422,11 @@ func TestHubModelForceSteerBannerNamesTheStatusReason(t *testing.T) {
 		t.Fatal("ctrl+s while awaiting produced a command")
 	}
 	after := updated.(hubModel)
-	view := after.sessionView()
-	if strings.Contains(view, "does not advertise steer") {
-		t.Fatalf("banner blamed the harness for a status refusal:\n%s", view)
+	if reason := after.sessionControls().drainReason; reason != drainNoActiveTurn {
+		t.Fatalf("drain refusal = %v, want the status reason, not the harness", reason)
 	}
-	if !strings.Contains(view, "no active turn") {
-		t.Fatalf("banner missing the status reason:\n%s", view)
+	if len(after.session.messages) != len(m.session.messages)+1 || after.session.messages[len(after.session.messages)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("refused ctrl+s posted no banner: %+v", after.session.messages)
 	}
 }
 
@@ -2473,12 +2489,12 @@ func TestHubModelDrainReasonNamesTheStatusBeforeTheStaleRevision(t *testing.T) {
 		t.Fatal("precondition: the partial drain should have marked the revision stale")
 	}
 	got.detail.State = appwire.ThreadStatusAwaiting
-	if reason := got.sessionControls().drainReason; reason != "no active turn" {
-		t.Fatalf("drainReason while awaiting with a stale revision = %q, want the status reason", reason)
+	if reason := got.sessionControls().drainReason; reason != drainNoActiveTurn {
+		t.Fatalf("drainReason while awaiting with a stale revision = %v, want the status reason", reason)
 	}
 	got.detail.State = appwire.ThreadStatusActive
-	if reason := got.sessionControls().drainReason; reason != "the queue is syncing after the last force-steer; retry in a moment" {
-		t.Fatalf("drainReason while active with a stale revision = %q, want the revision reason", reason)
+	if reason := got.sessionControls().drainReason; reason != drainQueueSyncing {
+		t.Fatalf("drainReason while active with a stale revision = %v, want the revision reason", reason)
 	}
 }
 
@@ -2684,9 +2700,8 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	if got.session.processing {
 		t.Fatal("session stayed processing after idle status refresh")
 	}
-	view := got.sessionView()
-	if !strings.Contains(view, "send: ready") {
-		t.Fatalf("session view did not show send-ready after refresh:\n%s", view)
+	if mode := got.sessionComposerMode(); mode != hubComposerModeSend {
+		t.Fatalf("composer mode after refresh = %v, want send", mode)
 	}
 	// Steer, Interrupt and Queue stay advertised at idle -- they are harness
 	// support -- while the TUI applies the status: no turn is running, so the
@@ -2703,7 +2718,7 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	if c := got.sessionControls(); c.stop || c.queue || c.steer {
 		t.Fatalf("idle controls = %+v, want stop/queue/steer all withheld by the status", c)
 	}
-	if strings.Contains(view, "ctrl+s") {
+	if view := got.sessionView(); strings.Contains(view, "ctrl+s") {
 		t.Fatalf("idle composer offered the force-steer hint:\n%s", view)
 	}
 	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
@@ -2714,8 +2729,8 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("ctrl+c at idle produced an interrupt command; it must be a silent no-op")
 	}
-	if msgs := after.(hubModel).session.messages; len(msgs) > 0 && strings.Contains(msgs[len(msgs)-1].Text, "Interrupting") {
-		t.Fatalf("ctrl+c at idle announced an interrupt: %q", msgs[len(msgs)-1].Text)
+	if msgs := after.(hubModel).session.messages; len(msgs) != len(got.session.messages) {
+		t.Fatalf("ctrl+c at idle announced something: %+v", msgs)
 	}
 }
 
@@ -3335,8 +3350,8 @@ func TestHubModelDirectModelCommandSplitsProviderQualifiedModel(t *testing.T) {
 	if gotModel.Ref != "local:01SEND" || gotModel.ModelProvider != "openai" || gotModel.Model != "gpt-5-mini" {
 		t.Fatalf("model set params=%+v, want local:01SEND openai/gpt-5-mini", gotModel)
 	}
-	if view := m.View(); !strings.Contains(view, "Model updated.") {
-		t.Fatalf("missing model updated message:\n%s", view)
+	if len(m.notices) != 0 || len(m.session.messages) == 0 || m.session.messages[len(m.session.messages)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("model change was not confirmed in the session: notices=%+v messages=%+v", m.notices, m.session.messages)
 	}
 }
 
@@ -3377,7 +3392,10 @@ func TestHubModelSessionModelPickerUsesHubModels(t *testing.T) {
 	if m.sessionModelPicker == nil {
 		t.Fatalf("expected session model picker:\n%s", m.View())
 	}
-	if got := m.View(); !strings.Contains(got, "Select model") || !strings.Contains(got, "openai/gpt-5-mini") {
+	if ids := pickerItemIDs(*m.sessionModelPicker); !slices.Contains(ids, "openai/gpt-5-mini") {
+		t.Fatalf("model picker items = %v, missing openai/gpt-5-mini", ids)
+	}
+	if got := m.View(); !strings.Contains(got, "openai/gpt-5-mini") {
 		t.Fatalf("model picker view missing model choices:\n%s", got)
 	}
 
@@ -3398,8 +3416,8 @@ func TestHubModelSessionModelPickerUsesHubModels(t *testing.T) {
 	if m.sessionModelPicker != nil {
 		t.Fatal("session model picker should close after selection")
 	}
-	if got := m.View(); !strings.Contains(got, "Model updated.") {
-		t.Fatalf("missing model updated message:\n%s", got)
+	if len(m.notices) != 0 || len(m.session.messages) == 0 || m.session.messages[len(m.session.messages)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("model change was not confirmed in the session: notices=%+v messages=%+v", m.notices, m.session.messages)
 	}
 }
 
@@ -3442,9 +3460,16 @@ func TestHubModelSessionModelPickerDisablesAuthRequiredModels(t *testing.T) {
 	if m.sessionModelPicker == nil {
 		t.Fatalf("expected session model picker:\n%s", m.View())
 	}
-	view := m.View()
-	unwrapped := collapseViewWhitespace(view)
-	if !strings.Contains(view, "openai/gpt-5") || !strings.Contains(unwrapped, "disabled: Login required") || !strings.Contains(view, "/auth openai") {
+	var disabled tuipick.ModelPickerItem
+	for _, item := range m.sessionModelPicker.Items() {
+		if item.ID == "openai/gpt-5" {
+			disabled = item
+		}
+	}
+	if !strings.Contains(disabled.DisabledReason, "Login required") {
+		t.Fatalf("auth-required model row = %+v, want it disabled with the diagnostic's title", disabled)
+	}
+	if view := m.View(); !strings.Contains(view, "openai/gpt-5") || !strings.Contains(view, "/auth openai") {
 		t.Fatalf("missing disabled auth-required model row:\n%s", view)
 	}
 
@@ -3491,8 +3516,8 @@ func TestHubModelSessionModelPickerRequiresCapability(t *testing.T) {
 	if got.sessionModelPicker != nil {
 		t.Fatal("unavailable model picker should stay closed")
 	}
-	if view := got.View(); !strings.Contains(view, "Model change is not available for this session.") {
-		t.Fatalf("missing unavailable model message:\n%s", view)
+	if _, ok := noticeByCategory(got, "action-unavailable"); !ok {
+		t.Fatalf("unavailable model change raised no action-unavailable notice: %+v", got.notices)
 	}
 }
 
@@ -3513,7 +3538,7 @@ func TestHubModelThemePicker(t *testing.T) {
 	if m.sessionThemePicker == nil {
 		t.Fatalf("expected theme picker:\n%s", m.View())
 	}
-	if got := m.View(); !strings.Contains(got, "Select theme") || !strings.Contains(got, "dark") || !strings.Contains(got, "light") {
+	if got := m.View(); !strings.Contains(got, "dark") || !strings.Contains(got, "light") {
 		t.Fatalf("theme picker view missing choices:\n%s", got)
 	}
 
@@ -3532,8 +3557,8 @@ func TestHubModelThemePicker(t *testing.T) {
 	if tuitheme.CurrentThemeName() != "dark" {
 		t.Fatalf("theme=%q, want dark", tuitheme.CurrentThemeName())
 	}
-	if got := m.View(); !strings.Contains(got, "Switched to dark theme.") {
-		t.Fatalf("missing theme switch message:\n%s", got)
+	if msgs := m.session.messages; len(msgs) == 0 || msgs[len(msgs)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("missing theme switch message: %+v", msgs)
 	}
 }
 
@@ -3721,6 +3746,10 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 		t.Fatalf("draft input=%q", draft.session.input.Value())
 	}
 
+	wantLabel := draft.forkDraft.Label
+	if wantLabel == "" {
+		t.Fatal("fork draft carries no label")
+	}
 	draft.session.setInputValue("edited request")
 	updated, cmd = draft.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -3736,7 +3765,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 		t.Fatalf("detail=%+v", got.detail)
 	}
 	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 3})
-	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != wantLabel {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }
@@ -3758,9 +3787,8 @@ func TestHubModelBrowseForkRequiresUserMessageWithTranscriptEntryIndex(t *testin
 	if got.forkDraft != nil {
 		t.Fatalf("fork draft=%+v, want nil", got.forkDraft)
 	}
-	view := got.View()
-	if !strings.Contains(view, "fork requires a persisted transcript position") {
-		t.Fatalf("missing fork reason:\n%s", view)
+	if msgs := got.session.messages; len(msgs) != len(m.session.messages)+1 || msgs[len(msgs)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("missing fork refusal: %+v", msgs)
 	}
 }
 
@@ -3782,8 +3810,8 @@ func TestHubModelBrowseForkRequiresSelectedUserMessage(t *testing.T) {
 	if got.forkDraft != nil {
 		t.Fatalf("fork draft=%+v, want nil", got.forkDraft)
 	}
-	if !strings.Contains(got.View(), "Select a user message to fork.") {
-		t.Fatalf("missing invalid selection reason:\n%s", got.View())
+	if msgs := got.session.messages; len(msgs) != len(m.session.messages)+1 || msgs[len(msgs)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("missing invalid selection refusal: %+v", msgs)
 	}
 }
 
@@ -3808,6 +3836,7 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 		t.Fatal("starting a fork draft should be synchronous")
 	}
 	draft := updated.(hubModel)
+	wantLabel := draft.forkDraft.Label
 	draft.session.setInputValue("edited request")
 
 	updated, cmd = draft.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -3819,18 +3848,17 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 	if got.forkDraft == nil {
 		t.Fatal("failed fork should keep the draft active")
 	}
-	if got.forkDraft.Label != "original before fork" {
-		t.Fatalf("draft label=%q", got.forkDraft.Label)
+	if wantLabel == "" || got.forkDraft.Label != wantLabel {
+		t.Fatalf("draft label=%q, want the draft's own %q kept", got.forkDraft.Label, wantLabel)
 	}
 	if got.session.input.Value() != "edited request" {
 		t.Fatalf("draft input=%q, want edited request", got.session.input.Value())
 	}
-	view := got.View()
-	if !strings.Contains(view, "Fork failed:") || !strings.Contains(view, "fork failed from test") {
-		t.Fatalf("missing fork failure notice:\n%s", view)
+	if !strings.Contains(got.sessionStatusError, "fork failed from test") {
+		t.Fatalf("fork failure not recorded: %q", got.sessionStatusError)
 	}
 	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 3})
-	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != wantLabel {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }
@@ -3860,8 +3888,8 @@ func TestHubModelDashboardShowsRecentWhenNothingLive(t *testing.T) {
 	if expanded := updated.(hubModel).dashboardView(); !strings.Contains(expanded, "ended history") {
 		t.Fatalf("recent disclosure did not reveal ended session:\n%s", expanded)
 	}
-	if strings.Contains(got, "s start") {
-		t.Fatalf("dashboard recent-only state advertised legacy s key:\n%s", got)
+	if pressed, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}}); pressed.(hubModel).mode != hubModeDashboard {
+		t.Fatalf("legacy s key left the recent-only dashboard for mode %v", pressed.(hubModel).mode)
 	}
 }
 
@@ -3896,8 +3924,13 @@ func TestHubModelActionBarsUseApprovedNewSessionKey(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = corpus.DashboardTree
 	m.rows = buildDashboardRows(corpus.DashboardTree)
-	if got := m.dashboardView(); !strings.Contains(got, "new") || strings.Contains(got, "s spawn") || strings.Contains(got, "p project") {
-		t.Fatalf("dashboard action bar should advertise new without legacy project/spawn keys:\n%s", got)
+	for _, legacy := range []rune{'s', 'p'} {
+		if pressed, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{legacy}}); pressed.(hubModel).mode != hubModeDashboard {
+			t.Fatalf("legacy %c key left the dashboard for mode %v", legacy, pressed.(hubModel).mode)
+		}
+	}
+	if pressed, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}); pressed.(hubModel).mode != hubModeSpawn {
+		t.Fatalf("n key opened mode %v, want the new-session form", pressed.(hubModel).mode)
 	}
 }
 
@@ -3949,36 +3982,35 @@ func TestHubModelSpawnFormDoesNotAdvertiseOrAcceptCtrlS(t *testing.T) {
 func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
 	m := newSessionHubModel(nil)
 	got := m.sessionView()
-	for _, want := range []string{"esc: browse", "ctrl+o: dashboard"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("session footer missing %q:\n%s", want, got)
-		}
+	if !strings.Contains(got, "ctrl+o") {
+		t.Fatalf("session footer missing the dashboard key:\n%s", got)
 	}
-	if !strings.Contains(got, "enter: send") {
-		t.Fatalf("session footer missing send key:\n%s", got)
+	if mode := m.sessionComposerMode(); mode != hubComposerModeSend {
+		t.Fatalf("session composer mode = %v, want send", mode)
 	}
-	if strings.Contains(got, "esc: dashboard") {
-		t.Fatalf("session footer still advertises esc dashboard:\n%s", got)
+	// esc browses the transcript; it no longer leaves for the dashboard.
+	escaped, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if got := escaped.(hubModel); got.mode != hubModeSession || !got.session.scrollMode {
+		t.Fatalf("esc in the composer: mode=%v browsing=%v, want to browse the session", got.mode, got.session.scrollMode)
 	}
 
 	m.detail.Capabilities.Send = false
-	got = m.sessionView()
-	if strings.Contains(got, "enter: send") {
-		t.Fatalf("session footer advertised unavailable send:\n%s", got)
+	if mode := m.sessionComposerMode(); mode == hubComposerModeSend {
+		t.Fatal("session composer offered unavailable send")
 	}
 
 	m.detail.Capabilities.Send = true
 	m.detail.Capabilities.Fork = true
 	m.enterSessionBrowse(false)
 	got = m.sessionView()
-	for _, want := range []string{"esc: compose", "ctrl+f: fork selected user message", "ctrl+o: dashboard"} {
+	for _, want := range []string{"ctrl+f", "ctrl+o"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("browse footer missing %q:\n%s", want, got)
 		}
 	}
 	m.detail.Capabilities.Fork = false
 	got = m.sessionView()
-	if strings.Contains(got, "ctrl+f: fork") {
+	if strings.Contains(got, "ctrl+f") {
 		t.Fatalf("browse footer advertised unavailable fork:\n%s", got)
 	}
 }
@@ -4001,8 +4033,11 @@ func TestHubModelForkCommandEntersBrowseMode(t *testing.T) {
 	if !got.session.scrollMode {
 		t.Fatal("/fork should enter transcript browse mode")
 	}
+	if msgs := got.session.messages; msgs[len(msgs)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("/fork posted no guidance: %+v", msgs)
+	}
 	view := got.sessionView()
-	for _, want := range []string{"Select a user message with ctrl+up/ctrl+down, then press ctrl+f to fork.", "ctrl+f: fork selected user message", "original request"} {
+	for _, want := range []string{"ctrl+f", "original request"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("/fork view missing %q:\n%s", want, view)
 		}
@@ -4055,7 +4090,7 @@ func TestHubModelHelpRespectsSessionCapabilities(t *testing.T) {
 		t.Fatal("/help should not need an async command")
 	}
 	got = updated.(hubModel).View()
-	if !strings.Contains(got, "/fork") || !strings.Contains(got, "Fork selected user message") {
+	if !strings.Contains(got, "/fork") {
 		t.Fatalf("help missing supported fork:\n%s", got)
 	}
 }
@@ -4145,7 +4180,7 @@ func TestHubModelSessionCommandPaletteDoesNotShowOtherSessions(t *testing.T) {
 		t.Fatal("session palette did not open")
 	}
 	got := m.sessionView()
-	if !strings.Contains(got, "Command palette") || !strings.Contains(got, "/help") {
+	if !strings.Contains(got, "/help") {
 		t.Fatalf("session command palette missing commands:\n%s", got)
 	}
 	for _, unwanted := range []string{"Please reply exactly: old smoke", "past renderer", "/search"} {
@@ -4163,20 +4198,14 @@ func TestHubModelSessionPaletteShowsDisabledCommandReasons(t *testing.T) {
 	if m.commandPalette == nil {
 		t.Fatal("session palette did not open")
 	}
-	got := m.commandPalette.View()
-	for _, want := range []string{
-		"/model",
-		"disabled: source does not advertise change model",
-		"/clear",
-		"disabled: source does not advertise clear",
-		"/fork",
-		"disabled: source does not advertise fork",
-		"/shutdown",
-		"disabled: source does not advertise shutdown",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("session palette missing %q:\n%s", want, got)
+	for _, name := range []string{"model", "clear", "fork", "shutdown"} {
+		entry, ok := paletteCommandEntry(*m.commandPalette, name)
+		if !ok || entry.Item.DisabledReason == "" {
+			t.Fatalf("session palette entry for /%s = %+v (found %v), want it listed as disabled with a reason", name, entry, ok)
 		}
+	}
+	if entry, ok := paletteCommandEntry(*m.commandPalette, "help"); !ok || entry.Item.DisabledReason != "" {
+		t.Fatalf("session palette entry for /help = %+v (found %v), want it enabled", entry, ok)
 	}
 }
 
@@ -4203,7 +4232,7 @@ func TestHubModelDashboardPaletteCanSearchOtherSessions(t *testing.T) {
 		m = updated.(hubModel)
 	}
 	got := m.dashboardView()
-	if !strings.Contains(got, "Command palette") || !strings.Contains(got, "past renderer") {
+	if !strings.Contains(got, "past renderer") {
 		t.Fatalf("dashboard palette should search sessions:\n%s", got)
 	}
 	if strings.Contains(got, "live scoring") {
@@ -4228,8 +4257,8 @@ func TestHubModelDashboardOnlyCommandIsNotASessionCommand(t *testing.T) {
 	if got := m.session.input.Value(); got != "keep this draft" {
 		t.Fatalf("/new should not replace composer draft, got %q", got)
 	}
-	if got := m.sessionView(); !strings.Contains(got, "Unknown command: /new") {
-		t.Fatalf("/new should not be advertised as a session command:\n%s", got)
+	if msgs := m.session.messages; len(msgs) != 1 || msgs[0].Kind != transcript.MsgSystem {
+		t.Fatalf("/new should dead-end with a session message, got %+v", msgs)
 	}
 }
 
@@ -4269,7 +4298,7 @@ func TestHubModelSessionPaletteShortcutDoesNotExposeCrossSessionSearch(t *testin
 		m = updated.(hubModel)
 	}
 	got := m.sessionView()
-	for _, want := range []string{"Command palette", "/model", "> keep this draft"} {
+	for _, want := range []string{"/model", "> keep this draft"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("session command palette missing %q:\n%s", want, got)
 		}
@@ -4291,7 +4320,7 @@ func TestHubModelSessionLeadingSlashOpensCommandPalette(t *testing.T) {
 		t.Fatal("leading slash did not open session command palette")
 	}
 	got := m.sessionView()
-	if !strings.Contains(got, "Command palette") || !strings.Contains(got, "/help") || !strings.Contains(got, "/model") {
+	if !strings.Contains(got, "/help") || !strings.Contains(got, "/model") {
 		t.Fatalf("session slash palette missing commands:\n%s", got)
 	}
 }
@@ -4299,16 +4328,14 @@ func TestHubModelSessionLeadingSlashOpensCommandPalette(t *testing.T) {
 func TestHubModelCtrlCQuitsWithoutInAppWarningFromSession(t *testing.T) {
 	m := newSessionHubModel(nil)
 
+	before := m.View()
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd != nil {
 		t.Fatal("first ctrl+c should arm quit without quitting")
 	}
 	m = updated.(hubModel)
-	got := m.View()
-	for _, unwanted := range []string{"Press ctrl+c again", "Restore this session:"} {
-		if strings.Contains(got, unwanted) {
-			t.Fatalf("first ctrl+c should not render in-app quit warning %q:\n%s", unwanted, got)
-		}
+	if got := m.View(); got != before || m.postQuitMessage != "" {
+		t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", got)
 	}
 
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -4330,13 +4357,10 @@ func TestHubModelSecondCtrlCStoresPostQuitRestoreMessage(t *testing.T) {
 	if got.postQuitMessage == "" {
 		t.Fatal("second ctrl+c did not preserve a post-quit restore message")
 	}
-	for _, want := range []string{"Restore this session:", "evener-tui --hub-addr http://hub.test", "local:01SEND"} {
+	for _, want := range []string{"evener-tui --hub-addr http://hub.test", "local:01SEND"} {
 		if !strings.Contains(got.postQuitMessage, want) {
 			t.Fatalf("post-quit restore message missing %q: %q", want, got.postQuitMessage)
 		}
-	}
-	if strings.Contains(got.postQuitMessage, "Press ctrl+c again") {
-		t.Fatalf("post-quit message should only contain restoration instructions: %q", got.postQuitMessage)
 	}
 }
 
@@ -4344,15 +4368,13 @@ func TestHubModelCtrlCWarningExpires(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.lastCtrlC = time.Now().Add(-2 * time.Second)
 
+	before := m.View()
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd != nil {
 		t.Fatal("expired ctrl+c warning should not quit")
 	}
-	got := updated.(hubModel).View()
-	for _, unwanted := range []string{"Press ctrl+c again", "Restore this session:"} {
-		if strings.Contains(got, unwanted) {
-			t.Fatalf("expired first ctrl+c should not render in-app warning %q:\n%s", unwanted, got)
-		}
+	if got := updated.(hubModel).View(); got != before {
+		t.Fatalf("expired first ctrl+c should not render an in-app warning:\n%s", got)
 	}
 }
 
@@ -4390,8 +4412,8 @@ func TestHubModelFirstCtrlCInterruptsActiveTurn(t *testing.T) {
 	}
 
 	got := updated.(hubModel)
-	if view := got.View(); !strings.Contains(view, "Interrupting active turn") {
-		t.Fatalf("session should announce interrupt:\n%s", view)
+	if msgs := got.session.messages; len(msgs) != len(m.session.messages)+1 || msgs[len(msgs)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("session should announce the interrupt: %+v", msgs)
 	}
 
 	_, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -4453,7 +4475,7 @@ func TestHubModelCtrlCQuitsOutsideSessionButArmsQuitInSession(t *testing.T) {
 			if cmd != nil {
 				t.Fatal("first session ctrl+c should arm quit without quitting")
 			}
-			if got := updated.(hubModel).View(); strings.Contains(got, "Press ctrl+c again") {
+			if got := updated.(hubModel).View(); got != tc.model.View() {
 				t.Fatalf("session ctrl+c rendered in-app warning:\n%s", got)
 			}
 		})
@@ -4618,6 +4640,16 @@ func newSessionHubModel(client *appwire.Client) hubModel {
 	}
 	m.session.sessionID = "01SEND"
 	return m
+}
+
+// paletteCommandEntry finds the palette entry that runs the named command.
+func paletteCommandEntry(p commandPalette, name string) (commandPaletteEntry, bool) {
+	for _, entry := range p.entries {
+		if entry.Kind == commandPaletteCommand && entry.Command == name {
+			return entry, true
+		}
+	}
+	return commandPaletteEntry{}, false
 }
 
 func renderedLineCount(view string) int {

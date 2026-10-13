@@ -136,9 +136,9 @@ func TestApplyEdit_FastCheapModel(t *testing.T) {
 	}
 }
 
-// TestLayerRows_ResolvedDefaultLabels: the non-schema fallback rows render a
-// nil pointer field as the resolved effective value with a " (default)"
-// suffix, while the edit value keeps the unset "(default)" placeholder.
+// TestLayerRows_ResolvedDefaultLabels: the non-schema fallback rows show a
+// nil pointer field with the resolved effective value, while the edit value
+// stays the unset placeholder, so saving the row unedited keeps it unset.
 func TestLayerRows_ResolvedDefaultLabels(t *testing.T) {
 	twoHundred := 200
 	rows := layerRows(appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{MaxRounds: &twoHundred})
@@ -146,11 +146,16 @@ func TestLayerRows_ResolvedDefaultLabels(t *testing.T) {
 	for _, row := range rows {
 		byField[row.field] = row
 	}
-	if row := byField["max_rounds"]; row.value != "200 (default)" || row.editValue != "(default)" {
-		t.Errorf("max_rounds = value %q editValue %q, want 200 (default)/(default)", row.value, row.editValue)
+	maxRounds := byField["max_rounds"]
+	if !strings.Contains(maxRounds.value, "200") || maxRounds.value == maxRounds.editValue {
+		t.Errorf("max_rounds = value %q editValue %q, want the resolved 200 shown apart from the unset edit value", maxRounds.value, maxRounds.editValue)
 	}
-	if row := byField["max_subagent_depth"]; row.value != "(default)" {
-		t.Errorf("max_subagent_depth (unset everywhere) = %q, want (default)", row.value)
+	saved, err := applyEdit(appwire.LaunchConfigLayer{}, "max_rounds", maxRounds.editValue)
+	if err != nil || saved.MaxRounds != nil {
+		t.Errorf("saving max_rounds' edit value unedited = %v, %v; want it left unset", saved.MaxRounds, err)
+	}
+	if row := byField["max_subagent_depth"]; row.value != row.editValue {
+		t.Errorf("max_subagent_depth (unset everywhere) value %q, want the bare unset placeholder %q", row.value, row.editValue)
 	}
 }
 

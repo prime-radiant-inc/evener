@@ -30,16 +30,6 @@
     max-width: none;
   }
 
-  /* Layoutguard flattens CSS modules into one resolved.css file with plain
-     selectors, so StackHost's `.body` and PaneScaffold's `.body` would
-     otherwise collide. This alias removes the pane body's extra scroll/padding
-     from the StackHost wrapper while leaving the real `.body` rule on the pane
-     body itself. */
-  .stackBody {
-    overflow: visible;
-    padding: 0;
-  }
-
   .paneBodyContent {
     display: flex;
     flex-direction: column;
@@ -79,10 +69,10 @@
       <section class="host">
         <div class="topBar">
           <div class="leading" aria-hidden="true"></div>
-          <span class="title">local:session-viewport</span>
+          <span class="stackTitle">local:session-viewport</span>
           <button type="button" aria-label="Sessions">Sessions</button>
         </div>
-        <div class="body stackBody">
+        <div class="stackBody">
           <article data-pane class="pane">
             <div data-pane-body class="body">
               <div class="paneBodyContent">
@@ -117,10 +107,10 @@
       <section class="host">
         <div class="topBar">
           <div class="leading" aria-hidden="true"></div>
-          <span class="title">welcome</span>
+          <span class="stackTitle">welcome</span>
           <button type="button" aria-label="Sessions">Sessions</button>
         </div>
-        <div class="body stackBody">
+        <div class="stackBody">
           <article data-pane class="pane">
             <div data-pane-body class="body">
               <div class="paneBodyContent">

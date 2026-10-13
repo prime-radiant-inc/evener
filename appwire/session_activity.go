@@ -122,32 +122,38 @@ type SessionDelegate struct {
 	ProjectionRevision uint64 `json:"projectionRevision"`
 	// ReportPreview is the settled current run's reported text, capped at 4096
 	// Unicode code points including an ellipsis when truncated.
-	ReportPreview          string               `json:"reportPreview,omitempty"`
-	ReportPreviewTruncated bool                 `json:"reportPreviewTruncated,omitempty"`
-	DelegateID             string               `json:"delegateId"`
-	OwnerRef               string               `json:"ownerRef"`
-	RootRef                string               `json:"rootRef"`
-	ChildRef               string               `json:"childRef"`
-	ParentDelegateID       string               `json:"parentDelegateId,omitempty"`
-	Description            string               `json:"description"`
-	Task                   string               `json:"task"`
-	Type                   string               `json:"type"`
-	Lifecycle              string               `json:"lifecycle"`
-	Phase                  string               `json:"phase"`
-	Status                 string               `json:"status"`
-	Outcome                string               `json:"outcome,omitempty"`
-	Reason                 string               `json:"reason,omitempty"`
-	Error                  string               `json:"error,omitempty"`
-	Terminal               bool                 `json:"terminal"`
-	Resumable              bool                 `json:"resumable"`
-	NotResumableReason     string               `json:"notResumableReason,omitempty"`
-	Model                  string               `json:"model,omitempty"`
-	ReasoningEffort        string               `json:"reasoningEffort,omitempty"`
-	RunStartedAt           string               `json:"runStartedAt,omitempty"`
-	RunEndedAt             string               `json:"runEndedAt,omitempty"`
-	LatestActivityAt       string               `json:"latestActivityAt,omitempty"`
-	Usage                  *EvenerUsage         `json:"usage,omitempty"`
-	Worktree               *JobActivityWorktree `json:"worktree,omitempty"`
+	ReportPreview          string `json:"reportPreview,omitempty"`
+	ReportPreviewTruncated bool   `json:"reportPreviewTruncated,omitempty"`
+	DelegateID             string `json:"delegateId"`
+	OwnerRef               string `json:"ownerRef"`
+	RootRef                string `json:"rootRef"`
+	ChildRef               string `json:"childRef"`
+	ParentDelegateID       string `json:"parentDelegateId,omitempty"`
+	Description            string `json:"description"`
+	Task                   string `json:"task"`
+	Type                   string `json:"type"`
+	Lifecycle              string `json:"lifecycle"`
+	Phase                  string `json:"phase"`
+	Status                 string `json:"status"`
+	Outcome                string `json:"outcome,omitempty"`
+	Reason                 string `json:"reason,omitempty"`
+	Error                  string `json:"error,omitempty"`
+	Terminal               bool   `json:"terminal"`
+	Resumable              bool   `json:"resumable"`
+	NotResumableReason     string `json:"notResumableReason,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	ReasoningEffort        string `json:"reasoningEffort,omitempty"`
+	RunStartedAt           string `json:"runStartedAt,omitempty"`
+	RunEndedAt             string `json:"runEndedAt,omitempty"`
+	LatestActivityAt       string `json:"latestActivityAt,omitempty"`
+	// LatestIntent is the open generation's newest stated tool-call intent
+	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+	// the controller's live value when non-empty, else the folded journal
+	// value — the same join the pushed frame applies, so the read and the
+	// frame agree for every row state. Absent from older daemons.
+	LatestIntent string               `json:"latestIntent,omitempty"`
+	Usage        *EvenerUsage         `json:"usage,omitempty"`
+	Worktree     *JobActivityWorktree `json:"worktree,omitempty"`
 }
 
 type SessionWatchState string

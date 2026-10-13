@@ -43,14 +43,18 @@ func TestSpawnPlugins_SummaryShowsInspectionDuringRefresh(t *testing.T) {
 	}}
 	m.spawnPluginPreviewLoaded = true
 	m.spawnLaunchOverrides = &appwire.LaunchConfigLayer{EnabledPlugins: &values}
-	if got := m.spawnPluginsSummary(); got != "1/2 enabled" {
-		t.Fatalf("initial summary=%q, want count", got)
+	initial := m.spawnPluginsSummary()
+	if !strings.Contains(initial, "1/2") {
+		t.Fatalf("initial summary=%q, want count", initial)
 	}
 	if cmd := m.requestSpawnPluginPreview(); cmd == nil {
 		t.Fatal("refresh did not return a command")
 	}
-	if got := m.spawnPluginsSummary(); got != "Inspecting plugins…" {
-		t.Fatalf("refresh summary=%q, want inspection state", got)
+	if !m.spawnPluginPreviewLoading {
+		t.Fatal("refresh did not mark the preview as inspecting")
+	}
+	if got := m.spawnPluginsSummary(); got == initial {
+		t.Fatalf("refresh summary=%q still reads the settled count", got)
 	}
 }
 
@@ -167,10 +171,11 @@ func TestSpawnPlugins_FailureRetryAndOpenPanelRefresh(t *testing.T) {
 	m := newHubModel(client, "http://hub.test")
 	m.mode = hubModeSpawn
 	m.spawnPluginPreviewRequestKey = "current"
-	updated, _ := m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: "current", Err: errors.New("hub unavailable")})
+	previewErr := errors.New("hub unavailable")
+	updated, _ := m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: "current", Err: previewErr})
 	m = updated.(hubModel)
-	if !strings.Contains(m.spawnPluginsSummary(), "Couldn't inspect plugins") {
-		t.Fatalf("failure summary=%q", m.spawnPluginsSummary())
+	if !errors.Is(m.spawnPluginPreviewErr, previewErr) || m.spawnPluginPreviewLoaded {
+		t.Fatalf("failure state: err=%v loaded=%v, want the preview failure recorded", m.spawnPluginPreviewErr, m.spawnPluginPreviewLoaded)
 	}
 	m.setSpawnFocus(hubSpawnFieldPlugins)
 	updated, cmd := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -195,10 +200,11 @@ func TestSpawnPlugins_FailureRetryAndOpenPanelRefresh(t *testing.T) {
 	if m.spawnPluginsPanel == nil || !strings.Contains(m.spawnPluginsPanel.View(), "new") {
 		t.Fatal("open panel did not receive refreshed candidates")
 	}
-	updated, _ = m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: "open", Err: errors.New("temporary failure")})
+	refreshErr := errors.New("temporary failure")
+	updated, _ = m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: "open", Err: refreshErr})
 	m = updated.(hubModel)
-	if !strings.Contains(m.spawnPluginsPanel.View(), "Couldn't inspect plugins") {
-		t.Fatal("open panel did not show honest refresh failure")
+	if !errors.Is(m.spawnPluginsPanel.PreviewErr(), refreshErr) {
+		t.Fatalf("open panel preview error = %v, want the honest refresh failure", m.spawnPluginsPanel.PreviewErr())
 	}
 	updated, cmd = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(hubModel)
@@ -230,7 +236,8 @@ func TestSpawnPlugins_ChangedPreviewFailureDoesNotReportPreviousSuccess(t *testi
 	m.spawnDir = "/tmp/request-b"
 	bCmd := m.requestSpawnPluginPreview()
 	bRequest := bCmd().(launchconfig.PluginPreviewRequestMsg)
-	updated, _ = m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: bRequest.Key, Err: errors.New("preview unavailable")})
+	previewErr := errors.New("preview unavailable")
+	updated, _ = m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: bRequest.Key, Err: previewErr})
 	m = updated.(hubModel)
 
 	if m.spawnPluginPreviewLoaded {
@@ -239,8 +246,8 @@ func TestSpawnPlugins_ChangedPreviewFailureDoesNotReportPreviousSuccess(t *testi
 	if len(m.spawnPluginPreview.Plugins) != 0 {
 		t.Fatalf("failed changed preview retained candidates: %+v", m.spawnPluginPreview.Plugins)
 	}
-	if got, want := m.spawnPluginsSummary(), "Couldn't inspect plugins — press Enter to retry"; got != want {
-		t.Fatalf("summary=%q, want %q", got, want)
+	if !errors.Is(m.spawnPluginPreviewErr, previewErr) {
+		t.Fatalf("preview error = %v, want the failed changed preview's", m.spawnPluginPreviewErr)
 	}
 }
 
@@ -273,8 +280,8 @@ func TestSpawnPlugins_CachedFailureOpensRemovalOnlyPanelAndClearsSelection(t *te
 	if cmd != nil || m.spawnPluginsPanel == nil {
 		t.Fatalf("open cached failure panel: cmd=%v panel=%v", cmd != nil, m.spawnPluginsPanel != nil)
 	}
-	if view := m.spawnPluginsPanel.View(); !strings.Contains(view, "Couldn't inspect plugins") || !strings.Contains(view, "N none") {
-		t.Fatalf("cached failure panel view=%q", view)
+	if m.spawnPluginsPanel.PreviewErr() == nil {
+		t.Fatal("cached failure panel does not know the preview failed")
 	}
 
 	updated, _ = m.updateImpl(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'N'}})

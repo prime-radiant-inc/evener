@@ -825,6 +825,11 @@ type spawnConfig struct {
 	// parentJobActivity reports parent-observable child progress for the stable
 	// delegate that owns this session.
 	parentJobActivity func(delegateID, phase string)
+	// parentJobIntent states the child's newest tool-call intent on its own
+	// stable delegate row through the intent channel: a stated line, or the
+	// explicit empty clear at the child's execution start. A call stating no
+	// intent reports nothing.
+	parentJobIntent func(delegateID, intent string)
 
 	// descendantEvent reports every event emitted by this session to the root
 	// daemon. It is inherited unchanged by descendants, so one callback observes

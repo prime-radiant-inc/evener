@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { WireError } from "../../errors";
+import { friendlyErrorMessage, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
 import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
@@ -45,11 +45,11 @@ describe("store shape", () => {
     expect(first.store.getState().plugins).toEqual([LINTER]);
     expect(first.store.getState().pluginsError).toBeNull();
     expect(second.store.getState().plugins).toBeNull();
-    expect(second.store.getState().pluginsError).toBe("boom");
+    expect(second.store.getState().pluginsError).toBe(friendlyErrorMessage(new Error("boom")));
 
     first.store.reset();
     expect(first.store.getState().plugins).toBeNull();
-    expect(second.store.getState().pluginsError).toBe("boom");
+    expect(second.store.getState().pluginsError).toBe(friendlyErrorMessage(new Error("boom")));
   });
 });
 
@@ -63,8 +63,23 @@ describe("fetches never throw, mutations reject", () => {
     expect(store.getState()).toMatchObject({
       plugins: [LINTER],
       pluginsLoading: false,
-      pluginsError: "network down",
+      pluginsError: friendlyErrorMessage(new Error("network down")),
     });
+  });
+
+  // The list error is translated while it still has its type: a hub's own
+  // WireError explanation survives, and a client-side failure gets the shared
+  // friendly form. A host translating the stored text would lose the detail.
+  test.each([
+    ["a hub-reported WireError", new WireError("plugin index is rebuilding", -32000)],
+    ["a client-side Error", new Error("AppwireClient internal detail")],
+  ])("a failed list stores %s in its friendly form", async (_label, err) => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => {
+      throw err;
+    });
+    await store.getState().fetchPlugins();
+    expect(store.getState().pluginsError).toBe(friendlyErrorMessage(err));
   });
 
   test("a list that succeeds clears the error a failed one left", async () => {
@@ -298,7 +313,11 @@ describe("list ordering", () => {
 
     fake.on(LIST, failing("offline"));
     await store.getState().fetchPlugins();
-    expect(store.getState()).toMatchObject({ plugins: [FORMATTER], pluginsError: "offline", pluginsLoading: false });
+    expect(store.getState()).toMatchObject({
+      plugins: [FORMATTER],
+      pluginsError: friendlyErrorMessage(new Error("offline")),
+      pluginsLoading: false,
+    });
   });
 });
 
@@ -364,7 +383,7 @@ describe("a write that outruns a read", () => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, failing("offline"));
     await store.getState().fetchPlugins();
-    expect(store.getState().pluginsError).toBe("offline");
+    expect(store.getState().pluginsError).toBe(friendlyErrorMessage(new Error("offline")));
 
     fake.on("evener/plugin/install", () => ({ plugins: [LINTER] }));
     await store.getState().installPlugin("linter", "acme");

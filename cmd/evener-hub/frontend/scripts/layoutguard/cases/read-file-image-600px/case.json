@@ -4,7 +4,8 @@
   "cssFiles": [
     "styles/tokens.css",
     "styles/global.css",
-    "panes/session/transcript/flow/imagegallery.module.css"
+    "panes/session/transcript/flow/imagegallery.module.css",
+    "widgets/zoomablemedia/zoomablemedia.module.css"
   ],
   "mutation": {
     "declaration": "imagegallery.module.css: .thumbImgLarge { max-height: 600px } (removed, so the tall fixture renders at its natural 400x1200)",

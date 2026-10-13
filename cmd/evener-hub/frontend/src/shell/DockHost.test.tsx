@@ -2,7 +2,7 @@ import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SerializedDockview } from "dockview-core";
 import { lazy } from "react";
@@ -230,7 +230,7 @@ test("shows a loading placeholder instead of a blank pane while a newly-opened p
   render(<DockHost />);
 
   // Before the chunk resolves: a loading placeholder, not silence.
-  expect(await screen.findByTestId("empty-state")).toBeTruthy();
+  expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.queryByText(/doc pane: ref_slow/)).toBeNull();
 
   await act(async () => {
@@ -258,7 +258,7 @@ test("cancels toggle-open focus when a panel deactivates before its lazy pane mo
     const delayed = await act(
       async () => workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_delayed" }).paneId,
     );
-    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
     expect(screen.queryByText("delayed details body")).toBeNull();
 
     act(() => {
@@ -272,7 +272,7 @@ test("cancels toggle-open focus when a panel deactivates before its lazy pane mo
     act(() => {
       workspaceStore.getState().focusPane(delayed);
     });
-    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
     await act(async () => {
       resolveChunk();
       await pendingChunk;
@@ -304,7 +304,7 @@ test("a host teardown preserves the still-focused pane's pending focus marker", 
     const delayed = await act(
       async () => workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_swap" }).paneId,
     );
-    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
     expect(workspaceStore.getState().focusedPaneId).toBe(delayed);
 
     view.unmount();
@@ -1038,6 +1038,17 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   rename: false,
 };
 
+// The session pane body's own empty state (a fixture thread has no turns).
+// Compact EmptyStates inside lists and sidebars carry the same testid, so the
+// lookup is pinned to the body's reason and must find exactly one.
+function sessionBodyEmptyState(): Promise<Element> {
+  return waitFor(() => {
+    const found = document.querySelectorAll('[data-testid="empty-state"][data-reason="no-turns"]');
+    expect(found).toHaveLength(1);
+    return found[0] as Element;
+  });
+}
+
 function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
   return {
@@ -1087,7 +1098,7 @@ test("a session pane's tab title prefers the live ThreadModel name over the raw 
   // on its empty state. Matched by testid, not by that empty state's copy:
   // this test is about the TAB title, and has no business pinning wording the
   // session pane owns.
-  await screen.findByTestId("empty-state");
+  await sessionBodyEmptyState();
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Debug the flaky test");
 });
 
@@ -1164,7 +1175,12 @@ test("a session pane's tab title falls back to the navigation location title whe
     </ClientProvider>,
   );
 
-  await screen.findByTestId("empty-state");
+  // The pane body is up on its pre-hydration loading status.
+  await vi.waitFor(() => {
+    const body = document.querySelector('[data-pane-scaffold="session:ref_tree"]');
+    if (!(body instanceof HTMLElement)) throw new Error("session pane body not rendered");
+    within(body).getByRole("status");
+  });
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Fix the flaky CI job");
 });
 
@@ -1178,7 +1194,7 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   );
   // The real session pane's own body (wave 4): synced against the
   // pre-seeded model, whose fixture turns default to [].
-  await screen.findByTestId("empty-state");
+  await sessionBodyEmptyState();
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Original name");
 
   await act(async () => {
@@ -1195,7 +1211,7 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   // Still the same pane, not a fresh one - the session pane's own body
   // (which doesn't read the thread name at all, only its turns) is
   // untouched throughout the rename.
-  expect(screen.getByTestId("empty-state")).toBeTruthy();
+  await sessionBodyEmptyState();
 });
 
 test("job tabs use their own hydrated titles without extra reads or cross-owner leakage", async () => {
@@ -1261,7 +1277,7 @@ test("a session pane's tab shows a live status dot wired to the real dockview ho
       <DockHost />
     </ClientProvider>,
   );
-  await screen.findByTestId("empty-state");
+  await sessionBodyEmptyState();
 
   // Scoped to the session tab's own .dv-tab element: the pane's OWN header
   // carries its own Cadence dot (also role="img") - this test is about the

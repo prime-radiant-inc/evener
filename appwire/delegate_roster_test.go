@@ -42,6 +42,7 @@ func TestSlimDelegateForRosterKeepsEverythingElse(t *testing.T) {
 		Diagnostics: []string{"d"}, Usage: &EvenerUsage{InputTokens: 3}, PacketKind: "final",
 		Message: json.RawMessage(`"done"`), StructuredResult: json.RawMessage(`{"a":1}`),
 		ReportPreview: "done", ReportPreviewTruncated: true, LogicalOwnerSessionID: "owner-session",
+		LatestIntent: "Reading the board's row tests.",
 	}
 	got := SlimDelegateForRoster(in)
 	if len(got.Message) != 0 || len(got.StructuredResult) != 0 || got.PacketKind != "" {
@@ -58,6 +59,24 @@ func TestSlimDelegateForRosterKeepsEverythingElse(t *testing.T) {
 	}
 	if len(in.Message) == 0 {
 		t.Fatal("input row was mutated through its shared slices")
+	}
+}
+
+// The roster keeps status text like `status` and `phase`, so it keeps the
+// latest intent too: SlimDelegateForRoster clears only report payloads and the
+// logical-owner id, never a row's display line.
+func TestSlimDelegateForRosterKeepsLatestIntent(t *testing.T) {
+	in := EvenerDelegateInfo{DelegateID: "dlg_1", Status: "running", LatestIntent: "Fixing the parser."}
+	got := SlimDelegateForRoster(in)
+	if got.LatestIntent != "Fixing the parser." {
+		t.Fatalf("roster row dropped the latest intent: %+v", got)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"latestIntent":"Fixing the parser."`) {
+		t.Fatalf("roster wire omits the latest intent: %s", encoded)
 	}
 }
 

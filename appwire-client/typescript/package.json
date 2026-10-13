@@ -44,6 +44,11 @@
       "types": "./dist/state/mutation/index.d.ts",
       "import": "./dist/state/mutation/index.js",
       "require": "./dist/state/mutation/index.js"
+    },
+    "./pairing": {
+      "types": "./dist/pairing.d.ts",
+      "import": "./dist/pairing.js",
+      "require": "./dist/pairing.js"
     }
   },
   "scripts": {
@@ -55,5 +60,8 @@
     "tinykeys": "^4.0.0",
     "typescript": "~6.0.3",
     "ws": "^8.18.0"
+  },
+  "dependencies": {
+    "tweetnacl": "1.0.3"
   }
 }

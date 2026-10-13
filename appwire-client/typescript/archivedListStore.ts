@@ -15,7 +15,7 @@
 // over a request-only client port; each app wraps one for its own view layer.
 
 import type { AppwireClient } from "./client";
-import { errorText } from "./errors";
+import { friendlyErrorMessage } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { decodeArchivedListSessions } from "./state/navigation/codec";
 import type { ArchivedListParams, NavigationCatalogs, NavigationSessionSummary } from "./types.gen";
@@ -33,7 +33,9 @@ export interface ArchivedList {
   /** Whether a page has arrived. Until one does, total is unknown. */
   loaded: boolean;
   loading: boolean;
-  /** Non-null when the most recent request failed. Loaded rows are kept. */
+  /** Non-null when the most recent request failed: its friendlyErrorMessage,
+   * translated while the error still has its type so a hub's own WireError
+   * explanation survives; render it as-is. Loaded rows are kept. */
   error: string | null;
   /** The hub's revision of the whole list, held only while every loaded page
    * carried it (pages read at different revisions vouch for none); a refresh
@@ -153,7 +155,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
       }));
     } catch (err) {
       if (!isNewest()) return;
-      patch(key, () => ({ loading: false, error: errorText(err) }));
+      patch(key, () => ({ loading: false, error: friendlyErrorMessage(err) }));
     }
   }
 
@@ -175,7 +177,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
       }));
     } catch (err) {
       if (!isNewest()) return;
-      patch(key, () => ({ loading: false, error: errorText(err) }));
+      patch(key, () => ({ loading: false, error: friendlyErrorMessage(err) }));
     }
   }
 

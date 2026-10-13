@@ -480,13 +480,13 @@ func decodeConfig(name, data string) (Config, error) {
 	// BurntSushi/toml v1.6.0: bare integers report "Integer", quoted duration
 	// strings report "String", an absent key reports "").
 	if metadata.Type("daemon_idle_timeout") == "Integer" {
-		return cfg, fmt.Errorf("daemon_idle_timeout must be a duration string such as \"1h\" or \"0s\" (got the integer %[1]d, which TOML decodes as %[1]d nanoseconds)", int64(cfg.DaemonIdleTimeout))
+		return cfg, fmt.Errorf("daemon_idle_timeout %[1]w such as \"1h\" or \"0s\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", errIntegerDuration, int64(cfg.DaemonIdleTimeout))
 	}
 	// The same footgun, same refusal: a bare integer is a nanosecond count, so
 	// `host_probe_timeout = 10` (plausible shorthand for ten seconds) would arm
 	// a 10ns deadline that fails every probe.
 	if metadata.Type("host_probe_timeout") == "Integer" {
-		return cfg, fmt.Errorf("host_probe_timeout must be a duration string such as \"10s\" (got the integer %[1]d, which TOML decodes as %[1]d nanoseconds)", int64(cfg.HostProbeTimeout))
+		return cfg, fmt.Errorf("host_probe_timeout %[1]w such as \"10s\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", errIntegerDuration, int64(cfg.HostProbeTimeout))
 	}
 	// The same footgun, same refusal, for every duration-shaped record knob:
 	// `host_tombstone_retention = 7` would arm a 7ns retention and prune every
@@ -502,7 +502,7 @@ func decodeConfig(name, data string) (Config, error) {
 		{"host_keyless_audit_ttl", cfg.HostKeylessAuditTTL},
 	} {
 		if metadata.Type(knob.key) == "Integer" {
-			return cfg, fmt.Errorf("%[1]s must be a duration string such as \"168h\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", knob.key, int64(knob.value))
+			return cfg, fmt.Errorf("%[1]s %[3]w such as \"168h\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", knob.key, int64(knob.value), errIntegerDuration)
 		}
 	}
 	applyConfigDefaults(&cfg)
@@ -606,6 +606,9 @@ var (
 	// accepted because the manager normalizes them to loopback for its own dial
 	// and probe.
 	ErrHostAddr = errors.New("host addr unusable")
+	// errIntegerDuration refuses a duration knob written as a bare integer,
+	// which TOML decodes as a nanosecond count.
+	errIntegerDuration = errors.New("must be a duration string")
 )
 
 // normalizeMachineRoots trims the hub's own machine roots and drops blank

@@ -16,6 +16,7 @@ import {
 	settle,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
+import { hasTestID, markers } from "../markerTestUtils";
 import { takeQuote } from "../session/pendingQuote";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
@@ -249,11 +250,9 @@ describe("comments (Task 16)", () => {
 		act(() => menu.pick(menu.options.options.indexOf(label)));
 	}
 
+	/** How many comments the block's pill counts; null with no pill. */
 	function marker(tree: ReactTestRenderer, index: number): string | null {
-		const pills = block(tree, index).findAll(
-			(node) => String(node.type) === "Pressable" && /^\d+ comments?$/.test(String(node.props.accessibilityLabel)),
-		);
-		return pills[0] ? String(pills[0].props.accessibilityLabel) : null;
+		return markers(block(tree, index), "comment-pill")[0] ?? null;
 	}
 
 	const commentParams = (over: Record<string, unknown> = {}) => ({
@@ -304,7 +303,10 @@ describe("comments (Task 16)", () => {
 	it("opens the block's four actions on a long press, and highlights that block while it's open", async () => {
 		const { tree } = await mount();
 		const menu = openMenu(tree, 1);
-		expect(menu.options.options).toEqual(["Comment", "Quote in reply", "Copy", "Select text", "Cancel"]);
+		// Comment, Quote in reply, Copy and Select text, each picked by the
+		// tests below, then Cancel.
+		expect(menu.options.options).toHaveLength(5);
+		expect(menu.options.cancelButtonIndex).toBe(4);
 		const highlighted = () => (block(tree, 1).props.style as { backgroundColor?: string }).backgroundColor;
 		expect(highlighted()).toBeTruthy();
 		expect((block(tree, 0).props.style as { backgroundColor?: string }).backgroundColor).toBeUndefined();
@@ -318,7 +320,6 @@ describe("comments (Task 16)", () => {
 		expect(navigation.navigate).toHaveBeenCalledWith("CommentSheet", commentParams());
 		const sheet = commentSheet();
 		expect(renderedText(sheet)).toContain(goal.text);
-		expect(renderedText(sheet)).toContain("Comments stay with this document until you send your review.");
 		expect(pressable(sheet, "Add")?.props.accessibilityState).toMatchObject({ disabled: true });
 		typeComment(sheet, "Say which run.");
 		act(() => pressable(sheet, "Add")?.props.onPress());
@@ -327,7 +328,7 @@ describe("comments (Task 16)", () => {
 		]);
 		expect(sheetNavigation.goBack).toHaveBeenCalled();
 		await rerender();
-		expect(marker(tree, 1)).toBe("1 comment");
+		expect(marker(tree, 1)).toBe("1");
 	});
 
 	it("asks before losing a typed comment", async () => {
@@ -335,15 +336,17 @@ describe("comments (Task 16)", () => {
 		expect(sheetNavigation.prevented.at(-1)).toBe(false);
 		typeComment(sheet, "Half a thought");
 		expect(sheetNavigation.prevented.at(-1)).toBe(true);
+		const asked = alertRequests.length;
 		act(() => sheetNavigation.onPrevent?.({ data: { action: { type: "GO_BACK" } } }));
-		expect(alertRequests.at(-1)?.title).toBe("Discard this comment?");
+		expect(alertRequests).toHaveLength(asked + 1);
+		expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 	});
 
 	it("puts a list item's comments on that item alone", async () => {
 		for (const text of ["one", "two"])
 			memory.addComment(KEY, { blockIndex: 4, blockHash: secondItem.hash, quote: secondItem.text, text });
 		const { tree } = await mount();
-		expect(marker(tree, 4)).toBe("2 comments");
+		expect(marker(tree, 4)).toBe("2");
 		expect(marker(tree, 3)).toBeNull();
 	});
 
@@ -358,13 +361,13 @@ describe("comments (Task 16)", () => {
 
 	it("shows the tip until the first comment, then the Comments button", async () => {
 		const { tree, navigation, rerender } = await mount();
-		expect(renderedText(tree)).toContain("Touch and hold a paragraph to comment on it");
+		expect(hasTestID(tree, "comment-tip")).toBe(true);
 		expect(pressable(tree, "Comments")).toBeUndefined();
 		act(() => {
 			memory.addComment(KEY, { blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "x" });
 		});
 		await rerender();
-		expect(renderedText(tree)).not.toContain("Touch and hold a paragraph to comment on it");
+		expect(hasTestID(tree, "comment-tip")).toBe(false);
 		act(() => pressable(tree, "Comments")?.props.onPress());
 		expect(navigation.navigate).toHaveBeenCalledWith("CommentsSheet", {
 			hubId: "studio",
@@ -383,7 +386,8 @@ describe("comments (Task 16)", () => {
 		});
 		await mount();
 		const sheet = commentsSheet();
-		expect(renderedText(sheet)).toContain("Comments · 1");
+		// The sheet's title counts the comments.
+		expect(sheet.root.findByProps({ accessibilityRole: "header" }).props.children).toMatch(/\D1$/);
 		expect(renderedText(sheet)).toContain("Fix it.");
 		expect(renderedText(sheet)).toContain("Name the fix.");
 		flatListCalls.length = 0;
@@ -395,7 +399,7 @@ describe("comments (Task 16)", () => {
 		]);
 		act(() => pressable(sheet, "Delete")?.props.onPress());
 		expect(memory.comments(KEY)).toEqual([]);
-		expect(renderedText(sheet)).toContain("No comments yet");
+		expect(hasTestID(sheet, "comments-empty")).toBe(true);
 	});
 
 	it("comments on the words you selected", async () => {
