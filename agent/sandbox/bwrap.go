@@ -185,7 +185,7 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		// the session's private layer) and then reports the root busy.
 		// Mounting its parent instead would overlay unrelated directories.
 		for _, c := range liveCacheRoots(rp) {
-			add("--overlay-src", c, "--tmp-overlay", c)
+			add(overlayFlags(c)...)
 		}
 	}
 
@@ -375,6 +375,15 @@ func commonDirWriteGrant(rp ResolvedPolicy) string {
 		}
 	}
 	return ""
+}
+
+// overlayFlags is the read-real / write-private overlay mount bwrap makes over a
+// cache root: --overlay-src is the root as the lower, --tmp-overlay mounts the
+// per-session upper at the root itself. buildBwrapArgv emits exactly this pair,
+// and the per-root capability probe (bwrapOverlayProbeArgs) runs exactly it, so
+// the probe's verdict is about the mount the spawn will really make (#4220).
+func overlayFlags(root string) []string {
+	return []string{"--overlay-src", root, "--tmp-overlay", root}
 }
 
 // bwrapWriteRoots returns the roots the bwrap argv actually binds writable: the
