@@ -356,6 +356,21 @@ type hubModel struct {
 	// again) or a recovery response succeeds (roborev PR #1044 round-13
 	// medium 2).
 	liveNavRecoveryRetries int
+
+	// entryRepairRef, while non-zero, marks the pending navigation-scoped
+	// retry of a session entry whose read answered the hub's typed
+	// transcriptIndexRebuilding code (#4343): the retry re-issues the entry
+	// read on a paced schedule (hub_entry_repair.go), and the error line
+	// shows the repair status instead of the entry error while it stands.
+	// Retired when the intent departs — a new pick, a session switch, the
+	// terminal history-failed answer — and by the departing tick itself.
+	entryRepairRef appwire.Ref
+	// entryRepairDelay is the wait the pending retry sleeps before its next
+	// re-read: the base after arming, doubling at each tick, capped.
+	entryRepairDelay time.Duration
+	// entryRepairSeq is the liveNavSeq the retry was armed under: any
+	// session switch or cycling pick bumps it, retiring the retry.
+	entryRepairSeq int
 }
 
 // hubLiveNavRecoveryMaxRetries bounds consecutive recovery-read retries: the
@@ -413,9 +428,13 @@ func newSpawnDirInput() textinput.Model {
 // prominentErrors returns every live account the hub model should render as
 // an error line, transient first, then the standing marketplace-removal
 // outcome warning. It is nil-safe: a model with no live account renders
-// nothing.
+// nothing. While an entry-repair retry stands (#4343), the repair status is
+// the line's first account in place of the entry error it displaced.
 func (m hubModel) prominentErrors() []error {
 	var errs []error
+	if m.entryRepairRef != (appwire.Ref{}) {
+		errs = append(errs, errHubEntryRepairing)
+	}
 	if m.err != nil {
 		errs = append(errs, m.err)
 	}

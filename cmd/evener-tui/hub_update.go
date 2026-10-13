@@ -17,6 +17,8 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.updateKey(msg)
+	case hubEntryRepairTickMsg:
+		return m.updateHubEntryRepairTick(msg)
 	case tea.MouseMsg:
 		return m.updateMouse(msg)
 	case tea.WindowSizeMsg:
@@ -287,6 +289,35 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.reestablishDisplayedSubscription()
 			}
 			m.sessionDetailsRequested = false
+			// #4343: a session entry whose read answered the hub's typed
+			// rebuilding code arms the paced retry instead of stranding, and
+			// the error line carries the repair status while the retry
+			// stands. A history-failed answer is terminal: the retry
+			// retires and the error shows. An ordinary transient while the
+			// retry stands (mid-repair lock contention with no repair in
+			// flight) keeps it armed: the status stands and the transient
+			// rides after it. Only the plain entry path arms — the
+			// already-open surfaces above keep their existing re-entry
+			// points.
+			if msg.expectedState == "" && msg.liveNavSeq == 0 && !msg.liveNavRefresh {
+				ref, refErr := appwire.ParseRef(msg.ref)
+				armedFor := refErr == nil && m.entryRepairRef == ref
+				switch {
+				case refErr == nil && isHubTranscriptIndexRebuilding(msg.err):
+					if m.entryRepairRef != ref {
+						m.entryRepairRef = ref
+						m.entryRepairDelay = hubEntryRepairBaseDelay
+						m.entryRepairSeq = m.liveNavSeq
+					}
+					m.err = nil
+					return m, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq)
+				case armedFor && !isHubTranscriptHistoryFailed(msg.err):
+					m.err = msg.err
+					return m, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq)
+				case armedFor:
+					m.entryRepairRetire()
+				}
+			}
 			m.err = msg.err
 			return m, nil
 		}
@@ -365,6 +396,10 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.liveNavSeq++
 			m.liveNavPendingRef = ""
 		}
+		// Entering any session is the newer intent: a pending entry-repair
+		// retry — whose own successful re-read lands here too — retires
+		// with it, and its status with it.
+		m.entryRepairRetire()
 		m.mode = hubModeSession
 		m.detail = msg.detail
 		m.session = newModel(nil)
@@ -728,6 +763,9 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Fork returned invalid ref: " + msg.resp.Ref)
 			return m, nil
 		}
+		// The fork's landing is the newer navigation intent: retire any
+		// pending entry-repair retry so its re-read cannot race it.
+		m.entryRepairRetire()
 		return m, fetchHubSession(m.frames, m.client, ref)
 	case hubSpawnMsg:
 		m.spawnSubmitting = false

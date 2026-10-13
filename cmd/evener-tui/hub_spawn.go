@@ -541,6 +541,10 @@ func (m *hubModel) openSpawnForm() {
 	m.setSpawnDir(dir)
 	m.spawnDirPrefillUntouched = dir != ""
 	m.spawnProject = project
+	// Leaving session entry for the spawn form departs the navigation
+	// intent: a pending entry-repair retry (#4343) retires, and its status
+	// with it.
+	m.entryRepairRetire()
 	m.mode = hubModeSpawn
 	m.err = nil
 	m.setSpawnFocus(hubSpawnFieldPrompt)

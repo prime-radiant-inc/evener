@@ -204,6 +204,9 @@ func (m hubModel) activateDashboardRow(rows []hubRow) (tea.Model, tea.Cmd) {
 	if m.client == nil {
 		return m, nil
 	}
+	// The new pick is the newer navigation intent: retire any pending
+	// entry-repair retry so its re-read cannot race this pick's read.
+	m.entryRepairRetire()
 	return m, fetchHubSession(m.frames, m.client, row.ref)
 }
 
@@ -251,6 +254,9 @@ func (m hubModel) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.client == nil {
 			return m, nil
 		}
+		// The picked session is the newer navigation intent: retire any
+		// pending entry-repair retry so its re-read cannot race this pick.
+		m.entryRepairRetire()
 		return m, fetchHubSession(m.frames, m.client, entry.Ref)
 	default:
 		return m, cmd
