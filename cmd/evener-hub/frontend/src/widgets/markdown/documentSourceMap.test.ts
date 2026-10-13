@@ -243,6 +243,28 @@ test("maps a large heavily formatted document with exact coordinates", () => {
   expect(source.slice(tailFirst.start, tailLast.end)).toBe("Tail");
 });
 
+// A list item's first line near the 512 KiB document limit runs expandTabs
+// piece-per-character, and the transformations assembled those pieces by
+// spreading them into concat: past the engine's function-call argument limit
+// the spread itself throws while rendering a document that is within the
+// size limit (Chrome throws at smaller pieces than Node; the assembly must
+// never depend on that limit).
+test("maps a giant single-line list item with a tab within the size limit", () => {
+  const source = `- ${"a".repeat(500_000)}\tb\n`;
+  const { map, segments } = renderDocument(source, { displayedSnapshotId: "snap-giant", mappingId: "map-giant" });
+  expect(segments.length).toBeGreaterThan(0);
+  const run = map.textRuns.find((entry) => entry.renderedText.includes("a"));
+  if (!run) throw new Error("missing giant list item run");
+  const first = run.sourceSpans[0];
+  const last = run.sourceSpans.at(-1);
+  if (!first || !last) throw new Error("missing giant run spans");
+  // The item's own text begins after the "- " bullet, and the expanded tab's
+  // rendered spaces still map onto the tab's original source units.
+  expect(first.start).toBe(2);
+  expect(run.renderedText.startsWith("aaaaa")).toBe(true);
+  expect(source.slice(first.start, last.end)).toBe(`${"a".repeat(500_000)}\tb`);
+});
+
 // A long list item with thousands of lazy continuation lines: every
 // continuation check needs only the FIRST line's provenance, but splitting
 // the ENTIRE remaining document into lines per check was quadratic - the
