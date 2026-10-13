@@ -154,3 +154,112 @@ func TestSessionActivityPageBudgetEscapedRowsRemainReachable(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionActivityIntentDenseDelegateJournalPagesUnderTheColdBudget pins the
+// compatibility contract: one fold work unit per stated tool call, so a
+// journal dense with intent events — a tool-heavy run — turns a retained read
+// that once completed in one pass into a valid multi-page continuation.
+// Following the pages as a client must serve every delegate exactly once with
+// the dense journal's row carrying the newest stated line of its interrupted
+// open run: no row is silently excluded by the exhausted budget.
+func TestSessionActivityIntentDenseDelegateJournalPagesUnderTheColdBudget(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	root := "intentsdense"
+	ref := encodeRef("", root)
+	savePastActivityMeta(t, stateDir, root, "Root")
+	const total = 5
+	const calls = 2_000
+	descriptors := make([]delegatestore.Descriptor, total)
+	for i := range descriptors {
+		descriptors[i] = pastStableDescriptor(root, fmt.Sprintf("childdense_%03d", i), "dense run")
+	}
+	writePastStableDelegates(t, stateDir, root, descriptors...)
+
+	// The dense journal: the newest delegate's generation opens, states one
+	// intent per tool call — created, started and stated events together pass
+	// the 2,000-unit cold budget — and the daemon dies mid-run, so the row
+	// must serve the folded line of the interrupted open generation. The id
+	// follows writePastStableDelegates's own rule for descriptor ids.
+	denseID := "dlg_" + strings.TrimPrefix(descriptors[total-1].ChildSessionID, "child")
+	path := filepath.Join(jobsDir(stateDir, root), "delegates.jsonl")
+	existing, err := delegatestore.ReadEvents(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := delegatestore.Fold(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Unix(100, 0).UTC()
+	dense := make([]delegatestore.Event, 0, calls+1)
+	dense = append(dense, delegatestore.Event{
+		Kind:       delegatestore.EventDelegateRunStarted,
+		DelegateID: denseID,
+		TS:         started,
+		RunStarted: &delegatestore.RunStarted{Generation: 1, Trigger: delegatestore.TriggerInitial, StartedAt: started},
+	})
+	for i := range calls {
+		dense = append(dense, delegatestore.Event{
+			Kind:       delegatestore.EventDelegateIntentStated,
+			DelegateID: denseID,
+			TS:         started.Add(time.Duration(i) * time.Second),
+			IntentStated: &delegatestore.IntentStated{
+				Generation: 1,
+				Intent:     fmt.Sprintf("Reading file %04d.", i),
+			},
+		})
+	}
+	journal, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := journal.AppendBatch(live, dense); err != nil {
+		_ = journal.Close()
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	params := appwire.SessionActivityListParams{Ref: ref, Scope: appwire.SessionActivityScopeSession, Limit: 200}
+	seen := make(map[string]bool, total)
+	paged := false
+	var denseIntent string
+	for range 200 {
+		response, err := LoadSessionActivityDelegates(t.Context(), stateDir, root, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil || len(encoded) > sessionActivityPageBytes {
+			t.Fatalf("page bytes=%d err=%v", len(encoded), err)
+		}
+		for _, row := range response.Delegates {
+			if seen[row.DelegateID] {
+				t.Fatalf("delegate %s served on two pages", row.DelegateID)
+			}
+			seen[row.DelegateID] = true
+			if row.DelegateID == denseID {
+				denseIntent = row.LatestIntent
+			}
+		}
+		if response.Page.Complete {
+			break
+		}
+		if response.Page.NextCursor == "" || response.Page.NextCursor == params.Cursor {
+			t.Fatal("continuation did not advance")
+		}
+		paged = true
+		params.Cursor = response.Page.NextCursor
+	}
+	if len(seen) != total {
+		t.Fatalf("cold pages served %d delegates, want %d with none excluded", len(seen), total)
+	}
+	if !paged {
+		t.Fatal("a journal past the cold budget completed in one pass; the test no longer exercises the continuation")
+	}
+	if denseIntent != fmt.Sprintf("Reading file %04d.", calls-1) {
+		t.Fatalf("the dense journal's row carried %q, want the newest stated line of the interrupted run", denseIntent)
+	}
+}

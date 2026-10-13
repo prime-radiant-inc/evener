@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -105,7 +106,8 @@ func TestActivityReadFiltersToTheRefsAsked(t *testing.T) {
 	if len(got.Sessions) != 1 || got.Sessions[0].Ref != "local:01WORKSPACE" {
 		t.Fatalf("sessions = %+v, want only the session whose Live row is local:01WORKSPACE", got.Sessions)
 	}
-	if _, err := hubActivityRead(t.Context(), cfg, nil, appwire.ActivityReadParams{Refs: []string{"not a ref"}}, activityReadNow); err == nil || !strings.Contains(err.Error(), "refs must be session refs") {
+	_, err = hubActivityRead(t.Context(), cfg, nil, appwire.ActivityReadParams{Refs: []string{"not a ref"}}, activityReadNow)
+	if wire, ok := errors.AsType[appwire.WireError](err); !ok || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("malformed ref error = %v, want an invalid-params refusal", err)
 	}
 	many := make([]string, maxActivityReadRefs+1)

@@ -259,12 +259,20 @@ func isJSONNumber(raw json.RawMessage) bool {
 // remain on disk, so it is not retryable, and the caller reconciles from the
 // marker's own snapshot or a fresh read instead.
 func marketplaceCloneRemainsWarning(err error, unavailable bool) error {
-	message := "marketplace removed; clone files remain on disk"
 	if unavailable {
-		message += "; current list could not be confirmed"
+		return fmt.Errorf("%w; %w: %w", errMarketplaceCloneRemains, errMarketplaceListUnconfirmed, err)
 	}
-	return fmt.Errorf("%s: %w", message, err)
+	return fmt.Errorf("%w: %w", errMarketplaceCloneRemains, err)
 }
+
+var (
+	// errMarketplaceCloneRemains marks a removal that stood while its clone
+	// files remain on disk.
+	errMarketplaceCloneRemains = errors.New("marketplace removed; clone files remain on disk")
+	// errMarketplaceListUnconfirmed marks a removal account whose post-removal
+	// list has not been confirmed by a fresh read yet.
+	errMarketplaceListUnconfirmed = errors.New("current list could not be confirmed")
+)
 
 // marketplaceRemovedWarning reports a removal the hub marked
 // marketplaceRemoveApplied: the removal and its clone cleanup both landed,

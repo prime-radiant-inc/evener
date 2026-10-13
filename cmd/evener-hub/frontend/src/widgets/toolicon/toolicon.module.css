@@ -1,0 +1,15 @@
+/* Tone: the state hue of a glyph whose colour IS the state (on the
+ * token-contract semantic allowlist). The path strokes currentColor, so the
+ * hue only has to set color. */
+
+.toneAlive {
+  color: var(--alive);
+}
+
+.toneAttention {
+  color: var(--attention);
+}
+
+.toneDanger {
+  color: var(--danger);
+}

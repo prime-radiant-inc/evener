@@ -55,9 +55,9 @@ export function PluginChecklist() {
 			</View>
 			{plugins.status === "error" ? <GroupFooter tone="danger">{plugins.message}</GroupFooter> : null}
 			{!cwd.trim() ? (
-				<GroupFooter>Plugins are listed once a project is chosen.</GroupFooter>
+				<GroupFooter testID="plugins-status:no-project">Plugins are listed once a project is chosen.</GroupFooter>
 			) : !response && plugins.status === "loading" ? (
-				<GroupFooter>{`Checking plugins on ${hostLabel(source)}…`}</GroupFooter>
+				<GroupFooter testID="plugins-status:checking">{`Checking plugins on ${hostLabel(source)}…`}</GroupFooter>
 			) : null}
 			{orphans.map((issue) => (
 				<GroupFooter key={`issue:${issue.name}`} tone="danger">{`${issue.name}: ${issue.reason}`}</GroupFooter>
@@ -82,7 +82,11 @@ export function PluginChecklist() {
 			))}
 			{groups.map((group) => (
 				<View key={group.marketplace ?? ""}>
-					<Group label={group.marketplace ?? "Other plugins"} machineLabel={Boolean(group.marketplace)}>
+					<Group
+						label={group.marketplace ?? "Other plugins"}
+						section={group.marketplace ? `marketplace-${group.marketplace}` : "other-plugins"}
+						machineLabel={Boolean(group.marketplace)}
+					>
 						{group.plugins.map((plugin) => (
 							<PluginRow
 								key={plugin.name}

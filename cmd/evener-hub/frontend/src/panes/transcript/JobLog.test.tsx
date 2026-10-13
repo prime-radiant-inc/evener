@@ -3,7 +3,7 @@
 
 import type { AppwireClient } from "@evener/appwire-client";
 import { connectJobOutputPeer, type JobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { StubResizeObserver } from "../../resizeObserverTestUtils";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
@@ -13,8 +13,9 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspa
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
-import { installJobLogGeometry, jobLogOutputText, jobOutputMetadata } from "./JobLogTestUtils";
+import { installJobLogGeometry, jobLogCommandText, jobLogOutputText, jobOutputMetadata } from "./JobLogTestUtils";
 import { retainedJobLogReader } from "./jobLogReader";
 import Transcript from "./Transcript";
 
@@ -106,18 +107,26 @@ describe("JobLog", () => {
       { offsetBytes: 0, bytesReturned: 3, totalBytes: 3, retainedStartBytes: 0, encoding: "utf8", data: "ok\n" },
       jobOutputMetadata({ command: "go test ./... -run Foo -count=1" }),
     );
-    expect((await screen.findByTestId("joblog-command")).textContent).toBe("go test ./... -run Foo -count=1");
+    expect(jobLogCommandText(await screen.findByTestId("joblog-command"))).toBe("go test ./... -run Foo -count=1");
+    expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
     expect((await screen.findByTestId("joblog-content")).textContent).toContain("ok");
     expect(peer.requests("evener/jobs/output").map((request) => request.params)).toEqual([
       { ref: "ref_root", jobId: "job_x", maxBytes: 65536 },
     ]);
   });
 
+  test("shows a loading status until the job's output arrives", async () => {
+    mountJob();
+    expect(await screen.findByRole("status", { name: "Loading job output" })).toBeTruthy();
+    await respond(HELLO, jobOutputMetadata({ command: "make lint" }));
+    expect(screen.queryByRole("status", { name: "Loading job output" })).toBeNull();
+  });
+
   test("shows the command even when the job has written no output yet", async () => {
     mountJob();
     await respond(EMPTY, jobOutputMetadata({ command: "make lint", hasOutput: false }));
-    expect((await screen.findByTestId("joblog-command")).textContent).toBe("make lint");
-    expect(await screen.findByText("No output yet")).toBeTruthy();
+    expect(jobLogCommandText(await screen.findByTestId("joblog-command"))).toBe("make lint");
+    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["empty"]));
   });
 
   test("renders the log with no command line when the job read is unavailable", async () => {
@@ -142,7 +151,7 @@ describe("JobLog", () => {
   test("never shows another job's command while the new job's metadata is in flight", async () => {
     const { rerender } = mountJob();
     await respond(HELLO, jobOutputMetadata({ command: "first command" }));
-    expect((await screen.findByTestId("joblog-command")).textContent).toBe("first command");
+    expect(jobLogCommandText(await screen.findByTestId("joblog-command"))).toBe("first command");
     act(() =>
       workspaceStore.setState({
         panes: [
@@ -164,7 +173,7 @@ describe("JobLog", () => {
       peer.reply(secondGet, jobOutputMetadata({ jobId: "job_y", command: "second command" }));
       peer.reply(secondOutput, HELLO);
     });
-    expect((await screen.findByTestId("joblog-command")).textContent).toBe("second command");
+    expect(jobLogCommandText(await screen.findByTestId("joblog-command"))).toBe("second command");
   });
 });
 
@@ -627,6 +636,6 @@ test("failed terminal output keeps its true status, full command and exit code",
     }),
   );
   expect(screen.getByTestId("joblog-status").textContent).toBe("failed · Exit code 2");
-  expect(screen.getByTestId("joblog-command").textContent).toBe("go test ./... -run Failure -count=1");
+  expect(jobLogCommandText(screen.getByTestId("joblog-command"))).toBe("go test ./... -run Failure -count=1");
   expect(screen.getByText("FAILURE_OUTPUT")).toBeTruthy();
 });

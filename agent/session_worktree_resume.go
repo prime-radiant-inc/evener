@@ -263,9 +263,17 @@ func worktreeGitEntryExists(path string) bool {
 // the parent's own lock or emit a spurious co-occupying warning on every
 // spawn.
 //
-// isGitRepo is the caller's already-computed snapshotGit result (session_init.go),
-// passed in to skip the ResolveMainRepoRoot git fork entirely for the common
-// non-repo case.
+// The function decides repo-ness from its own structural facts —
+// ResolveProjectWith (a managed-lane root resolves from its linked-worktree
+// `.git` pointer) and projectIsGitCheckout — NOT from the caller's
+// session-start git snapshot. That snapshot's IsGitRepo comes from snapshotGit,
+// which reports a probe that timed out or failed as "not a repo"; gating this
+// function on it let a starved probe silently disable the occupancy lock
+// (#4132). The old parameter was documented as an optimization to skip a git
+// fork for the common non-repo case, but the function returns for every
+// non-local env and a managed-lane root never needs that fork, so the
+// parameter could only ever subtract correctness. See #4138 for the probe
+// conflation itself.
 //
 // Invariant carried from Task 18 into Task 21: this scoping was sound when
 // every spawn path hardcoded workingDir="" (a child always inherited
@@ -277,8 +285,8 @@ func worktreeGitEntryExists(path string) bool {
 // at `git worktree add` time on the PARENT side, before the child spawns, so
 // there is no unlocked window for this function to (mis)detect on the
 // child's own init.
-func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
-	if !isGitRepo || s.isSubagentSession() {
+func (s *Session) applyInitInsideWorktreeLock() {
+	if s.isSubagentSession() {
 		return
 	}
 	s.mu.Lock()

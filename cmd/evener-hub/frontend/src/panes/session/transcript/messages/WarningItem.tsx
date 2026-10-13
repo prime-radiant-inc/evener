@@ -16,9 +16,8 @@
 
 import { isInformationalWarning, warningWords } from "@evener/appwire-client";
 import { memo } from "react";
-import { Chip } from "../../../../widgets";
+import { Chip, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import styles from "./warningitem.module.css";
 
@@ -70,11 +69,11 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
  * A warning a human should see: the attention chip with its title (or
  * "Warning"), the message, and the hint beneath. A type:"warning" item and a
  * daemon's warning notice (SystemNoticeItem, #3387) render through it, so the
- * two kinds of warning look the same.
+ * two kinds of warning look the same. data-fallback marks the generic chip.
  */
 export function WarningBlock({ title, message, hint }: { title?: string; message: string; hint?: string }) {
   return (
-    <div className={CLASS.row} data-testid="warning-item">
+    <div className={CLASS.row} data-testid="warning-item" data-fallback={title ? undefined : "true"}>
       <Chip tone="attention">{title || "Warning"}</Chip>
       <div className={CLASS.message} data-testid="warning-message">
         {message}

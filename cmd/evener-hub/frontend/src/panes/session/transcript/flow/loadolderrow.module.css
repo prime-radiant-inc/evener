@@ -28,18 +28,3 @@
   color: var(--ink-hi);
   font-weight: var(--font-weight-medium);
 }
-
-.retry {
-  padding: 0 var(--space-1);
-  border: none;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.retry:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}

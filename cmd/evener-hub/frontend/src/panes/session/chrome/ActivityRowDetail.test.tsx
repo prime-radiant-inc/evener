@@ -4,6 +4,7 @@ import { connectJobOutputPeer } from "@evener/appwire-client/testing/jobOutputPe
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { accessibleName } from "../../../accessibleNameTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
@@ -243,13 +244,14 @@ describe("ActivityRowDetail", () => {
     expect(screen.getByText("the repo").tagName).toBe("STRONG");
     expect(screen.queryByText("Additional instructions: keep the report concise.")).toBeNull();
 
-    const showMore = screen.getByText("Show more");
-    expect(showMore.tagName).toBe("SUMMARY");
+    const showMore = document.querySelector("summary");
+    if (!showMore) throw new Error("Missing show-more disclosure");
+    expect(accessibleName(showMore as HTMLElement).trim()).not.toBe("");
     await userEvent.click(showMore);
     expect(screen.getByText("Additional instructions: keep the report concise.")).toBeTruthy();
 
     rerender(<ActivityRowDetail row={delegateRow({ mandate: "Only one paragraph." })} now={NOW} />);
-    expect(screen.queryByText("Show more")).toBeNull();
+    expect(document.querySelector("summary")).toBeNull();
   });
 
   test("renders a settled delegate report as a small message bubble attributed to its name", () => {
@@ -288,7 +290,7 @@ describe("ActivityRowDetail", () => {
       act(() => {
         vi.advanceTimersByTime(300);
       });
-      expect(screen.getByRole("tooltip").textContent).toContain("Delegate");
+      expect(screen.getByRole("tooltip").querySelector('[data-entity-kind="delegate"]')).not.toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -338,7 +340,7 @@ describe("ActivityRowDetail", () => {
       });
 
       const card = screen.getByRole("tooltip");
-      expect(card.textContent).toContain("Delegate");
+      expect(card.querySelector('[data-entity-kind="delegate"]')).not.toBeNull();
       expect(card.textContent).toContain("Inspect the repo");
     } finally {
       vi.useRealTimers();

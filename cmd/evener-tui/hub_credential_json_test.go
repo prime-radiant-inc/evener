@@ -181,7 +181,7 @@ func TestCredentialJsonFile_NeverEchoesWhatWasSubmitted(t *testing.T) {
 			if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), tt.value) {
 				t.Fatalf("err = %q, must not repeat what was submitted", err)
 			}
-			if !strings.Contains(err.Error(), "credential JSON") {
+			if !errors.Is(err, errCredentialJSONUnreadable) {
 				t.Fatalf("err = %q, want it to name what failed", err)
 			}
 			if got.Value != "" {
@@ -195,7 +195,7 @@ func TestCredentialJsonFile_NeverEchoesWhatWasSubmitted(t *testing.T) {
 // prompt must refuse, on a goroutine with a deadline: the read happens on the
 // update loop, so a path that never returns has to be refused before it is
 // opened rather than hanging the interface.
-func assertCredentialPathRefused(t *testing.T, value, want string) {
+func assertCredentialPathRefused(t *testing.T, value string, want error) {
 	t.Helper()
 	client, got, cleanup := credentialJSONHub(t)
 	defer cleanup()
@@ -218,8 +218,8 @@ func assertCredentialPathRefused(t *testing.T, value, want string) {
 		t.Fatal("reading blocked: the path was opened instead of being refused")
 	}
 	res, ok := msg.(launchconfig.AuthApiKeySetResultMsg)
-	if !ok || res.Err == nil || !strings.Contains(res.Err.Error(), want) {
-		t.Fatalf("result = %#v, want an error saying %q", msg, want)
+	if !ok || !errors.Is(res.Err, want) || !errors.Is(res.Err, errCredentialJSONUnreadable) {
+		t.Fatalf("result = %#v, want an error wrapping %v", msg, want)
 	}
 	if got.Value != "" {
 		t.Fatalf("the hub must not be called; it received %q", got.Value)
@@ -237,8 +237,8 @@ func TestCredentialJsonResult_RefusesWhatIsNotAReadableFile(t *testing.T) {
 	if err := os.Truncate(huge, maxCredentialFileBytes+1); err != nil {
 		t.Fatal(err)
 	}
-	t.Run("directory", func(t *testing.T) { assertCredentialPathRefused(t, dir, "not a regular file") })
-	t.Run("too large", func(t *testing.T) { assertCredentialPathRefused(t, huge, "too large") })
+	t.Run("directory", func(t *testing.T) { assertCredentialPathRefused(t, dir, errCredentialPathNotRegular) })
+	t.Run("too large", func(t *testing.T) { assertCredentialPathRefused(t, huge, errCredentialFileTooLarge) })
 }
 
 // TestCredentialJsonResult_CancelledOrEmptyStoresNothing mirrors the API-key

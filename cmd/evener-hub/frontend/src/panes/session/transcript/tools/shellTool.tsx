@@ -34,8 +34,7 @@ import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-
-const TAIL_MAX_CHARS = 8000;
+import { TOOL_BODY_MAX_CHARS } from "./bodies";
 
 // shellCommand, stripRedundantCd and the summary: @evener/appwire-client's
 // toolSummaries.
@@ -68,7 +67,7 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
     buffer.current.sessionRef !== sessionRef ||
     (!live && buffer.current.live)
   ) {
-    buffer.current = { itemId: item.id, sessionRef, live, tail: new AnsiTailBuffer(TAIL_MAX_CHARS) };
+    buffer.current = { itemId: item.id, sessionRef, live, tail: new AnsiTailBuffer(TOOL_BODY_MAX_CHARS) };
   }
   buffer.current.live = live;
   const tail = buffer.current.tail.update(output);
@@ -105,7 +104,7 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
           text={
             live || !tail.truncated
               ? renderedOutput
-              : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${renderedOutput}`
+              : `earlier output not retained — showing the last ${TOOL_BODY_MAX_CHARS.toLocaleString("en-US")} chars\n${renderedOutput}`
           }
           copyText={tail.copyText}
           copyLabel="Copy output"

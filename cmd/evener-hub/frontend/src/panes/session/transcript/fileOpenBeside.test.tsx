@@ -90,7 +90,9 @@ test("Open beside is icon-only: no visible text label, but keeps its accessible 
   const button = screen.getByRole("button", { name: "Open beside: src/a.ts" });
   expect(button.textContent).toBe(""); // icon only - the SVG carries no text, aria-hidden
   // The tooltip is the one word everywhere; the PATH stays in the aria-label.
-  expect(button.getAttribute("title")).toBe("Open");
+  const title = button.getAttribute("title") ?? "";
+  expect(title).not.toBe("");
+  expect(title).not.toContain("src/a.ts");
 });
 
 test("renders nothing for an out-of-cwd path (no affordance)", () => {

@@ -2,7 +2,7 @@ package hub
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -22,7 +22,7 @@ func TestHubUpgradeRefusedWhileApplyHoldsTheLock(t *testing.T) {
 	})
 
 	_, err := hubUpgrade(context.Background(), appwire.UpgradeParams{})
-	if err == nil || !strings.Contains(err.Error(), "already in progress") {
+	if !errors.Is(err, errHubUpdateInProgress) {
 		t.Fatalf("hubUpgrade err = %v", err)
 	}
 	if *upgrades != 0 {
@@ -45,7 +45,7 @@ func TestHubUpdateApplyRefusedWhileUpgradeHoldsTheLock(t *testing.T) {
 	restarts := stubScheduleRestart(t)
 
 	_, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{})
-	if err == nil || !strings.Contains(err.Error(), "already in progress") {
+	if !errors.Is(err, errHubUpdateInProgress) {
 		t.Fatalf("hubUpdateApply err = %v", err)
 	}
 	if *upgrades != 0 || len(*restarts) != 0 {

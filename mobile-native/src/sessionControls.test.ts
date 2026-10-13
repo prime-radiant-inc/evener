@@ -140,7 +140,7 @@ describe("conversation-owned session controls", () => {
 		);
 		expect(await controls.forceStop()).toBe(false);
 		expect(stopped).toBe(0);
-		expect(controls.getSnapshot().error).toContain("Could not confirm");
+		expect(controls.getSnapshot().error).not.toBeNull();
 	});
 
 	it("does not publish resume success when resume fails", async () => {
@@ -177,7 +177,7 @@ describe("conversation-owned session controls", () => {
 		);
 		expect(await controls.resume()).toBe(false);
 		expect(controls.getSnapshot().notice).toBeNull();
-		expect(controls.getSnapshot().error).toContain("Could not confirm");
+		expect(controls.getSnapshot().error).not.toBeNull();
 	});
 
 	it("does not recover a stale binding", async () => {

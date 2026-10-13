@@ -80,10 +80,13 @@ function DetailPanel({
 }: DetailPanelProps) {
   const isMobile = layout === "mobile";
   const layoutName = layout === "desktop" ? "Desktop" : "Mobile";
-  const statusMessages: string[] = [];
-  if (hubLoading) statusMessages.push("Loading hub default…");
+  const statusMessages: { kind: "hub-loading" | "hub-unsupported"; text: string }[] = [];
+  if (hubLoading) statusMessages.push({ kind: "hub-loading", text: "Loading hub default…" });
   if (hubSupport === "unsupported")
-    statusMessages.push("This older hub does not support transcript display defaults. Local changes still work.");
+    statusMessages.push({
+      kind: "hub-unsupported",
+      text: "This older hub does not support transcript display defaults. Local changes still work.",
+    });
   const failureMessages = new Map<string, string>();
   if (hubError !== null) failureMessages.set(hubError, `Hub default status: ${hubError}`);
   if (storageWarning !== null && !failureMessages.has(storageWarning))
@@ -94,11 +97,15 @@ function DetailPanel({
       className={isMobile ? CLASS.sheetContent : `${CLASS.panel} ${CLASS.content}`}
       data-testid="transcript-detail-control"
     >
-      <p className={CLASS.scope}>{localExists ? `Local ${layoutName} view` : "Using hub default"}</p>
+      <p className={CLASS.scope} data-testid="transcript-detail-scope" data-scope={localExists ? "local" : "hub"}>
+        {localExists ? `Local ${layoutName} view` : "Using hub default"}
+      </p>
       {statusMessages.length > 0 && (
         <div className={CLASS.status} role="status" aria-live="polite">
           {statusMessages.map((message) => (
-            <p key={message}>{message}</p>
+            <p key={message.kind} data-kind={message.kind}>
+              {message.text}
+            </p>
           ))}
         </div>
       )}

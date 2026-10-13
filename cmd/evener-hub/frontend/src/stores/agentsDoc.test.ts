@@ -1,5 +1,5 @@
 import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { beforeEach, describe, expect, test } from "vitest";
 import { agentsDocStore, resetAgentsDocStoreForTests } from "./agentsDoc";
@@ -49,14 +49,14 @@ describe("fetch", () => {
     expect(agentsDocStore.getState().doc).toEqual(DOC);
   });
 
-  test("records a failed fetch as error text and keeps doc null", async () => {
+  test("records a failed fetch's friendly form and keeps doc null", async () => {
     const fake = connectFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => {
       throw new Error("disk on fire");
     });
     await agentsDocStore.getState().fetch();
     expect(agentsDocStore.getState().doc).toBeNull();
-    expect(agentsDocStore.getState().error).toContain("disk on fire");
+    expect(agentsDocStore.getState().error).toBe(friendlyErrorMessage(new Error("disk on fire")));
     expect(agentsDocStore.getState().loading).toBe(false);
   });
 

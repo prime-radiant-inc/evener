@@ -281,24 +281,57 @@ func anthropicImageBlock(p llm.ContentPart) (map[string]any, error) {
 			}
 		}
 		return map[string]any{
-			"type": "image",
-			"source": map[string]any{
-				"type":       "base64",
-				"media_type": mt,
-				"data":       base64.StdEncoding.EncodeToString(b),
-			},
+			"type":   "image",
+			"source": anthropicBase64Source(mt, b),
 		}, nil
 	}
 	if u != "" {
 		return map[string]any{
-			"type": "image",
-			"source": map[string]any{
-				"type": "url",
-				"url":  u,
-			},
+			"type":   "image",
+			"source": anthropicURLSource(u),
 		}, nil
 	}
 	return nil, nil
+}
+
+// anthropicBase64Source builds the inline source an image or document content
+// block shares.
+func anthropicBase64Source(mediaType string, data []byte) map[string]any {
+	return map[string]any{
+		"type":       "base64",
+		"media_type": mediaType,
+		"data":       base64.StdEncoding.EncodeToString(data),
+	}
+}
+
+// anthropicURLSource builds the url source an image or document content block
+// shares.
+func anthropicURLSource(u string) map[string]any {
+	return map[string]any{"type": "url", "url": u}
+}
+
+// anthropicDocumentBlock maps a document content part to Anthropic's document
+// content block: a base64 source for inline bytes (the application/pdf default
+// the tool layer and the Responses builder apply) or a url source, mirroring
+// the Responses builder's input_file path. A part with neither returns nil, and
+// the caller drops it. Anthropic's Messages API accepts base64 application/pdf
+// documents in user messages with no beta header (#4209).
+func anthropicDocumentBlock(p llm.ContentPart) map[string]any {
+	if p.Document == nil {
+		return nil
+	}
+	doc := p.Document
+	if len(doc.Data) > 0 {
+		mt := strings.TrimSpace(doc.MediaType)
+		if mt == "" {
+			mt = "application/pdf"
+		}
+		return map[string]any{"type": "document", "source": anthropicBase64Source(mt, doc.Data)}
+	}
+	if u := strings.TrimSpace(doc.URL); u != "" {
+		return map[string]any{"type": "document", "source": anthropicURLSource(u)}
+	}
+	return nil
 }
 
 func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[string]any, _ error) {
@@ -348,7 +381,11 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					if block != nil {
 						blocks = append(blocks, block)
 					}
-				case llm.ContentAudio, llm.ContentDocument:
+				case llm.ContentDocument:
+					if block := anthropicDocumentBlock(p); block != nil {
+						blocks = append(blocks, block)
+					}
+				case llm.ContentAudio:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for anthropic: %s", p.Kind)}
 				default:
 					// ignore
@@ -450,22 +487,24 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					b, _ := json.Marshal(v)
 					outStr = string(b)
 				}
-				var resultContent any
+				// Tool-result bytes ride inline as an image block for image
+				// media only. Anthropic's image block rejects a document media
+				// type — a PDF result written as an image 400s the whole turn
+				// (#4209) — and the design keeps documents on the side-channel
+				// (llm.DeliversToolResultMedia is image-only), so a non-image
+				// result contributes its text alone.
+				resultContent := any(outStr)
 				if len(p.ToolResult.ImageData) > 0 {
-					mediaType := p.ToolResult.ImageMediaType
+					mediaType := strings.TrimSpace(p.ToolResult.ImageMediaType)
 					if mediaType == "" {
 						mediaType = "image/png"
 					}
-					resultContent = []map[string]any{
-						{"type": "text", "text": outStr},
-						{"type": "image", "source": map[string]any{
-							"type":       "base64",
-							"media_type": mediaType,
-							"data":       base64.StdEncoding.EncodeToString(p.ToolResult.ImageData),
-						}},
+					if strings.HasPrefix(strings.ToLower(mediaType), "image/") {
+						resultContent = []map[string]any{
+							{"type": "text", "text": outStr},
+							{"type": "image", "source": anthropicBase64Source(mediaType, p.ToolResult.ImageData)},
+						}
 					}
-				} else {
-					resultContent = outStr
 				}
 
 				blocks = append(blocks, map[string]any{

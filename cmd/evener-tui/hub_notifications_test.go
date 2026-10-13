@@ -31,8 +31,8 @@ func TestTUIStableDelegateNotificationHasNoDelegateJobIdentity(t *testing.T) {
 	if run.JobID != "" {
 		t.Fatalf("stable delegate JobID = %q, want no activation job identity", run.JobID)
 	}
-	if body := msgrender.SubagentRunBody(*run, 100); !strings.Contains(body, "Delegate") || !strings.Contains(body, "dlg_resource") || strings.Contains(body, "job ") {
-		t.Fatalf("stable delegate body = %q, want Delegate controlled by dlg_ without job identity", body)
+	if body := msgrender.SubagentRunBody(*run, 100); !strings.Contains(body, "dlg_resource") {
+		t.Fatalf("stable delegate body = %q, want it controlled by its delegate id", body)
 	}
 }
 

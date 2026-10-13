@@ -66,6 +66,10 @@ func (s *Session) beginExecution(name string) {
 			started(turnID)
 		}
 		s.emit(events.EventExecutionStarted, events.ExecutionStartedData{TurnID: turnID})
+		// A new execution clears the reported line, the root meter's own
+		// boundary: a row names this turn's work, not the words of a turn
+		// that already finished.
+		s.noteParentJobIntent("")
 	}
 	s.attachedTranscript().BeginExecution(turnID, reopen)
 	if reopen {

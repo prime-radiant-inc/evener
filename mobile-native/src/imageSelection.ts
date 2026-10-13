@@ -14,9 +14,22 @@ interface PendingImage extends PickedImage {
 	id: string;
 	marker: number;
 }
+/** Why a picked image, or the whole pick, didn't attach. */
+export type ImageRefusalReason = AttachmentRejection | "sizeUnread" | "notPrepared" | "cameraDenied" | "unreadable";
+
+/** One thing a pick refused: the image it names, or null for the pick as a
+ * whole (the camera was off, or the selection couldn't be read). */
+export interface ImageRefusal {
+	name: string | null;
+	reason: ImageRefusalReason;
+}
+
 interface SelectionSnapshot {
 	busy: boolean;
 	pending: PendingImage[];
+	/** What the last pick refused, in order. */
+	refusals: ImageRefusal[];
+	/** The refusals in the person's terms, one line each; null with none. */
 	error: string | null;
 }
 export interface ImagePicker {
@@ -30,10 +43,12 @@ export interface ImagePicker {
 	id(): string;
 }
 
+const CAMERA_OFF = "Camera access is off. Turn it on in Settings to take photos here.";
+
 /** The camera permission is off, so the picker could not open the camera. */
 export class CameraAccessDenied extends Error {
 	constructor() {
-		super("Camera access is off. Turn it on in Settings to take photos here.");
+		super(CAMERA_OFF);
 		this.name = "CameraAccessDenied";
 	}
 }
@@ -57,28 +72,38 @@ const MAX_SOURCE_PIXELS = FULL_FRAME_WIDTH * FULL_FRAME_HEIGHT;
 
 /** Why an image can't be attached, after its name: the reason, then what to
  * do (#3166). Too large to decode and too large to send read the same. */
-const REFUSED: Record<AttachmentRejection, string> = {
+const REFUSED: Record<ImageRefusalReason, string> = {
 	notImage: "This isn't an image. Choose an image to attach.",
 	tooMany: `You can attach up to ${MAX_ATTACHMENTS} images. Remove one to add another.`,
 	tooLarge: "This image is too large to attach. Try a smaller image or a screenshot.",
+	sizeUnread: "This image's size couldn't be read. Try another image.",
+	notPrepared: "This image couldn't be prepared to attach. Try another image.",
+	cameraDenied: CAMERA_OFF,
+	unreadable: "Could not open or read the image selection.",
 };
-const SIZE_UNREAD = "This image's size couldn't be read. Try another image.";
-const NOT_PREPARED = "This image couldn't be prepared to attach. Try another image.";
 
-function refused(image: PickedImage, why: string): string {
-	return `${image.name}: ${why}`;
+function refused(image: PickedImage, reason: ImageRefusalReason): ImageRefusal {
+	return { name: image.name, reason };
+}
+
+function refusalText({ name, reason }: ImageRefusal): string {
+	return name === null ? REFUSED[reason] : `${name}: ${REFUSED[reason]}`;
+}
+
+function refusalUpdate(refusals: ImageRefusal[]): Pick<SelectionSnapshot, "refusals" | "error"> {
+	return { refusals, error: refusals.length ? refusals.map(refusalText).join("\n") : null };
 }
 
 /** Why a picked image can't be staged, said before it's decoded, or undefined.
  * Its own size isn't the attachment limit: the phone scales it down and the
  * encoding is measured after. A picker that doesn't say its pixel size leaves
  * only the file-size cap to bound the decode. */
-function sourceRejection(image: PickedImage, reserved: number): string | undefined {
-	if (!Number.isFinite(image.size) || image.size < 0) return refused(image, SIZE_UNREAD);
+function sourceRejection(image: PickedImage, reserved: number): ImageRefusal | undefined {
+	if (!Number.isFinite(image.size) || image.size < 0) return refused(image, "sizeUnread");
 	if (image.size > MAX_SOURCE_BYTES || (image.width ?? 0) * (image.height ?? 0) > MAX_SOURCE_PIXELS)
-		return refused(image, REFUSED.tooLarge);
+		return refused(image, "tooLarge");
 	const rejection = admissionRejection(image, reserved);
-	return rejection && refused(image, REFUSED[rejection]);
+	return rejection && refused(image, rejection);
 }
 
 function base64ByteLength(data: string): number {
@@ -91,6 +116,7 @@ export class ImageSelection {
 	private snapshot: SelectionSnapshot = {
 		busy: false,
 		pending: [],
+		refusals: [],
 		error: null,
 	};
 	private listeners = new Set<() => void>();
@@ -113,7 +139,7 @@ export class ImageSelection {
 	}
 	cancel() {
 		this.generation++;
-		this.update({ busy: false, pending: [], error: null });
+		this.update({ busy: false, pending: [], ...refusalUpdate([]) });
 	}
 	remove(id: string) {
 		this.update({
@@ -125,12 +151,12 @@ export class ImageSelection {
 		if (this.snapshot.busy || !draft.loaded || draft.error) return;
 		const count = draft.record.images?.length ?? 0;
 		if (count >= MAX_ATTACHMENTS) {
-			this.update({ error: REFUSED.tooMany });
+			this.update(refusalUpdate([{ name: null, reason: "tooMany" }]));
 			return;
 		}
 		const generation = ++this.generation;
-		this.update({ busy: true, error: null });
-		const errors: string[] = [];
+		this.update({ busy: true, ...refusalUpdate([]) });
+		const refusals: ImageRefusal[] = [];
 		try {
 			const picked =
 				source === "camera" ? await this.picker.capture() : await this.picker.pick(MAX_ATTACHMENTS - count);
@@ -143,9 +169,9 @@ export class ImageSelection {
 			let reserved = current.images?.length ?? 0;
 			const pending: PendingImage[] = [];
 			for (const image of picked) {
-				const reason = sourceRejection(image, reserved);
-				if (reason) {
-					errors.push(reason);
+				const refusal = sourceRejection(image, reserved);
+				if (refusal) {
+					refusals.push(refusal);
 					continue;
 				}
 				reserved++;
@@ -165,7 +191,7 @@ export class ImageSelection {
 					if (generation !== this.generation) return;
 					if (!this.snapshot.pending.some((item) => item.id === image.id)) continue;
 					const rejection = sizeRejection(base64ByteLength(data));
-					if (rejection) errors.push(refused(image, REFUSED[rejection]));
+					if (rejection) refusals.push(refused(image, rejection));
 					else
 						this.document.addImage({
 							id: image.id,
@@ -176,19 +202,14 @@ export class ImageSelection {
 						});
 				} catch {
 					if (generation === this.generation && this.snapshot.pending.some((item) => item.id === image.id))
-						errors.push(refused(image, NOT_PREPARED));
+						refusals.push(refused(image, "notPrepared"));
 				}
 				if (generation === this.generation) this.remove(image.id);
 			}
 		} catch (error) {
-			errors.push(error instanceof CameraAccessDenied ? error.message : "Could not open or read the image selection.");
+			refusals.push({ name: null, reason: error instanceof CameraAccessDenied ? "cameraDenied" : "unreadable" });
 		} finally {
-			if (generation === this.generation)
-				this.update({
-					busy: false,
-					pending: [],
-					error: errors.length ? errors.join("\n") : null,
-				});
+			if (generation === this.generation) this.update({ busy: false, pending: [], ...refusalUpdate(refusals) });
 		}
 	}
 }

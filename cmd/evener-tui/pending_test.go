@@ -119,8 +119,8 @@ func TestPendingCoordinator_FailEmitsFailedMsg(t *testing.T) {
 	if !ok {
 		t.Fatalf("got %T", got[0])
 	}
-	if !strings.Contains(fm.Reason, "not available") {
-		t.Fatalf("reason: %q", fm.Reason)
+	if fm.Reason != "steer is not available for this session" {
+		t.Fatalf("reason: %q, want the failure it was given", fm.Reason)
 	}
 	if !fm.Entry.Failed {
 		t.Fatal("entry should be Failed=true")
@@ -147,8 +147,8 @@ func TestPendingCoordinator_TimeoutMarksFailed(t *testing.T) {
 	if !ok {
 		t.Fatalf("got %T", got[0])
 	}
-	if !strings.Contains(fm.Reason, "server did not confirm") {
-		t.Fatalf("reason: %q", fm.Reason)
+	if !fm.Entry.Failed || fm.Reason == "" {
+		t.Fatalf("timed-out entry = %+v reason %q, want it failed with a reason", fm.Entry, fm.Reason)
 	}
 }
 
@@ -526,8 +526,8 @@ func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
 	if !ok {
 		t.Fatalf("second msg = %T", got[1])
 	}
-	if !strings.Contains(fm.Reason, "not available") {
-		t.Fatalf("reason: %q", fm.Reason)
+	if !strings.Contains(fm.Reason, "steer is not available for this session") {
+		t.Fatalf("reason: %q, want the hub's refusal", fm.Reason)
 	}
 }
 

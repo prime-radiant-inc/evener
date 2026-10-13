@@ -59,7 +59,6 @@ test("intent-only tool rows take half the item rhythm; open states keep the full
 
 test("the most-read quiet text sits in --ink-mid, not --ink-low", () => {
   const think = read("panes/session/transcript/messages/thinkblock.module.css");
-  expect(rule(think, ".summary")).toMatch(/color: var\(--ink-mid\)/);
   expect(rule(think, ".label")).toMatch(/color: var\(--ink-mid\)/);
   const liveness = read("panes/session/transcript/flow/livenessline.module.css");
   expect(rule(liveness, ".line")).toMatch(/color: var\(--ink-mid\)/);

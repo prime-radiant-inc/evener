@@ -21,6 +21,7 @@ import type {
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
+import { SHOW_DELAY_MS } from "../../../../widgets/hovercard/useFloatingLabel";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { PendingChips } from "../../pending/PendingChips";
@@ -85,9 +86,11 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
 // button's disabled state via the plain DOM property directly (e.g.
 // widgets/button/button.test.tsx, sandboxEscalation.test.tsx), not a
 // `toBeDisabled()` matcher; this helper matches that established
-// convention.
+// convention. A refusal that explains itself (a row action with a disabled
+// reason) is aria-disabled rather than natively disabled, so it keeps focus
+// and its reason stays reachable from the keyboard; both count as refused.
 function isDisabled(el: HTMLElement): boolean {
-  return (el as HTMLButtonElement).disabled;
+  return (el as HTMLButtonElement).disabled || el.getAttribute("aria-disabled") === "true";
 }
 
 function queueStrip(): HTMLElement | null {
@@ -499,7 +502,8 @@ describe("durable recovery rows", () => {
     });
     renderStrip(defaultProps());
 
-    expect(await screen.findByText(/turn is not active/)).toBeTruthy();
+    const row = await findRow("refused");
+    expect(within(row).getByText(/turn is not active/)).toBeTruthy();
   });
 
   // A Stop carries no input, so its preview is empty and "Edit message" would
@@ -1756,6 +1760,38 @@ describe("edit", () => {
     expect(isDisabled(within(row).getByRole("button", { name: /remove from queue/i }))).toBe(false);
   });
 
+  test("a refused edit stays focusable and explains itself to a keyboard user", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: [""], preview: ["[image]"] },
+      },
+    });
+    const props = defaultProps();
+    renderStrip(props);
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    const edit = within(row).getByRole("button", { name: /edit/i });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      act(() => edit.focus());
+      act(() => {
+        vi.advanceTimersByTime(SHOW_DELAY_MS);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(document.activeElement).toBe(edit);
+    expect(edit.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByRole("tooltip").textContent).not.toBe("");
+    await user.keyboard("{Enter}");
+    expect(props.onRestoreToComposer).not.toHaveBeenCalled();
+    expect(fake.calls.filter((call) => call.method === "turn/cancelQueued")).toEqual([]);
+  });
+
   test("edit is disabled entirely when the daemon reports no texts array at all", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
@@ -2116,6 +2152,43 @@ describe("drain-as-steer affordance", () => {
     if (!wrapper) throw new Error("Steer now has no tooltip wrapper");
     expect(hoverForTooltip(wrapper).textContent).toBe(NO_ACTIVE_TURN);
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
+  });
+
+  // Availability flips under a focused control when the turn ends or starts.
+  // The row's buttons must stay the same nodes so keyboard focus survives.
+  test("a focused Steer now keeps focus as steering availability flips both ways", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const steerNow = await screen.findByRole("button", { name: "Steer now" });
+    expect(isDisabled(steerNow)).toBe(false);
+    act(() => steerNow.focus());
+    expect(document.activeElement).toBe(steerNow);
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "awaiting" } },
+      });
+    });
+    expect(document.activeElement).toBe(steerNow);
+    expect(isDisabled(steerNow)).toBe(true);
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+      });
+    });
+    expect(document.activeElement).toBe(steerNow);
+    expect(isDisabled(steerNow)).toBe(false);
   });
 
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {

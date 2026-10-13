@@ -22,7 +22,7 @@
 // the current client on each call.
 
 import type { AppwireClientLike, RequestPort } from "../../clientLike";
-import { errorText } from "../../errors";
+import { friendlyErrorMessage } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { HostRequestMethod, LaunchConfigLayer } from "../../types.gen";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
@@ -33,8 +33,9 @@ export type LaunchLayerClient = RequestPort<HostRequestMethod> & Pick<AppwireCli
 export interface LaunchLayerState {
   launchLayer: LaunchConfigLayer | null;
   launchLayerLoading: boolean;
-  /** The failed read's own text (errorText), for the host to translate at
-   * render; null once a read succeeds. */
+  /** The failed read's friendlyErrorMessage, translated while the error still
+   * has its type so a hub's own WireError explanation survives; render it
+   * as-is. null once a read succeeds. */
   launchLayerError: string | null;
   fetchLaunchLayer(): Promise<void>;
   setLaunchLayer(next: LaunchConfigLayer): Promise<void>;
@@ -97,7 +98,7 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
         // newer write's layer.
         return readRevisioned(listRevision, () => client.request("evener/launch/getLayer", GLOBAL_LAYER_PARAMS), {
           onAnswer: (layer) => () => set({ launchLayer: layer, launchLayerLoading: false, launchLayerError: null }),
-          onFailure: (err) => () => set({ launchLayerLoading: false, launchLayerError: errorText(err) }),
+          onFailure: (err) => () => set({ launchLayerLoading: false, launchLayerError: friendlyErrorMessage(err) }),
         });
       },
 

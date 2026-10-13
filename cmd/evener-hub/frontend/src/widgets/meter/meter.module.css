@@ -21,18 +21,18 @@
  * prop - a danger/attention fill is exactly the "genuine semantic state"
  * that allowlist exists for.
  */
-.neutral {
+.fillNeutral {
   background: var(--accent);
 }
 
-.attention {
+.fillAttention {
   background: var(--attention);
 }
 
-.alive {
+.fillAlive {
   background: var(--alive);
 }
 
-.danger {
+.fillDanger {
   background: var(--danger);
 }

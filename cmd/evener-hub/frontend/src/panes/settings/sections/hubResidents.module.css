@@ -17,12 +17,6 @@
   margin: 0;
 }
 
-.errorBanner {
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
-  margin: 0;
-}
-
 /* Responsive horizontal scroll so the table doesn't overflow the pane on
    narrow viewports — mirrors the existing responsive overflow convention. */
 .tableWrapper {

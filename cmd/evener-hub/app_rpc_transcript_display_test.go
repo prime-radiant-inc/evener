@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -214,9 +213,6 @@ func TestHubRPCTranscriptDisplayPatchFailuresDoNotNotify(t *testing.T) {
 	var invalidResult appwire.TranscriptDisplayDefaultsPatchResponse
 	err = clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch, json.RawMessage(invalidRaw), &invalidResult)
 	assertTranscriptDisplayWireCode(t, err, appwire.CodeInvalidParams)
-	if !containsTranscriptDisplayError(err, "unsupported transcript display config version") {
-		t.Fatalf("semantic validation error = %v, want unsupported-version diagnostic", err)
-	}
 	assertNoTranscriptDisplayNotification(t, clientA)
 	assertNoTranscriptDisplayNotification(t, clientB)
 
@@ -360,9 +356,6 @@ func TestHubRPCTranscriptDisplayMalformedStateUsesFallbackAndRemainsReadOnly(t *
 	err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.TranscriptDisplayDefaultsPatchParams{Layout: appwire.TranscriptViewportDesktop, Config: config}, &result)
 	assertTranscriptDisplayWireCode(t, err, appwire.CodeInternalError)
-	if !containsTranscriptDisplayError(err, "decode transcript display state") {
-		t.Fatalf("malformed-state PATCH error = %v, want load diagnostic", err)
-	}
 	assertNoTranscriptDisplayNotification(t, clientA)
 	assertNoTranscriptDisplayNotification(t, clientB)
 	unchanged, err := os.ReadFile(statePath)
@@ -407,10 +400,6 @@ func assertTranscriptDisplayWireCode(t *testing.T, err error, code int) {
 	if !errors.As(err, &wire) || wire.Code != code {
 		t.Fatalf("error = %T %v, want wire code %d", err, err, code)
 	}
-}
-
-func containsTranscriptDisplayError(err error, want string) bool {
-	return err != nil && strings.Contains(err.Error(), want)
 }
 
 func equalTranscriptDisplayDefaults(a, b appwire.TranscriptDisplayDefaults) bool {

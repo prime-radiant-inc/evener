@@ -12,7 +12,6 @@ import {
 	applyNotification,
 	hydrateThread,
 	makeTranscriptDisplayConfig,
-	MEMORY_CONTEXT_LABEL,
 	shippedConfig,
 	type AnyNotification,
 	type Thread,
@@ -31,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import { markers } from "./markerTestUtils";
 import { nativeDisclosureStore } from "./nativeDisclosure";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
 import { pressable, render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
@@ -184,6 +184,20 @@ function absent(tree: ReactTestRenderer, testID: string): boolean {
 	return tree.root.findAllByProps({ testID }).length === 0;
 }
 
+/** What each opened refresh says it read, as `<scope>:<state>`. */
+function observed(tree: ReactTestRenderer): string[] {
+	return markers(tree, "memory-context");
+}
+
+/** Opens or closes the refresh's own disclosure: the first toggle it draws. */
+function openRefresh(tree: ReactTestRenderer): void {
+	const [toggle] = tree.root.findAll(
+		(node) => String(node.type) === "Pressable" && node.props.accessibilityState?.expanded !== undefined,
+	);
+	if (!toggle) throw new Error("no refresh disclosure");
+	act(() => toggle.props.onPress());
+}
+
 function press(tree: ReactTestRenderer, label: string): void {
 	const target = pressable(tree, label);
 	if (!target) throw new Error(`no pressable labelled ${label}`);
@@ -222,7 +236,7 @@ describe("collapsed 'Refreshed my memory' at every level and gate", () => {
 			const { tree, row } = mountItem(item, level, false);
 			expect(row).toMatchObject({ kind: "notice", eventKind: "memory-context" });
 			if (row.kind !== "notice") throw new Error("not a notice row");
-			expect(row.label ?? "").toContain(MEMORY_CONTEXT_LABEL);
+			expect(row.label).toBeTruthy();
 			expect(absent(tree, "memory-context-scope-state")).toBe(true);
 			expect(renderedText(tree)).not.toContain('memory index: "');
 			expect(renderedText(tree)).not.toContain("since you last saw it");
@@ -257,8 +271,8 @@ describe("an explicit tap reveals the decoded refresh", () => {
 	it("shows scope/state, the formatted index and the exact Source for a valid payload", () => {
 		const item = memoryContextWireItem("current-personal");
 		const { tree } = mountItem(item, "tools", true);
-		press(tree, MEMORY_CONTEXT_LABEL);
-		expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("Personal memory · current");
+		openRefresh(tree);
+		expect(observed(tree)).toEqual(["personal:current"]);
 		expect(markdownSource(tree)).toContain("a note");
 		// The Source is separately folded: hidden until its own tap.
 		expect(absent(tree, "memory-context-source-text")).toBe(true);
@@ -270,8 +284,8 @@ describe("an explicit tap reveals the decoded refresh", () => {
 	it("names the project scope truthfully", () => {
 		resetDisclosure();
 		const { tree } = mountItem(memoryContextWireItem("current-project"), "tools", true);
-		press(tree, MEMORY_CONTEXT_LABEL);
-		expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("Project memory · current");
+		openRefresh(tree);
+		expect(observed(tree)).toEqual(["project:current"]);
 		unmount(tree);
 	});
 
@@ -283,7 +297,7 @@ describe("an explicit tap reveals the decoded refresh", () => {
 			const { tree, row } = mountItem(item, "tools", true);
 			if (row.kind !== "notice") throw new Error("not a notice row");
 			// Unavailable/revoked carry their state on the collapsed label.
-			press(tree, row.label ?? MEMORY_CONTEXT_LABEL);
+			openRefresh(tree);
 			press(tree, "Source");
 			expect(textOf(requireFind(tree, "memory-context-source-text"))).toBe(item.text);
 			unmount(tree);
@@ -304,7 +318,7 @@ describe("states and truncation stay honest", () => {
 			const { tree, row } = mountItem(item, "tools", true);
 			if (row.kind !== "notice") throw new Error("not a notice row");
 			expect(row.label).toContain(state);
-			expect(pressable(tree, `${MEMORY_CONTEXT_LABEL} · ${state}`)).toBeDefined();
+			expect(pressable(tree, row.label ?? "")).toBeDefined();
 			unmount(tree);
 		}
 	});
@@ -312,21 +326,25 @@ describe("states and truncation stay honest", () => {
 	it("distinguishes empty, missing and a truncated current index", () => {
 		resetDisclosure();
 		let { tree } = mountItem(memoryContextWireItem("empty-project"), "tools", true);
-		press(tree, MEMORY_CONTEXT_LABEL);
-		expect(textOf(requireFind(tree, "memory-context-empty"))).toBe("Empty index");
+		openRefresh(tree);
+		expect(observed(tree)).toEqual(["project:current"]);
+		expect(absent(tree, "memory-context-empty")).toBe(false);
 		expect(absent(tree, "memory-context-content")).toBe(true);
+		expect(absent(tree, "memory-context-truncated")).toBe(true);
 		unmount(tree);
 
 		resetDisclosure();
 		({ tree } = mountItem(memoryContextWireItem("missing-project"), "tools", true));
-		press(tree, MEMORY_CONTEXT_LABEL);
-		expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("missing");
+		openRefresh(tree);
+		expect(observed(tree)).toEqual(["project:missing"]);
+		expect(absent(tree, "memory-context-truncated")).toBe(true);
 		unmount(tree);
 
 		resetDisclosure();
 		({ tree } = mountItem(memoryContextWireItem("truncated-project"), "tools", true));
-		press(tree, MEMORY_CONTEXT_LABEL);
-		expect(textOf(requireFind(tree, "memory-context-truncated"))).toBe("truncated");
+		openRefresh(tree);
+		expect(observed(tree)).toEqual(["project:current"]);
+		expect(absent(tree, "memory-context-truncated")).toBe(false);
 		unmount(tree);
 	});
 });
@@ -338,7 +356,7 @@ describe("an invalid payload falls back, a later valid one still renders", () =>
 		const item = memoryContextWireItem("malformed-project");
 		expect(item.raw).toBeFalsy();
 		const { tree } = mountItem(item, "tools", true);
-		press(tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(tree);
 		expect(textOf(requireFind(tree, "memory-context-fallback"))).toBe(item.text);
 		expect(absent(tree, "memory-context-scope-state")).toBe(true);
 		expect(absent(tree, "memory-context-content")).toBe(true);
@@ -354,12 +372,12 @@ describe("an invalid payload falls back, a later valid one still renders", () =>
 		expect(noticeRows.map((row) => row.id)).toEqual(["mem-bad", "mem-good"]);
 
 		const badTree = mountRow(findRow(rows, "mem-bad"), { expandByDefault });
-		press(badTree, MEMORY_CONTEXT_LABEL);
+		openRefresh(badTree);
 		expect(textOf(requireFind(badTree, "memory-context-fallback"))).toBe(malformed.text);
 
 		const goodTree = mountRow(findRow(rows, "mem-good"), { expandByDefault });
-		press(goodTree, MEMORY_CONTEXT_LABEL);
-		expect(textOf(requireFind(goodTree, "memory-context-scope-state"))).toContain("Project memory · current");
+		openRefresh(goodTree);
+		expect(observed(goodTree)).toEqual(["project:current"]);
 		unmount(badTree);
 		unmount(goodTree);
 	});
@@ -372,7 +390,7 @@ describe("explicit choices survive remount, verbosity and stay per hub/session",
 		const item = memoryContextWireItem("current-personal");
 		const first = mountItem(item, "tools", true);
 		expect(first.expandByDefault).toBe(false);
-		press(first.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(first.tree);
 		expect(find(first.tree, "memory-context-scope-state")).toBeDefined();
 		unmount(first.tree);
 
@@ -391,8 +409,8 @@ describe("explicit choices survive remount, verbosity and stay per hub/session",
 	it("keeps an explicit close through the expansion default switching on", () => {
 		const item = memoryContextWireItem("current-personal");
 		const tree = mountItem(item, "tools", true);
-		press(tree.tree, MEMORY_CONTEXT_LABEL);
-		press(tree.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(tree.tree);
+		openRefresh(tree.tree);
 		expect(absent(tree.tree, "memory-context-scope-state")).toBe(true);
 		unmount(tree.tree);
 
@@ -405,7 +423,7 @@ describe("explicit choices survive remount, verbosity and stay per hub/session",
 	it("does not open the same item id in another session or hub", () => {
 		const item = memoryContextWireItem("current-personal");
 		const tree = mountItem(item, "tools", true, { hubId: "hub", sessionRef: "session-1" });
-		press(tree.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(tree.tree);
 		expect(find(tree.tree, "memory-context-scope-state")).toBeDefined();
 		unmount(tree.tree);
 
@@ -427,15 +445,15 @@ describe("the folded Source keeps its own explicit choice", () => {
 	it("keeps an explicit Source open through row remount, outer fold and a verbosity remount", () => {
 		const item = memoryContextWireItem("current-personal");
 		const first = mountItem(item, "tools", true);
-		press(first.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(first.tree);
 		press(first.tree, "Source");
 		expect(hasSource(first.tree)).toBe(true);
 		// The nested fold is independent of the outer one: folding the outer
 		// refresh and reopening it leaves the Source as the reader set it.
 		expect(find(first.tree, "memory-context-scope-state")).toBeDefined();
-		press(first.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(first.tree);
 		expect(absent(first.tree, "memory-context-scope-state")).toBe(true);
-		press(first.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(first.tree);
 		expect(hasSource(first.tree)).toBe(true);
 		unmount(first.tree);
 
@@ -458,12 +476,12 @@ describe("the folded Source keeps its own explicit choice", () => {
 		// independently of the verbosity/expansion baseline.
 		const freshFull = mountItem(item, "full", true, { hubId: "hub", sessionRef: "source-fresh-full" });
 		expect(freshFull.expandByDefault).toBe(true);
-		press(freshFull.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(freshFull.tree);
 		expect(hasSource(freshFull.tree)).toBe(false);
 		unmount(freshFull.tree);
 
 		const first = mountItem(item, "tools", true);
-		press(first.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(first.tree);
 		expect(hasSource(first.tree)).toBe(false);
 		press(first.tree, "Source");
 		expect(hasSource(first.tree)).toBe(true);
@@ -471,9 +489,9 @@ describe("the folded Source keeps its own explicit choice", () => {
 		expect(hasSource(first.tree)).toBe(false);
 		// Folding the outer refresh and reopening it leaves the explicit close
 		// in force.
-		press(first.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(first.tree);
 		expect(absent(first.tree, "memory-context-scope-state")).toBe(true);
-		press(first.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(first.tree);
 		expect(find(first.tree, "memory-context-scope-state")).toBeDefined();
 		expect(hasSource(first.tree)).toBe(false);
 		unmount(first.tree);
@@ -489,25 +507,25 @@ describe("the folded Source keeps its own explicit choice", () => {
 	it("does not share a Source choice across hub, session or item", () => {
 		const item = memoryContextWireItem("current-personal");
 		const first = mountItem(item, "tools", true, { hubId: "hub", sessionRef: "session-1" });
-		press(first.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(first.tree);
 		press(first.tree, "Source");
 		expect(hasSource(first.tree)).toBe(true);
 		unmount(first.tree);
 
 		const otherSession = mountItem(item, "tools", true, { hubId: "hub", sessionRef: "session-2" });
-		press(otherSession.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(otherSession.tree);
 		expect(hasSource(otherSession.tree)).toBe(false);
 		unmount(otherSession.tree);
 
 		const otherHub = mountItem(item, "tools", true, { hubId: "hub-2", sessionRef: "session-1" });
-		press(otherHub.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(otherHub.tree);
 		expect(hasSource(otherHub.tree)).toBe(false);
 		unmount(otherHub.tree);
 
 		// Fixture items share an id, so give the other item its own.
 		const otherItem = { ...memoryContextWireItem("current-project"), id: "mem-other" } as ThreadItem;
 		const itemTree = mountItem(otherItem, "tools", true, { hubId: "hub", sessionRef: "session-1" });
-		press(itemTree.tree, MEMORY_CONTEXT_LABEL);
+		openRefresh(itemTree.tree);
 		expect(hasSource(itemTree.tree)).toBe(false);
 		unmount(itemTree.tree);
 	});
@@ -550,8 +568,8 @@ describe("live reduction and history hydration agree", () => {
 		// Live reduction reaches the mounted renderer, not just the projected row.
 		const liveProjected = projectModel("tools", live, true);
 		const liveTree = mountRow(findRow(liveProjected.rows, item.id), { expandByDefault: liveProjected.expandByDefault });
-		press(liveTree, MEMORY_CONTEXT_LABEL);
-		expect(textOf(requireFind(liveTree, "memory-context-scope-state"))).toContain("Personal memory · current");
+		openRefresh(liveTree);
+		expect(observed(liveTree)).toEqual(["personal:current"]);
 		expect(markdownSource(liveTree)).toContain("a note");
 		press(liveTree, "Source");
 		const liveSource = textOf(requireFind(liveTree, "memory-context-source-text"));
@@ -562,7 +580,7 @@ describe("live reduction and history hydration agree", () => {
 		const historyTree = mountRow(findRow(historyProjected.rows, item.id), {
 			expandByDefault: historyProjected.expandByDefault,
 		});
-		press(historyTree, MEMORY_CONTEXT_LABEL);
+		openRefresh(historyTree);
 		expect(textOf(requireFind(historyTree, "memory-context-scope-state"))).toBe(
 			textOf(requireFind(liveTree, "memory-context-scope-state")),
 		);
@@ -661,12 +679,12 @@ describe("a store-bounded refresh keeps the complete original beyond the row bou
 				// Default closed at the expansion default.
 				expect(absent(tree, "memory-context-scope-state")).toBe(true);
 				expect(absent(tree, "memory-context-fallback")).toBe(true);
-				press(tree, MEMORY_CONTEXT_LABEL);
+				openRefresh(tree);
 				if (id === "mem-bad") {
 					// The malformed fallback opens as the complete original, tail included.
 					expect(textOf(requireFind(tree, "memory-context-fallback"))).toBe(original);
 				} else {
-					expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("Personal memory · current");
+					expect(observed(tree)).toEqual(["personal:current"]);
 					press(tree, "Source");
 					expect(textOf(requireFind(tree, "memory-context-source-text"))).toBe(original);
 				}

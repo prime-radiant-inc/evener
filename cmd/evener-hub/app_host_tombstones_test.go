@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -890,7 +891,7 @@ ssh = "gone.example"
 	}
 	if _, err := LoadConfig(configPath); err == nil {
 		t.Fatal("a twinless tombstone loaded, want the loud refusal")
-	} else if !strings.Contains(err.Error(), "high-water twin") {
+	} else if !errors.Is(err, errTombstoneTwinMissing) {
 		t.Fatalf("refusal = %v, want it to name the missing twin", err)
 	}
 	// The complete pair loads and re-adds strictly above the mark. The
@@ -960,7 +961,7 @@ rows_truncated = false
 		}
 		if _, err := LoadConfig(configPath); err == nil {
 			t.Fatalf("a tombstone whose entry.name is %q loaded, want the loud refusal", entryName)
-		} else if !strings.Contains(err.Error(), "entry names") {
+		} else if !errors.Is(err, errTombstoneEntryNameMismatch) {
 			t.Fatalf("refusal = %v, want it to name the disagreeing entry name", err)
 		}
 	}

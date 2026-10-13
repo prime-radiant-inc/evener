@@ -19,7 +19,7 @@ export const MAX_INTENT_CODE_POINTS = 200;
 /** Whether value is an intent the wire's bound allows: at most
  * MAX_INTENT_CODE_POINTS code points, astral characters counted once. The walk
  * stops at the bound, so a runaway costs no more than the bound plus one step. */
-function intentWithinBound(value: string): boolean {
+export function intentWithinBound(value: string): boolean {
   let points = 0;
   for (let index = 0; index < value.length; ) {
     const code = value.codePointAt(index) ?? 0;

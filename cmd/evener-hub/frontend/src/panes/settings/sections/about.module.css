@@ -14,12 +14,3 @@
   color: var(--ink-mid);
   font-size: var(--font-size-ui);
 }
-
-.license {
-  margin: 0;
-  padding: var(--space-3);
-  white-space: pre-wrap;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}

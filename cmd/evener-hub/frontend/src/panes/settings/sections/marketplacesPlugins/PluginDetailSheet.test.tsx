@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { chipKinds } from "./marketplacesTestUtils";
 import { PluginDetailSheet } from "./PluginDetailSheet";
 
 const LINTER: PluginEntry = {
@@ -61,9 +62,7 @@ test("renders name, state chips, version, marketplace, and source", async () => 
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
-  expect(screen.getByText("broken")).toBeTruthy();
-  expect(screen.getByText("off by default")).toBeTruthy();
-  expect(screen.getByText("auto-upgrade")).toBeTruthy();
+  expect(chipKinds()).toEqual(["broken", "disabled", "auto-upgrade"]);
   expect(screen.getByText("v1.2.0")).toBeTruthy();
   expect(screen.getByText("acme-plugins")).toBeTruthy();
   expect(screen.getByText("github: acme/plugins")).toBeTruthy();
@@ -215,11 +214,11 @@ test("Upgrade and its badge show only when the hub found an update", async () =>
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
-  expect(screen.queryByText("update available")).toBeNull();
+  expect(chipKinds()).not.toContain("update-available");
 
   act(() => extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }] }));
   expect(screen.getByRole("button", { name: "Upgrade" })).toBeTruthy();
-  expect(screen.getByText("update available")).toBeTruthy();
+  expect(chipKinds()).toContain("update-available");
   const browse = browseMarketplace.mock.results[0];
   if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
   await act(() => browse.value);

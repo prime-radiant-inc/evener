@@ -6,6 +6,7 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
+import { accessibleName } from "../../accessibleNameTestUtils";
 import { chromeStore } from "../../shell/chromeStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -25,12 +26,14 @@ import {
   activityThread,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
 import { holdReaderFrames, installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
 import { enterAgentCascade, popAgentCascade } from "./actions";
+import { cascadeScope } from "./cascadeTestUtils";
 import { recordCascadeOrigin } from "./inspectionOrigin";
 import type { SessionZoomParams } from "./intent";
 import Zoom from "./Zoom";
@@ -413,12 +416,9 @@ test.each(["deleted", "missing"] as const)(
     });
     mount(fake);
     await screen.findByText("root content old-root");
-    const child = screen
-      .getAllByTestId("cascade-column")
-      .find((column) => column.getAttribute("data-scope-ref") === "child");
-    if (!child) throw new Error("Missing child column");
-    await within(child).findByText(failure === "deleted" ? "This session was deleted" : "Transcript unavailable");
-    expect(within(child).queryByText("Loading transcript…")).toBeNull();
+    const child = cascadeScope("child", "cascade-column");
+    await waitFor(() => expect(emptyStateReasons(child)).toEqual([failure === "deleted" ? "deleted" : "unavailable"]));
+    expect(within(child).queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText("root content old-root")).toBeTruthy();
     if (failure === "deleted") expect(threadsStore.getState().deletedRefs.has("child")).toBe(true);
     act(() => fireEvent.click(within(child).getByRole("button", { name: "Open conversation" })));
@@ -458,7 +458,7 @@ test("a deleted child hides its retained transcript without hiding the parent", 
     await expect(threadsStore.getState().refreshThread("child")).rejects.toThrow("target has been deleted");
   });
   expect(threadsStore.getState().threads.get("child")).toBeDefined();
-  expect(screen.getByText("This session was deleted")).toBeTruthy();
+  expect(emptyStateReasons(cascadeScope("child", "cascade-column"))).toEqual(["deleted"]);
   expect(screen.queryByText("child content child-id")).toBeNull();
   expect(screen.getByText("root content old-root")).toBeTruthy();
 });
@@ -471,7 +471,7 @@ test("unsupported child activity does not hide its healthy transcript", async ()
   });
   mount(fake);
   await screen.findByText("child content child-id");
-  expect(screen.queryByText("Transcript unavailable")).toBeNull();
+  expect(emptyStateReasons(cascadeScope("child", "cascade-column"))).toEqual([]);
   expect(currentParams().ref).toBe("child");
   expect(columnRefs()).toEqual(["root", "child"]);
 });
@@ -496,8 +496,8 @@ test("a transient child read failure recovers through the existing owner without
   });
   mount(fake);
   await act(async () => failed.promise);
-  expect(screen.queryByText("This session was deleted")).toBeNull();
-  expect(screen.queryByText("Transcript unavailable")).toBeNull();
+  expect(emptyStateReasons(document.body)).not.toContain("deleted");
+  expect(emptyStateReasons(document.body)).not.toContain("unavailable");
   const source = currentPane();
   healed = true;
   act(() =>
@@ -641,18 +641,18 @@ test.each<{ name: string; before?: TrackStep; change: Partial<Geometry>; want: n
 });
 
 test.each([
-  ["active", "Active", "Running", null],
-  ["awaiting", "Awaiting", "Needs you", "needs-you"],
-  ["warning", "Warning", "Needs you", "needs-you"],
-  ["restartRequired", "RestartRequired", "Needs you", "needs-you"],
-  ["systemError", "SystemError", "Broken", "failed"],
-  ["idle", "Idle", null, null],
-  ["closed", "Closed", null, null],
-  ["notLoaded", "NotLoaded", null, null],
-  ["futureState", "FutureState", null, null],
+  ["active", "Active", "working"],
+  ["awaiting", "Awaiting", "needs-you"],
+  ["warning", "Warning", "needs-you"],
+  ["restartRequired", "RestartRequired", "needs-you"],
+  ["systemError", "SystemError", "failed"],
+  ["idle", "Idle", null],
+  ["closed", "Closed", null],
+  ["notLoaded", "NotLoaded", null],
+  ["futureState", "FutureState", null],
 ] as const)(
-  "a %s ancestor uses the session-list signal and keeps its exact runtime text available",
-  async (state, runtimeText, signalLabel, signalState) => {
+  "a %s ancestor keeps the session-list signal glyph but hides its own family label from assistive tech",
+  async (state, runtimeText, glyphState) => {
     const { fake, statuses } = fixture();
     statuses.set("root", state);
     mount(fake);
@@ -665,11 +665,16 @@ test.each([
     const runtime = within(spine).getByTitle(runtimeText);
     expect(runtime.getAttribute("data-runtime-state")).toBe(state);
     expect(within(runtime).getByText(runtimeText).getAttribute("aria-hidden")).not.toBe("true");
-    if (signalLabel) {
-      const signal = within(runtime).getByRole("img", { name: signalLabel });
-      expect(signal.getAttribute("data-status")).toBe(signalState);
+    // The shared session-list glyph is still rendered and still carries the
+    // same signal family, but it is decorative: the compact ancestor status
+    // exposes no second, family-labelled node beside its runtime text.
+    expect(within(runtime).queryByRole("img")).toBeNull();
+    const glyph = runtime.querySelector("[data-state]");
+    if (glyphState) {
+      expect(glyph?.getAttribute("data-state")).toBe(glyphState);
+      expect(glyph?.getAttribute("aria-hidden")).toBe("true");
     } else {
-      expect(within(runtime).queryByRole("img")).toBeNull();
+      expect(glyph).toBeNull();
     }
     expect(columnRefs()).toEqual(["child", "grandchild"]);
     act(() => fireEvent.click(within(spine).getByRole("button", { name: "Show root" })));
@@ -691,10 +696,12 @@ test("a paused ancestor updates its signal through runtime changes without repla
   await screen.findByText("grandchild content grandchild-id");
   const spine = screen.getByTestId("cascade-spine");
   const branch = currentPane();
-  expect(within(spine).getByRole("img", { name: "Running" })).toBeTruthy();
-  for (const [state, text, label] of [
-    ["awaiting", "Awaiting", "Needs you"],
-    ["systemError", "SystemError", "Broken"],
+  const active = within(spine).getByTitle("Active");
+  expect(active.querySelector("[data-state]")?.getAttribute("data-state")).toBe("working");
+  expect(within(active).queryByRole("img")).toBeNull();
+  for (const [state, text, glyphState] of [
+    ["awaiting", "Awaiting", "needs-you"],
+    ["systemError", "SystemError", "failed"],
     ["idle", "Idle", null],
   ] as const) {
     act(() =>
@@ -704,8 +711,10 @@ test("a paused ancestor updates its signal through runtime changes without repla
       }),
     );
     const runtime = within(spine).getByTitle(text);
-    if (label) expect(within(runtime).getByRole("img", { name: label })).toBeTruthy();
-    else expect(within(runtime).queryByRole("img")).toBeNull();
+    expect(within(runtime).queryByRole("img")).toBeNull();
+    const glyph = runtime.querySelector("[data-state]");
+    if (glyphState) expect(glyph?.getAttribute("data-state")).toBe(glyphState);
+    else expect(glyph).toBeNull();
     expect(currentPane()).toBe(branch);
     expect(columnRefs()).toEqual(["child", "grandchild"]);
   }
@@ -728,14 +737,19 @@ test("an ancestor with pending runtime metadata stays explicitly unknown until i
   const spine = screen.getByTestId("cascade-spine");
   const branch = currentPane();
   try {
-    const runtime = within(spine).getByTitle("State unknown");
-    expect(runtime.getAttribute("data-runtime-state")).toBe("unknown");
-    expect(within(runtime).getByText("State unknown")).toBeTruthy();
+    const runtime = spine.querySelector('[data-runtime-state="unknown"]');
+    if (!(runtime instanceof HTMLElement)) throw new Error("Missing unknown runtime state");
+    const label = runtime.querySelector("[data-runtime-label]");
+    expect(label).not.toBeNull();
+    expect(label?.textContent?.trim()).not.toBe("");
+    // The unknown state names itself exactly as the runtime label it renders -
+    // read off the element, so no literal copy is pinned - and carries no glyph.
+    expect(accessibleName(runtime)).toBe(label?.textContent?.trim());
     expect(within(runtime).queryByRole("img")).toBeNull();
   } finally {
     await act(async () => held.resolve(response("root")));
   }
-  await within(spine).findByTitle("Idle");
+  await waitFor(() => expect(spine.querySelector('[data-runtime-state="idle"]')).not.toBeNull());
   expect(within(spine).queryByRole("img")).toBeNull();
   expect(currentPane()).toBe(branch);
   expect(columnRefs()).toEqual(["child", "grandchild"]);
@@ -745,7 +759,7 @@ test("unknown ancestry labels the proven clicked segment without blocking child 
   const { fake } = fixture(false);
   mount(fake);
   await screen.findByText("child content child-id");
-  expect(screen.getByText("Earlier ancestry is incomplete")).toBeTruthy();
+  expect(screen.getByTestId("cascade-ancestry-incomplete")).toBeTruthy();
   expect(columnRefs()).toEqual(["root", "child"]);
 });
 
@@ -975,10 +989,7 @@ test("a held abandoned grandchild read cannot replace a later sibling or move fo
   });
   await screen.findByText("sibling content sibling-id");
   expect(grandchild.alive).toBe(false);
-  const siblingColumn = screen
-    .getAllByTestId("cascade-column")
-    .find((column) => column.getAttribute("data-scope-ref") === "sibling");
-  if (!siblingColumn) throw new Error("Missing sibling column");
+  const siblingColumn = cascadeScope("sibling", "cascade-column");
   const open = within(siblingColumn).getByRole("button", { name: "Open conversation" });
   open.focus();
   await act(async () => held.resolve(response("grandchild")));

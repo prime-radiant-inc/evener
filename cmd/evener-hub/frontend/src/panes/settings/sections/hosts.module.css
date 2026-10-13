@@ -10,12 +10,6 @@
   font-size: var(--font-size-ui);
 }
 
-.error {
-  margin: 0;
-  color: var(--danger);
-  font-size: var(--font-size-ui);
-}
-
 .list {
   margin: 0;
   padding: 0;
@@ -25,65 +19,10 @@
   gap: var(--space-2);
 }
 
-.row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.rowName {
-  font-weight: 600;
-}
-
-.rowDetail {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
-/* The operation progress/terminal segment on its host row (S15). */
-.rowOperation {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.rowOperationError {
-  color: var(--danger);
-  font-size: var(--font-size-caption);
-}
-
-/* The remnant repair segment on its host row (S16). */
-.rowRepair {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.rowRepairNotice {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
-.rowActions {
-  margin-left: auto;
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-}
-
 .form {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-
-.formError {
-  margin: 0;
-  color: var(--danger);
-  font-size: var(--font-size-ui);
 }
 
 /* The deploy plan confirmation's rendered fields (S14). */
@@ -93,23 +32,49 @@
   gap: var(--space-2);
 }
 
-.planField {
-  display: flex;
-  gap: var(--space-2);
-  font-size: var(--font-size-ui);
-}
-
-.planLabel {
-  min-width: 9rem;
-  color: var(--ink-mid);
-}
-
-.planValue {
-  overflow-wrap: anywhere;
-}
-
 .planNotice {
   margin: 0;
   color: var(--ink-mid);
   font-size: var(--font-size-ui);
+}
+
+/* A row of small repair buttons inside a repair surface. */
+.buttonRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* HostSheet (design-system §10): the host's state and its operation, then
+ * its actions as one full-width column, Remove below a divider. */
+.sheetBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.chipRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.operation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sheetActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sheetDivider {
+  margin: 0;
+  border: none;
+  border-top: 1px solid var(--edge);
 }

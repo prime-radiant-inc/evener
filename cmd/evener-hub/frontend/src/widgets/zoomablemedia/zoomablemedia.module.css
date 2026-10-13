@@ -1,0 +1,31 @@
+/* A block of media that is also its own open control. Every user-agent
+ * button default is neutralized so the media reads as content; the class
+ * name is distinct (not .root/.button) because layoutguard harnesses load
+ * module stylesheets unscoped, side by side. */
+.zoomableMedia {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: zoom-in;
+}
+
+/* fill: a fixed-size thumbnail tile gives the trigger a definite height to
+ * fill. Opt-in, because in a flowing pane (the doc viewer) a filled height
+ * would stretch the trigger to the pane instead of the image. */
+.zoomableMedia[data-fill] {
+  height: 100%;
+}
+
+/* Inset: thumbnail tiles clip their overflow, and an outset ring on a child
+ * that fills the tile would be clipped away entirely. */
+.zoomableMedia:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}

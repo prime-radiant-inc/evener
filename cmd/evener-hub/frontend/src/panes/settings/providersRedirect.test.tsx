@@ -14,6 +14,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { urlToPane } from "../../shell/routing";
 import Settings, { type SettingsPaneParams } from "./Settings";
+import { settingsSectionLabel } from "./sections";
 
 // jsdom has no window.matchMedia (useIsMobile.test.ts's own header comment);
 // every test file that renders Settings stubs it locally - see
@@ -42,6 +43,6 @@ test("the real /settings/providers redirect resolves to a rendered credentials s
   expect(pane).toEqual({ type: "settings", params: { section: "credentials" } });
 
   render(<Settings params={pane?.params as SettingsPaneParams} paneId="settings-1" focused={true} />);
-  expect(screen.getByRole("heading", { name: "Providers & credentials" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: settingsSectionLabel("credentials") })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Providers & credentials" }).getAttribute("aria-current")).toBe("page");
 });

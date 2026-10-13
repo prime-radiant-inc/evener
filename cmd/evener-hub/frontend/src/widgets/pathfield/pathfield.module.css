@@ -5,7 +5,7 @@
  * internal/fieldTrigger.module.css) so the model picker and this one stay one
  * object rather than two copies; only the monospace face is this widget's own,
  * since a path is read character by character. */
-.trigger {
+.pathTrigger {
   composes: trigger from "../internal/fieldTrigger.module.css";
   font-family: var(--font-mono);
 }
@@ -31,11 +31,11 @@
   composes: default from "../internal/fieldTrigger.module.css";
 }
 
-.chevron {
+.pathChevron {
   composes: chevron from "../internal/fieldTrigger.module.css";
 }
 
-.srOnly {
+.pathSrOnly {
   composes: srOnly from "../internal/fieldTrigger.module.css";
 }
 

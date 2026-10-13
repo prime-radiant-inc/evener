@@ -137,6 +137,42 @@ test("disabled is the native attribute: inert and out of the tab order", async (
   expect(onChange).not.toHaveBeenCalled();
 });
 
+test("a description describes the switch without joining its name", () => {
+  render(
+    <Switch
+      label="Notifications"
+      checked={false}
+      onChange={() => {}}
+      description={<span data-testid="switch-detail">detail</span>}
+    />,
+  );
+  const control = screen.getByRole("switch", { name: "Notifications" });
+  const describedBy = control.getAttribute("aria-describedby");
+  expect(describedBy).toBeTruthy();
+  const description = document.getElementById(describedBy ?? "");
+  expect(description?.contains(screen.getByTestId("switch-detail"))).toBe(true);
+});
+
+test("without a description the switch has no aria-describedby", () => {
+  render(<Switch label="Notifications" checked={false} onChange={() => {}} />);
+  expect(screen.getByRole("switch").hasAttribute("aria-describedby")).toBe(false);
+});
+
+test("clicking the description does not toggle the switch", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(
+    <Switch
+      label="Notifications"
+      checked={false}
+      onChange={onChange}
+      description={<span data-testid="switch-detail">detail</span>}
+    />,
+  );
+  await user.click(screen.getByTestId("switch-detail"));
+  expect(onChange).not.toHaveBeenCalled();
+});
+
 test("is keyboard-focusable when enabled", () => {
   render(<Switch label="Notifications" checked={false} onChange={() => {}} />);
   const toggle = screen.getByRole("switch") as HTMLButtonElement;
@@ -165,18 +201,21 @@ test("the unchecked track background is --field", () => {
 test("the clickable label gets the coarse-pointer touch floor", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "switch.module.css"), "utf8");
-  const coarsePointer = /@media \(pointer: coarse\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
-  expect(coarsePointer).toContain(".label");
-  expect(coarsePointer).toContain("min-height: var(--tap-min)");
+  const tapFloor = [...css.matchAll(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/g)]
+    .map((block) => block[1])
+    .join("\n");
+  expect(tapFloor).toMatch(/\.label\s*\{[^}]*min-height: var\(--tap-min\)/);
 });
 
 test("keeps the native mobile button at the touch floor without enlarging the painted track", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "switch.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/@media \(max-width: 899px\)[\s\S]*?\.control\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
+  expect(css).toMatch(
+    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.control\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+  );
   expect(css).toMatch(/\.control\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);
   expect(css).toMatch(
-    /@media \(max-width: 899px\)[\s\S]*?\.control\s*\{[^}]*width:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)[^}]*height:\s*var\(--tap-min\)[^}]*min-height:\s*var\(--tap-min\)/,
+    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.control\s*\{[^}]*width:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)[^}]*height:\s*var\(--tap-min\)[^}]*min-height:\s*var\(--tap-min\)/,
   );
   expect(css).toMatch(/\.control:focus-visible\s*\{/);
   expect(css).toMatch(/\.track\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);

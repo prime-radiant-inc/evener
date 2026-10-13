@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -266,6 +267,43 @@ func TestToolRegistry_OmitIntentLeavesSchemaStrict(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "intent") {
 		t.Fatalf("expected intent schema error, got: %s", res.Output)
+	}
+}
+
+// Definitions feeds the provider's tool list and the system prompt's
+// "Currently callable tools", so its order has to be stable across calls.
+func TestToolRegistry_DefinitionsOrderIsStable(t *testing.T) {
+	r := NewRegistry()
+	want := []string{"compact_context", "echo", "list_dir", "notes_agent_set", "update_goal", "urls_add"}
+	// Register in reverse order: the expectation below is sorted, so this pins
+	// sort-by-name rather than the registration sequence.
+	register := slices.Clone(want)
+	slices.Reverse(register)
+	for _, name := range register {
+		if err := r.Register(RegisteredTool{
+			Definition: llm.ToolDefinition{
+				Name:        name,
+				Description: "a tool",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return "ok", nil
+			},
+		}); err != nil {
+			t.Fatalf("Register(%s): %v", name, err)
+		}
+	}
+	// Ranging a map re-randomizes per call. Five calls is enough: a single
+	// unsorted call already fails with probability 719/720, so five passes
+	// would need (1/720)^5 by chance.
+	for range 5 {
+		got := make([]string, 0, len(want))
+		for _, d := range r.Definitions() {
+			got = append(got, d.Name)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("Definitions order = %v, want stable sorted %v", got, want)
+		}
 	}
 }
 

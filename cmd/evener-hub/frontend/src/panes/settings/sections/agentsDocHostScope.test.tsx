@@ -166,7 +166,7 @@ test("switching to a host whose document is already cached shows that host's doc
   act(() => setSettingsHost("beta"));
 
   await waitFor(() => expect(editor().value).toBe("# beta\n"));
-  expect(screen.queryByText(/changed on disk/)).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
 });
 
 // The sharper half of the same race: the new host's cached document happens to
@@ -202,5 +202,5 @@ test("switching hosts never arms Save over an empty body", async () => {
 
   await waitFor(() => expect(editor().value).toBe("# beta\n"));
   expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.queryByText(/changed on disk/)).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
 });

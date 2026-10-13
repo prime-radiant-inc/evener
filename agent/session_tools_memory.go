@@ -179,6 +179,7 @@ func isMemoryIndexPath(file string) bool {
 
 const (
 	memoryMissingDescriptionNote    = "\n\nThis page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter."
+	memoryMissingWhenNote           = "\n\nThis page has no when in its frontmatter. Add when: <one line> saying when a future session will need this page, the way a skill says when to use it."
 	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a description that contains a colon."
 )
 
@@ -204,6 +205,8 @@ func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes
 		notes = memoryUnreadableFrontmatterNote
 	case !page.HasDescription:
 		notes = memoryMissingDescriptionNote
+	case page.When == "":
+		notes = memoryMissingWhenNote
 	}
 	return stamped, notes
 }
@@ -289,11 +292,11 @@ func memoryPageSizeNote(size int, withSkill bool) string {
 // with the save tools, which no delegate has), use_skill is callable and the
 // skill is advertised to the model.
 func (s *Session) memoryGardeningSkillAvailable() bool {
-	if !s.memorySaveInstructionsEnabled() || !s.canInstructTool("use_skill") {
+	if !s.skillAvailableToSession(gardeningMemorySkillName) || !s.canInstructTool("use_skill") {
 		return false
 	}
 	for _, descriptor := range s.skills.ModelEntries() {
-		if descriptor.CatalogName == "gardening-memory" {
+		if descriptor.CatalogName == gardeningMemorySkillName {
 			return true
 		}
 	}

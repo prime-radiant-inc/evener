@@ -6,10 +6,11 @@
 // in beforeEach, cleans up in afterEach.
 
 import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, test } from "vitest";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore } from "./connection";
 import {
   _clearDaemonResidentsInflightForTests,
   daemonResidentsStore,
@@ -146,7 +147,7 @@ describe("refresh", () => {
 
     const state = daemonResidentsStore.getState();
     expect(state.data).toEqual(EMPTY_RESPONSE); // stale data kept, not blanked
-    expect(state.error).toBe("network down");
+    expect(state.error).toBe(friendlyErrorMessage(new Error("network down")));
     expect(state.loading).toBe(false);
   });
 
@@ -186,16 +187,21 @@ describe("refresh", () => {
     expect(daemonResidentsStore.getState().data?.defaultTimeoutMillis).toBe(9999);
   });
 
-  test("rejects with the shared port's labelled error when no client is connected", async () => {
-    // No client connected: store has client=null. The message must be the exact
-    // one connectedClientPort("daemonResidents") raises, not a hand-rolled
-    // equivalent with its own wording (the drift roborev flagged).
+  test("records the shared port's failure in its friendly form when no client is connected", async () => {
+    // No client connected: store has client=null. The refresh fails with the
+    // error connectedClientPort("daemonResidents") raises, and the store keeps
+    // that error's friendly form rather than the port's internal wording.
     await daemonResidentsStore.getState().refresh();
     const state = daemonResidentsStore.getState();
     expect(state.data).toBeNull();
-    expect(state.error).toBe(
-      "daemonResidents store: no client connected; call connectionStore.getState().connect(client) first",
-    );
+    let portError: unknown;
+    try {
+      connectedClientPort("daemonResidents").requireClient();
+    } catch (err) {
+      portError = err;
+    }
+    expect(portError).toBeInstanceOf(Error);
+    expect(state.error).toBe(friendlyErrorMessage(portError));
   });
 });
 

@@ -35,7 +35,7 @@
   outline-offset: 2px;
 }
 
-@media (max-width: 899px) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .select {
     min-height: var(--tap-min);
     height: var(--tap-min);

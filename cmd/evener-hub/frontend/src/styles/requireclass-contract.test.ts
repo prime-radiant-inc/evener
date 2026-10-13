@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
+import { definedClassNames } from "./cssClassTestUtils";
 
 // Every CSS Modules import in this codebase (`import styles from
 // "./x.module.css"`) is typed as an index signature under this project's
@@ -39,48 +40,8 @@ function walkFiles(dir: string, isMatch: (name: string) => boolean, found: strin
 }
 
 // --- mechanism 1: what classes does a stylesheet actually define? -------
-//
-// A class is "defined" only when it appears in SELECTOR position, never
-// inside a declaration's value - scoped this way so a future declaration
-// value that happens to contain a literal dot followed by a letter (e.g.
-// `url("./sprite.svg")`, a file extension) can never be mistaken for a
-// class and mask a genuinely missing one (see the poison test below that
-// pins exactly this). Comments are stripped first, identical to
-// token-contract.test.ts's own COMMENT_RE, so a class-shaped mention
-// inside a comment doesn't count as a definition either.
-const COMMENT_RE = /\/\*[\s\S]*?\*\//g;
-
-// A selector or at-rule prelude is the text between the start of the file
-// or a `{`/`}`, and the next `{`. The boundary MUST be a lookbehind rather
-// than a consumed leading character: that lets two preludes share the same
-// single brace as their boundary, which is exactly the shape of
-// `@media (...) { .foo { ... } }` - the text right after @media's own `{`
-// starts a second, nested prelude, " .foo ". A version that consumes the
-// boundary character as part of the match cannot do this (the first match
-// already used that `{` up) and silently drops every rule nested one level
-// inside an at-rule - which is exactly where every real @media in this
-// codebase's CSS modules puts its rules (dialog, tooltip, menu, statusdot,
-// streamingtext). Verified both ways by hand before picking this one; the
-// poison test below pins the @media case directly.
-const PRELUDE_RE = /(?<=^|[{}])([^{}]*)\{/g;
-
-// Class tokens within a prelude: identifier-shaped only, the same shape as
-// a JS property name - every class in this codebase's CSS modules is
-// camelCase with no hyphens (swept by hand across all 87 files while
-// building this test; a hyphenated class couldn't be reached via
-// `styles.foo` dot-access anyway). Requiring a letter/underscore
-// immediately after the dot excludes decimals in media conditions
-// (`min-width: 43.75em`) with no extra casing needed.
-const CLASS_TOKEN_RE = /\.([A-Za-z_][A-Za-z0-9_]*)/g;
-
-function definedClassNames(cssText: string): Set<string> {
-  const stripped = cssText.replace(COMMENT_RE, " ");
-  const names = new Set<string>();
-  for (const prelude of stripped.matchAll(PRELUDE_RE)) {
-    for (const token of prelude[1]!.matchAll(CLASS_TOKEN_RE)) names.add(token[1]!);
-  }
-  return names;
-}
+// definedClassNames (cssClassTestUtils.ts) - selector position only, comments
+// stripped, nested @media rules included; the poison tests below pin it.
 
 const CSS_MODULE_PATHS = walkFiles(SRC_ROOT, (name) => name.endsWith(".module.css"));
 

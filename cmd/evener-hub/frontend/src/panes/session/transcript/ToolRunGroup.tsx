@@ -4,10 +4,10 @@
 // in the shared disclosureStore, so a reader's choice survives re-projection
 // and the transcript's expand/collapse-all baselines reach it.
 //
-// Unlike the intent group, the body is MOUNTED ONLY WHILE OPEN: a folded run
-// exists to spare the reader (and the render) the rows it stands for, and a
-// closed run that still mounted every tool body would spare neither. That is
-// also why the folded entries carry no view anchors of their own - TurnBlock
+// The body is MOUNTED ONLY WHILE OPEN: a folded run exists to spare the
+// reader (and the render) the rows it stands for, and a closed run that still
+// mounted every tool body would spare neither. That is also why the folded
+// entries carry no view anchors of their own - TurnBlock
 // gives the whole run ONE anchor that lists its members, so a run is one position in the scroll
 // coordinator's list whether it is open or closed rather than a set of
 // anchors that appear and vanish with a click.

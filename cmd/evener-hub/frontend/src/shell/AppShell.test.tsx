@@ -55,6 +55,7 @@ import {
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { resetThreadsStoreForTests } from "../stores/threads";
+import { emptyStateReasons } from "../widgets/emptystate/emptyStateTestUtils";
 import { AppShell } from "./AppShell";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { ClientProvider } from "./clientContext";
@@ -517,7 +518,7 @@ async function saveRealSessionPanelLayout(): Promise<void> {
   });
   await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toMatch(/^pane_sessionTasks_/));
-  await screen.findByText(/Loading session panel…/);
+  await screen.findByRole("status", { name: "Loading session panel" });
 
   unmount();
   expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
@@ -925,7 +926,7 @@ test("a real session URL wins over an Activity-only saved layout", async () => {
 
 test("mounts and renders the welcome pane", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-session"));
 });
 
 test("wires the injected client into connectionStore (connects on mount)", async () => {
@@ -1827,8 +1828,8 @@ test("an unknown path renders NotFound instead of the workspace", async () => {
   window.history.pushState({}, "", "/not/a/real/route");
   render(<AppShell client={new FakeClient("ready")} />);
 
-  expect(await screen.findByText("Page not found")).toBeTruthy();
-  expect(screen.queryByText("No session open")).toBeNull();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["not-found"]));
+  expect(screen.queryByTestId("workspace-host")).toBeNull();
 });
 
 test("clicking Go home from NotFound returns to the welcome pane", async () => {
@@ -4101,11 +4102,11 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
     panelId = workspaceStore.getState().openPane("sessionDetails", { ref: "local:s1" }, { slot: "secondary" });
     workspaceStore.getState().focusPane(panelId);
   });
-  await screen.findByText("Loading session panel…");
+  await screen.findByRole("status", { name: "Loading session panel" });
   await waitFor(() => expect(getDockviewApi()?.panels.some((panel) => panel.id === panelId)).toBe(true));
 
   act(() => setMobile(true));
-  expect(await screen.findByText("Loading session panel…")).toBeTruthy();
+  expect(await screen.findByRole("status", { name: "Loading session panel" })).toBeTruthy();
   expect(workspaceStore.getState().focusedPaneId).toBe(panelId);
   // The scaffold header is display:none below 900px - StackHost's top-bar
   // Back is the VISIBLE mobile return path, wired to the parent session for
@@ -4123,7 +4124,7 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
   expect(getDockviewApi()).not.toBeNull();
 
   act(() => setMobile(true));
-  await screen.findByText("Loading session panel…");
+  await screen.findByRole("status", { name: "Loading session panel" });
   await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).not.toBe(panelId));
   expect(
@@ -4155,6 +4156,7 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
   await waitFor(() => expect(window.location.pathname).toBe("/thread/local:s1"));
   expect(document.querySelector("[data-single-pane]")).not.toBeNull();
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
 });
 
 // --- kata p5w9: one boot, one baseline AppWire navigation read -------------------------

@@ -1023,6 +1023,25 @@ func TestDelegateIdleRelease_PregateRefusalLeavesRuntimeWarm(t *testing.T) {
 	}
 }
 
+// idleReleaseFirstGenerationTripwire bounds this fixture's wait for the delegate
+// runner's first generation to finish: sub.done, closed at the end of the
+// stable-run finalize tail (subagents.go). It is a hang guard, never a speed
+// assertion, and it is NOT the fixture's rendezvous — the residue plant and the
+// forced refusal begin only after this wait returns. Nothing the fixture
+// controls closes `done`: it follows the runner goroutine's whole first turn —
+// the model turn, the durable generation settlement (this fixture sets
+// ForceRealIO, so the append path fsyncs), the announcement, and the attention
+// re-arm. (The child Session's construction is not in the span: createDelegate
+// builds it synchronously before it launches the runner.) The inline 10s this
+// replaces was sized as if `done` closed at the millisecond rendezvous its old
+// comment claimed; a controlled 12s pause on one legitimate post-publication
+// finalize step (testOnly.subagentAfterFinalStatePublish) makes a 10s bound fire
+// at 10.03s with the runner healthy, while this bound passes. 30s matches this
+// package's standing whole-operation tripwire for in-process work
+// (stallHandshakeTimeout, retirementCreateBarrierTripwire,
+// stalledRefreshTripwire).
+const idleReleaseFirstGenerationTripwire = 30 * time.Second
+
 // TestDelegateIdleRelease_RetriesAfterPregateRefusal: a grace timer that
 // fires into residue must not lose the release to a one-shot refusal — the
 // refusal re-arms one more grace window, and the retry, not any caller,
@@ -1066,7 +1085,7 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 	sub.mu.Unlock()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	case <-time.After(idleReleaseFirstGenerationTripwire):
 		t.Fatal("delegate runner did not finish")
 	}
 	tree := sess.delegateController

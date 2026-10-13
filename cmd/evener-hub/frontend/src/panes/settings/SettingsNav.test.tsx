@@ -64,11 +64,13 @@ test("renders all 15 legacy section links with their visible labels", () => {
   }
 });
 
+function clusterHeaders(container: HTMLElement): (string | null)[] {
+  return [...container.querySelectorAll("[data-section]")].map((header) => header.getAttribute("data-section"));
+}
+
 test("renders the 3 cluster headers", () => {
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
-  expect(screen.getByText("Agent setup")).toBeTruthy();
-  expect(screen.getByText("Extensions")).toBeTruthy();
-  expect(screen.getByText("Daemon")).toBeTruthy();
+  const { container } = render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  expect(clusterHeaders(container)).toEqual(["agents-models", "extensions", "daemon"]);
 });
 
 test("the active section's link carries aria-current=page; others don't", () => {
@@ -108,12 +110,11 @@ test("filtering is case-insensitive", async () => {
 
 test("a cluster header hides once every one of its links is filtered out", async () => {
   const user = userEvent.setup();
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  const { container } = render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
   await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "storage");
 
-  expect(screen.getByText("Daemon")).toBeTruthy(); // Storage matches, stays
-  expect(screen.queryByText("Agent setup")).toBeNull(); // nothing in it matches
-  expect(screen.queryByText("Extensions")).toBeNull();
+  // Storage matches, so its cluster stays; nothing in the other two matches.
+  expect(clusterHeaders(container)).toEqual(["daemon"]);
 });
 
 test("clearing the filter re-shows every link", async () => {

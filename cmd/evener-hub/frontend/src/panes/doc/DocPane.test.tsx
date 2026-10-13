@@ -170,13 +170,22 @@ test("the doc pane's markdown body text reads at the prose step, pinned on the p
   expect(css.match(/--prose-font-size/g)).toHaveLength(1);
   expect(css).toMatch(/\.markdown\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });
-test("a text file renders in a pre, with normalized title and an absolute requested target", async () => {
+test("a text file renders as a copyable code block, with normalized title and an absolute requested target", async () => {
   respond("plain body line");
   renderDoc("./src//notes.txt");
-  expect((await screen.findByText("plain body line")).tagName).toBe("PRE");
+  expect((await screen.findByText("plain body line")).closest("pre")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "notes.txt" })).toBeTruthy();
   expect(requests[0]?.searchParams.get("path")).toBe("/work/a/src/notes.txt");
   expect(requests[0]?.searchParams.get("session")).toBe(ref);
+});
+test("a long text file shows every line, never folded to its tail", async () => {
+  // Well past CodeBlock's fold threshold, so a fold would hide the head.
+  respond(Array.from({ length: 250 }, (_, i) => `line ${i + 1}`).join("\n"));
+  renderDoc("src/long.txt");
+  expect(await screen.findByText("line 1")).toBeTruthy();
+  expect(screen.getByText("line 250")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /earlier line/ })).toBeNull();
 });
 test("a markdown file uses the sanitizing Markdown widget and prose host", async () => {
   respond("# Heading\n\nbody");

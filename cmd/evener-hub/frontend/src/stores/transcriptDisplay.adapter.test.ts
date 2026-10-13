@@ -1,4 +1,5 @@
 import {
+  friendlyErrorMessage,
   makeTranscriptDisplayConfig,
   shippedMobileConfig,
   type TranscriptDisplayConfigV1,
@@ -50,7 +51,7 @@ describe("transcript display adapter (package store delegation)", () => {
       features: { ...(await first.connect()).features, transcriptDisplaySettings: true },
     });
     await transcriptDisplayStore.getState().refreshHubDefaults();
-    expect(transcriptDisplayStore.getState().hubError).toBe("first read failed");
+    expect(transcriptDisplayStore.getState().hubError).toBe(friendlyErrorMessage(new Error("first read failed")));
     expect(transcriptDisplayStore.getState().hubLoading).toBe(false);
 
     const second = new FakeClient("ready");
@@ -357,7 +358,7 @@ describe("transcript display adapter (package store delegation)", () => {
     let retry: Promise<unknown> | undefined;
     let retryStarted = false;
     const stop = transcriptDisplayStore.subscribe((state) => {
-      if (state.hubErrors.desktop !== "write failed" || retryStarted) return;
+      if (state.hubErrors.desktop !== friendlyErrorMessage(new Error("write failed")) || retryStarted) return;
       // The in-flight flag flips BEFORE the call: the retry's own start
       // publication runs synchronously inside it, and this subscriber must
       // not fire again for the still-present error during that publication.

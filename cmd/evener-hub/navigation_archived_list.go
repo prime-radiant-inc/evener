@@ -80,6 +80,9 @@ func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navig
 // between Projects and Archived projects. A zero time.Time round-trips through
 // JSON as the zero time, so a row with no timestamps keeps its place in the
 // order.
+// errArchivedCursorForeign refuses a cursor minted for another archived list.
+var errArchivedCursorForeign = errors.New("cursor belongs to another archived list")
+
 type archivedCursor struct {
 	Hint    navigationResourceKind `json:"k"`
 	Project string                 `json:"p"`
@@ -105,7 +108,7 @@ func decodeArchivedCursor(cursor string, hint navigationResourceKind, projectKey
 		return hubcore.SessionOrderKey{}, errors.New("invalid cursor")
 	}
 	if c.Hint != hint || c.Project != projectKey {
-		return hubcore.SessionOrderKey{}, errors.New("cursor belongs to another archived list")
+		return hubcore.SessionOrderKey{}, errArchivedCursorForeign
 	}
 	return hubcore.SessionOrderKey{Updated: c.Updated, Created: c.Created, Title: c.Title, ID: c.ID}, nil
 }

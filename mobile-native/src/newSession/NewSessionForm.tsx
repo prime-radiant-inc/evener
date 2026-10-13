@@ -217,8 +217,16 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				</View>
 			</Group>
 			{imageState.error ? <GroupFooter tone="danger">{imageState.error}</GroupFooter> : null}
-			{block?.message ? <GroupFooter tone="danger">{block.message}</GroupFooter> : null}
-			{form.error ? <GroupFooter tone="danger">{form.error}</GroupFooter> : null}
+			{block?.message ? (
+				<GroupFooter tone="danger" testID={`start-block:${block.field}`}>
+					{block.message}
+				</GroupFooter>
+			) : null}
+			{form.error ? (
+				<GroupFooter tone="danger" testID="start-error">
+					{form.error}
+				</GroupFooter>
+			) : null}
 			{form.storageError ? (
 				<>
 					<GroupFooter tone="danger">{form.storageError}</GroupFooter>
@@ -232,7 +240,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 					</Group>
 				</>
 			) : null}
-			<Group label="Where">
+			<Group label="Where" section="where">
 				<Row
 					icon="server.rack"
 					label="Host"
@@ -255,7 +263,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				{branch ? <Row icon="arrow.triangle.branch" label="Branch" value={branch} /> : null}
 			</Group>
 			{form.hostNote ? <GroupFooter>{form.hostNote}</GroupFooter> : null}
-			<Group label="Agent">
+			<Group label="Agent" section="agent">
 				<Row
 					icon="cpu"
 					label="Model"
@@ -266,7 +274,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 					onPress={() => navigation.navigate("Model")}
 				/>
 				{levels.length > 0 ? (
-					<View key="effort" style={{ paddingBottom: 12 }}>
+					<View key="effort" testID="effort" style={{ paddingBottom: 12 }}>
 						<Row label="Effort" sub="How long it thinks before acting" />
 						<Segmented
 							label="Effort"

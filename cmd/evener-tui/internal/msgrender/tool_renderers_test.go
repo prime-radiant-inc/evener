@@ -169,19 +169,36 @@ func TestListDirRenderer(t *testing.T) {
 	if r.Target(args) != "/tmp" {
 		t.Errorf("list_dir target = %q", r.Target(args))
 	}
-	// Result parses JSON array of DirEntry.
+	// Result reads the entry count from the footer formatDirListing writes
+	// (agent/session_tools_shell.go); the recorded shapes are in
+	// TestRenderersCountEntriesOfRecordedResults, and these are the shapes around
+	// them. Only a listing with no entries tells the count-alone read apart from
+	// searchresult.EntryCount: with entries the footer's number is the number of
+	// lines above it.
+	//
+	// The breaker appends its nudge after a blank line (agent/internal/tool/breaker.go
+	// appendIntervention); nothing here reads what the nudge says.
+	nudge := "a nudge the breaker appended after the listing"
 	tests := []struct {
+		name   string
 		output string
 		want   string
 	}{
-		{`[]`, "0 entries"},
-		{`[{"name":"file.txt","is_dir":false}]`, "1 entries"},
-		{`[{"name":"a","is_dir":true},{"name":"b","is_dir":false},{"name":"c","is_dir":false}]`, "3 entries"},
+		{"a page past the end is its count alone", "0 of 3 entries (offset 10)", "0 entries"},
+		{"a page naming its next page", "d.go\t3\n\n1 of 5 entries (offset 4) — more with list_dir(offset=5)", "1 entries"},
+		{"a page with no next page", "d.go\t3\n\n1 of 5 entries (offset 4)", "1 entries"},
+		{"no output", "", "0 entries"},
+		{"no footer counts the listing's own lines", "2 entries.md\t9\n", "1 entries"},
+		{"an entry named like a count stays an entry", "2 entries.md\t9\nb.go\t3\nc.go\t4\n\n3 entries", "3 entries"},
+		{"a trailing newline after the footer", "b.go\t3\nc.go\t4\n\n2 entries\n", "2 entries"},
+		{"a trailing newline after an empty directory's count", "0 entries\n", "0 entries"},
+		{"a nudge after the footer", "b.go\t3\nc.go\t4\n\n2 entries\n\n" + nudge, "2 entries"},
+		{"a nudge after an empty directory's count", "0 entries\n\n" + nudge, "0 entries"},
 	}
 	for _, tc := range tests {
 		got := r.Result(args, tc.output, "", 0)
 		if got != tc.want {
-			t.Errorf("list_dir Result(%q) = %q; want %q", tc.output, got, tc.want)
+			t.Errorf("list_dir Result(%s) = %q; want %q", tc.name, got, tc.want)
 		}
 	}
 }
@@ -470,10 +487,36 @@ func TestDiffResultText(t *testing.T) {
 	}
 }
 
-// TestSearchRenderersCountEntriesOfRecordedResults reads real grep and glob
-// results (agent/testdata/toolwire): a note the tool puts after a blank line
-// (the cap cut the result, paths were left out) is not a hit (#4186).
-func TestSearchRenderersCountEntriesOfRecordedResults(t *testing.T) {
+// TestRenderersCountEntriesOfRecordedResults reads the tools' real recorded results
+// (agent/testdata/toolwire): a note a search tool puts after a blank line (the cap cut
+// the result, paths were left out) is not a hit (#4186), and a listing's count footer
+// is not an entry (#4236).
+func TestRenderersCountEntriesOfRecordedResults(t *testing.T) {
+	outputs := recordedToolOutputs(t)
+	for _, tc := range []struct{ call, tool, want string }{
+		{"call_grep", "grep", "2 hits"},
+		{"call_grep_capped", "grep", "1 hits"},
+		{"call_glob", "glob", "2 matches"},
+		{"call_glob_excluded", "glob", "0 matches"},
+		{"call_list_dir", "list_dir", "3 entries"},
+		{"call_list_dir_empty", "list_dir", "0 entries"},
+		{"call_list_dir_page", "list_dir", "2 entries"},
+	} {
+		output, ok := outputs[tc.call]
+		if !ok {
+			t.Fatalf("no recorded output for %s", tc.call)
+		}
+		r, _ := lookupToolRenderer(tc.tool)
+		if got := r.Result(ToolArgs{}, output, "", 0); got != tc.want {
+			t.Errorf("%s: Result(%q) = %q, want %q", tc.call, output, got, tc.want)
+		}
+	}
+}
+
+// recordedToolOutputs is agent/testdata/toolwire's recorded tool results, keyed
+// by call id: the tools' real output, which the renderers' counts are pinned to.
+func recordedToolOutputs(t *testing.T) map[string]string {
+	t.Helper()
 	raw, err := os.ReadFile("../../../../agent/testdata/toolwire/calls.json")
 	if err != nil {
 		t.Fatal(err)
@@ -490,19 +533,5 @@ func TestSearchRenderersCountEntriesOfRecordedResults(t *testing.T) {
 			outputs[item.CallID] = item.Output
 		}
 	}
-	for _, tc := range []struct{ call, tool, want string }{
-		{"call_grep", "grep", "2 hits"},
-		{"call_grep_capped", "grep", "1 hits"},
-		{"call_glob", "glob", "2 matches"},
-		{"call_glob_excluded", "glob", "0 matches"},
-	} {
-		output, ok := outputs[tc.call]
-		if !ok {
-			t.Fatalf("no recorded output for %s", tc.call)
-		}
-		r, _ := lookupToolRenderer(tc.tool)
-		if got := r.Result(ToolArgs{}, output, "", 0); got != tc.want {
-			t.Errorf("%s: Result(%q) = %q, want %q", tc.call, output, got, tc.want)
-		}
-	}
+	return outputs
 }

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>listrow-chips-keep-label layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+  }
+
+  .fixtures { display: flex; flex-direction: column; gap: 8px; }
+
+  /* A ch-wide probe in the label's own font: the readable floor the label
+     must keep, measured rather than hard-coded in pixels. */
+  .probe {
+    position: absolute;
+    visibility: hidden;
+    width: 10ch;
+    font-family: var(--font-sans);
+    font-size: var(--font-size-ui);
+  }
+</style>
+</head>
+<body data-font-size="m">
+<main class="fixtures"></main>
+
+<!-- ListRow's real interactive collection markup (widgets/listrow/index.tsx):
+     a <button> holding .heading (.label + .chips), .meta, and the trailing
+     chevron; the chips are Chip's own spans. Chevron's module is not under
+     test, so its svg stands in at the same 14px box. -->
+<template id="fixture-template">
+  <section class="fixture">
+    <button class="row collection interactive" type="button" data-row>
+      <span class="heading">
+        <span class="label" data-label></span>
+        <span class="chips">
+          <span class="chip attention" data-chip>connecting</span>
+          <span class="chip attention" data-chip>Restart orphan-unverified</span>
+        </span>
+      </span>
+      <span class="meta">deploy-target.internal.example · hub 1.4.2 · linux/arm64 · hub.toml</span>
+      <span class="trailing chevron" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 16 16" style="display: block"><path d="M6 3.5 L10.5 8 L6 12.5" fill="none" stroke="currentColor" stroke-width="1.75"/></svg>
+      </span>
+    </button>
+    <span class="probe" data-probe></span>
+  </section>
+</template>
+
+<script>
+// Spliced by run.mjs from case.json's widthMatrix (see widthMatrix.mjs).
+const WIDTH_MATRIX = __LAYOUTGUARD_WIDTH_MATRIX__;
+
+const LONG_NAME = "build-farm-arm64-west-replica-02.internal";
+
+const FIXTURES = [];
+const main = document.querySelector(".fixtures");
+const template = document.getElementById("fixture-template");
+
+for (const spec of WIDTH_MATRIX) {
+  const root = template.content.firstElementChild.cloneNode(true);
+  root.style.width = `${spec.width}px`;
+  root.querySelector("[data-label]").textContent = spec.short ? "alpha" : LONG_NAME;
+  main.appendChild(root);
+  FIXTURES.push({ width: spec.width, short: spec.short === true, root });
+}
+
+function rectOf(element) {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height };
+}
+
+window.measure = () =>
+  FIXTURES.map(({ width, short, root }) => {
+    const row = root.querySelector("[data-row]");
+    return {
+      width,
+      short,
+      row: { rect: rectOf(row), clientWidth: row.clientWidth, scrollWidth: row.scrollWidth },
+      label: rectOf(root.querySelector("[data-label]")),
+      readableFloor: rectOf(root.querySelector("[data-probe]")).width,
+      chips: [...root.querySelectorAll("[data-chip]")].map((chip) => ({
+        rect: rectOf(chip),
+        scrollHeight: chip.scrollHeight,
+        clientHeight: chip.clientHeight,
+      })),
+    };
+  });
+</script>
+</body>
+</html>

@@ -1,7 +1,6 @@
-import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Disclosure } from "../../../widgets/disclosure";
+import { CodeBlock, Disclosure } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./about.module.css";
 import { FieldDim } from "./settingsField";
@@ -10,7 +9,6 @@ const CLASS = {
   root: requireClass(styles.root, "about.module.css", "root"),
   identity: requireClass(styles.identity, "about.module.css", "identity"),
   help: requireClass(styles.help, "about.module.css", "help"),
-  license: requireClass(styles.license, "about.module.css", "license"),
 };
 
 // The MIT license text Beautiful UI's own terms require reproducing
@@ -52,9 +50,8 @@ export { MIT_LICENSE_TEXT };
  * second request - hub.version/hub.commit are the same fields General's own
  * "Hub version" row shows. Unlike General, a failed or not-yet-connected
  * fetch isn't fatal here: the credits below don't depend on the hub at all,
- * so only the identity line degrades (to a bare "evener hub", no raw error
- * text - friendlyErrorMessage only feeds the dim caption, never the store's
- * raw message).
+ * so only the identity line degrades (to a bare "evener hub", with the
+ * store's already-friendly error in the dim caption).
  */
 export function AboutSection() {
   const data = useSettingsOverviewStore((s) => s.data);
@@ -68,21 +65,23 @@ export function AboutSection() {
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.identity}>
+      <p className={CLASS.identity} data-testid="about-identity">
         evener hub
         {hub?.version !== undefined && <> {hub.version}</>}
         {hub?.commit !== undefined && <FieldDim> ({hub.commit})</FieldDim>}
       </p>
       {hub?.version === undefined && data === null && error !== null && (
-        <p className={CLASS.help}>Version unavailable: {friendlyErrorMessage(error)}</p>
+        <p className={CLASS.help} data-testid="about-version-unavailable">
+          Version unavailable: {error}
+        </p>
       )}
 
-      <p className={CLASS.help}>
+      <p className={CLASS.help} data-testid="design-credit">
         The visual design language is adapted from Beautiful UI (https://www.beautifului.dev) by Shane Levine, used
         under the MIT License.
       </p>
-      <Disclosure id="about-mit-license" summary="MIT License">
-        <pre className={CLASS.license}>{MIT_LICENSE_TEXT}</pre>
+      <Disclosure id="about-mit-license" summary="MIT License" data-testid="about-mit-license">
+        <CodeBlock text={MIT_LICENSE_TEXT} fold={false} />
       </Disclosure>
 
       <p className={CLASS.help}>Inter and JetBrains Mono, used under the SIL Open Font License.</p>

@@ -20,16 +20,17 @@ import (
 // request builder: a protocol misfiled here whose builder hard-errors on the
 // kind would brick every subsequent turn.
 //
-// Per protocol: hard errors for anthropic and google (their request builders
-// reject the kind outright); silent drops for openai-chat (llm/providers/
-// chatcompletions has no document/audio case — silently dropping user content
-// counts as unrepresentable by policy); audio only for openai-responses
-// (llm/providers/responses carries documents).
+// Per protocol: hard errors for google (its request builder rejects the kind
+// outright); silent drops for openai-chat (llm/providers/chatcompletions has
+// no document/audio case — silently dropping user content counts as
+// unrepresentable by policy); audio only for anthropic (its builder writes a
+// document content block, #4209) and openai-responses (llm/providers/responses
+// carries documents).
 func unrepresentableContentKinds(protocol string) map[llm.ContentKind]bool {
 	switch protocol {
-	case registry.ProtocolAnthropic, registry.ProtocolGoogle, registry.ProtocolOpenAIChat:
+	case registry.ProtocolGoogle, registry.ProtocolOpenAIChat:
 		return map[llm.ContentKind]bool{llm.ContentDocument: true, llm.ContentAudio: true}
-	case registry.ProtocolOpenAIResponses:
+	case registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses:
 		return map[llm.ContentKind]bool{llm.ContentAudio: true}
 	default:
 		return nil

@@ -23,53 +23,44 @@ test("every section id is unique", () => {
   expect(new Set(ids).size).toBe(ids.length);
 });
 
-test("the 6 ungrouped sections are General/Theme/Transcript display/Display/Notifications/Keybindings, in this order, first", () => {
+test("the 6 ungrouped sections are general/theme/transcript/display/notifications/keybindings, in this order, first", () => {
   const ungrouped = SETTINGS_SECTIONS.filter((s) => s.cluster === undefined);
-  expect(ungrouped.map((s) => s.label)).toEqual([
-    "General",
-    "Theme",
-    "Transcript display",
-    "Display",
-    "Notifications",
-    "Keybindings",
+  expect(ungrouped.map((s) => s.id)).toEqual([
+    "general",
+    "theme",
+    "transcript",
+    "display",
+    "notifications",
+    "keybindings",
   ]);
   expect(SETTINGS_SECTIONS.slice(0, 6)).toEqual(ungrouped);
 });
 
-test('the "Agent setup" cluster has exactly these 5 sections, in order, right after the ungrouped ones', () => {
+test('the "agents-models" cluster has exactly these 5 sections, in order, right after the ungrouped ones', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "agents-models");
-  expect(cluster.map((s) => s.label)).toEqual([
-    "Providers & credentials",
-    "Agents",
-    "AGENTS.md",
-    "Evener launch",
-    "In-repo config",
-  ]);
+  expect(cluster.map((s) => s.id)).toEqual(["credentials", "agents", "agents-md", "launch-evener", "inrepo"]);
   expect(SETTINGS_SECTIONS.slice(6, 11)).toEqual(cluster);
 });
 
-test('the "Extensions" cluster has exactly these 4 sections, in order, right after "Agent setup"', () => {
+test('the "extensions" cluster has exactly these 4 sections, in order, right after "agents-models"', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "extensions");
-  expect(cluster.map((s) => s.label)).toEqual(["Marketplaces & Plugins", "Plugins", "Skills", "MCP servers"]);
+  expect(cluster.map((s) => s.id)).toEqual(["plugins-manager", "plugins", "skills", "mcp"]);
   expect(SETTINGS_SECTIONS.slice(11, 15)).toEqual(cluster);
 });
 
-test('the "Daemon" cluster has exactly these 5 sections, in order, last', () => {
+test('the "daemon" cluster has exactly these 5 sections, in order, last', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "daemon");
-  expect(cluster.map((s) => s.label)).toEqual(["Hosts", "Hub", "Mobile app", "Storage", "About"]);
+  expect(cluster.map((s) => s.id)).toEqual(["hosts", "hub", "mobile", "storage", "about"]);
   expect(SETTINGS_SECTIONS.slice(15, 20)).toEqual(cluster);
 });
 
-test('"About" is the very last section overall', () => {
-  expect(SETTINGS_SECTIONS[SETTINGS_SECTIONS.length - 1]?.label).toBe("About");
+test('"about" is the very last section overall', () => {
+  expect(SETTINGS_SECTIONS[SETTINGS_SECTIONS.length - 1]?.id).toBe("about");
 });
 
-test("the credentials section's id is exactly credentials (the /credentials alias resolves to this id)", () => {
-  expect(SETTINGS_SECTIONS.find((s) => s.label === "Providers & credentials")?.id).toBe("credentials");
-});
-
-test("SETTINGS_CLUSTERS lists the 3 labeled clusters in nav order", () => {
-  expect(SETTINGS_CLUSTERS.map((c) => c.label)).toEqual(["Agent setup", "Extensions", "Daemon"]);
+test("SETTINGS_CLUSTERS lists the 3 labeled clusters in nav order, each with a label", () => {
+  expect(SETTINGS_CLUSTERS.map((c) => c.id)).toEqual(["agents-models", "extensions", "daemon"]);
+  for (const cluster of SETTINGS_CLUSTERS) expect(cluster.label).not.toBe("");
 });
 
 test("every section's cluster field (when set) references a real cluster id", () => {
@@ -85,10 +76,11 @@ test("DEFAULT_SECTION_ID names a real, ungrouped section", () => {
   expect(match?.cluster).toBeUndefined();
 });
 
-test("settingsSectionLabel resolves a known id to its label", () => {
-  expect(settingsSectionLabel("theme")).toBe("Theme");
-  expect(settingsSectionLabel("transcript")).toBe("Transcript display");
-  expect(settingsSectionLabel("credentials")).toBe("Providers & credentials");
+test("settingsSectionLabel resolves a known id to that section's own label", () => {
+  for (const section of SETTINGS_SECTIONS) {
+    expect(section.label).not.toBe(section.id);
+    expect(settingsSectionLabel(section.id)).toBe(section.label);
+  }
 });
 
 test("settingsSectionLabel falls back to the raw id for an unknown section (e.g. a stale bookmark)", () => {

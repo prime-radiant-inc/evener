@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeAll, beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
+import { OpenButton } from "../../../widgets";
 import { OpenTranscriptButton, openTranscript } from "./openTranscript";
 
 beforeAll(async () => {
@@ -211,7 +212,13 @@ test("OpenTranscriptButton renders the glyph with no visible label, tooltip 'Ope
   const button = screen.getByRole("button", { name: "Open transcript" });
   // Icon-only: the accessible name comes from aria-label, not visible text.
   expect(button.textContent).toBe("");
-  expect(button.getAttribute("title")).toBe("Open");
+  const title = button.getAttribute("title") ?? "";
+  expect(title).not.toBe("");
+  expect(title).not.toContain("local:child");
+  // The same one-word tooltip every other open control carries.
+  const other = render(<OpenButton label="Open beside: elsewhere" />);
+  expect(screen.getByRole("button", { name: "Open beside: elsewhere" }).getAttribute("title")).toBe(title);
+  other.unmount();
 
   fireEvent.click(button);
   expect(transcriptPanes("local:child")).toHaveLength(1);

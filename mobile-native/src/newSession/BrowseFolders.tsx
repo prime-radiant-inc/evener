@@ -58,6 +58,9 @@ export function BrowseFolders({ navigation, route }: NativeStackScreenProps<NewS
 	const label = rows.find((row) => row.kind === "group");
 	const folders = rows.filter((row) => row.kind === "parent" || row.kind === "dir");
 	const status = rows.find((row) => row.kind === "status");
+	// Why the status line shows: still reading, nothing in the folder, or a
+	// folder the host couldn't open.
+	const statusKind = listing?.error ? "unreadable" : (listing?.paths ?? null) === null ? "loading" : "empty";
 	return (
 		<GroupedPage>
 			<SheetStatus />
@@ -73,7 +76,7 @@ export function BrowseFolders({ navigation, route }: NativeStackScreenProps<NewS
 					)}
 				</Group>
 			) : null}
-			{status ? <GroupFooter>{status.text}</GroupFooter> : null}
+			{status ? <GroupFooter testID={`folder-status:${statusKind}`}>{status.text}</GroupFooter> : null}
 			<Group>
 				{dir ? (
 					<Row
