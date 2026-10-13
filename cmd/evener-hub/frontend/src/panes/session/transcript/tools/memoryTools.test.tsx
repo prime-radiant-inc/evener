@@ -84,13 +84,13 @@ test("memory_read uses the tail-folded output body and memory_search uses the he
   expect(toolRendererFor("memory_search").body).toBe(HeadClippedOutputBody);
 });
 
-test("memory_write renders content as Markdown", () => {
+test("memory_write renders its body as Markdown", () => {
   const Body = toolRendererFor("memory_write").body!;
   render(
     <Body
       item={item({
         toolName: "memory_write",
-        argumentsJSON: JSON.stringify({ content: "# Memory page\n\n**saved prose**" }),
+        argumentsJSON: JSON.stringify({ body: "# Memory page\n\n**saved prose**" }),
       })}
       live={false}
     />,
@@ -100,30 +100,44 @@ test("memory_write renders content as Markdown", () => {
   expect(screen.getByText("saved prose").tagName).toBe("STRONG");
 });
 
-test("memory_write content passes through at the 8,000-character boundary and clips with the established marker above it", () => {
+test("memory_write shows its when line above the body", () => {
+  const Body = toolRendererFor("memory_write").body!;
+  render(
+    <Body
+      item={item({
+        toolName: "memory_write",
+        argumentsJSON: JSON.stringify({ when: "When pricing a cart", body: "# Cart pricing\n\nfact" }),
+      })}
+      live={false}
+    />,
+  );
+
+  expect(screen.getByText("When:").tagName).toBe("STRONG");
+  expect(screen.getByText(/When pricing a cart/)).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Cart pricing" })).toBeTruthy();
+});
+
+test("memory_write body passes through at the 8,000-character boundary and clips with the established marker above it", () => {
   const Body = toolRendererFor("memory_write").body!;
   const atBudget = "x".repeat(8_000);
   const overBudget = "y".repeat(8_001);
 
   const exact = render(
-    <Body
-      item={item({ toolName: "memory_write", argumentsJSON: JSON.stringify({ content: atBudget }) })}
-      live={false}
-    />,
+    <Body item={item({ toolName: "memory_write", argumentsJSON: JSON.stringify({ body: atBudget }) })} live={false} />,
   );
   expect(exact.container.textContent?.replace(/\n$/, "")).toBe(atBudget);
   exact.unmount();
 
   const clipped = render(
     <Body
-      item={item({ toolName: "memory_write", argumentsJSON: JSON.stringify({ content: overBudget }) })}
+      item={item({ toolName: "memory_write", argumentsJSON: JSON.stringify({ body: overBudget }) })}
       live={false}
     />,
   );
   expect(clipped.container.textContent?.replace(/\n$/, "")).toBe(`${"y".repeat(8_000)}…`);
 });
 
-test("memory_write falls back to the tool output when args have no content", () => {
+test("memory_write falls back to the tool output when args have no body", () => {
   const Body = toolRendererFor("memory_write").body!;
   render(
     <Body
@@ -139,7 +153,7 @@ test("memory_write falls back to the tool output when args have no content", () 
   expect(screen.getByText("Saved page text")).toBeTruthy();
 });
 
-test("memory_write with empty content renders the tool's output, not an empty page", () => {
+test("memory_write with an empty body renders the tool's output, not an empty page", () => {
   const Body = toolRendererFor("memory_write").body!;
   render(
     <Body
@@ -199,7 +213,7 @@ test("a rejected session-memory write remains a visible generic failed row with 
   const rejected = item({
     id: "rejected-session-memory-write",
     toolName: "memory_write",
-    argumentsJSON: JSON.stringify({ scope: "session", file_path: "notes.md", content: "not allowed" }),
+    argumentsJSON: JSON.stringify({ scope: "session", file_path: "notes.md", body: "not allowed" }),
     status: "failed",
     error: "session memory belongs to the root session; report this to your parent instead",
   });
@@ -239,7 +253,7 @@ test("renders a recorded memory write, edit, and search through the transcript r
       argumentsJSON: JSON.stringify({
         scope: "personal",
         file_path: "implementation-delegation.md",
-        content: page,
+        body: page,
       }),
     }),
     item({

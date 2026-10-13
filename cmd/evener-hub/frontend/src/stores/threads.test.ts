@@ -17519,3 +17519,199 @@ test.each(["output", "metadata"] as const)("fences obsolete job %s after readine
     connectionStore.setState({ client: null, state: "idle" });
   }
 });
+
+// #4552 (Jesse's ruling, 2026-10-13): a graceful shutdown gates mutation
+// DISPATCH only. Its cancellation write is an await and is not itself a fence,
+// so a dispatch already scheduled for the ref could be admitted in that window
+// and put the row the Stop is cancelling on the wire - the race a 30 ms pause at
+// the top of cancelUnattemptedMutations reproduces in Session.test.tsx's "a Stop
+// on the resumed identity cancels the stale post-resume publish". forceStop
+// closes the window with stoppingRefs; a graceful shutdown must NOT, because
+// that fence also refuses a Send the user makes during the window
+// (isLocalRecoveryFenced and isSendResumesLocal read it). This dispatch-only
+// gate keeps the cancelled row off the wire while leaving every Send face
+// untouched.
+//
+// The shared stage for the shutdown-dispatch-gate tests below: an idle local ref
+// whose client answers reads and turn/start, on the given (or a fresh) outbox.
+function stageShutdownGate(
+  ref: string,
+  storage = new MutationOutboxIndexedDB(),
+): { fake: FakeClient; storage: MutationOutboxIndexedDB } {
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref, { status: { type: "idle" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: mutationReceipt(params.clientMutationId),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  return { fake, storage };
+}
+
+test("a graceful shutdown gates dispatch without refusing a Send made during the window", async () => {
+  const ref = "local:shutdown-gate-send";
+  const { fake, storage } = stageShutdownGate(ref);
+  fake.on("thread/shutdown", () => ({}));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  // The cancellation write is durably done but still in flight for the Stop -
+  // exactly the window that is unfenced today.
+  const hold = holdNextWriteTransaction(["outbox", "sequences"]);
+  try {
+    const pending = threadsStore.getState().shutdown(ref);
+    await hold.reached;
+    // The dispatch-only gate did NOT arm the broad Stop fence, so the session
+    // stays off the Send-resumes face, exactly as Jesse ruled.
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+    // A Send pressed during the window is admitted and its row is durable.
+    await threadsStore.getState().send(ref, "during shutdown");
+    expect((await storage.listOutbox(ref)).map((record) => record.state)).toEqual(["submitting"]);
+    // ...but its dispatch is held off the wire for the window.
+    await flushIndexedDBUntil(() => false);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    hold.release();
+    await pending;
+  } finally {
+    hold.release();
+  }
+  // The gate is released with the shutdown, so the row dispatches afterwards
+  // with no manual readiness nudge (RoboRev Low on the first revision: release
+  // must reschedule, or the row waits for the next discovery scan).
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+});
+
+// The gate must not leak: a shutdown that rejects has still released it, or the
+// session could never dispatch again.
+test("the shutdown dispatch gate is released when the shutdown rejects", async () => {
+  const ref = "local:shutdown-gate-reject";
+  const { fake, storage } = stageShutdownGate(ref);
+  const stop = deferred<void>();
+  fake.on("thread/shutdown", () => stop.promise);
+  await threadsStore.getState().ensureThread(ref);
+  const hold = holdNextWriteTransaction(["outbox", "sequences"]);
+  try {
+    const pending = threadsStore.getState().shutdown(ref);
+    // Attach the rejection handler up front: the shutdown rejects only when the
+    // held write releases below, and an unobserved rejection would be flagged.
+    const settled = pending.then(
+      () => undefined,
+      (err: Error) => err,
+    );
+    await hold.reached;
+    await threadsStore.getState().send(ref, "during shutdown");
+    expect((await storage.listOutbox(ref)).map((record) => record.state)).toEqual(["submitting"]);
+    await flushIndexedDBUntil(() => false);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    hold.release();
+    stop.reject(new Error("shutdown refused"));
+    expect((await settled)?.message).toBe("shutdown refused");
+  } finally {
+    hold.release();
+  }
+  // The gate did not leak: the row dispatches once the shutdown has returned,
+  // with no manual readiness nudge.
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+});
+
+// The Stop's reach is wider than the ref it names: an identity-changing resume
+// registers old -> resumed, and the Stop's second cancellation write reaches the
+// rows the drive moved under the resumed ref. The gate must cover that ref for
+// its own cancellation window, or a dispatch racing that write can put a moved
+// row on the wire.
+test("a graceful shutdown also gates the ref a resume moved rows to", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:swap-gate-from";
+  const toRef = "local:swap-gate-to";
+  const idle = (ref: string) =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  const fenced = (ref: string) =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  fake.on("thread/read", (params) => (params.ref === toRef ? idle(toRef) : fenced(fromRef)));
+  fake.on("thread/resume", () => idle(toRef));
+  fake.on("thread/shutdown", () => ({}));
+  fake.on("turn/start", (params) => ({
+    receipt: mutationReceipt(params.clientMutationId),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  const startsToTarget = () =>
+    fake.calls.filter((call) => call.method === "turn/start" && (call.params as { ref?: string }).ref === toRef);
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  // A send on the resume-only old ref drives the identity-changing resume, which
+  // registers old -> resumed until the pane follows the identity.
+  await threadsStore.getState().send(fromRef, "resumed");
+  await flushIndexedDBUntil(() => threadsStore.getState().resumedIdentities.has(fromRef));
+  const dispatchedBeforeStop = startsToTarget().length;
+  // Hold the resumed ref's own cancellation write: that await is the window its
+  // arm covers.
+  const realCancel = MutationOutboxIndexedDB.prototype.cancelUnattempted;
+  let swapCancelReached!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    swapCancelReached = resolve;
+  });
+  let releaseSwapCancel!: () => void;
+  const swapCancelHeld = new Promise<void>((resolve) => {
+    releaseSwapCancel = resolve;
+  });
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "cancelUnattempted").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    target: string,
+  ) {
+    if (target === toRef) {
+      swapCancelReached();
+      await swapCancelHeld;
+    }
+    return realCancel.call(this, target);
+  });
+  try {
+    const pending = threadsStore.getState().shutdown(fromRef);
+    await reached;
+    // A Send on the resumed ref is admitted, but its dispatch is gated for the
+    // window of that ref's own cancellation write.
+    await threadsStore.getState().send(toRef, "during shutdown");
+    await flushIndexedDBUntil(() => false);
+    expect(startsToTarget()).toHaveLength(dispatchedBeforeStop);
+    releaseSwapCancel();
+    await pending;
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// The gate must not leak: a shutdown whose cancellation write fails has still
+// released it, or the session could never dispatch again.
+test("the shutdown dispatch gate is released when the cancellation write fails", async () => {
+  let failCancel = true;
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit(operation) {
+      if (failCancel && operation === "cancelUnattempted") throw new Error("storage unavailable");
+    },
+  });
+  const ref = "local:shutdown-gate-cancel-fail";
+  const { fake } = stageShutdownGate(ref, storage);
+  fake.on("thread/shutdown", () => ({}));
+  await threadsStore.getState().ensureThread(ref);
+  await expect(threadsStore.getState().shutdown(ref)).rejects.toThrow("storage unavailable");
+  failCancel = false;
+  // The gate is released, so a fresh Send dispatches.
+  await threadsStore.getState().send(ref, "after shutdown");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+});
