@@ -332,9 +332,13 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, m
 	}
 	out[npmConfigCacheEnv] = envValueFold(env, npmConfigCacheEnv)
 	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
-	if home != "" {
-		out[npmConfigCacheEnv] = firstOr(out[npmConfigCacheEnv], filepath.Join(home, ".npm"))
-		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(home, ".cargo"))
+	// With no HOME in the spawn's own environment (a clean EnvPolicyNone), npm
+	// and cargo fall back to the login user's home in the user database, which is
+	// the one the probe read, so their default caches are judged there.
+	npmHome := firstOr(home, host.Home)
+	if npmHome != "" {
+		out[npmConfigCacheEnv] = firstOr(out[npmConfigCacheEnv], filepath.Join(npmHome, ".npm"))
+		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(npmHome, ".cargo"))
 	}
 	return out, unknown
 }

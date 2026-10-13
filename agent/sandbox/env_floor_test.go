@@ -473,6 +473,29 @@ func TestEnvFloorLeavesNpmCachesInAPersistentWriteRootAlone(t *testing.T) {
 	}
 }
 
+// A spawn with no HOME in its environment (a clean EnvPolicyNone) still gets
+// npm's and cargo's default caches judged: their runtimes fall back to the login
+// user's home in the user database, which is the one the probe read, so a
+// default under a degraded root is redirected there too (#4220).
+func TestEnvFloorRedirectsNpmAndCargoDefaultsWithNoHome(t *testing.T) {
+	home := servedHome(t)
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay,
+		CacheRoots: []string{home + "/.npm", home + "/.cargo"},
+		Spawned:    AccessScope{Read: ReadAnywhere},
+		resolveHost: HostFacts{
+			OS: "linux", Home: home, OverlayLowerOK: func(string) bool { return false },
+		},
+	}
+	out := ApplyEnvFloor(nil, policy, tmp)
+	for name, want := range map[string]string{"npm_config_cache": tmp + "/npm", "CARGO_HOME": tmp + "/cargo"} {
+		if v, _ := envValue(out, name); v != want {
+			t.Errorf("with no HOME, a %s under a degraded root must go to the session scratch %q, got %q", name, want, v)
+		}
+	}
+}
+
 // A Go cache that cannot be a directory (an existing file, or one below a
 // file) is not served by an overlaid ancestor: go would fail on it, so it
 // goes to the scratch instead.
