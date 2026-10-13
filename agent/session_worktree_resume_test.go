@@ -1060,6 +1060,12 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe(t *testi
 	// the real deadline; the cleanup above is idempotent.
 	gitExecTimeout = orig
 
+	// The probe really starved: without this, a probe that completed before its
+	// expired deadline was observed would let the test pass on a healthy
+	// snapshot, silently ceasing to reproduce #4132.
+	if sess.envInfo.IsGitRepo {
+		t.Fatal("the session-start git probe reported a repository; the starved-probe condition was not exercised")
+	}
 	assertCoOccupyingUnknownOwnerTracked(t, sess, path)
 }
 
