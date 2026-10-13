@@ -362,7 +362,12 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     let cancelled = false;
     void (async () => {
       void readNonce; // re-run the read for each foreground reread
-      if (readNonce === 0) setState({ status: "loading" });
+      // A revalidation of already-rendered content keeps that content on
+      // screen: a binding re-record (an origin churn, a restored pane gaining
+      // its binding) re-reads the same document, and blanking it to the
+      // loading skeleton would tear down the reading position, the selection
+      // surface and any bound scope mid-read.
+      if (readNonce === 0) setState((previous) => (previous.status === "ok" ? previous : { status: "loading" }));
 
       // A thrown beginRead storage fault is uncertainty, not proof the document
       // changed: fall through to the raw read and suspend usable authority,

@@ -1713,6 +1713,65 @@ test("the annotated reader fetches the retained binding's read target, not the c
   expect(requested.every((path) => path === "/work/a/NOTES.md")).toBe(true);
 });
 
+// A re-open that re-records the pane's binding (an origin churn or a
+// restored pane gaining its binding) revalidates the SAME document: the
+// fetch target may change shape (the pane path to the binding's absolute
+// target) while the file does not. That revalidation never blanks the
+// rendered content: the loading branch replaces the whole body - the
+// highlight overlay included - so a reader mid-document and any bound
+// scope lose the document until the fetch returns.
+test("a binding re-record for the same document revalidates without blanking the rendered content", async () => {
+  const f = await fixture("reader-rerecord-stable");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+
+  const sourcePaneId = workspaceStore.getState().openPane("session", { ref: "root" });
+  // Open without a retained binding, as a restored layout does: the pane
+  // record carries params only, so the reader fetches the pane path.
+  workspaceStore.getState().openPane("doc", { session: "root", path: "NOTES.md", kind: "file" });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a real document pane");
+
+  const requested: string[] = [];
+  mockRead.mockImplementation(async (_session: string, path: string) => {
+    requested.push(path);
+    return docContent(SOURCE, "rev-A");
+  });
+
+  const host = render(
+    <ClientProvider client={client}>
+      <DocPane paneId={pane.id} focused={true} params={pane.params as DocParams} annotations={ports} />
+    </ClientProvider>,
+  );
+  cleanupAfterTest(() => disposeDocumentReaderWork(pane.id));
+  cleanupAfterTest(() => host.unmount());
+  await screen.findByText("First occurrence: same");
+  expect(requested).toEqual(["NOTES.md"]);
+
+  // Re-open the SAME document through an absolute reference: the found pane
+  // is focused and its binding re-recorded, flipping the fetch target without
+  // changing the file. The host re-renders the pane with the updated record,
+  // as the shell does for a pane-record update.
+  const absolute = bindFilePath("/work/a/NOTES.md", "/work/a");
+  if (!absolute) throw new Error("expected an absolute reference");
+  act(() => openDocBeside({ session: "root", sourcePaneId, reference: absolute }));
+  const rerecorded = workspaceStore.getState().panes.find((candidate) => candidate.id === pane.id);
+  if (!rerecorded) throw new Error("expected the re-recorded pane");
+  host.rerender(
+    <ClientProvider client={client}>
+      <DocPane paneId={pane.id} focused={true} params={rerecorded.params as DocParams} annotations={ports} />
+    </ClientProvider>,
+  );
+  // The revalidation neither flashes a loading skeleton over the rendered
+  // content nor blanks it: the document stays on screen throughout.
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+  await waitFor(() => expect(requested.at(-1)).toBe("/work/a/NOTES.md"));
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+});
+
 // ---------------------------------------------------------------------------
 // Reader pipeline ordering: the approved beginRead -> readDocFile -> acceptRead
 // -> mapped rendering path, traced with read-only observers placed around the
