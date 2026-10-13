@@ -726,6 +726,14 @@ func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]Di
 // fd-anchored walk, policy checks and refusal surface, but each listing is
 // read in charged chunks and the walk stops once the page need is met.
 func (s *sandboxFS) listDirBudgeted(ctx context.Context, tool, abs string, depth int, budget *DirListBudget) ([]DirEntry, error) {
+	// The root open below resolves the requested path component by component
+	// and is this arm's one filesystem touch before the walk's own checks — a
+	// resolution over an unavailable mount is exactly the unbounded wait the
+	// budget exists to prevent — so an already-cancelled call answers before
+	// it, mirroring the off-sandbox arm's pre-open fence.
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, cerr
+	}
 	abs = filepath.Clean(abs)
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
@@ -734,8 +742,17 @@ func (s *sandboxFS) listDirBudgeted(ctx context.Context, tool, abs string, depth
 	if err != nil {
 		// The resolver's raw errno does not say which path was wrong, and the
 		// legacy walk returns it just as bare — but this walk is the one the
-		// tool calls, so it names the requested path the way the off-sandbox
-		// arm's errors do, with the underlying error preserved.
+		// tool calls, so an ordinary filesystem error names the requested
+		// path the way the off-sandbox arm's errors do, with the underlying
+		// error preserved. A typed sandbox denial never wraps: its own
+		// message is the disclosure contract — the requested path reduced to
+		// a basename, or omitted entirely for a sensitive denial — and an
+		// fs.PathError shell would print the FULL requested path around
+		// whatever the denial chose to disclose, defeating the redaction
+		// exactly where the masking policy needs it.
+		if _, ok := errors.AsType[*sandbox.DeniedError](err); ok {
+			return nil, err
+		}
 		return nil, &fs.PathError{Op: "open", Path: abs, Err: err}
 	}
 	var out []DirEntry

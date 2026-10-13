@@ -102,6 +102,55 @@ func TestListDirBudgetAnswersACancelledContextBeforeTheOpen(t *testing.T) {
 	}
 }
 
+// TestSandboxedListDirBudgetAnswersACancelledContextBeforeTheOpen is the
+// confined twin of TestListDirBudgetAnswersACancelledContextBeforeTheOpen:
+// the root open resolves the requested path component by component and is
+// the arm's one filesystem touch before the walk's own checks — a resolution
+// over an unavailable mount is exactly the unbounded wait the budget exists
+// to prevent — so an already-cancelled call must answer before it. The
+// missing target proves the point: a walk that opened would answer the
+// filesystem's ENOENT, and only a walk that never touched the filesystem
+// answers the cancellation.
+func TestSandboxedListDirBudgetAnswersACancelledContextBeforeTheOpen(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	missing := filepath.Join(worktree, "definitely-not-here-xyz")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	entries, err := env.ListDirectoryWithBudget(ctx, missing, 1, NewDirListBudget(0, 1000, 0))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled confined list_dir = (%v, %q), want context.Canceled answered before the root open", entries, err)
+	}
+}
+
+// TestSandboxedListDirBudgetKeepsSandboxDenialsUnwrapped pins the round-5
+// redaction finding: a typed sandbox denial is its own disclosure contract —
+// Error() reduces the requested path to a basename, and a sensitive denial
+// omits the path entirely — so the root-open wrap must return it unchanged:
+// the fs.PathError shell prints the FULL requested path around whatever the
+// denial chose to disclose, which for the sensitive denials darwin's
+// canonical-path recheck can produce is exactly the leak the masking policy
+// exists to prevent. The Linux-reachable denial here is the symlink
+// component refusal, whose own diagnostic deliberately names the offending
+// component and its target — disclosure chosen by the denial, not by the
+// wrap — so the pinned property is the shell's absence, which holds for
+// every typed denial on both arms.
+func TestSandboxedListDirBudgetKeepsSandboxDenialsUnwrapped(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	link := filepath.Join(worktree, "link")
+	if err := os.Symlink(worktree, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := env.ListDirectoryWithBudget(t.Context(), link, 1, NewDirListBudget(0, 1000, 0))
+	if _, ok := errors.AsType[*sandbox.DeniedError](err); !ok {
+		t.Fatalf("a symlink root must refuse through the typed sandbox denial, got %q", err)
+	}
+	if _, ok := errors.AsType[*fs.PathError](err); ok {
+		t.Fatalf("the typed denial must return unchanged: the fs.PathError shell prints the full requested path %q around the denial's own disclosure contract: %q", link, err)
+	}
+}
+
 // TestListDirBudgetListsThroughASymlinkToADirectory pins the fence's edge:
 // O_DIRECTORY constrains the target's type after the link resolves, so a
 // symlink pointing at a directory must keep traversing exactly as the legacy
