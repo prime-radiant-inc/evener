@@ -395,17 +395,21 @@ describe("counts, structure and state are behavior", () => {
     `expect(screen.getByText("Recommended").dataset.state).toBe("open");`,
     `expect((screen.getByText("Recommended") as HTMLInputElement).checked).toBe(true);`,
     `expect(screen.getByText("Recommended")).toHaveAttribute("aria-current");`,
+    `expect.soft(screen.getAllByText("Recommended")).toHaveLength(2);`,
+    `await expect.poll(() => screen.queryAllByText("Recommended")).toHaveLength(2);`,
+    `await expect.poll(() => screen.queryAllByText("Recommended").length).toBe(2);`,
   ])("%s", (check) => {
     const src = `test("renders Recommended in both themes", () => {\n  render(<Specimen />);\n  ${check}\n});\n`;
     expect(targetNames(src, ["Recommended"])).toEqual([]);
   });
 
-  test("the same test with a copy-only check is a target", () => {
-    const src = `test("renders Recommended in both themes", () => {
-  render(<Specimen />);
-  expect(screen.getByText("Recommended")).toBeTruthy();
-});
-`;
+  test.each([
+    `expect(screen.getByText("Recommended")).toBeTruthy();`,
+    `expect.soft(screen.getByText("Recommended")).toBeTruthy();`,
+    `await expect.poll(() => screen.queryByText("Recommended")).not.toBeNull();`,
+    `await expect.poll(() => status.textContent).toBe("Recommended");`,
+  ])("the same test with a copy-only check is a target: %s", (check) => {
+    const src = `test("renders Recommended in both themes", async () => {\n  render(<Specimen />);\n  ${check}\n});\n`;
     expect(targetNames(src, ["Recommended"])).toEqual(["renders Recommended in both themes"]);
   });
 });

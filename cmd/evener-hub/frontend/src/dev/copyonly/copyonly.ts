@@ -203,9 +203,10 @@ function calleeName(call: ts.CallExpression): string | null {
 }
 
 /**
- * The checks inside a test: each expect(...) chain, and each getBy or findBy
- * query outside one (a query throws when nothing matches, so on its own it is
- * a claim). A check nested inside another belongs to the outer one.
+ * The checks inside a test: each expect(...), expect.soft(...) or
+ * expect.poll(...) chain, and each getBy or findBy query outside one (a query
+ * throws when nothing matches, so on its own it is a claim). A check nested
+ * inside another belongs to the outer one.
  */
 function findChecks(call: ts.CallExpression): ts.Node[] {
   const roots: ts.Node[] = [];
@@ -213,7 +214,7 @@ function findChecks(call: ts.CallExpression): ts.Node[] {
     walk(arg, (node) => {
       if (!ts.isCallExpression(node)) return;
       const name = calleeName(node);
-      if ((ts.isIdentifier(node.expression) && name === "expect") || (name !== null && CHECK_QUERY.test(name))) {
+      if (startsAssertion(node) || (name !== null && CHECK_QUERY.test(name))) {
         roots.push(chainTop(node));
       }
     });
@@ -222,6 +223,20 @@ function findChecks(call: ts.CallExpression): ts.Node[] {
     (check, i) =>
       roots.indexOf(check) === i &&
       !roots.some((outer) => outer !== check && outer.pos <= check.pos && check.end <= outer.end),
+  );
+}
+
+/** Starts an assertion chain on its own: `expect(x)`, `expect.soft(x)`, `expect.poll(fn)`. */
+const EXPECT_CHAIN_VARIANTS = new Set(["soft", "poll"]);
+
+function startsAssertion(call: ts.CallExpression): boolean {
+  const e = call.expression;
+  if (ts.isIdentifier(e)) return e.text === "expect";
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    ts.isIdentifier(e.expression) &&
+    e.expression.text === "expect" &&
+    EXPECT_CHAIN_VARIANTS.has(e.name.text)
   );
 }
 
