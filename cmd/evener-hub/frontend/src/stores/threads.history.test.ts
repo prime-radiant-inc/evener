@@ -25,6 +25,7 @@ import {
   acquireBackgroundThread,
   resetThreadsStoreForTests,
   settleBackgroundTranscriptsForTests,
+  settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
 
@@ -1088,9 +1089,9 @@ describe("entry repository: older paging", () => {
       });
       replacement.on("thread/turns/list", turnsList);
       connectionStore.getState().connect(replacement);
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      await settleBackgroundTranscriptsForTests();
+      // Reconnect hydrates asynchronously before publishing the fresh baseline.
+      // The background drain does not join that hydration; wait for it explicitly.
+      await settleEntryTranscriptForTests(SELECTED);
       // No paging was issued just by reconnecting.
       expect(pageCalls).toBe(2);
       // The fresh replacement drops the pre-gap rows entirely: they cannot
