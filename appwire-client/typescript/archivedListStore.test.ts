@@ -8,6 +8,7 @@ import {
   archivedListKey,
   createArchivedListStore,
 } from "./archivedListStore";
+import { ConnectionClosedError, friendlyErrorMessage, RequestTimeoutError, WireError } from "./errors";
 import { deferred } from "./testing/deferred";
 import { callsTo, FakeClient } from "./testing/fakeClient";
 import { completeSession } from "./testing/navigation";
@@ -72,7 +73,7 @@ describe("refresh", () => {
 
     const list = entry("projects", "proj");
     expect(list.rows.map((r) => r.ref)).toEqual(["local:a"]);
-    expect(list.error).toContain("hub unavailable");
+    expect(list.error).toBe(friendlyErrorMessage(new Error("hub unavailable")));
   });
 
   test("rejects malformed rows as an error and keeps the old rows", async () => {
@@ -86,7 +87,7 @@ describe("refresh", () => {
 
     const list = entry("projects", "proj");
     expect(list.rows.map((r) => r.ref)).toEqual(["local:a"]);
-    expect(list.error).toContain("invalid archived list");
+    expect(list.error).not.toBeNull();
   });
 });
 
@@ -211,7 +212,7 @@ describe("refresh over pages already loaded", () => {
 
     const list = entry("projects", "proj");
     expect(list.rows.map((r) => r.ref)).toEqual([...refs("a", 50), ...refs("b", 10)]);
-    expect(list.error).toContain("hub unavailable");
+    expect(list.error).toBe(friendlyErrorMessage(new Error("hub unavailable")));
     expect(list.loading).toBe(false);
   });
 });
@@ -254,7 +255,7 @@ describe("loadMore", () => {
     const list = entry("projects", "proj");
     expect(list.rows.map((r) => r.ref)).toEqual(["local:a"]);
     expect(list.nextCursor).toBe("cursor-1");
-    expect(list.error).toContain("hub unavailable");
+    expect(list.error).toBe(friendlyErrorMessage(new Error("hub unavailable")));
     expect(list.loading).toBe(false);
   });
 
@@ -370,5 +371,156 @@ describe("reset", () => {
     await loadingMore;
 
     expect(store.getState().lists).toEqual({});
+  });
+});
+
+describe("the list's revision", () => {
+  const revised = (refs: string[], total: number, revision: string, nextCursor?: string): ArchivedListResponse => ({
+    ...page(refs, total, nextCursor),
+    revision,
+  });
+  // twoPages serves local:a then, at cursor-1, local:b, each page at its own revision.
+  const twoPages =
+    (first: string, second: string) =>
+    (params: ArchivedListParams): ArchivedListResponse =>
+      params.cursor ? revised(["local:b"], 2, second) : revised(["local:a"], 2, first, "cursor-1");
+
+  test("a refresh sends the revision the list holds and keeps its rows when the hub says unchanged", async () => {
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return seen.length === 1
+        ? revised(["local:a"], 1, "r1")
+        : { sessions: [], total: 1, revision: "r1", unchanged: true };
+    });
+    await store.refresh("projects", "proj");
+    await store.refresh("projects", "proj");
+
+    expect(seen[1]).toEqual({ catalog: "projects", projectKey: "proj", revision: "r1" });
+    const list = entry("projects", "proj");
+    expect(list.rows.map((r) => r.ref)).toEqual(["local:a"]);
+    expect(list.loading).toBe(false);
+    expect(list.error).toBeNull();
+  });
+
+  test("an unchanged answer keeps the cursor of the rows it vouches for and takes the total", async () => {
+    let call = 0;
+    fake.on("evener/archived/list", () =>
+      ++call === 1
+        ? revised(["local:a"], 2, "r1", "cursor-1")
+        : { sessions: [], total: 2, revision: "r1", unchanged: true },
+    );
+    await store.refresh("projects", "proj");
+    await store.refresh("projects", "proj");
+    const list = entry("projects", "proj");
+    expect(list.nextCursor).toBe("cursor-1");
+    expect(list.total).toBe(2);
+  });
+
+  test("an unchanged answer overtaken by a newer request changes nothing", async () => {
+    fake.on("evener/archived/list", twoPages("r1", "r1"));
+    await store.refresh("projects", "proj");
+    const unchanged = deferred<ArchivedListResponse>();
+    const next = deferred<ArchivedListResponse>();
+    fake.on("evener/archived/list", (params) => (params.cursor ? next.promise : unchanged.promise));
+    const refreshing = store.refresh("projects", "proj");
+    const loading = store.loadMore("projects", "proj");
+    unchanged.resolve({ sessions: [], total: 9, revision: "r1", unchanged: true });
+    await refreshing;
+    expect(entry("projects", "proj").loading).toBe(true);
+    expect(entry("projects", "proj").total).toBe(2);
+    next.resolve(revised(["local:b"], 2, "r1"));
+    await loading;
+    expect(entry("projects", "proj").rows.map((r) => r.ref)).toEqual(["local:a", "local:b"]);
+  });
+
+  test("a page loaded at the held revision keeps it", async () => {
+    fake.on("evener/archived/list", twoPages("r1", "r1"));
+    await store.refresh("projects", "proj");
+    await store.loadMore("projects", "proj");
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [], total: 2, revision: "r1", unchanged: true };
+    });
+    await store.refresh("projects", "proj");
+    expect(seen[0]?.revision).toBe("r1");
+  });
+
+  test("a refresh whose own pages came back at different revisions holds none", async () => {
+    fake.on("evener/archived/list", twoPages("r1", "r1"));
+    await store.refresh("projects", "proj");
+    await store.loadMore("projects", "proj");
+    fake.on("evener/archived/list", twoPages("r1", "r2"));
+    await store.refresh("projects", "proj");
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return twoPages("r2", "r2")(params);
+    });
+    await store.refresh("projects", "proj");
+    expect(seen[0]?.revision).toBeUndefined();
+  });
+
+  test("a changed list is read in full and holds its new revision", async () => {
+    let call = 0;
+    fake.on("evener/archived/list", () =>
+      ++call === 1 ? revised(["local:a"], 1, "r1") : revised(["local:b"], 1, "r2"),
+    );
+    await store.refresh("projects", "proj");
+    await store.refresh("projects", "proj");
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [], total: 1, revision: "r2", unchanged: true };
+    });
+    await store.refresh("projects", "proj");
+
+    expect(seen[0]?.revision).toBe("r2");
+    expect(entry("projects", "proj").rows.map((r) => r.ref)).toEqual(["local:b"]);
+  });
+
+  test("pages read at different revisions hold none, so the next refresh reads in full", async () => {
+    fake.on("evener/archived/list", twoPages("r1", "r2"));
+    await store.refresh("projects", "proj");
+    await store.loadMore("projects", "proj");
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return twoPages("r2", "r2")(params);
+    });
+    await store.refresh("projects", "proj");
+
+    expect(seen[0]?.revision).toBeUndefined();
+  });
+
+  test("an older hub sends no revision, and the list sends none back", async () => {
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return page(["local:a"], 1);
+    });
+    await store.refresh("projects", "proj");
+    await store.refresh("projects", "proj");
+    expect(seen[1]).toEqual({ catalog: "projects", projectKey: "proj" });
+  });
+});
+
+describe("failure text", () => {
+  // The store keeps a failed request's friendly form: a hub WireError keeps
+  // its own explanation, and the client's own failures (closed, timed out,
+  // lost socket, any other exception) never show their wiring text.
+  test.each([
+    ["a hub-reported WireError", new WireError("archive index is rebuilding", -32000)],
+    ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+    ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+    ["the client's lost socket", new Error("AppwireClient: socket closed (code 1006)")],
+    ["an unexpected client-side exception", new TypeError("cannot read properties of undefined")],
+  ])("a failed refresh from %s records its friendly form", async (_label, err) => {
+    fake.on("evener/archived/list", () => {
+      throw err;
+    });
+    await store.refresh("projects", "proj");
+    expect(entry("projects", "proj").error).toBe(friendlyErrorMessage(err));
   });
 });

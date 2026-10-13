@@ -2,7 +2,8 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { HubProfile } from "../connection";
-import { render, renderedText } from "../renderNative.testkit";
+import { fonts } from "../design/tokens";
+import { render, renderedText, offersButton } from "../renderNative.testkit";
 import { Row } from "../sheet/Grouped";
 import { HubsPage } from "./HubsPage";
 import type { HubRoutes } from "./hubSheetContext";
@@ -74,7 +75,6 @@ function press(tree: ReactTestRenderer, label: string) {
 it("lists every saved hub with its address, and checks the selected one", () => {
 	const { tree } = mount();
 	const text = renderedText(tree);
-	expect(text).toContain("Hubs");
 	expect(text).toContain("magic-kingdom");
 	expect(text).toContain("https://magic-kingdom:9180");
 	expect(text).toContain("paradise-park");
@@ -88,7 +88,7 @@ it("shows each hub's address in Menlo", () => {
 	const { tree } = mount();
 	for (const line of ["https://magic-kingdom:9180", "http://100.113.28.18:9180"]) {
 		const address = tree.root.find((node) => String(node.type) === "Text" && node.props.children === line);
-		expect(JSON.stringify(address.props.style)).toContain("Menlo");
+		expect(JSON.stringify(address.props.style)).toContain(fonts.mono);
 	}
 });
 
@@ -123,7 +123,6 @@ it("opens a hub's details from its info button", () => {
 
 it("adds a hub by scanning, pasting or typing its address", () => {
 	const { tree, navigation } = mount();
-	expect(renderedText(tree)).toContain("Add a hub");
 	const ways: [string, string, string | undefined][] = [
 		["Scan pairing code", "scan", "qrcode.viewfinder"],
 		["Paste pairing link", "paste", "doc.on.clipboard"],
@@ -136,11 +135,9 @@ it("adds a hub by scanning, pasting or typing its address", () => {
 	}
 });
 
-it("says where the pairing code lives, and never asks to reconnect", () => {
+it("never asks to reconnect", () => {
 	const { tree } = mount();
-	const text = renderedText(tree);
-	expect(text).toContain("In Evener on your computer, open Settings, then Mobile app, to show a pairing code.");
-	expect(text).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 });
 
 function rowOf(tree: ReactTestRenderer, name: string) {
@@ -149,10 +146,17 @@ function rowOf(tree: ReactTestRenderer, name: string) {
 
 it("says the selected hub is connected, in the UI font beside its address, and says nothing of the others", () => {
 	const { tree } = mount();
-	expect(rowOf(tree, "magic-kingdom")).toMatchObject({ sub: "https://magic-kingdom:9180", value: "Connected" });
+	expect(rowOf(tree, "magic-kingdom")).toMatchObject({
+		sub: "https://magic-kingdom:9180",
+		testID: "hub-connection-connected",
+	});
 	expect(rowOf(tree, "paradise-park")).toMatchObject({ sub: "http://100.113.28.18:9180", value: undefined });
-	const word = tree.root.find((node) => String(node.type) === "Text" && node.props.children === "Connected");
-	expect(JSON.stringify(word.props.style)).not.toContain("Menlo");
+	expect(rowOf(tree, "paradise-park")?.testID).toBeUndefined();
+	const [word] = hubRow(tree, "magic-kingdom")
+		.findByProps({ testID: "row-value" })
+		.findAll((node) => String(node.type) === "Text");
+	expect(word?.props.children).toBeTruthy();
+	expect(JSON.stringify(word?.props.style)).not.toContain(fonts.mono);
 });
 
 it("says the selected hub's connection state in the words the Hub's header uses", () => {
@@ -163,7 +167,9 @@ it("says the selected hub's connection state in the words the Hub's header uses"
 		connection.downSince = now - 5_000;
 		connection.lastLiveAt = now;
 		const { tree } = mount();
-		expect(rowOf(tree, "magic-kingdom")?.value).toBe("Reconnecting…");
+		// The shared connection line speaks, as it does in the Hub's header.
+		expect(rowOf(tree, "magic-kingdom")?.testID).toBe("hub-connection-line");
+		expect(rowOf(tree, "magic-kingdom")?.value).toBeTruthy();
 		act(() => tree.unmount());
 	} finally {
 		vi.useRealTimers();

@@ -1,11 +1,19 @@
-import { type ActivityJob, type JobLogTail, parseJobLogTail } from "@evener/appwire-client";
+import {
+	type ActivityJob,
+	type DecodedJobOutputPage,
+	decodeJobOutputText,
+	parseJobOutputPage,
+} from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 
 /** A shell job's output as its detail shows it: still being read, not
- * readable (the read failed, or answered with something that isn't a tail),
- * or its tail. */
-export type ShellJobOutput = { status: "reading" } | { status: "failed" } | { status: "read"; tail: JobLogTail };
+ * readable (the read failed, or answered with a malformed page),
+ * or its latest decoded byte page. */
+export type ShellJobOutput =
+	| { status: "reading" }
+	| { status: "failed" }
+	| { status: "read"; page: DecodedJobOutputPage; text: string };
 
 const READING: ShellJobOutput = { status: "reading" };
 
@@ -45,8 +53,12 @@ export function useShellJobOutput(
 				.then(
 					(response) => {
 						if (!current) return;
-						const tail = parseJobLogTail(response.data);
-						setRead({ key, output: tail === null ? { status: "failed" } : { status: "read", tail } });
+						const page = parseJobOutputPage(response.data);
+						setRead({
+							key,
+							output:
+								page === null ? { status: "failed" } : { status: "read", page, text: decodeJobOutputText(page.bytes) },
+						});
 					},
 					() => {
 						if (!current) return;

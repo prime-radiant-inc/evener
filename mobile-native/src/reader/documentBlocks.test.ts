@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { documentBlocks, documentTitle, hashText, outline, plainText } from "./documentBlocks";
+import { documentBlocks, documentTitle, hashText, outline } from "./documentBlocks";
 
 // A markdown code fence, built so this file can sit inside one.
 const FENCE = "`".repeat(3);
@@ -130,23 +130,43 @@ it("reads a setext heading as its words, without its underline", () => {
 	]);
 });
 
+// A one-block document's words.
+const wordsOf = (markdown: string) => documentBlocks(markdown).map((block) => block.text);
+
 it("reads links and images as their words", () => {
-	expect(plainText("See [the plan](docs/plan.md) and ![the diagram](out/d.png).")).toBe(
+	expect(wordsOf("See [the plan](docs/plan.md) and ![the diagram](out/d.png).")).toEqual([
 		"See the plan and the diagram.",
-	);
+	]);
 });
 
 it("reads a link's or image's URL holding a pair of parentheses as its words, leaving none of the URL", () => {
-	expect(plainText("See ![chart](https://x.test/a_(b).png) and [docs](https://x.test/d_(1)) here")).toBe(
+	expect(wordsOf("See ![chart](https://x.test/a_(b).png) and [docs](https://x.test/d_(1)) here")).toEqual([
 		"See chart and docs here",
-	);
-	expect(plainText('A [link](https://x.test/p "a (1) title") and ![img](u.png "fig (2)") end')).toBe(
+	]);
+	expect(wordsOf('A [link](https://x.test/p "a (1) title") and ![img](u.png "fig (2)") end')).toEqual([
 		"A link and img end",
-	);
+	]);
+	expect(wordsOf("See [docs](https://x.test/a_((b))) here")).toEqual(["See docs here"]);
 });
 
 it("still reads a link as its words when its URL's parentheses don't pair up", () => {
-	expect(plainText("An [unbalanced](b(c) link")).toBe("An unbalanced link");
+	expect(wordsOf("An [unbalanced](b(c) link")).toEqual(["An unbalanced link"]);
+});
+
+it("reads a reference link and an image by reference as their words, and drops the definitions", () => {
+	expect(wordsOf("See [the plan][p] and ![a chart][c].\n\n[p]: docs/plan.md\n[c]: out/c.png")).toEqual([
+		"See the plan and a chart.",
+	]);
+});
+
+it("reads an escaped character as itself, without its backslash", () => {
+	expect(wordsOf("Not \\*emphasis\\* and a literal \\[bracket\\].")).toEqual([
+		"Not *emphasis* and a literal [bracket].",
+	]);
+});
+
+it("reads emphasis inside a word and strikethrough as their words", () => {
+	expect(wordsOf("un*frigging*believable and ~~gone~~ text")).toEqual(["unfriggingbelievable and gone text"]);
 });
 
 it("drops inline HTML tags from a block's words, but not inside an inline code span", () => {
@@ -155,17 +175,49 @@ it("drops inline HTML tags from a block's words, but not inside an inline code s
 	expect(paragraph?.markdown).toBe("Some <b>bold</b> text and a `Vec<String>` span.");
 	expect(paragraph?.text).toBe("Some bold text and a Vec<String> span.");
 	expect(documentBlocks("a<br>b")[0]?.text).toBe("ab");
-	expect(documentBlocks("See <https://x.test> too.")[0]?.text).toBe("See <https://x.test> too.");
+	expect(documentBlocks("See <https://x.test> too.")[0]?.text).toBe("See https://x.test too.");
 	expect(documentBlocks('Tags like <span title="a > b">value</span> go.')[0]?.text).toBe("Tags like value go.");
-	expect(documentBlocks("Code ``a`<b>`` done.")[0]?.text).toBe("Code a<b> done.");
+	expect(documentBlocks("Code ``a`<b>`` done.")[0]?.text).toBe("Code a`<b> done.");
+});
+
+it("leaves one space where an inline tag between two words drops", () => {
+	expect(wordsOf("text <!-- c --> more")).toEqual(["text more"]);
+	expect(wordsOf("a <br> b and x <span>y</span> z")).toEqual(["a b and x y z"]);
+	expect(wordsOf("**Note <br>** text and [<br>](u) end")).toEqual(["Note text and end"]);
+	expect(wordsOf("| x <br> | y |\n|---|---|\n| 1 | 2 |")).toEqual(["| x | y |\n| 1 | 2 |"]);
+	expect(wordsOf("| <br> | y |\n|---|---|\n|  | 2 |")).toEqual(["|  | y |\n|  | 2 |"]);
+	expect(wordsOf("a <br> <br> b and x `a  b` <br> y")).toEqual(["a b and x a  b y"]);
+	expect(wordsOf("a <br>\nb")).toEqual(["a\nb"]);
+});
+
+it("keeps a code span's own edge spaces beside a dropped tag", () => {
+	expect(wordsOf("x `a  ` <br> z")).toEqual(["x a   z"]);
+	expect(wordsOf("x <br> `  a` y")).toEqual(["x   a y"]);
+	expect(wordsOf("| `x ` <br> y | z |\n|---|---|\n| 1 | 2 |")).toEqual(["| x  y | z |\n| 1 | 2 |"]);
+	// At a line's or cell's edge a code span's spaces trim as before, so a
+	// heading of only a blank code span still leaves the title to the file name.
+	expect(wordsOf("| `  x  ` | y |\n|---|---|\n| 1 | 2 |")).toEqual(["| x | y |\n| 1 | 2 |"]);
+	expect(documentTitle(documentBlocks("# ` `"), "docs/notes.md")).toBe("notes.md");
+	expect(wordsOf("`  a  `")).toEqual(["a"]);
+});
+
+it("reads a NUL in the source as U+FFFD, as CommonMark does, instead of dropping it", () => {
+	expect(wordsOf("a\u0000b and c \u0000 d")).toEqual(["a\uFFFDb and c \uFFFD d"]);
+});
+
+it("reads a table cell's escaped pipe as a pipe in the cell, not a column", () => {
+	expect(wordsOf("| a \\| b | c |\n|---|---|\n| `x \\| y` | z |")).toEqual(["| a \\| b | c |\n| x \\| y | z |"]);
 });
 
 it("keeps an html block's markup but still strips its markdown", () => {
 	expect(documentBlocks("<div>\n**bold**\n</div>")[0]?.text).toBe("<div>\nbold\n</div>");
+	expect(documentBlocks("<div>\n# heading\n- item\n> quote\n</div>")[0]?.text).toBe(
+		"<div>\nheading\nitem\nquote\n</div>",
+	);
 });
 
-it("protects a code span that runs across lines from tag stripping", () => {
-	expect(documentBlocks("`before\n<b>\nafter`")[0]?.text).toBe("before\n<b>\nafter");
+it("reads a code span that runs across lines on one line, as it's drawn, keeping its tags", () => {
+	expect(documentBlocks("`before\n<b>\nafter`")[0]?.text).toBe("before <b> after");
 });
 
 it("hashes the same text the same way every time, and different text differently", () => {

@@ -1,10 +1,10 @@
-import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
+import type { SessionActivity } from "@evener/appwire-client";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PulseMeter } from "../board/PulseMeter";
 import { palettes } from "../design/tokens";
-import { pressable, render, renderHook, renderedText } from "../renderNative.testkit";
+import { pressable, render, renderHook, renderedText, textOf, unmountMountedTrees } from "../renderNative.testkit";
 import { LiveStatusTray, StatusTray, useFrameCounter } from "./StatusTray";
 import { FrameCounter, type TraySource } from "./trayLine";
 
@@ -58,7 +58,9 @@ describe("StatusTray", () => {
 	it("has no Stop when the turn cannot be stopped", () => {
 		const { tree } = tray({ canStop: false });
 		expect(pressable(tree, "Stop")).toBeUndefined();
-		expect(renderedText(tree)).not.toContain("Stop");
+		// One control fewer than a tray that can stop.
+		const controls = (of: ReactTestRenderer) => of.root.findAll((node) => String(node.type) === "Pressable").length;
+		expect(controls(tree)).toBe(controls(tray().tree) - 1);
 	});
 
 	it("labels Stop and calls onStop when it is pressed", () => {
@@ -127,16 +129,17 @@ describe("LiveStatusTray", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-09-26T12:00:00Z"));
 	});
-	afterEach(() => vi.useRealTimers());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.useRealTimers();
+	});
 
-	function live(source: TraySource | null, frames = new FrameCounter(), client: FakeClient | null = null) {
+	function live(source: TraySource | null, frames = new FrameCounter(), activity?: SessionActivity) {
 		return (
 			<LiveStatusTray
 				session={source}
 				frames={frames}
-				client={client}
-				sessionRef="local:root"
-				inFront
+				activity={activity}
 				connected
 				canStop
 				stopping={false}
@@ -149,12 +152,14 @@ describe("LiveStatusTray", () => {
 	it("ticks once a second while the agent works, and runs no timer at rest", () => {
 		const start = Date.now();
 		const tree = render(live(session(true, start)));
-		expect(renderedText(tree)).toContain("Working");
+		const working = textOf(lineText(tree));
 		expect(vi.getTimerCount()).toBe(1);
 		act(() => {
 			vi.advanceTimersByTime(21_000);
 		});
-		expect(renderedText(tree)).toContain("Quiet 21s");
+		// Gone quiet, the line says for how long.
+		expect(textOf(lineText(tree))).not.toBe(working);
+		expect(textOf(lineText(tree))).toContain("21s");
 
 		act(() => tree.update(live(session(false, start))));
 		expect(tree.toJSON()).toBeNull();
@@ -164,43 +169,11 @@ describe("LiveStatusTray", () => {
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
-	it("polls the hub's activity for its own session only while the agent works, and names its count", async () => {
-		const client = new FakeClient("ready");
-		client.on("evener/activity/read", () => ({
-			sessions: [rootRead(3)],
-		}));
-		const tree = render(live(session(true, Date.now()), new FrameCounter(), client));
-		await act(async () => {});
-		expect(client.calls).toEqual([{ method: "evener/activity/read", params: { refs: ["local:root"] } }]);
-		expect(renderedText(tree)).toContain("Waiting on 3 subagents");
-
-		act(() => tree.update(live(session(false, Date.now()), new FrameCounter(), client)));
-		act(() => {
-			vi.advanceTimersByTime(30_000);
-		});
-		expect(client.calls).toHaveLength(1);
-		expect(vi.getTimerCount()).toBe(0);
-	});
-
-	it("never shows the count from before an idle spell once the agent works again", async () => {
-		const client = new FakeClient("ready");
-		const reads = gateSettlements(client, "evener/activity/read");
-		const tree = render(live(session(true, Date.now()), new FrameCounter(), client));
-		await act(async () => {});
-		await act(async () => {
-			reads[0]?.resolve({ sessions: [rootRead(3)] });
-		});
-		expect(renderedText(tree)).toContain("Waiting on 3 subagents");
-
-		act(() => tree.update(live(session(false, Date.now()), new FrameCounter(), client)));
-		await act(async () => tree.update(live(session(true, Date.now()), new FrameCounter(), client)));
-		expect(reads).toHaveLength(2);
-		expect(renderedText(tree)).not.toContain("Waiting on 3 subagents");
-
-		await act(async () => {
-			reads[1]?.resolve({ sessions: [rootRead(5)] });
-		});
-		expect(renderedText(tree)).toContain("Waiting on 5 subagents");
+	it("names the running count from the activity read it is given", () => {
+		const tree = render(live(session(true, Date.now()), new FrameCounter(), rootRead(3)));
+		expect(textOf(lineText(tree))).toContain("3");
+		act(() => tree.update(live(session(true, Date.now()), new FrameCounter(), rootRead(5))));
+		expect(textOf(lineText(tree))).toContain("5");
 	});
 
 	it("shows the one-bar fallback until a frame arrives, then this phone's counts", () => {

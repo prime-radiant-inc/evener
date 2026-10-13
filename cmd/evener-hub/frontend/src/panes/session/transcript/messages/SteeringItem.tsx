@@ -29,87 +29,27 @@
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 
 import {
+  isParentSteer,
   isSuppressedSteeringKind,
+  labelledSteeringKind,
   steeringLabel,
   steeringNotificationFragments,
   stripSystemReminder,
 } from "@evener/appwire-client";
 import { memo, useMemo } from "react";
-import { Chevron, SteeringGlyph } from "../../../../widgets";
-import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
-import { requireClass } from "../../../../widgets/internal/requireClass";
-import { itemScopeKey } from "../tools/subagentModuleStore";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import { NotificationCard } from "./NotificationCard";
-import styles from "./steeringitem.module.css";
+import { SteeringDivider } from "./SteeringDivider";
 import { UserMessageView } from "./UserMessageItem";
-
-const CLASS = {
-  details: requireClass(styles.details, "steeringitem.module.css", "details"),
-  summary: requireClass(styles.summary, "steeringitem.module.css", "summary"),
-  railIcon: requireClass(styles.railIcon, "steeringitem.module.css", "railIcon"),
-  label: requireClass(styles.label, "steeringitem.module.css", "label"),
-  chevron: requireClass(styles.chevron, "steeringitem.module.css", "chevron"),
-  body: requireClass(styles.body, "steeringitem.module.css", "body"),
-};
-
-// The quiet collapsed-by-default steering divider (parity-m4 §8:
-// appendSteeringDivider) - summary is the glyph, the kind label (or the bare
-// fallback), and a trailing chevron; body is the verbatim steered text in a
-// <pre> (never re-rendered as markdown). Open/closed state lives in the
-// shared disclosureStore keyed by session ref plus item id, so an expanded
-// divider survives a remount without colliding with another session's item.
-// Collapsed by default.
-function SteeringDivider({
-  id,
-  label,
-  text,
-  sessionRef,
-}: {
-  id: string;
-  label: string;
-  text: string;
-  sessionRef?: string;
-}) {
-  const disclosureKey = itemScopeKey(sessionRef, id);
-  const open = isDisclosureOpen(disclosureKey, false);
-  return (
-    <details className={CLASS.details} data-testid="steering-item" open={open}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
-      <summary
-        className={CLASS.summary}
-        onClick={(e) => {
-          e.preventDefault();
-          toggleDisclosure(disclosureKey, false);
-        }}
-      >
-        {/* The diamond rails with the thought/tool kind icons (Jesse's
-            unification call): a run row with an empty rail reads as
-            "weirdly indented". The slot span carries the rail geometry
-            (--speaker-avatar-size wide, 50% opacity); the summary itself
-            takes the gutter pull above the breakpoint, same container-pull
-            mechanism as thinkblock's. */}
-        <span className={CLASS.railIcon} data-testid="steering-rail-icon" aria-hidden="true">
-          <SteeringGlyph />
-        </span>
-        <span className={CLASS.label}>{label}</span>
-        <span
-          className={CLASS.chevron}
-          aria-hidden="true"
-          data-open={open ? "true" : "false"}
-          data-testid="steering-chevron"
-        >
-          <Chevron />
-        </span>
-      </summary>
-      <pre className={CLASS.body}>{text}</pre>
-    </details>
-  );
-}
 
 export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: ItemRenderProps) {
   // Parsed once per text: a live turn re-renders this row on every publish.
-  const fragments = useMemo(() => steeringNotificationFragments(item.text ?? ""), [item.text]);
+  // A parent's message is conversation, so quoted notification tags in it are
+  // text, never cards.
+  const fragments = useMemo(
+    () => (isParentSteer(item.source) ? null : steeringNotificationFragments(item.text ?? "")),
+    [item.source, item.text],
+  );
   // The human-note steer rides the user-sourced steering rail (it interrupts
   // via the client-mutation steer path) but carries the human-note kind, and
   // the kind selects the divider: it labels the human's whiteboard update
@@ -118,7 +58,13 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   if (item.steeringKind === "human-note") {
     if (!item.text) return null; // no text, no images path here - nothing to show
     return (
-      <SteeringDivider id={item.id} label={steeringLabel("human-note")} text={item.text} sessionRef={sessionRef} />
+      <SteeringDivider
+        id={item.id}
+        label={steeringLabel("human-note")}
+        kind="human-note"
+        text={item.text}
+        sessionRef={sessionRef}
+      />
     );
   }
   // opensExchange={false}: a steer the human typed lands MID-turn, interrupting
@@ -131,7 +77,10 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // Card routing stays content-driven: the trigger is <job-notification>
   // markup, which cannot false-positive, so a steer projected before the kind
   // field existed still renders its cards.
-  const label = steeringLabel(item.steeringKind);
+  const label = steeringLabel(item.steeringKind, item.source);
+  // What the label names: the parent speaking, or the kind it labels (none
+  // for a kind this build has no label for).
+  const kind = isParentSteer(item.source) ? "parent" : labelledSteeringKind(item.steeringKind);
   if (fragments) {
     return (
       <>
@@ -171,6 +120,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
               key={index}
               id={`${item.id}:${index}`}
               label={label}
+              kind={kind}
               text={fragment.text}
               sessionRef={sessionRef}
             />
@@ -180,7 +130,8 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
     );
   }
 
-  return <SteeringDivider id={item.id} label={label} text={stripSystemReminder(item.text)} sessionRef={sessionRef} />;
+  const text = isParentSteer(item.source) ? item.text : stripSystemReminder(item.text);
+  return <SteeringDivider id={item.id} label={label} kind={kind} text={text} sessionRef={sessionRef} />;
 }, ignoringTurn);
 
 registerItemRenderer("steering", SteeringItem);

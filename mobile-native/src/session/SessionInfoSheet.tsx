@@ -8,6 +8,7 @@ import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-n
 import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
+import { taskSettledCount } from "@evener/appwire-client";
 import { markFor } from "../board/StateMark";
 import { space } from "../design/tokens";
 import { useReadingType } from "../display/displayContext";
@@ -147,7 +148,7 @@ function SessionInfoBody({
 		if (!host.controls || !ready) return;
 		if ((await host.controls.rename(editing.text)) === true) {
 			setEditing(null);
-			toast.show({ text: "Session renamed" });
+			toast.show({ kind: "rename:done", text: "Session renamed" });
 		}
 	};
 	const error = state?.error && !(state.lastAction && MODEL_ACTIONS.has(state.lastAction)) ? state.error : null;
@@ -166,7 +167,7 @@ function SessionInfoBody({
 				<StateLine session={session} runMs={host.runMs} />
 			</View>
 
-			<Group label="Where">
+			<Group section="where" label="Where">
 				<Row
 					icon="server.rack"
 					label={where.host}
@@ -180,7 +181,7 @@ function SessionInfoBody({
 				{where.branch ? <Row icon="arrow.triangle.branch" label={where.branch} /> : null}
 			</Group>
 
-			<Group label="Model">
+			<Group section="model" label="Model">
 				<Row
 					icon="cpu"
 					label={host.modelLabel}
@@ -204,7 +205,7 @@ function SessionInfoBody({
 
 			{plugins ? (
 				<>
-					<Group label="Plugins">
+					<Group section="plugins" label="Plugins">
 						<Row label={plugins.line} />
 						{plugins.names.length > 0 ? (
 							<View style={{ paddingHorizontal: 16, paddingVertical: 8, gap: 2 }}>
@@ -221,14 +222,14 @@ function SessionInfoBody({
 			) : null}
 
 			{access ? (
-				<Group label="Access">
+				<Group section="access" label="Access">
 					<Row label="Sandbox" value={access.mode} />
 					<Row label="Network" value={access.network} />
 				</Group>
 			) : null}
 
 			{Object.keys(usage).length > 0 ? (
-				<Group label="Usage">
+				<Group section="usage" label="Usage">
 					{usage.tokens ? <Row label={usage.tokens} sub={usage.split} /> : null}
 					{usage.cost ? <Row label="Cost" value={usage.cost} /> : null}
 					{usage.workTime ? <Row label="Work time" value={usage.workTime} /> : null}
@@ -238,11 +239,14 @@ function SessionInfoBody({
 			) : null}
 
 			{session.goal || capabilities.goal ? (
-				<Group label="Goal">
+				<Group section="goal" label="Goal">
 					{session.goal ? (
 						<View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 4 }}>
 							{session.goal.objective ? <Serif>{session.goal.objective}</Serif> : null}
-							<Quiet tone={session.goal.status === "blocked" ? "attention" : "mid"}>
+							<Quiet
+								testID={`goal-status:${session.goal.status}`}
+								tone={session.goal.status === "blocked" ? "attention" : "mid"}
+							>
 								{GOAL_STATUS[session.goal.status] ?? session.goal.status}
 							</Quiet>
 						</View>
@@ -267,10 +271,10 @@ function SessionInfoBody({
 			) : null}
 
 			{session.tasks?.total ? (
-				<Group label="Tasks">
+				<Group section="tasks" label="Tasks">
 					{session.tasks.current ? <Row label={session.tasks.current.description} /> : null}
 					<Row
-						label={`Tasks · ${session.tasks.done} of ${session.tasks.total}`}
+						label={`Tasks · ${taskSettledCount(session.tasks)} of ${session.tasks.total}`}
 						chevron
 						onPress={() =>
 							navigation.navigate("TasksSheet", {
@@ -285,7 +289,7 @@ function SessionInfoBody({
 			) : null}
 
 			{capabilities.sharedNotes ? (
-				<Group label="Notes & links">
+				<Group section="notes" label="Notes & links">
 					<Row
 						label="Notes & links"
 						value={notesSummary(session)}
@@ -295,7 +299,7 @@ function SessionInfoBody({
 				</Group>
 			) : null}
 
-			<Group label="Actions">
+			<Group section="actions" label="Actions">
 				{capabilities.forkFromTurn ? (
 					<Row label="Aside" tone="accent" disabled={!ready} onPress={() => leaveFor("aside")} />
 				) : null}
@@ -407,6 +411,7 @@ function StateLine({ session, runMs }: { session: MobileConversation; runMs(now:
 				<SymbolView name={mark.name} tintColor={palette[mark.tint]} size={Math.min(mark.size, 15) * scale} />
 			) : null}
 			<Text
+				testID={`session-state:${line.state}`}
 				allowFontScaling={allowFontScaling}
 				style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale, fontVariant: ["tabular-nums"] }}
 			>
@@ -474,8 +479,10 @@ function Quiet({
 	children,
 	small = false,
 	tone = "mid",
+	testID,
 }: {
 	children: string;
+	testID?: string;
 	small?: boolean;
 	tone?: "mid" | "attention";
 }) {
@@ -483,6 +490,7 @@ function Quiet({
 	const scale = useTextScale();
 	return (
 		<Text
+			testID={testID}
 			allowFontScaling={allowFontScaling}
 			style={{
 				fontSize: (small ? 13 : 15) * scale,

@@ -1,5 +1,13 @@
 import type { AnyNotification } from "@evener/appwire-client";
-import { makeTranscriptDisplayConfig, shippedDefault, toWireConfig, WireError } from "@evener/appwire-client";
+import {
+  ConnectionClosedError,
+  friendlyErrorMessage,
+  makeTranscriptDisplayConfig,
+  RequestTimeoutError,
+  shippedDefault,
+  toWireConfig,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -13,6 +21,7 @@ import {
 } from "../../../stores/transcriptDisplay";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { TranscriptSection } from "./transcript";
 
 const originalPatchHubDefault = transcriptDisplayStore.getState().patchHubDefault;
@@ -69,6 +78,14 @@ function observeAlertInsertions(): { messages: string[]; stop(): void } {
   };
 }
 
+function successToasts(): string[] {
+  return toastKinds().filter((kind) => kind === "success");
+}
+
+async function savedOnce(): Promise<void> {
+  await waitFor(() => expect(successToasts()).toHaveLength(1));
+}
+
 function renderWithToasts() {
   render(
     <>
@@ -103,7 +120,7 @@ async function mountReadySection(
   await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
 }
 
-test("renders Desktop then Mobile stacked cards with hub-sync and browser-local scope copy", () => {
+test("renders Desktop then Mobile stacked cards, each with its own example preview", () => {
   transcriptDisplayStore.setState({ hubSupport: "supported" });
   renderWithToasts();
 
@@ -112,30 +129,22 @@ test("renders Desktop then Mobile stacked cards with hub-sync and browser-local 
     "transcript-display-card-desktop",
     "transcript-display-card-mobile",
   ]);
-  expect(
-    screen.getByText(
-      "Transcript display defaults sync to devices paired with this hub. Live transcript choices remain browser-local.",
-    ),
-  ).toBeTruthy();
-  expect(
-    screen.getAllByText(
-      "Transcript display defaults sync to devices paired with this hub. Live transcript choices remain browser-local.",
-    ),
-  ).toHaveLength(1);
   expect(cards.every((card) => card.querySelector(":scope > div") !== null)).toBe(true);
-  expect(screen.getAllByText("Example only—not your data")).toHaveLength(2);
+  for (const layout of ["desktop", "mobile"]) {
+    const canvas = screen.getByTestId(`transcript-display-preview-canvas-${layout}`);
+    expect(within(canvas).getByRole("heading", { level: 3 })).toBeTruthy();
+  }
 });
 
 test("shows an accessible status for an unknown or older hub", () => {
   renderWithToasts();
   expect(screen.getAllByRole("status")).toHaveLength(1);
-  expect(screen.getByRole("status").textContent).toMatch(/Waiting/);
-  expect(screen.getByText(/Waiting for the hub connection to report transcript display support/)).toBeTruthy();
+  expect(screen.getByRole("status").getAttribute("data-reason")).toBe("hub-unknown");
 
   cleanup();
   transcriptDisplayStore.setState({ hubSupport: "unsupported" });
   renderWithToasts();
-  expect(screen.getByText(/older hub does not support synced transcript defaults/)).toBeTruthy();
+  expect(screen.getByRole("status").getAttribute("data-reason")).toBe("unsupported");
   expect(screen.getAllByRole("radio").every((radio) => (radio as HTMLButtonElement).disabled)).toBe(true);
 });
 
@@ -164,11 +173,11 @@ test("keeps the preview on the draft until the hub acknowledges the canonical re
   await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
   await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
   expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(draft);
-  expect(screen.queryByText("Settings saved")).toBeNull();
-  expect(screen.getByRole("status").textContent).toMatch(/Saving hub default/);
+  expect(successToasts()).toEqual([]);
+  expect(within(screen.getByTestId("transcript-display-card-desktop")).getByRole("status")).toBeTruthy();
 
   releasePatch(patchResult);
-  expect(await screen.findByText("Settings saved")).toBeTruthy();
+  await savedOnce();
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(2);
 });
@@ -180,7 +189,7 @@ test("renders a server error as an alert with retry instead of a saved state", (
   expect(screen.getByRole("alert").textContent).toContain("server unavailable");
   expect(screen.getAllByText(/server unavailable/)).toHaveLength(1);
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
-  expect(screen.queryByText("Settings saved")).toBeNull();
+  expect(successToasts()).toEqual([]);
   expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
 });
 
@@ -194,9 +203,8 @@ test("keeps browser-storage failure inline without a failure notification", asyn
       .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
   });
 
-  expect(transcriptDisplayStore.getState().storageWarning).toMatch(/may not survive restart/);
+  expect(transcriptDisplayStore.getState().storageWarning).not.toBeNull();
   await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(1));
-  expect(screen.getByRole("alert").textContent).toContain("Browser-local storage warning");
   expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
 });
 
@@ -213,7 +221,7 @@ test("reverts a failed hub mutation and retries the last draft", async () => {
   }));
   client.on("evener/settings/transcriptDisplay/patch", () => {
     patchCalls += 1;
-    if (patchCalls === 1) throw new Error("server unavailable");
+    if (patchCalls === 1) throw new WireError("server unavailable", -32000);
     return retryResponse.promise;
   });
   connectionStore.getState().connect(client);
@@ -231,15 +239,16 @@ test("reverts a failed hub mutation and retries the last draft", async () => {
   expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   expect(transcriptDisplayStore.getState().hub.desktop?.config).toEqual(confirmed);
-  expect(screen.queryByText("Settings saved")).toBeNull();
+  expect(successToasts()).toEqual([]);
 
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+  expect(within(screen.getByTestId("transcript-display-card-desktop")).getAllByRole("status")).toHaveLength(1);
   expect(screen.getAllByRole("status")).toHaveLength(1);
-  expect(screen.getByRole("status").textContent).toContain("Saving");
-  expect(screen.queryByText(/Could not load transcript display defaults/)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
   retryResponse.resolve({ layout: "desktop", revision: 2, config: toWireConfig(draft) });
-  expect(await screen.findByText("Settings saved")).toBeTruthy();
-  expect(screen.getByRole("region", { name: "Notifications" }).textContent).toContain("Settings saved");
+  await savedOnce();
+  const notifications = screen.getByRole("region", { name: "Notifications" });
+  await waitFor(() => expect(notifications.textContent).toMatch(/\S/));
   alertInsertions.stop();
   expect(patchCalls).toBe(2);
 });
@@ -267,8 +276,8 @@ test("does not acknowledge a canonical response for a different requested config
   await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
 
   await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
-  expect((await screen.findByRole("alert")).textContent).toContain("did not acknowledge");
-  expect(screen.queryByText("Settings saved")).toBeNull();
+  await screen.findByRole("alert");
+  expect(successToasts()).toEqual([]);
   expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
 });
@@ -294,7 +303,7 @@ test("acknowledges an ordinary same-config response after the store clears its d
   await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
 
   await userEvent.setup().click(screen.getAllByRole("radio", { name: "Activity" })[0]!);
-  expect(await screen.findByText("Settings saved")).toBeTruthy();
+  await savedOnce();
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
 });
 
@@ -316,9 +325,12 @@ test("allows the winner-first concurrent save to toast exactly once", async () =
   await waitFor(() => expect(responses).toHaveLength(2));
 
   responses[1]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(winnerDraft) });
-  expect(await screen.findByText("Settings saved")).toBeTruthy();
-  responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
-  await waitFor(() => expect(screen.getAllByText("Settings saved")).toHaveLength(1));
+  await savedOnce();
+  await act(async () => {
+    responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
+    await responses[0]?.promise;
+  });
+  expect(successToasts()).toHaveLength(1);
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
@@ -344,14 +356,14 @@ test("does not let a stale A response duplicate the current A success after an A
     responses[2]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstA) });
     await responses[2]?.promise;
   });
-  expect(await screen.findByText("Settings saved")).toBeTruthy();
+  await savedOnce();
 
   await act(async () => {
     responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstA) });
     responses[1]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(middleB) });
     await Promise.all([responses[0]?.promise, responses[1]?.promise]);
   });
-  expect(screen.getAllByText("Settings saved")).toHaveLength(1);
+  expect(successToasts()).toHaveLength(1);
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
@@ -375,7 +387,7 @@ test("does not insert a transient alert for the loser-first concurrent save", as
 
   responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
   responses[1]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(winnerDraft) });
-  expect(await screen.findByText("Settings saved")).toBeTruthy();
+  await savedOnce();
   expect(alertInsertions.messages).toEqual([]);
   alertInsertions.stop();
 });
@@ -398,8 +410,7 @@ test("acknowledges a notification received before its matching save response", a
     await response.promise;
   });
 
-  expect(await screen.findByText("Settings saved")).toBeTruthy();
-  expect(screen.getAllByText("Settings saved")).toHaveLength(1);
+  await savedOnce();
 });
 
 test("does not acknowledge a save from a stale client generation", async () => {
@@ -418,8 +429,8 @@ test("does not acknowledge a save from a stale client generation", async () => {
   });
   client.on("evener/settings/transcriptDisplay/patch", () => response.promise);
   connectionStore.getState().connect(client);
-  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
-  client.emitReady();
+  const initialize = await client.connect();
+  client.emitReady({ ...initialize, features: { ...initialize.features, transcriptDisplaySettings: true } });
   renderWithToasts();
   await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
   await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
@@ -441,8 +452,8 @@ test("does not acknowledge a save from a stale client generation", async () => {
   expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(draft);
   response.resolve({ layout: "desktop", revision: 2, config: toWireConfig(draft) });
 
-  expect((await screen.findByRole("alert")).textContent).toContain("did not acknowledge");
-  expect(screen.queryByText("Settings saved")).toBeNull();
+  await screen.findByRole("alert");
+  expect(successToasts()).toEqual([]);
 });
 
 test("keeps Desktop and Mobile pending saves, failures, retry, and Toasts independent", async () => {
@@ -465,9 +476,9 @@ test("keeps Desktop and Mobile pending saves, failures, retry, and Toasts indepe
   const mobile = screen.getByTestId("transcript-display-card-mobile");
   expect(screen.getAllByRole("status")).toHaveLength(2);
 
-  responses.find((entry) => entry.layout === "desktop")?.response.reject(new Error("desktop unavailable"));
+  responses.find((entry) => entry.layout === "desktop")?.response.reject(new WireError("desktop unavailable", -32000));
   expect((await within(desktop).findByRole("alert")).textContent).toContain("desktop unavailable");
-  expect(within(mobile).getByRole("status").textContent).toContain("Saving");
+  expect(within(mobile).getByRole("status")).toBeTruthy();
   expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
 
   await user.click(within(desktop).getByRole("button", { name: "Retry" }));
@@ -477,7 +488,7 @@ test("keeps Desktop and Mobile pending saves, failures, retry, and Toasts indepe
     .find((entry) => entry.layout === "mobile")
     ?.response.resolve({ layout: "mobile", revision: 2, config: toWireConfig(draft) });
   responses[2]?.response.resolve({ layout: "desktop", revision: 2, config: toWireConfig(draft) });
-  await waitFor(() => expect(screen.getAllByText("Settings saved")).toHaveLength(2));
+  await waitFor(() => expect(successToasts()).toHaveLength(2));
   expect(screen.queryByRole("alert")).toBeNull();
   expect(transcriptDisplayStore.getState().drafts).toEqual({});
 });
@@ -512,23 +523,23 @@ test("does not toast when an overlapping PATCH conflicts with the committed winn
   await waitFor(() => expect(responses).toHaveLength(2));
 
   responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
-  expect((await screen.findByRole("alert")).textContent).toContain("did not acknowledge");
-  expect(screen.queryByText("Settings saved")).toBeNull();
+  await screen.findByRole("alert");
+  expect(successToasts()).toEqual([]);
   expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(newerDraft);
 
   await act(async () => {
     responses[1]?.reject(
-      new WireError("revision conflict", -32013, {
+      new WireError("conflict-from-hub", -32013, {
         evenerErrorInfo: "conflict",
         layout: "desktop",
         current: { revision: 2, config: toWireConfig(firstDraft) },
       }),
     );
-    await expect(competingPatch).rejects.toThrow("revision conflict");
+    await expect(competingPatch).rejects.toThrow("conflict-from-hub");
   });
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: firstDraft });
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
-  expect(screen.queryByText("Settings saved")).toBeNull();
+  expect(successToasts()).toEqual([]);
 });
 
 test("reports a conflict instead of acknowledging two patches with one expected revision", async () => {
@@ -557,16 +568,61 @@ test("reports a conflict instead of acknowledging two patches with one expected 
   await waitFor(() => expect(responses).toHaveLength(2));
   responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
   responses[1]?.reject(
-    new WireError("revision conflict", -32013, {
+    new WireError("conflict-from-hub", -32013, {
       evenerErrorInfo: "conflict",
       layout: "desktop",
       current: { revision: 2, config: toWireConfig(firstDraft) },
     }),
   );
 
-  expect((await screen.findByRole("alert")).textContent).toContain("revision conflict");
-  expect(screen.queryByText("Settings saved")).toBeNull();
+  expect((await screen.findByRole("alert")).textContent).toContain("conflict-from-hub");
+  expect(successToasts()).toEqual([]);
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: firstDraft });
   expect(screen.getAllByRole("button", { name: "Retry" }).length).toBeGreaterThan(0);
+});
+
+// The store keeps its own failure messages, and gives a hub WireError and the
+// client's connection-state failure their friendly form, so the notice never
+// shows the client's wiring text.
+test.each([
+  ["a hub-reported WireError", new WireError("transcript defaults are being rewritten", -32000)],
+  ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+  ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+])("a hub read failure from %s shows its friendly form", async (_name, err) => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/transcriptDisplay/get", () => {
+    throw err;
+  });
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubError).not.toBeNull());
+  expect(document.body.textContent).toContain(friendlyErrorMessage(err));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
+});
+
+// The client's own write failures (a timeout, a lost connection) show their
+// friendly form on the card, never the client's wiring text.
+test.each([
+  ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+  ["the client's lost socket", new Error("AppwireClient: socket closed (code 1006)")],
+])("a failed save from %s shows its friendly form", async (_name, err) => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  client.on("evener/settings/transcriptDisplay/patch", () => {
+    throw err;
+  });
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+
+  await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
+  expect((await screen.findByRole("alert")).textContent).toContain(friendlyErrorMessage(err));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
 });

@@ -4,16 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -270,6 +277,142 @@ func TestSummarizeToolResult_Glob(t *testing.T) {
 	want := `[glob: "*.go" → 3 files]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestSummarizeToolResult_SearchNotes summarizes real grep and glob results
+// (agent/testdata/toolwire): a note the tool puts after a blank line is not a
+// match, and the summary keeps it, so a compacted search still says it was cut
+// short or left paths out (#4186).
+func TestSummarizeToolResult_SearchNotes(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/toolwire/calls.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Items []appwire.ThreadItem `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	args, outputs := map[string]string{}, map[string]string{}
+	for _, item := range fixture.Items {
+		if item.ArgumentsJSON != "" {
+			args[item.CallID] = item.ArgumentsJSON
+		}
+		if item.Output != "" {
+			outputs[item.CallID] = item.Output
+		}
+	}
+	for _, tc := range []struct{ call, tool, want string }{
+		{"call_grep_capped", "grep", `[grep: "package|func" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`},
+		{"call_glob_excluded", "glob", `[glob: "**/plan.md" → 0 files; 0 matches after excluding 1 dotfile/gitignored path(s); set include_ignored to include them]`},
+	} {
+		if got := summarizeToolResult(tc.tool, outputs[tc.call], json.RawMessage(args[tc.call])); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.call, got, tc.want)
+		}
+	}
+}
+
+// memory_search writes grep's output, so it summarizes like grep: entries
+// counted, notes kept.
+func TestSummarizeToolResult_MemorySearch(t *testing.T) {
+	output := "notes.md:1:x\n\n[results truncated at 1; narrow the path or glob_filter, or raise max_results]"
+	got := summarizeToolResult("memory_search", output, json.RawMessage(`{"pattern":"x"}`))
+	want := `[memory_search: "x" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A breaker nudge the registry appended to a repeated search
+// (agent/internal/tool appendIntervention) is not a note about the search, so
+// the summary must not show it as one. A search that wrote no notes of its own
+// is the case a positional rule (notes end at the second blank line) cannot
+// tell apart, and the case the issue named (#4223). The repeated result comes
+// from the registry itself, so no nudge text is copied here and the producer
+// and this reader are pinned to each other.
+func TestSummarizeToolResult_RepeatedSearchNudgeIsNotANote(t *testing.T) {
+	for _, tc := range []struct{ name, tool, body, want string }{
+		{
+			name: "a repeated grep with no notes of its own",
+			tool: "grep",
+			body: "a.go:1:x\nb.go:2:x",
+			want: `[grep: "x" → 2 matches]`,
+		},
+		{
+			name: "a repeated grep keeps its own note",
+			tool: "grep",
+			body: "a.go:1:x\n\nSENTINEL-NOTE",
+			want: `[grep: "x" → 1 matches; SENTINEL-NOTE]`,
+		},
+		{
+			name: "a repeated memory_search with no notes of its own",
+			tool: "memory_search",
+			body: "notes.md:1:x",
+			want: `[memory_search: "x" → 1 matches]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repeated := repeatedToolOutput(t, tc.tool, tc.body)
+			got := summarizeToolResult(tc.tool, repeated, json.RawMessage(`{"pattern":"x"}`))
+			if got != tc.want {
+				t.Fatalf("a repeated %s's nudge read as one of its notes: got %q, want %q", tc.tool, got, tc.want)
+			}
+		})
+	}
+}
+
+// repeatedToolOutput runs toolName twice through a registry whose executor
+// returns body, so the second result carries the registry's own repetition
+// nudge for a repeated identical call. It fails when the second call drew no
+// intervention, so a summarizer case cannot pass by never seeing one.
+func repeatedToolOutput(t *testing.T, toolName, body string) string {
+	t.Helper()
+	reg := tool.NewRegistry()
+	if err := reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: toolName},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return body, nil
+		},
+		Limit: schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: schema.TruncHeadCount},
+	}); err != nil {
+		t.Fatalf("register %s: %v", toolName, err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	call := llm.ToolCallData{ID: "c1", Name: toolName, Arguments: json.RawMessage(`{"pattern":"x"}`)}
+	first := reg.ExecuteCall(context.Background(), env, call)
+	repeated := reg.ExecuteCall(context.Background(), env, call)
+	if len(repeated.Output) <= len(first.Output) {
+		t.Fatalf("the repeated %s call drew no intervention: first %q, second %q", toolName, first.Output, repeated.Output)
+	}
+	return repeated.Output
+}
+
+// A search's own notes are kept, however many blocks they span. Opaque
+// sentinels stand in for the notes, so this pins that the notes cross the
+// summarizer without hardcoding any of the tools' or the registry's wording.
+func TestSummarizeToolResult_SearchKeepsItsNotes(t *testing.T) {
+	for _, tc := range []struct{ name, tool, output, want string }{
+		{
+			name:   "one note the tool wrote",
+			tool:   "grep",
+			output: "a.go:1:x\n\nSENTINEL-NOTE",
+			want:   `[grep: "x" → 1 matches; SENTINEL-NOTE]`,
+		},
+		{
+			name:   "two blocks, the second the registry's marker",
+			tool:   "glob",
+			output: "a.go\n\nSENTINEL-TOOL-NOTE\n\nSENTINEL-MARKER",
+			want:   `[glob: "x" → 1 files; SENTINEL-TOOL-NOTE; SENTINEL-MARKER]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := summarizeToolResult(tc.tool, tc.output, json.RawMessage(`{"pattern":"x"}`))
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -861,7 +1004,7 @@ func TestSummarizeWithLLM_DefaultsToActiveModel(t *testing.T) {
 				if !found {
 					t.Error("expected compaction/handoff prompt")
 				}
-				return llm.Response{Message: llm.Assistant("Summary: fixed auth bug")}
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary: fixed auth bug")}
 			},
 		},
 	}
@@ -890,7 +1033,9 @@ func TestSummarizeWithLLM_DefaultsToActiveModel(t *testing.T) {
 }
 
 func TestSummarizeWithLLM_UsesConfiguredCompactionModel(t *testing.T) {
-	adapter := &fakeAdapter{name: "openai"}
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("## Progress\nsummary")} },
+	}}
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -962,7 +1107,7 @@ func (a *fallbackSummaryAdapter) Complete(ctx context.Context, req llm.Request) 
 		if req.Model != "gpt-5.2" {
 			a.t.Fatalf("fallback summary model = %q, want gpt-5.2", req.Model)
 		}
-		return llm.Response{Message: llm.Assistant("fallback summary")}, nil
+		return llm.Response{Message: llm.Assistant("## Progress\nfallback summary")}, nil
 	default:
 		a.t.Fatalf("unexpected request %d", len(a.requests))
 		return llm.Response{}, errors.New("unexpected request")
@@ -1022,7 +1167,7 @@ func TestSummarizeWithLLM_ReplacesOldHistory(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Summary of work done")}
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary of work done")}
 			},
 		},
 	}
@@ -1060,7 +1205,7 @@ func TestSummarizeWithLLM_PreservesRecentTurns(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -1351,7 +1496,7 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -1445,7 +1590,7 @@ func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 				for _, m := range req.Messages {
 					receivedPromptLen += len(m.Text())
 				}
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -1483,7 +1628,7 @@ func TestSummarizeWithLLM_RequestsInterleavedConversationTimeline(t *testing.T) 
 					promptSb1365.WriteString(m.Text())
 				}
 				prompt += promptSb1365.String()
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -2387,7 +2532,7 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Summary: tests were run and passed")}
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary: tests were run and passed")}
 			},
 		},
 	}
@@ -2535,7 +2680,7 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY] forced")}
+				return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] forced")}
 			},
 		},
 	}
@@ -2616,7 +2761,7 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY] forced summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] forced summary")}
 			},
 		},
 	}
@@ -2716,7 +2861,7 @@ func TestForceCompact_ReportsGeneratedSummary(t *testing.T) {
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -2994,10 +3139,11 @@ func TestCheckpoint_ShedOrder_NoUserEntryShedsOldestFirst(t *testing.T) {
 	}
 }
 
-func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
-	// A pinned original task too large to ever fit must be trimmed, not left to
-	// defeat the checkpoint's size cap and not dropped entirely.
-	original := "ORIGINAL TASK: " + strings.Repeat("t", 5000)
+func TestCheckpoint_ShedOrder_MiddleTrimsAnOversizedPartnerMessage(t *testing.T) {
+	// The human partner's messages are never dropped (#4281). One too large to
+	// fit is trimmed in the middle, keeping its head and tail and saying where
+	// the full text is, and the agent's own reply is shed first.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 5000) + " TASK_TAIL"
 	data := checkpointData{
 		conversation: []checkpointConversationEntry{
 			{Role: "user", Text: original},
@@ -3005,18 +3151,37 @@ func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
 		},
 	}
 
-	const maxChars = 1200
-	cp := formatCheckpoint(data, nil, maxChars)
+	cp := formatCheckpoint(data, persistentMeta, 1200)
 
-	if len(cp) > maxChars {
-		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	entries := extractCheckpointConversation(cp)
+	if len(entries) != 1 || entries[0].Role != "user" {
+		t.Fatalf("want only the partner's message, trimmed; got %q", entries)
 	}
-	if !strings.Contains(cp, "ORIGINAL TASK: "+strings.Repeat("t", 900)) {
-		t.Fatalf("the head of the original task should survive trimming:\n%s", cp)
+	got := entries[0].Text
+	if !strings.HasPrefix(got, "ORIGINAL TASK: ") || !strings.HasSuffix(got, " TASK_TAIL") {
+		t.Fatalf("the trimmed message lost its head or tail:\n%s", got)
 	}
-	if !strings.Contains(cp, "...") {
-		t.Fatalf("the trimmed original task should carry an ellipsis:\n%s", cp)
+	if !isMiddleTrimOf(got, original) {
+		t.Fatalf("want the message's head and tail around the trimmed-message note:\n%s", got)
 	}
+}
+
+// isMiddleTrimOf reports whether got is original with its middle replaced by
+// the trimmed-message note for the characters removed.
+func isMiddleTrimOf(got, original string) bool {
+	// The note's length depends only on how many digits the trimmed count has,
+	// which fixes how much of each end was kept.
+	for digits := 1; digits <= 9; digits++ {
+		noteLen := len(trimmedMessageNote(0)) - 1 + digits
+		keep := (len(got) - noteLen) / 2
+		if keep <= 0 || 2*keep >= len(original) {
+			continue
+		}
+		if got == original[:keep]+trimmedMessageNote(len(original)-2*keep)+original[len(original)-keep:] {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCheckpoint_ShedOrder_ShedsNotesToFitBudget(t *testing.T) {
@@ -3099,26 +3264,36 @@ func TestCheckpoint_ShedOrder_DropsOversizedWorkingNote(t *testing.T) {
 
 // --- buildSummaryPrompt ---
 
-func TestBuildSummaryPrompt_NoInstructions(t *testing.T) {
-	p := buildSummaryPrompt("User: hi\n", "")
-	if !strings.Contains(p, "Your summary MUST include ALL of the following sections") {
-		t.Fatal("default prompt should mandate the standard sections")
-	}
-	if strings.Contains(p, "CALLER INSTRUCTIONS") {
-		t.Fatal("no caller-instruction block expected when instructions empty")
-	}
-}
+var updateSummaryPromptGoldens = flag.Bool("update-prompt", false,
+	"rewrite agent/internal/contextmgr/testdata/summaryprompt from the current summary prompts")
 
-func TestBuildSummaryPrompt_WithInstructions(t *testing.T) {
-	p := buildSummaryPrompt("User: hi\n", "Drop the vendored build logs; keep the migration plan verbatim.")
-	if !strings.Contains(p, "Drop the vendored build logs") {
-		t.Fatal("caller instructions must appear in the prompt")
-	}
-	if strings.Contains(p, "Your summary MUST include ALL of the following sections") {
-		t.Fatal("the mandatory-7-sections block must be replaced, not retained, when instructions are present")
-	}
-	if !strings.Contains(p, "CALLER INSTRUCTIONS (these take precedence)") {
-		t.Fatal("expected the instruction-led header")
+// The summary prompt is pinned whole, per shape, in testdata/summaryprompt:
+// the default mandatory-sections prompt and the caller-instruction prompt that
+// replaces those sections. Opaque sentinels stand in for the history and the
+// caller's instructions. This is the repository's pattern for prompt text
+// (agent/testdata/memoryprompt is the same): the golden pins the whole prompt
+// as reviewed output, so a wording change shows up as a reviewed diff instead
+// of a sentence-level assertion; behavior that depends on the prompt's
+// structure is pinned separately (TestSummaryPromptSectionsComeFromThePrompt).
+// Regenerate after an intended wording change with
+//
+//	go test ./agent/internal/contextmgr -run 'TestSummaryPromptGolden$' -count=1 -update-prompt
+//
+// and read the diff.
+func TestSummaryPromptGolden(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, instructions string
+	}{
+		{"default", ""},
+		{"caller-instructions", "CALLER_INSTRUCTIONS_SENTINEL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			prompt := buildSummaryPrompt("HISTORY_SENTINEL\n", tc.instructions)
+			agenttest.CheckGolden(t, filepath.Join("testdata", "summaryprompt", tc.name+".md"), []byte(prompt), *updateSummaryPromptGoldens,
+				"Regenerate with `go test ./agent/internal/contextmgr -run 'TestSummaryPromptGolden$' -count=1 -update-prompt` and read the diff.")
+		})
 	}
 }
 

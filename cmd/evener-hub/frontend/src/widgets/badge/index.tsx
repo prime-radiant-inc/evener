@@ -15,10 +15,10 @@ const BASE_CLASS = {
 };
 
 const TONE_CLASS: Record<BadgeTone, string> = {
-  neutral: requireClass(styles.neutral, "badge.module.css", "neutral"),
-  attention: requireClass(styles.attention, "badge.module.css", "attention"),
-  alive: requireClass(styles.alive, "badge.module.css", "alive"),
-  danger: requireClass(styles.danger, "badge.module.css", "danger"),
+  neutral: requireClass(styles.badgeNeutral, "badge.module.css", "badgeNeutral"),
+  attention: requireClass(styles.badgeAttention, "badge.module.css", "badgeAttention"),
+  alive: requireClass(styles.badgeAlive, "badge.module.css", "badgeAlive"),
+  danger: requireClass(styles.badgeDanger, "badge.module.css", "badgeDanger"),
 };
 
 /** A small numeric count indicator. Passive - no interaction, no focus

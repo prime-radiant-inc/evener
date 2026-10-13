@@ -7,6 +7,7 @@ import {
 	displayForLevel,
 	DETAIL_LEVELS,
 	DetailLevels,
+	detailLevel,
 	detailMenuLabel,
 	forgetDetailLevels,
 	levelToast,
@@ -31,9 +32,13 @@ describe("the levels (spec 8.2; ruling 8)", () => {
 	});
 
 	it("names the current level in the menu", () => {
-		expect(detailMenuLabel("tools")).toBe("Detail level · Tools");
-		expect(detailMenuLabel("custom")).toBe("Detail level · Custom");
-		expect(detailMenuLabel(null)).toBe("Detail level");
+		// With no level known, the item names itself alone; with one, it adds the
+		// level's own name, and Custom reads apart from every level.
+		const plain = detailMenuLabel(null);
+		expect(detailMenuLabel("tools")).toMatch(new RegExp(`^${plain}.+${detailLevel("tools").label}$`));
+		expect(detailMenuLabel("custom").startsWith(plain)).toBe(true);
+		expect(detailMenuLabel("custom")).not.toBe(plain);
+		expect(detailMenuLabel("custom")).not.toBe(detailMenuLabel("tools"));
 	});
 });
 

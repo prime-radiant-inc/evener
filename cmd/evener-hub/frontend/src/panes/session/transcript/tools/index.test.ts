@@ -41,3 +41,13 @@ test("importing the barrel registers descriptors for every T3 tool family", () =
 test("an unregistered tool name still falls back to the composed default body (the barrel doesn't break the fallback)", () => {
   expect(toolRendererFor("totally_unregistered_tool_xyz").body).toBe(defaultToolBody);
 });
+
+// The barrel's one import line is the only reason the running app gets the
+// dedicated compact_context body instead of the default raw dump - a test
+// importing the descriptor module directly (as compactContext.test.tsx does)
+// stays green without it. So this file, which imports only the barrel,
+// pins the registration: defaultToolBody here is the composed fallback a
+// missing barrel line would restore.
+test("the barrel registers the compact_context descriptor's dedicated body, not the default raw dump", () => {
+  expect(toolRendererFor("compact_context").body).not.toBe(defaultToolBody);
+});

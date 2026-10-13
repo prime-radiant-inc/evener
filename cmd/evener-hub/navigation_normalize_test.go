@@ -183,6 +183,14 @@ func TestNavigationViewScopeParityVectors(t *testing.T) {
 			key:  navigationResourceKey{Kind: navigationResourceProjects, Offset: 7, Limit: maxNavigationCatalogRows + 1},
 			want: "nav3/projects/////7/100",
 		},
+		{
+			key:  navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "no-project", Catalog: navigationResourceTestRuns},
+			want: "nav3/project///bm8tcHJvamVjdA//0/0/catalog/test_runs",
+		},
+		{
+			key:  navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "no-project", Catalog: navigationResourceArchivedProjects, Tier: "current", Offset: 1, Limit: 2},
+			want: "nav3/project_page///bm8tcHJvamVjdA/Y3VycmVudA/1/2/catalog/archived_projects",
+		},
 	}
 	for _, test := range tests {
 		if got := navigationViewScope(test.key); got != test.want {

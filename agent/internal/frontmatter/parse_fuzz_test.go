@@ -3,8 +3,10 @@ package frontmatter
 import (
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
@@ -12,13 +14,14 @@ import (
 // seam (yaml.Unmarshal of the fenced block). Input is an arbitrary Markdown
 // document. Beyond no-panic it asserts the documented contract: a document with
 // no frontmatter framing (no leading delimiter, or a leading delimiter with no
-// closing one) is returned verbatim as Body with nil Meta; a framed document
-// splits Body exactly at the inner boundary the framing defines. Parsing is
+// closing one) is returned as Body, line endings normalized, with nil Meta; a
+// framed document splits Body exactly at the inner boundary the framing
+// defines, in the normalized text. Parsing is
 // deterministic (a second parse matches the first).
 //
 // Note: when framing IS present, Meta may still come back nil if the YAML body
-// parses to a null/empty mapping (e.g. "---\n!---\n"), so the contract keys on
-// framing, not on Meta-nilness.
+// parses to a null/empty mapping (e.g. "---\nnull\n---\nbody"), so the
+// contract keys on framing, not on Meta-nilness.
 func FuzzFrontmatterParse(f *testing.F) {
 	seeds := []string{
 		"---\ntitle: hi\ntags: [a, b]\n---\nbody text\n",
@@ -28,6 +31,9 @@ func FuzzFrontmatterParse(f *testing.F) {
 		"---\n: : : not valid yaml :\n---\nbody",
 		"",
 		"---\n",
+		"\ufeff---\ntitle: hi\n---\nbody text\n",
+		"\ufeffno frontmatter here",
+		"\ufeff",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -48,17 +54,19 @@ func FuzzFrontmatterParse(f *testing.F) {
 			return
 		}
 
-		// Framing contract: an unframed document is returned verbatim with nil
-		// Meta; a framed one splits Body exactly at the inner boundary.
+		// Framing contract: an unframed document is returned normalized — line
+		// endings normalized and a leading UTF-8 byte-order mark dropped — with
+		// nil Meta; a framed one splits Body exactly at the inner boundary.
 		const delim = "---\n"
-		if idx := indexAfter(raw); idx < 0 {
-			if doc.Meta != nil || doc.Body != raw {
-				t.Fatalf("unframed document not returned verbatim:\n in  =%q\n meta=%#v\n body=%q", raw, doc.Meta, doc.Body)
+		normalized := strings.TrimPrefix(lineend.Normalize(raw), "\ufeff")
+		if idx := indexAfter(normalized); idx < 0 {
+			if doc.Meta != nil || doc.Body != normalized {
+				t.Fatalf("unframed document not returned normalized:\n in  =%q\n meta=%#v\n body=%q", normalized, doc.Meta, doc.Body)
 			}
 		} else {
-			wantBody := raw[len(delim)+idx+len(delim):]
+			wantBody := normalized[len(delim)+idx+len(delim):]
 			if doc.Body != wantBody {
-				t.Fatalf("framed document body mismatch:\n in  =%q\n want=%q\n got =%q", raw, wantBody, doc.Body)
+				t.Fatalf("framed document body mismatch:\n in  =%q\n want=%q\n got =%q", normalized, wantBody, doc.Body)
 			}
 		}
 
@@ -66,6 +74,8 @@ func FuzzFrontmatterParse(f *testing.F) {
 		// float64 NaN, and reflect.DeepEqual(NaN, NaN) is false even though the
 		// parse is perfectly deterministic — so a plain DeepEqual would
 		// false-flag any input that yields a NaN-valued field.
+		// The same input twice, so the property is Parse(x) == Parse(x), not a
+		// comparison against a normalized copy.
 		doc2, err2 := Parse(raw)
 		if err2 != nil || doc.Body != doc2.Body || !yamlValueEqual(doc.Meta, doc2.Meta) {
 			t.Fatalf("Parse not deterministic for %q", raw)
@@ -114,8 +124,9 @@ func yamlValueEqual(a, b any) bool {
 	}
 }
 
-// indexAfter reports whether a closing "---\n" delimiter exists after the
-// opening one, mirroring Parse's own framing check.
+// indexAfter reports where the closing delimiter, a line that is exactly
+// "---", starts after the opening one, or -1, mirroring Parse's own framing
+// check.
 func indexAfter(raw string) int {
 	const delim = "---\n"
 	if len(raw) < len(delim) || raw[:len(delim)] != delim {
@@ -123,7 +134,7 @@ func indexAfter(raw string) int {
 	}
 	rest := raw[len(delim):]
 	for i := 0; i+len(delim) <= len(rest); i++ {
-		if rest[i:i+len(delim)] == delim {
+		if rest[i:i+len(delim)] == delim && (i == 0 || rest[i-1] == '\n') {
 			return i
 		}
 	}

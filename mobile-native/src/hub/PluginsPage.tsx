@@ -32,6 +32,7 @@ import {
 	createPluginsStore,
 	HUB_WRITE_BUSY,
 	type HubWriteGate,
+	type PluginsStore,
 	runGatedMutation,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
@@ -281,7 +282,7 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 	if (activeProfile?.id !== route.params.hubId)
 		return (
 			<GroupedPage>
-				<GroupFooter>{HUB_NO_LONGER_SELECTED}</GroupFooter>
+				<GroupFooter testID="plugins-hub-not-selected">{HUB_NO_LONGER_SELECTED}</GroupFooter>
 			</GroupedPage>
 		);
 	if (display === "wall" || !renderClient)
@@ -434,8 +435,8 @@ function Plugins({
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
 	const [selected, setSelected] = useState<PluginRefParams | null>(null);
 	const [query, setQuery] = useState("");
-	const [actionError, setActionError] = useState<string | null>(null);
-	const [notice, setNotice] = useState<string | null>(null);
+	const [actionError, setActionError] = useState<keyof typeof ACTION_PROBLEMS | null>(null);
+	const [notice, setNotice] = useState<UpgradeNotice | null>(null);
 	const editorVersion = useRef(0);
 	const entry = state.plugins?.find(
 		(item) => item.plugin === selected?.plugin && item.marketplace === selected?.marketplace,
@@ -490,6 +491,38 @@ function Plugins({
 			model.dispose();
 		};
 	}, [model]);
+	// The first time this store's installed list loads, ask the hub which
+	// plugins have an update (read-on-open: nothing polls). A first read that
+	// failed checks once a later one recovers, and a page closed before its
+	// list landed asks nothing. A check that got no answer (see
+	// checkPluginUpdates) asks again on the next return to ready, never while
+	// the connection is down. A hub without the check flags none, so Upgrade
+	// stays hidden.
+	const checkedUpdates = useRef<PluginsStore | null>(null);
+	const listLoaded = state.plugins !== null && state.pluginsError === null;
+	// Counts returns to ready, so a check that fails only after the
+	// connection already came back still gets that ready's one re-ask: it
+	// bumps checkAgain, which re-runs the effect. A check that fails with the
+	// connection unchanged waits for the next return to ready instead, so a
+	// hub that keeps failing is never asked in a loop.
+	const readyReturns = useRef(0);
+	useEffect(() => {
+		if (ready) readyReturns.current += 1;
+	}, [ready]);
+	const [checkAgain, setCheckAgain] = useState(0);
+	useEffect(() => {
+		if (!listLoaded || !ready || checkedUpdates.current === model) return;
+		checkedUpdates.current = model;
+		const askedIn = readyReturns.current;
+		void model
+			.getState()
+			.checkPluginUpdates()
+			.then((answered) => {
+				if (answered || checkedUpdates.current !== model) return;
+				checkedUpdates.current = null;
+				if (readyReturns.current !== askedIn) setCheckAgain((n) => n + 1);
+			});
+	}, [model, listLoaded, ready, checkAgain]);
 	const close = useCallback(() => {
 		editorVersion.current += 1;
 		setSelected(null);
@@ -509,7 +542,7 @@ function Plugins({
 		setSelected({ plugin: focus.plugin, marketplace: focus.marketplace });
 		onFocused();
 	}, [focus, onFocused, close]);
-	async function act(action: () => Promise<void>, success?: () => string) {
+	async function act(action: () => Promise<void>, success?: () => UpgradeNotice) {
 		const version = editorVersion.current;
 		const outcome = await runGatedMutation(canUseConnection, action);
 		if (version !== editorVersion.current) return;
@@ -520,9 +553,8 @@ function Plugins({
 		if (outcome === "not-ready") return;
 		setActionError(null);
 		setNotice(null);
-		if (outcome === "refused") setActionError(HUB_WRITE_BUSY);
-		else if (outcome === "failed")
-			setActionError("Could not confirm the change. Check this plugin’s status before trying again.");
+		if (outcome === "refused") setActionError("write-busy");
+		else if (outcome === "failed") setActionError("write-failed");
 		else if (success) setNotice(success());
 	}
 	function remove() {
@@ -553,6 +585,10 @@ function Plugins({
 		);
 	}
 	const listError = state.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
+	// What an empty installed list points at: nothing before the hub's
+	// marketplaces are read, else adding one or browsing them.
+	const emptyReason =
+		marketplaceList === null ? "unknown" : marketplaceList.length === 0 ? "no-marketplaces" : "has-marketplaces";
 	// Today's filter, by plugin or marketplace name: useful on a hub with many.
 	const needle = query.trim().toLowerCase();
 	const visible = (state.plugins ?? []).filter(
@@ -574,14 +610,26 @@ function Plugins({
 			<SheetStatus />
 			<GroupGap />
 			<Segmented<Segment> label="Plugins" options={SEGMENTS} value={panel} onChange={setPanel} />
-			{marketplaceWarning ? <GroupFooter tone="danger">{marketplaceWarning}</GroupFooter> : null}
+			{marketplaceWarning ? (
+				<GroupFooter tone="danger" testID="marketplace-warning">
+					{marketplaceWarning}
+				</GroupFooter>
+			) : null}
 			{panel === "installed" ? (
 				<>
 					<GroupFooter>
 						“On by default” sets which plugins new sessions start with. You can still choose per session.
 					</GroupFooter>
-					{listError ? <GroupFooter tone="danger">{listError}</GroupFooter> : null}
-					{!selected && actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
+					{listError ? (
+						<GroupFooter tone="danger" testID="plugins-problem-list-failed">
+							{listError}
+						</GroupFooter>
+					) : null}
+					{!selected && actionError ? (
+						<GroupFooter tone="danger" testID={`plugins-problem-${actionError}`}>
+							{ACTION_PROBLEMS[actionError]}
+						</GroupFooter>
+					) : null}
 					{state.plugins === null && state.pluginsLoading ? <Spinner label="Loading installed plugins" /> : null}
 					{/* The field stays while a filter is set, so it can always be cleared. */}
 					{state.plugins?.length || query !== "" ? (
@@ -590,24 +638,22 @@ function Plugins({
 						</View>
 					) : null}
 					{state.plugins?.length === 0 && query === "" ? (
-						<GroupFooter>
-							{marketplaceList === null
-								? "No plugins installed on this hub."
-								: marketplaceList.length === 0
-									? "No plugins installed on this hub. Add a marketplace to find plugins."
-									: "No plugins installed on this hub. Browse a marketplace to install one."}
-						</GroupFooter>
+						<GroupFooter testID={`plugins-empty-${emptyReason}`}>{EMPTY_INSTALLED[emptyReason]}</GroupFooter>
 					) : null}
 					{state.plugins !== null && query !== "" && visible.length === 0 ? (
-						<GroupFooter>No matching plugins.</GroupFooter>
+						<GroupFooter testID="plugins-empty-filtered">No matching plugins.</GroupFooter>
 					) : null}
 					{byMarketplace(visible).map(([marketplace, plugins]) => (
 						<Fragment key={marketplace}>
 							<Group label={marketplace} machineLabel>
 								{plugins.map((item) => {
-									const sub = item.broken
-										? "Broken"
-										: `${item.version || "Unknown version"}${item.autoUpgrade ? " · Upgrades automatically" : ""}`;
+									const sub = [
+										item.broken ? "Broken" : item.version || "Unknown version",
+										item.updateAvailable && "Update available",
+										!item.broken && item.autoUpgrade && "Upgrades automatically",
+									]
+										.filter(Boolean)
+										.join(" · ");
 									return (
 										<SwitchRow
 											key={item.plugin}
@@ -670,7 +716,10 @@ function Plugins({
 							/>
 						</Group>
 						<Group>
-							<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
+							{/* Only where the hub's update check found one. */}
+							{entry.updateAvailable ? (
+								<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
+							) : null}
 							<Row
 								label="Remove"
 								accessibilityLabel="Remove plugin"
@@ -681,10 +730,21 @@ function Plugins({
 						</Group>
 						{/* Beneath the actions that fix it. */}
 						{entry.broken ? (
-							<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
+							<GroupFooter
+								tone="danger"
+								testID={entry.updateAvailable ? "plugin-broken-upgradable" : "plugin-broken-remove-only"}
+							>
+								{entry.updateAvailable
+									? "This plugin is broken. Upgrade it or remove it."
+									: "This plugin is broken. Remove it."}
+							</GroupFooter>
 						) : null}
-						{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
-						{notice ? <GroupFooter>{notice}</GroupFooter> : null}
+						{actionError ? (
+							<GroupFooter tone="danger" testID={`plugins-problem-${actionError}`}>
+								{ACTION_PROBLEMS[actionError]}
+							</GroupFooter>
+						) : null}
+						{notice ? <GroupFooter testID={`plugin-notice-${notice.kind}`}>{notice.text}</GroupFooter> : null}
 						{busy ? <Spinner label="Updating plugin" /> : null}
 						<Group label="Details">
 							{description ? <Row label="About" sub={description} /> : null}
@@ -718,10 +778,30 @@ function byMarketplace(plugins: readonly PluginEntry[]): [string, PluginEntry[]]
 	return [...groups];
 }
 
+/** Why a plugin write didn't land, and what the page says about it. */
+const ACTION_PROBLEMS = {
+	"write-busy": HUB_WRITE_BUSY,
+	"write-failed": "Could not confirm the change. Check this plugin’s status before trying again.",
+} as const;
+
+/** What an empty installed list says, by what it points at. */
+const EMPTY_INSTALLED = {
+	unknown: "No plugins installed on this hub.",
+	"no-marketplaces": "No plugins installed on this hub. Add a marketplace to find plugins.",
+	"has-marketplaces": "No plugins installed on this hub. Browse a marketplace to install one.",
+} as const;
+
+/** What an upgrade did: nothing changed ("current") or a new version landed. */
+interface UpgradeNotice {
+	kind: "current" | "upgraded";
+	text: string;
+}
+
 /** What an upgrade did, from the entry before it and the list it answered
  * with: the same version and commit is "Already up to date" (ruling 7). */
-function upgradeOutcome(before: PluginEntry, after: readonly PluginEntry[] | null): string {
+function upgradeOutcome(before: PluginEntry, after: readonly PluginEntry[] | null): UpgradeNotice {
 	const now = after?.find((item) => item.plugin === before.plugin && item.marketplace === before.marketplace);
-	if (!now || (now.version === before.version && now.gitCommitSha === before.gitCommitSha)) return "Already up to date";
-	return `Upgraded to ${now.version || "an unknown version"}`;
+	if (!now || (now.version === before.version && now.gitCommitSha === before.gitCommitSha))
+		return { kind: "current", text: "Already up to date" };
+	return { kind: "upgraded", text: `Upgraded to ${now.version || "an unknown version"}` };
 }

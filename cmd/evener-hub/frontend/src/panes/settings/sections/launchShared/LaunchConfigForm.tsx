@@ -44,7 +44,7 @@ import {
   schemaPathKind,
 } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, useToasts } from "../../../../widgets";
+import { Button, Eyebrow, InlineNotice, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
@@ -56,7 +56,6 @@ const CLASS = {
   groupHeader: requireClass(styles.groupHeader, "LaunchConfigForm.module.css", "groupHeader"),
   field: requireClass(styles.field, "LaunchConfigForm.module.css", "field"),
   actions: requireClass(styles.actions, "LaunchConfigForm.module.css", "actions"),
-  conflict: requireClass(styles.conflict, "LaunchConfigForm.module.css", "conflict"),
   status: requireClass(styles.status, "LaunchConfigForm.module.css", "status"),
 };
 
@@ -93,6 +92,13 @@ export interface LaunchConfigFormProps {
   draftOwner?: object;
   onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
   onSaved?: (resolved: LaunchConfigResolved) => void;
+}
+
+/** The save status line: `kind` is rendered as `data-state`; a saved status
+ * self-clears, an error stays until the next save. */
+interface SaveStatus {
+  kind: "saved" | "error";
+  text: string;
 }
 
 function formatSavedAt(): string {
@@ -169,7 +175,7 @@ export function LaunchConfigForm({
   // unchanged across a re-registration - so a caller that has the instance hands
   // it over, and one that does not keeps today's name-keyed behavior.
   const owner: object | string | undefined = draftOwner ?? host;
-  const [status, setStatusText] = useState("");
+  const [status, setSaveStatus] = useState<SaveStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
@@ -178,7 +184,7 @@ export function LaunchConfigForm({
     setSeed({ owner, current, baseline });
     setState(baseline);
     setFieldErrors({});
-    setStatusText("");
+    setSaveStatus(null);
     setConflict(false);
   } else if (seed.current !== current) {
     // A same-owner re-read: the pane refreshed this host's layer while the form
@@ -220,12 +226,12 @@ export function LaunchConfigForm({
   // biome-ignore lint/correctness/useExhaustiveDependencies: owner is the trigger, not a read - the cleanup it gates clears a timer armed by the owner before it
   useEffect(() => () => clearTimeout(clearTimerRef.current), [owner]);
 
-  function setStatus(text: string): void {
+  function setStatus(next: SaveStatus): void {
     clearTimeout(clearTimerRef.current);
-    setStatusText(text);
-    if (text && !text.startsWith("Error:")) {
+    setSaveStatus(next);
+    if (next.kind === "saved") {
       clearTimerRef.current = setTimeout(() => {
-        setStatusText((prev) => (prev === text ? "" : prev));
+        setSaveStatus((prev) => (prev === next ? null : prev));
       }, STATUS_CLEAR_MS);
     }
   }
@@ -277,7 +283,7 @@ export function LaunchConfigForm({
     setBusy(true);
     try {
       const resolved = await onSave(collectConfig(supportedOptions, state));
-      setStatus(formatSavedAt());
+      setStatus({ kind: "saved", text: formatSavedAt() });
       toast.push("success", successToast);
       onSaved?.(resolved);
     } catch (err) {
@@ -285,7 +291,7 @@ export function LaunchConfigForm({
       if (matchesEnvCredentialError(message) && supportedOptions.some((o) => o.wireField === "env")) {
         setFieldErrors((e) => ({ ...e, env: message }));
       }
-      setStatus(`Error: ${message}`);
+      setStatus({ kind: "error", text: `Error: ${message}` });
       toast.push("error", "Save failed");
     } finally {
       setBusy(false);
@@ -405,7 +411,9 @@ export function LaunchConfigForm({
       {groups.map((group, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: group.group repeats when the legacy header-per-change rule re-opens the same name non-contiguously (see groupOptions) - the segment's position is the only stable identity.
         <div key={`${group.group}-${index}`} className={CLASS.group}>
-          <div className={CLASS.groupHeader}>{group.group}</div>
+          <div className={CLASS.groupHeader}>
+            <Eyebrow>{group.group}</Eyebrow>
+          </div>
           {group.options.map((opt) => (
             <div key={opt.field} className={CLASS.field}>
               {renderOption(opt)}
@@ -414,19 +422,23 @@ export function LaunchConfigForm({
         </div>
       ))}
       {conflict && (
-        <p className={CLASS.conflict} role="status">
-          These settings changed on the host while you were editing. Saving will overwrite the newer values.{" "}
-          <Button type="button" onClick={() => adoptHostValues()}>
-            Use the host's values
-          </Button>
-        </p>
+        <InlineNotice
+          data-reason="host-changed"
+          action={
+            <Button type="button" onClick={() => adoptHostValues()}>
+              Use the host's values
+            </Button>
+          }
+        >
+          These settings changed on the host while you were editing. Saving will overwrite the newer values.
+        </InlineNotice>
       )}
       <div className={CLASS.actions}>
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>
           Save launch defaults
         </Button>
-        <p className={CLASS.status} aria-live="polite">
-          {status}
+        <p className={CLASS.status} aria-live="polite" data-testid="launch-config-status" data-state={status?.kind}>
+          {status?.text}
         </p>
       </div>
     </div>

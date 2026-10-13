@@ -17,7 +17,7 @@ import {
 	reconnectDelay,
 	useHubConnection,
 } from "./hubConnection";
-import { renderHook } from "./renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ client: null as unknown }));
 vi.mock("./connection", () => ({
@@ -125,6 +125,7 @@ async function elapse(ms: number): Promise<void> {
 }
 
 afterEach(() => {
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });

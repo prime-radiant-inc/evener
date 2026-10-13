@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/llm/apilog"
 )
 
@@ -599,13 +600,13 @@ func newAPILogSummaryRetention(rangeArg string) *apiLogSummaryRetention {
 	}
 	switch {
 	case strings.HasPrefix(rangeArg, "start:"):
-		if _, ok := parsePositiveInt(strings.TrimPrefix(rangeArg, "start:")); ok {
+		if _, ok := turnwindow.ParsePositiveInt(strings.TrimPrefix(rangeArg, "start:")); ok {
 			retention.mode = apiLogRetainStart
 			retention.start = 0
 			retention.end = maxAPILogRecords - 1
 		}
 	case strings.Contains(rangeArg, "-"):
-		lo, hi, ok := parseDashRange(rangeArg)
+		lo, hi, ok := turnwindow.ParseDash(rangeArg)
 		if ok {
 			retention.mode = apiLogRetainExact
 			retention.start = lo
@@ -759,7 +760,7 @@ func selectAPILogRange(spec string, recordCount int) (start, end int, normalized
 	}
 	start, end, err := parseRangeErr(normalized, recordCount)
 	if err != nil {
-		warning = fmt.Sprintf("invalid range %q; rendered the default instead. Accepted: %s", spec, rangeAcceptedGrammar)
+		warning = fmt.Sprintf("invalid range %q; rendered the default instead. Accepted: %s", spec, turnwindow.Grammar)
 		normalized = fmt.Sprintf("last:%d", defaultAPILogRecords)
 		start, end, _ = parseRangeErr(normalized, recordCount)
 	}

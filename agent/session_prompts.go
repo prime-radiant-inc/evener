@@ -110,14 +110,18 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		resourceCapsJSON = renderResourceCapsJSON(resources.CPUs, resources.MemoryMB)
 	}
 
+	read := s.memoryContextEnabled()
+	saves := s.memorySaveInstructionsEnabled()
 	data := promptData{
 		NonInteractive:           s.cfg.noOneToAsk(),
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
-		IsSubagent:               s.depth > 0,
+		IsSubagent:               s.isSubagentSession(),
 		Surface:                  s.profile.Surface(),
 		TurnEndsProcess:          s.cfg.TurnEndsProcess,
-		MemorySaves:              s.memorySaveInstructionsEnabled(),
-		ProjectMemory:            s.memorySaveInstructionsEnabled() && s.cfg.MemoryProjectID != "",
+		MemoryRead:               read,
+		MemorySearch:             read && s.canInstructTool("memory_search"),
+		MemorySaves:              saves,
+		ProjectMemory:            read && s.cfg.MemoryProjectID != "",
 		WorkingDir:               s.envInfo.WorkingDir,
 		IsGitRepo:                s.envInfo.IsGitRepo,
 		GitBranch:                s.envInfo.GitBranch,
@@ -146,8 +150,12 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		sources = append(sources, *roleSource)
 	}
 
-	// Skills
+	// Skills. A skill this session cannot follow is left out, so the catalog
+	// only offers usable skills.
 	for _, descriptor := range s.skills.ModelEntries() {
+		if !s.skillAvailableToSession(descriptor.CatalogName) {
+			continue
+		}
 		skillName, sm := descriptor.CatalogName, descriptor.Meta
 		data.Skills = append(data.Skills, skillEntry{
 			Name: sm.Name, CatalogName: skillName, Description: sm.Description,
@@ -178,6 +186,9 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// point 1); reading it back from the registry avoids a second predicate
 	// that could drift from the real gate.
 	data.HasAskUser = s.reg.Get("ask_user") != nil
+	// end_reason shares that gate: the registered communicate schema takes
+	// it by this same predicate (toolDeps.offersEndReason).
+	data.HasEndReason = s.hasHumanPartnerToAsk()
 
 	// Available subagent types
 	data.AvailableAgents = s.availableAgentEntries()

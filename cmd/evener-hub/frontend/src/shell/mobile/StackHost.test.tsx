@@ -1,11 +1,14 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bindFilePath } from "@evener/appwire-client/docContent";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { DockviewApi } from "dockview-core";
 import { lazy, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
+import { openDocBeside } from "../../panes/doc/openDoc";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
@@ -23,8 +26,9 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../acti
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
+import { usePaneVisible } from "../paneVisibility";
 import { openTopLevelSession } from "../sessionPlacement";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import { documentPaneState, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
 
 // Fixture pane type for the bulk of this file's tests - non-singleton, so
@@ -34,12 +38,14 @@ import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
 // need a real example of. A local click counter proves whether a mount
 // survived a focus change (StackHost's own remount-safety contract, same
 // one DockHost's PaneHost documents - see this component's own comment).
-function DocFixture({ params, paneId, focused }: PaneProps<{ ref: string }>) {
+function DocFixture({ params, paneId, focused }: PaneProps<{ ref?: string; path?: string }>) {
   const [clicks, setClicks] = useState(0);
+  const visible = usePaneVisible();
+  const label = params.ref ?? params.path ?? "unknown";
   return (
     <div>
-      <p>
-        doc pane: {params.ref} (focused={String(focused)}) (paneId={paneId})
+      <p data-testid={`doc-visibility-${label}`} data-pane-visible={String(visible)}>
+        doc pane: {label} (focused={String(focused)}) (paneId={paneId})
       </p>
       <button type="button" onClick={() => setClicks((c) => c + 1)}>
         clicks: {clicks}
@@ -52,10 +58,46 @@ function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
   return <div>settings pane: {params.section ?? "none"}</div>;
 }
 
+class RestoreDockviewApi {
+  panels: Array<{ id: string; params: unknown }> = [];
+  activePanel: { id: string } | undefined = undefined;
+  received: unknown;
+
+  constructor(
+    readonly serialized: unknown,
+    private readonly restoredPanels: Array<{ id: string; params: unknown }>,
+    private readonly restoredActivePanel: { id: string },
+  ) {}
+
+  toJSON(): unknown {
+    return this.serialized;
+  }
+
+  fromJSON(data: unknown): void {
+    this.received = data;
+    this.panels = this.restoredPanels;
+    this.activePanel = this.restoredActivePanel;
+  }
+
+  clear(): void {
+    this.panels = [];
+    this.activePanel = undefined;
+  }
+
+  removePanel(panel: { id: string }): void {
+    this.panels = this.panels.filter((candidate) => candidate.id !== panel.id);
+    if (this.activePanel?.id === panel.id) this.activePanel = undefined;
+  }
+}
+
+function asDockviewApi(fake: RestoreDockviewApi): DockviewApi {
+  return fake as unknown as DockviewApi;
+}
+
 beforeAll(async () => {
-  registerPaneForTests<{ ref: string }>({
+  registerPaneForTests<{ ref?: string; path?: string }>({
     id: "doc",
-    title: (params) => `Doc ${params.ref}`,
+    title: (params) => `Doc ${params.ref ?? params.path ?? "unknown"}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
   registerPaneForTests<{ section?: string }>({
@@ -87,7 +129,7 @@ beforeAll(async () => {
   // same tripwire as App.test.tsx's warmRoute.
   await warmPane(
     () => {}, // nothing focused: StackHost's own fallback opens welcome
-    (timeout) => screen.findByText("No session open", undefined, { timeout }),
+    (timeout) => findStackedEmptyState("welcome", timeout),
   );
   await warmPane(
     () => workspaceStore.getState().openPane("doc", { ref: "ref_warm" }),
@@ -103,6 +145,21 @@ beforeAll(async () => {
 // for a hung render, not a responsiveness budget. Same value and reasoning as App.test.tsx's own
 // WARM_ROUTE_TRIPWIRE_MS.
 const PANE_WARMUP_TRIPWIRE_MS = 10_000;
+
+// Waits until the stack shows a pane of `paneType` whose body has rendered
+// its empty state: welcome's "nothing open" landing. The pane type comes from
+// the stack body's own marker, so
+// this proves which pane is on screen without reading its copy.
+async function findStackedEmptyState(paneType: string, timeout?: number): Promise<HTMLElement> {
+  return waitFor(
+    () => {
+      const body = document.querySelector(`[data-stacked-pane-type="${paneType}"]`);
+      if (!(body instanceof HTMLElement)) throw new Error(`No stacked ${paneType} pane`);
+      return within(body).getByTestId("empty-state");
+    },
+    { timeout },
+  );
+}
 
 // Renders StackHost once with `open`'s pane focused and awaits its landmark,
 // so both halves of that pane's lazy-loading cost are already paid by the
@@ -137,13 +194,13 @@ afterEach(() => {
 
 test("falls back to opening welcome when nothing is focused at mount", async () => {
   render(<StackHost />);
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("opens the mobile panel when nothing is focused", async () => {
   render(<StackHost />);
   // Welcome pane mounts behind the panel; the panel opens over it
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
   // The panel's Sheet title "Sessions" is the dialog's accessible name
   expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
 });
@@ -151,10 +208,6 @@ test("opens the mobile panel when nothing is focused", async () => {
 test("Activity opened from the mobile drawer supersedes the drawer", async () => {
   const ref = "remote:drawer-activity";
   const client = activityClient();
-  client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
-    ...activitySummary(requested),
-    scope: scope ?? "session",
-  }));
   connectionStore.getState().connect(client);
   const user = userEvent.setup();
   workspaceStore.getState().openPane("doc", { ref });
@@ -188,10 +241,6 @@ test("Activity opened from the mobile drawer supersedes the drawer", async () =>
 test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
   const ref = "remote:activity";
   const client = activityClient();
-  client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
-    ...activitySummary(requested),
-    scope: scope ?? "session",
-  }));
   client.on("evener/thread/jobs/list", ({ ref: requested, scope }) => ({
     context: activityContext(requested),
     scope: scope ?? "session",
@@ -227,7 +276,10 @@ test.each(["Close", "Escape"])(
     client.on("thread/read", ({ ref }) =>
       activityDetailsThread(ref, { name: ref === parent ? "Parent work" : "Child work" }),
     );
-    client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      context: context(ref),
+    }));
     client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
       context: context(ref),
       scope: scope ?? "session",
@@ -408,7 +460,7 @@ test("a restored cascade renders only its selected reader on mobile and restores
 test("does not flash the panel during routeDeferred", async () => {
   render(<StackHost routeDeferred />);
   // Wait for welcome to appear behind the (closed) panel
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
   // Panel should NOT be open while routeDeferred
   expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
 });
@@ -436,6 +488,15 @@ test("renders only the focused pane - a second open pane is not mounted at all",
 
   await screen.findByText(/doc pane: ref_b/);
   expect(screen.queryByText(/doc pane: ref_a/)).toBeNull();
+});
+
+test("publishes only the rendered mobile foreground pane as visible", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "background" });
+  workspaceStore.getState().openPane("doc", { ref: "foreground" });
+  render(<StackHost />);
+  const foreground = await screen.findByTestId("doc-visibility-foreground");
+  expect(foreground.getAttribute("data-pane-visible")).toBe("true");
+  expect(screen.queryByTestId("doc-visibility-background")).toBeNull();
 });
 
 test("switching the focused pane (workspace.focusPane) swaps which one is rendered", async () => {
@@ -512,11 +573,17 @@ test("hosts the tree drawer trigger in the top bar, regardless of which pane is 
   expect(await screen.findByRole("button", { name: "Sessions" })).toBeTruthy();
 });
 
+test("a single-pane route offers no tree drawer trigger", async () => {
+  render(<StackHost singlePane />);
+  expect(await screen.findByTestId("topbar-title")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+});
+
 // --- back navigation ---------------------------------------------------
 
 test("the back affordance is hidden while welcome (the stack's root) is focused", async () => {
   render(<StackHost />);
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
   expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
 });
 
@@ -540,7 +607,12 @@ test("a session panel pane's top-bar Back returns to the parent session, not the
   act(() => {
     workspaceStore.getState().openPane("sessionDetails", { ref: "local:ref_panel" });
   });
-  expect(await screen.findByText("Loading session panel…")).toBeTruthy();
+  const sessionDetails = await waitFor(() => {
+    const body = document.querySelector('[data-stacked-pane-type="sessionDetails"]');
+    if (!(body instanceof HTMLElement)) throw new Error("No stacked sessionDetails pane");
+    return body;
+  });
+  expect(await within(sessionDetails).findByRole("status")).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Back" }));
 
@@ -568,6 +640,146 @@ test("back returns to the pane that was focused before the current one", async (
   expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
 });
 
+test("document Back prefers its retained exact origin over transient local history", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const unrelated = workspace.openPane("doc", { ref: "unrelated" }, { slot: "secondary" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: unrelated/);
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  act(() => openDocBeside({ session, reference, sourcePaneId: sourceId }));
+  await screen.findByText(/doc pane: docs\/a.md/);
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(unrelated);
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+});
+
+test("document Back uses the latest exact same-session origin after reopen and host remount", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const firstSourceId = workspace.openPane("session", { ref: session });
+  const secondSourceId = workspace.openPane("transcript", { ref: session }, { slot: "secondary" });
+  const firstSource = workspaceStore.getState().panes.find((pane) => pane.id === firstSourceId);
+  const secondSource = workspaceStore.getState().panes.find((pane) => pane.id === secondSourceId);
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference || !firstSource || !secondSource) throw new Error("fixture did not create bound sources");
+
+  openDocBeside({ session, reference, sourcePaneId: firstSource.id });
+  const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!document) throw new Error("document did not open");
+  const firstHost = render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  firstHost.unmount();
+
+  openDocBeside({ session, reference, sourcePaneId: secondSource.id });
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toEqual([document]);
+  expect(documentPaneState(document)).toEqual({ reference, origin: secondSource, reopen: 1 });
+  workspace.focusPane(firstSource.id);
+
+  render(<StackHost />);
+  await screen.findByRole("heading", { name: session });
+  act(() => workspace.focusPane(document.id));
+  await screen.findByText(/doc pane: docs\/a.md/);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+
+  const state = workspaceStore.getState();
+  expect(state.focusedPaneId).toBe(secondSource.id);
+  expect(state.focusedPaneId).not.toBe(firstSource.id);
+  expect(state.panes.find((pane) => pane.id === state.focusedPaneId)).toBe(secondSource);
+});
+
+test("document Back retains its exact origin across a StackHost remount", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  openDocBeside({ session, reference, sourcePaneId: sourceId });
+  const first = render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  first.unmount();
+
+  render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+});
+
+test("document Back navigates to its bound session after the exact origin closes", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference) throw new Error("fixture did not bind document");
+  openDocBeside({ session, reference, sourcePaneId: sourceId });
+  workspace.closePane(sourceId);
+  render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(window.location.pathname).toBe(`/s/${encodeURIComponent(session)}`);
+});
+
+test("restored document Back cannot follow a source id reused from the retired lifetime", async () => {
+  const session = "local:02wMz5TxvEMoJEDTDGOTil";
+  const workspace = workspaceStore.getState();
+  const sourceId = workspace.openPane("session", { ref: session });
+  const oldSource = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const reference = bindFilePath("docs/a.md", "/work/child");
+  if (!reference || !oldSource) throw new Error("fixture did not create a bound source");
+  openDocBeside({ session, reference, sourcePaneId: sourceId });
+  const oldDocument = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!oldDocument) throw new Error("document did not open");
+  expect(documentPaneState(oldDocument)).toEqual({ reference, origin: oldSource, reopen: 0 });
+
+  const saved = {
+    grid: { root: { type: "branch", data: [] } },
+    panels: {
+      [sourceId]: {
+        id: sourceId,
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: session } },
+      },
+      [oldDocument.id]: {
+        id: oldDocument.id,
+        contentComponent: "default",
+        params: { paneType: "doc", paneParams: oldDocument.params },
+      },
+    },
+    activeGroup: "group-2",
+  };
+  const fake = new RestoreDockviewApi(
+    saved,
+    [
+      { id: sourceId, params: { paneType: "session", paneParams: { ref: session } } },
+      { id: oldDocument.id, params: { paneType: "doc", paneParams: oldDocument.params } },
+    ],
+    { id: oldDocument.id },
+  );
+  registerDockviewApi(asDockviewApi(fake));
+
+  expect(workspace.restoreLayout(workspace.layoutJSON())).toBe(true);
+  expect(fake.received).toBe(saved);
+  const restoredSource = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const restoredDocument = workspaceStore.getState().panes.find((pane) => pane.id === oldDocument.id);
+  if (!restoredSource || !restoredDocument) throw new Error("layout did not restore source and document");
+  expect(restoredSource).not.toBe(oldSource);
+  expect(restoredDocument).not.toBe(oldDocument);
+  expect(documentPaneState(oldDocument)).toBeUndefined();
+  expect(documentPaneState(restoredDocument)).toBeUndefined();
+
+  render(<StackHost />);
+  await screen.findByText(/doc pane: docs\/a.md/);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+
+  const state = workspaceStore.getState();
+  expect(state.focusedPaneId).not.toBe(restoredSource.id);
+  expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
+});
+
 test("back falls all the way to welcome when this component never observed an earlier pane", async () => {
   // StackHost mounts with ref_a already focused (simulating AppShell
   // having pre-seeded it via routing, same as the real integration) - this
@@ -582,7 +794,7 @@ test("back falls all the way to welcome when this component never observed an ea
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
 
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("back walks multiple levels deep, one pane per tap", async () => {
@@ -606,7 +818,7 @@ test("back walks multiple levels deep, one pane per tap", async () => {
   expect(await screen.findByText(/doc pane: ref_a/)).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
   expect(screen.queryByRole("button", { name: "Back" })).toBeNull(); // welcome: nothing further behind it
 });
 
@@ -627,7 +839,7 @@ test("a back tap does not push the pane it left onto the stack (no ping-pong)", 
   // ref_a - see the "falls all the way to welcome" test above) - a second
   // tap must go straight to welcome, not bounce forward to ref_b.
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("retained-parent Back: valid observed history wins over a retained transcript parent", async () => {
@@ -644,7 +856,7 @@ test("retained-parent Back: valid observed history wins over a retained transcri
   expect(workspaceStore.getState().focusedPaneId).toBe(previous);
   expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test.each([
@@ -668,7 +880,7 @@ test.each([
   expect(workspaceStore.getState().focusedPaneId).toBe(leaf);
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
   const state = workspaceStore.getState();
   expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
   expect(state.panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
@@ -683,7 +895,7 @@ test("retained-parent Back: a non-transcript's parentRef does not override the W
   await screen.findByText(/doc pane: document/);
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test.each([false, true])(
@@ -718,7 +930,7 @@ test.each([false, true])(
       slot: "main",
     });
     await user.click(screen.getByRole("button", { name: "Back" }));
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await findStackedEmptyState("welcome");
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
 );
@@ -783,7 +995,7 @@ test.each([
       );
       visited.add(next);
     }
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await findStackedEmptyState("welcome");
     const state = workspaceStore.getState();
     expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
     expect(state.panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
@@ -811,7 +1023,7 @@ test.each([false, true])(
       expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
     }
     await user.click(screen.getByRole("button", { name: "Back" }));
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await findStackedEmptyState("welcome");
     expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
@@ -833,7 +1045,7 @@ test("retained-parent cycle safety: valid observed history wins even when retain
   expect(workspaceStore.getState().panes).toEqual(retained);
   expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 // --- real browser back/forward composing with the in-app Back button -----
@@ -877,7 +1089,7 @@ test("a REAL back/forward gesture does not stack the pane it left, unlike an ord
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
 
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("an ORDINARY (untrusted) synthetic popstate - routing.ts's own navigate() - still stacks normally", async () => {
@@ -992,7 +1204,7 @@ test("back skips a stacked pane that has since been closed, falling to welcome w
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
 
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });
 
 test("back skips a stale MIDDLE stack entry and lands on the next valid one behind it", async () => {
@@ -1093,7 +1305,7 @@ test("resetChromeStoreForTests clears a published paneBack handler", () => {
 
 test("the URL updates to a deep-linked pane's URL once it becomes focused", async () => {
   render(<StackHost />);
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
 
   act(() => {
     workspaceStore.getState().openPane("session", { ref: "local:ref_x" });
@@ -1153,7 +1365,7 @@ test("a deferred route keeps the address bar - the fallback pane does not publis
   window.history.pushState({}, "", "/s/local%3Aref_deferred");
 
   render(<StackHost routeDeferred />);
-  await screen.findByText("No session open"); // the fallback pane is up and focused
+  await findStackedEmptyState("welcome"); // the fallback pane is up and focused
 
   expect(window.location.pathname).toBe("/s/local%3Aref_deferred");
 });
@@ -1163,7 +1375,7 @@ test("a deferred route keeps the address bar - the fallback pane does not publis
 test("the sync resumes on the pane that lands once the route is no longer deferred", async () => {
   window.history.pushState({}, "", "/s/local%3Aref_deferred");
   const { rerender } = render(<StackHost routeDeferred />);
-  await screen.findByText("No session open");
+  await findStackedEmptyState("welcome");
 
   act(() => {
     workspaceStore.getState().openPane("session", { ref: "local:ref_placed" });
@@ -1309,7 +1521,7 @@ test.each(["exact cycle", "mixed cycle", "session origin", "missing farther ance
       expect(workspaceStore.getState().panes).toEqual(retained);
       await user.click(screen.getByRole("button", { name: "Back" }));
     }
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await findStackedEmptyState("welcome");
     expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
     expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
@@ -1333,5 +1545,5 @@ test("exact Open origin Back: valid local history wins over a recorded origin", 
   expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
   expect(workspaceStore.getState().panes).toEqual(retained);
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await findStackedEmptyState("welcome");
 });

@@ -9,6 +9,7 @@ import { resetLaunchConfigHostStoresForTests, resetLaunchConfigStoreForTests } f
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { LaunchServerHostScope } from "./launchServer";
+import { shownReasons } from "./reasonTestUtils";
 import { LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS } from "./useConnectedEffect";
 
 // The launch-evener settings surface's host scope (component 07b): the shared
@@ -193,7 +194,7 @@ test("a host that is no longer configured says so instead of falling back to thi
   // Beta disappears from the registry (removed from another client).
   act(() => hostsStore.setState({ load: { phase: "ready", hosts: [] } }));
 
-  expect(await screen.findByText(/is no longer configured/)).toBeTruthy();
+  await waitFor(() => expect(shownReasons()).toContain("host-gone"));
 });
 
 // A host switch must not submit what the user typed for the host they left.
@@ -310,7 +311,7 @@ test("a launch-config change for the SELECTED host re-reads the pane and shows t
   // Exactly ONE more layer read - the refresh - and it was the refresh path
   // (the form never blanked), not a load.
   expect(forwardedMethodCalls(fake, "beta", "evener/launch/getLayer")).toBe(2);
-  expect(screen.queryByText(/Loading launch settings/)).toBeNull();
+  expect(screen.queryByTestId("loader-grid")).toBeNull();
 });
 
 test("a launch-config change for a DIFFERENT host does not re-read the selected pane", async () => {
@@ -396,7 +397,7 @@ test("an incoming change keeps the user's typed draft and says the host's values
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
   // ...and the pane does not silently keep it: the newer host values are named
   // beside the form, with a way to take them.
-  expect(screen.getByText(/changed on the host while you were editing/)).toBeTruthy();
+  expect(shownReasons()).toContain("host-changed");
 });
 
 test("with the local hub selected, a change to its launch config re-reads the pane", async () => {
@@ -501,7 +502,7 @@ test("a pane that failed while its host was away re-reads when the host attaches
 
   setSettingsHost("beta");
   render(<LaunchServerHostScope sectionId="launch-evener" />);
-  expect(await screen.findByText(/Failed to load launch settings/)).toBeTruthy();
+  await waitFor(() => expect(shownReasons()).toContain("load-failed"));
 
   // The host comes back: the registry's next answer reports it attached.
   attached = true;
@@ -579,7 +580,7 @@ test("a failed refresh keeps the form and the draft, reports itself beside it, a
   await user.clear(agent);
   await user.type(agent, "typed-on-beta");
   // A load that succeeded says nothing about failures.
-  expect(screen.queryByText(/Could not re-read/)).toBeNull();
+  expect(shownReasons()).not.toContain("refresh-failed");
 
   // Away, then back: the re-read that follows fails.
   attached = false;
@@ -588,14 +589,14 @@ test("a failed refresh keeps the form and the draft, reports itself beside it, a
   attached = true;
   await act(() => hostsStore.getState().refresh());
 
-  expect(await screen.findByText(/Could not re-read this host's launch settings/)).toBeTruthy();
+  await waitFor(() => expect(shownReasons()).toContain("refresh-failed"));
   // The form, and the draft in it, are still here.
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
 
   refuse = false;
   await user.click(screen.getByRole("button", { name: "Retry" }));
 
-  await waitFor(() => expect(screen.queryByText(/Could not re-read/)).toBeNull());
+  await waitFor(() => expect(shownReasons()).not.toContain("refresh-failed"));
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
 });
 
@@ -619,12 +620,12 @@ test("a pane left on its load failure offers a retry instead of a dead end", asy
   setSettingsHost("beta");
   render(<LaunchServerHostScope sectionId="launch-evener" />);
   const user = userEvent.setup();
-  expect(await screen.findByText(/Failed to load launch settings/)).toBeTruthy();
+  await waitFor(() => expect(shownReasons()).toContain("load-failed"));
 
   refuse = false;
   await user.click(screen.getByRole("button", { name: "Retry" }));
 
   expect(await screen.findByLabelText("Agent")).toBeTruthy();
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent");
-  expect(screen.queryByText(/Failed to load launch settings/)).toBeNull();
+  expect(shownReasons()).not.toContain("load-failed");
 });

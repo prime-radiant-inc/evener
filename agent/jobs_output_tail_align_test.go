@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 	"unicode/utf8"
+
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // A tail window that lands mid-rune starts on the next rune boundary instead of
@@ -13,23 +15,21 @@ import (
 
 // tailWindowProjection projects a tail read (content ending at total) through
 // the same constructor the production paths use.
-func tailWindowProjection(out string, total int64) JobOutputTail {
-	return jobOutputTailFromWindow(jobOutputWindow{
-		content: out,
-		start:   total - int64(len(out)),
-		end:     total,
-		total:   total,
-	})
+func tailWindowProjection(out string, total int64) JobOutputPage {
+	page, _, _ := jobOutputPageResult(jobstore.OutputWindowSnapshot{
+		Content: []byte(out), Start: total - int64(len(out)), End: total, TotalBytes: total,
+	}, true, nil)
+	return page
 }
 
-func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
+func TestReadClosedJobOutputTailAlignsMidRuneWindowStart(t *testing.T) {
 	t.Parallel()
 	// Two 4-byte emoji: a 6-byte window starts 2 bytes into the first one.
 	path := writeOutputFixture(t, "😀😀")
 
-	out, total, truncated, err := tailOutputFile(path, 6, 8)
+	out, total, truncated, err := readClosedJobOutput(path, nil, 6, false)
 	if err != nil {
-		t.Fatalf("tailOutputFile: %v", err)
+		t.Fatalf("readClosedJobOutput: %v", err)
 	}
 	if !utf8.ValidString(out) {
 		t.Fatalf("tail is not valid UTF-8: %x", out)
@@ -41,32 +41,32 @@ func TestTailOutputFileAlignsMidRuneWindowStart(t *testing.T) {
 		t.Fatalf("tail = (%q, %d, %v), want (😀, 8, true)", out, total, truncated)
 	}
 	projected := tailWindowProjection(out, total)
-	if projected.RetainedStart != 4 || projected.TotalBytes-projected.RetainedStart != int64(len(out)) {
+	if projected.OffsetBytes != 4 || projected.TotalBytes-projected.OffsetBytes != int64(len(out)) {
 		t.Fatalf("projection = %+v, want retainedStart 4 describing %d returned bytes", projected, len(out))
 	}
 }
 
 // A window that already begins on a rune boundary is returned whole: alignment
 // costs a window nothing when there is nothing to align.
-func TestTailOutputFileWindowOnRuneBoundaryUnchanged(t *testing.T) {
+func TestReadClosedJobOutputTailWindowOnRuneBoundaryUnchanged(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀😀")
 
-	out, total, truncated, err := tailOutputFile(path, 4, 8)
+	out, total, truncated, err := readClosedJobOutput(path, nil, 4, false)
 	if err != nil {
-		t.Fatalf("tailOutputFile: %v", err)
+		t.Fatalf("readClosedJobOutput: %v", err)
 	}
 	if out != "😀" || total != 8 || !truncated {
 		t.Fatalf("tail = (%q, %d, %v), want (😀, 8, true)", out, total, truncated)
 	}
-	if got := tailWindowProjection(out, total).RetainedStart; got != 4 {
+	if got := tailWindowProjection(out, total).OffsetBytes; got != 4 {
 		t.Fatalf("retainedStart = %d, want 4", got)
 	}
 }
 
 // Pure ASCII output is byte-identical at every window size: every byte is a rune
 // start, so no window can lose one.
-func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
+func TestReadClosedJobOutputTailASCIIWindowsByteIdentical(t *testing.T) {
 	t.Parallel()
 	const content = "abcdefghij"
 	path := writeOutputFixture(t, content)
@@ -76,9 +76,9 @@ func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
 		if n < len(content) {
 			want = content[len(content)-n:]
 		}
-		out, _, _, err := tailOutputFile(path, n, int64(len(content)))
+		out, _, _, err := readClosedJobOutput(path, nil, n, false)
 		if err != nil {
-			t.Fatalf("tailOutputFile(%d): %v", n, err)
+			t.Fatalf("readClosedJobOutput(%d): %v", n, err)
 		}
 		if out != want {
 			t.Fatalf("tail(%d) = %q, want %q", n, out, want)
@@ -89,19 +89,19 @@ func TestTailOutputFileASCIIWindowsByteIdentical(t *testing.T) {
 // A window narrower than the rune it lands in yields an EMPTY tail with honest
 // offsets, rather than a lone replacement character: retainedStart equals the
 // total, so the caption reads "0 of 4 bytes" and the content agrees.
-func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
+func TestReadClosedJobOutputTailWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 	t.Parallel()
 	path := writeOutputFixture(t, "😀")
 
-	out, total, truncated, err := tailOutputFile(path, 2, 4)
+	out, total, truncated, err := readClosedJobOutput(path, nil, 2, false)
 	if err != nil {
-		t.Fatalf("tailOutputFile: %v", err)
+		t.Fatalf("readClosedJobOutput: %v", err)
 	}
 	if out != "" || total != 4 || !truncated {
 		t.Fatalf("tail = (%q, %d, %v), want (\"\", 4, true)", out, total, truncated)
 	}
 	projected := tailWindowProjection(out, total)
-	if projected.RetainedStart != 4 || projected.TotalBytes-projected.RetainedStart != 0 {
+	if projected.OffsetBytes != 4 || projected.TotalBytes-projected.OffsetBytes != 0 {
 		t.Fatalf("projection = %+v, want retainedStart 4 describing 0 returned bytes", projected)
 	}
 }
@@ -112,7 +112,7 @@ func TestTailOutputFileWindowNarrowerThanRuneIsEmpty(t *testing.T) {
 // whole retained file that happens to start with continuation bytes is never
 // cut (we did not make that cut), and a run of continuation bytes longer than
 // any rune could leave loses only the three a 4-byte rune could account for.
-func TestTailOutputFileKeepsInvalidUTF8(t *testing.T) {
+func TestReadClosedJobOutputTailKeepsInvalidUTF8(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -145,15 +145,15 @@ func TestTailOutputFileKeepsInvalidUTF8(t *testing.T) {
 			path := writeOutputFixture(t, string(tc.content))
 			total := int64(len(tc.content))
 
-			out, gotTotal, _, err := tailOutputFile(path, tc.bytes, total)
-			if err != nil {
-				t.Fatalf("tailOutputFile: %v", err)
+			out, gotTotal, _, err := readClosedJobOutput(path, nil, tc.bytes, false)
+			if err != nil || gotTotal != total {
+				t.Fatalf("readClosedJobOutput: total %d, %v; want total %d", gotTotal, err, total)
 			}
 			if out != string(tc.want) {
 				t.Fatalf("tail = %x, want %x", out, tc.want)
 			}
 			projected := tailWindowProjection(out, gotTotal)
-			if projected.TotalBytes-projected.RetainedStart != int64(len(out)) {
+			if projected.TotalBytes-projected.OffsetBytes != int64(len(out)) {
 				t.Fatalf("projection = %+v, want the caption to count the %d returned bytes", projected, len(out))
 			}
 		})

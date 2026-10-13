@@ -204,20 +204,3 @@
    * or iOS zooms into it on focus (--font-size-control is 16px on phones). */
   font-size: var(--font-size-control);
 }
-
-/* Standard visually-hidden recipe: keeps a real, focus-order-preserving
- * <label> in the accessibility tree without taking up any visual footprint in
- * this compact row. The effort readout beside it is aria-hidden (the select
- * already speaks its own value), so this association is the control's only
- * accessible name. */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}

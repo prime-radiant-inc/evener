@@ -1,4 +1,8 @@
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../../stores/transcriptDisplay";
+import { mountReaderScene } from "../transcriptReaderTestUtils";
 import {
   announceTranscriptViews,
   type CapturedTranscriptView,
@@ -12,6 +16,61 @@ import {
   restoreTranscriptViews,
   transitionTranscriptViews,
 } from "./transcriptViewRegistry";
+
+test.each(["display replay", "prepared remount", "current remount"] as const)(
+  "superseded original capture cannot write or focus through real %s",
+  async (delivery) => {
+    const scene = mountReaderScene(`stale-${delivery}`);
+    try {
+      await scene.start();
+      const anchor = scene.port().querySelector<HTMLElement>('[data-view-anchor-id="current-entry"]');
+      if (!anchor) throw new Error("Missing actual source anchor");
+      anchor.tabIndex = -1;
+      anchor.focus();
+      const original = scene.capture();
+      if (!original) throw new Error("Missing actual producer capture");
+      expect(original.focusedEntryId).toBe("current-entry");
+      const editor = screen.getByRole("textbox", { name: "Neighbor editor" }) as HTMLTextAreaElement;
+      editor.focus();
+      editor.setSelectionRange(5, 9);
+      await act(async () => {
+        fireEvent.wheel(scene.port(), { deltaY: -800 });
+        scene.port().scrollTop = 100;
+        fireEvent.scroll(scene.port());
+      });
+      if (delivery === "display replay") {
+        await act(async () => restoreTranscriptView(scene.view.id, original));
+        await act(async () => scene.external.notify());
+        expect(scene.port().scrollTop).toBe(100);
+        expect(document.activeElement).toBe(editor);
+        expect([editor.selectionStart, editor.selectionEnd]).toEqual([5, 9]);
+        await act(async () =>
+          transcriptDisplayStore
+            .getState()
+            .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })),
+        );
+        await act(async () => scene.external.notify());
+        expect(scene.port().scrollTop).toBe(100);
+      } else {
+        scene.view.setReadable(false);
+        const newer = scene.view.getCapture();
+        expect(newer).toMatchObject({ anchorId: "current-entry", anchorOffset: -100, followingBottom: false });
+        prepareTranscriptViewRemount(
+          new Map([[scene.view.id, delivery === "current remount" ? (newer ?? original) : original]]),
+          "desktop",
+        );
+        await act(async () => scene.remount(newer));
+        await act(async () => scene.external.notify());
+        await act(async () => scene.frames.release());
+        expect(scene.port().scrollTop).toBe(100);
+        expect(document.activeElement?.getAttribute("data-view-anchor-id")).not.toBe("current-entry");
+      }
+    } finally {
+      scene.dispose();
+      resetTranscriptDisplayStoreForTests();
+    }
+  },
+);
 
 function captured(anchorId: string): CapturedTranscriptView {
   return {

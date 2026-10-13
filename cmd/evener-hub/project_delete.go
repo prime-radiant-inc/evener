@@ -146,11 +146,7 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 			if err := ctx.Err(); err != nil {
 				return appwire.ProjectDeleteResponse{}, err
 			}
-			skipped := []projectDeleteSkip{{ID: ownerErr.ThreadID, Reason: ownerErr.Error()}}
-			if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
-				skipped = appendProjectDeleteLiveSkip(nil, ownerErr.ThreadID)
-			}
-			return s.projectDeleteResult(ctx, []string{}, skipped, false, project.ID)
+			return s.projectDeleteResult(ctx, []string{}, []projectDeleteSkip{ownershipSkip(ownerErr.ThreadID, ownerErr)}, false, project.ID)
 		}
 		defer func() {
 			if releaseOwnership != nil {
@@ -391,11 +387,7 @@ func (s *WebServer) acquireProjectDeletionCandidates(
 			releases = append(releases, releaseTarget)
 			continue
 		}
-		if errors.Is(err.Err, llm.ErrAPILogTargetLocked) || err.Live {
-			skipped = appendProjectDeleteLiveSkip(skipped, target.ThreadID)
-		} else {
-			skipped = append(skipped, projectDeleteSkip{ID: target.ThreadID, Reason: err.Error()})
-		}
+		skipped = append(skipped, ownershipSkip(target.ThreadID, err))
 	}
 	return owned, skipped, release
 }
@@ -605,6 +597,20 @@ func (s *WebServer) cleanupProjectDeletion(
 	return result
 }
 
+// recordedScratchTempDir is the temp dir sessionID's daemon recorded in its
+// meta, as the index still holds it while the session's files are removed.
+// The hub's own temp dir is always searched; this adds the daemon's, which
+// differs when the daemon was started with another TMPDIR.
+func (s *WebServer) recordedScratchTempDir(sessionID string) []string {
+	if s.cfg.Past == nil {
+		return nil
+	}
+	if entry, ok := s.cfg.Past.FindIndexed(sessionID); ok && entry.Meta.ScratchTempDir != "" {
+		return []string{entry.Meta.ScratchTempDir}
+	}
+	return nil
+}
+
 func (s *WebServer) cleanupProjectDeletionTarget(stateDir, sessionID string) error {
 	// Tombstone first, under the metadata writers' lock: an in-flight
 	// out-of-process autosave holding or waiting on that lock would otherwise
@@ -685,7 +691,7 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 	}
 	// Last and best-effort, as on archive: the session is already gone, and an
 	// entry the scratch removal cannot take must not leave it half-deleted.
-	_ = agentsandbox.RemoveSessionScratchTree(sessionID)
+	_ = agentsandbox.RemoveSessionScratchTree(sessionID, s.recordedScratchTempDir(sessionID)...)
 	return nil
 }
 
@@ -793,6 +799,12 @@ func removeFlatProjectSessionArtifacts(sessionsDir, sessionID string) error {
 	return nil
 }
 
-func appendProjectDeleteLiveSkip(skipped []projectDeleteSkip, id string) []projectDeleteSkip {
-	return append(skipped, projectDeleteSkip{ID: id, Reason: "resumed live"})
+// ownershipSkip reports the session id whose deletion err refused. A live
+// owner, or another process holding the session's API log, is a live skip;
+// any other ownership failure is skipped with that failure as its reason.
+func ownershipSkip(id string, err *projectDeletionOwnershipError) projectDeleteSkip {
+	if errors.Is(err.Err, llm.ErrAPILogTargetLocked) || err.Live {
+		return projectDeleteSkip{ID: id, Reason: "resumed live", Kind: appwire.SkipKindLive}
+	}
+	return projectDeleteSkip{ID: id, Reason: err.Error()}
 }

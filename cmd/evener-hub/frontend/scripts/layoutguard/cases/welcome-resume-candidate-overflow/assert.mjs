@@ -1,6 +1,6 @@
 // Issue #197's mechanism and its fix, both directions, at three phone widths:
 //
-// - The 200-rune resume-candidate title must not inflate the welcome .actions
+// - The 200-rune resume-candidate title must not inflate the .welcomeActions
 //   column past the pane body. When it does, PaneScaffold's .body
 //   overflow-x:clip slices the centered button symmetrically into a
 //   marker-less mid-string fragment (leftClippedPx/rightClippedPx both
@@ -45,7 +45,7 @@ export default function assert(measurements) {
     contained("New session button", m.newSession);
 
     for (const [name, rect] of [
-      ["welcome .actions column", m.actions],
+      ["welcome .welcomeActions column", m.actions],
       [".hints container", m.hints],
     ]) {
       if (rect.width > bodyWidth + TOLERANCE) {

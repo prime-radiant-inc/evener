@@ -14,13 +14,47 @@ import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } 
 import { DEMO_MODEL_LIST } from "./dev/demoSetup.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
-import { SessionActivityStore, projectSessionActivity, parseJobLogTail } from "@evener/appwire-client";
+import {
+	SessionActivityStore,
+	projectSessionActivity,
+	parseJobOutputPage,
+	decodeJobOutputText,
+} from "@evener/appwire-client";
 import { readDocFile } from "@evener/appwire-client/docContent";
 import { decodeArchivedListSessions } from "@evener/appwire-client/state/navigation";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
 import { nativeDocPort } from "./nativeDocPort";
 import { flattenActivity, isJobRow, isSubagentRow } from "./subagents/subagentModel";
 import { SubagentTree } from "./subagents/subagentTree";
+
+// The phone sends Steer now and Steer all now through its outbox; these send
+// the same requests to the demo hub directly.
+let queueActionCount = 0;
+function promoteQueued(
+	client: ReturnType<typeof createHubClient>,
+	ref: string,
+	queued: { index: number; id: string; instanceId: string },
+) {
+	return client.request("turn/promoteQueuedAsSteer", {
+		ref,
+		index: queued.index,
+		expectedEntryId: queued.id,
+		expectedInstanceId: queued.instanceId,
+		clientMutationId: `promote-${++queueActionCount}`,
+	});
+}
+function drainQueue(
+	client: ReturnType<typeof createHubClient>,
+	ref: string,
+	queue: { revision: number; instanceId: string },
+) {
+	return client.request("turn/drainAsSteer", {
+		ref,
+		expectedQueueRevision: queue.revision,
+		expectedInstanceId: queue.instanceId,
+		clientMutationId: `drain-${++queueActionCount}`,
+	});
+}
 
 describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 	const PR2138 = `local:${demoSessionId("s-pr2138")}`;
@@ -338,9 +372,14 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			const failed = listed.jobs.find((job) => job.status === "command_exited_nonzero");
 			if (!failed) throw new Error("no failed job");
 			const response = await client.request("evener/jobs/output", { ref: failed.ownerRef, jobId: failed.jobId });
-			const tail = parseJobLogTail((response as { data: unknown }).data);
-			expect(tail?.tail).toContain("FAIL");
-			expect(tail?.totalBytes).toBe(new TextEncoder().encode(tail?.tail ?? "").length);
+			const page = parseJobOutputPage((response as { data: unknown }).data);
+			const text = page ? decodeJobOutputText(page.bytes) : "";
+			expect(text).toContain("FAIL");
+			expect(page?.totalBytes).toBe(new TextEncoder().encode(text).length);
+			expect(page?.bytesReturned).toBe(page?.totalBytes);
+			expect(page?.offsetBytes).toBe(0);
+			expect(page?.retainedStartBytes).toBe(0);
+			expect(page?.encoding).toBe("utf8");
 			// Only the owning session answers for the job, as on a real hub.
 			await expect(client.request("evener/jobs/output", { ref: PR2138, jobId: failed.jobId })).rejects.toThrow(
 				`job not found: ${failed.jobId}`,
@@ -484,16 +523,18 @@ describe("native demonstration hub", () => {
 			if (!first || !second || !observed.instanceId || !observed.queue) throw new Error("Missing queue guards");
 			await service.cancelQueued(0, first, observed.instanceId);
 			await expect(service.cancelQueued(0, first, observed.instanceId)).rejects.toMatchObject({ code: -32013 });
-			await expect(service.drainAsSteer(observed.queue.revision, observed.instanceId)).rejects.toMatchObject({
+			await expect(
+				drainQueue(client, "demo:playground", { revision: observed.queue.revision, instanceId: observed.instanceId }),
+			).rejects.toMatchObject({
 				code: -32013,
 			});
 			const remaining = await service.open("demo:playground");
 			expect(remaining.queue?.texts).toEqual(["Second", "Third"]);
-			await service.promoteQueuedAsSteer(0, second, observed.instanceId);
+			await promoteQueued(client, "demo:playground", { index: 0, id: second, instanceId: observed.instanceId });
 			const last = await service.open("demo:playground");
 			expect(last.queue?.texts).toEqual(["Third"]);
 			if (!last.queue) throw new Error("Missing queue guards");
-			await service.drainAsSteer(last.queue.revision, observed.instanceId);
+			await drainQueue(client, "demo:playground", { revision: last.queue.revision, instanceId: observed.instanceId });
 			expect((await service.open("demo:playground")).queue?.depth).toBe(0);
 		} finally {
 			service.close();
@@ -1070,7 +1111,7 @@ describe("native demonstration hub's fleet sessions", () => {
 	});
 
 	it("queues, steers, stops and holds a fleet session's messages, then sends one held", async () => {
-		await withSession({}, async (service) => {
+		await withSession({}, async (service, client) => {
 			const opened = await service.open(fleetSessionRef("s-pr2138"));
 			const instanceId = opened.instanceId;
 			if (!instanceId) throw new Error("Missing instance id");
@@ -1081,7 +1122,7 @@ describe("native demonstration hub's fleet sessions", () => {
 			const [first, second] = queued.queue?.ids ?? [];
 			if (!first || !second) throw new Error("Missing queue ids");
 			expect(ghosts(queued, [], null, [], true).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
-			await service.promoteQueuedAsSteer(0, first, instanceId);
+			await promoteQueued(client, fleetSessionRef("s-pr2138"), { index: 0, id: first, instanceId });
 			// Stop with a message queued holds it, and Send now releases it.
 			await service.interrupt();
 			const stopped = await service.open(fleetSessionRef("s-pr2138"));
@@ -1090,7 +1131,7 @@ describe("native demonstration hub's fleet sessions", () => {
 			expect(ghosts(stopped, [], null, [], true)).toEqual([
 				expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
 			]);
-			await service.promoteQueuedAsSteer(0, second, instanceId);
+			await promoteQueued(client, fleetSessionRef("s-pr2138"), { index: 0, id: second, instanceId });
 			const sent = await service.open(fleetSessionRef("s-pr2138"));
 			expect(sent.queue?.depth).toBe(0);
 			expect(sent.status.type).toBe("active");
@@ -1182,7 +1223,7 @@ describe("native demonstration hub's fleet sessions", () => {
 	});
 
 	it("cancels one queued message and steers with the rest from a long queue", async () => {
-		await withSession({}, async (service) => {
+		await withSession({}, async (service, client) => {
 			const opened = await service.open(fleetSessionRef("s-stumble"));
 			const [first] = opened.queue?.ids ?? [];
 			if (!first || !opened.instanceId || !opened.queue) throw new Error("Missing queue guards");
@@ -1190,7 +1231,10 @@ describe("native demonstration hub's fleet sessions", () => {
 			const cancelled = await service.open(fleetSessionRef("s-stumble"));
 			expect(cancelled.queue?.depth).toBe(4);
 			if (!cancelled.queue) throw new Error("Missing queue");
-			await service.drainAsSteer(cancelled.queue.revision, opened.instanceId);
+			await drainQueue(client, fleetSessionRef("s-stumble"), {
+				revision: cancelled.queue.revision,
+				instanceId: opened.instanceId,
+			});
 			expect((await service.open(fleetSessionRef("s-stumble"))).queue?.depth).toBe(0);
 		});
 	});
@@ -1474,15 +1518,19 @@ describe("native demonstration hub's fleet sessions", () => {
 			const ref = fleetSessionRef("s-pr2138");
 			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
 			const expectedInstanceId = thread.evener.instanceId ?? "";
+			const note = "Fix causes,\nand say which.\n\nThen rest.";
 			const saved = await client.request("notes/human/set", {
 				ref,
 				clientMutationId: "note-1",
 				expectedInstanceId,
-				// Saved as the daemon stores it: whitespace runs collapsed.
-				note: "  Fix causes,\n and   say which. ",
+				// Saved as the daemon's normalizeWhiteboard stores it: controls
+				// dropped, CRLF and CR read as line breaks, each line's whitespace
+				// collapsed and trimmed, outer blank lines dropped and a run of
+				// blank lines kept as one.
+				note: "\n \n  Fix causes,\r\n and \x1b  say which. \r\r\t\n\nThen\u00a0rest.\n\n",
 			});
 			expect(saved).toMatchObject({
-				note: "Fix causes, and say which.",
+				note,
 				receipt: {
 					clientMutationId: "note-1",
 					disposition: "applied",
@@ -1495,20 +1543,21 @@ describe("native demonstration hub's fleet sessions", () => {
 				ref,
 				clientMutationId: "note-same",
 				expectedInstanceId,
-				note: "Fix causes, and say which.",
+				note,
 			});
 			expect(unchanged.receipt.projectionState).toBe("removed");
 			expect(unchanged.receipt).not.toHaveProperty("turnId");
 			await client.request("urls/remove", { ref, clientMutationId: "link-1", expectedInstanceId, id: "u-checks" });
 			const after = await client.request("thread/read", { ref, includeTurns: true });
-			expect(after.thread.evener.humanNote).toBe("Fix causes, and say which.");
-			// The changed note steers the agent, as the daemon records it.
+			expect(after.thread.evener.humanNote).toBe(note);
+			// The changed note steers the agent, as the daemon records it:
+			// continuation lines indented under the prefix (formatNotesField).
 			expect(after.thread.turns?.at(-1)?.items).toContainEqual(
 				expect.objectContaining({
 					type: "steering",
 					source: "user",
 					steeringKind: "human-note",
-					text: "human updated their whiteboard: Fix causes, and say which.",
+					text: "human updated their whiteboard: Fix causes,\n  and say which.\n\n  Then rest.",
 					clientMutationId: "note-1",
 				}),
 			);
@@ -1539,6 +1588,22 @@ describe("native demonstration hub's fleet sessions", () => {
 					note: "x",
 				}),
 			).rejects.toThrow("This session doesn't take shared notes");
+		});
+	});
+
+	it("clamps your note to 1000 characters without leaving a line break at the end", async () => {
+		await withHub({}, async (client) => {
+			const ref = fleetSessionRef("s-pr2138");
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			const firstLine = "a".repeat(999);
+			const saved = await client.request("notes/human/set", {
+				ref,
+				clientMutationId: "note-clamp",
+				expectedInstanceId: thread.evener.instanceId ?? "",
+				// The clamp cuts just after the line break, which is then trimmed.
+				note: `${firstLine}\nb`,
+			});
+			expect(saved.note).toBe(firstLine);
 		});
 	});
 

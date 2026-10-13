@@ -132,7 +132,17 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	c := s.delegateController
 	nextPacket := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"Second run report."`)}
 	c.mu.Lock()
-	_, err = c.appendLocked(delegateControllerRunStartedEvent("dlg_reported", 2, delegatestore.TriggerOwnerInput, wireFixtureStart), delegateRunFinishedEvent(delegateLease{delegateID: "dlg_reported", generation: 2}, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", wireFixtureStart.Add(30*time.Second), delegateDeliveryID("dlg_reported", 2), &nextPacket))
+	_, err = c.appendLocked(
+		delegateControllerRunStartedEvent("dlg_reported", 2, delegatestore.TriggerOwnerInput, wireFixtureStart),
+		// An update the resumed run posted before reporting: delegates/list
+		// and its reportPreview read only the report.
+		delegatestore.Event{
+			Kind:         delegatestore.EventDelegateUpdatePosted,
+			DelegateID:   "dlg_reported",
+			UpdatePosted: &delegatestore.UpdatePosted{Generation: 2, Message: "Need the schema before I continue."},
+		},
+		delegateRunFinishedEvent(delegateLease{delegateID: "dlg_reported", generation: 2}, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", wireFixtureStart.Add(30*time.Second), delegateDeliveryID("dlg_reported", 2), &nextPacket),
+	)
 	c.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)

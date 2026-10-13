@@ -200,7 +200,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		policy := sandbox.ResolvedPolicy{FileTool: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}
 		sfs := newSandboxFS(&policy, "")
 		defer sfs.close()
-		if err := sfs.walkDirFd(-1, "", t.TempDir(), 2, new([]DirEntry)); err == nil {
+		if err := sfs.walkDirFd(-1, "", t.TempDir(), 2, false, new([]DirEntry)); err == nil {
 			t.Fatal("directory walk on invalid descriptor succeeded")
 		}
 		_ = sfs.recheckMaskedFd("read_file", filepath.Join(t.TempDir(), "x"), -1)
@@ -253,12 +253,12 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		securePathRel = func(string, string) (string, error) { return "", errors.New("scripted rel failure") }
 		_, _, _ = containingRoot([]string{root}, filepath.Join(root, "child"))
 		securePathRel = pathRelOrig
-		if _, err := rootFS.listDir("list_directory", root, 2); err != nil {
+		if _, err := rootFS.listDir("list_directory", root, 2, false); err != nil {
 			t.Fatal(err)
 		}
 		entryInfoOrig := secureEntryInfo
-		secureEntryInfo = func(int, string) (int64, os.FileMode, error) { return 0, 0, fs.ErrPermission }
-		if _, err := rootFS.listDir("list_directory", root, 1); err != nil {
+		secureEntryInfo = func(int, string) (int64, os.FileMode, time.Time, error) { return 0, 0, time.Time{}, fs.ErrPermission }
+		if _, err := rootFS.listDir("list_directory", root, 1, false); err != nil {
 			t.Fatal(err)
 		}
 		secureEntryInfo = entryInfoOrig
@@ -266,9 +266,9 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		readDirForInfo := secureReadDirEntries
 		secureReadDirEntries = func(int) ([]os.DirEntry, error) { return []os.DirEntry{fakeEntry}, nil }
 		entryInfoForSynth := secureEntryInfo
-		secureEntryInfo = func(int, string) (int64, os.FileMode, error) { return 0, 0o755, nil }
+		secureEntryInfo = func(int, string) (int64, os.FileMode, time.Time, error) { return 0, 0o755, time.Time{}, nil }
 		var synthetic []DirEntry
-		if err := rootFS.walkDirFd(-1, "", root, 1, &synthetic); err != nil || len(synthetic) != 1 || !synthetic[0].IsExec {
+		if err := rootFS.walkDirFd(-1, "", root, 1, false, &synthetic); err != nil || len(synthetic) != 1 || !synthetic[0].IsExec {
 			t.Fatalf("synthetic executable entry=%+v err=%v", synthetic, err)
 		}
 		secureEntryInfo = entryInfoForSynth
@@ -283,7 +283,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 
 		readDirOrig := secureReadDirEntries
 		secureReadDirEntries = func(int) ([]os.DirEntry, error) { return nil, fs.ErrPermission }
-		if _, err := rootFS.listDir("list_directory", root, 2); err == nil {
+		if _, err := rootFS.listDir("list_directory", root, 2, false); err == nil {
 			t.Fatal("scripted readdir failure unexpectedly succeeded")
 		}
 		secureReadDirEntries = readDirOrig
@@ -292,16 +292,16 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			_ = fn("denied", nil, fs.ErrPermission)
 			return nil
 		}
-		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err != nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content", 0, nil); err != nil {
 			t.Fatal(err)
 		}
 		secureBrowseWalkDir = func(fs.FS, string, fs.WalkDirFunc) error { return fs.ErrPermission }
-		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err == nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content", 0, nil); err == nil {
 			t.Fatal("browse walk fault succeeded")
 		}
 		secureBrowseWalkDir = browseWalkOrig
 		secureBrowseReadFile = func(fs.FS, string) ([]byte, error) { return nil, fs.ErrPermission }
-		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err != nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content", 0, nil); err != nil {
 			t.Fatal(err)
 		}
 		secureBrowseReadFile = browseReadOrig
@@ -339,7 +339,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		}
 		openatOrig := secureOpenat
 		secureOpenat = func(int, string, int, uint32) (int, error) { return -1, fs.ErrPermission }
-		if _, err := rootFS.listDir("list_directory", root, 2); err != nil {
+		if _, err := rootFS.listDir("list_directory", root, 2, false); err != nil {
 			t.Fatal(err)
 		}
 		secureOpenat = openatOrig
@@ -351,7 +351,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			}
 			return readDirOrig(fd)
 		}
-		if _, err := rootFS.listDir("list_directory", root, 2); err == nil {
+		if _, err := rootFS.listDir("list_directory", root, 2, false); err == nil {
 			t.Fatal("recursive readdir failure unexpectedly succeeded")
 		}
 		secureReadDirEntries = readDirOrig

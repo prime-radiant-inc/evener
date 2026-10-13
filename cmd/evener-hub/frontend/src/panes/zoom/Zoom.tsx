@@ -1,18 +1,18 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { m, spatialTransition, useReducedMotion } from "../../motion";
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { ScopeCrumbs } from "../../shell/statusbar/ScopeCrumbs";
+import { ScopeCrumbs, useScopeTitle } from "../../shell/statusbar/ScopeCrumbs";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { deriveScope } from "../../shell/statusbar/statusScope";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, workspaceStore } from "../../shell/workspace";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
-import { useSessionActivity } from "../../stores/sessionActivity";
+import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
-import { Button, EmptyState, PaneScaffold } from "../../widgets";
+import { Button, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { ReadOnlyThreadContent } from "../transcript/ReadOnlyThreadContent";
@@ -25,13 +25,21 @@ import {
 } from "./actions";
 import { CascadeColumn } from "./CascadeColumn";
 import { CascadeSpine } from "./CascadeSpine";
-import { type CascadeScope, deriveCascadePath, type SessionZoomParams } from "./intent";
+import { cascadeOriginRef } from "./inspectionOrigin";
+import {
+  type CascadeScope,
+  deriveCascadePath,
+  firstReadableIndex,
+  phoneScopes,
+  renderedScopes,
+  type SessionZoomParams,
+} from "./intent";
 import styles from "./zoom.module.css";
 
 const CLASS = {
   body: requireClass(styles.body, "zoom.module.css", "body"),
-  path: requireClass(styles.path, "zoom.module.css", "path"),
   hint: requireClass(styles.hint, "zoom.module.css", "hint"),
+  returnRow: requireClass(styles.returnRow, "zoom.module.css", "returnRow"),
   track: requireClass(styles.track, "zoom.module.css", "track"),
   column: requireClass(styles.column, "zoom.module.css", "column"),
   spine: requireClass(styles.spine, "zoom.module.css", "spine"),
@@ -43,6 +51,7 @@ function ScopeConversation({
   scope,
   readable,
   leaf,
+  only,
   mobile,
   userTransition,
 }: {
@@ -51,11 +60,13 @@ function ScopeConversation({
   scope: CascadeScope;
   readable: boolean;
   leaf: boolean;
+  only: boolean;
   mobile: boolean;
   userTransition: boolean;
 }) {
   // Spines retain summary demand, not transcript or collection demand.
   const { snapshot } = useSessionActivity(scope.requestedRef);
+  const subagents = useSubagentCounts(scope.requestedRef);
   useNavigationStore((state) => state.resources);
   const model = useThreadsStore(
     useShallow((state) => {
@@ -83,11 +94,13 @@ function ScopeConversation({
     return () => view.setReadable(false);
   }, [view, readable, admitted]);
 
-  const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot);
+  const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot, subagents);
   activity.leaf.title = (imageMatches && model?.name) || scope.title;
   const readableWidth = leaf ? 440 : 400;
   const desktopWidth = readable ? readableWidth : 52;
-  const width = mobile ? "100%" : desktopWidth;
+  // A lone column fills the pane so the first drill reads as the subagent's
+  // own conversation; deeper shapes keep the fixed column and spine widths.
+  const width = mobile || only ? "100%" : desktopWidth;
   return (
     <m.section
       className={readable ? CLASS.column : CLASS.spine}
@@ -104,7 +117,7 @@ function ScopeConversation({
           {admitted ? (
             <ReadOnlyThreadContent ref={scope.requestedRef} view={view} availability={snapshot?.summaryState} />
           ) : (
-            <EmptyState title="Loading transcript…" />
+            <Skeleton />
           )}
         </CascadeColumn>
       ) : (
@@ -112,6 +125,39 @@ function ScopeConversation({
       )}
     </m.section>
   );
+}
+
+/** Scrolls the column track to its right end and returns the offset it landed on. */
+function scrollToEnd(element: HTMLElement): number {
+  element.scrollLeft = element.scrollWidth - element.clientWidth;
+  return element.scrollLeft;
+}
+
+// The origin conversation never renders in the pane, but its identity is
+// still observed: when the origin's ref resolves to a replacement session,
+// reconcileCascadeBinding retires the cascade's stale descendant edges and
+// readers — the reconciliation the rendered origin column performed before
+// the redesign. The observer renders nothing; it only holds the origin's
+// activity subscription on the cascade's lifetime. `ancestrySessionId` is
+// the identity the child's ancestry already knows, standing in until the
+// origin's own summary resolves — the same fallback a rendered scope uses —
+// so an origin replaced before that first summary still retires the stale
+// descendants instead of registering the replacement as the first identity.
+function CascadeOriginBindingObserver({
+  pane,
+  originRef,
+  ancestrySessionId,
+}: {
+  pane: OpenPaneRecord;
+  originRef: string;
+  ancestrySessionId: string | undefined;
+}) {
+  const { snapshot } = useSessionActivity(originRef);
+  const sessionId = snapshot?.context?.sessionId ?? ancestrySessionId;
+  useLayoutEffect(() => {
+    if (sessionId !== undefined) reconcileCascadeBinding(pane, originRef, sessionId);
+  }, [pane, originRef, sessionId]);
+  return null;
 }
 
 export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) {
@@ -124,16 +170,66 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   const reducedMotion = useReducedMotion();
   const track = useRef<HTMLDivElement>(null);
   const userTransition = params !== undefined && hasCascadeUserTransition(params);
+  const selectedTitle = useScopeTitle(params?.ref ?? "", params?.ref ?? "");
+  // A drill or pop reveals the leaf at the track's right end, and the track
+  // keeps to its end while it is there: the pane can narrow just after (a
+  // sidebar opening alongside it on a narrow desktop), and columns keep
+  // animating their widths, either of which would otherwise leave the leaf past
+  // the right edge. A scroll away from the end stops that; a scroll back to it
+  // resumes it. followsLeaf holds the offset last written, because that write's
+  // own scroll event can arrive after a column has briefly widened the track,
+  // short of the new end. A browser clamp to a shrunk end is at the end.
+  const followsLeaf = useRef<number | null>(null);
   useLayoutEffect(() => {
     if (!params || !userTransition) return;
     clearCascadeUserTransition(params);
-    if (track.current) track.current.scrollLeft = track.current.scrollWidth - track.current.clientWidth;
+    if (track.current) followsLeaf.current = scrollToEnd(track.current);
   }, [params, userTransition]);
+  const mounted = pane !== undefined && params !== undefined;
+  useEffect(() => {
+    const element = track.current;
+    if (!mounted || !element || typeof ResizeObserver === "undefined") return;
+    const scrolled = () => {
+      if (element.scrollLeft >= element.scrollWidth - element.clientWidth - 1) followsLeaf.current = element.scrollLeft;
+      else if (element.scrollLeft !== followsLeaf.current) followsLeaf.current = null;
+    };
+    const resized = new ResizeObserver(() => {
+      // A scroll can land after this frame's scroll events and before this
+      // callback (a smooth or rAF-driven scroll); read the reader's place first.
+      scrolled();
+      if (followsLeaf.current !== null) followsLeaf.current = scrollToEnd(element);
+    });
+    // The track's own box changes when the pane does; its content width changes
+    // only through its columns, observed as they come and go.
+    resized.observe(element);
+    for (const column of element.children) resized.observe(column);
+    const columns = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) if (node instanceof Element) resized.observe(node);
+        for (const node of record.removedNodes) if (node instanceof Element) resized.unobserve(node);
+      }
+    });
+    columns.observe(element, { childList: true });
+    element.addEventListener("scroll", scrolled);
+    return () => {
+      resized.disconnect();
+      columns.disconnect();
+      element.removeEventListener("scroll", scrolled);
+    };
+  }, [mounted]);
   if (!pane || !params) return null;
   const lifetime = conversationPaneLifetime(pane);
   const path = deriveCascadePath(params, snapshot?.context ?? null);
-  const scopes = mobile ? path.scopes.slice(-1) : path.scopes;
-  const firstReadable = Math.max(0, scopes.length - 2);
+  // The origin conversation never renders in the pane — no column, no spine —
+  // while its pane stays live beside the cascade. Closing it retires the
+  // association and the full path renders again.
+  const originRef = cascadeOriginRef(pane);
+  const renderedPath = renderedScopes(path.scopes, originRef);
+  const scopes = mobile ? phoneScopes(path.scopes, renderedPath) : renderedPath;
+  // The readable set stays over the full path: the leaf and its immediate
+  // parent, with the parent dropped when it is the removed origin.
+  const firstReadable = firstReadableIndex(path.scopes, originRef);
+  const readableRefs = new Set(path.scopes.slice(firstReadable).map((scope) => scope.requestedRef));
   const returnAction = (
     <Button variant="quiet" size="sm" onClick={() => returnFromAgentCascade(paneId)}>
       Return to previous view
@@ -143,37 +239,40 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
     <PaneScaffold
       paneId={paneId}
       focused={focused}
-      title="Agent cascade"
+      mobileTitle={selectedTitle}
+      publishTabTitle={false}
       scaffoldMarker="cascade"
+      bodyScroll={false}
       actions={mobile ? undefined : returnAction}
       edgeFooter={
-        <StatusBar
-          sessionRef={params.ref}
-          paneId={paneId}
-          leading={
-            <ScopeCrumbs
-              path={path.scopes.map((scope) => ({ ref: scope.requestedRef, title: scope.title }))}
-              onNavigate={(ref) => popAgentCascade(paneId, ref)}
-            />
-          }
-        />
+        mobile ? undefined : (
+          <StatusBar
+            sessionRef={params.ref}
+            paneId={paneId}
+            leading={
+              <ScopeCrumbs
+                path={renderedPath.map((scope) => ({ ref: scope.requestedRef, title: scope.title }))}
+                onNavigate={(ref) => popAgentCascade(paneId, ref)}
+              />
+            }
+          />
+        )
       }
     >
+      {originRef !== null && (
+        <CascadeOriginBindingObserver
+          pane={pane}
+          originRef={originRef}
+          ancestrySessionId={path.scopes.find((scope) => scope.requestedRef === originRef)?.sessionId}
+        />
+      )}
       <div className={CLASS.body}>
-        {mobile && returnAction}
-        <nav className={CLASS.path} aria-label="Agent path">
-          {path.scopes.map((scope) => (
-            <Button
-              key={scope.requestedRef}
-              variant="quiet"
-              size="xs"
-              onClick={() => popAgentCascade(paneId, scope.requestedRef)}
-            >
-              {scope.title}
-            </Button>
-          ))}
-        </nav>
-        {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}
+        {mobile && <div className={CLASS.returnRow}>{returnAction}</div>}
+        {!path.ancestryKnown && (
+          <p className={CLASS.hint} data-testid="cascade-ancestry-incomplete">
+            Earlier ancestry is incomplete
+          </p>
+        )}
         <div ref={track} className={CLASS.track}>
           {scopes.map((scope, index) => (
             <ScopeConversation
@@ -181,8 +280,9 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
               pane={pane}
               lifetime={lifetime}
               scope={scope}
-              readable={index >= firstReadable}
+              readable={readableRefs.has(scope.requestedRef)}
               leaf={index === scopes.length - 1}
+              only={scopes.length === 1}
               mobile={mobile}
               userTransition={userTransition && reducedMotion !== true}
             />

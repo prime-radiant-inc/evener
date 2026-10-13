@@ -1,0 +1,5 @@
+This run cannot finish with undisposed background job(s): job_host, job_build. The process exits once this turn's work is drained; a job still running then is killed and its output lost. Decide what each job is:
+- Scratch work you no longer need: stop it with job_stop.
+- A process that must outlive this run (a server, a watcher): stop it with job_stop FIRST, then relaunch the same command with shell mode="detached". Stop first — relaunching without stopping leaves the original running, and anything bound to a port will fail to rebind. A detached process's output is discarded and it sends no completion notification, and it gets no session scratch ($EVENER_SCRATCH_DIR is unset there), so give its command absolute paths for its output and for any file it reads.
+- A command that terminates on its own whose result you need: create job_watch(operation="create", source="<job_id>", progress_interval_ms=120000) and the run will wait for it.
+If you do nothing, this run will ask once more and then exit, killing the job(s).

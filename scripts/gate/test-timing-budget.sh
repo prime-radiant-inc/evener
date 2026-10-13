@@ -257,7 +257,7 @@ else
 		if [ -d "$web_dir" ]; then
 			report="$work/vitest-report.json"
 			if ( cd "$web_dir" && PATH="$PWD/node_modules/.bin:$PATH" \
-				vitest run --reporter=json --outputFile="$report" \
+				vitest run --configLoader runner --reporter=json --outputFile="$report" \
 				--exclude scripts/browserGuardProcess.test.mjs ) >"$work/vitest.log" 2>&1; then
 				:
 			fi

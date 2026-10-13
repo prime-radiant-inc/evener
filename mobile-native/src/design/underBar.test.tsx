@@ -3,13 +3,14 @@
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Platform } from "react-native";
-import { renderHook } from "../renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { listContentMinHeight, underBar, useBarHeight } from "./underBar";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
 const platform = Platform as { OS: string };
 afterEach(() => {
+	unmountMountedTrees();
 	platform.OS = "ios";
 });
 

@@ -9,6 +9,7 @@ import { resetLaunchConfigHostStoresForTests, resetLaunchConfigStoreForTests } f
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ProjectHostScope } from "./project";
+import { shownReasons } from "./reasonTestUtils";
 
 // The Per-project launch overrides surface's host scope (component 07b): the
 // shared HostPicker over the selected host, whose own project layer both shows
@@ -274,7 +275,7 @@ test("switching hosts keeps the route's ?cwd=, re-scoping the same project to th
 
   expect(new URL(window.location.href).searchParams.get("cwd")).toBe("/repo");
   expect(new URL(window.location.href).searchParams.get("host")).toBe("beta");
-  expect(screen.queryByText(/No project selected/)).toBeNull();
+  expect(shownReasons()).not.toContain("no-project");
   // And the same project's layer now comes from beta.
   await screen.findByText("default: beta-agent");
   expect(screen.getByText("/repo")).toBeTruthy();
@@ -307,7 +308,7 @@ test("a failed refresh keeps the project form and the draft, and a retry clears 
   const agent = (await screen.findByLabelText("Agent")) as HTMLInputElement;
   await user.clear(agent);
   await user.type(agent, "typed-on-beta");
-  expect(screen.queryByText(/Could not re-read/)).toBeNull();
+  expect(shownReasons()).not.toContain("refresh-failed");
 
   attached = false;
   await act(() => hostsStore.getState().refresh());
@@ -315,13 +316,13 @@ test("a failed refresh keeps the project form and the draft, and a retry clears 
   attached = true;
   await act(() => hostsStore.getState().refresh());
 
-  expect(await screen.findByText(/Could not re-read this host's project settings/)).toBeTruthy();
+  await waitFor(() => expect(shownReasons()).toContain("refresh-failed"));
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
 
   refuse = false;
   await user.click(screen.getByRole("button", { name: "Retry" }));
 
-  await waitFor(() => expect(screen.queryByText(/Could not re-read/)).toBeNull());
+  await waitFor(() => expect(shownReasons()).not.toContain("refresh-failed"));
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
 });
 

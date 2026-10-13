@@ -51,7 +51,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 			if strings.Contains(req.Messages[0].Text(), "MUST survive VERBATIM") {
 				return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", 400, "unsupported model", nil, nil)
 			}
-			return llm.Response{Message: llm.Assistant("cheap summary " + token)}, nil
+			return llm.Response{Message: llm.Assistant("## Progress\ncheap summary " + token)}, nil
 		},
 	}
 	active := &cmgpAdapter{
@@ -60,7 +60,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 			if strings.Contains(req.Messages[0].Text(), "MUST survive VERBATIM") {
 				return llm.Response{Message: llm.Assistant("  - retain " + token + "\n")}, nil
 			}
-			return llm.Response{Message: llm.Assistant("active summary " + token)}, nil
+			return llm.Response{Message: llm.Assistant("## Progress\nactive summary " + token)}, nil
 		},
 	}
 	client := cmgpClient(active, cheap)
@@ -374,7 +374,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", 400, "unsupported model", nil, nil)
 	}}
 	fallbackActive := &cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
-		return llm.Response{Message: llm.Assistant("fallback " + token)}, nil
+		return llm.Response{Message: llm.Assistant("## Progress\nfallback " + token)}, nil
 	}}
 	fallbackCM := NewManager(profile, cmgpClient(fallbackActive, fallbackCheap), cheapmodel.New(cmgpClient(fallbackActive, fallbackCheap)))
 	if got, err := fallbackCM.summarizeWithLLMSteered(ctx, input, 2, ""); err != nil || len(got) == 0 || got[0].Kind != schema.TurnSummary || len(fallbackCheap.requests) != 1 || len(fallbackActive.requests) != 1 {
@@ -729,7 +729,7 @@ func cmgpStrategyResponder(token string) func(llm.Request) (llm.Response, error)
 		case strings.Contains(prompt, "Summarize these coding agent actions"):
 			return llm.Response{Message: llm.Assistant("micro " + token)}, nil
 		default:
-			return llm.Response{Message: llm.Assistant("summary " + token)}, nil
+			return llm.Response{Message: llm.Assistant("## Progress\nsummary " + token)}, nil
 		}
 	}
 }

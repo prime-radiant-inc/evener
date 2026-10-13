@@ -16,8 +16,7 @@ const MARK_LIMIT = 500;
 const RECENT_LIMIT = 8;
 
 interface SeenRecord {
-	through?: string;
-	unread?: true;
+	through: string;
 }
 interface SeenState {
 	/** First run is done: the Board read this hub once and took the newest
@@ -32,7 +31,7 @@ function parseSeen(value: unknown): SeenState {
 	if (!isPlainObject(value)) return state;
 	// First run stands only with an epoch that reads as a hub time, or with
 	// none because the fleet it read had no timestamps. A garbled epoch runs
-	// first run again rather than flooding Finished.
+	// first run again rather than flooding the Board with blue dots.
 	const epoch = typeof value.epoch === "string" && hubTime(value.epoch) !== null ? value.epoch : null;
 	if (value.adopted === true && (epoch !== null || value.epoch === null)) {
 		state.adopted = true;
@@ -40,16 +39,14 @@ function parseSeen(value: unknown): SeenState {
 	}
 	if (isPlainObject(value.sessions))
 		for (const [ref, record] of Object.entries(value.sessions)) {
-			if (!isPlainObject(record)) continue;
-			if (record.unread === true) state.sessions[ref] = { unread: true };
-			else if (typeof record.through === "string" && hubTime(record.through) !== null)
+			if (isPlainObject(record) && typeof record.through === "string" && hubTime(record.through) !== null)
 				state.sessions[ref] = { through: record.through };
 		}
 	return state;
 }
 
-/** Whether you have opened each session since its last turn ended: Finished
- * until seen, then Idle (spec 13.1). Every comparison is between the hub's
+/** Whether you have opened each session since its last turn ended: the
+ * row's blue dot until seen (spec 13.1). Every comparison is between the hub's
  * own timestamps (a row's updated_at against the updated_at stored when you
  * opened it), so the phone's clock never matters. The first load on a device
  * adopts the newest updated_at it sees as an epoch, so sessions that ended
@@ -76,7 +73,6 @@ export class SeenMarkers {
 
 	isSeen(row: { ref: string; updated_at?: string }): boolean {
 		const record = this.state.sessions[row.ref];
-		if (record?.unread) return false;
 		if (!this.state.adopted) return true;
 		const updated = hubTime(row.updated_at);
 		if (updated === null) return true;
@@ -106,11 +102,6 @@ export class SeenMarkers {
 		this.save();
 	}
 
-	markUnread(ref: string): void {
-		this.state.sessions[ref] = { unread: true };
-		this.save();
-	}
-
 	subscribe = (listener: () => void): (() => void) => {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -121,13 +112,9 @@ export class SeenMarkers {
 	private save(): void {
 		const entries = Object.entries(this.state.sessions);
 		if (entries.length > MARK_LIMIT) {
-			// 500 marks in all, unread kept first: an unread mark is a choice you
-			// made, so past the limit the oldest seen marks go first (they matter
+			// 500 marks in all: past the limit the oldest go first (they matter
 			// least: the epoch covers old sessions).
-			entries.sort(
-				([, a], [, b]) =>
-					(a.unread ? 0 : 1) - (b.unread ? 0 : 1) || (hubTime(b.through) ?? 0) - (hubTime(a.through) ?? 0),
-			);
+			entries.sort(([, a], [, b]) => (hubTime(b.through) ?? 0) - (hubTime(a.through) ?? 0));
 			this.state.sessions = Object.fromEntries(entries.slice(0, MARK_LIMIT));
 		}
 		writeJson(this.storage, seenKey(this.hubId), this.state);

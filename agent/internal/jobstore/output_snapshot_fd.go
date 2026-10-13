@@ -7,8 +7,6 @@ import (
 	"os"
 
 	"github.com/spf13/afero"
-
-	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 // ReadOutputSnapshotFromFile reads a stable head or tail window from an
@@ -54,10 +52,31 @@ func ReadOutputWindowSnapshotFromFile(path string, f *os.File, offset int64, max
 	return snapshot, err
 }
 
+// ReadOutputPageSnapshotFromFile selects and reads a raw page from f. The
+// caller owns f, and must reopen it before retrying a concurrent change.
+func ReadOutputPageSnapshotFromFile(path string, f *os.File, beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
+	if f == nil {
+		return OutputWindowSnapshot{}, errors.New("jobstore: output file is nil")
+	}
+	snapshot, err := readOutputPageSnapshotFromFileOnce(afero.NewOsFs(), path, f, beforeBytes, maxBytes)
+	if errors.Is(err, errOutputChanged) {
+		return OutputWindowSnapshot{}, ErrOutputChangedDuringRead
+	}
+	return snapshot, err
+}
+
+func readOutputPageSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return readOutputRangeSnapshotFromFileOnce(fs, path, f, func(totalBytes, retainedStart int64) (int64, int64, error) {
+		return outputPageBounds(beforeBytes, maxBytes, totalBytes, retainedStart)
+	})
+}
+
 // KEEP IN SYNC with the path-backed attempt protocol in output_snapshot.go.
 // These implementations intentionally remain separate: frozen path-reader
 // seams require afero path access, while descriptor reads must fence path/file
 // generations and give observation errors precedence over partial changes.
+// Descriptor reads validate the metadata once per read, relying on that
+// generation fence (see checkOutputSizeUnchanged).
 func readOutputSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, maxBytes int, fromHead bool) (OutputSnapshot, error) {
 	before, err := observeOutputSnapshotFromFile(fs, path, f)
 	if err != nil {
@@ -82,12 +101,18 @@ func readOutputSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, maxByt
 }
 
 func readOutputWindowSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return readOutputRangeSnapshotFromFileOnce(fs, path, f, func(totalBytes, retainedStart int64) (int64, int64, error) {
+		return outputWindowBounds(offset, maxBytes, totalBytes, retainedStart)
+	})
+}
+
+func readOutputRangeSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, selectRange outputRangeSelector) (OutputWindowSnapshot, error) {
 	before, err := observeOutputSnapshotFromFile(fs, path, f)
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
 
-	snapshot, readErr := readOutputWindowSnapshotFromFileAttempt(fs, path, f, before.retainedBytes, offset, maxBytes)
+	snapshot, readErr := readOutputRangeSnapshotFromFileAttempt(fs, path, f, before.retainedBytes, selectRange)
 	after, observeErr := observeOutputSnapshotFromFile(fs, path, f)
 	if observeErr != nil {
 		return OutputWindowSnapshot{}, observeErr
@@ -97,6 +122,9 @@ func readOutputWindowSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, 
 	}
 	if after.changedFrom(before) {
 		return OutputWindowSnapshot{}, errOutputChanged
+	}
+	if err := checkOutputFileGeneration(path, f); err != nil {
+		return OutputWindowSnapshot{}, err
 	}
 	if readErr != nil {
 		return snapshot, readErr
@@ -109,89 +137,87 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 		return OutputSnapshot{}, err
 	}
 	fileFS := newOutputSnapshotFileFS(fs, path, f)
-	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, retainedBytes)
+	view, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
 
-	content, err := readOutputSnapshotWindowFromFile(f, retainedBytes, maxBytes, fromHead)
+	content, err := readOutputSnapshotWindowFromFile(f, retainedBytes, view.visibleOffset(), maxBytes, fromHead)
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
 
-	afterInfo, err := f.Stat()
-	if err != nil {
-		return OutputSnapshot{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
-	}
-	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, afterInfo.Size())
-	if err != nil {
+	if err := checkOutputSizeUnchanged(f, retainedBytes); err != nil {
 		return OutputSnapshot{}, err
-	}
-	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart || afterRetainedStartPartial != retainedStartPartial {
-		return OutputSnapshot{}, errOutputChanged
 	}
 	if err := checkOutputFileGeneration(path, f); err != nil {
 		return OutputSnapshot{}, err
 	}
 	return OutputSnapshot{
 		Content:              content,
-		TotalBytes:           totalBytes,
-		RetainedStart:        retainedStart,
-		RetainedStartPartial: retainedStartPartial,
-		Truncated:            retainedStart > 0 || int64(maxBytes) < retainedBytes,
+		TotalBytes:           view.total,
+		RetainedStart:        view.visibleStart,
+		RetainedStartPartial: view.visiblePartial,
+		Truncated:            view.visibleStart > 0 || int64(maxBytes) < retainedBytes-view.visibleOffset(),
 	}, nil
 }
 
-func readOutputWindowSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, retainedBytes int64, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
+func readOutputRangeSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, retainedBytes int64, selectRange outputRangeSelector) (OutputWindowSnapshot, error) {
 	if err := checkOutputFileGeneration(path, f); err != nil {
 		return OutputWindowSnapshot{}, err
 	}
 	fileFS := newOutputSnapshotFileFS(fs, path, f)
-	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, retainedBytes)
+	view, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
+	offset, end, rangeErr := selectRange(view.total, view.visibleStart)
 	snapshot := OutputWindowSnapshot{
 		Start:                offset,
-		End:                  offset,
-		TotalBytes:           totalBytes,
-		RetainedStart:        retainedStart,
-		RetainedStartPartial: retainedStartPartial,
+		End:                  end,
+		TotalBytes:           view.total,
+		RetainedStart:        view.visibleStart,
+		RetainedStartPartial: view.visiblePartial,
 	}
-	if offset < retainedStart {
-		return snapshot, fmt.Errorf("%w: offset=%d first_available=%d", ErrOutputPruned, offset, retainedStart)
+	if rangeErr != nil {
+		return snapshot, rangeErr
 	}
-	if offset > totalBytes {
-		return snapshot, fmt.Errorf("%w: offset=%d total=%d", ErrInvalidOffset, offset, totalBytes)
-	}
-	if totalBytes-retainedStart != retainedBytes {
+	if view.total-view.fileStart != retainedBytes {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
 
-	end := addWindowLimit(offset, maxBytes, totalBytes)
-	content, err := readOutputRawSnapshotWindowFromFile(f, offset-retainedStart, end-offset)
+	content, err := readOutputRawSnapshotWindowFromFile(f, offset-view.fileStart, end-offset)
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
 	snapshot.Content = content
 	snapshot.End = end
-	snapshot.Truncated = retainedStart > 0 || offset > retainedStart || end < totalBytes
+	snapshot.Truncated = view.visibleStart > 0 || offset > view.visibleStart || end < view.total
 
-	afterInfo, err := f.Stat()
-	if err != nil {
-		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: stat output window snapshot: %w", err)
-	}
-	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, afterInfo.Size())
-	if err != nil {
+	if err := checkOutputSizeUnchanged(f, retainedBytes); err != nil {
 		return OutputWindowSnapshot{}, err
-	}
-	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart || afterRetainedStartPartial != retainedStartPartial {
-		return OutputWindowSnapshot{}, errOutputChanged
 	}
 	if err := checkOutputFileGeneration(path, f); err != nil {
 		return OutputWindowSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// checkOutputSizeUnchanged reports a read's file as changed when it no longer
+// holds the retainedBytes its metadata was validated against. A size check is
+// enough, so a read skips a second validation, which would hash the whole
+// retained file again: an append changes the descriptor's size, a compaction renames a new
+// file over the path (checkOutputFileGeneration), and no writer rewrites in
+// place.
+func checkOutputSizeUnchanged(f *os.File, retainedBytes int64) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("jobstore: stat output snapshot: %w", err)
+	}
+	if info.Size() != retainedBytes {
+		return errOutputChanged
+	}
+	return nil
 }
 
 func checkOutputFileGeneration(path string, f *os.File) error {
@@ -216,23 +242,13 @@ func observeOutputSnapshotFromFile(fs afero.Fs, path string, f *os.File) (output
 	return observeOutputSnapshot(newOutputSnapshotFileFS(fs, path, f), path)
 }
 
-func readOutputSnapshotWindowFromFile(f *os.File, retainedBytes int64, maxBytes int, fromHead bool) ([]byte, error) {
-	windowBytes := min(retainedBytes, int64(maxBytes))
-	start := int64(0)
-	if !fromHead {
-		start = retainedBytes - windowBytes
-	}
+func readOutputSnapshotWindowFromFile(f *os.File, retainedBytes, visibleAt int64, maxBytes int, fromHead bool) ([]byte, error) {
+	start, windowBytes := outputSnapshotWindow(retainedBytes, visibleAt, maxBytes, fromHead)
 	content, err := readOutputRawSnapshotWindowFromFile(f, start, windowBytes)
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: read output snapshot: %w", err)
 	}
-	if fromHead && windowBytes < retainedBytes {
-		content = runetrim.TrimTrailingPartial(content)
-	}
-	if !fromHead && start > 0 {
-		content = runetrim.TrimLeadingPartial(content)
-	}
-	return content, nil
+	return trimOutputSnapshotWindow(content, retainedBytes, visibleAt, start, fromHead), nil
 }
 
 func readOutputRawSnapshotWindowFromFile(f *os.File, fileOffset int64, size int64) ([]byte, error) {

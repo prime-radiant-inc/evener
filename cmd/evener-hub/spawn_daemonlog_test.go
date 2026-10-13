@@ -3,8 +3,10 @@ package hub
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -319,8 +321,10 @@ func TestSpawnFailsWhenTheDaemonLogCannotBeOpened(t *testing.T) {
 	if err == nil {
 		t.Fatal("spawn succeeded with an unopenable daemon log")
 	}
-	if !strings.Contains(err.Error(), "daemon log") {
-		t.Fatalf("error does not name the daemon log: %v", err)
+	// A regular file where the log directory belongs is what refused the
+	// create, so the failure is about a path under it.
+	if pathErr, ok := errors.AsType[*fs.PathError](err); !ok || !strings.HasPrefix(pathErr.Path, filepath.Join(runDir, "logs")) {
+		t.Fatalf("error is not the daemon log's own failure: %v", err)
 	}
 	if _, statErr := os.Stat(ran); statErr == nil {
 		t.Fatal("the daemon was launched anyway, with nowhere to log")
@@ -585,8 +589,9 @@ func TestResumingASessionBoundsTheHistoryItsLogCarriesIn(t *testing.T) {
 
 	// A trimmed log has to say so, or it reads as the session's complete
 	// history and an operator counts the absence of a line as evidence.
+	// The admission is a line of its own, ahead of the retained ones.
 	kept := strings.SplitAfter(string(got), "\n")
-	if !strings.Contains(kept[0], "earlier output dropped") {
+	if strings.TrimSpace(kept[0]) == "" || strings.HasPrefix(kept[0], "[serve] earlier run line ") {
 		t.Fatalf("a trimmed log does not admit to being trimmed; it opens with %q", kept[0])
 	}
 	if len(kept[1]) != len(line(0)) || !strings.HasPrefix(kept[1], "[serve] earlier run line ") {

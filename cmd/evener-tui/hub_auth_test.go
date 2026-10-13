@@ -47,10 +47,10 @@ func TestHubModelCredentialTestActionUsesAppWire(t *testing.T) {
 	if testedProvider != "custom / team-east" {
 		t.Fatalf("tested provider=%q, want custom / team-east", testedProvider)
 	}
-	view := result.credentialsPanel.View()
-	if !strings.Contains(view, "Credentials verified.") {
-		t.Fatalf("credential result missing from panel:\n%s", view)
+	if got, ok := result.credentialsPanel.TestResult("custom / team-east"); !ok || got.Status != appwire.AuthTestStatusSuccess {
+		t.Fatalf("credential test result = %+v (found %v), want the hub's success", got, ok)
 	}
+	view := result.credentialsPanel.View()
 	if strings.Contains(view, "provider-secret-must-not-render") {
 		t.Fatalf("credential result leaked provider message:\n%s", view)
 	}

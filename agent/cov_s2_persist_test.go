@@ -28,7 +28,10 @@ func TestS2Cov_PersistToolResults_VisionSteering(t *testing.T) {
 	}
 	c := llm.NewClient()
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, MaxSubagentDepth: 1})
+	// The fixture is the text-only gpt-5.2-codex row: a session model that
+	// sees tool-result images natively skips image descriptions by default,
+	// and this test is about the steering plumbing, not that default.
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2-codex"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, MaxSubagentDepth: 1})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

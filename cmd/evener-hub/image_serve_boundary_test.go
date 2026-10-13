@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -159,8 +158,8 @@ func TestWeb_SessionImage_RejectsV1AndMixedTranscriptWithoutPartialImage(t *test
 			if rec.Code != http.StatusInternalServerError {
 				t.Fatalf("unsupported transcript response = status %d body %q, want 500", rec.Code, rec.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), transcript.ErrUnsupportedFormat.Error()) {
-				t.Fatalf("unsupported transcript response body %q does not expose format error", rec.Body.String())
+			if bytes.Contains(rec.Body.Bytes(), fixture.image) {
+				t.Fatalf("unsupported transcript response body %q served the image", rec.Body.String())
 			}
 		})
 	}

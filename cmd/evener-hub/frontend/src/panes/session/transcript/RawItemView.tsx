@@ -8,6 +8,7 @@
 // shows the plain settled text field.
 
 import { memo } from "react";
+import { Eyebrow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./rawitemview.module.css";
 import { StreamingText } from "./StreamingText";
@@ -15,7 +16,6 @@ import { type ItemRenderProps, ignoringTurn } from "./types";
 
 const CLASS = {
   item: requireClass(styles.item, "rawitemview.module.css", "item"),
-  type: requireClass(styles.type, "rawitemview.module.css", "type"),
   text: requireClass(styles.text, "rawitemview.module.css", "text"),
 };
 
@@ -28,7 +28,7 @@ export const RawItemView = memo(function RawItemView({ item, live }: ItemRenderP
   const streaming = live && chunks !== undefined && chunks.length > 0;
   return (
     <div className={CLASS.item} data-testid="raw-item" data-item-type={item.type}>
-      <span className={CLASS.type}>{item.type}</span>
+      <Eyebrow as="span">{item.type}</Eyebrow>
       {streaming ? <StreamingText chunks={chunks} /> : <span className={CLASS.text}>{item.text}</span>}
     </div>
   );

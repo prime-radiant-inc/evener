@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -34,6 +35,24 @@ func TestS3Cov_FormatDirListing(t *testing.T) {
 			if !strings.Contains(got, want) {
 				t.Errorf("listing missing %q:\n%s", want, got)
 			}
+		}
+	})
+
+	t.Run("control character name stays on one line", func(t *testing.T) {
+		t.Parallel()
+		// A newline in a name is written as a JSON string, as grep and glob
+		// write it (#4156), so the entry never splits into two.
+		got := formatDirListing(listDirResult{
+			Entries: []execenv.DirEntry{{Name: "bad\nname.md", Size: 1}, {Name: "sub\ndir", IsDir: true}},
+			Total:   2,
+		})
+		if want := "\"bad\\nname.md\"\t1\n\"sub\\ndir\"/\n\n2 entries"; got != want {
+			t.Fatalf("listing = %q, want %q", got, want)
+		}
+		// The page budget sizes the quoted name, never the shorter raw one.
+		ctrl := execenv.DirEntry{Name: "\x01\x02\x03\x04\x05\x06", Size: 1}
+		if line := formatDirListing(listDirResult{Entries: []execenv.DirEntry{ctrl}}); dirEntrySize(ctrl) < len(strings.SplitN(line, "\n", 2)[0])+1 {
+			t.Fatalf("dirEntrySize(%q) = %d, under its rendered line %q", ctrl.Name, dirEntrySize(ctrl), line)
 		}
 	})
 
@@ -244,5 +263,32 @@ func TestS3Cov_GlobTool_TruncationNoteNamesTheCapWithoutDroppingMatches(t *testi
 	}
 	if !strings.Contains(note, strconv.Itoa(capAt)) {
 		t.Fatalf("the truncation note does not name the cap (%d): %q", capAt, note)
+	}
+}
+
+// TestS3Cov_GlobTool_QuotesAControlCharacterPath pins the glob tool to the
+// one-path-per-line naming grep uses (#4156): a matched name holding a
+// newline is written as a JSON string on one line, so it never prints as two
+// results neither of which names a real file.
+func TestS3Cov_GlobTool_QuotesAControlCharacterPath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const badName = "bad\nname.md"
+	for _, name := range []string{badName, "ok.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := newSession(t, withDir(dir))
+	res := s3cov_exec(t, s, "glob", `{"pattern":"*.md","path":"."}`)
+	if res.IsError {
+		t.Fatalf("glob error: %v", res.Output)
+	}
+	lines := strings.Split(res.Output, "\n")
+	slices.Sort(lines)
+	want := []string{execenv.QuoteControlPath(filepath.Join(dir, badName)), filepath.Join(dir, "ok.md")}
+	slices.Sort(want)
+	if !slices.Equal(lines, want) {
+		t.Fatalf("glob lines = %q, want %q", lines, want)
 	}
 }

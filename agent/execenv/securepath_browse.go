@@ -1,15 +1,19 @@
 package execenv
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // This file holds the platform-independent browse logic (the writability
@@ -32,7 +36,7 @@ func (s *sandboxFS) checkWritable(tool, abs string) error {
 	if _, _, ok := containingRoot(s.policy.FileTool.WriteRoots, abs); !ok {
 		return s.deny(tool, abs, denyReasonOutsideWrite)
 	}
-	if s.underMasked(abs) {
+	if s.underMaskedForWrite(abs) {
 		return s.deny(tool, abs, denyReasonMasked)
 	}
 	if s.underProtected(abs) {
@@ -49,9 +53,33 @@ type grepAccum struct {
 	maxResults   int
 	contextLines int
 	results      []string
-	fileCounts   map[string]int
-	filesSeen    map[string]struct{}
-	total        int
+	// truncated records that the walk found a result past maxResults, so
+	// finish adds grepTruncationNote as a note.
+	truncated bool
+}
+
+// compileGrepPattern compiles a grep pattern as the native search reads it.
+func compileGrepPattern(pattern string, caseInsensitive bool) (*regexp.Regexp, error) {
+	flags := ""
+	if caseInsensitive {
+		flags = "(?i)"
+	}
+	re, err := regexp.Compile(flags + pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+	return re, nil
+}
+
+// CheckGrepArgs reports the error a grep would give for its pattern or its
+// glob filter's brace syntax before searching anything, so a caller that
+// searches nothing can still refuse bad arguments.
+func CheckGrepArgs(pattern, globFilter string, caseInsensitive bool) error {
+	if _, err := expandGrepFilter(globFilter); err != nil {
+		return err
+	}
+	_, err := compileGrepPattern(pattern, caseInsensitive)
+	return err
 }
 
 // newGrepAccum compiles the pattern (with optional case-insensitivity) and
@@ -61,13 +89,9 @@ type grepAccum struct {
 // effect on "files_with_matches" or "count", which report per-file, not
 // per-line.
 func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMode string, contextLines int) (*grepAccum, error) {
-	flags := ""
-	if caseInsensitive {
-		flags = "(?i)"
-	}
-	re, err := regexp.Compile(flags + pattern)
+	re, err := compileGrepPattern(pattern, caseInsensitive)
 	if err != nil {
-		return nil, fmt.Errorf("invalid regex: %w", err)
+		return nil, err
 	}
 	if maxResults <= 0 {
 		maxResults = DefaultGrepMaxResults
@@ -80,102 +104,172 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 		outputMode:   outputMode,
 		maxResults:   maxResults,
 		contextLines: contextLines,
-		fileCounts:   map[string]int{},
-		filesSeen:    map[string]struct{}{},
 	}, nil
 }
 
 // feed scans one file's lines and records matches per output mode; it returns true
-// when maxResults has been reached and the walk should stop.
+// when it found a result past maxResults, which it leaves out, and the walk
+// should stop. Stopping at the result past the cap rather than at the cap
+// itself tells a result cut short from one that held exactly maxResults.
 //
 // A relPath of "." means the search target was the file itself (the walk root),
 // not a file found under a directory. Ripgrep omits the filename entirely when
 // given a single explicit file argument, so content and count output do the
 // same here; otherwise the tool's output would differ between environments with
-// and without rg on PATH.
+// and without rg on PATH. A path is written as OneLinePath gives it. A
+// binary file (one holding a NUL byte) is skipped.
 func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
+	if bytes.IndexByte(data, 0) >= 0 {
+		return false
+	}
 	singleFile := relPath == "."
-	lines := strings.Split(string(data), "\n")
+	name := OneLinePath(relPath)
+	lines := fileLines(string(data))
+	switch a.outputMode {
+	case "files_with_matches":
+		if !slices.ContainsFunc(lines, a.re.MatchString) {
+			return false
+		}
+		return a.emit(name)
+	case "count":
+		n := 0
+		for _, line := range lines {
+			if a.re.MatchString(line) {
+				n++
+			}
+		}
+		if n == 0 {
+			return false
+		}
+		// One row per file in walk order, capped like files_with_matches —
+		// the same first-N truncation the ripgrep path applies to rg
+		// --count. A named file's row is the bare count, as rg prints it.
+		if singleFile {
+			return a.emit(strconv.Itoa(n))
+		}
+		return a.emit(name + ":" + strconv.Itoa(n))
+	default:
+		return a.feedContent(name, singleFile, lines)
+	}
+}
+
+// fileLines is a file's lines as rg counts them: none in an empty file, and
+// no empty line after a final newline, which ends the last line rather than
+// starting another.
+func fileLines(text string) []string {
+	if text == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+}
+
+// feedContent records a file's matching lines, and with contextLines the
+// lines around each, the way rg -C prints them: windows that overlap or touch
+// join into one group, a "--" goes between groups (across files too), and a
+// match line takes ":" where a context line takes "-". The cap counts output
+// lines, separators and context included, as the ripgrep arm's cap does and
+// the grep tool's max_results promises for content.
+func (a *grepAccum) feedContent(name string, singleFile bool, lines []string) (stop bool) {
+	// last is the last line written from this file; afterEnd is the last line
+	// the latest match's after-context reaches.
+	last, afterEnd := -1, -1
+	// context writes lines lo through hi as context, up to the last line.
+	context := func(lo, hi int) (stop bool) {
+		for k := lo; k <= min(hi, len(lines)-1); k++ {
+			if a.emitLine(name, singleFile, k, "-", lines[k]) {
+				return true
+			}
+			last = k
+		}
+		return false
+	}
 	for i, line := range lines {
 		if !a.re.MatchString(line) {
 			continue
 		}
-		switch a.outputMode {
-		case "files_with_matches":
-			if _, seen := a.filesSeen[relPath]; !seen {
-				a.filesSeen[relPath] = struct{}{}
-				a.results = append(a.results, relPath)
-				a.total++
-				if a.total >= a.maxResults {
-					return true
-				}
-			}
-			return false // once recorded, move to the next file
-		case "count":
-			// The cap counts entries like files_with_matches does: once
-			// maxResults files hold a count row, the walk stops, so the
-			// rendered count output has at most maxResults rows — the same
-			// first-N truncation the ripgrep path applies to rg --count.
-			if _, seen := a.fileCounts[relPath]; !seen && len(a.fileCounts) >= a.maxResults {
-				return true
-			}
-			a.fileCounts[relPath]++
-		default: // "content" or ""
-			if a.contextLines > 0 {
-				// Mirror rg's -C style: a "--" separator between match groups, the
-				// match line itself using ":", and surrounding context lines using
-				// "-" (both as the file/line separator), matched immediately below.
-				if len(a.results) > 0 {
-					a.results = append(a.results, "--")
-				}
-				lo, hi := i-a.contextLines, i+a.contextLines
-				if lo < 0 {
-					lo = 0
-				}
-				if hi >= len(lines) {
-					hi = len(lines) - 1
-				}
-				for j := lo; j <= hi; j++ {
-					sep := "-"
-					if j == i {
-						sep = ":"
-					}
-					if singleFile {
-						a.results = append(a.results, fmt.Sprintf("%d%s%s", j+1, sep, lines[j]))
-					} else {
-						a.results = append(a.results, fmt.Sprintf("%s%s%d%s%s", relPath, sep, j+1, sep, lines[j]))
-					}
-				}
-			} else if singleFile {
-				a.results = append(a.results, fmt.Sprintf("%d:%s", i+1, line))
-			} else {
-				a.results = append(a.results, fmt.Sprintf("%s:%d:%s", relPath, i+1, line))
-			}
-			a.total++
-			if a.total >= a.maxResults {
-				return true
-			}
+		if context(last+1, min(i-1, afterEnd)) {
+			return true
 		}
+		start := max(last+1, i-a.contextLines)
+		if a.contextLines > 0 && len(a.results) > 0 && (last < 0 || start > last+1) && a.emit("--") {
+			return true
+		}
+		if context(start, i-1) || a.emitLine(name, singleFile, i, ":", line) {
+			return true
+		}
+		last, afterEnd = i, i+a.contextLines
 	}
+	return context(last+1, afterEnd)
+}
+
+// emitLine writes line index k of a file as a content line: "12:text" for a
+// named file, else "path:12:text", with sep in place of ":" on a context line.
+func (a *grepAccum) emitLine(name string, singleFile bool, k int, sep, text string) (stop bool) {
+	if singleFile {
+		return a.emit(fmt.Sprintf("%d%s%s", k+1, sep, text))
+	}
+	return a.emit(fmt.Sprintf("%s%s%d%s%s", name, sep, k+1, sep, text))
+}
+
+// emit adds one content output line, or reports the cap cut it off.
+func (a *grepAccum) emit(line string) (stop bool) {
+	if len(a.results) >= a.maxResults {
+		return a.cutAtCap()
+	}
+	a.results = append(a.results, line)
 	return false
 }
 
-// finish renders the accumulated results in the requested output mode.
-func (a *grepAccum) finish() string {
-	if a.outputMode == "count" {
-		var countResults []string
-		for file, cnt := range a.fileCounts {
-			if file == "." {
-				// Single explicit file target: rg prints the bare count.
-				countResults = append(countResults, strconv.Itoa(cnt))
-				continue
-			}
-			countResults = append(countResults, fmt.Sprintf("%s:%d", file, cnt))
-		}
-		sort.Strings(countResults)
-		return strings.Join(countResults, "\n")
+// cutAtCap records that feed found a result past maxResults, which it leaves
+// out, and returns feed's stop.
+func (a *grepAccum) cutAtCap() (stop bool) {
+	a.truncated = true
+	return true
+}
+
+// grepFileSelected reports whether grep searches the file named name, at
+// slash path rel, once dotfile and ignore rules have let it through: a file
+// skip names (when skip is not nil) or outside the glob filters is left out.
+// The error is a malformed glob filter's.
+func grepFileSelected(name, rel string, globFilters []string, skip func(rel string) bool) (bool, error) {
+	if skip != nil && skip(rel) {
+		return false, nil
 	}
-	return strings.Join(a.results, "\n")
+	if len(globFilters) == 0 {
+		return true, nil
+	}
+	return matchesAnyGrepFilter(name, globFilters)
+}
+
+// finish renders the accumulated results in the requested output mode, then
+// grepTruncationNote as a note (searchresult.WithNotes) when the cap left
+// results out.
+func (a *grepAccum) finish() string {
+	out := strings.Join(a.results, "\n")
+	if a.truncated {
+		return searchresult.WithNotes(out, grepTruncationNote(a.maxResults))
+	}
+	return out
+}
+
+// finishWalk is finish for a walk that left excludedByIgnore paths out.
+// Silent-empty is the enemy (D2): when the walk found nothing, a note tells
+// "no matches among the files searched, but N were skipped by the default
+// dotfile/gitignore exclusion" from "genuinely no matches". grep has no
+// include_ignored knob, so this is informational rather than a suggestion to
+// retry.
+func (a *grepAccum) finishWalk(excludedByIgnore int) string {
+	out := a.finish()
+	if out == "" && excludedByIgnore > 0 {
+		return searchresult.WithNotes("", fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore))
+	}
+	return out
+}
+
+// grepTruncationNote is the note on a grep result the cap cut short, so a
+// model never reads the results it got as all there are.
+func grepTruncationNote(maxResults int) string {
+	return fmt.Sprintf("[results truncated at %d; narrow the path or glob_filter, or raise max_results]", maxResults)
 }
 
 // sortPathStat is the stat the glob result ordering runs on; a variable so

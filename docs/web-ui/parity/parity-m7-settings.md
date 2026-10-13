@@ -235,7 +235,8 @@ Appwire: none — localStorage key `evener-hub.notifications` (JSON); OS toggle 
 - [ ] Every non-OS-gated commit + the loudScope radio change both dispatch `document`
       `CustomEvent("evener hub:notifications-changed", {detail:{key,value}})` and toast "Settings
       saved" — `assets/settings-notifications.js:27-36,64-75`
-- [ ] "Loud for" radio (`loudScope`): `"asks"` (Questions & errors, default) vs `"all"` (Everything
+- [ ] "Loud for" radio (`loudScope`): `"asks"` (Questions, reply requests, approvals & errors,
+      default; reply requests are `needsResponse` attention entries, #4093) vs `"all"` (Everything
       needing me); governs which state-transitions get OS notification + sound — title/favicon
       count always reflects everything regardless — `templates/partials/settings/notifications.html:45-54`,
       `assets/settings-notifications.js:89`
@@ -657,7 +658,9 @@ all defined in `assets/plugins.js:8-23` as thin wrappers over `EvenerAppwire.req
       `templates/partials/settings/plugins-manager.html:304,540-549`
 - [ ] "Upgrade" calls `pluginUpgrade`, refreshes, toasts "Checked {plugin} for upgrades" on
       success — the toast confirms only that an upgrade check ran, not that a new version actually
-      installed — `templates/partials/settings/plugins-manager.html:305,550-559`
+      installed — `templates/partials/settings/plugins-manager.html:305,550-559`. Superseded
+      (2026-10-05, `docs/web-ui/decisions.md`): Upgrade shows only for a plugin the hub's update
+      check flagged, and its success toast says "Upgraded {plugin}"
 - [ ] "Remove" requires `confirm('Remove plugin "{plugin}"?')`; on confirm calls `pluginRemove`,
       refreshes, toasts "Removed {plugin}"; failure toasts "Remove failed" —
       `templates/partials/settings/plugins-manager.html:306,561-572`

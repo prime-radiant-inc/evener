@@ -125,7 +125,16 @@ export function TranscriptDetailEditor({
         fullWidth
         onChange={selectContent}
       />
-      <Disclosure open={advancedOpen} onOpenChange={setAdvancedOpen} disabled={disabled} summary={disclosureSummary}>
+      <Disclosure
+        open={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+        disabled={disabled}
+        summary={
+          <span data-testid="transcript-detail-summary" data-content={config.content.kind} data-extras={advancedCount}>
+            {disclosureSummary}
+          </span>
+        }
+      >
         <div className={CLASS.advancedPanel}>
           <div className={CLASS.fieldsets}>
             <fieldset className={CLASS.fieldset}>

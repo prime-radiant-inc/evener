@@ -939,10 +939,9 @@ func (s *Store) noteFoldedSendsLocked(folded WatchSendRecord) WatchSendRecord {
 // cloneFoldJobs deep-copies folded job records. Every field that can carry a
 // caller-visible reference is copied: the time and int/bool pointers, the
 // provenance chains, and the StructuredResult payload, which is a value
-// decoded by encoding/json (see cloneJSONValue). Background, Phase and
-// LastActivity are live-only and never set by a fold, so there is nothing to
-// copy for them beyond the struct value itself — except LastActivity, which
-// is still cloned defensively in case a caller sets it on a returned record.
+// decoded by encoding/json (see cloneJSONValue). Background is copied with
+// the struct value. Phase and LastActivity are live-only; LastActivity is
+// cloned defensively in case a caller sets it on a returned record.
 func cloneFoldJobs(in map[string]*JobRecord) map[string]*JobRecord {
 	if in == nil {
 		return nil

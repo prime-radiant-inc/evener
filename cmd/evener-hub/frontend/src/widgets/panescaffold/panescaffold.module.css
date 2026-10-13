@@ -88,6 +88,23 @@
   padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
 }
 
+/* A pane that owns its scrolling internally (the cascade's columns) renders
+ * flush: the padded scroll allocation would only add a second, unit-level
+ * scroll surface around it. Written as a modifier OF the base body at double
+ * specificity, so it wins over .body — including the mobile media .body
+ * rule below, which would otherwise restore padding on the phone — whatever
+ * the rule order. The overflow pair makes the body a true non-scroller: clip
+ * cannot be shifted programmatically (focus chains, scrollIntoView) the way a
+ * merely-hidden box can; hidden is the fallback for engines that predate
+ * clip, and dropping the invalid value leaves it. */
+.body.bodyNoScroll {
+  padding: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: clip supersedes hidden as a true non-scroller where supported; hidden is the fallback for engines that predate it */
+  overflow: clip;
+}
+
 .footer {
   flex: none;
   padding: var(--space-3) var(--space-5);

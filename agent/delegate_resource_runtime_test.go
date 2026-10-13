@@ -91,7 +91,7 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 		t.Fatalf("restore root: %v", err)
 	}
 	defer root.Close()
-	var recorder currentWorkEventRecorder
+	var recorder sessionEventRecorder
 	root.SetDescendantEventFunc(recorder.record)
 
 	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
@@ -1825,7 +1825,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 		drainSteering:      func() []steeringMessage { return nil },
 		prependSteering:    func([]steeringMessage) {},
 		resultToolName:     func() string { return "communicate" },
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
 			captured = raw
 			return true
 		},
@@ -1842,7 +1842,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 	}); err != nil {
 		t.Fatalf("register custom communicate schema: %v", err)
 	}
-	registerCommunicateTool(reg, deps)
+	_ = registerCommunicateTool(reg, deps)
 	if _, err := reg.Get("communicate").Exec(context.Background(), nil, map[string]any{
 		"message": "explicit null", "end_turn": true, "output": nil,
 	}); err != nil {

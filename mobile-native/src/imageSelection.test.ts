@@ -62,8 +62,6 @@ it("takes a photo bigger than the limit on disk when the phone's encoding of it 
 	expect(document.getSnapshot().record.images?.[0]?.mediaType).toBe("image/jpeg");
 });
 
-const TOO_LARGE = "This image is too large to attach. Try a smaller image or a screenshot.";
-
 /** Picks `images`, counting the decodes the selection asks for. */
 async function chooseCounting(images: PickedImage[]) {
 	let decoded = 0;
@@ -75,14 +73,15 @@ async function chooseCounting(images: PickedImage[]) {
 		},
 	);
 	await selection.choose();
-	return { decoded, attached: document.getSnapshot().record.images ?? [], error: selection.getSnapshot().error };
+	const { error, refusals } = selection.getSnapshot();
+	return { decoded, attached: document.getSnapshot().record.images ?? [], error, refusals };
 }
 
 it("refuses a file over 25 MB before decoding it, and says what to do", async () => {
 	const result = await chooseCounting([{ ...photo, name: "huge.jpg", size: MAX_SOURCE_BYTES + 1 }]);
 	expect(result.decoded).toBe(0);
 	expect(result.attached).toHaveLength(0);
-	expect(result.error).toBe(`huge.jpg: ${TOO_LARGE}`);
+	expect(result.refusals).toEqual([{ name: "huge.jpg", reason: "tooLarge" }]);
 });
 
 it("takes a file at exactly 25 MB", async () => {
@@ -95,7 +94,7 @@ it("refuses a photo over 48 megapixels by the size the picker reports, before de
 	const result = await chooseCounting([{ ...photo, name: "pano.jpg", width: 16000, height: 4000 }]);
 	expect(result.decoded).toBe(0);
 	expect(result.attached).toHaveLength(0);
-	expect(result.error).toBe(`pano.jpg: ${TOO_LARGE}`);
+	expect(result.refusals).toEqual([{ name: "pano.jpg", reason: "tooLarge" }]);
 });
 
 it("takes a full-frame 48 megapixel camera photo", async () => {
@@ -125,7 +124,7 @@ it("rejects an encoded image over the server byte limit without persisting it", 
 	expect(document.getSnapshot().record.images?.[0]?.name).toBe(valid.name);
 	expect(document.getSnapshot().record.images?.[0]?.marker).toBe(2);
 	expect(document.getSnapshot().record.draft).toBe("[image 2]");
-	expect(selection.getSnapshot().error).toBe(`${source.name}: ${TOO_LARGE}`);
+	expect(selection.getSnapshot().refusals).toEqual([{ name: source.name, reason: "tooLarge" }]);
 	expect(selection.getSnapshot().pending).toHaveLength(0);
 });
 
@@ -274,7 +273,7 @@ it("says how to turn the camera on when its permission is refused", async () => 
 	await selection.choose("camera");
 
 	expect(document.getSnapshot().record.images).toBeUndefined();
-	expect(selection.getSnapshot().error).toBe("Camera access is off. Turn it on in Settings to take photos here.");
+	expect(selection.getSnapshot().refusals).toEqual([{ name: null, reason: "cameraDenied" }]);
 	expect(selection.getSnapshot().busy).toBe(false);
 });
 
@@ -296,13 +295,11 @@ it("says an image the phone couldn't encode couldn't be processed, and attaches 
 		},
 	);
 	await selection.choose();
-	expect(selection.getSnapshot().error).toBe(
-		"broken.heic: This image couldn't be prepared to attach. Try another image.",
-	);
+	expect(selection.getSnapshot().refusals).toEqual([{ name: "broken.heic", reason: "notPrepared" }]);
 	expect(document.getSnapshot().record.images).toHaveLength(1);
 });
 
-it("says in a sentence why each picked file can't be attached (#3166)", async () => {
+it("says why each picked file can't be attached, one line each (#3166)", async () => {
 	const { selection } = setup(
 		async () => [
 			{ ...photo, name: "notes.txt", type: "text/plain" },
@@ -313,9 +310,11 @@ it("says in a sentence why each picked file can't be attached (#3166)", async ()
 		async () => "AQID",
 	);
 	await selection.choose();
-	expect(selection.getSnapshot().error?.split("\n")).toEqual([
-		"notes.txt: This isn't an image. Choose an image to attach.",
-		"unread.jpg: This image's size couldn't be read. Try another image.",
-		"ninth.jpg: You can attach up to 8 images. Remove one to add another.",
+	const { error, refusals } = selection.getSnapshot();
+	expect(refusals).toEqual([
+		{ name: "notes.txt", reason: "notImage" },
+		{ name: "unread.jpg", reason: "sizeUnread" },
+		{ name: "ninth.jpg", reason: "tooMany" },
 	]);
+	expect(error?.split("\n")).toHaveLength(refusals.length);
 });

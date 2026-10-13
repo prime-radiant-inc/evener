@@ -11,6 +11,12 @@ export default function CardGallerySection() {
           <Card>
             <p className={styles.body}>A flat section for grouping related content through space and alignment.</p>
           </Card>
+          <Card variant="outlined">
+            <p className={styles.body}>An outlined box: a tool body or form panel that needs its own edge.</p>
+          </Card>
+          <Card tone="attention">
+            <p className={styles.body}>An attention envelope: a pending question or approval waiting on you.</p>
+          </Card>
         </div>
       </ThemeFlip>
     </section>

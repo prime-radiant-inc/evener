@@ -56,6 +56,17 @@ preserves but does not enforce are advisory and appear only at Full transcript
 detail. Invalid metadata and unreadable or unavailable skills remain visible at
 less verbose levels because they require action.
 
+A `SKILL.md` whose frontmatter block is missing only its opening `---` — it
+begins directly with a mapping entry such as `name:` and still closes on a whole
+`---` line — is read tolerantly: Evener treats the leading block as frontmatter
+and reports a `missing_frontmatter_delimiter` compatibility diagnostic, advisory
+in the same way as the other preserved-metadata notes. A block that starts with
+a heading or prose, or that does not carry both a non-blank `name` and a
+non-blank `description`, is not recovered. A file saved with CRLF (or lone CR)
+line endings reads like an LF one either way, and its delivered body ends its
+lines in `\n`. Every other malformed shape stays an
+`invalid_frontmatter` diagnostic and the skill stays unavailable.
+
 `allowed-tools` may be one string or an ordered array of strings. Evener
 preserves it and diagnoses that it is not enforced: it neither grants nor
 restricts tool access.
@@ -154,7 +165,9 @@ a structured, data-safe context. The context includes `base_directory`, the
 skill directory against which relative references to scripts, references, or
 other collateral are resolved. Referenced resources are loaded lazily with the
 ordinary permission-checked tools only when the task needs them; they are not
-eagerly included with the skill body.
+eagerly included with the skill body. A sandboxed session can read that directory
+in every mode, including for plugin skills and your own skills inside the masked
+`~/.config/evener` ([sandboxing](sandboxing.md#the-denylist-secrets-and-pseudo-filesystems)).
 
 Skill bodies are inert instructions, not executable templates. Evener performs
 no expansion on them: no shell execution, no file inclusion, no argument

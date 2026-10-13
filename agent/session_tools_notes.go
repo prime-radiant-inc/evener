@@ -85,10 +85,10 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 			human, agent, urls := deps.notesGuard.SnapshotAll()
 			lines := []string{}
 			if human != "" {
-				lines = append(lines, "Human: "+human)
+				lines = append(lines, formatNotesField("Human:", human))
 			}
 			if agent != "" {
-				lines = append(lines, "Agent: "+agent)
+				lines = append(lines, formatNotesField("Agent:", agent))
 			}
 			for _, u := range urls {
 				lines = append(lines, formatNotesLinkLine(u))

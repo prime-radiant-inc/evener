@@ -1,7 +1,7 @@
 import { ScrollView, Text } from "react-native";
 import { act, type ReactTestRendererJSON } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { Sheet } from "./Sheet";
 
 // The text size the phone is set to: 1 is the default (Large).
@@ -83,6 +83,7 @@ describe("the sheet's chrome", () => {
 
 	describe("at the largest text sizes (#3311)", () => {
 		afterEach(() => {
+			unmountMountedTrees();
 			text.fontScale = 1;
 		});
 

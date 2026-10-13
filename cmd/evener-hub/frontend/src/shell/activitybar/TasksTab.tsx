@@ -6,6 +6,7 @@
 import { TasksPanelBody, taskDisclosureId } from "../../panes/session/chrome/TasksPanel";
 import { useTasksPanelStore } from "../../stores/tasksPanel";
 import { useThreadModel } from "../../stores/useThreadModel";
+import { Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ActivityScope } from "../statusbar/statusScope";
 import { useActivityScrollProgress } from "./ActivityViewport";
@@ -13,7 +14,6 @@ import styles from "./activitybar.module.css";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
-  emptyNote: requireClass(styles.emptyNote, "activitybar.module.css", "emptyNote"),
 };
 
 export function TasksTab({ scope }: { scope: ActivityScope }) {
@@ -25,7 +25,7 @@ export function TasksTab({ scope }: { scope: ActivityScope }) {
     !!entry && entry.rows !== null && !entry.loading && !entry.failure && !entry.daemonGone && !entry.unsupported,
   );
   if (!model) {
-    return <span className={CLASS.emptyNote}>Loading tasks…</span>;
+    return <Skeleton lines={2} />;
   }
   return (
     <div className={CLASS.stack}>

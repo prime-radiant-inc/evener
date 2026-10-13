@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -120,7 +122,7 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	}
 	reg.Remove("delegate_send")
 	return reg.Register(tool.RegisteredTool{
-		Definition: tool.DefDelegateSend(),
+		Definition: tool.DefDelegateSendNamed(s.resultToolName()),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -131,6 +133,9 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 
 func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	target := strings.TrimSpace(stringArg(args, "to"))
+	if target == runtimeMessageAliasCaller {
+		return nil, errors.New("invalid_request: delegate_send reaches only your own delegates; to message your parent, call communicate with end_turn=false")
+	}
 	message := strings.TrimSpace(stringArg(args, "message"))
 	wait := 0
 	if n, ok := shellIntArg(args, "max_wait_ms"); ok {
@@ -143,40 +148,23 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 	if wait > 0 {
 		wait = int(clampJobBlockTimeout(wait).Milliseconds())
 	}
-	if target == runtimeMessageAliasCaller {
-		if wait > 0 {
-			return nil, errors.New("invalid_request: max_wait_ms is not supported for the caller route; no message was delivered")
-		}
-		if s == nil || s.delegateController == nil {
-			return nil, errors.New("delegate controller is unavailable")
-		}
-		actor, err := s.delegateActor(ctx)
-		if err != nil {
-			return nil, err
-		}
-		plans, err := s.delegateController.SteerCaller(ctx, actor, message, s.activeCausalProvenance())
-		if err != nil {
-			return nil, err
-		}
-		if err := s.executeDelegateMutationPlans(plans); err != nil {
-			return nil, err
-		}
-		result := sendMessageResult{Target: target, Action: "delivered"}
-		result.WaitIgnoredReason = liveSteerWaitIgnoredReason(requestedWait, result.Status, result.Action)
-		return marshalDelegateSendResult(result, maxChars)
-	}
 	outcome := (delegateRuntime{owner: s}).send(ctx, target, message, wait)
 	outcome.result.WaitIgnoredReason = liveSteerWaitIgnoredReason(requestedWait, outcome.result.Status, outcome.result.Action)
 	if outcome.result.Err != nil && outcome.result.DelegateID == "" {
 		return nil, outcome.result.Err
 	}
 	if outcome.commit != nil {
+		commits := append(slices.Clone(outcome.earlierCommits), outcome.commit)
 		callID, _ := ctx.Value(ctxToolCallID).(string)
 		if callID == "" {
-			_, _ = outcome.commit.Complete(false)
+			for _, commit := range commits {
+				_, _ = commit.Complete(false)
+			}
 			return nil, errors.New("delegate result cannot be committed outside a tool round")
 		}
-		s.queueDelegateDeliveryCommit(callID, outcome.commit)
+		for _, commit := range commits {
+			s.queueDelegateDeliveryCommit(callID, commit)
+		}
 	}
 	return marshalDelegateSendResult(outcome.result, maxChars)
 }
@@ -257,7 +245,7 @@ func (s *Session) resultToolName() string {
 	if s.cfg.ResultToolName != "" {
 		return s.cfg.ResultToolName
 	}
-	return "communicate"
+	return tool.DefaultResultToolName
 }
 
 // RegisterTool registers a custom tool at runtime.
@@ -445,6 +433,78 @@ func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, 
 	return res.Caps.EffortCapable(), res.Caps.EffortValues
 }
 
+// sessionChainSeesToolResultMedia reports whether every model that could
+// serve a later round — the session model plus each resolvable
+// model_fallbacks entry — sees tool-result bytes of this media type inline.
+// A generated description is steering text every serving model can read, so
+// skipping it is safe only while every model that might serve can see the
+// bytes natively: a text-only or image-stripping fallback inherits the same
+// history and would otherwise lose the image twice over.
+//
+// One registry per session is the invariant every production wiring holds:
+// the profile resolves on the client's registry, the cross-provider resolver
+// is built from that same client, and delegates and restores inherit both.
+// When a session is handed a profile from another registry, its facts say
+// nothing about what this client dispatches or how the runner classifies a
+// fallback — nothing in the chain can vouch, so descriptions keep flowing.
+//
+// Fallback capability facts resolve at facts depth
+// (Profile.ResolveModelFactsForRef, the runner's own classification against
+// the profile's registry): the answer is metadata about a model that
+// may never serve, while the full resolution the round runner uses to serve
+// an entry materializes credentials — including command-bearing keys that
+// would spend a mint and prompt the user's password manager just to read an
+// image. An entry whose facts cannot be resolved right now breaks the chain
+// instead of passing it: the round runner re-resolves every entry on each
+// failing round (its "could not be resolved; skipping it" warning is
+// per-attempt), so today's error says nothing about whether the entry serves
+// later — and an image-stripping fallback that recovers must find the
+// description still flowing.
+func (s *Session) sessionChainSeesToolResultMedia(profile *provider.Profile, fallbacks []string, mt string) bool {
+	if profile.Registry() != s.client.Registry() {
+		return false
+	}
+	if !profile.SeesToolResultMedia(mt) {
+		return false
+	}
+	for _, ref := range fallbacks {
+		res, err := profile.ResolveModelFactsForRef(ref)
+		if err != nil || !llm.RowSeesToolResultMedia(res, mt) {
+			return false
+		}
+	}
+	return true
+}
+
+// sessionModelTakesRequestMedia reports whether the session profile can see a
+// describe-request's media part: a raster image needs image input (a
+// user-message image is the one shape every protocol vouches for), a document
+// needs the row's pdf input plus an adapter that represents a user-message
+// document. Any other kind stays with the configured route's verdict.
+func sessionModelTakesRequestMedia(part llm.ContentPart, profile *provider.Profile) bool {
+	switch part.Kind {
+	case llm.ContentImage:
+		return profile.AcceptsImageInput()
+	case llm.ContentDocument:
+		return profile.AcceptsDocumentInput()
+	default:
+		return false
+	}
+}
+
+// applyVisionRouteEffort clamps the fixed low vision cap to the route's
+// supported effort levels. A model whose cheapest level is above the cap gets
+// that level rather than a value it would reject, and a route that takes no
+// effort control gets none on the wire.
+func (s *Session) applyVisionRouteEffort(req *llm.Request, profile *provider.Profile, providerName, modelID string) {
+	if supportsReasoning, levels := s.visionRouteReasoning(profile, providerName, modelID); supportsReasoning {
+		effort := llm.ClampReasoningEffort(visionReasoningEffort, levels)
+		req.ReasoningEffort = &effort
+	} else {
+		req.ReasoningEffort = nil
+	}
+}
+
 func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
 	if len(r.ImageData) == 0 {
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
@@ -461,10 +521,31 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	s.mu.Lock()
 	profile := s.profile
 	visionSetting := s.cfg.VisionModel
+	modelFallbacks := slices.Clone(s.cfg.ModelFallbacks)
 	s.mu.Unlock()
+	visionSetting = strings.TrimSpace(visionSetting)
 
 	routeProvider, routeModel, visionOff := resolveVisionRoute(profile, visionSetting)
 	if visionOff {
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
+	}
+
+	mt := strings.ToLower(strings.TrimSpace(r.ImageMediaType))
+	if mt == "" {
+		mt = "image/png"
+	}
+
+	// Native vision replaces the side-channel when every model that could
+	// serve a later round sees this result's bytes inline
+	// (sessionChainSeesToolResultMedia: image input on a row whose adapter
+	// delivers that media, checked across the session model and its
+	// fallbacks): a describing call would only duplicate bytes the serving
+	// model already sees, and its failures would call native vision
+	// unavailable. Documents never qualify — no adapter vouches for a PDF
+	// tool result — so they always take the side-channel. An explicitly
+	// configured vision model is a deliberate instruction to describe with
+	// that model and stays honored.
+	if visionSetting == "" && s.sessionChainSeesToolResultMedia(profile, modelFallbacks, mt) {
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
@@ -472,11 +553,6 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	// knows what it needs — we just ask the vision model to answer that question
 	// under one unconditional observation contract.
 	prompt := visionPrompt(r.ImagePrompt)
-
-	mt := r.ImageMediaType
-	if mt == "" {
-		mt = "image/png"
-	}
 
 	// Build the content part based on media type — images use ContentImage,
 	// documents (PDFs) use ContentDocument so the provider sends them correctly.
@@ -525,18 +601,28 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		},
 	}
 	// This request is built manually (not via buildModelRequest), so clamp the
-	// fixed vision cap to the model's supported levels here too. A model whose
-	// cheapest level is above the cap gets that level rather than a value it
-	// would reject. Gate on SupportsReasoning so non-reasoning models never get
-	// reasoning_effort on the wire.
-	if supportsReasoning, levels := s.visionRouteReasoning(profile, routeProvider, routeModel); supportsReasoning {
-		effort := llm.ClampReasoningEffort(visionReasoningEffort, levels)
-		req.ReasoningEffort = &effort
-	}
+	// fixed vision cap to the route's supported levels here too.
+	s.applyVisionRouteEffort(&req, profile, routeProvider, routeModel)
 	s.applyModelRequestMetadata(&req)
 
 	start := s.sclock().Now()
-	resp, err := s.cheap.CompleteRouted(visionCtx, profile, routeProvider, routeModel, req)
+	resp, ranSessionModel, err := s.cheap.CompleteRouted(visionCtx, profile, routeProvider, routeModel, req)
+	if err != nil && !ranSessionModel && visionCtx.Err() == nil && sessionModelTakesRequestMedia(mediaPart, profile) {
+		// The failed attempt never touched the session model — cheapmodel
+		// reroutes unservable routes and its own refusal fallback there, and
+		// both report it — the fixed deadline is not spent, and the session
+		// model can see the media (a raster image needs image input, the one
+		// user-message shape every protocol vouches for; a document needs the
+		// row's pdf input plus an adapter that represents a user-message
+		// document, which the Anthropic and Responses builders do): try the
+		// description once on it before declaring vision unavailable. The
+		// effort must fit the session model's ladder, not the failed route's.
+		// A model that cannot see the media never gets the doomed request:
+		// providers reject it, and the ones that do not answer with confident
+		// hallucinated descriptions.
+		s.applyVisionRouteEffort(&req, profile, profile.ID(), profile.Model())
+		resp, _, err = s.cheap.CompleteRouted(visionCtx, profile, profile.ID(), profile.Model(), req)
+	}
 	elapsed := s.sclock().Now().Sub(start)
 	elapsed = max(elapsed, 0)
 	if err != nil {
@@ -781,8 +867,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	if !prep.RawArgumentsRejected && len(originalArgs) > 0 && json.Valid(originalArgs) {
 		_ = json.Unmarshal(originalArgs, &args)
 	}
+	// The parent-report line for this call, excerpted once below.
+	intentLine := ""
 	if d := toolStartDescription(args); d != "" {
 		startData.Description = d
+		// The excerpt decides what the row may state: a whitespace-only
+		// intent excerpts to the empty line, and an empty report is the
+		// execution-start clear's word, so a call stating nothing real
+		// reports nothing and the previous line stands.
+		intentLine = appwire.Excerpt(d, appwire.MaxIntentRunes)
 	}
 	s.execToolCheckpoint("before_side_effects")
 	toolEventOpen := false
@@ -796,6 +889,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		s.toolEventsWG.Add(1)
 		toolEventOpen = true
 		s.emit(events.EventToolCallStart, startData)
+		// The report rides the start's own serialized, cancellation-checked
+		// block: parallel read-only calls admit starts in lock order, so the
+		// newest admitted start's line is the one that stands, and a call
+		// cancelled before admission reports nothing at all.
+		if intentLine != "" {
+			s.noteParentJobIntent(intentLine)
+		}
 	}); err != nil {
 		return skippedToolResult(call, err)
 	}
@@ -920,7 +1020,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
 		for _, m := range postResult.ModelContext {
 			if err := s.deliverHookContext(m); err != nil {
-				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true}
+				// Keep the tool state: a turn-ending communicate's records the
+				// end reason restore reads (endedOnNeedsResponse).
+				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true, ToolState: res.ToolState}
 			}
 		}
 		for _, m := range postResult.UserMessages {
@@ -1089,7 +1191,7 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		persisted := llm.Message{Role: llm.RoleTool, Content: persistedParts}
 		if len(commits) != 0 {
 			persistErr = s.appendToolResultsWithDeliveryCommitsDurably(live, persisted, commits, skillState)
-		} else if hasSuccessfulTerminalJobStatusResult(calls, results) {
+		} else if hasTerminalJobResult(calls, results) {
 			persistErr = s.appendToolResultsDurably(live, persisted, skillState)
 		} else if skillState != nil {
 			liveTurn := schema.NewTurn(schema.TurnToolResults, live)
@@ -1233,18 +1335,25 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	}
 	var completionErrs []error
 	requeue := false
-	for _, binding := range commits {
-		if binding.commit == nil {
+	// commits come grouped by tool call; each call's run completes in order.
+	var run []*delegateToolResultCommit
+	for i, binding := range commits {
+		if binding.commit != nil {
+			run = append(run, binding.commit)
+		}
+		if i+1 < len(commits) && commits[i+1].toolCallID == binding.toolCallID {
 			continue
 		}
-		plans, err := binding.commit.Complete(true)
+		completed, err := completeDelegateDeliveryCommits(run)
+		run = nil
 		if err != nil {
 			completionErrs = append(completionErrs, err)
 			requeue = true
-			continue
 		}
-		if err := s.executeDelegateMutationPlans(plans); err != nil {
-			completionErrs = append(completionErrs, err)
+		for _, plans := range completed {
+			if err := s.executeDelegateMutationPlans(plans); err != nil {
+				completionErrs = append(completionErrs, err)
+			}
 		}
 	}
 	if requeue {
@@ -1330,6 +1439,8 @@ func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	// keep the advertised capability set aligned with the unconditional grant
 	// guard rather than the parent's interactive-root registry.
 	canonical = removeStrings(canonical, protectedGrantTools())
+	// No delegate can save memory (filterUnavailableMemoryTools).
+	canonical = removeStrings(canonical, memorySaveToolNames)
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
@@ -1373,7 +1484,7 @@ func (s *Session) delegateCapabilityRoster() string {
 func (s *Session) delegateToolDefinition() llm.ToolDefinition {
 	sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 	sandboxSchema.ModelDescription = s.delegateModelDescription
-	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
+	definition := tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
 	roster := s.delegateCapabilityRoster()
 	if roster == "" {
 		return definition
@@ -1437,7 +1548,7 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 		if defs[i].Name == "delegate" {
 			sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 			sandboxSchema.ModelDescription = s.delegateModelDescription
-			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
+			defs[i] = tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
 		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
@@ -1470,9 +1581,9 @@ func (s *Session) rebuildToolDefsCache() {
 					}
 				}
 			}
-			if td.Name == "job_watch" {
-				td = tool.DefJobWatch(availableEventKindNames())
-			}
+			// Registration builds descriptions that name the session's result
+			// tool; the profile's copy names the default.
+			td.Description = s.reg.Get(td.Name).Definition.Description
 			wire := td
 			if mapped, ok := nameMap[td.Name]; ok {
 				wire.Name = mapped
@@ -1499,11 +1610,19 @@ func (s *Session) rebuildToolDefsCache() {
 		}
 		defs = append(defs, normalizeRegistryToolDefinition(td))
 	}
+	// The registry holds what this session can call, by canonical name.
+	canMessageDelegates := s.reg.Get("delegate_send") != nil
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
-			if s.memorySaveInstructionsEnabled() {
-				defs[i].Description += " " + memoryReportReminder
+			if s.hasHumanPartnerToAsk() {
+				defs[i] = tool.WithCommunicateEndReason(defs[i])
+			}
+			if s.reportsToParent() {
+				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
+			}
+			if canMessageDelegates {
+				defs[i] = tool.WithCommunicateDelegatePointer(defs[i])
 			}
 		} else {
 			// Same wire contract as wireToolDef: intent is required in the
@@ -1608,29 +1727,18 @@ func (s *Session) maybeInjectTaskReminder() (string, string) {
 	totalRounds := s.totalRounds
 	lastRound := s.taskToolLastRound
 	everUsed := s.taskToolEverUsed
-	nudgeFired := s.taskNudgeFired
 	s.mu.Unlock()
 
 	roundsSinceUse := totalRounds - lastRound
-	canUseTaskList := s.canInstructTool("task_list")
 
-	// Trigger 3: never used task_list, 10+ rounds in. A session without the
-	// tool is told nothing: this reminder is nothing but a call suggestion.
-	if canUseTaskList && !everUsed && !nudgeFired && totalRounds >= 10 {
-		s.mu.Lock()
-		s.taskNudgeFired = true
-		s.mu.Unlock()
-		return taskReminderNudge(), events.SteeringKindTaskNudge
-	}
-
-	// Trigger 2: tasks exist, not used in 25+ rounds.
+	// Tasks exist, not used in 25+ rounds.
 	if everUsed && roundsSinceUse >= 25 {
 		store := s.getOrCreateTaskStore()
 		if len(store.View()) > 0 {
 			s.mu.Lock()
 			s.taskToolLastRound = totalRounds
 			s.mu.Unlock()
-			return taskReminderForInactivity(store, canUseTaskList), events.SteeringKindTaskInactive
+			return taskReminderForInactivity(store, s.canInstructTool("task_list")), events.SteeringKindTaskInactive
 		}
 	}
 

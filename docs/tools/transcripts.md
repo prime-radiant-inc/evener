@@ -180,7 +180,20 @@ stable delegate's session `transcript_ref` from `delegate`, `job_status`, or
 | `output_match` | shell job, artifact | bounded RE2 line search (maximum 65,536 characters) |
 | `context_lines` | shell job, artifact search | 0–10 lines before and after each match; requires `output_match` |
 
-Registered `strict:false`, so every parameter is optional. The three formats are one
+Registered `strict:false`, so every parameter is optional. Models whose strict
+schemas emit every key send placeholders for the ones they mean to leave out,
+and those read as absent. On any ref, the string `"null"` stands for an absent
+`range`, `expand_turn`, `offset_bytes`, or `context_lines`, and for `format`
+except on an artifact ref, which judges it. `output_match` `"null"` reads as
+absent on a session ref only; on a job or artifact ref it is a regular
+expression and searches for the text null. On a session ref a
+JSON `null` does too, as do an empty `output_match`, a zero `context_lines`,
+and a zero `offset_bytes`, because a session ref has no search and an
+expansion starts at byte 0 anyway. `expand_turn` 0 stays, since Turn 0 is a
+real turn. A nonzero `offset_bytes` without `expand_turn`, a nonzero
+`context_lines` without `output_match`, or a non-empty `output_match` on a
+session ref is still refused. On a job or artifact ref `offset_bytes` 0 is a
+real request for the first raw page. The three formats are one
 escalating ladder — outline to see the shape, markdown to read it, JSONL to inspect its structure —
 and each session read returns the same envelope skeleton (`transcript_ref`?, `format`,
 `content`, format-specific `meta`); `transcript_ref` is omitted when the session lives in a
@@ -341,9 +354,10 @@ contiguous in-range window.
 evidence, while the `expansion` field returns byte-paged exact `transcript_v2_jsonl`: one
 entry for an ordinary user, steering, summary, checkpoint, model-switch, or orphan-result
 turn; or the minimal assistant/tool-result span needed to preserve call/result ownership.
-Use the returned `offset_bytes` continuation until all exact bytes are read. If the named
-turn falls outside the rendered range, bounded markdown also appends a labeled supplemental
-section naming its real Turn number.
+Use the returned `offset_bytes` continuation until all exact bytes are read. Without a
+`range`, the markdown shows only that turn (or its assistant/result span). With a `range`,
+it shows that window, and if the named turn falls outside it, appends a labeled
+supplemental section naming its real Turn number.
 
 ## The navigation loop
 
@@ -364,7 +378,9 @@ section naming its real Turn number.
 - **One ref per read.** `find` does corpus discovery and never reads a session;
   `read` consumes one session, shell-job, or artifact ref.
 - **One turn numbering.** What the outline and markdown show is what `range` and `expand_turn`
-  take. No second index is ever exposed.
+  take. No second index is ever exposed. `doctor_evener` / `evener doctor transcript` rows
+  carry the same turn numbers (`turn`), and its `range` takes them with the same grammar;
+  entries `read_transcript` omits appear there without a number.
 - **The registry never truncates.** Each format bounds its own output, always rune-safe and
   reported in `meta`.
 - **Honest counts and windows.** `turns_rendered + elided_turns == turns_total`; a default

@@ -2,7 +2,7 @@
 
 import { type IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
-import { IDBConnection, requestResult, transactionCompletion } from "./idbConnection";
+import { IDBConnection, IDBUpgradeError, requestResult, transactionCompletion } from "./idbConnection";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
@@ -28,10 +28,10 @@ function makeConnection(
     upgrade?: (database: IDBDatabase) => void;
     prepare?: (database: IDBDatabase) => Promise<void>;
     errors?: Partial<{
-      open: string;
-      superseded: string;
+      open: () => Error;
+      superseded: () => Error;
       timeout: () => Error;
-      blocked: string;
+      blocked: () => Error;
     }>;
     reportDiagnostic?: (path: string, versionchangeTransaction: boolean) => void;
     reportOpenError?: (error: Error) => void;
@@ -45,8 +45,8 @@ function makeConnection(
     upgrade: overrides.upgrade ?? (() => {}),
     prepare: overrides.prepare,
     errors: {
-      open: overrides.errors?.open ?? "session cache open failed",
-      superseded: overrides.errors?.superseded ?? "session cache open was superseded",
+      open: overrides.errors?.open ?? (() => new Error("session cache open failed")),
+      superseded: overrides.errors?.superseded ?? (() => new Error("session cache open was superseded")),
       timeout: overrides.errors?.timeout ?? (() => new Error("session cache open timed out")),
       blocked: overrides.errors?.blocked,
     },
@@ -414,4 +414,27 @@ test.each(["complete", "abort"])("cache transaction completion waits past error 
   transaction.dispatchEvent(new Event(terminal));
   if (terminal === "complete") expect(await observed).toBe("committed");
   else expect(await observed).toEqual(new Error("IndexedDB transaction aborted"));
+});
+
+// The open names a throwing upgrade's own failure (see IDBUpgradeError).
+test("a throwing schema upgrade rejects the open with its own failure", async () => {
+  const schemaBug = new TypeError("schema bug");
+  const connection = new IDBConnection({
+    indexedDB: new IDBFactory(),
+    databaseName: "evener-upgrade-bug",
+    databaseVersion: 1,
+    waitMs: 10_000,
+    upgrade: () => {
+      throw schemaBug;
+    },
+    errors: {
+      open: () => new Error("open failed"),
+      superseded: () => new Error("open superseded"),
+      timeout: () => new Error("open timed out"),
+    },
+    reportDiagnostic: () => undefined,
+  });
+  const open = connection.open();
+  await expect(open).rejects.toBeInstanceOf(IDBUpgradeError);
+  await expect(open).rejects.toMatchObject({ cause: schemaBug });
 });

@@ -401,6 +401,11 @@ func (read *sessionActivityRead) nextKey(walk *sessionActivityWalk, after sessio
 	}
 	return selectedOwner, selected, found
 }
+
+func activityJobEligible(record *jobstore.JobRecord) bool {
+	return record != nil && record.Type == jobstore.JobShell && record.Background
+}
+
 func (read *sessionActivityRead) jobsPage(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
 	result := appwire.SessionJobsResponse{Context: read.context, Scope: read.scope}
 	token, walk, err := read.index.token(params, appwire.SessionActivityResourceJobs, read.context.SessionID)
@@ -436,7 +441,7 @@ func (read *sessionActivityRead) jobsPage(ctx context.Context, params appwire.Se
 		read.budget--
 		source := read.index.jobs[owner]
 		record := source.Jobs[key.ID]
-		if record == nil || record.Type != jobstore.JobShell || source.CreationOffsets["job:"+key.ID] > walk.Cutoffs[owner] || walk.Highwater.before(key) {
+		if !activityJobEligible(record) || source.CreationOffsets["job:"+key.ID] > walk.Cutoffs[owner] || walk.Highwater.before(key) {
 			token.After = key
 			continue
 		}

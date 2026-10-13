@@ -474,7 +474,10 @@ export function ModelCatalog({
           {/* Plain text, not a Chip: the trigger already draws the control's
               own border, and a bordered chip inside it read as a double
               border. */}
-          <span className={`${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`}>
+          <span
+            className={`${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`}
+            data-state={value === "" ? "default" : undefined}
+          >
             {value === "" ? emptyLabel : value}
           </span>
           <span className={CLASS.chevron} aria-hidden="true">

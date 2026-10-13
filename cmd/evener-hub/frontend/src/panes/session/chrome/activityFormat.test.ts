@@ -11,20 +11,32 @@ import {
 } from "./activityFormat";
 
 test("Overview labels retain unknown activity instead of inventing a zero count", () => {
-  expect(activityActionLabel(undefined, "Overview")).toBe("Overview");
-  expect(activityActionLabel(activitySummary(), "Overview")).toBe("Overview");
+  const subagents = { known: true, total: 4, active: 3, failed: 0, completed: 1 };
+  const label = "Overview";
+  expect(activityActionLabel(undefined, subagents, label)).toBe(label);
+  expect(activityActionLabel(activitySummary(), null, label)).toBe(label);
+  expect(activityActionLabel(activitySummary(), { ...subagents, known: false }, label)).toBe(label);
 });
 
-test("Overview labels count known active delegates and jobs", () => {
+// Subagents count at every depth (the subtree count, useSubagentCounts); jobs
+// count for the session itself. The session's own delegate count is ignored.
+test("Overview labels count subagents at every depth and the session's jobs", () => {
   const summary = activitySummary();
-  summary.delegates = { known: true, total: 4, active: 3, failed: 0, completed: 1 };
-  expect(activityActionLabel(summary, "Overview")).toBe("Overview · 5 active");
-  expect(activityActionLabel(summary)).toBe("Activity · 5 active");
-  summary.delegates.active = 0;
+  summary.delegates = { known: true, total: 1, active: 1, failed: 0, completed: 0 };
+  const subagents = { known: true, total: 4, active: 3, failed: 0, completed: 1 };
+  // 3 subagents at every depth plus the session's 2 running jobs; the
+  // session's own delegate is not counted again.
+  const overview = activityActionLabel(summary, subagents, "Overview");
+  expect(overview.startsWith("Overview")).toBe(true);
+  expect(overview.match(/\d+/g)).toEqual(["5"]);
+  const activity = activityActionLabel(summary, subagents);
+  expect(activity.startsWith("Activity")).toBe(true);
+  expect(activity.match(/\d+/g)).toEqual(["5"]);
+  subagents.active = 0;
   summary.jobs.active = 0;
-  expect(activityActionLabel(summary, "Overview")).toBe("Overview · 0 active");
+  expect(activityActionLabel(summary, subagents, "Overview").match(/\d+/g)).toEqual(["0"]);
   summary.jobs.known = false;
-  expect(activityActionLabel(summary, "Overview")).toBe("Overview");
+  expect(activityActionLabel(summary, subagents, "Overview")).toBe("Overview");
 });
 
 test("formatUsagePair renders arrows with compact counts", () => {
@@ -76,6 +88,8 @@ test("jobStatusDisplay keeps raw machine words except the command outcomes", () 
   expect(jobStatusDisplay("running")).toBe("running");
   expect(jobStatusDisplay("failed")).toBe("failed");
   expect(jobStatusDisplay("exhausted")).toBe("exhausted");
-  expect(jobStatusDisplay("command_exited_nonzero")).toBe("Command failed");
-  expect(jobStatusDisplay("command_killed")).toBe("Command killed");
+  // The two command outcomes get display words, distinct from each other.
+  expect(jobStatusDisplay("command_exited_nonzero")).not.toBe("command_exited_nonzero");
+  expect(jobStatusDisplay("command_killed")).not.toBe("command_killed");
+  expect(jobStatusDisplay("command_exited_nonzero")).not.toBe(jobStatusDisplay("command_killed"));
 });

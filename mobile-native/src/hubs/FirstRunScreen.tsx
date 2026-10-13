@@ -37,7 +37,7 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 	return (
 		<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
 			<GroupedPage>
-				<View style={{ paddingHorizontal: 32, paddingTop: 48, paddingBottom: 12, gap: 8 }}>
+				<View testID="first-run-intro" style={{ paddingHorizontal: 32, paddingTop: 48, paddingBottom: 12, gap: 8 }}>
 					<Text
 						accessibilityRole="header"
 						allowFontScaling={allowFontScaling}
@@ -61,7 +61,7 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 				</Group>
 				{profiles.length > 0 ? (
 					<>
-						<Group label="Saved hubs">
+						<Group label="Saved hubs" section="saved-hubs">
 							{profiles.map((profile) => (
 								<Row
 									key={profile.id}

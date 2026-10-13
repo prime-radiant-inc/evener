@@ -538,6 +538,8 @@ describe("ActivityStore", () => {
 			const v = store.getState().view;
 			const openGroup = v?.tasks.find((g) => g.status === "open");
 			expect(openGroup?.count).toBe(0);
+			const doneGroup = v?.tasks.find((g) => g.status === "done");
+			expect(doneGroup?.count).toBe(3);
 		});
 
 		it("task/updated trusts an authoritative zero remaining over total - done - cancelled", () => {

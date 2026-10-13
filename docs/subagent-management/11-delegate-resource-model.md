@@ -266,11 +266,10 @@ the call, remains only on the delegate_send result and the transcript/UI
 transport of that result, and is not folded into warnings, the delegate
 aggregate, stable events/status, or client snapshots.
 
-to=caller remains the explicit route from a delegate to its controlling
-caller. If the caller is another delegate, the route uses that stable parent's
-controller steering path and lifecycle checks. If the caller is the root
-Session, it uses the root's existing steering admission. caller is a contextual
-route, not a second delegate identity.
+There is no caller route. A delegate reaches its owner only through
+communicate: end_turn=false posts an update into the delegate's ordered
+delivery queue, and end_turn=true settles its report. delegate_send(to="caller")
+is rejected, at the root as well.
 
 job_status accepts target=job_... or target=dlg_.... A delegate result is
 metadata-only:
@@ -340,7 +339,7 @@ Knowing a stable ID does not grant control.
 
 - The root Session directly owns its direct delegates.
 - A delegate directly owns only the delegates it created.
-- delegate_send may target a directly owned delegate or caller.
+- delegate_send may target only a directly owned delegate.
 - job_stop may directly target a directly owned delegate. Recursive stop then
   reaches all descendants through the controller.
 - Ancestors may list or inspect visible descendants under existing
@@ -1189,6 +1188,13 @@ cannot reuse it. It is never a control handle.
   next head.
 - Only the head pending delivery may be dispatched. Acknowledging that exact
   head removes it and returns the delivery plan for the next head, if any.
+- A delegate_update_posted event records a running generation's update and
+  joins the same per-delegate queue as the pending delivery
+  `<delegate_id>/update/<event seq>` with packet kind `update`. The
+  generation's updates are therefore dispatched in the order posted and ahead
+  of the report its finish appends. Only the open, running
+  generation may post one. An update at the head never claims the
+  generation's inline waiter; a `delegate_send` wait stays for the report.
 - Restart begins with the oldest unacknowledged packet and advances through the
   same acknowledge-then-release chain.
 - Receiver-side insertion is idempotent by delivery ID, so a crash between
@@ -1199,10 +1205,11 @@ cannot reuse it. It is never a control handle.
 If selected inline delivery cannot commit because the owner Session closes or
 its tool result fails, delivery remains pending and later uses the ordinary
 notification/replay path. The aggregate keeps an ordered collection keyed by
-delivery ID, with at most one entry per generation. A later generation may
-finish while an earlier delivery remains unacknowledged; it appends a second
-entry rather than overwriting the first, but receives no independent delivery
-plan until every earlier entry is acknowledged. Waiter selection occurs when
+delivery ID, with at most one report entry per generation plus any updates
+that generation posted. A later generation may finish while an earlier
+delivery remains unacknowledged; it appends its report entry rather than
+overwriting the earlier ones, but receives no independent delivery plan until
+every earlier entry is acknowledged. Waiter selection occurs when
 an entry becomes the head and looks up that entry's generation-keyed waiter,
 even if a successor generation is now current. A restart loses process-local
 waiters and therefore uses notification/replay for every remaining head. There
@@ -1281,7 +1288,8 @@ Required event kinds are:
 - delegate_run_finished;
 - delegate_resumability_closed;
 - delegate_subtree_stop_requested;
-- delegate_subtree_stop_completed; and
+- delegate_subtree_stop_completed;
+- delegate_update_posted; and
 - delegate_delivery_acknowledged.
 
 No event kind exists for a delegate activation JobRecord, current/latest job
@@ -1532,6 +1540,29 @@ is a normal delegate generation:
 7. the child Session processes those model-bound transcript turns; and
 8. before that generation finishes, settlement appends and fsyncs one
    provider-excluded consumed resolution marker per bound ID.
+
+Attention that reaches a delegate while one of its generations runs, whatever
+started that generation, joins the generation's history and is presented at
+its next model request. A settled request that presented it covers it: when the
+turn ends successfully, still inside the generation's lease, the runtime appends
+and fsyncs a generation-less consumed marker for each covered ID that is still
+pending, so the delegate is not driven again for attention its model has
+already seen. Attention already pending when a generation starts is consumed
+the same way once one of that generation's settled requests shows it. The lease
+is the delegate's only start claim (no attention reservation is admitted while a
+generation holds a live binding), so the marker cannot conflict with a reserved
+generation. A failed turn leaves its covered
+IDs pending; attention appended after the generation's last request was built
+stays pending and starts its own attention generation; a turn outside a lease
+covers nothing. No attention reservation reports this consumption, so the
+delegate's noted wakes stay until a clear reconciles them against the
+transcript: when the generation lets go with nothing left pending it lowers the
+needs-attention projection and drops the wakes itself, and if that clear fails
+the root's attention drive retries it. A stop meanwhile discards only the
+attention the transcript still owes; a wake whose item is already resolved is
+only forgotten, and the clear leaves the wakes to a pending stop. A delegate
+that can no longer resume never acts on a wake, so its noted wakes do not block
+retirement (the transcript evidence still does for anything pending).
 
 There are no recordless model-bearing drive turns. A drive is not a JobRecord,
 but it is an exact delegate generation governed by the same lease.
@@ -1914,7 +1945,7 @@ At minimum, characterize:
     admission and fails before create side effects when insufficient;
 17. positive stop wait cannot suspend or cancel the sole reconciliation driver;
 18. a foreground shell timeout releases its exact controller receipt;
-19. to=caller never writes directly into an unfinished root tool round;
+19. delegate_send(to="caller") is rejected and delivers nothing;
 20. explicit JSON null, validation, exhaustion, worktree evidence, turn slots,
     timing, usage, and diagnostics survive live/cold/client bridges, while
     wait_ignored_reason survives only the delegate_send result and its
@@ -1990,7 +2021,7 @@ fsync/source acknowledgement, coalesce a later update during acknowledgement,
 race both watch receipt classes with stop, fire the quiet threshold under a fake
 clock, block and release SubagentStop, fail final-round salvage, reclaim a
 post-order runtime subtree during create, hold a foreground-shell receipt across
-timeout, and block a root tool-result append while to=caller arrives. These use
+timeout. These use
 scripted providers, fake clocks, barriers, channels, and durable readback. No
 sleep, polling race, generated-script snapshot, compile failure, or selector
 with no tests is valid RED evidence.
@@ -2137,8 +2168,7 @@ The project is complete only when all of the following are true:
     task/model/effort, and worktree/disposal evidence across every live and cold
     projection.
 30. Positive stable stop waits cannot disable the reconciliation driver;
-    foreground shell timeout cannot leak its controller receipt; to=caller
-    cannot write into an unfinished root tool round.
+    foreground shell timeout cannot leak its controller receipt.
 31. Historical transcript/activity/Hub/doctor reads are pure and never create,
     append, repair, truncate, or mutate a log.
 32. Old delegate durable state fails legacy_delegate_state and old

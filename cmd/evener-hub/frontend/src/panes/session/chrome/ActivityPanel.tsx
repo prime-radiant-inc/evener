@@ -13,9 +13,9 @@ import { deriveScope } from "../../../shell/statusbar/statusScope";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
-import { useSessionActivity } from "../../../stores/sessionActivity";
+import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
-import { Button, EmptyState, Sheet } from "../../../widgets";
+import { Button, EmptyState, Loader, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityTree } from "./ActivityTree";
 import { activityActionLabel } from "./activityFormat";
@@ -37,7 +37,7 @@ export interface ActivityPanelHandle {
 }
 const COLLECTIONS: readonly SessionActivityCollection[] = ["delegates", "jobs", "watches"];
 const CLASS = {
-  panel: requireClass(styles.panel, "activitypanel.module.css", "panel"),
+  activityPanel: requireClass(styles.activityPanel, "activitypanel.module.css", "activityPanel"),
   panelColumn: requireClass(styles.panelColumn, "activitypanel.module.css", "panelColumn"),
   stale: requireClass(styles.stale, "activitypanel.module.css", "stale"),
 };
@@ -49,7 +49,8 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
   const resources = useNavigationStore((state) => state.resources);
   // biome-ignore lint/correctness/useExhaustiveDependencies: resources invalidates the navigation title read.
   const scope = useMemo(
-    () => deriveScope(navigationStore.getState(), sessionRef, snapshot),
+    // Only the crumbs are shown here, so no subagent count is read.
+    () => deriveScope(navigationStore.getState(), sessionRef, snapshot, null),
     [sessionRef, snapshot, resources],
   );
   const presentation = useMemo(() => (snapshot ? projectSessionActivity(snapshot) : null), [snapshot]);
@@ -109,17 +110,26 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
   );
   return (
     <EntityViewsProvider entities={entities} ownerRef={sessionRef}>
-      <div className={CLASS.panel}>
+      <div className={CLASS.activityPanel}>
         <ScopeCrumbs path={scope.path} hierarchy />
         {!scope.ancestryKnown ? <p className={CLASS.stale}>Finding session context…</p> : null}
-        {updating ? <p className={CLASS.stale}>Activity is updating…</p> : null}
+        {updating ? (
+          <p className={CLASS.stale} data-testid="activity-updating">
+            Activity is updating…
+          </p>
+        ) : null}
         {!tree || (empty && !complete) ? (
-          <EmptyState title={unavailable ? "Activity unavailable for this session" : "Loading activity…"} />
+          unavailable ? (
+            <EmptyState title="Activity unavailable for this session" reason="unsupported" />
+          ) : (
+            <Loader label="Loading activity…" />
+          )
         ) : null}
         {empty && complete ? (
           <EmptyState
             title="No retained activity yet"
             hint="No shell, delegate or watch activity has been retained for this session."
+            reason="empty"
           />
         ) : null}
         {tree && !empty ? (
@@ -171,15 +181,16 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     (open: boolean) => activityPanelStore.getState().setSheetOpen(sessionRef, open),
     [sessionRef],
   );
-  const { snapshot } = useSessionActivity(
-    !hideTrigger || refreshWhenHidden || discoverWhenHidden || open ? sessionRef : null,
-  );
+  const countedRef = !hideTrigger || refreshWhenHidden || discoverWhenHidden || open ? sessionRef : null;
+  const { snapshot } = useSessionActivity(countedRef);
+  // Only a shown trigger says the count.
+  const subagents = useSubagentCounts(hideTrigger ? null : countedRef);
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), [setOpen]);
   return (
     <>
       {!hideTrigger ? (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          {activityActionLabel(snapshot?.summary)}
+          {activityActionLabel(snapshot?.summary, subagents)}
         </Button>
       ) : null}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">

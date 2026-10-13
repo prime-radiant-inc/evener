@@ -1,9 +1,9 @@
-import type { ButtonVariant } from "../../widgets/button";
+import type { IconButtonVariant } from "../../widgets/iconbutton";
 import { IconButton } from "../../widgets/iconbutton";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 
-const VARIANTS: ButtonVariant[] = ["primary", "quiet", "danger", "dangerQuiet"];
+const VARIANTS: IconButtonVariant[] = ["primary", "quiet", "danger", "dangerQuiet"];
 
 function DotIcon() {
   return (
@@ -13,7 +13,7 @@ function DotIcon() {
   );
 }
 
-function VariantRow({ variant }: { variant: ButtonVariant }) {
+function VariantRow({ variant }: { variant: IconButtonVariant }) {
   return (
     <div className={styles.row}>
       <p className={styles.rowLabel}>{variant}</p>
@@ -21,6 +21,15 @@ function VariantRow({ variant }: { variant: ButtonVariant }) {
       <IconButton variant={variant} size="sm" label="Close" icon={<DotIcon />} />
       <IconButton variant={variant} size="xs" label="Close" icon={<DotIcon />} />
       <IconButton variant={variant} size="md" label="Close" icon={<DotIcon />} disabled />
+      <IconButton variant={variant} size="md" label="Close (refused)" icon={<DotIcon />} aria-disabled />
+      <IconButton
+        variant={variant}
+        size="md"
+        label="Close (explained)"
+        icon={<DotIcon />}
+        disabled
+        disabledReason="Nothing to close in this session"
+      />
     </div>
   );
 }
@@ -33,6 +42,18 @@ export default function IconButtonGallerySection() {
         {VARIANTS.map((variant) => (
           <VariantRow key={variant} variant={variant} />
         ))}
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>badge</p>
+          <IconButton
+            variant="secondary"
+            size="sm"
+            label="Show sidebar (3 need attention)"
+            icon={<DotIcon />}
+            badge={{ count: 3, tone: "attention" }}
+          />
+          <IconButton variant="quiet" label="Sessions" icon={<DotIcon />} badge={{ count: 120, tone: "attention" }} />
+          <IconButton variant="quiet" label="Inbox" icon={<DotIcon />} badge={{ count: 7 }} />
+        </div>
       </ThemeFlip>
     </section>
   );

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { searchForWorkspaceRoot } from "vite";
-import { defineConfig, type Plugin } from "vitest/config";
+import { configDefaults, defineConfig, type Plugin } from "vitest/config";
 
 // The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth/<token> capability flow
@@ -30,10 +30,13 @@ const appwirePackageDir = path.join(__dirname, "..", "..", "..", "appwire-client
 // otherwise forbids for good reason. Restoring the file HERE, as part of the
 // build itself, means every invocation path (`make build-web`, `npm run
 // build`, or `vite build` run directly during frontend dev) leaves the
-// tracked file's content byte-identical afterward instead of missing.
+// tracked file's content byte-identical afterward instead of missing. Vite
+// also calls closeBundle when a dev or test server closes, so the plugin
+// applies to builds only: a vitest run must write nothing into the checkout.
 function restoreDistPlaceholder(): Plugin {
   return {
     name: "restore-dist-placeholder",
+    apply: "build",
     closeBundle() {
       const outDir = path.join(__dirname, "dist");
       fs.mkdirSync(outDir, { recursive: true });
@@ -44,15 +47,22 @@ function restoreDistPlaceholder(): Plugin {
 
 export default defineConfig({
   plugins: [react(), restoreDistPlaceholder()],
-  // Keep the dep-optimizer cache inside this checkout. Vite defaults it to
-  // node_modules/.vite, and fleet worktrees symlink node_modules to ONE shared
-  // install (docs/developing-evener/conventions/agent-fleets.md), so that
-  // default's dep-cache temp dir is shared by every lane and every concurrent
-  // Vite process - which races (issue #1586). path.join(__dirname, ...) is
-  // lexical and never follows the symlink. make test-web starts only vitest's
-  // Vite, and make test-web-browser, which runs guards side by side, gives
-  // each guard its own cache (browserguard.vite.config.mjs).
-  cacheDir: path.join(__dirname, ".vite-cache"),
+  // Keep the dep-optimizer cache inside this checkout by default. Vite defaults
+  // it to node_modules/.vite, and fleet worktrees symlink node_modules to ONE
+  // shared install (docs/developing-evener/conventions/agent-fleets.md), so
+  // that default's dep-cache temp dir is shared by every lane and every
+  // concurrent Vite process - which races (issue #1586). path.join(__dirname,
+  // ...) is lexical and never follows the symlink. make test-web starts only
+  // vitest's Vite, and make test-web-browser, which runs guards side by side,
+  // gives each guard its own cache (browserguard.vite.config.mjs).
+  //
+  // EVENER_FRONTEND_VITE_CACHE_DIR moves the cache to a writable root the
+  // caller owns: the web gate (cmd/evener-dev/webchecks.go) points it at each
+  // check's private scratch directory, so a read-only checkout - which cannot
+  // hold .vite-cache and fails the optimizer with EACCES - still runs its
+  // vitest suite (issue #4193). An empty value falls back to the checkout, the
+  // same truthiness BROWSER_GUARD_VITE_CACHE_DIR uses below.
+  cacheDir: process.env.EVENER_FRONTEND_VITE_CACHE_DIR || path.join(__dirname, ".vite-cache"),
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
   // These mirror tsconfig.json's paths - tsconfig paths are invisible to Vite,
   // so the alias is what the bundler, the dev server, Vitest and the five
@@ -63,6 +73,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
+      "@evener/appwire-client/pairing": path.join(appwirePackageDir, "pairing.ts"),
       "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
       "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),
       "@evener/appwire-client/state/extensions": path.join(appwirePackageDir, "state", "extensions", "index.ts"),
@@ -88,6 +99,7 @@ export default defineConfig({
       // the package's KeybindingParser port; the package itself never names
       // tinykeys, so this alias serves only its tests.
       tinykeys: path.join(__dirname, "node_modules", "tinykeys"),
+      tweetnacl: path.join(__dirname, "node_modules", "tweetnacl"),
     },
   },
   server: {
@@ -113,8 +125,9 @@ export default defineConfig({
       // file outside the allow list. The daemon's recorded notification frames
       // (agent/testdata/notificationwire), its system events and steers
       // (agent/testdata/systemeventwire), its tool calls
-      // (agent/testdata/toolwire) and its subagent calls
-      // (agent/testdata/subagentwire) reach the same suites the same way,
+      // (agent/testdata/toolwire), its subagent calls
+      // (agent/testdata/subagentwire) and its automatic memory refreshes
+      // (agent/testdata/memorycontextwire) reach the same suites the same way,
       // through the package's testing/*WireFixtures.ts loaders.
       allow: [
         searchForWorkspaceRoot(__dirname),
@@ -125,6 +138,7 @@ export default defineConfig({
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "systemeventwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "toolwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "subagentwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "memorycontextwire"),
       ],
     },
     proxy: {
@@ -155,6 +169,11 @@ export default defineConfig({
       "**/*.{test,spec}.?(c|m)[jt]s?(x)",
       "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)",
     ],
+    // The top-level scripts/*.test.mjs files are node:test suites that `npm test`
+    // runs with `node --test`. Vitest finds no suite in them, but loading one
+    // still starts its node:test run, and the worker teardown that follows skips
+    // its after hooks, so a bare `vitest run` leaked the processes they start.
+    exclude: [...configDefaults.exclude, "scripts/*.test.mjs"],
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],

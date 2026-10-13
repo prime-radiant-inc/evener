@@ -16,10 +16,10 @@ import (
 const maxSessionSeenMarks = 500
 
 // maxSeenThroughLead bounds how far past the hub's clock a seenThrough may be.
-// A correct mark echoes a row's turn_ended_at, which a daemon stamped, so it
-// is never far ahead even from a host whose clock drifts. Seen-through only
-// moves forward, so an unbounded future mark would hide the session's turns
-// for good.
+// A correct mark echoes a row's turn_ended_at or a session's lastMovedAt,
+// both daemon-stamped, so it is never far ahead even from a host whose clock
+// drifts. Seen-through only moves forward, so an unbounded future mark would
+// hide the session's turns for good.
 const maxSeenThroughLead = 24 * time.Hour
 
 func registerSessionSeenHandler(server *appserver.Server, cfg hubcore.WebConfig, navigation *NavigationService) {
@@ -53,7 +53,7 @@ func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navi
 			return appwire.SessionSeenSetResponse{}, appwire.InvalidParams("each session sets exactly one of seenThrough or unread")
 		}
 		if mark.SeenThrough > now.Add(maxSeenThroughLead).UnixMilli() {
-			return appwire.SessionSeenSetResponse{}, appwire.InvalidParams("sessions[].seenThrough is a row's turn_ended_at and cannot be a day past the hub's clock")
+			return appwire.SessionSeenSetResponse{}, appwire.InvalidParams("sessions[].seenThrough is a hub or daemon timestamp and cannot be a day past the hub's clock")
 		}
 		source := hubcore.NormalizeDecisionSource(ref.HostID)
 		if err := validateDecisionSource(cfg, source); err != nil {

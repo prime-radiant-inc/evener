@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -444,7 +446,7 @@ func undisposedBackgroundJobsAnnouncement(jobIDs []string, shellTool string, can
 		strings.Join(jobIDs, ", "))
 	b.WriteString("- Scratch work you no longer need: stop it with job_stop.\n")
 	if canDetach {
-		fmt.Fprintf(&b, "- A process that must outlive this run (a server, a watcher): stop it with job_stop FIRST, then relaunch the same command with %s mode=\"detached\". Stop first — relaunching without stopping leaves the original running, and anything bound to a port will fail to rebind. A detached process's output is discarded (redirect to a file if you need it) and it sends no completion notification.\n", shellTool)
+		fmt.Fprintf(&b, "- A process that must outlive this run (a server, a watcher): stop it with job_stop FIRST, then relaunch the same command with %s mode=\"detached\". Stop first — relaunching without stopping leaves the original running, and anything bound to a port will fail to rebind. A detached process's output is discarded and it sends no completion notification, and it gets no session scratch ($EVENER_SCRATCH_DIR is unset there), so give its command absolute paths for its output and for any file it reads.\n", shellTool)
 	} else {
 		b.WriteString("- A process that must outlive this run: this environment cannot disown a process, so nothing can outlive it. Stop the job and say so plainly in your final answer.\n")
 	}
@@ -943,12 +945,71 @@ func drainStallGiveUpMessage(stuckJobs, undisposableDelegates []string) string {
 // carry their own round/time caps, so a well-formed tree always quiesces on its
 // own. Every owned managed job holds the drain open.
 func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
+	return s.drainJobTreeUsing(ctx, s.ProcessInputKind)
+}
+
+// DrainJobTreeKeepingReport is DrainJobTree for a delegate that has already
+// reported: a drain turn that ends with a terminal communicate replaces the
+// report, and a drain turn that ends without one leaves the report standing.
+func (s *Session) DrainJobTreeKeepingReport(ctx context.Context) (string, error) {
+	return s.drainJobTreeUsing(ctx, s.keepingReport(s.ProcessInputKind))
+}
+
+func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) (string, error) {
 	if s.jobManager == nil {
 		return "", nil
 	}
 	ticker := s.clock.NewTicker(drainRecheckInterval)
 	defer ticker.Stop()
-	return s.drainJobTree(ctx, ticker.C())
+	return s.drainJobTreeWith(ctx, ticker.C(), s.kickDriveTree, process)
+}
+
+// keepingReport wraps a drain turn. Every input starts with a fresh
+// communicate result, so a turn that ends without a terminal communicate would
+// erase the report the delegate already gave. That turn restores the latest
+// report the session accepted, which may have come from an earlier input of
+// the same call. Its bare-text or empty-response
+// failure is the reply of a housekeeping turn, not a failure of the run that
+// already reported; any other error still propagates.
+func (s *Session) keepingReport(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+		reported := s.Communicated()
+		res, err := process(ctx, input, images, kind)
+		if !reported {
+			return res, err
+		}
+		s.mu.Lock()
+		if !s.comm.called {
+			s.comm = s.latestReport
+			if isNoReportFailure(err) {
+				err = nil
+			}
+		}
+		s.mu.Unlock()
+		return res, err
+	}
+}
+
+// isNoReportFailure reports whether err consists only of the failures of a
+// turn that ended without a terminal communicate. errors.Is alone would also
+// match a joined error that carries an unrelated failure beside one of them.
+func isNoReportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		parts := joined.Unwrap()
+		for _, part := range parts {
+			if !isNoReportFailure(part) {
+				return false
+			}
+		}
+		return len(parts) > 0
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return isNoReportFailure(wrapped.Unwrap())
+	}
+	return errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)
 }
 
 // drainJobTree contains the drain loop behind an injectable recheck channel.
@@ -975,6 +1036,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 
 	lastResult := ""
 	var stallStart time.Time
+	// drivenUpdates holds the delegate updates the model has already seen, so
+	// an update that stays pending does not run another turn. It starts with
+	// what the turn before the drain showed: a delta turn credits nothing and
+	// clears that coverage, which would leave an update whose marker failed
+	// to repeat turns forever.
+	drivenUpdates := make(map[string]struct{})
+	s.settlePresentedDelegateUpdates(drivenUpdates)
 	// drainStartedAt is the instant the root declared the work over: in a
 	// one-shot run this loop starts the moment the coordinator's terminal
 	// communicate ended its turn. It is the reference delegateAbandonedByDrain
@@ -1089,17 +1157,33 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// admission. The steer is consumed before the run re-enters this drain,
 		// so the early return does not spin.
 		//
-		// A queued notification (or root attention) already runs a turn whose
-		// model request binds the steering with the lease context, so the gate
-		// below consumes it and the long-standing notification/steering merge is
-		// preserved; only the no-other-driver case returns early.
-		if s.hasPendingStableSteering() && s.peekNotifications() == 0 && !s.pendingRootDelegateAttention() {
-			return lastResult, nil
-		}
+		// A queued notification (or root attention, or a delegate's update)
+		// already runs a turn whose model request binds the steering with the
+		// lease context, so the gate below consumes it and the long-standing
+		// notification/steering merge is preserved; only the no-other-driver
+		// case returns early.
+		//
 		// Parked attention does not drive the rung: a Stop's park defers it,
 		// and the notification turn would only stand down at the admission
-		// gate and spin the drain loop at full rate.
-		if s.peekNotifications() > 0 || s.pendingRootDelegateAttention() {
+		// gate and spin the drain loop at full rate. A delegate's update to
+		// this delegate does drive it (hasPendingDelegateUpdateAttention), and
+		// the turn that presents it consumes it. The drain runs under the
+		// run's lease, so the admission gate (coversPresentedAttention) and
+		// this predicate agree. A successful leased turn credits what its
+		// requests presented as consumed, so the predicate falls quiet; an
+		// update stays pending only if no request presented it or its marker
+		// write failed (retried after the turn), and a turn that fails first
+		// returns its error from the process call below rather than looping.
+		// Compaction does not hide a pending update from that turn: it retains
+		// unresolved attention turns in the history (retainDelegateAttentionTurn,
+		// and resume restores them; see
+		// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart),
+		// so a request after a compaction or a failed turn still presents it.
+		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasUndrivenDelegateUpdate(drivenUpdates)
+		if s.hasPendingStableSteering() && !notificationTurnOwed {
+			return lastResult, nil
+		}
+		if notificationTurnOwed {
 			// A completion is queued on this (root) rail: run a notification turn so
 			// the coordinator's model receives it and can dispatch more work or wrap
 			// up. The turn's boundary also drives any idle descendant that has
@@ -1115,6 +1199,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if res != "" {
 				lastResult = res
 			}
+			s.settlePresentedDelegateUpdates(drivenUpdates)
 			s.restartDrainGraceSecondWindows(s.sclock().Now())
 			// A delivered notification is real drain progress: reset the stall
 			// clock so the watchdog measures only continuous stall, never a stall
@@ -1623,4 +1708,30 @@ func (s *Session) kickDriveTreeWithFlush(ctx context.Context, drain func(*Sessio
 		}
 	}
 	return nil
+}
+
+// hasUndrivenDelegateUpdate reports whether an update from this session's own
+// delegates is pending that the drain has not yet run a turn for.
+func (s *Session) hasUndrivenDelegateUpdate(driven map[string]struct{}) bool {
+	return slices.ContainsFunc(s.pendingDelegateUpdateAttentionIDs(), func(id string) bool {
+		_, done := driven[id]
+		return !done
+	})
+}
+
+// settlePresentedDelegateUpdates records the updates the last turn showed the
+// model in driven and retries the consumed marker of any still pending. A
+// failed marker write leaves an update the model already saw pending. The
+// turn's coverage survives until the next turn starts, so only the marker is
+// retried; if that fails too, the update stays pending for the generation's
+// end and this drain runs no more turns for it.
+func (s *Session) settlePresentedDelegateUpdates(driven map[string]struct{}) {
+	for _, id := range s.presentedDelegateUpdateAttentionIDs() {
+		driven[id] = struct{}{}
+	}
+	if s.hasPendingDelegateUpdateAttention() {
+		if err := s.finishAttentionTurn(nil, nil); err != nil {
+			s.emit(events.EventWarning, warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
+		}
+	}
 }

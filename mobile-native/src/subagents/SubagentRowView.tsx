@@ -16,13 +16,20 @@ import {
 	timeInState,
 } from "./subagentModel";
 
+/** Words that replace a row's why line, and what they report: a stop
+ * request on its way (sent through the coordinator or directly) or settled. */
+export interface SubagentNote {
+	kind: "stop-requested" | "stop-requested-direct" | "stop-settled";
+	text: string;
+}
+
 export interface SubagentRowViewProps {
 	row: SubagentRow;
 	now: number;
 	coordinatorModel: string | null;
 	modelName(model: string): string;
 	/** Replaces the why line: PR 3 passes the stop request's words. */
-	note?: string;
+	note?: SubagentNote;
 	onOpen(row: SubagentRow): void;
 }
 
@@ -39,9 +46,9 @@ export const SubagentRowView = memo(function SubagentRowView({
 	const time = timeInState(row, now);
 	const why = subagentWhy(row, now);
 	const last = subagentLastLine(row, coordinatorModel, modelName);
-	// A failure's "Failed" takes the danger ink; a note replaces the why line.
+	// Preserve the outcome and cause; a note replaces the why line.
 	const failure = note === undefined && why.word === "Failed";
-	const whyLine = note ?? why.text;
+	const whyLine = note?.text ?? why.text;
 	const label = [row.title, subagentStateWord(row.state), whyLine, time === null ? null : spokenDuration(time)]
 		.filter((part) => part)
 		.join(", ");
@@ -66,7 +73,7 @@ export const SubagentRowView = memo(function SubagentRowView({
 				{row.state === "running" ? (
 					<SymbolView name="circle.fill" size={8} tintColor={palette.alive} />
 				) : row.state === "failed" ? (
-					<SymbolView name="xmark.octagon.fill" size={20} tintColor={palette.danger} />
+					<SymbolView name="xmark.octagon.fill" size={20} tintColor={palette.inkLow} />
 				) : (
 					<SymbolView name="checkmark" size={14} tintColor={palette.inkLow} />
 				)}
@@ -88,13 +95,14 @@ export const SubagentRowView = memo(function SubagentRowView({
 				</View>
 				{failure || whyLine ? (
 					<Text
+						testID={`subagent-why:${note?.kind ?? why.kind}`}
 						allowFontScaling={allowFontScaling}
 						numberOfLines={failure ? 2 : 1}
-						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: failure ? palette.inkHi : palette.inkMid }}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
 					>
 						{failure ? (
 							<>
-								<Text style={{ fontWeight: "600", color: palette.dangerInk }}>Failed</Text>
+								<Text style={{ color: palette.inkMid }}>Failed</Text>
 								{whyLine ? `: ${whyLine}` : ""}
 							</>
 						) : (

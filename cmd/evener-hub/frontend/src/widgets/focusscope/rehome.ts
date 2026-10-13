@@ -57,8 +57,7 @@ export function useFocusRehome(root: RefObject<HTMLElement | null>): void {
   // closes - and a listener holding the old node would stop remembering anything
   // for the rest of the session.
   useEffect(() => {
-    const remember = (event: FocusEvent): void => {
-      const target = event.target;
+    const remember = (target: EventTarget | null): void => {
       const node = root.current;
       if (!(target instanceof HTMLElement) || node === null || !node.contains(target)) return;
       lastFocused.current = {
@@ -70,8 +69,13 @@ export function useFocusRehome(root: RefObject<HTMLElement | null>): void {
         container: target.closest<HTMLElement>('[role="dialog"], [aria-modal="true"]') ?? node,
       };
     };
-    document.addEventListener("focusin", remember, true);
-    return () => document.removeEventListener("focusin", remember, true);
+    const onFocusIn = (event: FocusEvent): void => remember(event.target);
+    // Focus that landed before this listener existed counts too: a sheet's
+    // FocusScope autofocuses its first control in a child effect, which runs
+    // before this one, so that focusin is never seen.
+    remember(document.activeElement);
+    document.addEventListener("focusin", onFocusIn, true);
+    return () => document.removeEventListener("focusin", onFocusIn, true);
   }, [root]);
 
   // No dependency array on purpose: the condition is "the control this hook

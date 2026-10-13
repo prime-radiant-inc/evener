@@ -1,57 +1,164 @@
-// The Reader's document (spec 10.2), read through the hub's /doc/file with
-// this hub's origin and token, as TranscriptImages reads images. It reads on
-// mount, on reload(), when the connection comes back, and when the app
-// returns to the front. A re-read keeps the shown document until the new one
-// lands, and a re-read that fails keeps it: a failure is transient, while a
-// missing or forbidden file really changed.
-import { useCallback, useEffect, useRef, useState } from "react";
+// One visible Reader's recovering demand. Bytes and native image events publish
+// only for the complete captured identity, never under a replacement's title.
+import {
+	createDocumentReadDemand,
+	type DocumentReadAttempt,
+	type DocumentReadDemand,
+	type DocumentReadOutcome,
+	type FileReference,
+} from "@evener/appwire-client/docContent";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { useConnection } from "../ConnectionProvider";
-import type { LoadedDocument } from "./documentSource";
+import { documentNotice, type LoadedDocument } from "./documentSource";
 import { readHubDocument } from "./hubDocument";
+
+/** Private viewer event bridge. Each closure captures its source and scheduler attempt. */
+export interface NativeImageAttempt {
+	generation: string;
+	isCurrent(): boolean;
+	loaded(): void;
+	failed(): void;
+}
 
 export function useDocument(
 	hubId: string,
 	sessionRef: string,
-	path: string,
-): { document: LoadedDocument | null; reload(): void } {
-	const { profiles, state } = useConnection();
+	reference: FileReference,
+	inFront: boolean,
+): {
+	document: LoadedDocument | null;
+	notice: string | undefined;
+	reference: FileReference;
+	imageGeneration: string | undefined;
+	imageAttempt: NativeImageAttempt | undefined;
+	reload(): void;
+} {
+	const { profiles, state, activeProfile } = useConnection();
 	const origin = profiles.find((profile) => profile.id === hubId)?.origin ?? "";
-	const [document, setDocument] = useState<LoadedDocument | null>(null);
-	// Only the newest read may land: an older one finishing late would put
-	// back a version already replaced.
-	const generation = useRef(0);
-	const reload = useCallback(() => {
-		generation.current += 1;
-		const mine = generation.current;
-		void (async () => {
-			const next = await readHubDocument(origin, hubId, sessionRef, path);
-			if (mine !== generation.current) return;
-			setDocument((shown) => (next.kind === "failed" && shown !== null ? shown : next));
-		})();
-	}, [origin, hubId, sessionRef, path]);
-
+	const capturedReference = useMemo(
+		() => ({
+			path: reference.path,
+			cwd: reference.cwd,
+			readTarget: reference.readTarget,
+			provenance: reference.provenance,
+		}),
+		[reference.path, reference.cwd, reference.readTarget, reference.provenance],
+	);
+	const identity = JSON.stringify([
+		hubId,
+		origin,
+		sessionRef,
+		reference.path,
+		reference.cwd,
+		reference.readTarget,
+		reference.provenance,
+	]);
+	const currentIdentity = useRef(identity);
+	currentIdentity.current = identity;
+	const [foreground, setForeground] = useState(AppState.currentState === "active");
+	const foregroundRef = useRef(foreground);
+	const [shown, setShown] = useState<{
+		identity: string;
+		document: LoadedDocument;
+		notice?: string;
+		imageAttempt?: NativeImageAttempt;
+	} | null>(null);
+	const binding = useRef({ hubId, origin, sessionRef, reference, identity });
+	const pendingImage = useRef<{ resolve(outcome: DocumentReadOutcome): void } | null>(null);
+	const settleImage = useCallback(() => {
+		pendingImage.current?.resolve("terminal");
+		pendingImage.current = null;
+	}, []);
+	const demand = useRef<DocumentReadDemand | null>(null);
 	useEffect(() => {
-		reload();
-		// A document read after its screen closed has nowhere to land.
+		const ownedDemand = createDocumentReadDemand(async (attempt: DocumentReadAttempt) => {
+			const source = binding.current;
+			const current = () => attempt.isCurrent() && currentIdentity.current === source.identity;
+			const next = await readHubDocument(source.origin, source.hubId, source.sessionRef, source.reference.readTarget);
+			if (!current()) return "terminal";
+			if (next.kind === "image") {
+				return new Promise<DocumentReadOutcome>((resolve) => {
+					pendingImage.current = { resolve };
+					let settled = false;
+					const complete = (outcome: "success" | "transient") => {
+						if (!current() || settled) return;
+						settled = true;
+						pendingImage.current = null;
+						setShown((previous) =>
+							previous?.identity === source.identity
+								? {
+										...previous,
+										notice: outcome === "transient" ? "This image couldn't be loaded right now." : undefined,
+									}
+								: previous,
+						);
+						resolve(outcome);
+					};
+					setShown({
+						identity: source.identity,
+						document: next,
+						imageAttempt: {
+							generation: attempt.generation,
+							isCurrent: () => current() && !settled,
+							loaded: () => complete("success"),
+							failed: () => complete("transient"),
+						},
+					});
+				});
+			}
+			setShown((previous) =>
+				next.kind === "failed" &&
+				previous?.identity === source.identity &&
+				["markdown", "code", "image", "binary"].includes(previous.document.kind)
+					? { ...previous, notice: documentNotice(next) ?? undefined }
+					: { identity: source.identity, document: next },
+			);
+			if (next.kind === "failed") return "transient";
+			if (["missing", "forbidden", "host-unsupported"].includes(next.kind)) return "terminal";
+			return "success";
+		});
+		demand.current = ownedDemand;
 		return () => {
-			generation.current += 1;
+			ownedDemand.dispose();
+			settleImage();
+			demand.current = null;
 		};
-	}, [reload]);
+	}, [settleImage]);
 
-	const lastState = useRef(state);
 	useEffect(() => {
-		const was = lastState.current;
-		lastState.current = state;
-		if (state === "ready" && was !== "ready") reload();
-	}, [state, reload]);
-
+		binding.current = { hubId, origin, sessionRef, reference: capturedReference, identity };
+		demand.current?.replace();
+		settleImage();
+	}, [hubId, origin, sessionRef, capturedReference, identity, demand, settleImage]);
+	const active = inFront && foreground && origin !== "" && activeProfile?.id === hubId && state === "ready";
+	useEffect(() => {
+		demand.current?.setActive(active);
+		if (!active) settleImage();
+	}, [active, demand, settleImage]);
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (next) => {
-			if (next === "active") reload();
+			const nextForeground = next === "active";
+			if (nextForeground && foregroundRef.current && active) {
+				demand.current?.refresh();
+				settleImage();
+			}
+			foregroundRef.current = nextForeground;
+			setForeground(nextForeground);
 		});
 		return () => subscription.remove();
-	}, [reload]);
-
-	return { document, reload };
+	}, [active, demand, settleImage]);
+	const reload = useCallback(() => {
+		demand.current?.refresh();
+		settleImage();
+	}, [demand, settleImage]);
+	const visible = shown?.identity === identity ? shown : null;
+	return {
+		document: visible?.document ?? null,
+		notice: visible?.notice,
+		reference,
+		imageGeneration: visible?.imageAttempt?.generation,
+		imageAttempt: visible?.imageAttempt,
+		reload,
+	};
 }

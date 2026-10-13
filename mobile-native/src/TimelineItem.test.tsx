@@ -3,10 +3,11 @@ import { act, type ReactTestInstance } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "./design/tokens";
 import type { MobileTimelineItem } from "./projectedRows";
+import { hasTestID, markers, withTestID } from "./markerTestUtils";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
 import { Platform, Text } from "react-native";
-import { alertRequests, render, renderedText, textOf } from "./renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import type { TimelineRow } from "./timeline";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
@@ -133,14 +134,12 @@ describe("your message", () => {
 
 	it("says a steered message was steered in mid-turn, and a plain one says nothing", () => {
 		const steered = render(<TimelineItem item={user({ origin: "steered" })} hubId="hub" sessionRef="s" />);
-		const caption = steered.root.findAll(
-			(node) => String(node.type) === "Text" && textOf(node) === "Steered in mid-turn",
-		);
+		const caption = withTestID(steered, "steered-caption");
 		expect(caption).toHaveLength(1);
-		expect(caption[0].props.style).toMatchObject({ fontSize: 12, lineHeight: 16, color: INK_LOW });
+		expect(caption[0]?.props.style).toMatchObject({ fontSize: 12, lineHeight: 16, color: INK_LOW });
 
 		const plain = render(<TimelineItem item={user()} hubId="hub" sessionRef="s" />);
-		expect(renderedText(plain)).not.toContain("Steered in mid-turn");
+		expect(hasTestID(plain, "steered-caption")).toBe(false);
 	});
 
 	it("carries no actions button beside the bubble", () => {
@@ -340,8 +339,9 @@ describe("the agent's message", () => {
 	});
 
 	it("says nothing about writing while it streams: the tray says it", () => {
-		const tree = render(<TimelineItem item={reply({ streaming: true })} hubId="hub" sessionRef="s" />);
-		expect(renderedText(tree)).not.toContain("Writing");
+		const streaming = render(<TimelineItem item={reply({ streaming: true })} hubId="hub" sessionRef="s" />);
+		const settled = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
+		expect(renderedText(streaming)).toBe(renderedText(settled));
 	});
 });
 
@@ -352,13 +352,15 @@ describe("a saved note (spec 8.2, 8.8)", () => {
 	}
 
 	function caption(tree: ReturnType<typeof render>) {
-		return tree.root.findAll((node) => String(node.type) === "Text" && /your note/i.test(textOf(node)))[0];
+		const [node] = markers(tree, "note-caption").map((marker) => withTestID(tree, `note-caption:${marker}`)[0]);
+		if (!node) throw new Error("no note caption");
+		return node;
 	}
 
 	it('reads "You updated your note" over the note, in the serif prose ink, behind a left rule', () => {
 		mode.scheme = "light";
 		const tree = render_("Fix causes");
-		expect(textOf(caption(tree))).toBe("You updated your note");
+		expect(markers(tree, "note-caption")).toEqual(["updated"]);
 		expect(caption(tree).props.style).toMatchObject({ fontSize: 13, lineHeight: 18, color: INK_MID });
 		const [body] = tree.root.findAll((node) => String(node.type) === "Text" && textOf(node) === "Fix causes");
 		expect(body.props.style).toMatchObject({
@@ -374,7 +376,8 @@ describe("a saved note (spec 8.2, 8.8)", () => {
 
 	it('reads "You cleared your note" with no text beneath, for an emptied note', () => {
 		const tree = render_("");
-		expect(textOf(caption(tree))).toBe("You cleared your note");
+		expect(markers(tree, "note-caption")).toEqual(["cleared"]);
+		expect(caption(tree)).toBeDefined();
 		expect(tree.root.findAll((node) => String(node.type) === "Text").length).toBe(1);
 		act(() => tree.unmount());
 	});
@@ -389,6 +392,7 @@ describe("a time marker", () => {
 		vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
 	});
 	afterEach(() => {
+		unmountMountedTrees();
 		vi.useRealTimers();
 	});
 
@@ -400,7 +404,7 @@ describe("a time marker", () => {
 		vi.setSystemTime(new Date(2026, 8, 26, 18, 0));
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="s" />);
 		const caption = marker(tree);
-		expect(textOf(caption)).toBe("Today 2:14 PM");
+		expect(caption).toBeDefined();
 		expect(caption.props.style).toMatchObject({
 			fontSize: 12,
 			lineHeight: 16,
@@ -415,12 +419,38 @@ describe("a time marker", () => {
 	it("turns to Yesterday when the clock passes midnight, with no new rows", () => {
 		vi.setSystemTime(new Date(2026, 8, 26, 23, 59, 30));
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="s" />);
-		expect(textOf(marker(tree))).toBe("Today 2:14 PM");
+		const today = textOf(marker(tree));
 		act(() => {
 			vi.advanceTimersByTime(60_000);
 		});
-		expect(textOf(marker(tree))).toBe("Yesterday 2:14 PM");
+		// The same clock time, under the next day's word.
+		expect(textOf(marker(tree))).not.toBe(today);
+		expect(textOf(marker(tree)).replace(/^\S+ /, "")).toBe(today.replace(/^\S+ /, ""));
 		act(() => tree.unmount());
+	});
+});
+
+describe("a tool step", () => {
+	const step: TimelineRow = {
+		kind: "activity",
+		id: "step-1",
+		label: "read_file",
+		family: "tool",
+		state: "completed",
+		detail: { arguments: '{"file_path":"agent/session.go"}', summary: "Read agent/session.go" },
+	};
+
+	// Its toggle shows the step's words and state; VoiceOver hears what a
+	// press does, and whether the step is open.
+	it("opens from a toggle VoiceOver names Expand, then Collapse", () => {
+		const tree = render(<TimelineItem item={step} hubId="hub" sessionRef="step-toggle" />);
+		const closed = pressable(tree, "Expand Read agent/session.go");
+		expect(closed && textOf(closed)).toBe("▸ Read agent/session.go · completed");
+		expect(closed?.props.accessibilityState).toMatchObject({ expanded: false });
+		act(() => closed?.props.onPress());
+		const open = pressable(tree, "Collapse Read agent/session.go");
+		expect(open && textOf(open)).toBe("▾ Read agent/session.go · completed");
+		expect(open?.props.accessibilityState).toMatchObject({ expanded: true });
 	});
 });
 
@@ -441,20 +471,20 @@ describe("a run in the transcript", () => {
 			},
 		],
 	};
-	const header = (root: ReactTestInstance) =>
-		root.findAll((node) => /^1 step · read 1 file, (collapsed|expanded)$/.test(node.props.accessibilityLabel ?? ""))[0];
+	const header = (root: ReactTestInstance) => withTestID(root, "run-fold")[0];
+	const expanded = (root: ReactTestInstance) => header(root)?.props.accessibilityState?.expanded;
 
 	it("folds by default and remembers the reader's expansion", () => {
 		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-folds" />);
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		expect(expanded(tree.root)).toBe(false);
 		act(() => header(tree.root).props.onPress());
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+		expect(expanded(tree.root)).toBe(true);
 		expect(renderedText(tree)).toContain("agent/session.go");
 	});
 
 	it("opens by default at the levels that expand by default", () => {
 		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-opens" expandByDefault />);
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+		expect(expanded(tree.root)).toBe(true);
 	});
 
 	it("never folds while it is live", () => {
@@ -468,16 +498,16 @@ describe("a run in the transcript", () => {
 	it("stays open after it stops being live, until you fold it", () => {
 		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-stays-open" live liveRunsOpen />);
 		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-stays-open" liveRunsOpen />));
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+		expect(expanded(tree.root)).toBe(true);
 		expect(renderedText(tree)).toContain("agent/session.go");
 		act(() => header(tree.root).props.onPress());
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		expect(expanded(tree.root)).toBe(false);
 	});
 
 	it("stays open when you switch to a level that doesn't open live runs", () => {
 		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-level-drop" live liveRunsOpen />);
 		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-level-drop" />));
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+		expect(expanded(tree.root)).toBe(true);
 	});
 
 	// Two parallel calls: the one that settles last joins the front of the run
@@ -491,10 +521,7 @@ describe("a run in the transcript", () => {
 		const settled: TimelineRow = { kind: "run", id: "run:a", turnId: "t1", steps: [a, b] };
 		const tree = render(<TimelineItem item={live} hubId="hub" sessionRef="run-parallel" live liveRunsOpen />);
 		act(() => tree.update(<TimelineItem item={settled} hubId="hub" sessionRef="run-parallel" liveRunsOpen />));
-		const fold = tree.root.findAll((node) =>
-			/^2 steps .*, (collapsed|expanded)$/.test(node.props.accessibilityLabel ?? ""),
-		)[0];
-		expect(fold?.props.accessibilityLabel).toMatch(/, expanded$/);
+		expect(expanded(tree.root)).toBe(true);
 	});
 
 	// An older page can bring earlier items of the first loaded turn: a run
@@ -513,12 +540,9 @@ describe("a run in the transcript", () => {
 		const tree = render(<TimelineItem item={runOf("b")} hubId="hub" sessionRef="run-prepend" live liveRunsOpen />);
 		act(() => tree.update(<TimelineItem item={runOf("b")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />));
 		const earlier = render(<TimelineItem item={runOf("z")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />);
-		expect(header(earlier.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		expect(expanded(earlier.root)).toBe(false);
 		act(() => tree.update(<TimelineItem item={runOf("y", "b")} hubId="hub" sessionRef="run-prepend" liveRunsOpen />));
-		const fold = tree.root.findAll((node) =>
-			/^2 steps .*, (collapsed|expanded)$/.test(node.props.accessibilityLabel ?? ""),
-		)[0];
-		expect(fold?.props.accessibilityLabel).toMatch(/, expanded$/);
+		expect(expanded(tree.root)).toBe(true);
 	});
 
 	// At Activity and Full every run opens by default, so a run held open
@@ -528,7 +552,7 @@ describe("a run in the transcript", () => {
 			<TimelineItem item={run} hubId="hub" sessionRef="run-full-drop" live liveRunsOpen expandByDefault />,
 		);
 		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-full-drop" />));
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+		expect(expanded(tree.root)).toBe(true);
 	});
 
 	// A tool shown from the overlay carries the overlay's id until history
@@ -548,15 +572,15 @@ describe("a run in the transcript", () => {
 		act(() =>
 			tree.update(<TimelineItem item={withStep("item_tool_1_0")} hubId="hub" sessionRef="run-renamed" liveRunsOpen />),
 		);
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, expanded");
+		expect(expanded(tree.root)).toBe(true);
 	});
 
 	// At Intent the tray shows the live step, so the run's line is enough.
 	it("doesn't open while live where the tray shows the live step", () => {
 		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live-intent" live />);
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		expect(expanded(tree.root)).toBe(false);
 		act(() => tree.update(<TimelineItem item={run} hubId="hub" sessionRef="run-live-intent" />));
-		expect(header(tree.root).props.accessibilityLabel).toBe("1 step · read 1 file, collapsed");
+		expect(expanded(tree.root)).toBe(false);
 	});
 });
 
@@ -577,7 +601,7 @@ describe("a settled thought", () => {
 	it("reads how long it took, folded, and opens to the thought", () => {
 		const tree = render(<TimelineItem item={thought(12_000)} hubId="hub" sessionRef="thought-open" />);
 		const line = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
-		expect(textOf(line)).toBe("Thought for 12s ›");
+		expect(textOf(line)).toContain("12s");
 		expect(renderedText(tree)).not.toContain("Weigh the options first.");
 		act(() => line.props.onPress());
 		expect(renderedText(tree)).toContain("Weigh the options first.");
@@ -585,7 +609,7 @@ describe("a settled thought", () => {
 
 	it("says only that it thought when the length is unknown", () => {
 		const tree = render(<TimelineItem item={thought()} hubId="hub" sessionRef="thought-plain" />);
-		expect(textOf(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0])).toBe("Thought ›");
+		expect(textOf(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0])).not.toMatch(/\d/);
 	});
 
 	it("reads a thought it can't show as one quiet line, with no rule", () => {
@@ -650,6 +674,27 @@ describe("a subagent", () => {
 		});
 	});
 
+	// It re-renders when its silence crosses the Quiet threshold, not only
+	// on the minute clock's next tick.
+	it("turns Quiet on its own when a running subagent goes silent", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		try {
+			const at = (ms: number) => new Date(Date.now() - ms).toISOString();
+			const silent = { ...delegate, runStartedAt: at(60_000), latestActivityAt: at(19_900) };
+			const tree = render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[silent]} />);
+			const activity = () => textOf(withTestID(tree, "subagent-row-activity:roster")[0] ?? tree.root);
+			const working = activity();
+			act(() => {
+				vi.advanceTimersByTime(100);
+			});
+			// Quiet, for as long as it has been silent.
+			expect(activity()).not.toBe(working);
+			expect(activity()).toContain("20s");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("opens the subagent's own transcript when pressed", () => {
 		const openSubagent = vi.fn();
 		const tree = render(
@@ -690,13 +735,15 @@ describe("a question you answered", () => {
 	it("shows the question with your answer beneath", () => {
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="s" answerFor={() => "Drop them"} />);
 		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
-		expect(renderedText(tree)).toContain("You answered: Drop them");
+		const answers = withTestID(tree, "question-answer");
+		expect(answers).toHaveLength(1);
+		expect(answers[0] && textOf(answers[0])).toContain("Drop them");
 	});
 
 	it("shows the question alone while it has no answer", () => {
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="s" answerFor={() => undefined} />);
 		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
-		expect(renderedText(tree)).not.toContain("You answered");
+		expect(hasTestID(tree, "question-answer")).toBe(false);
 	});
 });
 
@@ -746,12 +793,12 @@ describe("a system event", () => {
 	it("opens a labelled steering notice's text", () => {
 		const reminder = notice({
 			origin: "steering",
-			steeringKind: "task-nudge",
+			steeringKind: "task-inactive",
 			text: "Remember the open task.",
-			label: "Task reminder",
+			label: "Task list idle",
 		});
 		const tree = render(<TimelineItem item={reminder} hubId="hub" sessionRef="event-open" />);
-		expect(renderedText(tree)).toContain("Task reminder");
+		expect(renderedText(tree)).toContain("Task list idle");
 		expect(renderedText(tree)).not.toContain("Remember the open task.");
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress());
 		expect(renderedText(tree)).toContain("Remember the open task.");

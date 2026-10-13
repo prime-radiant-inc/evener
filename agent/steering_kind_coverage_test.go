@@ -160,19 +160,3 @@ func isEmptyStringLiteral(e ast.Expr) bool {
 	lit, ok := e.(*ast.BasicLit)
 	return ok && lit.Kind == token.STRING && lit.Value == `""`
 }
-
-func TestMaybeInjectTaskReminderReturnsItsKind(t *testing.T) {
-	t.Parallel()
-	s := newTestSession(t)
-	// Trigger 3: task_list never used, 10+ rounds in.
-	s.mu.Lock()
-	s.totalRounds = 10
-	s.mu.Unlock()
-	text, kind := s.maybeInjectTaskReminder()
-	if text == "" {
-		t.Fatal("expected a reminder text")
-	}
-	if kind != events.SteeringKindTaskNudge {
-		t.Errorf("kind = %q, want %q", kind, events.SteeringKindTaskNudge)
-	}
-}

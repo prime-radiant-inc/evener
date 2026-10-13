@@ -562,8 +562,8 @@ export class SessionEntryCache {
       waitMs: 10_000,
       upgrade: (database) => upgradeSessionCache(database),
       errors: {
-        open: "session entry cache open failed",
-        superseded: "session entry cache open was superseded",
+        open: () => new Error("session entry cache open failed"),
+        superseded: () => new Error("session entry cache open was superseded"),
         timeout: () => new Error("session entry cache open timed out"),
       },
       reportDiagnostic: () => {},

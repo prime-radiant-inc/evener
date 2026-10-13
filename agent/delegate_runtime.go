@@ -51,6 +51,21 @@ type delegateRuntime struct {
 type stableDelegateSendOutcome struct {
 	result sendMessageResult
 	commit *delegateToolResultCommit
+	// earlierCommits acknowledge, in order and before commit, the earlier
+	// results the reply carries (result.Earlier).
+	earlierCommits []*delegateToolResultCommit
+}
+
+// inlineOutcome is the send's reply for a resolved inline wait: result, which
+// already carries the newest result, plus the earlier results the wait
+// collected, oldest first, with their commits (#3906, #3951).
+func inlineOutcome(result sendMessageResult, resolution delegateInlineResolution) stableDelegateSendOutcome {
+	outcome := stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	for _, earlier := range resolution.earlier {
+		outcome.result.Earlier = append(outcome.result.Earlier, earlier.packet)
+		outcome.earlierCommits = append(outcome.earlierCommits, earlier.commit)
+	}
+	return outcome
 }
 
 type delegateRunLeaseContextKey struct{}
@@ -103,8 +118,78 @@ type delegateQuietAttentionClaim struct {
 // children's token rate.
 const delegateActivityPublishInterval = time.Second
 
+// delegateIntentPublishFloor bounds how often an intent change alone may
+// publish a delegate's snapshot. The floor is the intent channel's own clock:
+// an intent change publishes immediately only once at least this long has
+// passed since an intent change last published a frame — a quiescent gap,
+// which is exactly the multi-minute-tool-call case immediacy exists for, so
+// the line lands the moment the call starts even though the batch-start
+// activity report published the same instant. A change inside the window is
+// journaled and held pending, and rides the next publication of any kind; it
+// is never dropped, and only an intent-caused frame moves the clock the floor
+// measures, so two of them are always at least the floor apart.
+const delegateIntentPublishFloor = 5 * time.Second
+
 func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
 	return c.ReportActivityPhase(lease, at, "")
+}
+
+// ReportIntent states the open generation's newest tool-call intent. An
+// unchanged folded intent is a no-op — no append, no publication — mirroring
+// ReportActivityPhase's own short-circuit. A changed one does three things
+// and only those, in order, stopping at the first failure: it appends the
+// delegate_intent_stated journal event (a failed append touches nothing else),
+// sets the live intent, and publishes a snapshot under the five-second floor
+// of its own channel. It is display-only state: it advances no activity clock
+// — not the quiet baseline, not the drain-grace clock, not the activity
+// channel's publication coalescer — and rearms nothing, and it admits only a
+// running lease, so a settling-window report is rejected and the row keeps its
+// pre-report intent.
+func (c *delegateTreeController) ReportIntent(lease delegateLease, at time.Time, intent string) error {
+	if c == nil {
+		return errDelegateStaleLease
+	}
+	if at.IsZero() {
+		at = c.now()
+	}
+	bounded := appwire.Excerpt(intent, appwire.MaxIntentRunes)
+	c.mu.Lock()
+	aggregate, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if bounded == aggregate.LatestIntent {
+		c.mu.Unlock()
+		return nil
+	}
+	if _, err := c.appendLocked(delegatestore.Event{
+		Kind:         delegatestore.EventDelegateIntentStated,
+		TS:           c.now(),
+		DelegateID:   lease.delegateID,
+		IntentStated: &delegatestore.IntentStated{Generation: lease.generation, Intent: bounded},
+	}); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	c.evidenceVersion++
+	live.intent = bounded
+	// An intent change inside the floor journals and stands pending: it rides
+	// the next publication of any kind, which re-captures this snapshot, so it
+	// is never dropped. The floor reads the intent channel's own clock, so the
+	// batch-start activity report beside the call's stated intent cannot arm
+	// the window the line would wait out; during a single long call nothing
+	// else publishes, so a shared clock would shelve the line until the next
+	// event.
+	if at.Sub(live.intentPublishedAt) < delegateIntentPublishFloor {
+		c.mu.Unlock()
+		return nil
+	}
+	live.intentPublishedAt = at
+	plan := c.capturedPlanLocked(aggregate.DelegateID)
+	c.mu.Unlock()
+	c.emitDelegateUpdate(plan)
+	return nil
 }
 
 // ReportActivityPhase records parent-visible activity and separately advances
@@ -635,6 +720,12 @@ func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeC
 	child.cfg.spawn.parentJobActivity = func(_ string, phase string) {
 		_ = controller.ReportActivityPhase(lease, child.sclock().Now(), phase)
 	}
+	// The intent closure binds to this child's own lease, the fence that keeps
+	// a descendant's tool calls off every other row: each child reports to its
+	// own delegate id, never its parent's.
+	child.cfg.spawn.parentJobIntent = func(_ string, intent string) {
+		_ = controller.ReportIntent(lease, child.sclock().Now(), intent)
+	}
 	jm := child.jobManager
 	child.mu.Unlock()
 	if jm != nil {
@@ -1049,6 +1140,9 @@ func (s *Session) admitOwedDelegateAttentionStart(owed delegateOwedAttentionStar
 	if restoreErr != nil {
 		return nil, fmt.Errorf("restore owed runtime: %w", errors.Join(restoreErr, s.failOwedDelegateAttentionStart(started, nil, restoreErr)))
 	}
+	if err := sub.sess.restoreAcceptedTrigger(owed.attentionID, owed.turns); err != nil {
+		return nil, fmt.Errorf("restore owed trigger: %w", err)
+	}
 	return &deferredOwedDelegateAttentionStart{owner: owner, sub: sub, started: started}, nil
 }
 func (s *Session) abortOwedDelegateBootstrap(gate *owedBootstrapRestore, cause error) error {
@@ -1178,7 +1272,7 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		if err := s.armDelegateAttention(attentionID); err != nil {
 			return err
 		}
-		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded); err != nil {
+		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded, 0); err != nil {
 			return err
 		}
 		s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID)
@@ -1802,10 +1896,16 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
 	}
+	completeStableDelegateSendResult(&result, *resolution.packet)
+	return inlineOutcome(result, resolution)
+}
+
+// completeStableDelegateSendResult fills result as a send whose wait reached
+// packet, a terminal result of its delegate.
+func completeStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
 	result.RunningInBackground = false
 	result.Action = "completed"
-	populateStableDelegateSendResult(&result, *resolution.packet)
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	populateStableDelegateSendResult(result, packet)
 }
 
 func populateStableDelegateSendResult(result *sendMessageResult, packet delegatestore.TerminalPacket) {
@@ -1941,7 +2041,7 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	}
 	result.Action = "completed"
 	result.RunningInBackground = false
-	return stableDelegateSendOutcome{result: result, commit: resolution.commit}
+	return inlineOutcome(result, resolution)
 }
 
 func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error) sendMessageResult {
@@ -2671,7 +2771,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	restoreCfg := RestoreSessionConfig{
 		MemoryStateRoot:         s.cfg.MemoryStateRoot,
 		DisableMemory:           s.cfg.DisableMemory || descriptor.Config.DisableMemory,
-		memoryProjectCeiling:    &s.cfg.MemoryProjectID,
+		parentMemoryProjectID:   s.cfg.MemoryProjectID,
 		LifetimeContext:         s.cfg.LifetimeContext,
 		StateDir:                s.stateDir,
 		Project:                 s.cfg.Project,
@@ -3166,11 +3266,29 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 		ownerID := row.descriptor.OwnerSessionID
 		s.delegateController.mu.Lock()
 		logicalOwner := sessionActivityDelegateOwner(s.delegateController.durable, s.delegateController.durable[row.id])
+		var ancestry []string
+		if logicalOwner != "" {
+			ancestry = s.delegateController.sessionAncestryLocked(logicalOwner)
+		}
+		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(ancestry)
+		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
 		s.delegateController.mu.Unlock()
-		s.emitSessionActivityChanged(logicalOwner, appwire.SessionActivityResourceDelegates)
-		data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(now, rootID, row))
-		if runtime := s.delegateController.runtimeForDelegateOwner(row); runtime != nil {
-			runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
+		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))
+		data.AncestorSessionIDs = ancestors
+		// A subagent's own thread lists its subtree, so each live ancestor
+		// subagent's stream carries the update too. A released ancestor gets
+		// none: forwarding for it would reopen its closed thread's history, and
+		// its next thread read lists the row afresh. The owner is the root for
+		// every current row, so the guard only matters for a row a parent
+		// session owns, whose owner stream already carries it.
+		for _, runtime := range ancestorRuntimes {
+			if runtime != ownerRuntime {
+				runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
+			}
+		}
+		if ownerRuntime != nil {
+			ownerRuntime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)
 			continue
 		}
 		s.mu.Lock()
@@ -3187,12 +3305,28 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 	}
 }
 
-func (c *delegateTreeController) runtimeForDelegateOwner(row delegateSnapshot) *Session {
+// ancestorSubagentRuntimesLocked lists the subagent sessions of ancestry (a
+// sessionAncestryLocked chain), nearest first and without the root, and the
+// live runtime of each one that has one.
+func (c *delegateTreeController) ancestorSubagentRuntimesLocked(ancestry []string) ([]string, []*Session) {
+	var ancestors []string
+	var runtimes []*Session
+	for _, sessionID := range ancestry {
+		if sessionID == c.rootSessionID {
+			break
+		}
+		ancestors = append(ancestors, sessionID)
+		if live := c.live[c.delegateOwnerOfSessionLocked(sessionID)]; live != nil && live.runtime != nil && live.runtime.ID() == sessionID {
+			runtimes = append(runtimes, live.runtime)
+		}
+	}
+	return ancestors, runtimes
+}
+
+func (c *delegateTreeController) runtimeForDelegateOwnerLocked(row delegateSnapshot) *Session {
 	if c == nil {
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if row.descriptor.OwnerSessionID == c.rootSessionID {
 		return c.rootRuntime
 	}

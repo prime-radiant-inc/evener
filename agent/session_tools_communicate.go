@@ -20,14 +20,62 @@ func callIDFromContext(ctx context.Context) string {
 	return callID
 }
 
-func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
+// registerCommunicateTool registers the session's result tool under its
+// configured name, refusing a name this session cannot own (issue #4218:
+// `--result-tool-name` could name a native tool and leave the session with no
+// usable result tool).
+//
+// Callers register it LAST, after every other intrinsic tool, so the live
+// registry — not a hand-maintained list that drifts as tools are added — is the
+// oracle. Two collisions are possible:
+//
+//   - Another registered tool already holds the name. The profile-definition
+//     adoption below and tool.Registry.Register's silent overwrite would give
+//     the session a result tool with that tool's parameters and executor.
+//   - The name is a registered tool's provider-visible alias. rebuildToolDefsCache
+//     drops a registry tool whose wire name is already advertised, so the
+//     result tool would never be advertised at all.
+//   - The name is ask_user, whose behavior is keyed on the name string rather
+//     than the registration: tool.Registry.executeCall normalizes arguments by
+//     the call's name, and restore keys ask semantics on "ask_user" results.
+//   - The name is in the memory_ namespace while this session has no memory.
+//     filterUnavailableMemoryTools removes every memory_-prefixed name by
+//     prefix, so even a name no tool currently holds — memory_future, say —
+//     would be stripped after registration.
+//
+// The default name is exempt: adopting the profile's communicate definition,
+// which is always named tool.DefaultResultToolName, is the point.
+func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
+	resultToolName := deps.resultToolName()
+	if resultToolName != tool.DefaultResultToolName {
+		if reg.Get(resultToolName) != nil {
+			return fmt.Errorf("cannot use result tool name %q: an Evener tool of that name is already registered; choose a different --result-tool-name", resultToolName)
+		}
+		if deps.nativeWebSearch && resultToolName == "web_search" {
+			return fmt.Errorf("cannot use result tool name %q: the provider's own web search tool uses that name for this profile; choose a different --result-tool-name", resultToolName)
+		}
+		for canonical, wire := range deps.toolNameMap {
+			if wire == resultToolName && reg.Get(canonical) != nil {
+				return fmt.Errorf("cannot use result tool name %q: it is this session's provider-visible name for Evener's %q tool; choose a different --result-tool-name", resultToolName, canonical)
+			}
+		}
+		if resultToolName == askUserToolName {
+			return fmt.Errorf("cannot use result tool name %q: that name is reserved for the ask_user question tool; choose a different --result-tool-name", resultToolName)
+		}
+		if deps.memoryToolsStripped && strings.HasPrefix(resultToolName, "memory_") {
+			return fmt.Errorf("cannot use result tool name %q: this session has no memory namespace, so every memory_-prefixed tool name is removed; choose a different --result-tool-name", resultToolName)
+		}
+	}
 	// communicate is the only user-facing message channel.
 	// Use the profile's definition if available (it may have been modified by
 	// WithAllowedDecisions to add extra fields to the output schema).
 	// Fall back to the base definition otherwise.
-	resultToolDef := tool.DefCommunicateNamed(deps.resultToolName())
-	if existing := reg.Get(deps.resultToolName()); existing != nil {
+	resultToolDef := tool.DefCommunicateNamed(resultToolName)
+	if existing := reg.Get(resultToolName); existing != nil {
 		resultToolDef = existing.Definition
+	}
+	if deps.offersEndReason {
+		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
 	}
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: resultToolDef,
@@ -44,6 +92,14 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			endTurn, ok := args["end_turn"].(bool)
 			if !ok {
 				return nil, errors.New("communicate requires end_turn")
+			}
+			// The registry's schema has already held end_reason to its enum.
+			endReason := ""
+			if endTurn && deps.offersEndReason {
+				endReason, _ = args["end_reason"].(string)
+				if endReason == "" {
+					endReason = tool.CommunicateEndReasonDone
+				}
 			}
 
 			originalOutput := normalizeNodeOutput(args["output"])
@@ -71,9 +127,10 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			}
 
 			if err := deps.deliverCommunicate(events.CommunicateData{
-				CallID:  callIDFromContext(ctx),
-				EndTurn: endTurn,
-				Message: message,
+				CallID:    callIDFromContext(ctx),
+				EndTurn:   endTurn,
+				Message:   message,
+				EndReason: endReason,
 			}); err != nil {
 				// The transcript refused the entry (a poisoned or closed
 				// writer, or a served session failing closed): nothing
@@ -81,6 +138,14 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				// a captured terminal message it believes delivered would
 				// otherwise never reach a client or history.
 				return nil, err
+			}
+
+			// A delegate's end_turn=false message is an update for its parent.
+			// The message is already in this transcript, so delivery never
+			// fails the call; the result says where the update stands.
+			var update *delegateUpdateDelivery
+			if !endTurn && deps.postDelegateUpdate != nil {
+				update = deps.postDelegateUpdate(ctx, message)
 			}
 
 			inbox := []string{}
@@ -123,7 +188,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 						capturedOutput = json.RawMessage(`null`)
 					}
 				}
-				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput)
+				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput, endReason)
 			}
 
 			resp := map[string]any{
@@ -131,15 +196,106 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				"end_turn": endTurn,
 				"inbox":    inbox,
 			}
+			if update != nil {
+				resp["delivery"] = update.Status
+				if update.Reason != "" {
+					resp["reason"] = update.Reason
+				}
+			}
 			if endTurn && deps.runningJobIDs != nil {
 				if ids := deps.runningJobIDs(); len(ids) > 0 {
 					resp["warning"] = runningJobsEndTurnWarning(ids, deps.turnEndsProcess)
 				}
 			}
 			b, _ := json.Marshal(resp)
+			if accepted && endReason != "" {
+				// The accepted end reason rides the result's tool state, which
+				// restore reads (endedOnNeedsResponse): the result text can be
+				// truncated or carry a repeated-call nudge.
+				return tool.StateResult{Output: string(b), State: communicateEndState{EndReason: endReason}}, nil
+			}
 			return string(b), nil
 		},
 	})
+	return nil
+}
+
+// communicateEndState is the tool state of the turn-ending communicate call
+// the input accepted.
+type communicateEndState struct {
+	// The key is communicate's own, so no other tool's state can match it.
+	EndReason string `json:"communicate_end_reason"`
+}
+
+// delegateUpdateDelivery is where a delegate's update stands when its
+// communicate(end_turn=false) call returns: the result's delivery and reason.
+type delegateUpdateDelivery struct {
+	Status string
+	Reason string
+}
+
+const (
+	// The update is in the parent's transcript as attention.
+	delegateUpdateDelivered = "delivered"
+	// The update is durable in the delegate's journal and reaches the parent
+	// without anyone acting: the parent holds it for its next model boundary,
+	// or an earlier delivery of the same delegate is ahead of it.
+	delegateUpdateQueued = "queued"
+	// The journal refused the update; the message stays in the delegate's
+	// own transcript only.
+	delegateUpdateNotDelivered = "not_delivered"
+)
+
+// postDelegateUpdate hands a delegate's communicate(end_turn=false) message
+// to its parent as an update. It returns nil for a root, whose end_turn=false
+// message is a checkpoint for its human partner and goes nowhere else.
+//
+// An update carries the message and nothing else, the way a report does: it
+// travels the delegate delivery path, which has never carried a watch's causal
+// provenance. A feedback loop between an observer and the parent it watches is
+// bounded the same way for updates as for reports: the update is a communicate
+// event, which the watch on the sender counts toward watchDeliveryBudget, and
+// the watch auto-clears at the budget (TestWatchDeliveryCounterAndBudget).
+func (s *Session) postDelegateUpdate(ctx context.Context, message string) *delegateUpdateDelivery {
+	if !s.reportsToParent() {
+		return nil
+	}
+	if s.delegateController == nil || s.owningDelegateID == "" {
+		return &delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: "this session has no route to a parent agent"}
+	}
+	actor, err := s.delegateActor(ctx)
+	if err != nil {
+		return notDeliveredUpdate(err)
+	}
+	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message)
+	if err != nil {
+		return notDeliveredUpdate(err)
+	}
+	if err := s.executeDelegateMutationPlans(plans); err != nil {
+		// The update is durable in the journal. A delivery that failed stays
+		// pending there, and executeDelegateMutationPlans has queued the
+		// journal's pending heads and the rest of its queue for retry.
+		s.emit(events.EventWarning, warningDataFromError("deliver delegate update", err))
+	}
+	// A missing aggregate reads as not pending: it cannot occur while the run
+	// that just posted is open.
+	if s.delegateController.deliveryPending(s.owningDelegateID, deliveryID) {
+		return &delegateUpdateDelivery{Status: delegateUpdateQueued}
+	}
+	return &delegateUpdateDelivery{Status: delegateUpdateDelivered}
+}
+
+// notDeliveredUpdate says, for the delegate's model, why its update was
+// refused.
+func notDeliveredUpdate(err error) *delegateUpdateDelivery {
+	reason := "it could not be recorded: " + err.Error()
+	switch {
+	case errors.Is(err, errDelegateStaleLease):
+		reason = "this run of yours is no longer the current one"
+	case errors.Is(err, errDelegateTargetBusy), errors.Is(err, errDelegateNotControllable), errors.Is(err, ErrRetirementUnavailable):
+		reason = "you are stopping or finishing, or this run can no longer report to your parent"
+	}
+	return &delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: reason}
 }
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this

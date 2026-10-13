@@ -9,6 +9,15 @@ export function neverSettlingRequest(): IDBOpenDBRequest {
   return new EventTarget() as unknown as IDBOpenDBRequest;
 }
 
+// An open request another tab's older-version connection blocks: it fires
+// "blocked" on the next task and nothing else, the shape a tab still holding
+// the previous schema produces for an upgrade.
+export function blockedUpgradeRequest(): IDBOpenDBRequest {
+  const request = Object.assign(new EventTarget(), { transaction: null });
+  setTimeout(() => request.dispatchEvent(new Event("blocked")), 0);
+  return request as unknown as IDBOpenDBRequest;
+}
+
 // A fake-indexeddb factory whose open() returns the never-settling request:
 // neverSettlingRequest() alone IS the dead open request, and a wedged-open
 // adapter needs a factory handing that request out.
@@ -16,6 +25,19 @@ export function neverSettlingFactory(): IDBFactory {
   const indexedDB = new IDBFactory();
   vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
   return indexedDB;
+}
+
+// Wedge every open() of `databaseName` on this factory: the request comes back
+// but never fires success, error or blocked. Opens of any other database still
+// reach the real factory, so a probe can open a different one and finish. The
+// returned spy restores the real open() when the test calls mockRestore().
+export function wedgeDatabaseOpens(indexedDB: IDBFactory, databaseName: string) {
+  const open = indexedDB.open.bind(indexedDB);
+  return vi
+    .spyOn(indexedDB, "open")
+    .mockImplementation((name: string, version?: number) =>
+      name === databaseName ? neverSettlingRequest() : open(name, version),
+    );
 }
 
 // Delete the named database between tests, so no row one test seeded survives

@@ -1,10 +1,12 @@
-import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage, type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
 import { GeneralSection } from "./general";
+import { statusReasons } from "./reasonTestUtils";
+import { settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -19,12 +21,20 @@ const FULL_RESPONSE: SettingsOverviewResponse = {
     listenAddr: "127.0.0.1:9180",
     runDir: "/tmp/evener-run",
     spawnTimeout: "30s",
-    bearerTokenAge: "created 3d ago",
+    bearerTokenAge: "token-age-from-hub",
     daemonIdleTimeoutMillis: 3600000,
-    pastIndex: { path: "~/.evener/past.db", size: "48 MB", perPage: 20, count: 7 },
+    pastIndex: { path: "~/.evener/past.db", size: "size-from-hub", perPage: 20, count: 7 },
   },
   storage: { stateDir: "/home/user/.evener" },
 };
+
+/** The section's load-failure notice: a polite status, since the failure
+ * arrives as the section opens rather than from anything the reader did. */
+function loadFailureNotice(): HTMLElement {
+  const notice = document.querySelector<HTMLElement>('[role="status"][data-reason="unavailable"]');
+  if (notice === null) throw new Error("load failure shows no notice");
+  return notice;
+}
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -38,21 +48,20 @@ test("renders every field in the documented order with the cross-referenced Stat
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
 
-  const labels = screen.getAllByRole("term").map((el) => el.textContent);
-  expect(labels).toEqual([
-    "Hub address",
-    "Bearer token",
-    "Run dir",
-    "State dir",
-    "Past index",
-    "Spawn timeout",
-    "Past results per page",
-    "Hub config",
-    "Hub version",
+  expect(settingsFieldIds()).toEqual([
+    "hub-address",
+    "bearer-token",
+    "run-dir",
+    "state-dir",
+    "past-index",
+    "spawn-timeout",
+    "past-results-per-page",
+    "hub-config",
+    "hub-version",
   ]);
   // State dir is General's own field per SettingsStorageOverview - but reads
   // through settingsOverview.storage.stateDir, not any hub.* field.
-  expect(screen.getByText("/home/user/.evener")).toBeTruthy();
+  expect(settingsFieldValue("state-dir").textContent).toBe("/home/user/.evener");
 });
 
 test("never renders the bearer token value itself - only a fixed mask plus the optional age", async () => {
@@ -62,8 +71,9 @@ test("never renders the bearer token value itself - only a fixed mask plus the o
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
 
-  expect(screen.getByText("created 3d ago")).toBeTruthy();
-  expect(screen.getByText("••••••••••••", { exact: false })).toBeTruthy();
+  const token = settingsFieldValue("bearer-token");
+  expect(within(token).getByText("token-age-from-hub")).toBeTruthy();
+  expect(token.textContent).toContain("••••••••••••");
 });
 
 test("Hub config's static value carries the 'edit to change' dim hint (unlike Storage's own row)", async () => {
@@ -73,7 +83,9 @@ test("Hub config's static value carries the 'edit to change' dim hint (unlike St
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
 
-  expect(screen.getByText("edit to change")).toBeTruthy();
+  // The value carries a note beside the path itself.
+  const configValue = settingsFieldValue("hub-config");
+  expect(configValue.textContent).not.toBe(configValue.querySelector("code")?.textContent);
 });
 
 test("Hub version appends the commit only when present", async () => {
@@ -96,8 +108,8 @@ test("omits Past index and Past results per page when no past-session index is c
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
 
-  expect(screen.queryByText("Past index")).toBeNull();
-  expect(screen.queryByText("Past results per page")).toBeNull();
+  expect(settingsFieldIds()).not.toContain("past-index");
+  expect(settingsFieldIds()).not.toContain("past-results-per-page");
 });
 
 // A plain Error's own message is internal detail (not something the hub
@@ -106,14 +118,31 @@ test("omits Past index and Past results per page when no past-session index is c
 test("shows an inline error state with retry on load failure, not a toast", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => {
-    throw new Error("hub unreachable");
+    throw new Error("raw-overview-failure");
   });
 
   render(<GeneralSection />);
 
-  expect(await screen.findByText("Couldn't load general settings")).toBeTruthy();
-  expect(await screen.findByText("Something went wrong.")).toBeTruthy();
-  expect(screen.queryByText("hub unreachable")).toBeNull();
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(within(loadFailureNotice()).getByRole("button", { name: "Retry" })).toBeTruthy();
+  expect(screen.queryByTestId("empty-state")).toBeNull();
+  expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
+});
+
+// A hub-reported failure keeps its own explanation: the store translates the
+// error while it is still a WireError, so the notice is not reduced to the
+// generic fallback.
+test("a hub-reported WireError shows that error's friendly form", async () => {
+  const fake = connectFakeClient();
+  const err = new WireError("overview index is rebuilding", -32000);
+  fake.on("evener/settings/overview", () => {
+    throw err;
+  });
+
+  render(<GeneralSection />);
+
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(loadFailureNotice().textContent).toContain(friendlyErrorMessage(err));
 });
 
 // The verbatim bug report (user testing): this section showed "AppwireClient:
@@ -128,7 +157,7 @@ test("a client-unreachable rejection (the reported bug) shows the friendly hub-u
 
   render(<GeneralSection />);
 
-  expect(await screen.findByText("Couldn't load general settings")).toBeTruthy();
-  expect(await screen.findByText("Can't reach the hub right now.")).toBeTruthy();
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(loadFailureNotice().textContent).toMatch(/\S/);
   expect(screen.queryByText(/AppwireClient/i)).toBeNull();
 });

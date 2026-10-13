@@ -12,8 +12,9 @@ import {
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { ReactNode, RefObject } from "react";
-import { useMemo, useRef } from "react";
+import { createContext, useContext, useMemo, useRef } from "react";
 import { useStore } from "zustand";
+import { workspaceStore } from "../../../shell/workspace";
 import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { VirtualList, type VirtualListHandle } from "../../../widgets";
@@ -25,6 +26,7 @@ import type { CapturedTranscriptView } from "./flow/transcriptViewRegistry";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { foldTurnEntries } from "./toolRuns";
+import type { TranscriptReadView } from "./transcriptReadView";
 import { asTurnError } from "./turnFailure";
 import { useEntityView } from "./useEntityView";
 import "./messages";
@@ -33,6 +35,8 @@ import styles from "../session.module.css";
 
 const ESTIMATED_TURN_HEIGHT = 96;
 type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
+
+export const TranscriptSourcePaneContext = createContext<string | undefined>(undefined);
 
 export interface TranscriptTurnRow {
   readonly kind: "turn";
@@ -330,7 +334,10 @@ export interface TranscriptBodyProps {
   trailingRow?: { id: string; content: ReactNode };
   /** Stable pane identity for host-remount scroll state; optional for callers. */
   viewId?: string;
+  /** Owning interactive pane; omitted by previews and non-owning renders. */
+  sourcePaneId?: string;
   initialViewCapture?: CapturedTranscriptView;
+  readView?: TranscriptReadView;
   onAnnounceViewChange?: (summary: string) => void;
 }
 
@@ -349,9 +356,13 @@ export function TranscriptBody({
   trailingContent,
   trailingRow,
   viewId,
+  sourcePaneId: explicitSourcePaneId,
   initialViewCapture,
+  readView,
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
+  const inheritedSourcePaneId = useContext(TranscriptSourcePaneContext);
+  const sourcePaneId = explicitSourcePaneId ?? inheritedSourcePaneId;
   const focusFallbackRef = useRef<HTMLElement>(null);
   const entities = useEntityView(sessionRef ?? model.ref, model);
   const projection = useMemo(
@@ -375,6 +386,7 @@ export function TranscriptBody({
     surface,
     sessionRef,
     disclosureScope,
+    sourcePaneId,
   ].join("\0");
   // biome-ignore lint/correctness/useExhaustiveDependencies: itemRenderFingerprint covers projection semantics; retaining its identity avoids settled-row rerenders for unrelated stream deltas
   const itemRenderContext = useMemo(
@@ -386,6 +398,7 @@ export function TranscriptBody({
         surface,
         sessionRef,
         disclosureScope,
+        sourcePaneId,
       }),
     [itemRenderFingerprint],
   );
@@ -393,14 +406,17 @@ export function TranscriptBody({
   const viewRegistration = useTranscriptViewRegistration({
     enabled: surface !== "preview",
     id: viewId ?? `${surface}:${sessionRef ?? disclosureScope}`,
+    logicalRef: sessionRef ?? model.ref,
     layout: displayViewport,
     viewKey: configFingerprint(config),
     initialViewCapture,
+    readView,
     listRef,
     anchorEntries: preparedView?.anchorEntries ?? transcriptAnchorEntriesForRows(rows),
     // Include the synthetic trailing row: following-bottom view restores
     // target renderedRowCount - 1, which is the trailing row when present.
     renderedRowCount: rows.length + (trailingRow === undefined ? 0 : 1),
+    canRestoreFocus: () => sourcePaneId === undefined || workspaceStore.getState().focusedPaneId === sourcePaneId,
     focusFallback: () => focusFallbackRef.current?.focus(),
     announce: onAnnounceViewChange,
   });
@@ -474,7 +490,7 @@ export function TranscriptBody({
       <VirtualList
         ref={listRef}
         dynamic
-        anchorToEnd
+        anchorToEnd={!viewRegistration.hasRetainedPlacement()}
         count={rows.length + (trailingRow === undefined ? 0 : 1)}
         estimateSize={() => ESTIMATED_TURN_HEIGHT}
         getItemKey={(index) => (isTrailingRowIndex(index) && trailingRow ? trailingRow.id : rowAt(index).id)}
@@ -494,6 +510,7 @@ export function TranscriptBody({
             viewRegistration.restoreAfterMeasurement();
           }
         }}
+        onLayout={viewRegistration.restoreAfterLayout}
       />
     </section>
   );
@@ -541,6 +558,7 @@ export function TranscriptBody({
       sessionRef={sessionRef}
       disclosureScope={disclosureScope}
       thread={model}
+      sourcePaneId={sourcePaneId}
       entities={entities}
     >
       {content}

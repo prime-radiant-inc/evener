@@ -1,7 +1,7 @@
 package main
 
 import (
-	"strings"
+	"errors"
 	"testing"
 )
 
@@ -28,8 +28,8 @@ func TestParseAPILog(t *testing.T) {
 				if err == nil {
 					t.Fatalf("parseAPILog(%q) = %v, want error", tc.value, got)
 				}
-				if !strings.Contains(err.Error(), "want on or off") {
-					t.Fatalf("parseAPILog(%q) error = %v, want on-or-off guidance", tc.value, err)
+				if !errors.Is(err, errInvalidAPILog) {
+					t.Fatalf("parseAPILog(%q) error = %v, want errInvalidAPILog", tc.value, err)
 				}
 				return
 			}

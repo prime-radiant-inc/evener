@@ -3,7 +3,7 @@ import { canReadSharedNotes } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
 import { canWriteHumanNote, syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
-import { Chevron, ToolIcon } from "../../../widgets";
+import { Chevron, Eyebrow, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { hasNoteText, NotesPanelBody } from "./NotesPanel";
 import styles from "./topnotespanel.module.css";
@@ -17,16 +17,16 @@ const CLASS = {
   clampedText: requireClass(styles.clampedText, "topnotespanel.module.css", "clampedText"),
   placeholder: requireClass(styles.placeholder, "topnotespanel.module.css", "placeholder"),
   expandedHeader: requireClass(styles.expandedHeader, "topnotespanel.module.css", "expandedHeader"),
-  expandedTitle: requireClass(styles.expandedTitle, "topnotespanel.module.css", "expandedTitle"),
   expandedBody: requireClass(styles.expandedBody, "topnotespanel.module.css", "expandedBody"),
 };
 
 export interface TopNotesPanelProps {
   sessionRef: string;
   model: ThreadModel;
+  sourcePaneId?: string;
 }
 
-export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
+export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanelProps) {
   const expanded = useTopNotesExpanded(sessionRef);
   const pendingRequest = usePendingTopNotesFocus(sessionRef);
   const readable = canReadSharedNotes(model);
@@ -144,7 +144,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
             <Chevron size={16} />
           </span>
           {expanded ? (
-            <span className={CLASS.expandedTitle}>Session Notes</span>
+            <Eyebrow as="span">Session notes</Eyebrow>
           ) : (
             <>
               {sourceIconKind && (
@@ -152,14 +152,19 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
                   <ToolIcon kind={sourceIconKind} size={14} />
                 </span>
               )}
-              <span className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</span>
+              <span
+                className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}
+                data-reason={isPlaceholder ? (canWrite ? "empty" : "read-only") : undefined}
+              >
+                {summaryText}
+              </span>
             </>
           )}
         </span>
       </button>
       {expanded && (
         <div className={CLASS.expandedBody} data-testid="top-notes-expanded-content">
-          <NotesPanelBody sessionRef={sessionRef} model={model} editorRef={editorRef} />
+          <NotesPanelBody sessionRef={sessionRef} model={model} sourcePaneId={sourcePaneId} editorRef={editorRef} />
         </div>
       )}
     </div>

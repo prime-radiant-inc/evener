@@ -25,6 +25,9 @@ const (
 	EventUserInput EventKind = "USER_INPUT"
 	// EventEnvironment carries a persisted environment-context update.
 	EventEnvironment EventKind = "ENVIRONMENT"
+	// EventEnvironmentChanged reports the execution environment installed for the
+	// session, independently of prompt/transcript environment context.
+	EventEnvironmentChanged EventKind = "ENVIRONMENT_CHANGED"
 	// EventAssistantTextStart marks the start of an assistant text response.
 	EventAssistantTextStart EventKind = "ASSISTANT_TEXT_START"
 	// EventAssistantTextDelta carries an incremental chunk of assistant text.
@@ -119,6 +122,10 @@ const (
 	EventPromptLoaded EventKind = "PROMPT_LOADED"
 	// EventRoundTimings carries round timing information.
 	EventRoundTimings EventKind = "ROUND_TIMINGS"
+	// EventStatusSettled announces a resting session's new state outside a
+	// turn: a needs_response rest moving to awaiting once its quiet period
+	// passes.
+	EventStatusSettled EventKind = "STATUS_SETTLED"
 	// EventTurnEnded marks a single turn reaching its terminal boundary, carrying
 	// the turn's wall-clock duration.
 	EventTurnEnded EventKind = "TURN_ENDED"

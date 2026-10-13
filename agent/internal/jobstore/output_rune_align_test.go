@@ -26,14 +26,15 @@ func openAlignStore(t *testing.T, content string, capBytes int64) *OutputStore {
 // the pruner must not leave the cut inside a rune.
 func TestOutputStorePruneCutsOnRuneBoundary(t *testing.T) {
 	// Two 4-byte emoji under a 6-byte cap: the raw cut lands 2 bytes into the
-	// first one, so the retained file would open on a continuation byte.
+	// first one, so the retained file would open on a continuation byte. The
+	// filler takes the file past twice the cap, where compaction runs.
 	path := filepath.Join(t.TempDir(), "job_prune.log")
 	o, err := OpenOutputNoSync(path, 6)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer func() { _ = o.Close() }()
-	appendOutput(t, o, "😀😀")
+	appendOutput(t, o, "aaaaa😀😀")
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -47,8 +48,8 @@ func TestOutputStorePruneCutsOnRuneBoundary(t *testing.T) {
 	}
 	// The evicted bytes stay accounted for: retainedStart names the lifetime
 	// offset of the file's first byte, so it plus the file's size is the total.
-	if start, total := o.RetainedStart(), o.Len(); start != 4 || start+int64(len(raw)) != total {
-		t.Fatalf("retainedStart = %d with total %d over %d retained bytes, want 4", start, total, len(raw))
+	if start, total := o.RetainedStart(), o.Len(); start != 9 || start+int64(len(raw)) != total {
+		t.Fatalf("retainedStart = %d with total %d over %d retained bytes, want 9", start, total, len(raw))
 	}
 }
 
@@ -56,7 +57,7 @@ func TestOutputStorePruneCutsOnRuneBoundary(t *testing.T) {
 // rune boundary applies: the cut is the store's, not the file's.
 func TestOutputStorePruneOnOpenCutsOnRuneBoundary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_reopen.log")
-	if err := os.WriteFile(path, []byte("😀😀"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("aaaaa😀😀"), 0o644); err != nil {
 		t.Fatalf("write oversized file: %v", err)
 	}
 	o, err := OpenOutputNoSync(path, 6)
@@ -72,14 +73,16 @@ func TestOutputStorePruneOnOpenCutsOnRuneBoundary(t *testing.T) {
 	if string(raw) != "😀" {
 		t.Fatalf("pruned file = %x, want %x", raw, "😀")
 	}
-	if start := o.RetainedStart(); start != 4 {
-		t.Fatalf("retainedStart = %d, want 4", start)
+	if start := o.RetainedStart(); start != 9 {
+		t.Fatalf("retainedStart = %d, want 9", start)
 	}
 }
 
 // The pruner drops only the bytes its own cut orphaned. Output that is not
 // UTF-8 keeps everything past the three bytes a 4-byte rune could account for,
-// and a cap that lands on a rune boundary retains the cap exactly.
+// and a cap that lands on a rune boundary retains the cap exactly. Each case
+// leads with filler that takes the file past twice the cap, where compaction
+// runs.
 func TestOutputStorePruneKeepsInvalidUTF8(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -89,19 +92,19 @@ func TestOutputStorePruneKeepsInvalidUTF8(t *testing.T) {
 	}{
 		{
 			name:    "cut already on a boundary",
-			content: []byte("😀😀"),
+			content: []byte("a😀😀"),
 			cap:     4,
 			want:    []byte("😀"),
 		},
 		{
 			name:    "continuation run longer than a rune keeps the rest",
-			content: []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80},
+			content: []byte{'a', 'a', 'a', 'a', 'a', 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80},
 			cap:     6,
 			want:    []byte{0x80, 0x80, 0x80},
 		},
 		{
 			name:    "invalid lead byte at the cut",
-			content: []byte{'a', 'b', 0xFF, 0xFE, 'c'},
+			content: []byte{'x', 'x', 'a', 'b', 0xFF, 0xFE, 'c'},
 			cap:     3,
 			want:    []byte{0xFF, 0xFE, 'c'},
 		},

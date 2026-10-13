@@ -14,10 +14,10 @@
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
 // and Shut down. The composer placement alone can also lead with the
 // narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The
-// hidden ActivityPanel stays mounted for summary discovery. Overview opens the
-// shared sidebar at every viewport, and ActivityPanel's refreshWhenHidden is
-// unconditional because the menu's "Overview · N" label reads the summary that
-// refresh maintains.
+// Overview count adds the subagents running at every depth
+// (useSubagentCounts) to the session summary's running jobs. The hidden
+// ActivityPanel retains discovery and refresh wiring. Overview opens the
+// shared sidebar at every viewport.
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in
 // the menu - the session's own composer owns those now (2026-08-14, "the
 // composer is where you act on this session"; the command palette only
@@ -51,8 +51,8 @@ import { useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
-import { useSessionActivity } from "../../../stores/sessionActivity";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
+import { ownerRetainedRef, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
@@ -125,6 +125,7 @@ export function SessionChrome({
   // scope, so rail and session menus agree at every viewport.
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
   const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
+  const subagents = useSubagentCounts(sessionRef);
   const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
@@ -198,13 +199,7 @@ export function SessionChrome({
   // and panes with no navigation identity. The one exclusion is a session
   // retained by its owning session - its notice directs the user to the owner
   // instead (same predicate as Session.tsx's recoveryOwnerRef).
-  const recoveryOwnerRef =
-    !mutationStateAuthoritative &&
-    model.status.type !== "notLoaded" &&
-    model.status.type !== "restartRequired" &&
-    model.parentRef?.startsWith("local:")
-      ? model.parentRef
-      : undefined;
+  const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
 
   const openOverview = () => {
     // Mobile and desktop share the activity sidebar. Desktop toggles only when
@@ -216,7 +211,7 @@ export function SessionChrome({
       activitySidebarStore.getState().openFor(sessionRef);
     }
   };
-  const overviewLabel = activityActionLabel(activitySummary, "Overview");
+  const overviewLabel = activityActionLabel(activitySummary, subagents, "Overview");
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:

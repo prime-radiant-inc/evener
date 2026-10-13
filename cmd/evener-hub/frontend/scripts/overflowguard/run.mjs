@@ -43,7 +43,7 @@ import {
   applyViewport,
   assertGuardOrigin,
   clearViewportOverride,
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
   devtoolsHttpURL,
   evaluate,
@@ -95,7 +95,7 @@ const BOOT = {
 // settled page (the verb cluster) and needs none of the disclosure exception
 // probe, the Verbosity detail inspection or the trusted-focus pass.
 async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900, mobile: width < 900 });
@@ -221,7 +221,7 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
 }
 
 async function measureComposerSend(cdpEndpoint, url, width) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900, mobile: width < 900 });
@@ -282,7 +282,7 @@ async function measureComposerSend(cdpEndpoint, url, width) {
 // browser's actual env() value, not the footer's own padding formula. Only the
 // keyboard custom property is simulated, not an iOS Safari keyboard/viewport.
 async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   const mobile = width < 900;
   try {
@@ -299,7 +299,10 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
       // parameter references SafeAreaInsets, whose optional bottom is integer.
       if (safeAreaSupported) await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: safeArea } });
       for (const keyboard of mobile ? [0, 12, 300] : [0]) {
-        measurements.push(await evaluate(send, `(async () => {
+        measurements.push(
+          await evaluate(
+            send,
+            `(async () => {
           document.documentElement.style.setProperty('--keyboard-inset', '${keyboard}px');
           await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           const pane = document.getElementById('oh-pane');
@@ -328,7 +331,9 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
             path: path?.getAttribute('title') ?? null,
             metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
           };
-        })()`));
+        })()`,
+          ),
+        );
       }
     }
     return measurements;
@@ -351,30 +356,40 @@ function assertComposerFooter(measurement, width) {
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
   if (mobile) {
-    if (measurement.paneBottom === null || measurement.footerBottom === null || !nearlyEqual(measurement.footerBottom, measurement.paneBottom)) {
+    if (
+      measurement.paneBottom === null ||
+      measurement.footerBottom === null ||
+      !nearlyEqual(measurement.footerBottom, measurement.paneBottom)
+    ) {
       failures.push(`footer bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
     }
-    if (measurement.metadataCount !== 0) failures.push(`composer-repo-location still exists (${measurement.metadataCount})`);
+    if (measurement.metadataCount !== 0)
+      failures.push(`composer-repo-location still exists (${measurement.metadataCount})`);
     if (measurement.gap === null || !nearlyEqual(measurement.gap, requiredClearance)) {
       failures.push(`card-to-footer gap=${measurement.gap}px, required safe-area clearance=${requiredClearance}px`);
     }
   } else {
     // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
     if (
-      measurement.metadataCount !== 1 || !measurement.metadataVisible || !measurement.pathVisible ||
-      !measurement.metadataInEdgeFooter || measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
+      measurement.metadataCount !== 1 ||
+      !measurement.metadataVisible ||
+      !measurement.pathVisible ||
+      !measurement.metadataInEdgeFooter ||
+      measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
     ) {
       failures.push("desktop working-path metadata missing from the visible edge footer");
     }
     if (!nearlyEqual(measurement.paddingBottom, 12) || measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
-      failures.push(`desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`);
+      failures.push(
+        `desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`,
+      );
     }
   }
   return failures;
 }
 
 async function verifyItemPaging(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900 });
@@ -518,7 +533,7 @@ async function measureTrustedFocus(send) {
 // The guard measures the narrower chrome, selected activity-tab state, and the same
 // production Verbosity editor's containment and fieldset geometry.
 async function verifyPanelCollapse(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 900, height: 900 });
@@ -590,7 +605,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
 }
 
 async function verifyShortSessionMenu(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 844, height: 390, mobile: true });
@@ -602,9 +617,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
     const initial = await evaluate(
       send,
       `(async () => {
-        const trigger = [...document.querySelectorAll('button')].find((button) =>
-          button.textContent?.includes('Session actions'),
-        );
+        const trigger = document.querySelector('[data-session-actions-ref]')?.closest('button');
         if (!trigger) throw new Error('short-height Session actions trigger is missing');
         trigger.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -636,9 +649,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
     const focused = await evaluate(
       send,
       `(() => {
-        const trigger = [...document.querySelectorAll('button')].find((button) =>
-          button.textContent?.includes('Session actions'),
-        );
+        const trigger = document.querySelector('[data-session-actions-ref]')?.closest('button');
         const menu = [...document.querySelectorAll('[role="menu"]')].find(
           (candidate) => candidate.getAttribute('aria-labelledby') === trigger?.id,
         );
@@ -673,7 +684,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
 // boot the fixture, wait out the harness's own settled promise and fonts,
 // then run the inspection expression and return its result.
 async function inspectOnSettledPage(cdpEndpoint, url, expression) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900, mobile: false });
@@ -1244,12 +1255,20 @@ async function main() {
     const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
     if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
     const protocol = await protocolResponse.json();
-    const safeAreaSupported = protocol.domains.find((domain) => domain.domain === "Emulation")
-      ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
-    if (!safeAreaSupported) console.log("composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped");
+    const safeAreaSupported =
+      protocol.domains
+        .find((domain) => domain.domain === "Emulation")
+        ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
+    if (!safeAreaSupported)
+      console.log(
+        "composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped",
+      );
     for (const width of [...new Set([320, 390, 430, 899, 900, 1400, ...sweep])]) {
       const measurements = await measureComposerFooter(
-        cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`, width, safeAreaSupported,
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
+        width,
+        safeAreaSupported,
       );
       for (const measurement of measurements) {
         const failures = assertComposerFooter(measurement, width);
@@ -1344,7 +1363,9 @@ async function main() {
     if (shortMenu.itemCount !== 6) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 6`);
     const menuLabels = shortMenu.itemLabels.map((label) => label.replace(/^Overview · .+$/, "Overview"));
     if (JSON.stringify(menuLabels) !== JSON.stringify(expectedMenuLabels)) {
-      shortMenuFailures.push(`labels=${JSON.stringify(shortMenu.itemLabels)}, expected ${JSON.stringify(expectedMenuLabels)}`);
+      shortMenuFailures.push(
+        `labels=${JSON.stringify(shortMenu.itemLabels)}, expected ${JSON.stringify(expectedMenuLabels)}`,
+      );
     }
     if (shortMenu.top < 8 - GEOMETRY_TOLERANCE || shortMenu.bottom > 390 - 8 + GEOMETRY_TOLERANCE) {
       shortMenuFailures.push(`bounds=${shortMenu.top}-${shortMenu.bottom}, expected within 8-382`);
@@ -1574,13 +1595,13 @@ async function main() {
           disclosure.bodyWidth >= disclosure.expectedWidth - 1;
         const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
         const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
-        if (
-          disclosure.summaryDisplay !== "list-item" ||
-          disclosure.markerDisplay === "none" ||
-          !fullWidth ||
-          !stacked ||
-          !aligned
-        ) {
+        // The raw notification is a native <details> whose UA marker is its
+        // only expand affordance; the system prompt is a Disclosure widget,
+        // which draws its own chevron.
+        const nativeAffordance =
+          disclosure.kind !== "raw-notification" ||
+          (disclosure.summaryDisplay === "list-item" && disclosure.markerDisplay !== "none");
+        if (!nativeAffordance || !fullWidth || !stacked || !aligned) {
           widthFailed = true;
           console.log(
             `${width}px ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
@@ -1600,7 +1621,7 @@ async function main() {
       }
       if (result.scrollers.length === 0) {
         if (!widthFailed)
-          console.log(`${width}px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
+          console.log(`${width}px ... PASS - disclosures stay stacked and nothing scrolls horizontally`);
       } else {
         widthFailed = true;
         console.log(`${width}px ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);

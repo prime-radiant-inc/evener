@@ -61,6 +61,27 @@ test("selecting an option updates the controlled value", async () => {
   expect(screen.getByRole("combobox")).toHaveProperty("value", "eu-central");
 });
 
+test("a disabled option is listed but cannot be picked", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(
+    <Select
+      value="local"
+      options={[
+        { value: "local", label: "This hub" },
+        { value: "build-box", label: "build-box (offline)", disabled: true },
+      ]}
+      onChange={onChange}
+    />,
+  );
+  const offline = screen.getByRole("option", { name: "build-box (offline)" }) as HTMLOptionElement;
+  expect(offline.disabled).toBe(true);
+  expect((screen.getByRole("option", { name: "This hub" }) as HTMLOptionElement).disabled).toBe(false);
+  await user.selectOptions(screen.getByRole("combobox"), "build-box");
+  expect(onChange).not.toHaveBeenCalled();
+  expect(screen.getByRole("combobox")).toHaveProperty("value", "local");
+});
+
 test("disabled marks the native select inert (not focusable)", () => {
   render(<Select value="us-east" options={OPTIONS} onChange={() => {}} disabled />);
   const select = screen.getByRole("combobox") as HTMLSelectElement;
@@ -105,5 +126,7 @@ test("keeps the native select at 32px on desktop and the mobile touch floor", ()
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "select.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css).toMatch(/\.select\s*\{[^}]*height:\s*32px/);
-  expect(css).toMatch(/@media \(max-width: 899px\)[\s\S]*?\.select\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
+  expect(css).toMatch(
+    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.select\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+  );
 });

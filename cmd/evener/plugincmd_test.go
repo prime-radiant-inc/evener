@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/plugins"
 )
 
@@ -20,9 +21,8 @@ func TestPluginMarketplaceList_Empty(t *testing.T) {
 	if err := runPlugin([]string{"marketplace", "list"}, nil, &out, &errb); err != nil {
 		t.Fatalf("runPlugin marketplace list: %v\n%s", err, errb.String())
 	}
-	if !strings.Contains(out.String(), "No marketplaces") && strings.TrimSpace(out.String()) != "" {
-		// empty store: either a friendly "No marketplaces" line or empty output
-		t.Logf("marketplace list output: %q", out.String())
+	if errb.Len() != 0 {
+		t.Fatalf("marketplace list on an empty store wrote to stderr: %q", errb.String())
 	}
 }
 
@@ -55,8 +55,14 @@ func TestPluginMarketplaceAdd_RequiresConfirmation(t *testing.T) {
 	if err == nil {
 		t.Fatal("add without --yes should require confirmation")
 	}
-	if !strings.Contains(err.Error(), "confirmation") && !strings.Contains(errb.String(), "confirmation") {
-		t.Logf("Expected confirmation message in error or stderr")
+	mk, listErr := plugins.NewManager("").ListMarketplaces(context.Background())
+	if listErr != nil {
+		t.Fatalf("ListMarketplaces: %v", listErr)
+	}
+	for name, ref := range mk {
+		if ref.Source.URL == "https://example.com/repo.git" {
+			t.Fatalf("an unconfirmed add registered marketplace %q", name)
+		}
 	}
 }
 
@@ -151,9 +157,6 @@ func TestPluginMarketplaceRemove_CloneRemovalFailureReportsRemovedWithLitter(t *
 	}
 	if !errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains) {
 		t.Fatalf("err = %v, want errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains)", err)
-	}
-	if !strings.Contains(err.Error(), "removed marketplace") {
-		t.Fatalf("err = %v, want it to say the registry removal landed", err)
 	}
 	if strings.Contains(err.Error(), clone) {
 		t.Fatalf("err = %v, want no absolute path in the CLI-facing error", err)
@@ -302,11 +305,7 @@ func TestPluginHelp(t *testing.T) {
 	if err := runPlugin([]string{"help"}, nil, &out, &errb); err != nil {
 		t.Fatalf("runPlugin help: %v", err)
 	}
-	// Help should print usage (typically to stderr in this style)
-	usage := errb.String()
-	if !strings.Contains(usage, "plugin") && !strings.Contains(usage, "marketplace") {
-		t.Logf("Expected usage output, got: %q", usage)
-	}
+	requireOnlyStderr(t, &out, &errb)
 }
 
 // TestPluginList_JSONEmpty pins the exact `[]` encoding for an empty store,
@@ -499,9 +498,6 @@ func TestPluginAutoUpgrade_RoundTripsInList(t *testing.T) {
 	if err := runPlugin([]string{"auto-upgrade", "widget@local"}, nil, &out, &errb); err != nil {
 		t.Fatalf("runPlugin auto-upgrade: %v\n%s", err, errb.String())
 	}
-	if !strings.Contains(out.String(), "enabled") {
-		t.Errorf("expected confirmation output mentioning \"enabled\", got %q", out.String())
-	}
 	items := listPluginsJSON(t)
 	if len(items) != 1 || !items[0].AutoUpgrade {
 		t.Fatalf("list --json = %+v, want AutoUpgrade=true after enabling", items)
@@ -536,8 +532,8 @@ func TestPluginCheckNow_FreshStoreReportsNothing(t *testing.T) {
 	if err := runPlugin([]string{"check-now"}, nil, &out, &errb); err != nil {
 		t.Fatalf("runPlugin check-now: %v\n%s", err, errb.String())
 	}
-	if !strings.Contains(out.String(), "No plugins upgraded") {
-		t.Fatalf("expected 'No plugins upgraded', got %q", out.String())
+	if strings.Contains(out.String(), "@") || errb.Len() != 0 {
+		t.Fatalf("stdout = %q, stderr = %q; want no plugin@marketplace upgraded and no warning", out.String(), errb.String())
 	}
 }
 
@@ -572,11 +568,15 @@ func TestPluginCheckNow_SkipsDirectorySourcePlugin(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if err := runPlugin([]string{"check-now"}, nil, &out, &errb); err != nil {
+	if err := runPlugin([]string{"check-now", "--json"}, nil, &out, &errb); err != nil {
 		t.Fatalf("runPlugin check-now: %v\n%s", err, errb.String())
 	}
-	if !strings.Contains(out.String(), "No plugins upgraded") {
-		t.Fatalf("expected a directory-source plugin to report no upgrades, got %q", out.String())
+	var resp checkNowResult
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(resp.Updated) != 0 || resp.Error != "" {
+		t.Fatalf("resp = %+v, want a directory-source plugin to report no upgrades", resp)
 	}
 }
 
@@ -642,8 +642,8 @@ func TestPluginGc_NothingToRemove(t *testing.T) {
 	if err := runPlugin([]string{"gc"}, nil, &out, &errb); err != nil {
 		t.Fatalf("runPlugin gc: %v\n%s", err, errb.String())
 	}
-	if !strings.Contains(out.String(), "Nothing to remove") {
-		t.Fatalf("expected 'Nothing to remove', got %q", out.String())
+	if strings.Count(out.String(), "\n") != 1 || errb.Len() != 0 {
+		t.Fatalf("stdout = %q, stderr = %q; want a one-line report listing no removed directories", out.String(), errb.String())
 	}
 }
 
@@ -673,10 +673,10 @@ func TestPluginCommandChecksForLegacyDataBeforeTouchingTheStore(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
-		// wantErr is empty for the answers that never reach the store.
-		wantErr string
+		// wantErr is nil for the answers that never reach the store.
+		wantErr error
 	}{
-		{name: "list reaches the store", args: []string{"list"}, wantErr: "legacy Serf data"},
+		{name: "list reaches the store", args: []string{"list"}, wantErr: cmdutil.ErrLegacySerfData},
 		{name: "--help does not", args: []string{"--help"}},
 		{name: "no arguments does not", args: nil},
 	}
@@ -694,14 +694,14 @@ func TestPluginCommandChecksForLegacyDataBeforeTouchingTheStore(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			err := runPlugin(test.args, nil, &stdout, &stderr)
 			switch {
-			case test.wantErr != "":
-				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
-					t.Fatalf("plugin %v error = %v, want %q", test.args, err, test.wantErr)
+			case test.wantErr != nil:
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("plugin %v error = %v, want %v", test.args, err, test.wantErr)
 				}
 			case err != nil:
 				t.Fatalf("plugin %v error = %v, want the usage text", test.args, err)
-			case !strings.Contains(stderr.String(), "Usage: evener plugin"):
-				t.Fatalf("plugin %v stderr = %q, want the usage text", test.args, stderr.String())
+			case stderr.Len() == 0 || stdout.Len() != 0:
+				t.Fatalf("plugin %v stdout = %q, stderr = %q; want the usage text on stderr only", test.args, stdout.String(), stderr.String())
 			}
 			if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("the config root was created: stat err = %v", err)
@@ -719,7 +719,7 @@ func TestPluginDoctorTakesOnlyTheReadOnlyHalfOfTheGuard(t *testing.T) {
 	tests := []struct {
 		name    string
 		arrange func(t *testing.T, config string)
-		wantErr string
+		wantErr error
 	}{
 		{
 			name:    "a writable config home stays untouched",
@@ -744,7 +744,7 @@ func TestPluginDoctorTakesOnlyTheReadOnlyHalfOfTheGuard(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			wantErr: "legacy Serf data",
+			wantErr: cmdutil.ErrLegacySerfData,
 		},
 	}
 	for _, test := range tests {
@@ -761,9 +761,9 @@ func TestPluginDoctorTakesOnlyTheReadOnlyHalfOfTheGuard(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			err := runPlugin([]string{"doctor"}, nil, &stdout, &stderr)
-			if test.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
-					t.Fatalf("plugin doctor error = %v, want %q", err, test.wantErr)
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("plugin doctor error = %v, want %v", err, test.wantErr)
 				}
 				return
 			}

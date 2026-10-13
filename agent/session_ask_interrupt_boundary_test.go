@@ -126,7 +126,7 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "fold-tail-cheap/model")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
@@ -258,7 +258,7 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "fold-tail-cheap/model")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
@@ -440,7 +440,7 @@ func TestDeriveRestoredAskPending_FailedAskPairNeverCollects(t *testing.T) {
 			if len(pending) != 0 || isAskRound {
 				t.Fatalf("deriveRestoredAskPending = %d pending (isAskRound=%v), want 0: a failed ask has no completed non-error ask_user result to collect from", len(pending), isAskRound)
 			}
-			if got := deriveRestoredState(history, 0, nil); got != SessionIdle {
+			if got := deriveRestoredState(history, 0, nil, nil); got != SessionIdle {
 				t.Fatalf("deriveRestoredState = %q, want %q", got, SessionIdle)
 			}
 		})

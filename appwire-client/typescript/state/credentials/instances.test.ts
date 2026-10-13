@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { CONNECTION_REPLACED_ERROR } from "../../credentialLabels";
-import { errorText, friendlyErrorMessage, sessionActionError } from "../../errors";
+import { errorText, friendlyErrorMessage, sessionActionError, WireError } from "../../errors";
 import { deferred } from "../../testing/deferred";
 import { FakeClient } from "../../testing/fakeClient";
 import type { AuthStatusResponse, InstanceEntry, InstanceListResponse } from "../../types.gen";
@@ -216,8 +216,25 @@ describe("listing reads and writes", () => {
     });
     store.connectionChanged(fake, "ready");
     expect(await store.getState().fetch()).toBe(false);
-    expect(store.getState().error).toBe("offline");
+    expect(store.getState().error).toBe(friendlyErrorMessage(new Error("offline")));
     expect(store.getState().loading).toBe(false);
+  });
+
+  // The error is translated while it still has its type: a hub's own WireError
+  // explanation survives, and a client-side failure gets the shared friendly
+  // form. A consumer translating the stored text later would see only a string.
+  test.each([
+    ["a hub-reported WireError", new WireError("providers.toml is being rewritten", -32000)],
+    ["a client-side Error", new Error("AppwireClient internal detail")],
+  ])("a failed read stores %s in its friendly form", async (_label, err) => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => {
+      throw err;
+    });
+    store.connectionChanged(fake, "ready");
+    expect(await store.getState().fetch()).toBe(false);
+    expect(store.getState().error).toBe(friendlyErrorMessage(err));
   });
 
   test("a write applies the listing it answers with and clears the replaced-connection mark", async () => {
@@ -507,7 +524,7 @@ describe("foreignListingChange", () => {
           throw new Error("offline");
         });
         await store.getState().fetch();
-        expect(store.getState().error).toBe("offline");
+        expect(store.getState().error).toBe(friendlyErrorMessage(new Error("offline")));
       },
     ],
   ];

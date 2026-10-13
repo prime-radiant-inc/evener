@@ -22,13 +22,13 @@ import { Popover } from "../popover";
 import styles from "./pathfield.module.css";
 
 const CLASS = {
-  trigger: requireClass(styles.trigger, "pathfield.module.css", "trigger"),
+  trigger: requireClass(styles.pathTrigger, "pathfield.module.css", "pathTrigger"),
   directoryTrigger: requireClass(styles.directoryTrigger, "pathfield.module.css", "directoryTrigger"),
   directoryValue: requireClass(styles.directoryValue, "pathfield.module.css", "directoryValue"),
   triggerValue: requireClass(styles.triggerValue, "pathfield.module.css", "triggerValue"),
   triggerDefault: requireClass(styles.triggerDefault, "pathfield.module.css", "triggerDefault"),
-  chevron: requireClass(styles.chevron, "pathfield.module.css", "chevron"),
-  srOnly: requireClass(styles.srOnly, "pathfield.module.css", "srOnly"),
+  chevron: requireClass(styles.pathChevron, "pathfield.module.css", "pathChevron"),
+  srOnly: requireClass(styles.pathSrOnly, "pathfield.module.css", "pathSrOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "pathfield.module.css", "popoverPanel"),
   panel: requireClass(styles.panel, "pathfield.module.css", "panel"),
   input: requireClass(styles.input, "pathfield.module.css", "input"),

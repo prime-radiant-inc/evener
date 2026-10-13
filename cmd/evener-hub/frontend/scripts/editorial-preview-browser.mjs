@@ -7,7 +7,7 @@ import { measureEditorial, assertEditorialGeometry } from "./editorial-preview-m
 import { measureReadyDesktopCollaborators, assertDesktopCollaborators } from "./editorial-preview-readiness.mjs";
 import { exerciseNestedTranscripts } from "./editorial-preview-nested.mjs";
 import { startBrowserGuard } from "./browserGuardProcess.mjs";
-import { connectPage, createStartupDeadline, waitForHttp, navigateTo, evaluate, applyViewport, waitForFonts } from "./browserGuardCdp.mjs";
+import { connectOnlyPage, createStartupDeadline, waitForHttp, navigateTo, evaluate, applyViewport, waitForFonts } from "./browserGuardCdp.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const evidence = path.resolve(process.env.EDITORIAL_EVIDENCE ?? path.join(frontend, "../../..", ".superpowers/sdd/2026-09-09-tufte-webui/task-4-evidence"));
@@ -24,7 +24,7 @@ try {
   const endpoint = await run.waitForChrome({signal: deadline.signal});
   await waitForHttp(`http://127.0.0.1:${run.vitePort}/`, "editorial preview", run.getViteLaunchError, {signal: deadline.signal});
   deadline.clear();
-  page = await connectPage(endpoint);
+  page = await connectOnlyPage(endpoint);
   const {send, ws} = page;
   ws.addEventListener("message", event => {
     const message = JSON.parse(event.data);
@@ -255,7 +255,7 @@ try {
       }
       await evalJS("window.nativeTrace=[]");
       const native = await evalJS("document.querySelector('[data-tool-name=read_file] [data-testid=tool-call-body]').innerText");
-      assert(native.includes('retained native source evidence'), `${label}: native evidence missing`);
+      assert(native.includes('const fixtureLine1 = "evidence 1"'), `${label}: native evidence missing`);
       assert(native.includes('long-path/'.repeat(90)), `${label}: complete long native source line missing`);
       const scrollStart = await evalJS("(() => {const e=document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild;const r=e.getBoundingClientRect();return {top:e.scrollTop,x:r.x+r.width/2,y:r.y+r.height/2};})()");
       assert(await evalJS(`document.elementFromPoint(${scrollStart.x},${scrollStart.y})?.closest('[data-testid=transcript-virtual-list]') !== null`), `${label}: native scroll target hit-test`);

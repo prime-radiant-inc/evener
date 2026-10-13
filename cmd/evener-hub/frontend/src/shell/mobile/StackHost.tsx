@@ -43,9 +43,17 @@ import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
+import { PaneVisibilityContext } from "../paneVisibility";
 import { navigate, paneToURL, urlToPane } from "../routing";
+import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
-import { type OpenPaneRecord, transcriptOpenOrigin, useWorkspaceStore, workspaceStore } from "../workspace";
+import {
+  documentPaneState,
+  type OpenPaneRecord,
+  transcriptOpenOrigin,
+  useWorkspaceStore,
+  workspaceStore,
+} from "../workspace";
 import { MobilePanel } from "./MobilePanel";
 import styles from "./StackHost.module.css";
 import { TreeDrawer } from "./TreeDrawer";
@@ -58,9 +66,11 @@ import { TreeDrawer } from "./TreeDrawer";
 function StackedPane({ pane }: { pane: OpenPaneRecord }) {
   const Component = paneFor(pane.type).component;
   return (
-    <Suspense fallback={null}>
-      <Component params={pane.params} paneId={pane.id} focused />
-    </Suspense>
+    <PaneVisibilityContext.Provider value>
+      <Suspense fallback={null}>
+        <Component params={pane.params} paneId={pane.id} focused />
+      </Suspense>
+    </PaneVisibilityContext.Provider>
   );
 }
 
@@ -157,9 +167,13 @@ export interface StackHostProps {
   // owns that condition and passes it down; StackHost's only duty is not to
   // publish a URL over a route in that state. See the URL-sync effect.
   routeDeferred?: boolean;
+  // True on a single-pane route (the /thread/{ref} share link). The drawer
+  // opens the sidebar/search/settings chrome floor §2.3 forbids there, so its
+  // trigger is not rendered at all.
+  singlePane?: boolean;
 }
 
-export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = {}) {
+export function StackHost({ railSlot, routeDeferred = false, singlePane = false }: StackHostProps = {}) {
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   // The focused pane's title, published host-agnostically by its
@@ -311,6 +325,20 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   }, [activityOpen]);
 
   function handleBack(): void {
+    if (focusedPane?.type === "doc") {
+      const retained = documentPaneState(focusedPane);
+      if (retained) {
+        wentBackRef.current = true;
+        if (retained.origin && panes.includes(retained.origin)) {
+          workspaceStore.getState().focusPane(retained.origin.id);
+        } else {
+          const session = (focusedPane.params as { session?: unknown }).session;
+          if (typeof session === "string" && session !== "") openSessionByRef(session);
+          else workspaceStore.getState().openPane("welcome");
+        }
+        return;
+      }
+    }
     let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     if (!target && focusedPane?.type === "transcript") {
       const params = focusedPane.params as { ref?: unknown; parentRef?: unknown };
@@ -402,12 +430,12 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
             />
           )}
         </div>
-        <span className={styles.title} data-testid="topbar-title">
+        <span className={styles.stackTitle} data-testid="topbar-title">
           {paneTitle}
         </span>
-        <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />
+        {!singlePane && <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />}
       </div>
-      <div className={styles.body}>
+      <div className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
         {focusedPane && (
           // key forces a fresh mount on every distinct pane id, including
           // switching BACK to a previously-seen one - without it, two

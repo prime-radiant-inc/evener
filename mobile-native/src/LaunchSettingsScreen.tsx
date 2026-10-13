@@ -16,9 +16,10 @@ import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import type { HubRoutes } from "./hub/hubSheetContext";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
 import { confirmDiscard } from "./sheet/confirmDiscard";
+import { Button } from "./sheet/Grouped";
 
 type Props = NativeStackScreenProps<HubRoutes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
@@ -102,7 +103,9 @@ function LaunchDefaults({
 				{!client && <Copy>Disconnected. Your unsaved changes are kept here.</Copy>}
 				<Copy muted>Defaults for new Evener sessions. Project and per-launch settings can override these values.</Copy>
 				<View style={[styles.row, { flexWrap: "wrap" }]}>
-					<Action
+					<Button
+						text
+						label="Save defaults"
 						disabled={!client || !state.dirty || state.loading || state.saving || state.changedElsewhere}
 						onPress={() => {
 							setNotice(null);
@@ -110,11 +113,11 @@ function LaunchDefaults({
 								if (saved && alive.current) setNotice("Launch defaults saved.");
 							});
 						}}
-					>
-						Save defaults
-					</Action>
+					/>
 					{state.dirty && state.changedElsewhere ? (
-						<Action
+						<Button
+							text
+							label="Discard changes"
 							disabled={!client || state.loading || state.saving}
 							onPress={() =>
 								confirmDiscard(() => {
@@ -122,16 +125,17 @@ function LaunchDefaults({
 									void model.refresh(true);
 								})
 							}
-						>
-							Discard changes
-						</Action>
+						/>
 					) : null}
 				</View>
 				{state.loading && <Spinner label="Loading launch defaults" />}
 				{state.saving && <Spinner label="Saving launch defaults" />}
-				<ErrorMessage message={state.error} />
-				<ErrorMessage message={state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null} />
-				<ErrorMessage message={state.resolveError} />
+				<ErrorMessage message={state.error} testID="launch-problem:settings" />
+				<ErrorMessage
+					message={state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null}
+					testID="launch-problem:changed-elsewhere"
+				/>
+				<ErrorMessage message={state.resolveError} testID="launch-problem:resolve" />
 				{notice && <Copy>{notice}</Copy>}
 				{state.resolved?.diagnostics?.map((d) => (
 					<Copy muted key={JSON.stringify(d)}>

@@ -212,9 +212,9 @@ func TestNavigationCatalogGraphKeepsDuplicateKeyPerBucket(t *testing.T) {
 			t.Fatalf("%s shape = %d entities, row key %q", kind, len(snapshot.Entities), resource.Projects[0].Key)
 		}
 	}
-	// Both buckets' rows point at the shared Key, so the project map is
-	// last-write-wins; the location index must still carry every session of
-	// every catalog.
+	// Both buckets' rows point at the shared Key, and a read of it names the
+	// first catalog holding it; the location index must still carry every
+	// session of every catalog.
 	for _, id := range []string{"01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW"} {
 		ref := hubapi.LocalRef(id).String()
 		object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})

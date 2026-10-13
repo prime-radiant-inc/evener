@@ -181,11 +181,10 @@ type doubleLayerModel struct {
 
 func newDoubleLayerModel(preserveRecent int, sawLayer2 *atomic.Bool) *doubleLayerModel {
 	// A real, non-nil client — the shape every live session actually has —
-	// wired to the trivial fakeAdapter so Layer 2 executes for real instead
-	// of being skipped like the single-layer seqfuzz tests.
-	adapter := &fakeAdapter{name: "openai"}
-	client := llm.NewClient()
-	client.Register(adapter)
+	// wired to a scripted summarizer so Layer 2 executes for real instead of
+	// being skipped like the single-layer seqfuzz tests. The reply carries a
+	// summary section, or the summarizer rejects it and Layer 2 never stores.
+	client := ctxmgr_scriptedClient("openai", "## Progress\nsummary", nil)
 
 	cm := NewManager(testProfile("openai", "test", 1_000_000), client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = preserveRecent

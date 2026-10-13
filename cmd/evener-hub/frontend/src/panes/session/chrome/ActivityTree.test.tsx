@@ -2,18 +2,23 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  type ActivityCounts,
   type ActivityTree as ActivityTreeData,
   buildActivityRows,
+  jobStatusDisplay,
   projectSessionActivity,
   SessionActivityStore,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
+import {
+  subagentOutcomesDelegatesResponse,
+  subagentResumedDelegatesResponse,
+} from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import * as sessionPlacementModule from "../../../shell/sessionPlacement";
+import { accessibleName } from "../../../accessibleNameTestUtils";
 import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
@@ -29,16 +34,12 @@ import { detailLineByText } from "./detailLine.testFixture";
 // the real button's icon-only rendering and click behavior are covered in
 // openTranscript.test.tsx, where the workspace harness exists.
 let openTranscript: typeof openTranscriptModule.openTranscript;
-let openSessionByRef: typeof sessionPlacementModule.openSessionByRef;
 let openButtonProps: Array<{
   transcriptRef: string;
   parentRef?: string;
 }>;
 beforeEach(() => {
   openTranscript = vi.spyOn(openTranscriptModule, "openTranscript").mockImplementation(() => {});
-  // Spied the same way as openTranscript, so ActivityTree.tsx and these
-  // assertions share one binding.
-  openSessionByRef = vi.spyOn(sessionPlacementModule, "openSessionByRef").mockImplementation(() => {});
   openButtonProps = [];
   vi.spyOn(openTranscriptModule, "OpenTranscriptButton").mockImplementation((props) => {
     openButtonProps.push(props);
@@ -83,6 +84,51 @@ function shellJob(overrides: Record<string, unknown>) {
     startedAt: "2026-08-05T15:00:00Z",
     outputBytes: 0,
     ...overrides,
+  };
+}
+
+// The two intent tests' one-delegate tree: the shape both share, with the
+// live row as the delegate defaults. Each test passes the root counts and the
+// fields its row differs by, so a live-only field a terminal row must not
+// carry is neutralized by the override rather than duplicated away.
+function intentDelegateTree(overrides: Record<string, unknown>, counts: ActivityCounts): ActivityTreeData {
+  return {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: "sess_root",
+      ref: "ref_root",
+      label: "Root session",
+      aggregate: "running",
+      counts,
+      entries: [
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "dlg_intent",
+            ownerSessionId: "sess_root",
+            rootSessionId: "sess_root",
+            childSessionId: "sess_child",
+            childRef: "ref_child",
+            transcriptRef: "ref_child",
+            type: "delegate",
+            lifecycle: "active",
+            phase: "running",
+            status: "running",
+            projectionRevision: 1,
+            terminal: false,
+            resumable: true,
+            name: "inspect",
+            mandate: "Inspect the repo",
+            runStartedAt: "2026-08-05T15:00:00Z",
+            latestIntent: "Reading the board.",
+            branch: {},
+            ...overrides,
+          },
+        },
+      ],
+      branch: {},
+    },
   };
 }
 
@@ -162,11 +208,22 @@ const TREE: ActivityTreeData = {
 
 const FOLD_ID = "session:ref_root:inactive-fold";
 
-// The fold counts only the inactive entry hidden behind it; failed work is visible.
-const FOLD_NAME = "1 inactive";
+// The existing fold includes every settled entry, regardless of outcome.
+const FOLD_NAME = "2 inactive";
+
+// The row's kind glyph as a screen reader meets it: an exposed image with a
+// non-empty computed name. Returns the name so a test can compare outcomes
+// without pinning their wording.
+function glyphName(row: HTMLElement, glyph: HTMLElement): string {
+  expect(within(row).getAllByRole("img")).toContain(glyph);
+  const name = accessibleName(glyph).trim();
+  expect(name).not.toBe("");
+  return name;
+}
 
 // metaText reads a row's right-hand cluster alone, so an assertion pins the
 // meta grammar instead of the whole row (name, glyph, and open button text).
+
 function metaText(row: HTMLElement): string {
   const meta = row.querySelector<HTMLElement>("[class*='denseMeta']");
   if (!meta) throw new Error("row has no meta cluster");
@@ -199,12 +256,9 @@ afterEach(() => {
 });
 
 describe("ActivityTree", () => {
-  // A delegate the page stopped at: the depth or path bound was reached, so the
-  // branch is truncated and carries no token to page with. #1269 settled that
-  // deliberately -- a token there would name the child as a fresh root at
-  // position 0, which is the page a direct request already returns -- which
-  // leaves the child reachable only by asking for it as its own session.
-  function depthTruncatedTree(): ActivityTreeData {
+  // A delegate whose child session is rendered beneath it and carries its own
+  // session-level diagnostics.
+  function childDiagnosticsTree(diagnostics: string[]): ActivityTreeData {
     return {
       revision: 3,
       root: {
@@ -232,8 +286,18 @@ describe("ActivityTree", () => {
               terminal: false,
               resumable: true,
               task: "Deep work",
-              diagnostics: ['depth limit reached; request session "sess_deep_child" directly'],
-              branch: { truncated: true },
+              branch: {},
+              child: {
+                kind: "session",
+                sessionId: "sess_deep_child",
+                ref: "local:sess_deep_child",
+                label: "Deep child",
+                aggregate: "running",
+                counts: { active: 0, failed: 0, completed: 0, complete: false },
+                entries: [],
+                branch: {},
+                diagnostics,
+              },
             },
           },
         ],
@@ -242,111 +306,30 @@ describe("ActivityTree", () => {
     } as unknown as ActivityTreeData;
   }
 
-  test("a truncated delegate with no continuation offers to open the child session", async () => {
-    const user = userEvent.setup();
-    render(
-      <ActivityTree tree={depthTruncatedTree()} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={vi.fn()} />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
-    const open = screen.getByRole("button", { name: "Open session" });
-    await user.click(open);
-    expect(openSessionByRef).toHaveBeenCalledWith("local:sess_deep_child");
-  });
-
-  // The depth bound truncates the delegate's own branch, before the child is
-  // loaded at all. The continuation-path bound and a size trim inside the
-  // child land on the child's branch instead, with the child rendered above
-  // it — the same row, a different branch state.
-  function renderedChildTree(
-    childBranch: Record<string, unknown>,
-    childFields: Record<string, unknown> = {},
-  ): ActivityTreeData {
-    const tree = depthTruncatedTree();
-    const delegate = (tree.root.entries[0] as unknown as { delegate: Record<string, unknown> }).delegate;
-    delegate.branch = {};
-    delegate.diagnostics = undefined;
-    delegate.child = {
-      kind: "session",
-      sessionId: "sess_deep_child",
-      ref: "local:sess_deep_child",
-      label: "Deep child",
-      aggregate: "running",
-      counts: { active: 0, failed: 0, completed: 0, complete: false },
-      entries: [],
-      branch: childBranch,
-      ...childFields,
-    };
-    return tree;
-  }
-
   // The path bound and the journal conditions are the child session's to
   // report (agent/jobs_activity.go stamps them on the session, not the
   // delegate), and the delegate row is the only row that session has, so its
   // detail strip is where the sentence has to appear.
   test("a rendered child's session-level diagnostics show in the delegate's detail strip", () => {
     const pathLimit = 'continuation path limit reached; request session "sess_deep_child" directly';
-    render(
-      <ActivityTree
-        tree={renderedChildTree({ truncated: true }, { diagnostics: [pathLimit] })}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={vi.fn()}
-      />,
-    );
+    render(<ActivityTree tree={childDiagnosticsTree([pathLimit])} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
     expect(screen.getByText(pathLimit)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open session" })).toBeTruthy();
   });
 
-  test("a rendered child truncated with no continuation offers to open that session", async () => {
-    const user = userEvent.setup();
-    render(
-      <ActivityTree
-        tree={renderedChildTree({ truncated: true })}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={vi.fn()}
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Open session" }));
-    expect(openSessionByRef).toHaveBeenCalledWith("local:sess_deep_child");
-  });
-
-  test("a rendered child that can still be paged offers Load more, not an open-session link", async () => {
-    const user = userEvent.setup();
-    const onContinue = vi.fn();
-    render(
-      <ActivityTree
-        tree={renderedChildTree({ truncated: true, continuation: "token_child" })}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={onContinue}
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Load more" }));
-    // The two ids keep their separate jobs: the delegate row owns the strip
-    // and keys the graft (and the panel's failure map), while the child's
-    // token is what the request carries. A page fetched this way arrives
-    // wrapped in the ancestor chain, and the graft is fenced by projection
-    // revision, so it cannot cost this row its newer parent-side metadata —
-    // see activityMerge.test.ts.
-    expect(onContinue).toHaveBeenCalledWith('delegate:["local:sess_deep_child","dlg_deep"]', "token_child");
-  });
-
-  test("a delegate that can still be paged offers Load more, not an open-session link", () => {
-    const tree = depthTruncatedTree();
-    const delegate = (tree.root.entries[0] as { delegate: { branch: { truncated?: boolean; continuation?: string } } })
-      .delegate;
+  // Paging belongs to the panel's page boundaries, not the tree: a branch that
+  // carries a continuation token or stopped truncated renders its rows and its
+  // diagnostics, with no paging or open-session controls of its own.
+  test("a truncated or token-bearing tree renders its rows with no continuation controls", () => {
+    const tree = childDiagnosticsTree(["depth limit reached"]);
+    const delegate = (tree.root.entries[0] as unknown as { delegate: Record<string, unknown> }).delegate;
     delegate.branch = { truncated: true, continuation: "token_deep" };
+    tree.root.branch = { truncated: true, continuation: "token_root" };
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
-    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={vi.fn()} />);
-
-    expect(screen.getByRole("button", { name: "Load more" })).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: "Deep work" })).toBeTruthy();
+    expect(screen.getByText("depth limit reached")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
   });
 
@@ -457,7 +440,9 @@ describe("ActivityTree", () => {
 
     const row = screen.getByRole("treeitem", { name: "Bounded audit" });
     expect(row.textContent).toContain("exhausted");
-    expect(within(row).getByText("⌘").getAttribute("aria-label")).toBe("Failed");
+    expect(row.getAttribute("aria-description")).toBe("exhausted");
+    expect(within(row).getByText("⌘").getAttribute("data-state")).toBe("failed");
+    glyphName(row, within(row).getByText("⌘"));
   });
 
   test("active child gives a terminal stable delegate a working glyph", () => {
@@ -509,11 +494,12 @@ describe("ActivityTree", () => {
 
     render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "Stable child work" });
-    expect(within(row).getByText("⌘").getAttribute("aria-label")).toBe("Working");
+    expect(within(row).getByText("⌘").getAttribute("data-state")).toBe("working");
+    glyphName(row, within(row).getByText("⌘"));
     expect(row.textContent).toContain("completed");
   });
 
-  test("renders one dense row per live or failed entry with kind glyph and meta", () => {
+  test("renders one dense row per live entry with kind glyph and meta", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
@@ -526,8 +512,8 @@ describe("ActivityTree", () => {
     expect(within(delegateRow).getByText("⌘")).toBeTruthy();
     expect(delegateRow.textContent).toContain("↑41K ↓6K · 12s");
 
-    // One row per live or failed entry plus the fold: sessions never become rows.
-    expect(screen.getAllByRole("treeitem")).toHaveLength(4);
+    // One row per live entry plus the fold: sessions never become rows.
+    expect(screen.getAllByRole("treeitem")).toHaveLength(3);
   });
 
   // #1388: a live row with no usage opens its meta on its status, and both row
@@ -583,7 +569,7 @@ describe("ActivityTree", () => {
     expect(delegateMeta).toBe("running · 12s");
   });
 
-  test("successful terminal entries fold while failed work stays visible; clicking the fold only toggles it", async () => {
+  test("all terminal entries fold; clicking the fold only toggles it", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     const user = setupUser();
@@ -591,9 +577,9 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={onToggleFold} />);
 
     const foldRow = screen.getByRole("treeitem", { name: FOLD_NAME });
-    expect(foldRow.getAttribute("aria-label")).toBe("1 inactive");
+    expect(foldRow.getAttribute("aria-label")).toBe("2 inactive");
     expect(foldRow.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.getByRole("treeitem", { name: "broken lint" })).toBeTruthy();
+    expect(screen.queryByRole("treeitem", { name: "broken lint" })).toBeNull();
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
 
     await user.click(foldRow);
@@ -614,10 +600,53 @@ describe("ActivityTree", () => {
 
     const failedRow = screen.getByRole("treeitem", { name: "broken lint" });
     expect(failedRow.textContent).toContain("2m");
-    // No "failed" text in the meta: the colored kind glyph says it instead.
+    // Duration stays compact while the accessible row retains its true status.
+    expect(metaText(failedRow)).toBe("2m");
     expect(failedRow.textContent).not.toContain("failed");
+    expect(failedRow.getAttribute("aria-description")).toBe("failed");
     const kindGlyph = within(failedRow).getByText("$");
-    expect(kindGlyph.getAttribute("aria-label")).toBe("Failed");
+    expect(kindGlyph.getAttribute("data-state")).toBe("failed");
+    glyphName(failedRow, kindGlyph);
+  });
+
+  test("a live delegate row shows its intent while aria and glyph keep the status", () => {
+    const tree = intentDelegateTree({}, { active: 1, failed: 0, completed: 0, complete: false });
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    expect(metaText(row)).toBe("Reading the board.");
+    expect(row.getAttribute("aria-description")).toBe("running");
+    const kindGlyph = within(row).getByText("⌘");
+    expect(kindGlyph.getAttribute("aria-label")).toBe("Working");
+  });
+
+  test("a live delegate row keeps its intent beside token usage", () => {
+    const tree = intentDelegateTree(
+      { usage: { inputTokens: 41200, outputTokens: 6100 } },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    expect(metaText(row)).toBe("Reading the board. · ↑41.2K ↓6.1K");
+  });
+
+  test("a terminal delegate row keeps its status word over a stale intent", () => {
+    const tree = intentDelegateTree(
+      {
+        delegateId: "dlg_done",
+        lifecycle: "idle",
+        phase: "done",
+        status: "completed",
+        terminal: true,
+        latestIntent: "Stale line.",
+        mandate: undefined,
+        runStartedAt: undefined,
+      },
+      { active: 0, failed: 0, completed: 1, complete: true },
+    );
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    expect(metaText(row)).toBe("completed");
+    expect(row.textContent).not.toContain("Stale line.");
   });
 
   test("a legacy terminal failed row states the display word by its reason", () => {
@@ -649,9 +678,11 @@ describe("ActivityTree", () => {
         branch: {},
       },
     };
-    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} onContinue={vi.fn()} />);
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "legacy lint" });
-    expect(row.textContent).toContain("Command failed");
+    // The reason picks the word: it is not the bare status's.
+    expect(row.getAttribute("aria-description")).toBe(jobStatusDisplay("failed", "exit_nonzero"));
+    expect(row.getAttribute("aria-description")).not.toBe(jobStatusDisplay("failed"));
   });
 
   test("the kind glyph carries the row's status hue and accessible name", () => {
@@ -660,18 +691,25 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
 
     // Working rows color the glyph with the alive hue.
-    const liveGlyph = within(screen.getByRole("treeitem", { name: "run tests" })).getByText("$");
-    expect(liveGlyph.getAttribute("aria-label")).toBe("Working");
+    const liveRow = screen.getByRole("treeitem", { name: "run tests" });
+    const liveGlyph = within(liveRow).getByText("$");
+    expect(liveGlyph.getAttribute("data-state")).toBe("working");
     expect(liveGlyph.className).toContain("kindAlive");
 
-    // Failed rows color it danger; ended rows keep the default low ink.
-    const failedGlyph = within(screen.getByRole("treeitem", { name: "broken lint" })).getByText("$");
-    expect(failedGlyph.getAttribute("aria-label")).toBe("Failed");
-    expect(failedGlyph.className).toContain("kindDanger");
-    const endedGlyph = within(screen.getByRole("treeitem", { name: "finished build" })).getByText("$");
-    expect(endedGlyph.getAttribute("aria-label")).toBe("Ended");
+    // Both settled outcomes keep default low ink without losing the outcome label.
+    const failedRow = screen.getByRole("treeitem", { name: "broken lint" });
+    const failedGlyph = within(failedRow).getByText("$");
+    expect(failedGlyph.getAttribute("data-state")).toBe("failed");
+    expect(failedGlyph.className).not.toContain("kindDanger");
+    const endedRow = screen.getByRole("treeitem", { name: "finished build" });
+    const endedGlyph = within(endedRow).getByText("$");
+    expect(endedGlyph.getAttribute("data-state")).toBe("ended");
     expect(endedGlyph.className).not.toContain("kindDanger");
     expect(endedGlyph.className).not.toContain("kindAlive");
+
+    // A screen reader hears each outcome by name, and no two outcomes alike.
+    const names = [glyphName(liveRow, liveGlyph), glyphName(failedRow, failedGlyph), glyphName(endedRow, endedGlyph)];
+    expect(new Set(names).size).toBe(names.length);
   });
 
   test("a completed status with a failure outcome uses the failed glyph", () => {
@@ -698,10 +736,12 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
 
     const failedRow = screen.getByRole("treeitem", { name: "failed outcome" });
-    expect(within(failedRow).getByText("completed").className).toContain("denseFailed");
+    expect(metaText(failedRow)).toBe("completed");
+    expect(failedRow.querySelector("[class*=denseFailed]")).toBeNull();
     const failedGlyph = within(failedRow).getByText("$");
-    expect(failedGlyph.getAttribute("aria-label")).toBe("Failed");
-    expect(failedGlyph.className).toContain("kindDanger");
+    expect(failedGlyph.getAttribute("data-state")).toBe("failed");
+    expect(failedGlyph.className).not.toContain("kindDanger");
+    glyphName(failedRow, failedGlyph);
   });
 
   test("a terminal status with no failure outcome keeps the ended glyph", () => {
@@ -731,8 +771,9 @@ describe("ActivityTree", () => {
     expect(screen.getByRole("treeitem", { name: "1 inactive" })).toBeTruthy();
     const row = screen.getByRole("treeitem", { name: "status only" });
     const glyph = within(row).getByText("$");
-    expect(glyph.getAttribute("aria-label")).toBe("Ended");
+    expect(glyph.getAttribute("data-state")).toBe("ended");
     expect(glyph.className).not.toContain("kindDanger");
+    glyphName(row, glyph);
   });
 
   test("opening the fold reveals rows with their detail strips collapsed", async () => {
@@ -800,6 +841,17 @@ describe("ActivityTree", () => {
   test("dense rows never grow the name over the open control: meta owns the right edge", () => {
     expect(activityPanelCss).toMatch(/\.denseName\s*\{[^}]*flex:\s*0 1 auto/);
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*margin-left:\s*auto/);
+    // A long stated intent must not collapse the name to nothing: the meta
+    // shrinks and ellipsizes like the sidebar's rowMeta, so the name keeps
+    // first claim on its own space (the review's 200-rune intent scenario).
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*flex:\s*0 1 auto/);
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*min-width:\s*0/);
+    // Proportional shrink alone distributes by content width, so a long
+    // intent still starves a short name; the cap holds the meta to a share
+    // the name can survive.
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*max-width:\s*60%/);
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*overflow:\s*hidden/);
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*text-overflow:\s*ellipsis/);
   });
 
   test("dense-row open targets keep hit width but never overhang the row, so neighbors' targets can't overlap", () => {
@@ -943,10 +995,11 @@ describe("ActivityTree", () => {
     vi.setSystemTime(NOW);
     const user = setupUser();
     const onToggleFold = vi.fn();
-    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={onToggleFold} />);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[FOLD_ID]} onToggleFold={onToggleFold} />);
 
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
+    const doneRow = screen.getByRole("treeitem", { name: "finished build" });
     const failedRow = screen.getByRole("treeitem", { name: "broken lint" });
     const foldRow = screen.getByRole("treeitem", { name: FOLD_NAME });
 
@@ -954,11 +1007,15 @@ describe("ActivityTree", () => {
     await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(delegateRow);
     await user.keyboard("{ArrowDown}");
-    expect(document.activeElement).toBe(failedRow);
-    await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(foldRow);
-    await user.keyboard("{ArrowUp}");
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(doneRow);
+    await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(failedRow);
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(doneRow);
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(foldRow);
     await user.keyboard("{ArrowUp}");
     expect(document.activeElement).toBe(delegateRow);
     await user.keyboard("{ArrowUp}");
@@ -1033,20 +1090,20 @@ describe("ActivityTree", () => {
     expect(openTranscript).not.toHaveBeenCalled();
   });
 
-  test("host-driven fold toggle preserves visible failures while revealing and hiding successful work", async () => {
+  test("host-driven fold toggle reveals and hides every settled outcome", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<Host />);
 
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
-    expect(screen.getAllByRole("treeitem", { name: "broken lint" })).toHaveLength(1);
+    expect(screen.queryByRole("treeitem", { name: "broken lint" })).toBeNull();
     await user.click(screen.getByRole("treeitem", { name: FOLD_NAME }));
     expect(screen.getByRole("treeitem", { name: "finished build" })).toBeTruthy();
     expect(screen.getAllByRole("treeitem", { name: "broken lint" })).toHaveLength(1);
     await user.click(screen.getByRole("treeitem", { name: FOLD_NAME }));
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
-    expect(screen.getAllByRole("treeitem", { name: "broken lint" })).toHaveLength(1);
+    expect(screen.queryByRole("treeitem", { name: "broken lint" })).toBeNull();
   });
 
   // A tree whose only entry is one live stable delegate with a run start and
@@ -1179,63 +1236,6 @@ describe("ActivityTree", () => {
     expect(meta).toContain("5s");
     expect(meta).not.toContain("1m");
   });
-
-  test("continuation strip renders after the session's rows and calls onContinue", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(NOW);
-    const user = setupUser();
-    const onContinue = vi.fn();
-    const continuedTree: ActivityTreeData = {
-      revision: 1,
-      root: { ...TREE.root, branch: { continuation: "tok_root" } },
-    };
-    render(<ActivityTree tree={continuedTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={onContinue} />);
-
-    await user.click(screen.getByRole("button", { name: "Load more" }));
-    expect(onContinue).toHaveBeenCalledWith("session:ref_root", "tok_root");
-    expect(openTranscript).not.toHaveBeenCalled();
-  });
-
-  test("every continuation control waits while another branch is loading", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(NOW);
-    const continuedTree: ActivityTreeData = {
-      revision: 1,
-      root: { ...TREE.root, branch: { continuation: "tok_root" } },
-    };
-    render(
-      <ActivityTree
-        tree={continuedTree}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={vi.fn()}
-        loadingContinuationID='delegate:["ref_other","dlg_other"]'
-      />,
-    );
-    // The panel carries one page at a time, so a branch that is not the one
-    // loading still cannot start a second.
-    expect(screen.getByRole("button", { name: "Load more" }).hasAttribute("disabled")).toBe(true);
-  });
-
-  test("continuation failure message renders when the load failed", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(NOW);
-    const continuedTree: ActivityTreeData = {
-      revision: 1,
-      root: { ...TREE.root, branch: { continuation: "tok_root" } },
-    };
-    render(
-      <ActivityTree
-        tree={continuedTree}
-        expandedFoldIDs={[]}
-        onToggleFold={vi.fn()}
-        onContinue={vi.fn()}
-        continuationFailures={{ "session:ref_root": "Couldn't load more." }}
-        loadingContinuationID={undefined}
-      />,
-    );
-    expect(screen.getByText("Couldn't load more.")).toBeTruthy();
-  });
 });
 
 test("recorded compact delegate names label activity rows without changing transcript targets", async () => {
@@ -1258,4 +1258,117 @@ test("recorded compact delegate names label activity rows without changing trans
   const delegate = recorded.delegates.find((delegate) => delegate.delegateId === "dlg_reported");
   if (!delegate) throw new Error("missing recorded delegate");
   expect(openTranscript).toHaveBeenCalledWith(delegate.childRef, delegate.ownerRef);
+});
+
+test.each([subagentOutcomesDelegatesResponse, subagentResumedDelegatesResponse])(
+  "recorded settled delegates fold quietly without losing run reports or accessible failure",
+  async (load) => {
+    // These tests use the real row, detail and transcript controls, not this file's action spies.
+    vi.restoreAllMocks();
+    const recorded = load();
+    const state = new SessionActivityStore(new FakeClient(), recorded.context.ref).getSnapshot();
+    const projected = projectSessionActivity({
+      ...state,
+      context: recorded.context,
+      delegates: { ...state.delegates, rows: recorded.delegates, complete: true },
+      jobs: { ...state.jobs, complete: true },
+    });
+    if (!projected.tree) throw new Error("missing recorded tree");
+    const view = render(<ActivityTree tree={projected.tree} expandedFoldIDs={[]} onToggleFold={() => {}} />);
+    expect(screen.getAllByRole("treeitem")).toHaveLength(1);
+    expect(screen.getByRole("treeitem", { name: "3 inactive" })).toBeTruthy();
+    view.rerender(
+      <ActivityTree
+        tree={projected.tree}
+        expandedFoldIDs={["session:local:root:inactive-fold"]}
+        onToggleFold={() => {}}
+      />,
+    );
+    const row = screen.getByRole("treeitem", { name: "failed-delegate" });
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    expect(metaText(row)).toBe("30s");
+    expect(row.getAttribute("aria-description")).toBe("failed");
+    expect(within(row).getByRole("img", { name: "Failed" }).className).not.toContain("kindDanger");
+    expect(row.querySelector("[class*=denseFailed]")).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: "Show details for failed-delegate" }));
+    expect(screen.getByText("Update the lockfile")).toBeTruthy();
+    expect(detailLineByText("Delegate dlg_failed · send · stop · status")).toBeTruthy();
+    const reported = screen.getByRole("treeitem", { name: "reported-delegate" });
+    fireEvent.click(within(reported).getByRole("button", { name: "Show details for reported-delegate" }));
+    const report = recorded.delegates.find((delegate) => delegate.delegateId === "dlg_reported")?.reportPreview;
+    if (!report) throw new Error("missing recorded report");
+    expect(screen.getByTestId("delegate-report-bubble").textContent).toContain(report.split("\n")[0]);
+  },
+);
+
+test.each(["blocked", "needs-you"])(
+  "a recorded failed ancestor stays visible and live attention outranks settled failure: %s",
+  (status) => {
+    vi.restoreAllMocks();
+    const recorded = subagentOutcomesDelegatesResponse();
+    const failed = recorded.delegates.find((delegate) => delegate.delegateId === "dlg_failed");
+    if (!failed) throw new Error("missing recorded failure");
+    const state = new SessionActivityStore(new FakeClient(), recorded.context.ref).getSnapshot();
+    const projected = projectSessionActivity({
+      ...state,
+      context: recorded.context,
+      delegates: { ...state.delegates, rows: [failed], complete: true },
+      jobs: {
+        ...state.jobs,
+        complete: true,
+        rows: [
+          {
+            ...shellJob({}),
+            ownerRef: failed.childRef,
+            status,
+            description: "Current attention",
+          },
+        ],
+      },
+    });
+    if (!projected.tree) throw new Error("missing recorded tree");
+    render(<ActivityTree tree={projected.tree} compactDetails expandedFoldIDs={[]} onToggleFold={() => {}} />);
+    const parent = screen.getByRole("treeitem", { name: "failed-delegate" });
+    const child = screen.getByRole("treeitem", { name: "Current attention" });
+    expect(parent.getAttribute("aria-level")).toBe("1");
+    expect(child.getAttribute("aria-level")).toBe("2");
+    expect(within(parent).getByRole("img", { name: "Working" }).className).toContain("kindAlive");
+    expect(parent.textContent).toContain("failed");
+    expect(within(child).getByRole("img", { name: "Needs you" }).className).toContain("kindAttention");
+    expect(screen.queryByRole("treeitem", { name: /inactive/ })).toBeNull();
+  },
+);
+
+test("settling a focused failed job transfers focus to Inactive and preserves its disclosure choice", () => {
+  vi.restoreAllMocks();
+  const job = shellJob({ description: "Focused job", hasOutput: false, status: "error" });
+  const liveTree: ActivityTreeData = { ...TREE, root: { ...TREE.root, entries: [{ kind: "shell", job }] } };
+  const view = render(<ActivityTree tree={liveTree} expandedFoldIDs={[]} onToggleFold={() => {}} />);
+  const live = screen.getByRole("treeitem", { name: "Focused job" });
+  expect(within(live).getByRole("img", { name: "Failed" }).className).toContain("kindDanger");
+  fireEvent.click(within(live).getByRole("button", { name: "Hide details for Focused job" }));
+  act(() => live.focus());
+  const settledTree: ActivityTreeData = {
+    ...liveTree,
+    root: {
+      ...liveTree.root,
+      entries: [
+        {
+          kind: "shell",
+          job: { ...job, terminal: true, outcome: "failure", endedAt: "2026-08-05T15:00:30Z" },
+        },
+      ],
+    },
+  };
+  view.rerender(<ActivityTree tree={settledTree} expandedFoldIDs={[]} onToggleFold={() => {}} />);
+  expect(document.activeElement).toBe(screen.getByRole("treeitem", { name: "1 inactive" }));
+  view.rerender(<ActivityTree tree={settledTree} expandedFoldIDs={[FOLD_ID]} onToggleFold={() => {}} />);
+  const settled = screen.getByRole("treeitem", { name: "Focused job" });
+  expect(settled.getAttribute("aria-expanded")).toBe("false");
+  expect(settled.getAttribute("aria-description")).toBe("error");
+  expect(within(settled).getByRole("img", { name: "Failed" }).className).not.toContain("kindDanger");
+  fireEvent.click(within(settled).getByRole("button", { name: "Show details for Focused job" }));
+  view.rerender(<ActivityTree tree={settledTree} expandedFoldIDs={[]} onToggleFold={() => {}} />);
+  view.rerender(<ActivityTree tree={settledTree} expandedFoldIDs={[FOLD_ID]} onToggleFold={() => {}} />);
+  expect(screen.getByRole("treeitem", { name: "Focused job" }).getAttribute("aria-expanded")).toBe("true");
 });

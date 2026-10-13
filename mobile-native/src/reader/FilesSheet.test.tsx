@@ -1,9 +1,10 @@
-// Files & artifacts (spec 10.1, ruling 26): the session's documents, newest
+// Files (spec 10.1, ruling 26): the session's documents, newest
 // write first, each with its kind, title, path, length and age, and a blue dot
 // when it's new or changed since you last opened it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderedText } from "../renderNative.testkit";
+import { hasTestID } from "../markerTestUtils";
+import { pressable, render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { DocumentMemory } from "./documentMemory";
 import { forgetDocumentSummaries } from "./documentSummaries";
@@ -45,7 +46,6 @@ const bodies: Record<string, string> = {
 };
 
 let memory: DocumentMemory;
-const trees: ReactTestRenderer[] = [];
 
 function storage(): SyncStringStorage {
 	const data = new Map<string, string>();
@@ -69,25 +69,17 @@ beforeEach(() => {
 	});
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * MINUTE).toISOString();
 
 async function sheet(documents: SessionDocument[]) {
-	const params = { hubId: "studio", ref: "local:fix", title: "Fix race", documents };
+	const params = { hubId: "studio", ref: "local:fix", title: "Fix race", cwd: "/work/owner", documents };
 	const tree = render(
 		<FilesSheet route={{ key: "files", name: "FilesSheet", params } as never} navigation={sheetNavigation as never} />,
 	);
-	trees.push(tree);
 	await settle();
 	return tree;
 }
@@ -99,6 +91,14 @@ const rows = (tree: ReactTestRenderer) =>
 			node.props.accessibilityRole === "button" &&
 			node.props.testID === "document-row",
 	);
+/** A row's length and age, after its path. */
+const rowFacts = (row: ReturnType<typeof rows>[number] | undefined) =>
+	(row?.findAll((node) => String(node.type) === "Text") ?? [])
+		.flatMap((node) => node.children.filter((child) => typeof child === "string"))
+		.filter((text) => text.startsWith(" · "))
+		.join("")
+		.split(" · ")
+		.slice(1);
 const dotted = (row: ReturnType<typeof rows>[number]) =>
 	row.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "circle.fill").length > 0;
 
@@ -109,16 +109,26 @@ it("lists each document with its kind, title, path, length and age, in the order
 		{ path: CODE, kind: "Code" },
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("Files & artifacts");
 	expect(text).toContain("Fix the settle/drain race");
 	expect(text).toContain(PLAN);
-	expect(text).toContain("142 lines");
-	expect(text).toContain("3m ago");
-	const labels = rows(tree).map((row) => String(row.props.accessibilityLabel));
+	const [length, age, ...more] = rowFacts(rows(tree)[1]);
+	expect(length).toMatch(/^142\D/);
+	expect(age).toMatch(/^3\D/);
+	expect(more).toEqual([]);
+	const labels = rows(tree).map((row) => String(row.props.accessibilityLabel).split(", "));
 	expect(labels).toHaveLength(3);
-	expect(labels[0]).toMatch(/^Doc, Flake triage, /);
-	expect(labels[1]).toBe(`Plan, Fix the settle/drain race, ${PLAN}, 142 lines, 3 minutes ago, new`);
-	expect(labels[2]).toMatch(/^Code, retirement\.go, agent\/retirement\.go, 1 line, new$/);
+	expect(labels[0]?.slice(0, 2)).toEqual(["Doc", "Flake triage"]);
+	const [planKind, planTitle, planPath, planLength, planAge, planFresh, ...planRest] = labels[1] ?? [];
+	expect([planKind, planTitle, planPath]).toEqual(["Plan", "Fix the settle/drain race", PLAN]);
+	expect(planLength).toMatch(/^142\D/);
+	expect(planAge).toMatch(/^3\D/);
+	expect(planFresh).toBe("new");
+	expect(planRest).toEqual([]);
+	const [codeKind, codeTitle, codePath, codeLength, codeFresh, ...codeRest] = labels[2] ?? [];
+	expect([codeKind, codeTitle, codePath]).toEqual(["Code", "retirement.go", "agent/retirement.go"]);
+	expect(codeLength).toMatch(/^1\D/);
+	expect(codeFresh).toBe("new");
+	expect(codeRest).toEqual([]);
 });
 
 it("dots a document you haven't opened, and one written after your last read, and not one read since", async () => {
@@ -150,14 +160,34 @@ it("opens a document in the Reader over the session, after the sheet goes", asyn
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path: PLAN,
+		reference: { path: PLAN, cwd: "/work/owner", readTarget: `/work/owner/${PLAN}`, provenance: "relative" },
 		sessionTitle: "Fix race",
 		updatedAt,
 	});
 });
 
+it("captures literal raw-space artifact paths from this sheet's owning cwd", async () => {
+	const tree = await sheet([{ path: "docs/a raw.md", kind: "Doc" }]);
+	act(() => rows(tree)[0]?.props.onPress());
+	expect(sheetNavigation.navigate).toHaveBeenCalledWith("Reader", {
+		hubId: "studio",
+		sessionRef: "local:fix",
+		path: "docs/a raw.md",
+		reference: {
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative",
+		},
+		sessionTitle: "Fix race",
+		updatedAt: undefined,
+	});
+});
+
 it("says so when the session has no documents", async () => {
 	const tree = await sheet([]);
-	expect(renderedText(tree)).toContain("This session hasn't written or linked any documents yet.");
+	expect(rows(tree)).toEqual([]);
+	expect(hasTestID(tree, "files-empty")).toBe(true);
 });
 
 it("closes with Done", async () => {

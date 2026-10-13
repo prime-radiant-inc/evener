@@ -481,3 +481,31 @@ test("row info identity is stable for surviving rows across removal and re-add",
   expect(infosA.length).toBeGreaterThanOrEqual(3);
   for (const info of infosA) expect(info).toBe(infosA[0]);
 });
+
+// A control nested in a row (a project row's Retry) owns its own Enter: the
+// tree must neither swallow the keypress nor treat it as activating the row.
+test("Enter on a button inside a row clicks that button, not the row", () => {
+  const onRetry = vi.fn();
+  const { onActivate } = renderTree({
+    renderRow: (node) => (
+      <>
+        {node.id}
+        {node.id === "a" && (
+          <button type="button" onClick={onRetry}>
+            Retry
+          </button>
+        )}
+      </>
+    ),
+  });
+  const retry = screen.getByRole("button", { name: "Retry" });
+  const notPrevented = fireEvent.keyDown(retry, { key: "Enter" });
+  expect(notPrevented).toBe(true);
+  expect(onActivate).not.toHaveBeenCalled();
+});
+
+test("Enter on the row itself still activates it", () => {
+  const { onActivate } = renderTree();
+  fireEvent.keyDown(row("a"), { key: "Enter" });
+  expect(onActivate).toHaveBeenCalledTimes(1);
+});

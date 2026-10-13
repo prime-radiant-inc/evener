@@ -91,7 +91,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		return err
 	}
 	if err := registrar.Register(tool.RegisteredTool{
-		Definition: tool.DefJobList(), ReadOnly: true,
+		Definition: tool.DefJobListNamed(s.resultToolName()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -112,7 +112,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		return err
 	}
 	if err := registrar.Register(tool.RegisteredTool{
-		Definition: tool.DefJobWatch(availableEventKindNames()),
+		Definition: tool.DefJobWatchNamed(availableEventKindNames(), s.resultToolName()),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -149,6 +149,7 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 	if err != nil {
 		return "", err
 	}
+	a.ResultTool = s.resultToolName()
 	if a.Operation == "create" && watchArgsIsTimer(a) && s.cfg.TurnEndsProcess {
 		return "", errors.New("invalid_request: timers need a session that outlives the turn")
 	}
@@ -759,7 +760,10 @@ func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.Jo
 	if jm == nil || rec == nil || rec.TerminalGen == "" {
 		return
 	}
-	if !rec.Status.IsTerminal() || rec.NotifyState != jobstore.NotifyPending {
+	// not_armed is a terminal job whose notification was never armed: a kept
+	// foreground shell, or one a crash stopped before arming. The caller has
+	// learned it ended either way, so it settles just as a pending one does.
+	if !rec.Status.IsTerminal() || (rec.NotifyState != jobstore.NotifyPending && rec.NotifyState != jobstore.NotifyNotArmed) {
 		return
 	}
 	ownerSessionID := rec.OwnerSessionID
@@ -1673,6 +1677,10 @@ type delegateSendResult struct {
 	// lifecycle step 3); nil for a non-isolated delegate.
 	Worktree          *delegateWorktreeToolResult `json:"worktree,omitempty"`
 	WaitIgnoredReason string                      `json:"wait_ignored_reason,omitempty"`
+	// EarlierResults are results of the same delegate the caller had not
+	// yet received, oldest first, carried ahead of this one by a wait that
+	// collected them (#3906).
+	EarlierResults []delegateSendResult `json:"earlier_results,omitempty"`
 }
 
 type jobWatchToolResult struct {
@@ -1766,6 +1774,11 @@ func delegateSandboxToolResultFrom(sb *delegateSandboxReport) *delegateSandboxTo
 
 func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
 	_ = maxChars
+	out := delegateSendResultFrom(res)
+	return tool.StateResult{Output: formatDelegateSend(out), State: out}, nil
+}
+
+func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 	out := delegateSendResult{
 		DelegateID:          res.DelegateID,
 		Type:                res.Type,
@@ -1805,14 +1818,52 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		out.StructuredResultValid = &valid
 		out.StructuredResultReason = res.StructuredResultReason
 	}
-	return tool.StateResult{Output: formatDelegateSend(out), State: out}, nil
+	for _, packet := range res.Earlier {
+		earlier := sendMessageResult{DelegateID: res.DelegateID, Type: res.Type, TranscriptRef: res.TranscriptRef}
+		if packet.Kind == delegatestore.PacketUpdate {
+			// A mid-work update the reply carries ahead of the newest result
+			// settles nothing: it is the delegate's message and no more.
+			earlier.Action = "update"
+			message, err := delegateUpdateMessage(packet)
+			if err != nil {
+				// Unreachable by construction: the journal fold writes every
+				// update message with json.Marshal of a string. The reply has
+				// no error channel, so the decode error stands in as output.
+				message = err.Error()
+			}
+			earlier.Output = message
+		} else {
+			completeStableDelegateSendResult(&earlier, packet)
+		}
+		out.EarlierResults = append(out.EarlierResults, delegateSendResultFrom(earlier))
+	}
+	return out
 }
 
-// formatDelegateSend renders a delegate send/steer/start result: any reply output,
-// a bracketed footer, and the structured_result (JSON, genuinely structured) when
-// present.
+// latestResultHeader introduces a delegate_send reply's own result after the
+// earlier results it carries, in the tool reply and in transcripts alike.
+const latestResultHeader = "latest result:\n"
+
+// earlierResultHeader introduces earlier result i (zero-based) of n that a
+// delegate_send reply carries, in the tool reply and in transcripts alike.
+func earlierResultHeader(i, n int) string {
+	return fmt.Sprintf("earlier result %d of %d, not delivered before:\n", i+1, n)
+}
+
+// formatDelegateSend renders a delegate send/steer/start result: any earlier
+// results it carries, numbered and each rendered the same way, then any reply
+// output, a bracketed footer, and the structured_result (JSON, genuinely
+// structured) when present.
 func formatDelegateSend(out delegateSendResult) string {
 	var b strings.Builder
+	for i, earlier := range out.EarlierResults {
+		b.WriteString(earlierResultHeader(i, len(out.EarlierResults)))
+		b.WriteString(formatDelegateSend(earlier))
+		b.WriteString("\n\n")
+	}
+	if len(out.EarlierResults) != 0 {
+		b.WriteString(latestResultHeader)
+	}
 	if out.Output != nil && *out.Output != "" {
 		b.WriteString(*out.Output)
 		if !strings.HasSuffix(*out.Output, "\n") {

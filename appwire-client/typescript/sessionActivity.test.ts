@@ -64,6 +64,24 @@ test("decodeActivityRead keeps the latest tool intent", () => {
   ]);
 });
 
+// The read keeps when each session last moved, for comparing with its seen
+// mark; a session that hasn't moved since its daemon began serving it carries
+// no key, and a value that isn't a count drops that row alone.
+test("decodeActivityRead keeps when a session last moved", () => {
+  expect(
+    decodeActivityRead({
+      sessions: [
+        { ref: "local:a", minutes, runningSubagents: 0, lastMovedAt: 1_800_000_060_000 },
+        { ref: "local:b", minutes, runningSubagents: 0 },
+        { ref: "local:c", minutes, runningSubagents: 0, lastMovedAt: "soon" },
+      ],
+    }),
+  ).toEqual([
+    { ref: "local:a", minutes, runningSubagents: 0, lastMovedAt: 1_800_000_060_000 },
+    { ref: "local:b", minutes, runningSubagents: 0 },
+  ]);
+});
+
 // An intent a hub could not have cut to the wire's bound is a malformed entry
 // like any other, and drops its own row alone. The wire's bound counts Unicode
 // code points, so an astral character must not smuggle a longer line past it.

@@ -21,6 +21,15 @@
 //     present on PATH (command-present). Probe does not spawn or connect to
 //     the process, so command-present cannot certify connectability — the
 //     command could still fail to speak MCP once actually launched.
+//   - Each handshake is bounded by Probe's own per-server timeout, deliberately
+//     shorter than the bound the runtime manager gives one server: a probe
+//     answers for a whole configured set, reports each server separately, and
+//     must not be slowed by one unreachable server, while a session's connect
+//     may reasonably wait longer for the one server it needs.
+//   - Probe reports on the configuration it is handed. The settings overview
+//     hands it the servers of one config file while a session connects to the
+//     merged layered set, so a server name shadowed by a higher layer can be
+//     probed as one definition and connected as another (#4428).
 //
 // Results reflect what this probe observes from wherever it runs (typically
 // the hub process) at the moment it runs. If the daemon that will actually
@@ -30,7 +39,6 @@ package mcpprobe
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -168,41 +176,10 @@ func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig, deps probeDeps) R
 	}
 }
 
-// transportForProbe builds a client transport for an http/sse config. It is
-// a simpler, mcpprobe-local equivalent of agent/internal/mcp's unexported
-// transportForConfig (which mcpprobe cannot use directly): the same
-// http/sse transport construction and header injection, minus the stdio
-// CommandTransport machinery mcpprobe doesn't need — probeOne handles stdio
-// through its lookup dependency. A nil client leaves the SDK on
-// http.DefaultClient; Probe always supplies its own.
+// transportForProbe builds the client transport for an http/sse config through
+// the shared builder, so the probe and the connection manager construct
+// transports the same way (agent/internal/mcphttp). The probe passes the client
+// it pools for the call; probeOne handles stdio through its lookup dependency.
 func transportForProbe(cfg mcpconfig.ServerConfig, deps probeDeps) (mcpsdk.Transport, error) {
-	client := deps.httpClient
-	if len(cfg.Headers) > 0 {
-		client = mcphttp.ClientWithHeaders(client, cfg.URL, cfg.Headers)
-	}
-
-	switch cfg.Type {
-	case "sse":
-		if cfg.URL == "" {
-			return nil, errors.New("sse transport requires a url")
-		}
-		t := &mcpsdk.SSEClientTransport{Endpoint: cfg.URL}
-		if client != nil {
-			t.HTTPClient = client
-		}
-		return t, nil
-
-	case "http":
-		if cfg.URL == "" {
-			return nil, errors.New("http transport requires a url")
-		}
-		t := &mcpsdk.StreamableClientTransport{Endpoint: cfg.URL}
-		if client != nil {
-			t.HTTPClient = client
-		}
-		return t, nil
-
-	default:
-		return nil, fmt.Errorf("unknown MCP transport type %q", cfg.Type)
-	}
+	return mcphttp.BuildTransport(cfg.Type, cfg.URL, cfg.Headers, deps.httpClient)
 }

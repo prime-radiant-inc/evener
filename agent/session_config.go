@@ -50,7 +50,10 @@ type SessionConfig struct {
 
 	// MemoryStateRoot is the owning runtime host's binding, never persisted.
 	// An empty state root leaves library sessions without memory access.
-	// MemoryProjectID is trusted at launch and persisted, never inferred on resume.
+	// MemoryProjectID is bound at launch and persisted. A root session saved
+	// without one adopts its own home's binding on resume, never the resume cwd's.
+	// A delegate with a live parent (on spawn or restore) takes the parent's;
+	// resumed on its own, it keeps the binding it saved.
 	MemoryStateRoot string `json:"-"`
 	MemoryProjectID string `json:"memory_project_id,omitempty"`
 	DisableMemory   bool   `json:"disable_memory,omitempty"`
@@ -304,6 +307,9 @@ type SessionConfig struct {
 type testConfig struct {
 	// memoryBeforeIO observes the native scope boundary without providing data.
 	memoryBeforeIO func(scope, operation string) error
+	// memoryRealBudget gives the memory boundary its production read budget
+	// instead of the long default tests get (see memoryBoundaryWait).
+	memoryRealBudget bool
 	// visionSideChannelTimeout supplies an explicit owned deadline only for
 	// deterministic package tests. Zero leaves caller deadlines authoritative.
 	visionSideChannelTimeout time.Duration
@@ -442,6 +448,11 @@ type testConfig struct {
 	// pause it there so another drive is refused on that guard. Nil in
 	// production.
 	delegateAttentionBeforeGuardRelease func(*subagent)
+	// afterModelHistorySnapshot runs on every request build, just after the
+	// round snapshots its history and before a leased delegate turn takes the
+	// controller's own snapshot, so a test can land a turn between the two.
+	// Nil in production.
+	afterModelHistorySnapshot func()
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
@@ -576,6 +587,21 @@ type testConfig struct {
 	// window. Nil keeps the production default. Inherited by child configs
 	// like every testOnly field.
 	delegateIdleReleaseDelay *time.Duration
+
+	// needsResponseQuietPeriod overrides needsResponseQuietPeriodDefault for
+	// tests; zero rests awaiting at the settle itself. Nil keeps the
+	// production default.
+	needsResponseQuietPeriod *time.Duration
+
+	// needsResponseRestBeforeAnnounce, when set, runs in the quiet-period
+	// timer after the session rests awaiting and before STATUS_SETTLED is
+	// emitted, with restMu held, so a test can start a turn in that gap.
+	needsResponseRestBeforeAnnounce func()
+
+	// turnStartBeforeRestMu, when set, runs in processOneInput right before
+	// the turn start takes restMu, so a test knows the lock is the next thing
+	// the turn waits on.
+	turnStartBeforeRestMu func()
 
 	// idleTeardownConcurrency overrides the idle-release member teardown's
 	// concurrency bound (delegateTeardownConcurrencyDefault) for tests. Nil
@@ -799,6 +825,11 @@ type spawnConfig struct {
 	// parentJobActivity reports parent-observable child progress for the stable
 	// delegate that owns this session.
 	parentJobActivity func(delegateID, phase string)
+	// parentJobIntent states the child's newest tool-call intent on its own
+	// stable delegate row through the intent channel: a stated line, or the
+	// explicit empty clear at the child's execution start. A call stating no
+	// intent reports nothing.
+	parentJobIntent func(delegateID, intent string)
 
 	// descendantEvent reports every event emitted by this session to the root
 	// daemon. It is inherited unchanged by descendants, so one callback observes

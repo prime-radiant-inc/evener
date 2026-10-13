@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -79,9 +82,9 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cwd, ok := s.localSessionCWD(session)
-	if !ok {
-		http.NotFound(w, r)
+	cwd, err := s.localSessionCWD(r.Context(), session)
+	if err != nil {
+		serveSessionRootError(w, r, err)
 		return
 	}
 
@@ -118,13 +121,13 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 // resolves the path by the same rule (sessionCWD, which refuses a session id
 // naming another source, then fspaths.ResolveInRoot), so a remote read is
 // confined to the session's folder exactly as a local one is.
-func sessionDocumentFromHub(cfg hubcore.WebConfig, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
 	if params.SessionID == "" || params.Path == "" {
 		return appwire.SessionDocumentResponse{}, appwire.InvalidParams("sessionId and path are required")
 	}
-	cwd, ok := sessionCWD(cfg, canonicalRouteID(params.SessionID))
-	if !ok {
-		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("session not found")
+	cwd, err := sessionCWD(ctx, cfg, sources, canonicalRouteID(params.SessionID))
+	if err != nil {
+		return appwire.SessionDocumentResponse{}, err
 	}
 	doc, err := readSessionDocument(cwd, params.Path)
 	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
@@ -175,9 +178,9 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cwd, ok := s.localSessionCWD(session)
-	if !ok {
-		http.NotFound(w, r)
+	cwd, err := s.localSessionCWD(r.Context(), session)
+	if err != nil {
+		serveSessionRootError(w, r, err)
 		return
 	}
 
@@ -208,40 +211,90 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-// localSessionCWD resolves a local session's working directory from the past
-// index or live roster. /doc/image is local-session-only; non-local refs return
-// false.
-func (s *WebServer) localSessionCWD(session string) (string, bool) {
-	return sessionCWD(s.cfg, session)
+// localSessionCWD resolves a local session's current working directory from its
+// owning live source or freshly loaded archived metadata. /doc/image is
+// local-session-only; non-local refs are not found.
+func (s *WebServer) localSessionCWD(ctx context.Context, session string) (string, error) {
+	return sessionCWD(ctx, s.cfg, s.sources, session)
 }
 
-// sessionCWD resolves a session's working directory from the past index or live
-// roster. A non-local route id — the "<sourceID>:<threadID>" form a remote
-// session is addressed by — returns false, so a caller that reads files under
-// this directory can never be aimed at another host's session.
-func sessionCWD(cfg hubcore.WebConfig, session string) (string, bool) {
+// sessionCWD resolves a session's current working directory. A roster-owned
+// session is read through its owning Source; failure is transient and never
+// authorizes a cached launch root. An archived session uses the PastIndex only
+// for trusted ID and StateDir locators, then reloads its metadata from disk.
+// A non-local route id is not found, so a caller can never aim this local read
+// at another host's session.
+func sessionCWD(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, session string) (string, error) {
+	session = canonicalRouteID(session)
 	if !isLocalRouteID(session) {
-		return "", false
+		return "", appwire.ResourceNotFound("session not found")
 	}
-	if cfg.Past != nil {
-		pe, ok := cfg.Past.Find(session)
-		if ok {
-			cwd := strings.TrimSpace(pe.Meta.EnvInfo.WorkingDir)
-			if cwd != "" {
-				return cwd, true
-			}
+	ref := appRefFromRouteID(session)
+	if rosterOwnsLiveSession(cfg.Roster, session) {
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, ref, session)
+		if err != nil {
+			return "", liveSessionRootError(ctx, err)
 		}
-	}
-	if cfg.Roster != nil {
-		live, ok := cfg.Roster.Find(session)
-		if ok {
-			cwd := strings.TrimSpace(live.WorkingDir)
-			if cwd != "" {
-				return cwd, true
-			}
+		response, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+		if err != nil {
+			return "", liveSessionRootError(ctx, err)
 		}
+		cwd := strings.TrimSpace(response.Thread.CWD)
+		if cwd == "" {
+			return "", appwire.SessionUnavailable("live session working directory unavailable")
+		}
+		return cwd, nil
 	}
-	return "", false
+	if cfg.Past == nil {
+		return "", appwire.ResourceNotFound("session not found")
+	}
+	entry, ok := cfg.Past.Find(session)
+	if !ok {
+		return "", appwire.ResourceNotFound("session not found")
+	}
+	return withDeletionTargetOwnership(ctx, cfg, ref, session, "", func() (string, error) {
+		meta, err := schema.LoadSessionMeta(entry.StateDir, entry.ID)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", appwire.ResourceNotFound("session not found")
+		}
+		if err != nil {
+			return "", appwire.SessionUnavailable("archived session metadata unavailable")
+		}
+		cwd := strings.TrimSpace(meta.EnvInfo.WorkingDir)
+		if cwd == "" {
+			return "", appwire.ResourceNotFound("session working directory unavailable")
+		}
+		return cwd, nil
+	})
+}
+
+func rosterOwnsLiveSession(roster *hubcore.Roster, session string) bool {
+	if roster == nil {
+		return false
+	}
+	if live, ok := roster.Find(session); ok && !live.Crashed {
+		return true
+	}
+	_, ok := roster.SubagentState(session)
+	return ok
+}
+
+func liveSessionRootError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if isTargetDeletedError(err) || isSessionUnavailableError(err) {
+		return err
+	}
+	return appwire.SessionUnavailable("live session unavailable: " + err.Error())
+}
+
+func serveSessionRootError(w http.ResponseWriter, r *http.Request, err error) {
+	if sessionDocumentProxyStatus(err) == http.StatusNotFound {
+		http.NotFound(w, r)
+		return
+	}
+	http.Error(w, "session unavailable", http.StatusServiceUnavailable)
 }
 
 // docFileRead is one read of a document: the head a pane shows and what the

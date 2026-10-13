@@ -25,6 +25,7 @@ import {
 	subagentStateWord,
 	subagentTitle,
 	subagentWhy,
+	runningSubagentCount,
 	stripSegments,
 	subtreeStopped,
 	subtreeStops,
@@ -124,6 +125,14 @@ describe("a subagent's state is its own (spec 9)", () => {
 			"failed",
 		);
 		expect(subagentState(delegate("t", { type: "turns", turns: [job(true, { outcome: "success" })] }))).toBe("done");
+	});
+
+	it("counts the running subagents among any it is given", () => {
+		const turnContainer = delegate("t", { type: "turns", turns: [job(false)] });
+		expect(
+			runningSubagentCount([running("a"), turnContainer, failed("b"), done("c"), done("s", { outcome: "stopped" })]),
+		).toBe(2);
+		expect(runningSubagentCount([])).toBe(0);
 	});
 
 	it("says the state in the spec's words", () => {
@@ -227,23 +236,21 @@ describe("authoritative summary tallies", () => {
 });
 
 describe("the strip", () => {
-	it("sizes segments by count in the list's order, with failures never thinner than 3pt", () => {
+	it("combines all terminal outcomes into quiet history and preserves the running minimum", () => {
 		const segments = stripSegments({ failed: 2, running: 32, done: 21 }, 361);
-		expect(segments.map((segment) => segment.state)).toEqual(["failed", "running", "done"]);
-		expect(segments.reduce((sum, segment) => sum + segment.width, 0) + 2).toBeCloseTo(361);
-		expect(segments[0]?.width).toBeCloseTo(13.0545, 3);
-		expect(stripSegments({ failed: 1, running: 0, done: 499 }, 300)).toEqual([
-			{ state: "failed", width: 3 },
-			{ state: "done", width: 296 },
-		]);
+		expect(segments.map((segment) => segment.state)).toEqual(["running", "done"]);
+		expect(segments.reduce((sum, segment) => sum + segment.width, 0) + 1).toBeCloseTo(361);
+		expect(segments[0]?.width).toBeCloseTo((360 * 32) / 55);
+		expect(stripSegments({ failed: 1, running: 0, done: 499 }, 300)).toEqual([]);
 		expect(stripSegments({ failed: 0, running: 1, done: 999 }, 200)).toEqual([
 			{ state: "running", width: 1 },
 			{ state: "done", width: 198 },
 		]);
 	});
 
-	it("draws no strip once nothing is running or failed", () => {
+	it("draws no strip once nothing is running", () => {
 		expect(stripSegments({ failed: 0, running: 0, done: 5 }, 200)).toEqual([]);
+		expect(stripSegments({ failed: 5, running: 0, done: 0 }, 200)).toEqual([]);
 		expect(stripSegments({ failed: 0, running: 0, done: 0 }, 200)).toEqual([]);
 	});
 });
@@ -251,19 +258,22 @@ describe("the strip", () => {
 describe("why lines on the fallbacks (ruling 6)", () => {
 	it("names a failure's reason, with only the word taking the hue", () => {
 		expect(subagentWhy(rowOf(failed("f", { reason: "go test exited 1 (3 times)\nsee the log" })), NOW)).toEqual({
+			kind: "failed",
 			word: "Failed",
 			text: "go test exited 1 (3 times)",
 		});
-		expect(subagentWhy(rowOf(failed("f")), NOW)).toEqual({ word: "Failed", text: "" });
+		expect(subagentWhy(rowOf(failed("f")), NOW)).toEqual({ kind: "failed", word: "Failed", text: "" });
 	});
 
 	// The hub's reason is a code; a failed run's cause rides beside it (#3327).
 	it("names a failure by its cause, else its reason code in words", () => {
 		expect(subagentWhy(rowOf(failed("f", { reason: "failed", error: "provider returned 500" })), NOW)).toEqual({
+			kind: "failed",
 			word: "Failed",
 			text: "provider returned 500",
 		});
 		expect(subagentWhy(rowOf(failed("f", { reason: "runtime_lost" })), NOW)).toEqual({
+			kind: "failed",
 			word: "Failed",
 			text: "runtime lost",
 		});
@@ -273,27 +283,108 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 		expect(
 			subagentWhy(rowOf(done("d", { reportPreview: "## Report\n**Tests pass** on both platforms." })), NOW),
 		).toEqual({
+			kind: "report",
 			text: "Tests pass on both platforms.",
 		});
-		expect(subagentWhy(rowOf(done("d", { reportPreview: undefined })), NOW)).toEqual({ text: "Finished" });
-		expect(subagentWhy(rowOf(done("s", { outcome: "stopped" })), NOW)).toEqual({ text: "Stopped" });
+		const finished = subagentWhy(rowOf(done("d", { reportPreview: undefined })), NOW);
+		const stopped = subagentWhy(rowOf(done("s", { outcome: "stopped" })), NOW);
+		expect([finished.kind, stopped.kind]).toEqual(["finished", "stopped"]);
+		expect(finished.text).toMatch(/\S/);
+		expect(stopped.text).toMatch(/\S/);
+		expect(stopped.text).not.toBe(finished.text);
+	});
+
+	// What a subagent's transcript row and the tray count too: its own
+	// subagents that are themselves running. A finished subagent is not
+	// waited on, even while its own subagent or command still runs.
+	it("waits only on its own subagents that are still running", () => {
+		const finishedWithRunningChild = done("c", { child: session("local:c", [entry(running("g"))]) });
+		const finishedWithLiveJob = done("j", { child: session("local:j", [{ kind: "shell", job: job(false) }]) });
+		const parent = (...children: ActivityDelegate[]) =>
+			running("p", { latestActivityAt: ago(10_000), child: session("local:p", children.map(entry)) });
+		// Finished children leave it reading like a subagent with none.
+		const alone = running("p", { latestActivityAt: ago(10_000) });
+		expect(subagentWhy(rowOf(parent(finishedWithRunningChild, finishedWithLiveJob)), NOW)).toEqual(
+			subagentWhy(rowOf(alone), NOW),
+		);
+		const waitingOnOne = subagentWhy(rowOf(parent(finishedWithRunningChild, running("r"))), NOW);
+		expect(waitingOnOne.kind).toBe("waiting");
+		expect(waitingOnOne.text).toContain("1");
 	});
 
 	it("says what a running subagent is doing with what the tree carries", () => {
 		const commanding = running("r", {
 			child: session("local:r", [{ kind: "shell", job: job(false, { command: "go test ./agent/..." }) }]),
 		});
-		expect(subagentWhy(rowOf(commanding), NOW)).toEqual({ text: "Running go test ./agent/..." });
+		expect(subagentWhy(rowOf(commanding), NOW)).toEqual({
+			kind: "command",
+			text: expect.stringContaining("go test ./agent/..."),
+		});
 		const waiting = running("w", {
 			child: session("local:w", [entry(running("a")), entry(running("b")), entry(done("c"))]),
 		});
-		expect(subagentWhy(rowOf(waiting), NOW)).toEqual({ text: "Waiting on 2 subagents" });
+		const onTwo = subagentWhy(rowOf(waiting), NOW);
+		expect(onTwo).toEqual({ kind: "waiting", text: expect.stringContaining("2") });
 		const waitingOnOne = running("o", { child: session("local:o", [entry(running("a")), entry(done("c"))]) });
-		expect(subagentWhy(rowOf(waitingOnOne), NOW)).toEqual({ text: "Waiting on 1 subagent" });
-		expect(subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN) })), NOW)).toEqual({ text: "Quiet 4m" });
+		const onOne = subagentWhy(rowOf(waitingOnOne), NOW);
+		expect(onOne).toEqual({ kind: "waiting", text: expect.stringContaining("1") });
+		// One subagent reads in the singular.
+		expect(onOne.text.replace("1", "#")).not.toBe(onTwo.text.replace("2", "#"));
+		expect(subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN) })), NOW)).toEqual({
+			kind: "quiet",
+			text: expect.stringContaining("4m"),
+			quietForMs: 4 * MIN,
+		});
 		// The tray's and a subagent row's threshold: 20 seconds without an update.
-		expect(subagentWhy(rowOf(running("s", { latestActivityAt: ago(30_000) })), NOW)).toEqual({ text: "Quiet 30s" });
-		expect(subagentWhy(rowOf(running("n", { latestActivityAt: ago(10_000) })), NOW)).toEqual({ text: "Working" });
+		expect(subagentWhy(rowOf(running("s", { latestActivityAt: ago(30_000) })), NOW)).toEqual({
+			kind: "quiet",
+			text: expect.stringContaining("30s"),
+			quietForMs: 30_000,
+		});
+		expect(subagentWhy(rowOf(running("n", { latestActivityAt: ago(10_000) })), NOW)).toEqual({
+			kind: "working",
+			text: expect.stringMatching(/\S/),
+			quietForMs: 10_000,
+		});
+	});
+
+	it("shows a running subagent's stated intent as its why line", () => {
+		expect(subagentWhy(rowOf(running("i", { latestIntent: "Reading the board." })), NOW)).toEqual({
+			kind: "intent",
+			text: "Reading the board.",
+		});
+		// The intent is the whole line: no quiet word rides beside it.
+		expect(
+			subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN), latestIntent: "Reading the board." })), NOW),
+		).toEqual({
+			kind: "intent",
+			text: "Reading the board.",
+		});
+	});
+
+	it("keeps a terminal row's line over a stale intent", () => {
+		expect(
+			subagentWhy(rowOf(done("d", { reportPreview: "## Report\nAll tests pass.", latestIntent: "Stale line." })), NOW),
+		).toEqual({ kind: "report", text: "All tests pass." });
+		expect(
+			subagentWhy(rowOf(failed("f", { reason: "go test exited 1 (3 times)", latestIntent: "Stale line." })), NOW),
+		).toEqual({ kind: "failed", word: "Failed", text: "go test exited 1 (3 times)" });
+	});
+
+	// The silence the list times to turn a row Quiet (useNowPastQuiet): only
+	// a line that would say Quiet, and only while the silence grows with the
+	// clock, or the list would wake again and again for nothing.
+	it("times the silence only of a line that would say Quiet", () => {
+		const commanding = running("r", {
+			latestActivityAt: ago(10_000),
+			child: session("local:r", [{ kind: "shell", job: job(false, { command: "go test ./agent/..." }) }]),
+		});
+		const waiting = running("w", { latestActivityAt: ago(10_000), child: session("local:w", [entry(running("a"))]) });
+		// Only a snapshot of its silence, with no time it can grow from.
+		const snapshotOnly = delegate("p", { quietForMs: 10_000 });
+		for (const subject of [commanding, waiting, snapshotOnly, done("d"), failed("f")]) {
+			expect(subagentWhy(rowOf(subject), NOW).quietForMs).toBeUndefined();
+		}
 	});
 });
 
@@ -454,7 +545,11 @@ describe("shell jobs in the Activity list", () => {
 		const [running, finished] = flattenJobs(activityTree(), COORDINATOR);
 		if (!running || !finished) throw new Error("no jobs");
 		expect(shellJobMeta(running, NOW)).toBe("running · 2m");
-		expect(shellJobMeta(finished, NOW)).toBe("Command failed · 1m");
+		// A failed job names how it ended before its duration.
+		const [ending, took, ...rest] = shellJobMeta(finished, NOW).split(" · ");
+		expect(ending).toMatch(/\S/);
+		expect(took).toBe("1m");
+		expect(rest).toEqual([]);
 	});
 
 	// VoiceOver hears every ending, the clean one the meta leaves out included,

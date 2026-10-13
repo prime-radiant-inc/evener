@@ -18,7 +18,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { MarketplaceBrowser } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
-import { dropped, render, renderedText, screenConnection as connection } from "../renderNative.testkit";
+import { dropped, render, renderedText, screenConnection as connection, testIDSuffixes } from "../renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
@@ -152,18 +152,18 @@ it("shows the connection status inside an open plugin detail modal, with no Reco
 		tree.update(<PluginsPage {...props} />);
 	});
 	const modal = modalContaining(tree, "Upgrade automatically");
-	expect(subtreeText(modal)).toContain("Reconnecting…");
+	expect(testIDSuffixes(modal, "sheet-status")).toHaveLength(1);
 	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
-	expect(subtreeText(modal)).toContain("Upgrade automatically");
+	expect(modal.findAllByProps({ accessibilityLabel: "Upgrade automatically" }).length).toBeGreaterThan(0);
 });
 
 it("keeps the last action's notice when a disconnected press never runs the action", async () => {
 	const hub = new FakeClient("ready");
-	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	hub.on("evener/plugin/list", () => ({ plugins: [{ ...plugin("kept"), updateAvailable: true }] }));
 	let upgrades = 0;
 	hub.on("evener/plugin/upgrade", () => {
 		upgrades += 1;
-		return { plugins: [plugin("kept")] };
+		return { plugins: [{ ...plugin("kept"), updateAvailable: true }] };
 	});
 	harness.connection = connection(hub, "ready");
 	const tree = render(<PluginsPage {...props} />);
@@ -180,7 +180,7 @@ it("keeps the last action's notice when a disconnected press never runs the acti
 	});
 	await act(async () => {});
 	expect(upgrades).toBe(1);
-	expect(subtreeText(modalContaining(tree, "Upgrade automatically"))).toContain("Already up to date");
+	expect(testIDSuffixes(modalContaining(tree, "Upgrade automatically"), "plugin-notice-")).toEqual(["current"]);
 
 	// The connection drops with the modal open: a press now is a no-op the
 	// gate refuses on readiness, and it must not retire the notice the last
@@ -195,7 +195,7 @@ it("keeps the last action's notice when a disconnected press never runs the acti
 	});
 	await act(async () => {});
 	expect(upgrades).toBe(1);
-	expect(subtreeText(modalContaining(tree, "Upgrade automatically"))).toContain("Already up to date");
+	expect(testIDSuffixes(modalContaining(tree, "Upgrade automatically"), "plugin-notice-")).toEqual(["current"]);
 });
 
 it("walls a fatal close with the reason no retry can clear it", async () => {
@@ -219,7 +219,7 @@ it("walls a fatal close with the reason no retry can clear it", async () => {
 	});
 	const walled = renderedText(tree);
 	expect(walled).not.toContain("kept");
-	expect(walled).toContain(INCOMPATIBLE_VERSIONS);
+	expect(testIDSuffixes(tree, "first-load-")).toEqual(["fatal"]);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
@@ -269,9 +269,9 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 		tree.update(browser("reconnecting"));
 	});
 	const modal = modalContaining(tree, "Git URL");
-	expect(subtreeText(modal)).toContain("Reconnecting…");
+	expect(testIDSuffixes(modal, "sheet-status")).toHaveLength(1);
 	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
-	expect(subtreeText(modal)).toContain("Git URL");
+	expect(modal.findAllByProps({ accessibilityRole: "radiogroup" })).not.toHaveLength(0);
 });
 
 it("treats a route re-keyed to another hub as a fresh screen", async () => {
@@ -346,7 +346,7 @@ it("recovers a replacement client's failed first read when it becomes ready", as
 		tree.update(<PluginsPage {...props} />);
 	});
 	expect(renderedText(tree)).toContain("kept");
-	expect(renderedText(tree)).not.toContain("Could not load installed plugins");
+	expect(testIDSuffixes(tree, "plugins-problem-")).toEqual([]);
 
 	second.state = "ready";
 	harness.connection = connection(second, "ready");
@@ -356,7 +356,7 @@ it("recovers a replacement client's failed first read when it becomes ready", as
 	await act(async () => {});
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("added-on-retry");
-	expect(renderedText(tree)).not.toContain("Could not load installed plugins");
+	expect(testIDSuffixes(tree, "plugins-problem-")).toEqual([]);
 });
 
 it("re-reads the marketplaces the browse panel shows when the connection is ready again", async () => {
@@ -449,7 +449,7 @@ it("holds a plugin write's gate across a flap the write outlives", async () => {
 
 it("ignores a replaced client's late upgrade result", async () => {
 	const first = new FakeClient("ready");
-	first.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	first.on("evener/plugin/list", () => ({ plugins: [{ ...plugin("kept"), updateAvailable: true }] }));
 	let release!: () => void;
 	first.on(
 		"evener/plugin/upgrade",
@@ -483,7 +483,71 @@ it("ignores a replaced client's late upgrade result", async () => {
 		release();
 	});
 	await act(async () => {});
-	const detail = subtreeText(modalContaining(tree, "Upgrade automatically"));
-	expect(detail).not.toContain("Upgraded to");
-	expect(detail).not.toContain("Already up to date");
+	expect(testIDSuffixes(modalContaining(tree, "Upgrade automatically"), "plugin-notice-")).toEqual([]);
 });
+
+it("asks a replacement client's hub for updates once its own list loads", async () => {
+	const first = checkingClient();
+	harness.connection = connection(first, "ready");
+	const tree = render(<PluginsPage {...props} />);
+	await act(async () => {});
+	await act(async () => {});
+	expect(checks(first)).toBe(1);
+
+	const second = checkingClient();
+	await showWith(tree, second, "ready");
+	await act(async () => {});
+	await act(async () => {});
+	expect(checks(second)).toBe(1);
+	expect(checks(first)).toBe(1);
+});
+
+it("keeps a replaced store's late failed check from re-asking the new hub", async () => {
+	const first = checkingClient();
+	let failFirst!: (err: Error) => void;
+	first.on(
+		"evener/plugin/checkUpdates",
+		() =>
+			new Promise((_resolve, reject) => {
+				failFirst = reject;
+			}),
+	);
+	harness.connection = connection(first, "ready");
+	const tree = render(<PluginsPage {...props} />);
+	await act(async () => {});
+	await act(async () => {});
+	expect(checks(first)).toBe(1);
+
+	const second = checkingClient();
+	await showWith(tree, second, "ready");
+	await act(async () => {});
+	await act(async () => {});
+	expect(checks(second)).toBe(1);
+
+	// The replaced store's check now fails; that must not unlatch the new one.
+	await act(async () => failFirst(new Error("connection closed")));
+	await showWith(tree, second, "reconnecting");
+	await showWith(tree, second, "ready");
+	await act(async () => {});
+	expect(checks(second)).toBe(1);
+});
+
+/** A ready hub listing one plugin, whose update check answers. */
+function checkingClient(): FakeClient {
+	const client = new FakeClient("ready");
+	client.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	client.on("evener/plugin/checkUpdates", () => ({ plugins: [plugin("kept")] }));
+	return client;
+}
+
+/** Re-renders the page against `client` in `status`. */
+async function showWith(tree: ReturnType<typeof render>, client: FakeClient, status: ConnectionState): Promise<void> {
+	harness.connection = connection(client, status);
+	await act(async () => {
+		tree.update(<PluginsPage {...props} />);
+	});
+}
+
+function checks(client: FakeClient): number {
+	return client.calls.filter((call) => call.method === "evener/plugin/checkUpdates").length;
+}

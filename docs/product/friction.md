@@ -39,10 +39,10 @@ and should not be presented as reproduced production incidents.
 | [C06](#c06-rejected-image-message-recovery) | Medium | Rejected image messages cannot be restored intact for correction | S03, S11 |
 | [C07](#c07-model-discovery-and-default-launch) | Medium | Model discovery delays default launch and stays failed in an open form | S02, S03, S16 |
 | [C08](#c08-remote-provider-setup-at-launch) | Medium | Remote setup sends the user away from an otherwise usable setup path | S02, S07, S15 |
-| [C09](#c09-following-shell-job-output) | Medium | Job output stays static until Refresh; older output needs clicks | S02, S10, S12 |
 | [C10](#c10-quiet-task-panels) | Medium | A quiet Tasks panel remains failed until Try again | S02, S03, S05, S12 |
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
 | [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web send reorder, escape a cross-tab Stop, or duplicate | S02, S11 |
+| [C14](#c14-staged-image-attachments-across-identity-changes) | Medium | An image staged in the composer is lost silently when the session identity changes, while the typed draft survives | S02, S11 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
 | [R03](#r03-watch-intent-after-restart) | High | Restart can end monitoring without informing the owning agent | S08, S12 |
@@ -62,10 +62,12 @@ and should not be presented as reproduced production incidents.
 | [H10](#h10-update-outcome-after-the-response) | Medium | An update says restarting before a failure that only reaches logs | S06, S20 |
 | [H11](#h11-remote-bootstrap-diagnostics) | Low | First-start output is discarded when it would explain a failed connection | S07, S20, S21 |
 | [H12](#h12-dormant-host-notices) | Low | An unused disconnected host becomes a recovery notice | S03, S06, S07 |
+| [H13](#h13-wind-down-for-an-incompatible-session-daemon) | Medium | A fenced session's active work can only be moved by an immediate kill | S08 |
 | [T01](#t01-tool-call-parking) | High | Repeated failure parks an operation even after the dependency heals | S14 |
 | [T02](#t02-mcp-initial-discovery-recovery) | High | An initially unavailable MCP server never contributes tools to the session | S18, S19 |
 | [T04](#t04-read-only-directory-symlinks) | Medium (deferred) | A derived read-only delegate cannot browse an allowed target through a symlink | S12, S14 |
 | [T05](#t05-approval-scope-and-lifetime) | Medium (deferred) | Narrow one-call approval paths repeatedly interrupt authorized work | S12, S14 |
+| [T06](#t06-global-git-excludes-files-in-restricted-mode) | Medium (accepted limitation) | A global excludes or attributes file the config names does not apply in restricted mode | S14 |
 | [U01](#u01-tui-uncertain-submission) | High | A lost send acknowledgement becomes a manual new submission | S04, S05, S11 |
 | [U02](#u02-tui-failed-submission-attachments) | High | Preserving a newer draft discards the older failed submission's images | S04, S11 |
 | [D01](#d01-diagnostic-repair-authority) | Medium (deferred) | Bundled repair instructions prohibit product fixes and require byte-identical voting | S21 |
@@ -308,37 +310,6 @@ substitution. The original composition and settings survive. A pending Start
 continues once on the selected host after readiness is confirmed; cancellation
 prevents it, and a form without a pending Start remains ready for submission.
 
-### C09 Following shell-job output
-
-**Current behavior.** The browser job transcript reads one tail. A running job
-can remain at No output yet or old content until Refresh. Refresh replaces the
-tail and discards earlier pages; older output requires repeated clicks and a
-failed older read is silent. Reconnect does not reset the effect's started flag.
-
-**Evidence.** [JobLog](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L68)
-owns the reads, [loadEarlier](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L149)
-only clears loading on failure, and the
-[controls](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L164)
-require Refresh/Load earlier output. No focused live-view test establishes
-automatic following for this component.
-
-**Decision.** An open job-output viewer stays current automatically. Follow new
-output while the reader is at the bottom; when they scroll into earlier output,
-continue receiving new output without moving their reading position. Returning
-to the live end shows the latest available output. Load retained older output on
-scroll demand, recover temporary read failures automatically, and obtain final
-output when the job finishes. Use bounded memory and fetch activity appropriate
-to the visible viewer; this does not require monitoring every unopened job.
-Subscription or polling mechanics remain an implementation choice.
-Implementation remains pending.
-
-**Acceptance.** Open before first output and observe output through completion
-without clicking. While reading older output, verify new output continues to
-arrive without moving the reading position; returning to the live end shows it.
-Older paging and new output coexist without gaps or duplication, and a failed
-read recovers automatically. A high-volume job does not require unbounded
-client memory.
-
 ### C10 Quiet task panels
 
 **Current behavior.** Web and native task surfaces retain rows on snapshot
@@ -411,11 +382,26 @@ transfer while retaining the record of what already happened.
 
 ### C13 Storage-unavailable send fallback ordering and Stop fence
 
-**Current behavior.** When the mutation outbox cannot be written — the storage
-watchdog rejects the durable enqueue with `MutationStorageTimeoutError` — a
-composer send (`turn/start`, `turn/queue`, `turn/steer`, `turn/drainAsSteer`) is
-retried once and then dispatched directly as a plain RPC instead of failing
-closed, so sends keep working in a storage wedge. The fallback re-earns the
+**Current behavior.** When the mutation outbox cannot be written, a composer
+send (`turn/start`, `turn/queue`, `turn/steer`, `turn/drainAsSteer`) is
+dispatched directly as a plain RPC instead of failing closed. A write the
+storage watchdog gave up on (`MutationStorageTimeoutError`) is retried once
+first; a write the browser refuses outright — a full origin's
+`QuotaExceededError`, a browser that denies this origin storage
+(`SecurityError`), a `VersionError`, a retired connection, an upgrade another
+tab's older schema blocks — falls back at once. So sends keep working in a storage wedge or a full origin, and the
+composer's draft follows the send's own outcome. A failure that judges the
+record rather than the storage (the outbox's own validation, an uncloneable
+payload, a duplicate id) or that only a bug in the outbox raises (a missing
+store, a request on a finished transaction, a schema upgrade that throws) stays
+an ordinary send failure. The same storage
+failure also fails the ref's reconciliation (its outbox read), and that failure
+is classified apart from a genuine one: the ref is recorded as storage-blocked -
+at the reconcile's rejection, or earlier when the send fallback's own storage
+failure observes it while that reconcile is still pending - and the send
+fallback admits it, including the reconcile still pending on the same failure, while the durable dispatcher, a queued record's Retry press and the recovery
+banner stay fenced until discovery's retry reconciles once storage answers, so
+a storage-blocked ref shows no recovery banner. The fallback re-earns the
 dispatcher's admission and refuses when this tab can see an earlier undelivered
 or in-flight durable send for the same ref, but it carries none of the durable
 row's guarantees. Three gaps remain. (1) Per-ref ordering: the guard reads this
@@ -434,19 +420,30 @@ lands and its reply is lost the composer reports a failure and keeps the draft,
 and the person's re-send is a new intent with a new id, so the daemon can apply
 the send twice.
 
-**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2449)
-and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2538);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2689)
+**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2999)
+and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3092);
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3303)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
-the enqueue compares against. `threads.test.ts` pins the direct dispatch, the
-retry ladder, and the refusal to jump an undelivered or concurrent durable send;
-it does not pin the cross-tab, prior-session or human-retry cases above, which
-need the storage the wedge makes unreadable. The accepted behavior keeps the
-in-memory guard and accepts the three gaps (issue #3313).
+the enqueue compares against. The [reconcile
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3865)
+splits the storage-caused failure from a genuine one, and
+[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1150)
+fences a storage-blocked ref everywhere except the send fallback's own re-earn.
+`threads.test.ts` pins the direct dispatch through a wedge and a full origin, the retry ladder, the refusal to
+jump an undelivered or concurrent durable send, the storage-blocked
+classification, the wedged-reconcile journey (a send still delivers when the
+same wedge failed the reconcile), the still-pending variant, and the refusal a
+genuine reconcile failure keeps; `Session.test.tsx` pins the absent recovery
+banner. Issue #3969 observed the stranded-send shape on a phone browser: the
+reconcile failure fenced the fallback itself, so every send failed with the
+watchdog error until a page reload. The cross-tab, prior-session and
+human-retry cases above still need the storage the wedge makes unreadable; the
+accepted behavior keeps the in-memory guard and accepts the three gaps
+(issue #3313).
 
-**Deferred.** Keep the existing behavior: sends keep working in every storage
-wedge, at the cost of a possible reorder, an unhonoured cross-tab Stop, or a
+**Deferred.** Keep the existing behavior: sends keep working through every
+storage failure, at the cost of a possible reorder, an unhonoured cross-tab Stop, or a
 duplicate on human retry in the narrow cases above. Revisit when the outbox can
 be read again but not written, or if a reorder, a duplicated send, or an
 unhonoured cross-tab Stop is observed in practice.
@@ -456,6 +453,36 @@ while a send is issued from one tab, a durable row for the same ref exists in
 another tab or an earlier session, and a Stop lands in the other tab. The send
 reaches the daemon at most once, in per-ref order, and the unhonoured Stop is
 either honored or reported rather than silently applied.
+
+### C14 Staged image attachments across identity changes
+
+**Current behavior.** Staged image attachments in a web composer live in the
+pane's per-mount state: they survive none of a reload, an inactive-tab
+unmount, or a session identity change. When Send auto-resumes a
+recovery-fenced session and the daemon returns a different identity, the
+pane follows it carrying the newer stored draft (text, skill selections,
+command names, mentions), so an image staged while the resume was in flight
+is dropped, silently, while the text typed beside it survives. Attachments
+already submitted with the send ride the durable outbox row and are
+unaffected; the loss is bounded to content staged after the press.
+
+**Evidence.** The attachment store is created per composer mount
+([sourceState.ts](../../cmd/evener-hub/frontend/src/panes/session/composer/sourceState.ts))
+and the carry moves only the persisted draft record
+([draft.ts](../../cmd/evener-hub/frontend/src/panes/session/composer/draft.ts));
+a queued entry's edit likewise keeps image attachments out of the composer
+([Composer.tsx](../../cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx)),
+so ephemerality is the composer's existing boundary. The Send-resumes
+journey made the inconsistency user-visible by preserving the text half of
+the payload.
+
+**Discuss.** Whether staged image attachments should persist per session (or
+per ref) like the text draft, surviving reloads and identity-following
+navigation under the same newer-wins carry rule, or whether the boundary
+stays and only the composer's copy makes it explicit to users.
+
+**When discussed.** Record the accepted behavior with its acceptance
+scenario here.
 
 ## Runtime and continuing intent
 
@@ -1081,6 +1108,40 @@ clears on recovery or cancellation. Determine affected work independently of
 which session pages the client has loaded, so an incomplete local view cannot
 suppress a relevant notice. Routine recovery requires no user action.
 
+### H13 Wind-down for an incompatible session daemon
+
+**Current behavior.** A daemon running a different appwire protocol than the
+hub has no wire channel to it: the roster probe classifies its session
+restart-required, the hub refuses every session action, and graceful Shut
+down is disabled for these rows. The only lever that moves the session to the
+hub's version is Force shutdown, which verifies the process and delivers
+SIGKILL, interrupting any turn or job mid-flight. Work in the fenced session
+cannot finish first, and the daemon cannot learn it is obsolete and retire
+itself, because the hub dials daemons and the probe is one-way.
+
+**Evidence.** The prober's mismatch verdict
+([prober.go](../../cmd/evener-hub/internal/hubcore/prober.go)) and
+[daemonRestartRequiredError](../../cmd/evener-hub/app_restart_required.go)
+name the fence. The rail row disables Shut down for restart-required sessions
+([RailRow.tsx](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx#L350))
+and the session menu offers Force shutdown
+([SessionMenu.tsx](../../cmd/evener-hub/frontend/src/shell/sessionMenu/SessionMenu.tsx#L197)).
+Force stop signals SIGKILL and waits at most 10 seconds for the exit
+([app_force_stop.go](../../cmd/evener-hub/app_force_stop.go);
+[process_linux.go](../../cmd/evener-hub/internal/daemonprocess/process_linux.go#L41)).
+The pane presents the fence as a degraded state and recovery stays in the
+session menu; this case concerns only the stop path's destructiveness.
+
+**Discuss.** Whether a fenced daemon can be asked to wind down instead of
+being killed: an OS signal the daemon treats as finish-the-turn-then-exit
+with a bounded grace before a harder signal, and whether a daemon should
+retire itself once it can establish its hub moved on. SIGKILL remains the
+fallback; the question is whether the mid-flight work can be spared.
+
+**When discussed.** Decide the wind-down semantics (graceful signal, bounded
+grace, self-retirement) and record the accepted behavior with its acceptance
+scenario here.
+
 ## Agent capabilities and terminal workflow
 
 ### T01 Tool-call parking
@@ -1359,6 +1420,59 @@ the policy is decided.
 **Acceptance.** An authorized, diagnosed defect yields a concrete reviewable
 repair with meaningful validation and preserved source evidence, without
 unnecessary repeated permission or duplicate implementation rituals.
+
+### T06 Global git excludes files in restricted mode
+
+**Accepted limitation (2026-10-13).** Not a work item; recorded so the promise is
+explicit. A resumed attempt would need a backend-verifiable way to keep a granted
+pathname from being re-pointed, which six review rounds did not find.
+
+**Current behavior.** `restricted` grants the user's global git config FILES
+read-only (`$XDG_CONFIG_HOME/git/config`, `~/.gitconfig`) so git can run at all on a
+host that has one. It grants nothing of its own for the files those configs NAME
+through `core.excludesFile` or `core.attributesFile`: such a file is readable only
+where it already sits under a root the mode grants — the project worktree, `/etc`,
+`/opt`, `/nix/store` and the other system read roots — and not elsewhere, typically
+under `$HOME`. git reads those files on ordinary commands (`status`, `add`, `commit`),
+so where one is not readable the effect differs by host: macOS/Seatbelt reports
+
+    warning: unable to access '<path>': Operation not permitted
+
+on every such command, while Linux/bubblewrap hides the ungranted path, so git applies
+no excludes or attributes file at all and says nothing. The project's own rules are
+unaffected: `.gitignore`, `.gitattributes` and `.git/info/exclude` live in the
+worktree and stay readable.
+
+**Evidence.** The owning guide's [modes section](../sandboxing.md#modes) and the
+restricted branch of [the resolver](../../agent/sandbox/resolve.go). Reached from
+[#4234](https://github.com/prime-radiant-inc/evener/issues/4234); PR #4474's history
+holds the retired design and every review round it went through.
+
+**Decision.** Do not grant the files a global git config names. Such a grant is a
+pathname a spawned process resolves by its literal name at every spawn, so anything
+the session can write along that path can re-point the name at another file. Six
+review rounds each closed one shape of that — a symlink, a `..` the kernel resolves
+after one, a writable alias, a letter case, a directory in place of the file — and each
+exposed another, and the last one is backend-specific: Seatbelt canonicalizes a read
+root when it builds its policy per spawn, so a file swapped for a directory would grant
+that directory's tree, and that path cannot be verified where CI runs (no macOS host).
+The honest end is to promise less: `restricted` reads the developer's git configuration
+and the project's own ignore and attribute files, not ignore files elsewhere on the
+host. A session that needs the global ones can run `--sandbox off` or move the rules
+into the repository. #4234 stays open as the record; three adjacent defects from the
+same route are filed: [#4467](https://github.com/prime-radiant-inc/evener/issues/4467)
+(an unreadable `include.path` is fatal rather than a warning),
+[#4468](https://github.com/prime-radiant-inc/evener/issues/4468)
+(`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` are ignored by the config grant) and
+[#4479](https://github.com/prime-radiant-inc/evener/issues/4479) (the config-FILE grant
+can be re-pointed the same way).
+
+**Acceptance.** A restricted session runs `git status` and `git commit` against the
+developer's real global configuration, and the
+[owning guide's modes section](../sandboxing.md#modes) states, where the readable set
+is described, that a global `core.excludesFile`/`core.attributesFile` outside the
+project does not apply inside the sandbox, naming both host behaviors. No grant code
+for the files a config names exists in the tree.
 
 ## Recovery that already works
 

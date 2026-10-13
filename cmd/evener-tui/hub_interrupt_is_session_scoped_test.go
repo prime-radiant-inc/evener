@@ -43,10 +43,8 @@ func TestInterruptCommandDoesNotWaitForATurnID(t *testing.T) {
 
 	cmd := runHubCommandDefinition(m, command, "")
 
-	for _, message := range m.session.messages {
-		if strings.Contains(message.Text, "active turn") {
-			t.Fatalf("/interrupt refused a session with no announced turn id: %q", message.Text)
-		}
+	if len(m.session.messages) != 0 || len(m.notices) != 0 {
+		t.Fatalf("/interrupt refused a session with no announced turn id: messages=%+v notices=%+v", m.session.messages, m.notices)
 	}
 	if cmd == nil {
 		t.Fatal("/interrupt produced no command: nothing was sent to the daemon for a session the user can see working")
@@ -68,25 +66,22 @@ func TestInterruptCommandAppliesTheSessionStatus(t *testing.T) {
 	if !ok {
 		t.Fatal("no /interrupt command in the registry")
 	}
-	for _, tc := range []struct {
-		name       string
-		caps       hubSessionCapabilities
-		state      string
-		wantAvail  bool
-		wantReason string
-	}{
-		{"running turn", hubSessionCapabilities{Interrupt: true}, appwire.ThreadStatusActive, true, ""},
-		{"idle session", hubSessionCapabilities{Interrupt: true}, appwire.ThreadStatusIdle, false, "no active turn"},
-		{"awaiting session", hubSessionCapabilities{Interrupt: true}, appwire.ThreadStatusAwaiting, false, "no active turn"},
-		{"unwired harness", hubSessionCapabilities{}, appwire.ThreadStatusActive, false, "source does not advertise interrupt"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := hubCommandContext{mode: hubModeSession, caps: tc.caps, live: true, state: tc.state}
-			available, reason := hubCommandAvailable(command, ctx)
-			if available != tc.wantAvail || reason != tc.wantReason {
-				t.Fatalf("Available = %v %q, want %v %q", available, reason, tc.wantAvail, tc.wantReason)
-			}
-		})
+	availability := func(caps hubSessionCapabilities, state string) (bool, string) {
+		return hubCommandAvailable(command, hubCommandContext{mode: hubModeSession, caps: caps, live: true, state: state})
+	}
+	if available, reason := availability(hubSessionCapabilities{Interrupt: true}, appwire.ThreadStatusActive); !available || reason != "" {
+		t.Fatalf("running turn: Available = %v %q, want available", available, reason)
+	}
+	idleAvail, idleReason := availability(hubSessionCapabilities{Interrupt: true}, appwire.ThreadStatusIdle)
+	awaitingAvail, awaitingReason := availability(hubSessionCapabilities{Interrupt: true}, appwire.ThreadStatusAwaiting)
+	unwiredAvail, unwiredReason := availability(hubSessionCapabilities{}, appwire.ThreadStatusActive)
+	if idleAvail || awaitingAvail || unwiredAvail {
+		t.Fatalf("Available idle=%v awaiting=%v unwired=%v, want all refused", idleAvail, awaitingAvail, unwiredAvail)
+	}
+	// Idle and awaiting are refused by the status, the unwired harness by its
+	// capability: one status reason, told apart from the capability's.
+	if idleReason == "" || idleReason != awaitingReason || idleReason == unwiredReason || unwiredReason == "" {
+		t.Fatalf("reasons idle=%q awaiting=%q unwired=%q, want one status reason told apart from the capability reason", idleReason, awaitingReason, unwiredReason)
 	}
 
 	// /help lists a command only while it is available, so /interrupt tracks
@@ -108,8 +103,9 @@ func TestInterruptCommandAppliesTheSessionStatus(t *testing.T) {
 	if cmd := m.runHubSlashCommand("interrupt", ""); cmd != nil {
 		t.Fatal("typed /interrupt on an idle session produced a command; it must refuse before dispatch")
 	}
+	_, statusReason := hubCommandAvailable(command, hubCommandContext{mode: hubModeSession, caps: m.detail.Capabilities, live: true, state: appwire.ThreadStatusIdle})
 	notice, ok := noticeByCategory(*m, "action-unavailable")
-	if !ok || notice.Reason != "no active turn" {
-		t.Fatalf("typed /interrupt refusal = %+v ok=%v, want the no-active-turn reason", notice, ok)
+	if !ok || notice.Reason != statusReason {
+		t.Fatalf("typed /interrupt refusal = %+v ok=%v, want the status reason %q", notice, ok, statusReason)
 	}
 }

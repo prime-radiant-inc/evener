@@ -6,28 +6,73 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"primeradiant.com/evener/agent/internal/lineend"
 )
 
 // Document holds the parsed frontmatter metadata and the remaining Markdown body.
 type Document struct {
-	Meta map[string]any // parsed YAML frontmatter (nil if none present)
-	Body string         // markdown body after the closing ---
+	Meta    map[string]any // parsed YAML frontmatter (nil if none present)
+	Body    string         // markdown body after the closing ---
+	Framing Framing        // how the input was framed (see Framing)
 }
+
+// Framing describes how a document's frontmatter is framed.
+type Framing int
+
+const (
+	// FramingUnknown is the zero value: no framing was reported, which is what
+	// a document Parse returned with an error carries.
+	FramingUnknown Framing = iota
+	// NoOpeningDelimiter means raw does not open with the frontmatter delimiter.
+	NoOpeningDelimiter
+	// NoClosingDelimiter means raw opens with the delimiter but the closing
+	// delimiter line never follows.
+	NoClosingDelimiter
+	// Framed means a complete frontmatter block was found.
+	Framed
+)
 
 const delimiter = "---\n"
 
-// Parse splits a YAML-frontmattered Markdown document into metadata and body.
-// If no frontmatter is present (no leading ---), Meta is nil and Body is the full input.
-func Parse(raw string) (Document, error) {
-	if !strings.HasPrefix(raw, delimiter) {
-		return Document{Body: raw}, nil
-	}
+// Split cuts raw into its frontmatter block and the body after the closing
+// delimiter, the first line that is exactly "---". It reads raw with its line
+// endings normalized and a single leading UTF-8 byte-order mark dropped, so a
+// CRLF or BOM-prefixed document has the same frontmatter, and block and body
+// end their lines in "\n". A second byte-order mark is content, not framing.
+// ok is false, with body set to all of the normalized raw, when raw has no
+// complete frontmatter.
+func Split(raw string) (block, body string, ok bool) {
+	block, body, framing := split(raw)
+	return block, body, framing == Framed
+}
 
-	rest := raw[len(delimiter):]
-	yamlStr, body, found := strings.Cut(rest, delimiter)
+// split is Split's body, also reporting which framing it found, so Parse does
+// not have to re-derive the rule.
+func split(raw string) (block, body string, framing Framing) {
+	raw = strings.TrimPrefix(lineend.Normalize(raw), "\ufeff")
+	rest, found := strings.CutPrefix(raw, delimiter)
 	if !found {
-		// Opening delimiter but no closing delimiter — treat as no frontmatter.
-		return Document{Body: raw}, nil
+		return "", raw, NoOpeningDelimiter
+	}
+	// The closing delimiter starts a line, so "a---\n" ending a value is not
+	// one. Searching from the opening delimiter's "\n" lets a delimiter right
+	// after it match; end is then where the delimiter starts in rest.
+	end := strings.Index(raw[len(delimiter)-1:], "\n"+delimiter)
+	if end < 0 {
+		// Opening delimiter but no closing delimiter: treat as no frontmatter.
+		return "", raw, NoClosingDelimiter
+	}
+	return rest[:end], rest[end+len(delimiter):], Framed
+}
+
+// Parse splits a YAML-frontmattered Markdown document into metadata and body,
+// as Split reads it. If no frontmatter is present (no leading ---), Meta is
+// nil and Body is the full input with its line endings normalized and a leading
+// UTF-8 byte-order mark dropped.
+func Parse(raw string) (Document, error) {
+	yamlStr, body, framing := split(raw)
+	if framing != Framed {
+		return Document{Body: body, Framing: framing}, nil
 	}
 
 	meta := make(map[string]any)
@@ -37,5 +82,5 @@ func Parse(raw string) (Document, error) {
 		}
 	}
 
-	return Document{Meta: meta, Body: body}, nil
+	return Document{Meta: meta, Body: body, Framing: Framed}, nil
 }

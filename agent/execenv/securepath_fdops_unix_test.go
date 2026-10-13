@@ -32,7 +32,7 @@ func TestListDirEntryMetadataResolvesBeneathFd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ents, err := s.listDir("list_dir", worktree, 1)
+	ents, err := s.listDir("list_dir", worktree, 1, false)
 	if err != nil {
 		t.Fatalf("listDir: %v", err)
 	}

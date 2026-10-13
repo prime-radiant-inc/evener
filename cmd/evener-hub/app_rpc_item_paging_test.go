@@ -115,7 +115,7 @@ func TestHubRPCItemListNativeSuccessLegacyIdentityError(t *testing.T) {
 			if nativeErr != nil {
 				t.Fatalf("native list error = %v", nativeErr)
 			}
-			if legacyErr == nil || legacyErr.Error() != "legacy transcript item source cannot page without cursor identity" {
+			if !errors.Is(legacyErr, errLegacyItemSourceUnpageable) {
 				t.Fatalf("legacy list error = %v, want identity error", legacyErr)
 			}
 			if got := len(flattenTestItems(nativeResponse.Data)); got != 40 {

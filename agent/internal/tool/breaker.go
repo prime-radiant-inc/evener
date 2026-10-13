@@ -97,11 +97,12 @@ type dispatchKey struct {
 // newDispatchKey computes both ledger keys for a single dispatch. It is the
 // only production caller of exactSignature and failureFingerprint, so a tool
 // call's arguments are hashed exactly once on the dispatch path regardless of
-// how many ledger operations consult the result.
-func newDispatchKey(name string, args []byte) dispatchKey {
+// how many ledger operations consult the result. normalize is the tool's
+// RegisteredTool.NormalizeArgs, or nil when the tool has none or is unknown.
+func newDispatchKey(name string, args []byte, normalize func(map[string]any) (map[string]any, error)) dispatchKey {
 	return dispatchKey{
 		exact:    exactSignature(name, args),
-		semantic: failureFingerprint(name, args),
+		semantic: failureFingerprint(name, args, normalize),
 	}
 }
 
@@ -112,13 +113,15 @@ func newDispatchKey(name string, args []byte) dispatchKey {
 // whitespace are canonicalized. A call that changes only those is the same
 // failing operation, while any change to a field the tool executes on (target
 // ref, mode, offset, regex, or a presence-sensitive default such as
-// offset_bytes=0 or depends_on: []) keeps its own fingerprint and bounded
-// history: values are never judged to be "defaults" by their content alone.
+// offset_bytes=0) keeps its own fingerprint and bounded history: values are
+// never judged to be "defaults" by their content alone. The exception is the
+// tool's own normalize (its NormalizeArgs): what dispatch removes before the
+// handler runs is, by that tool's contract, the same call as leaving it out.
 //
 // Arguments that are not a single well-formed JSON value fall back to
 // exactSignature, preserving the original byte-exact behavior.
-func failureFingerprint(name string, args []byte) string {
-	canonical, ok := canonicalArgumentBytes(name, args)
+func failureFingerprint(name string, args []byte, normalize func(map[string]any) (map[string]any, error)) string {
+	canonical, ok := canonicalArgumentBytes(name, args, normalize)
 	if !ok {
 		return exactSignature(name, args)
 	}
@@ -129,7 +132,7 @@ func failureFingerprint(name string, args []byte) string {
 // arguments used by the semantic failure fingerprint. The bool is false when
 // args is not a single well-formed JSON value, in which case the caller must
 // fall back to the exact signature.
-func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
+func canonicalArgumentBytes(name string, args []byte, normalize func(map[string]any) (map[string]any, error)) ([]byte, bool) {
 	// The size and UTF-8 limits are the pre-parse boundary: a body the registry
 	// would reject must not be decoded and re-encoded here first. Falling back
 	// to the exact signature handles it as opaque bytes, which is both cheaper
@@ -159,7 +162,17 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 	if v == nil {
 		return []byte("{}"), true
 	}
-	encoded, err := json.Marshal(canonicalizeValue(v, true, name == "shell"))
+	canonical := canonicalizeValue(v, true, name == "shell")
+	// Apply the tool's own normalizer after canonicalizeValue, so it sees
+	// numbers already folded to int64 or float64 as dispatch's decoder gives
+	// them. A normalizer error means dispatch rejects the call, so the
+	// un-normalized view still names it.
+	if object, isObject := canonical.(map[string]any); isObject && normalize != nil {
+		if normalized, err := normalize(object); err == nil {
+			canonical = normalized
+		}
+	}
+	encoded, err := json.Marshal(canonical)
 	if err != nil {
 		return nil, false
 	}
@@ -177,7 +190,7 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 // deliberately kept, because whether a value means "omitted" is a property of
 // the field's contract, not of the value: a present read_transcript
 // offset_bytes=0 selects the retained-page operation while omitting it selects
-// the default view, and a present task_list depends_on: [] clears a task's
+// the default view, and a present task_list depends_on: [0] clears a task's
 // dependencies while omitting it leaves them alone. Pruning by value folded
 // those meaningful calls into the omitted form and could park a call the model
 // legitimately changed. The cost of not pruning is only that a caller which
@@ -294,12 +307,30 @@ const (
 	failureNudgeText = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 )
 
+// repetitionNudgePrefix is the fixed front of every repetition nudge (the count
+// follows it); IsBreakerNudge matches on it, so a reworded nudge cannot silently
+// stop being recognized as one.
+const repetitionNudgePrefix = "You have now made this same call and received the identical result "
+
 // repetitionNudgeText builds the nudge for a run of consecutive identical
 // results. Repetition is never parked, so count can climb arbitrarily high
 // as a session loops; stating the real count lets a long loop read as
 // escalating rather than repeating the same "twice" wording forever.
 func repetitionNudgeText(count int) string {
-	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+}
+
+// IsBreakerNudge reports whether text is the breaker's intervention text —
+// appendIntervention's failure or repetition nudge — rather than a note about a
+// tool result. A search result lists entries, then its own notes after a blank
+// line, and the registry appends the nudge the same way, so a reader that keeps
+// the notes cannot tell them apart by position when the result wrote none. The
+// compaction summarizer uses this to end a result's notes where the registry's
+// intervention begins (#4223). Every text appendIntervention appends must match
+// here, or a reader reads that intervention as a note again.
+func IsBreakerNudge(text string) bool {
+	text = strings.TrimSpace(text)
+	return text == failureNudgeText || strings.HasPrefix(text, repetitionNudgePrefix)
 }
 
 // failureParkText is the body of a refused call whose signature keeps failing

@@ -9,9 +9,10 @@
 // implements against actions.ts + the tree store's refresh().
 //
 // The rail is a TRIAGE surface. Broken is red, needs-you is yellow, and running
-// work is a grey spinner. Broken and blocked attention outrank work; plain
-// awaiting and warning yield to work already in flight. Idle and ended rows
-// have no indicator. The stable one-line rhythm keeps the
+// work is a grey spinner. Broken attention and anything waiting on a person
+// (a question, an approval, or an awaiting rest after a needs_response turn)
+// outrank work; a warning yields to work already in flight. Idle and ended
+// rows have no indicator. The stable one-line rhythm keeps the
 // title list scannable while the HoverCard preserves project, host, branch,
 // jobs, subagents, watches, tier, and age without permanent visual noise.
 //
@@ -31,7 +32,6 @@
 // with no hover to reveal them).
 
 import {
-  approvalWaiting,
   humanizeState,
   SHUT_DOWN_STATUSES,
   watchCadenceLabel,
@@ -48,14 +48,27 @@ import {
   selectSources,
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { Badge, type CadenceState, Chevron, IconButton } from "../../widgets";
-import { HoverCard } from "../../widgets/hovercard";
+import {
+  Badge,
+  Button,
+  Chevron,
+  Eyebrow,
+  HoverCard,
+  IconButton,
+  Menu,
+  type MenuItem,
+  PropertyList,
+  type PropertyListRow,
+  Skeleton,
+  STATUS_LABEL,
+  StatusDot,
+  type TreeRowInfo,
+} from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { Menu, type MenuItem } from "../../widgets/menu";
-import type { TreeRowInfo } from "../../widgets/tree";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
+import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
 import styles from "./RailRow.module.css";
 import {
   activeWatchCount,
@@ -85,18 +98,10 @@ const CLASS = {
   titleLine: requireClass(styles.titleLine, "RailRow.module.css", "titleLine"),
   label: requireClass(styles.label, "RailRow.module.css", "label"),
   sessionTitle: requireClass(styles.sessionTitle, "RailRow.module.css", "sessionTitle"),
-  statusDot: requireClass(styles.statusDot, "RailRow.module.css", "statusDot"),
-  statusSpinner: requireClass(styles.statusSpinner, "RailRow.module.css", "statusSpinner"),
   contextCard: requireClass(styles.contextCard, "RailRow.module.css", "contextCard"),
   contextHead: requireClass(styles.contextHead, "RailRow.module.css", "contextHead"),
-  contextKind: requireClass(styles.contextKind, "RailRow.module.css", "contextKind"),
   contextStatus: requireClass(styles.contextStatus, "RailRow.module.css", "contextStatus"),
   contextSummary: requireClass(styles.contextSummary, "RailRow.module.css", "contextSummary"),
-  contextRows: requireClass(styles.contextRows, "RailRow.module.css", "contextRows"),
-  contextRow: requireClass(styles.contextRow, "RailRow.module.css", "contextRow"),
-  contextKey: requireClass(styles.contextKey, "RailRow.module.css", "contextKey"),
-  contextValue: requireClass(styles.contextValue, "RailRow.module.css", "contextValue"),
-  contextMono: requireClass(styles.contextMono, "RailRow.module.css", "contextMono"),
   time: requireClass(styles.time, "RailRow.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
   host: requireClass(styles.host, "RailRow.module.css", "host"),
@@ -105,52 +110,6 @@ const CLASS = {
   star: requireClass(styles.star, "RailRow.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
-  srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
-};
-
-// Maps hubcore's normalized session state (cmd/evener-hub/internal/hubcore/
-// tree.go's NormalizeState / the State field's own doc comment: "errored" |
-// "awaiting" | "active" | "warning" | "idle" | "ended", plus a "notLoaded"
-// fallback) onto Cadence's four-family state space. "awaiting" is exactly
-// what makes a row NeedsYou-eligible server-side, so it maps to
-// "needs-you"; "warning" has no dedicated Cadence family (attention/alive/
-// danger/neutral) and is the next rung down from "active" in
-// hubapi.AttentionRank, so it shares "needs-you" rather than downgrading to
-// neutral. Exported for direct testing - this mapping is exactly the kind
-// of one-to-many judgment call worth pinning down explicitly.
-export function cadenceStateFor(wireState: string): CadenceState {
-  switch (wireState) {
-    case "errored":
-      return "failed";
-    case "awaiting":
-    case "warning":
-    case "restartRequired":
-      return "needs-you";
-    case "active":
-      return "working";
-    case "ended":
-      return "ended";
-    default: // "idle", "notLoaded", "", and any future/unknown value
-      return "idle";
-  }
-}
-
-// The Cadence states worth spending a dot on: a row is working, a human is
-// needed, or something failed. idle/ended are deliberately absent - a sidebar
-// full of identical grey dots trains the eye to ignore the one dot that
-// matters, and an EMPTY gutter beside a grey age already reads as "nothing
-// happening here" without a glyph asserting it. This is the RAIL asking for
-// less, not the widget changing: every other Cadence surface still renders all
-// five states.
-//
-const SIGNAL_STATES: ReadonlySet<CadenceState> = new Set<CadenceState>(["working", "needs-you", "failed"]);
-
-const CADENCE_LABEL: Record<CadenceState, string> = {
-  working: "Running",
-  "needs-you": "Needs you",
-  failed: "Broken",
-  ended: "Ended",
-  idle: "Idle",
 };
 
 // RowGutter is the wrapper the row's signal dot renders inside. The dot is
@@ -178,13 +137,7 @@ function Signal({ wireState }: { wireState: string }) {
   if (!SIGNAL_STATES.has(state)) return null;
   return (
     <RowGutter className={CLASS.signal} testId="rail-row-signal">
-      <span
-        role="img"
-        aria-label={CADENCE_LABEL[state]}
-        data-testid={state === "working" ? "rail-status-spinner" : "rail-status-dot"}
-        data-status={state === "working" ? undefined : state}
-        className={state === "working" ? CLASS.statusSpinner : CLASS.statusDot}
-      />
+      <StatusDot state={state} />
     </RowGutter>
   );
 }
@@ -281,12 +234,8 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
       // so it is simply never a tab stop at all.)
       triggerTabIndex={-1}
       variant="quiet"
-      trigger={
-        <>
-          <span aria-hidden="true">{"⋯"}</span>
-          <span className={CLASS.srOnly}>{`Actions for ${label}`}</span>
-        </>
-      }
+      icon="⋯"
+      label={`Actions for ${label}`}
       items={items}
     />
   );
@@ -488,12 +437,15 @@ function effectiveSessionState(session: RailSession): string {
   const presented = displayState(session);
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
   if (presented === "errored") return "errored";
-  // Only blocked attention outranks work. Plain awaiting ("Your move") and a
-  // warning share the amber dot family, but running jobs remain what is happening.
+  // Only attention that waits on a person outranks work: a question, a turn
+  // that ended on needs_response (awaiting without a question, #4093), an
+  // approval (which displayState presents as awaiting), or a restart. A
+  // warning shares the amber dot family, but running jobs remain what is
+  // happening.
   const attentionOutranksWork =
-    session.state === "restartRequired" ||
-    ((session.state === "awaiting" || session.state === "warning") && session.ask_pending === true) ||
-    approvalWaiting(session.state, session.approval_pending === true);
+    presented === "awaiting" ||
+    presented === "restartRequired" ||
+    (presented === "warning" && session.ask_pending === true);
   if (attentionOutranksWork) return presented;
   if (session.state === "active" || (session.running_job_count ?? 0) > 0 || (tally?.running ?? 0) > 0) {
     return "active";
@@ -504,20 +456,17 @@ function effectiveSessionState(session: RailSession): string {
 function sessionStatusLabel(session: RailSession, effectiveState: string, notStarted: boolean): string {
   const state = cadenceStateFor(effectiveState);
   if (notStarted) return "Not started";
-  if (state === "failed") return CADENCE_LABEL.failed;
-  if (state === "working") return CADENCE_LABEL.working;
+  if (state === "failed") return STATUS_LABEL.failed;
+  if (state === "working") return STATUS_LABEL.working;
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-function ContextRow({ label, value, mono = false }: { label: string; value?: ReactNode; mono?: boolean }) {
-  if (value === undefined || value === null || value === "") return null;
-  return (
-    <div className={CLASS.contextRow}>
-      <dt className={CLASS.contextKey}>{label}</dt>
-      <dd className={`${CLASS.contextValue}${mono ? ` ${CLASS.contextMono}` : ""}`}>{value}</dd>
-    </div>
-  );
+// Every fact wraps: the card is where the reader confirms which session
+// this is, so an ellipsis would hide the part that tells two apart. A fact
+// the session doesn't have is left out rather than shown blank.
+function contextRow(label: string, value: string | undefined, mono = false): PropertyListRow[] {
+  return value === undefined || value === "" ? [] : [{ label, value, mono, wrap: true }];
 }
 
 function subagentContext(session: RailSession): string | undefined {
@@ -528,11 +477,6 @@ function subagentContext(session: RailSession): string | undefined {
   if (tally.failed > 0) parts.push(`${tally.failed} failed`);
   if (tally.done > 0) parts.push(`${tally.done} done`);
   return parts.length > 0 ? parts.join(", ") : undefined;
-}
-
-function ContextAgeRow({ updatedAt }: { updatedAt?: string }) {
-  const now = useRailNow();
-  return <ContextRow label="Age" value={relativeAge(updatedAt, now)} />;
 }
 
 function SessionContextCard({
@@ -556,31 +500,31 @@ function SessionContextCard({
   const watches = session.watch_count ?? 0;
   const armedWatches = activeWatchCount(session);
   const status = sessionStatusLabel(session, effectiveState, notStarted);
+  const now = useRailNow();
   return (
     <div className={CLASS.contextCard} data-state={cadenceStateFor(effectiveState)}>
       <div className={CLASS.contextHead}>
-        <strong className={CLASS.contextKind}>Session</strong>
+        <Eyebrow as="span">Session</Eyebrow>
         <span className={CLASS.contextStatus}>{status}</span>
       </div>
       <div className={CLASS.contextSummary}>{session.title}</div>
-      <dl className={CLASS.contextRows}>
-        <ContextRow label="Project" value={session.project} />
-        <ContextRow
-          label="Host"
-          value={session.host_id && !hostOnline ? `${session.host_id} (offline)` : session.host_id}
-          mono
-        />
-        <ContextRow label="Branch" value={session.branch} mono />
-        <ContextRow label="Jobs" value={jobs > 0 ? `${jobs} running` : undefined} />
-        <ContextRow label="Subagents" value={subagentContext(session)} />
-        <ContextRow label="Watches" value={watches > 0 ? watchCountLabel(armedWatches, watches) : undefined} />
-        <ContextRow label="Pinned" value={pinSection} />
-        <ContextRow
-          label="Tier"
-          value={session.tier !== undefined && session.tier !== "current" ? session.tier : undefined}
-        />
-        <ContextAgeRow updatedAt={session.updated_at} />
-      </dl>
+      <PropertyList
+        rows={[
+          ...contextRow("Project", session.project),
+          ...contextRow(
+            "Host",
+            session.host_id && !hostOnline ? `${session.host_id} (offline)` : session.host_id,
+            true,
+          ),
+          ...contextRow("Branch", session.branch, true),
+          ...contextRow("Jobs", jobs > 0 ? `${jobs} running` : undefined),
+          ...contextRow("Subagents", subagentContext(session)),
+          ...contextRow("Watches", watches > 0 ? watchCountLabel(armedWatches, watches) : undefined),
+          ...contextRow("Pinned", pinSection),
+          ...contextRow("Tier", session.tier !== undefined && session.tier !== "current" ? session.tier : undefined),
+          ...contextRow("Age", relativeAge(session.updated_at, now)),
+        ]}
+      />
     </div>
   );
 }
@@ -734,15 +678,16 @@ function ProjectRow({
             {node.displayName ?? project.name}
           </span>
           {resourceError && retry && (
-            <button
-              type="button"
+            <Button
+              variant="quiet"
+              size="xs"
               onClick={(event) => {
                 event.stopPropagation();
                 retry();
               }}
             >
               Retry
-            </button>
+            </Button>
           )}
           <TrailingChevron info={info} />
         </span>
@@ -878,13 +823,10 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
 }
 
 function LoadingRow(): ReactNode {
-  // role="status" so this is announced the same way the top-level Skeleton
-  // (widgets/skeleton) is - the visible "Loading…" text is its own
-  // accessible name via name-from-content, no separate aria-label needed.
   return (
-    <span role="status" className={CLASS.loadingRow}>
-      Loading…
-    </span>
+    <div className={CLASS.loadingRow}>
+      <Skeleton lines={1} />
+    </div>
   );
 }
 

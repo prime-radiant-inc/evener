@@ -6,12 +6,15 @@
 // toolEvidence and delegateSteps readers, which the web's bodies read too).
 // Pure, so the rules live apart from how StepEvidence draws them.
 import {
+	capitalized,
+	delegateSendEarlierLabel,
 	diffStats,
 	editDiffText,
 	filePathOf,
 	jobStatusDisplay,
 	freshNotes,
 	lineCount,
+	memoryFileTarget,
 	parseArgs,
 	prettyJSON,
 	readTranscriptEnvelope,
@@ -25,7 +28,6 @@ import {
 	webFetchResult,
 	worktreeMessage,
 } from "@evener/appwire-client";
-import { INLINE_DESTINATION } from "../markdownLinks";
 import type { ActivityDetail, DetailTask } from "../projectedRows";
 import type { RunStep } from "../timeline";
 
@@ -67,40 +69,6 @@ function diff(text: string): Evidence {
 // A tool's output as it printed it, or nothing for an empty one.
 function rawOutput(text: string): Evidence[] {
 	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
-}
-
-// An image: ![alt] and then its (url) or (url "title") (INLINE_DESTINATION),
-// or its [ref]. A URL the pattern can't take whole leaves some of itself as
-// text, but ![alt] is always taken, so the image is gone.
-const IMAGE_RE = new RegExp(String.raw`!\[([^\]]*)\](?:${INLINE_DESTINATION}|\[[^\]]*\])?`, "g");
-
-// A skill's markdown is its author's, and the phone's markdown view loads
-// images from their URLs, so each image, inline (![alt](url)), by reference
-// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead. An image
-// needs "](" in its paragraph, or a reference definition, which needs "]:", so
-// a paragraph with neither reads as written, keeping code like vec![1, 2, 3].
-// If the markdown holds a "]:", or stripping writes one ([r]![](u): ...), the
-// whole markdown goes through withoutAnyImages.
-function withoutImages(markdown: string): string {
-	if (markdown.includes("]:")) return withoutAnyImages(markdown);
-	const text = markdown
-		.split(/(\n[ \t\r]*\n)/)
-		.map((paragraph) => (paragraph.includes("](") ? withoutAnyImages(paragraph) : paragraph))
-		.join("");
-	return text.includes("]:") ? withoutAnyImages(markdown) : text;
-}
-
-// Taking out an image can complete another (![a ![b](u)](v) leaves a
-// ![b](v)), so this repeats until none is left. Each pass shortens the text,
-// so it ends.
-function withoutAnyImages(markdown: string): string {
-	let text = markdown;
-	let before: string;
-	do {
-		before = text;
-		text = text.replace(IMAGE_RE, "$1");
-	} while (text !== before);
-	return text;
 }
 
 // What the shell tool's footer says besides the exit.
@@ -183,9 +151,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 		}
 		case "skill": {
 			const loaded = skillContext(text);
-			return loaded
-				? [{ kind: "markdown", title: loaded.name, markdown: withoutImages(loaded.instructions) }]
-				: rawOutput(text);
+			return loaded ? [{ kind: "markdown", title: loaded.name, markdown: loaded.instructions }] : rawOutput(text);
 		}
 		case "tasks": {
 			// No list, or one with no tasks in it: what the tool printed says more
@@ -228,16 +194,24 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			return rawOutput(description ? `${line} — ${description}` : line);
 		}
 		case "message": {
-			// A message to a subagent: what was sent, the delegate's reply when
-			// the send waited for one, and why a wait was ignored, as the web's
+			// A message to a subagent: what was sent, any earlier results its
+			// wait carried, the delegate's reply when the send waited for one,
+			// and why a wait was ignored, as the web's
 			// DelegateSendBody shows the exchange. A call with no message and no
 			// reply (a malformed one) shows its JSON, as any other tool's does.
 			const message = str(parseArgs(detail.arguments), "message");
-			if (!message && detail.sendReply === undefined) return jsonEvidence(detail, text);
+			const earlier = detail.sendEarlierReplies ?? [];
+			if (!message && detail.sendReply === undefined && earlier.length === 0) return jsonEvidence(detail, text);
 			const evidence: Evidence[] = [];
-			if (message) evidence.push({ kind: "markdown", title: "Message", markdown: withoutImages(message) });
+			if (message) evidence.push({ kind: "markdown", title: "Message", markdown: message });
+			// Results the caller had not yet received, which the wait carried
+			// ahead of its own reply (#3906), oldest first.
+			earlier.forEach((reply, i) => {
+				const title = capitalized(delegateSendEarlierLabel(reply, i, earlier.length));
+				evidence.push({ kind: "markdown", title, markdown: reply.text });
+			});
 			if (detail.sendReply !== undefined)
-				evidence.push({ kind: "markdown", title: "Reply", markdown: withoutImages(detail.sendReply) });
+				evidence.push({ kind: "markdown", title: "Reply", markdown: detail.sendReply });
 			if (detail.sendWaitIgnored !== undefined)
 				evidence.push({ kind: "note", text: `Wait ignored: ${detail.sendWaitIgnored}` });
 			return evidence;
@@ -264,6 +238,33 @@ function jsonEvidence(detail: ActivityDetail, text: string): Evidence[] {
 	return evidence;
 }
 
+// A memory write's content is the page the person asked to save; an edit is
+// the same file diff as edit_file, and other calls read as printed.
+function memoryEvidence(label: string, detail: ActivityDetail): Evidence[] {
+	const text = detail.output ?? "";
+	switch (label) {
+		case "memory_write": {
+			const args = parseArgs(detail.arguments);
+			const content = str(args, "content");
+			if (!content) return jsonEvidence(detail, text);
+			return [{ kind: "markdown", title: memoryFileTarget(args) ?? "Memory page", markdown: content }];
+		}
+		case "memory_edit": {
+			const args = parseArgs(detail.arguments);
+			const oldString = str(args, "old_string");
+			const newString = str(args, "new_string");
+			if (oldString === undefined && newString === undefined) return jsonEvidence(detail, text);
+			return [diff(editDiffText(filePathOf(args) ?? "", oldString ?? "", newString ?? ""))];
+		}
+		case "memory_read":
+		case "memory_search":
+		case "memory_delete":
+			return rawOutput(text);
+		default:
+			return jsonEvidence(detail, text);
+	}
+}
+
 /** The parts of a step its evidence comes from. */
 export type EvidenceSource = Pick<RunStep, "label" | "summaryOnly"> & {
 	detail: ActivityDetail;
@@ -274,7 +275,9 @@ export function stepEvidence(step: EvidenceSource): Evidence[] {
 	if (step.summaryOnly) return [];
 	const { detail } = step;
 	const evidence: Evidence[] = [];
-	if (isFileTool(step.label)) {
+	if (toolFamily(step.label) === "memory") {
+		evidence.push(...memoryEvidence(step.label, detail));
+	} else if (isFileTool(step.label)) {
 		const args = parseArgs(detail.arguments);
 		const path = filePathOf(args);
 		if (step.label === "edit_file") {

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { shownReasons } from "../reasonTestUtils";
 import { LaunchConfigForm } from "./LaunchConfigForm";
 
 // LaunchConfigForm's own contract when the SAME panes re-reads the SAME host's
@@ -75,7 +76,7 @@ test("a re-read that brings different values re-seeds a form the user has not ed
   rerenderForm(rerender, { agent: "beta-agent-2" });
 
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent-2");
-  expect(screen.queryByText(/changed on the host while you were editing/)).toBeNull();
+  expect(shownReasons()).not.toContain("host-changed");
 });
 
 test("a re-read that brings DIFFERENT values keeps the user's unsaved draft and says so", async () => {
@@ -91,7 +92,7 @@ test("a re-read that brings DIFFERENT values keeps the user's unsaved draft and 
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
   // ...and the user is told the host's values moved, rather than being left to
   // overwrite them silently with a later Save.
-  expect(screen.getByText(/changed on the host while you were editing/)).toBeTruthy();
+  expect(shownReasons()).toContain("host-changed");
 });
 
 test("the conflict notice's own button adopts the host's values and drops the draft", async () => {
@@ -102,12 +103,12 @@ test("the conflict notice's own button adopts the host's values and drops the dr
   await user.type(agent, "typed-on-beta");
 
   rerenderForm(rerender, { agent: "beta-agent-2" });
-  expect(screen.getByText(/changed on the host while you were editing/)).toBeTruthy();
+  expect(shownReasons()).toContain("host-changed");
 
   await user.click(screen.getByRole("button", { name: "Use the host's values" }));
 
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent-2");
-  expect(screen.queryByText(/changed on the host while you were editing/)).toBeNull();
+  expect(shownReasons()).not.toContain("host-changed");
 });
 
 test("a same-content re-read leaves the notice and the form alone", async () => {
@@ -122,7 +123,7 @@ test("a same-content re-read leaves the notice and the form alone", async () => 
   rerenderForm(rerender, { agent: "beta-agent" });
 
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
-  expect(screen.queryByText(/changed on the host while you were editing/)).toBeNull();
+  expect(shownReasons()).not.toContain("host-changed");
 });
 
 // The save path is untouched: an edited draft still wins when the user chooses

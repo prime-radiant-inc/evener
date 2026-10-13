@@ -12,7 +12,7 @@
 import { assertDraftDiscardable, discardCheckpointedDraft, persistCheckpointedDraft } from "./checkpointedDraftEditor";
 import type { AppwireClient } from "./client";
 import { canonicalJson, createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
-import { errorText, WireError, wireRejectionPayload } from "./errors";
+import { StoreMessageError, storeErrorText, WireError, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { isPlainObject } from "./plainObject";
 import { createReadyGenerationFence, type ReadyGenerationFence } from "./readyGenerationFence";
@@ -94,6 +94,9 @@ export interface TranscriptDraft {
 export interface TranscriptDisplayStoreFields {
   hubSupport: TranscriptDisplaySupport;
   hubLoading: boolean;
+  /** The last hub read failure, and each layout's last write failure, as
+   * storeErrorText: the store's own message, or a request failure's friendly
+   * form; render them as-is. */
   hubError: string | null;
   hubErrors: Partial<Record<ViewportClass, string>>;
   /** Confirmed defaults keep presenting across a transient disconnect. */
@@ -207,7 +210,7 @@ const DRAFT_REVIEW_BEFORE_SAVE_MESSAGE = "Review the current transcript settings
 const DRAFT_REVIEW_AGAIN_MESSAGE = "Transcript display settings changed again. Review the current values.";
 const SAVE_CANCELLED_MESSAGE = "Transcript preference save was cancelled.";
 
-class InvalidPatchResponseError extends Error {}
+class InvalidPatchResponseError extends StoreMessageError {}
 
 function isRevision(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -863,7 +866,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       const result = await client.request("evener/settings/transcriptDisplay/get", {});
       if (!stillMine()) return;
       const defaults = fromWireDefaults(result);
-      if (defaults === undefined) throw new Error(MALFORMED_DEFAULTS_MESSAGE);
+      if (defaults === undefined) throw new StoreMessageError(MALFORMED_DEFAULTS_MESSAGE);
       applyHubDefaults(defaults, (hub) => settledWrite(writeSerialAtStart, savingAtReadStart, draftAtReadStart, hub));
       if (!stillMine()) return;
       successfulHubReads += 1;
@@ -872,7 +875,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         void refreshFor(generation);
       }
     } catch (error) {
-      if (stillMine()) setState({ hubError: errorText(error), hubLoading: false });
+      if (stillMine()) setState({ hubError: storeErrorText(error), hubLoading: false });
     }
   }
 
@@ -915,12 +918,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // respect.
     if (state.storageUnavailable && !recoverDraftPort()) {
       setState(layoutError(layout, UNAVAILABLE_MESSAGE));
-      throw new Error(UNAVAILABLE_MESSAGE);
+      throw new StoreMessageError(UNAVAILABLE_MESSAGE);
     }
     state = getState();
     if (!fence.liveHub(generation) || !state.loaded || state.hubLoading || state.saving || state.writeUncertain) {
       setState(layoutError(layout, UNAVAILABLE_MESSAGE));
-      throw new Error(UNAVAILABLE_MESSAGE);
+      throw new StoreMessageError(UNAVAILABLE_MESSAGE);
     }
     const config = normalizeConfig(input);
     const requestedFingerprint = configFingerprint(config);
@@ -1000,7 +1003,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         applyHubDefault(layout, canonical);
         if (!stillMine()) return getState().hub[layout] ?? canonical;
       }
-      const message = errorText(error);
+      const message = storeErrorText(error);
       setState({
         ...clearPreview(layout),
         ...layoutError(layout, message),
@@ -1024,7 +1027,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       state.hubSupport !== "supported" ||
       !state.loaded
     )
-      throw new Error(UNAVAILABLE_MESSAGE);
+      throw new StoreMessageError(UNAVAILABLE_MESSAGE);
     return state.hub;
   }
 
@@ -1074,7 +1077,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     input?: TranscriptDisplayConfigV1,
   ): Promise<HubTranscriptDisplayDefault> {
     const hub = assertEditable();
-    if (getState().draftConflict) throw new Error(DRAFT_REVIEW_BEFORE_SAVE_MESSAGE);
+    if (getState().draftConflict) throw new StoreMessageError(DRAFT_REVIEW_BEFORE_SAVE_MESSAGE);
     const existing = getState().draft;
     const layout = layoutInput ?? existing?.layout ?? "mobile";
     const confirmed = confirmedFor(hub, layout);
@@ -1111,7 +1114,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // The saving publish above may have disposed the store or retired the
       // payload (a host tearing down on the transition): the checkpoint stays
       // for the next instance to restore, and nothing leaves.
-      if (!stillMine()) throw new Error(SAVE_CANCELLED_MESSAGE);
+      if (!stillMine()) throw new StoreMessageError(SAVE_CANCELLED_MESSAGE);
       result = await client.request("evener/settings/transcriptDisplay/patch", {
         layout,
         expectedRevision: revision,
@@ -1273,7 +1276,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const hub = assertEditable();
     const { draft, hubLoading } = getState();
     if (draft === null || hubLoading || confirmedFor(hub, draft.layout).revision !== reviewedRevision)
-      throw new Error(DRAFT_REVIEW_AGAIN_MESSAGE);
+      throw new StoreMessageError(DRAFT_REVIEW_AGAIN_MESSAGE);
     persistDraft({ layout: draft.layout, baseRevision: reviewedRevision, config: draft.config, writeUncertain: false });
     setState({
       draft: { ...draft, revision: reviewedRevision, generation: currentGeneration() },

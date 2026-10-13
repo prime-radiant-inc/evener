@@ -674,13 +674,13 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 		}
 		for _, dir := range dirs {
 			// Dot-directories are skipped the same way the subtree walk skips
-			// them: isDotPath drops every candidate underneath one before a
+			// them: IsDotPath drops every candidate underneath one before a
 			// rule from it could apply, so reading it could not change an
 			// answer and would spend the rules budget for nothing. The check
 			// is on the full path, not the basename: a scope like
 			// a/.config/sub sits beneath a dot-directory without naming one
 			// itself, and reading under it is just as pointless.
-			if dir != "." && isDotPath(dir) {
+			if dir != "." && IsDotPath(dir) {
 				continue
 			}
 			if dir != "." && skip != nil && skip(dir) {
@@ -733,13 +733,13 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 			continue
 		}
 		// A scope beneath a dot-directory has no candidates to collect for:
-		// isDotPath drops every path under one before a rule from inside
+		// IsDotPath drops every path under one before a rule from inside
 		// could apply, so walking it only spends the listing and rules
 		// budget — and a large enough subtree under it can refuse a glob
 		// whose answer is already fixed. The walk's own d.Name() check cannot
 		// see this: it only skips dot-named entries, never a scope already
 		// rooted under one.
-		if isDotPath(sc.prefix) {
+		if IsDotPath(sc.prefix) {
 			continue
 		}
 		// Each scope's walk is its own traversal, so it starts holding
@@ -909,7 +909,7 @@ func globMatchIsDir(ctx context.Context, fsys fs.FS, m string) (bool, error) {
 // drops the glob match m. Shared by the off and sandboxed glob so the two
 // arms exclude — and report a cancellation — identically.
 func globMatchExcluded(ctx context.Context, fsys fs.FS, ignores *ignoreSet, m string) (bool, error) {
-	if isDotPath(m) {
+	if IsDotPath(m) {
 		return true, nil
 	}
 	isDir, err := globMatchIsDir(ctx, fsys, m)
@@ -919,11 +919,11 @@ func globMatchExcluded(ctx context.Context, fsys fs.FS, ignores *ignoreSet, m st
 	return ignores.matches(m, isDir), nil
 }
 
-// isDotPath reports whether any path component of relPath (slash-separated)
+// IsDotPath reports whether any path component of relPath (slash-separated)
 // starts with "." — the existing convention (matching grepNative's long-
 // standing hidden-file skip) for hiding VCS internals, worktree scratch
 // dirs (.claude/worktrees/x), and other dotfiles from unscoped search.
-func isDotPath(relPath string) bool {
+func IsDotPath(relPath string) bool {
 	for part := range strings.SplitSeq(relPath, "/") {
 		if part != "." && strings.HasPrefix(part, ".") {
 			return true

@@ -50,10 +50,10 @@ export function useActivityPoll(
 		poll.start();
 		return () => {
 			poll.stop();
-			// A session's tray stops whenever its session goes idle; restarted
-			// within the freshness window, the old read would show a count from
-			// before the idle spell ("Waiting on 3 subagents") until the next
-			// read lands. The Board keeps its read, so a return to it within
+			// A session screen's poll stops whenever it leaves the front;
+			// restarted within the freshness window, the old read would show a
+			// count from before it left ("Waiting on 3 subagents") until the
+			// next read lands. The Board keeps its read, so a return to it within
 			// that window shows its rows' activity at once instead of a round
 			// trip of fallback lines.
 			if (sessionRef !== undefined) poll.forget();

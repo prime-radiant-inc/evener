@@ -60,7 +60,10 @@ func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T)
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	m = updated.(hubModel)
-	if got := m.View(); !strings.Contains(got, "Select transcript") || !strings.Contains(got, "subagent inspect") {
+	if m.sessionTranscriptPicker == nil {
+		t.Fatalf("/agents opened no transcript picker:\n%s", m.View())
+	}
+	if got := m.View(); !strings.Contains(got, "subagent inspect") {
 		t.Fatalf("transcript picker missing targets:\n%s", got)
 	}
 

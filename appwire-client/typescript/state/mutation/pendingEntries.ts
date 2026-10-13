@@ -32,6 +32,11 @@ export interface PendingTurnEntry {
   // sends, never the daemon's session-wide projection of every client's), and
   // that answer cannot change when a hydrate lands.
   fromThisClient: boolean;
+  // The queued message a promote steers with, while a durable record of
+  // the promote is unsettled: the queue row it will replace.
+  queueEntryId?: string;
+  // The queue revision a drain steers with, likewise: the queue it takes.
+  queueRevision?: number;
 }
 
 // The wire-method → PendingMethod mapping that names the entry method family:
@@ -192,6 +197,8 @@ function outboxEntry(
   const method = pendingMethod(record.method);
   if (!method) return undefined;
   const preview = inputPreview(outboxInput(record));
+  const queueEntryId = method === "promote" ? record.payload.expectedEntryId : undefined;
+  const queueRevision = method === "drain" ? record.payload.expectedQueueRevision : undefined;
   return {
     id: record.clientMutationId,
     ref: record.targetRef,
@@ -205,6 +212,8 @@ function outboxEntry(
     // or names this client - another client's in-flight send must not claim
     // tier-6 routing here.
     fromThisClient: isOwnMutationRecord(record),
+    ...(typeof queueEntryId === "string" ? { queueEntryId } : {}),
+    ...(typeof queueRevision === "number" ? { queueRevision } : {}),
   };
 }
 

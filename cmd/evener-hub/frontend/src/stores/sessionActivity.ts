@@ -4,6 +4,7 @@ import {
   type SessionActivityScope,
   type SessionActivitySnapshot,
   SessionActivityStore,
+  type SessionActivitySummary,
 } from "@evener/appwire-client";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useConnectionStore } from "./connection";
@@ -13,7 +14,13 @@ interface Owner {
   holders: number;
 }
 const owners = new WeakMap<AppwireClientLike, Map<string, Owner>>();
+/** One store per ref and scope, shared by every holder: the subagent count
+ * and an Activity view read the same subtree store. A view that closes stops
+ * observing its collections, and the store drops their pages still in flight,
+ * so a count that keeps the store alive takes in no closed view's late page. */
 const ownerKey = (ref: string, scope: SessionActivityScope) => JSON.stringify([ref, scope]);
+const ownedStore = (client: AppwireClientLike, ref: string, scope: SessionActivityScope) =>
+  owners.get(client)?.get(ownerKey(ref, scope))?.store;
 
 /** Called only by committed view lifetimes. Routing refs stay unchanged even
  * when the resolved context names a different session after a workspace clear. */
@@ -56,7 +63,7 @@ export function sessionActivitySnapshot(
   ref: string,
   scope: SessionActivityScope,
 ): SessionActivitySnapshot | null {
-  return owners.get(client)?.get(ownerKey(ref, scope))?.store.getSnapshot() ?? null;
+  return ownedStore(client, ref, scope)?.getSnapshot() ?? null;
 }
 
 export function useSessionActivity(
@@ -84,7 +91,7 @@ export function useSessionActivity(
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, () => null);
   useEffect(() => {
     if (!client || !ref || !collection) return;
-    const store = owners.get(client)?.get(ownerKey(ref, scope))?.store;
+    const store = ownedStore(client, ref, scope);
     if (!store) return;
     const releases = (typeof collection === "string" ? [collection] : collection).map((resource) =>
       store.observe(resource),
@@ -95,10 +102,21 @@ export function useSessionActivity(
   }, [client, ref, scope, collection]);
   const loadMore = useCallback(
     (resource: SessionActivityCollection) => {
-      const store = client && ref ? owners.get(client)?.get(ownerKey(ref, scope))?.store : undefined;
+      const store = client && ref ? ownedStore(client, ref, scope) : undefined;
       return store?.loadMore(resource) ?? Promise.resolve();
     },
     [client, ref, scope],
   );
   return { snapshot, loadMore };
+}
+
+/** A session's subagents at every depth: how many runs are open and how many
+ * there are, from the hub's subtree activity summary, or null until the hub
+ * knows. This is the web's one count of "running subagents": the status bar's
+ * Agents chip, the activity sidebar's Agents tab, the Overview and Activity
+ * action counts and the liveness line all read it, as the hub's Live tally and
+ * the phone count them. */
+export function useSubagentCounts(ref: string | null): SessionActivitySummary["delegates"] | null {
+  const delegates = useSessionActivity(ref, "subtree").snapshot?.summary?.delegates;
+  return delegates?.known ? delegates : null;
 }

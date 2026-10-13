@@ -2,6 +2,7 @@ package openai
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,7 +41,7 @@ func TestSaveAuthMkdirFailureSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("SaveAuth() error = nil, want create-directory failure")
 	}
-	if !strings.Contains(err.Error(), "create auth directory") {
+	if pathErr, ok := errors.AsType[*fs.PathError](err); !ok || pathErr.Op != "mkdir" {
 		t.Fatalf("SaveAuth() error = %v, want create-directory failure", err)
 	}
 }
@@ -58,7 +59,7 @@ func TestDeleteAuthSurfacesUnexpectedRemoveError(t *testing.T) {
 	if err == nil {
 		t.Fatal("DeleteAuth() error = nil, want remove failure")
 	}
-	if !strings.Contains(err.Error(), "delete auth file") {
+	if pathErr, ok := errors.AsType[*fs.PathError](err); !ok || pathErr.Op != "remove" {
 		t.Fatalf("DeleteAuth() error = %v, want delete-auth-file failure", err)
 	}
 }

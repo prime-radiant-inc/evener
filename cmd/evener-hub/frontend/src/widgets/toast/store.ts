@@ -13,6 +13,9 @@ export interface ToastRecord {
   id: string;
   kind: ToastKind;
   text: string;
+  /** Which outcome the toast reports, when the caller names one: lets callers
+   * and tests tell two toasts of the same kind apart without reading text. */
+  reason?: string;
 }
 
 type Listener = () => void;
@@ -34,9 +37,9 @@ export function getToasts(): ToastRecord[] {
   return toasts;
 }
 
-export function pushToast(kind: ToastKind, text: string): string {
+export function pushToast(kind: ToastKind, text: string, reason?: string): string {
   const id = `toast-${nextId++}`;
-  toasts = [...toasts, { id, kind, text }];
+  toasts = [...toasts, reason === undefined ? { id, kind, text } : { id, kind, text, reason }];
   emit();
   return id;
 }

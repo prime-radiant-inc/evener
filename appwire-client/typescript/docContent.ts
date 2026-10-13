@@ -13,6 +13,10 @@
 //   markdown / escaped <pre>). It is NOT the legacy /doc/file HTML page. The
 //   request itself comes from the DocPort the host supplies, so this module
 //   names no browser global, no origin and no credentials policy of its own.
+
+export * from "./documentReadDemand";
+export * from "./fileReferences";
+
 export interface DocFileContent {
   text: string;
   binary: boolean;
@@ -162,6 +166,10 @@ function etagRevision(etag: string | null): string | undefined {
 // sessionID and rel.
 export function docImageURL(origin: string, session: string, path: string): string {
   return `${docBase(origin)}/doc/image?session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
+}
+
+export function docImageReadURL(origin: string, session: string, readTarget: string, generation: string): string {
+  return `${docImageURL(origin, session, readTarget)}&read=${encodeURIComponent(generation)}`;
 }
 
 // filenameOf returns the last segment of a slash path: a document's name when

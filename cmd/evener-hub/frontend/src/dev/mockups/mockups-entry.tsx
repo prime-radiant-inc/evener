@@ -42,6 +42,8 @@ import {
   Badge,
   Button,
   Chevron,
+  DisclosureHeading,
+  Eyebrow,
   IconButton,
   Popover,
   RadioGroup,
@@ -887,8 +889,8 @@ function OrganizeControl({
   );
 }
 
-// Section markup mirrors Rail.tsx's own SectionHeading + RailSection, using
-// the same Rail.module.css classes.
+// Section markup mirrors Rail.tsx's own RailSection: a DisclosureHeading over
+// the section's Tree, using the same Rail.module.css section class.
 function MockSection(props: {
   title: string;
   nodes: MockRailNode[];
@@ -901,14 +903,7 @@ function MockSection(props: {
   if (nodes.length === 0) return <span className="mock-section-empty" hidden />;
   return (
     <section className={railStyles.section}>
-      <div className={railStyles.sectionHeadingRow}>
-        <h3 className={`${railStyles.sectionTitle} ${railStyles.staticSectionLabel}`}>
-          <button type="button" className={railStyles.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
-            {title}
-            <Chevron direction={open ? "down" : "right"} />
-          </button>
-        </h3>
-      </div>
+      <DisclosureHeading level={3} label={title} eyebrow open={open} onOpenChange={onToggleOpen} />
       {open && (
         <Tree nodes={nodes} onToggle={(node) => onToggle(node.id)} onActivate={() => {}} renderRow={renderRow} />
       )}
@@ -1091,7 +1086,7 @@ function ControlCloseups(): JSX.Element {
         </div>
         <div className={styles.closeup}>
           <div className={styles.closeupHeadingRow}>
-            <span className={railStyles.staticSectionLabel}>PROJECTS</span>
+            <Eyebrow as="span">Projects</Eyebrow>
             <SegmentedControl
               label="Group by"
               size="sm"

@@ -296,6 +296,13 @@ func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) 
 			resultIDs[part.ToolResult.ToolCallID] = struct{}{}
 		}
 	}
+	// A tool call may commit several deliveries, all in its own turn (a
+	// delegate_send wait carries earlier results ahead of its own, #3906); a
+	// call an earlier turn committed takes no more.
+	earlierCalls := make(map[string]struct{}, len(fold.deliveryCommits))
+	for _, toolCallID := range fold.deliveryCommits {
+		earlierCalls[toolCallID] = struct{}{}
+	}
 	for _, commit := range turn.DelegateDeliveryCommits {
 		if commit.ToolCallID == "" || commit.DeliveryID == "" {
 			return errors.New("delegate delivery commit identity is incomplete")
@@ -303,13 +310,12 @@ func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) 
 		if _, exists := resultIDs[commit.ToolCallID]; !exists {
 			return fmt.Errorf("delegate delivery %q references absent tool call %q", commit.DeliveryID, commit.ToolCallID)
 		}
-		if previous, exists := fold.deliveryCommits[commit.DeliveryID]; exists && previous != commit.ToolCallID {
+		previous, exists := fold.deliveryCommits[commit.DeliveryID]
+		if exists && previous != commit.ToolCallID {
 			return fmt.Errorf("delegate delivery %q has conflicting tool calls", commit.DeliveryID)
 		}
-		for deliveryID, toolCallID := range fold.deliveryCommits {
-			if toolCallID == commit.ToolCallID && deliveryID != commit.DeliveryID {
-				return fmt.Errorf("delegate tool call %q has conflicting deliveries", commit.ToolCallID)
-			}
+		if _, committed := earlierCalls[commit.ToolCallID]; committed && !exists {
+			return fmt.Errorf("delegate tool call %q has conflicting deliveries", commit.ToolCallID)
 		}
 		fold.deliveryCommits[commit.DeliveryID] = commit.ToolCallID
 	}
@@ -345,6 +351,22 @@ func (f delegateAttentionFold) pendingIDs() []string {
 		}
 	}
 	return pending
+}
+
+// pendingTurns returns the durable model-visible turn behind every pending
+// attention item, and behind the resolved item keep names, in arrival order.
+func (f delegateAttentionFold) pendingTurns(keep string) []schema.Turn {
+	var turns []schema.Turn
+	for _, attentionID := range f.order {
+		_, resolved := f.resolutions[attentionID]
+		if resolved && attentionID != keep {
+			continue
+		}
+		if turn, ok := f.turns[attentionID]; ok {
+			turns = append(turns, turn)
+		}
+	}
+	return turns
 }
 
 func appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, attentionID, content string, now time.Time, open delegateAttentionWriterOpener) (appended bool, err error) {
@@ -664,8 +686,18 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 }
 
 func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return nil, err
+	}
+	return fold.pendingIDs(), nil
+}
+
+// delegateAttentionFoldLocked folds the session's own transcript; the zero fold
+// stands in until a transcript is attached. The caller holds attentionMu.
+func (s *Session) delegateAttentionFoldLocked() (delegateAttentionFold, error) {
 	if s == nil {
-		return nil, nil
+		return delegateAttentionFold{}, nil
 	}
 	s.mu.Lock()
 	ready := s.transcriptReady
@@ -673,13 +705,86 @@ func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
 	stateDir := s.stateDir
 	s.mu.Unlock()
 	if !ready || sessionID == "" || stateDir == "" {
-		return nil, nil
+		return delegateAttentionFold{}, nil
 	}
-	fold, err := s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	return s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+}
+
+// pendingAttentionTurnsLocked returns the turns behind the pending attention
+// items and the accepted trigger no settled request has presented. The caller
+// holds attentionMu.
+func (s *Session) pendingAttentionTurnsLocked() ([]schema.Turn, error) {
+	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		return nil, err
 	}
-	return fold.pendingIDs(), nil
+	return fold.pendingTurns(s.attentionAcceptedID), nil
+}
+
+// attentionTurns returns the turns of history that carry an attention identity.
+func attentionTurns(history []schema.Turn) []schema.Turn {
+	var turns []schema.Turn
+	for _, turn := range history {
+		if turn.AttentionID != "" {
+			turns = append(turns, turn)
+		}
+	}
+	return turns
+}
+
+// withAttentionTurns restores to history the attention turns it does not hold.
+// Each goes before the first held turn of a later-arriving item (attention is
+// in arrival order), or at the end when none is held, so the model still reads
+// the items in the order they were delivered. It also returns where each was
+// inserted, in order, for the caller's in-flight boundary. It is the lock-free form of
+// retainDelegateAttentionTurn's append, for a caller that already holds s.mu
+// and owns the slice.
+func withAttentionTurns(history, attention []schema.Turn) (_ []schema.Turn, restoredAt []int) {
+	for i, turn := range attention {
+		if slices.ContainsFunc(history, func(held schema.Turn) bool { return held.AttentionID == turn.AttentionID }) {
+			continue
+		}
+		var at int
+		history, at = insertAttentionTurn(history, turn, attention[i+1:])
+		restoredAt = append(restoredAt, at)
+	}
+	return history, restoredAt
+}
+
+// insertAttentionTurn puts turn before the first held turn of a later-arriving
+// item (later, in arrival order), or at the end when none is held, and returns
+// the position it took.
+func insertAttentionTurn(history []schema.Turn, turn schema.Turn, later []schema.Turn) ([]schema.Turn, int) {
+	at := slices.IndexFunc(history, func(held schema.Turn) bool {
+		return slices.ContainsFunc(later, func(next schema.Turn) bool { return next.AttentionID == held.AttentionID })
+	})
+	if at < 0 {
+		at = len(history)
+	}
+	return slices.Insert(history, at, turn), at
+}
+
+// holdAcceptedTrigger latches an accepted generation's trigger so a fold keeps
+// its turn until a settled request presents it. The accept path and the
+// restart of an owed generation both set it.
+func (s *Session) holdAcceptedTrigger(attentionID string) {
+	s.attentionMu.Lock()
+	s.attentionAcceptedID = attentionID
+	s.attentionMu.Unlock()
+}
+
+// restoreAcceptedTrigger latches the trigger of a restarted owed generation
+// and puts its turn and the pending items' turns (turns, in arrival order)
+// back into the resumed history, which a compaction marker after them would
+// have cut.
+func (s *Session) restoreAcceptedTrigger(attentionID string, turns []schema.Turn) error {
+	s.holdAcceptedTrigger(attentionID)
+	for i, turn := range turns {
+		if err := s.retainDelegateAttentionTurn(turn, turns[i+1:]...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // acceptDelegateAttention records the exact reserved generation in the child
@@ -694,6 +799,11 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	if err != nil {
 		return err
 	}
+	// The latch goes up before the consumed marker can land: a fold that sees
+	// the item resolved must already find it latched. It stays up when the
+	// resolution fails, since a failed verification read can follow a marker
+	// that did land, and the retry needs the trigger's turn.
+	s.holdAcceptedTrigger(attentionID)
 	if err := s.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
 		return err
 	}
@@ -792,6 +902,27 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 	return ids
 }
 
+// finishAttentionTurn consumes, at the end of a turn, the attention the turn
+// owes: the root runs its notification rail (finishRootDelegateAttentionTurn).
+// Any other session consumes only what its settled requests presented
+// (coversPresentedAttention), and only when the turn succeeded; a failed
+// delegate turn leaves the items pending for a later generation, and the
+// paced retry and the paused notice stay the root's.
+func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
+	if s.isRootDelegateAttentionReceiver() {
+		return s.finishRootDelegateAttentionTurn(ids, turnErr)
+	}
+	var covered []string
+	if turnErr == nil {
+		covered = s.unionCoveredAttention(ids)
+	}
+	if len(covered) == 0 {
+		return nil
+	}
+	// The delegate's noted wakes stay; see clearResolvedDelegateAttention.
+	return s.resolveAttentionDurably(covered, delegateAttentionConsumed)
+}
+
 // finishRootDelegateAttentionTurn consumes the exact selected IDs only after a
 // successful model turn and durable resolution markers — plus any still-pending
 // attention this turn's built requests already presented to the model, which
@@ -810,7 +941,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 	// the serve loop's parked EntryNotification), not the retry scheduler the
 	// flag suppresses.
 	if turnErr == nil || len(ids) == 0 {
-		ids = s.unionCoveredRootDelegateAttention(ids)
+		ids = s.unionCoveredAttention(ids)
 	}
 	if len(ids) == 0 {
 		return nil
@@ -946,35 +1077,42 @@ func (s *Session) resumeRootAttentionAfterModelSwitch() {
 	}
 }
 
-// stageRootDelegateAttentionCoverage records one built request's candidate
-// coverage: the attention IDs the request presents that were not armed when
-// this turn began. Staging is candidacy, not credit — the round loop promotes
-// the staged set into rootAttentionCoveredIDs only when the round's call
-// settles, because a request that never settled (a failed attempt, a
-// content-filter retry whose compaction then folds the steering turn away)
-// presented nothing the design may consume. Only the root receiver stages:
-// this session marks only deliveries it owns, and a child's consumption is
-// governed by the controller's generation markers, which a generation-less
-// consumption marker would conflict with.
-//
-// A responses-continuation delta request carries only new items; any older
-// steering turn lives in server-side state this session cannot verify. Nothing
-// stages, and the items keep their wake for a full-history turn.
-func (s *Session) stageRootDelegateAttentionCoverage(req llm.Request, historyTurns []schema.Turn) {
-	if !s.isRootDelegateAttentionReceiver() {
-		return
+// coversPresentedAttention reports whether this turn consumes the attention
+// its settled requests present. The root receiver's turns do. So does a
+// stable delegate's turn running under its generation's lease: the lease is
+// the delegate's only start claim, since a delegate holds one reservation at
+// a time and no attention reservation is admitted while its generation holds
+// a live binding (delegateAttentionWakeEligibleLocked). The generation-less
+// consumed marker written at the turn's end therefore cannot conflict with a
+// reserved attention generation. An unleased turn on a child session covers
+// nothing.
+func (s *Session) coversPresentedAttention(ctx context.Context) bool {
+	if s.isRootDelegateAttentionReceiver() {
+		return true
 	}
-	if req.HistoryMode == llm.HistoryModeResponsesDelta {
+	_, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	return leased
+}
+
+// stagePresentedAttentionCoverage records one built request's candidate
+// coverage: the attention IDs among presentedTurns, the exact history the
+// request projects. Arming time does not matter: the model has seen the
+// message that would have woken it. Every request build replaces the staged
+// set, so a failed attempt's candidates never outlive it. Staging is
+// candidacy, not credit — promoteStagedAttentionCoverage credits the set only when the
+// round's call settles, because a request that never settled (a failed
+// attempt, a content-filter retry whose compaction then folds the steering
+// turn away) presented nothing the design may consume. Only a turn that
+// coversPresentedAttention stages.
+func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn) {
+	if !s.coversPresentedAttention(ctx) {
 		return
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	var staged map[string]struct{}
-	for _, turn := range historyTurns {
+	for _, turn := range presentedTurns {
 		if turn.AttentionID == "" {
-			continue
-		}
-		if _, preTurn := s.rootAttentionPreTurnArmIDs[turn.AttentionID]; preTurn {
 			continue
 		}
 		if staged == nil {
@@ -982,44 +1120,48 @@ func (s *Session) stageRootDelegateAttentionCoverage(req llm.Request, historyTur
 		}
 		staged[turn.AttentionID] = struct{}{}
 	}
-	s.rootAttentionStagedIDs = staged
+	s.attentionStagedIDs = staged
 }
 
-// promoteStagedRootDelegateAttention credits the staged set of a round whose
-// call settled. Called by the round loop on the success path only.
-func (s *Session) promoteStagedRootDelegateAttention() {
+// promoteStagedAttentionCoverage credits the staged set of a round whose
+// call settled as settled, the request that actually answered. Called by the
+// round loop on the success path only.
+//
+// A responses-continuation delta carries only new items; any older steering
+// turn lives in server-side state this session cannot verify, so a round that
+// settled as a delta credits nothing and the items keep their wake for a
+// full-history turn. A delta whose call fell back to a full-history request
+// settled as that request, which carried every staged turn.
+func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	if len(s.rootAttentionStagedIDs) == 0 {
+	staged := s.attentionStagedIDs
+	s.attentionStagedIDs = nil
+	if len(staged) == 0 || settled.HistoryMode == llm.HistoryModeResponsesDelta {
 		return
 	}
-	covered := s.rootAttentionCoveredIDs
-	if covered == nil {
-		covered = make(map[string]struct{}, len(s.rootAttentionStagedIDs))
+	if _, presented := staged[s.attentionAcceptedID]; presented && s.attentionAcceptedID != "" {
+		s.attentionAcceptedID = ""
 	}
-	maps.Copy(covered, s.rootAttentionStagedIDs)
-	s.rootAttentionCoveredIDs = covered
-	s.rootAttentionStagedIDs = nil
+	covered := s.attentionCoveredIDs
+	if covered == nil {
+		covered = make(map[string]struct{}, len(staged))
+	}
+	maps.Copy(covered, staged)
+	s.attentionCoveredIDs = covered
 }
 
-// resetRootDelegateAttentionCoverage clears the per-turn coverage at turn
-// start and snapshots the armed set that marking excludes, so consumption
-// credits only deliveries armed after this turn began. Guarded like the
-// staging it pairs with: a child session tracks no root coverage, and the
-// early return skips its per-turn lock and clone. maps.Clone(nil) is nil, and
-// the field is lookup-only, so an empty armed set needs no special case.
-func (s *Session) resetRootDelegateAttentionCoverage() {
-	if !s.isRootDelegateAttentionReceiver() {
-		return
-	}
+// resetAttentionCoverage clears the per-turn coverage at turn start. It runs
+// for every turn, so a turn that covers nothing never inherits an earlier
+// turn's coverage.
+func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
-	s.rootAttentionCoveredIDs = nil
-	s.rootAttentionStagedIDs = nil
-	s.rootAttentionPreTurnArmIDs = maps.Clone(s.rootAttentionWakeIDs)
+	s.attentionCoveredIDs = nil
+	s.attentionStagedIDs = nil
 	s.attentionMu.Unlock()
 }
 
-// unionCoveredRootDelegateAttention adds to the selected IDs the covered
+// unionCoveredAttention adds to the selected IDs the covered
 // deliveries still pending in the durable fold. A successful turn settles only
 // when every round's call settled, so each covered item reached the model in
 // a settled call of this very turn; an item appended after the final request
@@ -1031,10 +1173,10 @@ func (s *Session) resetRootDelegateAttentionCoverage() {
 // rejects the whole resolve atomically, and the wake would retry the item
 // forever. A fold read failure degrades to the selected IDs alone; the wake
 // path retries.
-func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
+func (s *Session) unionCoveredAttention(ids []string) []string {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	if len(s.rootAttentionCoveredIDs) == 0 {
+	if len(s.attentionCoveredIDs) == 0 {
 		return ids
 	}
 	pending, err := s.pendingDelegateAttentionIDsLocked()
@@ -1043,7 +1185,7 @@ func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
 	}
 	out := slices.Clone(ids)
 	for _, id := range pending {
-		if _, ok := s.rootAttentionCoveredIDs[id]; ok {
+		if _, ok := s.attentionCoveredIDs[id]; ok {
 			out = appendUniqueStrings(out, id)
 		}
 	}
@@ -1382,12 +1524,9 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	// and idempotent — a still-resident turn is replaced in place (no
 	// duplicate on a boundary-free restart), a missing one is re-appended,
 	// and resolved attentions are never pending, so nothing resurrects.
-	for _, id := range ids {
-		durable, ok := fold.turns[id]
-		if !ok {
-			continue
-		}
-		if err := s.retainDelegateAttentionTurn(durable); err != nil {
+	pendingTurns := fold.pendingTurns("")
+	for i, durable := range pendingTurns {
+		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
 			s.attentionMu.Unlock()
 			return err
 		}
@@ -1417,7 +1556,11 @@ func (s *Session) foldDelegateAttentionEntries(entries []transcript.Entry) (dele
 	return foldDelegateAttention(entries)
 }
 
-func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
+// retainDelegateAttentionTurn puts the durable turn into the history: a resident
+// copy is replaced in place, a missing one is restored. later names the items
+// that arrived after turn, so a restored turn keeps its delivery order among
+// the ones still resident.
+func (s *Session) retainDelegateAttentionTurn(turn schema.Turn, later ...schema.Turn) error {
 	if turn.Kind != schema.TurnSteering || turn.AttentionID == "" {
 		return errors.New("durable delegate attention turn is invalid")
 	}
@@ -1438,7 +1581,11 @@ func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
 		s.bumpHistoryRevisionLocked()
 		return nil
 	}
-	s.history = append(s.history, turn)
+	var at int
+	s.history, at = insertAttentionTurn(s.history, turn, later)
+	if at < len(s.history)-1 {
+		s.bumpHistoryRevisionLocked()
+	}
 	return nil
 }
 

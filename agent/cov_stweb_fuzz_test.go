@@ -71,7 +71,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 			return nil
 		}
 		reg := tool.NewRegistry()
-		registerCommunicateTool(reg, deps)
+		_ = registerCommunicateTool(reg, deps)
 		_, err := reg.Get("communicate").Exec(context.Background(), nil, map[string]any{
 			"message": "abort " + token, "end_turn": true,
 		})
@@ -82,12 +82,12 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 
 	deps := stoolCommunicateDeps()
 	committed := false
-	deps.setCommunicateTerminal = func(context.Context, string, string, string, any) bool {
+	deps.setCommunicateTerminal = func(context.Context, string, string, string, any, string) bool {
 		committed = true
 		return true
 	}
 	reg := tool.NewRegistry()
-	registerCommunicateTool(reg, deps)
+	_ = registerCommunicateTool(reg, deps)
 	handler := reg.Get("communicate").Exec
 	if _, err := handler(context.Background(), nil, map[string]any{"message": token}); err == nil || !strings.Contains(err.Error(), "end_turn") {
 		t.Fatalf("missing end_turn error = %v", err)
@@ -124,7 +124,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		}
 	}
 	deps.prependSteering = func(entries []steeringMessage) { deferred = append(deferred, entries...) }
-	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any) bool {
+	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any, _ string) bool {
 		resultMessage, resultReply, resultOutput = message, reply, output
 		structured = raw
 		return true
@@ -219,7 +219,7 @@ func stoolCommunicateDeps() *toolDeps {
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
+		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
 	}
 }
 

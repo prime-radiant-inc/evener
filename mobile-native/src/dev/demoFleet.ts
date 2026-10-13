@@ -471,7 +471,7 @@ const SESSIONS: RawSession[] = [
 	},
 	{ id: "s-namer", title: "Tune Session Namer Token Cap", state: "restart", ago: 47 * M },
 
-	// Finished, not yet seen (4)
+	// Idle, not yet seen: the blue dot (4)
 	{
 		id: "s-hier",
 		title: "Host Project Hierarchy UI Mockups",
@@ -708,13 +708,14 @@ function hostId(host: ProtoHost | undefined): string {
 
 // The prototype's states on the wire. An approval stays "active" (the phone
 // infers approval from the row's presence in needs_you, plus approvalPending
-// saying why), and "yourmove" is a turn that ended without asking.
+// saying why), and "yourmove" is a turn that ended without asking, which
+// rests idle (#4093).
 const WIRE_STATE: Record<ProtoState, { state: string; askPending?: true; approvalPending?: true }> = {
 	failed: { state: "errored" },
 	question: { state: "awaiting", askPending: true },
 	approval: { state: "active", approvalPending: true },
 	restart: { state: "restartRequired" },
-	yourmove: { state: "awaiting" },
+	yourmove: { state: "idle" },
 	working: { state: "active" },
 	idle: { state: "idle" },
 	shutdown: { state: "ended" },
@@ -968,7 +969,7 @@ export interface DemoFleetOptions {
 	// (demoSessions.ts LONG_CONTENT) in place of the usual.
 	long?: boolean;
 	// Mirrors EVENER_DEMO_FLEET_TOOLS: adds "Show Every Tool Family" to
-	// Finished, a session replaying the recorded wire corpora.
+	// Idle, a session replaying the recorded wire corpora.
 	toolFamilies?: boolean;
 	// The provider instance each model id runs on (demoSetup.ts's catalog),
 	// which the fleet's rows don't say: a sign-in notice counts the live
@@ -1052,7 +1053,7 @@ export type DemoStep = "question" | "failure" | "approval" | "finish" | "host-of
 
 // The row each row step changes, and the state it moves to. An approval
 // stays "active" on the wire and joins needs_you, as the hub promotes an
-// escalation; a finish is a turn ending with the ball in your court.
+// escalation; a finish is a turn ending without asking, which rests idle.
 export const ROW_STEPS: Record<Exclude<DemoStep, "host-offline" | "host-online">, [string, ProtoState]> = {
 	question: [ASKING_SESSION_ID, "question"],
 	failure: ["s-readintent", "failed"],

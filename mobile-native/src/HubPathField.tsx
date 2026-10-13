@@ -3,8 +3,9 @@ import { ScrollView, TextInput, View } from "react-native";
 import { basename, childrenPrefix, isDirEntry, parentOf } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPaths } from "./hubPaths";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
+import { Button } from "./sheet/Grouped";
 
 export function HubPathField({
 	client,
@@ -45,41 +46,41 @@ export function HubPathField({
 				style={[styles.input, { color: colors.text, borderColor: colors.border }]}
 			/>
 			<View style={[styles.row, { flexWrap: "wrap" }]}>
-				<Action
+				<Button
+					text
+					label={kind === "dir" ? "Find directories" : "Find files"}
 					disabled={disabled || state.loading}
 					onPress={() => {
 						setOpen(true);
 						void model.load(value);
 					}}
-				>
-					{kind === "dir" ? "Find directories" : "Find files"}
-				</Action>
+				/>
 				{open && (
-					<Action
+					<Button
+						text
+						label="Done browsing"
 						disabled={disabled}
 						onPress={() => {
 							setOpen(false);
 							model.clear();
 						}}
-					>
-						Done browsing
-					</Action>
+					/>
 				)}
 			</View>
 			{open && (
 				<View style={{ gap: 8 }}>
 					<Copy muted>{value || "Hub home directory"}</Copy>
 					{value.startsWith("/") && value !== "/" && (
-						<Action
+						<Button
+							text
+							label="Parent directory"
 							disabled={disabled}
 							onPress={() => {
 								const parent = childrenPrefix(parentOf(value));
 								edit(parent);
 								void model.load(parent);
 							}}
-						>
-							Parent directory
-						</Action>
+						/>
 					)}
 					{state.loading && <Spinner label="Loading hub paths" />}
 					<ErrorMessage message={state.error} />
@@ -87,10 +88,12 @@ export function HubPathField({
 					{state.paths && state.paths.length > 0 && (
 						<ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
 							{state.paths.map((path) => (
-								<Action
+								<Button
+									text
+									label={basename(path) || path}
 									key={path}
 									disabled={disabled}
-									label={`${kind === "dir" ? "Choose directory" : isDirEntry(path) ? "Open directory" : "Choose file"} ${path}`}
+									accessibilityLabel={`${kind === "dir" ? "Choose directory" : isDirEntry(path) ? "Open directory" : "Choose file"} ${path}`}
 									onPress={() => {
 										if (kind !== "dir" && isDirEntry(path)) {
 											edit(path);
@@ -100,9 +103,7 @@ export function HubPathField({
 											setOpen(false);
 										}
 									}}
-								>
-									{basename(path) || path}
-								</Action>
+								/>
 							))}
 						</ScrollView>
 					)}

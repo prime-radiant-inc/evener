@@ -29,8 +29,6 @@ func TestFormatCurrentTaskSteering(t *testing.T) {
 		"whether the work is correct.",
 		"</INSTRUCTIONS>",
 		"</CURRENT-TASK>",
-		"task_list to mark task 3 as done",
-		"when this step is complete.",
 		"</SYSTEM-REMINDER>",
 	}
 	for _, w := range wants {
@@ -41,7 +39,9 @@ func TestFormatCurrentTaskSteering(t *testing.T) {
 
 	// Effort level MUST NOT appear in the message — it is applied to the
 	// session internally via SetReasoningEffort, not rendered for the model.
-	unwants := []string{"REASONING-EFFORT", "reasoning: low", "reasoning_effort"}
+	// Nor does a per-step instruction to update the task list: agents close their tasks without it, and
+	// it pulled them into extra bookkeeping.
+	unwants := []string{"REASONING-EFFORT", "reasoning: low", "reasoning_effort", "task_list"}
 	for _, u := range unwants {
 		if strings.Contains(msg, u) {
 			t.Errorf("steering message should not contain %q. Got:\n%s", u, msg)
@@ -63,8 +63,8 @@ func TestFormatCurrentTaskSteering_NoPrompt(t *testing.T) {
 	if !strings.Contains(msg, "<TITLE>Bare task</TITLE>") {
 		t.Errorf("expected TITLE to be present: %s", msg)
 	}
-	if !strings.Contains(msg, "task_list to mark task 1 as done") {
-		t.Errorf("expected task_list completion instruction: %s", msg)
+	if strings.Contains(msg, "task_list") {
+		t.Errorf("steering should not instruct a task_list update: %s", msg)
 	}
 }
 
@@ -156,23 +156,6 @@ func TestTaskReminderForInactivity_Empty(t *testing.T) {
 	}
 }
 
-func TestTaskReminderNudge(t *testing.T) {
-	t.Parallel()
-	msg := taskReminderNudge()
-	if msg == "" {
-		t.Fatal("expected non-empty nudge")
-	}
-	if !strings.Contains(msg, "task_list") {
-		t.Fatalf("nudge should mention task_list: %s", msg)
-	}
-	if !strings.HasPrefix(msg, "<SYSTEM-REMINDER>") {
-		t.Fatalf("nudge should start with <SYSTEM-REMINDER>: %s", msg)
-	}
-	if !strings.HasSuffix(strings.TrimRight(msg, "\n"), "</SYSTEM-REMINDER>") {
-		t.Fatalf("nudge should end with </SYSTEM-REMINDER>: %s", msg)
-	}
-}
-
 func TestTaskReminderAllDone(t *testing.T) {
 	t.Parallel()
 	msg := taskReminderAllDone("communicate")
@@ -190,7 +173,9 @@ func TestTaskReminderAllDone(t *testing.T) {
 	}
 }
 
-func TestMaybeInjectTaskReminder_NudgeAfter10Rounds(t *testing.T) {
+// A session that never used task_list gets no reminder to start one, however
+// long it runs; the system prompt already offers the task list.
+func TestMaybeInjectTaskReminder_NoNudgeForASessionWithoutTasks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -202,26 +187,11 @@ func TestMaybeInjectTaskReminder_NudgeAfter10Rounds(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// 9 rounds — no nudge yet.
-	sess.totalRounds = 9
-	if msg, _ := sess.maybeInjectTaskReminder(); msg != "" {
-		t.Fatalf("expected no nudge at 9 rounds, got: %s", msg)
-	}
-
-	// At 10 rounds — nudge fires.
-	sess.totalRounds = 10
-	msg, kind := sess.maybeInjectTaskReminder()
-	if msg == "" || !strings.Contains(msg, "task_list") {
-		t.Fatalf("expected nudge at 10 rounds, got: %q", msg)
-	}
-	if kind != events.SteeringKindTaskNudge {
-		t.Errorf("kind = %q, want %q", kind, events.SteeringKindTaskNudge)
-	}
-
-	// Second call — nudge should not fire again.
-	sess.totalRounds = 15
-	if msg, _ := sess.maybeInjectTaskReminder(); msg != "" {
-		t.Fatalf("nudge should fire only once, got: %s", msg)
+	for _, rounds := range []int{9, 10, 15, 100} {
+		sess.totalRounds = rounds
+		if msg, kind := sess.maybeInjectTaskReminder(); msg != "" || kind != "" {
+			t.Fatalf("at %d rounds without tasks: reminder kind=%q msg=%q, want none", rounds, kind, msg)
+		}
 	}
 }
 

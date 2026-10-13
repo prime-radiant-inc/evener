@@ -128,7 +128,8 @@ func TestDecideEveryCell(t *testing.T) {
 		{EvDisposeChanged, Foreign, ActRefuse, "dispose-changed/foreign: —"},
 
 		// Row "prune candidate": unlocked → eligible (other conditions apply);
-		// any locked → skip. Owner-independent (§5 prune sweep 1).
+		// any locked → skip. Owner-independent (§5 prune sweep 1); the prune
+		// sweep adds its own-marker residue exception.
 		{EvPruneCandidate, Unlocked, ActNone, "prune/unlocked: eligible, other conditions apply"},
 		{EvPruneCandidate, OwnSession, ActSkip, "prune/own-session: locked → skip"},
 		{EvPruneCandidate, OwnDelegate, ActSkip, "prune/own-dlg: locked → skip"},

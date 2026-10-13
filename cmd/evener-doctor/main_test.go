@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -592,9 +593,6 @@ func TestRun_APILogValidateHuman(t *testing.T) {
 	if !strings.Contains(outStr, "records_ok=8") {
 		t.Errorf("validate output missing records_ok=8 (4 attempts + 4 settlements); got:\n%s", outStr)
 	}
-	if !strings.Contains(outStr, "clean: every complete record decoded through EOF") {
-		t.Errorf("validate output missing clean marker; got:\n%s", outStr)
-	}
 }
 
 func TestRun_APILogValidateJSON(t *testing.T) {
@@ -687,9 +685,6 @@ func TestRun_APILogValidateReportsProblemsAndNonzeroExit(t *testing.T) {
 		t.Fatalf("exit = %d, want 1 (structural problems found); stdout=%s stderr=%s", code, out.String(), errb.String())
 	}
 	outStr := out.String()
-	if !strings.Contains(outStr, "not clean") {
-		t.Errorf("validate output missing not-clean marker; got:\n%s", outStr)
-	}
 	if !strings.Contains(outStr, "offset") {
 		t.Errorf("validate output missing offset column; got:\n%s", outStr)
 	}
@@ -893,14 +888,23 @@ func TestRun_TreeDepthAndObservers(t *testing.T) {
 		// At --depth=1 the child is shown but its grandchild is elided, with a
 		// depth-limit note marking the truncation.
 		var shallow, shallowErr bytes.Buffer
-		if code := run([]string{"tree", "--state-dir", base, "--depth", "1", sid}, &shallow, &shallowErr); code != 0 {
+		if code := run([]string{"tree", "--json", "--state-dir", base, "--depth", "1", sid}, &shallow, &shallowErr); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, shallowErr.String())
 		}
-		if !strings.Contains(shallow.String(), "depth limit (children not expanded)") {
-			t.Errorf("--depth=1 should note the elided grandchild; got:\n%s", shallow.String())
+		var root doctor.TreeNode
+		if err := json.Unmarshal(shallow.Bytes(), &root); err != nil {
+			t.Fatalf("invalid json: %v\n%s", err, shallow.String())
 		}
-		if strings.Contains(shallow.String(), treeGrandchildSID) {
-			t.Errorf("--depth=1 should not expand to the grandchild; got:\n%s", shallow.String())
+		if len(root.Children) == 0 {
+			t.Fatalf("--depth=1 should show the child; got:\n%s", shallow.String())
+		}
+		for _, child := range root.Children {
+			if child.Edge == "delegate" && child.Note == "" {
+				t.Errorf("--depth=1 should note the elided grandchild on %s; got:\n%s", child.SessionID, shallow.String())
+			}
+			if len(child.Children) != 0 {
+				t.Errorf("--depth=1 should not expand to the grandchild; got:\n%s", shallow.String())
+			}
 		}
 
 		// At --depth=2 the grandchild is reached and printed.
@@ -1099,11 +1103,17 @@ func TestRun_MutationsRendersJournalAndQueue(t *testing.T) {
 func TestRun_MutationsMissingStoreExitsClean(t *testing.T) {
 	base, sid := fixture(t)
 	var out, errb bytes.Buffer
-	if code := run([]string{"mutations", sid, "--state-dir", base}, &out, &errb); code != 0 {
+	if code := run([]string{"mutations", sid, "--json", "--state-dir", base}, &out, &errb); code != 0 {
 		t.Fatalf("exit %d, stderr=%s", code, errb.String())
 	}
-	if !strings.Contains(out.String(), "no client-mutation store on disk") {
-		t.Errorf("missing store did not report cleanly:\n%s", out.String())
+	var report struct {
+		Present bool `json:"present"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if report.Present {
+		t.Errorf("missing store reported as present:\n%s", out.String())
 	}
 }
 

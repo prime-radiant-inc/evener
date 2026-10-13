@@ -29,11 +29,9 @@ import type {
 	ThreadTurnsListResponse,
 	Turn,
 	TurnCancelQueuedResponse,
-	TurnDrainAsSteerResponse,
 	TurnInterruptResponse,
 	TurnQueueResponse,
 	TurnStartResponse,
-	TurnSteerResponse,
 } from "@evener/appwire-client";
 import * as projectModule from "../../../mobile-native/src/projectedRows";
 import type { createActivityService } from "./activity";
@@ -106,7 +104,7 @@ function makeReadResponse(thread: Thread, olderCursor?: string): ThreadReadRespo
 }
 
 function makeReceipt(
-	kind: "send" | "steer" | "queue" | "interrupt" = "send",
+	kind: "send" | "queue" | "interrupt" = "send",
 	over: Partial<MutationReceipt> = {},
 ): MutationReceipt {
 	const receipt: MutationReceipt = {
@@ -115,7 +113,7 @@ function makeReceipt(
 		threadId: "thread-1",
 		projectionState: kind === "interrupt" ? "reflected" : "pending",
 	};
-	if (kind === "send" || kind === "steer" || kind === "interrupt") receipt.turnId = "turn-1";
+	if (kind === "send" || kind === "interrupt") receipt.turnId = "turn-1";
 	if (kind === "queue") receipt.queueEntryIds = ["queue-1"];
 	return { ...receipt, ...over };
 }
@@ -408,12 +406,21 @@ describe("ConversationService", () => {
 			const service = createConversationService(client, {
 				onReadComplete: () => Promise.reject(new Error("mutation storage down")),
 			});
-			await service.open("ref-1");
-			// The authoritative read succeeded; the fence failure leaves the durable
-			// dispatch gate blocked but must not fail the projection.
-			await expect(service.readProjection("ref-1")).resolves.toMatchObject({
-				olderCursor: "cursor",
-			});
+			// Each read reports its failed fence.
+			const fenceFailure = ["ConversationService: read fence failed", new Error("mutation storage down")];
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+			try {
+				await service.open("ref-1");
+				expect(consoleError.mock.calls).toEqual([fenceFailure]);
+				// The authoritative read succeeded; the fence failure leaves the durable
+				// dispatch gate blocked but must not fail the projection.
+				await expect(service.readProjection("ref-1")).resolves.toMatchObject({
+					olderCursor: "cursor",
+				});
+				expect(consoleError.mock.calls).toEqual([fenceFailure, fenceFailure]);
+			} finally {
+				consoleError.mockRestore();
+			}
 		});
 
 		it("invokes the host read fence only after the projection commits", async () => {
@@ -748,20 +755,6 @@ describe("ConversationService", () => {
 			expect(startParams.clientMutationId).toBe("cmid-1");
 		});
 
-		it("steer calls turn/steer", async () => {
-			const { client, service } = setup();
-			client.on("turn/steer", () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse);
-			await service.open("ref-1");
-			const receipt = await service.steer(textInput("steer this"));
-			expect(receipt.clientMutationId).toBe("cmid-1");
-			const call = client.calls.find((c) => c.method === "turn/steer");
-			expect(call?.params).toMatchObject({
-				ref: "ref-1",
-				input: [{ type: "text", text: "steer this" }],
-				expectedInstanceId: "thread-1",
-			});
-		});
-
 		it("queue calls turn/queue", async () => {
 			const { client, service } = setup();
 			client.on("turn/queue", () => ({ receipt: makeReceipt("queue") }) as TurnQueueResponse);
@@ -831,13 +824,8 @@ describe("ConversationService", () => {
 			}
 		});
 
-		it("enforces exact steer, queue, and interrupt receipt fields", async () => {
+		it("enforces exact queue and interrupt receipt fields", async () => {
 			const cases = [
-				{
-					method: "turn/steer" as const,
-					invoke: (service: LiveConversationService) => service.steer(textInput("steer")),
-					invalid: { receipt: makeReceipt("interrupt") },
-				},
 				{
 					method: "turn/queue" as const,
 					invoke: (service: LiveConversationService) => service.queue(textInput("queue")),
@@ -1143,14 +1131,14 @@ describe("ConversationService", () => {
 				thread: makeThread({
 					evener: {
 						ref: "ref-1",
-						capabilities: { ...ALL_TRUE_CAPS, steer: false },
+						capabilities: { ...ALL_TRUE_CAPS, queue: false },
 						queue: { revision: 0 },
 					},
 				}),
 			});
 			await service.open("ref-1");
 			service.subscribeNotifications(() => {});
-			client.on("turn/steer", () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse);
+			client.on("turn/queue", () => ({ receipt: makeReceipt("queue") }) as TurnQueueResponse);
 			const emit = (ref: string, threadId: string, caps: ThreadCapabilities) =>
 				client.emitNotification({
 					method: "thread/status/changed",
@@ -1163,11 +1151,11 @@ describe("ConversationService", () => {
 				});
 			emit("other-ref", "thread-1", ALL_TRUE_CAPS);
 			emit("ref-1", "other-thread", ALL_TRUE_CAPS);
-			await expect(service.steer([{ type: "text", text: "direction" }])).rejects.toThrow();
-			expect(client.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+			await expect(service.queue([{ type: "text", text: "direction" }])).rejects.toThrow();
+			expect(client.calls.filter((c) => c.method === "turn/queue")).toHaveLength(0);
 			emit("ref-1", "thread-1", { ...ALL_TRUE_CAPS, send: false });
-			await service.steer([{ type: "text", text: "direction" }]);
-			expect(client.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
+			await service.queue([{ type: "text", text: "direction" }]);
+			expect(client.calls.filter((c) => c.method === "turn/queue")).toHaveLength(1);
 			await expect(service.send([{ type: "text", text: "wrong mode" }])).rejects.toThrow();
 		});
 	});
@@ -1194,21 +1182,6 @@ describe("ConversationService", () => {
 			await expect(service.send(textInput("hello"))).rejects.toThrow();
 			const call = client.calls.find((c) => c.method === "turn/start");
 			expect(call).toBeUndefined();
-		});
-
-		it("steer throws when capabilities.steer is false", async () => {
-			const thread = makeThread({
-				evener: {
-					ref: "ref-1",
-					capabilities: { ...ALL_TRUE_CAPS, steer: false },
-					queue: { revision: 0 },
-				},
-			});
-			const { client, service } = setup({ thread });
-			client.on("turn/steer", () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse);
-			await service.open("ref-1");
-			await expect(service.steer(textInput("steer"))).rejects.toThrow();
-			expect(client.calls.find((c) => c.method === "turn/steer")).toBeUndefined();
 		});
 
 		it("queue throws when capabilities.queue is false", async () => {
@@ -1635,7 +1608,6 @@ describe("ConversationService", () => {
 			// Must also have all base ConversationService methods
 			expect(typeof service.open).toBe("function");
 			expect(typeof service.send).toBe("function");
-			expect(typeof service.steer).toBe("function");
 			expect(typeof service.queue).toBe("function");
 			expect(typeof service.interrupt).toBe("function");
 			expect(typeof service.loadOlder).toBe("function");
@@ -2215,7 +2187,6 @@ describe("ConversationService", () => {
 						receipt: makeReceipt(),
 					}) as TurnStartResponse,
 			);
-			client.on("turn/steer", () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse);
 			client.on("turn/queue", () => ({ receipt: makeReceipt("queue") }) as TurnQueueResponse);
 			client.on("turn/interrupt", () => ({ receipt: makeReceipt("interrupt") }) as TurnInterruptResponse);
 			client.on("thread/compact/start", () => EMPTY_RESPONSE);
@@ -2236,8 +2207,6 @@ describe("ConversationService", () => {
 			// Gated ops (requireCap + requireRef) — all must throw before wire.
 			await expect(service.send(textInput("hello"))).rejects.toThrow();
 			expect(client.calls.find((c) => c.method === "turn/start")).toBeUndefined();
-			await expect(service.steer(textInput("s"))).rejects.toThrow();
-			expect(client.calls.find((c) => c.method === "turn/steer")).toBeUndefined();
 			await expect(service.queue(textInput("q"))).rejects.toThrow();
 			expect(client.calls.find((c) => c.method === "turn/queue")).toBeUndefined();
 			await expect(service.interrupt()).rejects.toThrow();
@@ -2444,37 +2413,24 @@ describe("ConversationService", () => {
 });
 
 describe("queue action receipts", () => {
-	const cases = [
-		{
-			method: "turn/cancelQueued" as const,
-			call: (service: ReturnType<typeof createConversationService>) => service.cancelQueued(1, "entry-b", "thread-1"),
-		},
-		{
-			method: "turn/promoteQueuedAsSteer" as const,
-			call: (service: ReturnType<typeof createConversationService>) =>
-				service.promoteQueuedAsSteer(1, "entry-b", "thread-1"),
-		},
-		{
-			method: "turn/drainAsSteer" as const,
-			call: (service: ReturnType<typeof createConversationService>) => service.drainAsSteer(7, "thread-1"),
-		},
-	];
-	function response(method: string) {
-		const cancel = method === "turn/cancelQueued";
+	const method = "turn/cancelQueued";
+	const cancel = (service: ReturnType<typeof createConversationService>) =>
+		service.cancelQueued(1, "entry-b", "thread-1");
+	function response() {
 		return {
-			...(cancel ? { removedText: "sentinel", removedImages: 2 } : {}),
+			removedText: "sentinel",
+			removedImages: 2,
 			receipt: {
 				clientMutationId: "cmid-1",
 				threadId: "thread-1",
 				instanceId: "thread-1",
 				disposition: "applied",
-				projectionState: cancel ? "removed" : "pending",
+				projectionState: "removed",
 				queueEntryIds: ["entry-b"],
-				...(cancel ? {} : { turnId: "turn-1" }),
 			},
 		};
 	}
-	it.each(cases)("validates $method before treating the action as acknowledged", async ({ method, call }) => {
+	it("validates the cancellation before treating it as acknowledged", async () => {
 		for (const change of [
 			() => null,
 			() => ({}),
@@ -2512,48 +2468,45 @@ describe("queue action receipts", () => {
 			}),
 			(valid: ReturnType<typeof response>) => ({
 				...valid,
-				receipt: {
-					...valid.receipt,
-					turnId: method === "turn/cancelQueued" ? "unexpected" : "",
-				},
+				receipt: { ...valid.receipt, turnId: "unexpected" },
 			}),
 		]) {
 			idCounter = 0;
 			const { client, service } = setup();
-			client.on(method, () => change(response(method)) as never);
+			client.on(method, () => change(response()) as never);
 			await service.open("ref-1");
-			await expect(call(service)).rejects.toThrow();
+			await expect(cancel(service)).rejects.toThrow();
 			expect(client.calls.filter((entry) => entry.method === method)).toHaveLength(1);
 			service.close();
 		}
 	});
-	it.each(cases)("returns the validated $method response", async ({ method, call }) => {
+	it("returns the validated cancellation response", async () => {
 		idCounter = 0;
 		const { client, service } = setup();
-		const value = response(method);
+		const value = response();
 		client.on(method, () => value as never);
 		await service.open("ref-1");
-		await expect(call(service)).resolves.toEqual(value);
+		await expect(cancel(service)).resolves.toEqual(value);
 		expect(client.calls.filter((entry) => entry.method === method)).toHaveLength(1);
 		service.close();
 	});
-	it.each(cases.slice(0, 2))("rejects the wrong selected entry for $method", async ({ method, call }) => {
+	it("rejects the wrong selected entry", async () => {
 		idCounter = 0;
 		const { client, service } = setup();
-		const value = response(method);
+		const value = response();
 		value.receipt.queueEntryIds = ["other"];
 		client.on(method, () => value as never);
 		await service.open("ref-1");
-		await expect(call(service)).rejects.toThrow();
+		await expect(cancel(service)).rejects.toThrow();
 		service.close();
 	});
 	it("rejects malformed cancellation echoes", async () => {
 		for (const change of [{ removedText: null }, { removedImages: -1 }, { removedImages: 0.5 }]) {
 			idCounter = 0;
 			const { client, service } = setup();
-			client.on("turn/cancelQueued", () => ({ ...response("turn/cancelQueued"), ...change }) as never);
+			client.on(method, () => ({ ...response(), ...change }) as never);
 			await service.open("ref-1");
-			await expect(service.cancelQueued(1, "entry-b", "thread-1")).rejects.toThrow();
+			await expect(cancel(service)).rejects.toThrow();
 			service.close();
 		}
 	});
@@ -2575,148 +2528,31 @@ describe("observed queue guards", () => {
 		await expect(service.cancelQueued(0, "entry-1", "old-instance")).rejects.toThrow();
 		expect(client.calls.filter((c) => c.method === "turn/cancelQueued")).toHaveLength(0);
 	});
-	// The hub advertises steer as harness support (not "a turn is running"), so
-	// a steering harness carries steer:true at idle too, and a held queue can be
-	// promoted or drained from idle; the status half of that rule is the
-	// caller's (the SDK's sessionControls). A harness that advertises no steer
-	// cannot take a drain at all, whatever else it advertises.
-	it("refuses to run a held queue when the harness advertises no steer, even with send", async () => {
-		const thread = makeThread();
-		thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: false, send: true };
-		const { service, client } = setup({ thread });
-		await service.open("ref-1");
-		await expect(service.promoteQueuedAsSteer(0, "held-entry", "thread-1")).rejects.toThrow(
-			/unavailable for this session/,
-		);
-		await expect(service.drainAsSteer(3, "thread-1")).rejects.toThrow(/unavailable for this session/);
-		expect(
-			client.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer" || c.method === "turn/drainAsSteer"),
-		).toHaveLength(0);
-	});
-	it("can run a held queue from idle on a harness that advertises steer", async () => {
-		const thread = makeThread();
-		thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: true, send: true };
-		const { service, client } = setup({ thread });
-		client.on("turn/promoteQueuedAsSteer", ({ clientMutationId }) => ({
-			receipt: makeReceipt("steer", {
-				clientMutationId,
-				instanceId: "thread-1",
-				queueEntryIds: ["held-entry"],
-			}),
-		}));
-		client.on("turn/drainAsSteer", ({ clientMutationId }) => ({
-			receipt: makeReceipt("steer", {
-				clientMutationId,
-				instanceId: "thread-1",
-				queueEntryIds: ["held-entry"],
-			}),
-		}));
-		await service.open("ref-1");
-		await expect(service.promoteQueuedAsSteer(0, "held-entry", "thread-1")).resolves.toHaveProperty("receipt");
-		await expect(service.drainAsSteer(3, "thread-1")).resolves.toHaveProperty("receipt");
-		expect(client.calls.filter((c) => c.method.startsWith("turn/"))).toHaveLength(2);
-	});
-	it("carries the observed entry and revision without retrying a conflict", async () => {
-		const { service, client } = setup();
-		const conflict = new WireError("queue changed", -32013, {
-			evenerErrorInfo: "conflict",
-		});
-		client.on("turn/promoteQueuedAsSteer", () => {
-			throw conflict;
-		});
-		client.on("turn/drainAsSteer", () => {
-			throw conflict;
-		});
-		await service.open("ref-1");
-		await expect(service.promoteQueuedAsSteer(2, "entry-c", "thread-1")).rejects.toBe(conflict);
-		await expect(service.drainAsSteer(17, "thread-1")).rejects.toBe(conflict);
-		expect(client.calls.filter((c) => c.method.startsWith("turn/"))).toEqual([
-			{
-				method: "turn/promoteQueuedAsSteer",
-				params: {
-					ref: "ref-1",
-					index: 2,
-					expectedEntryId: "entry-c",
-					expectedInstanceId: "thread-1",
-					clientMutationId: "cmid-1",
-				},
-			},
-			{
-				method: "turn/drainAsSteer",
-				params: {
-					ref: "ref-1",
-					expectedQueueRevision: 17,
-					expectedInstanceId: "thread-1",
-					clientMutationId: "cmid-2",
-				},
-			},
-		]);
-	});
-	// A drain's receipt names the queue intents it consumed
-	// (consumedClientMutationIds, issue #1704). Wire-shaped: the daemon omits
-	// the key entirely when nothing was consumed (never an empty array), so the
-	// decoded receipt must mirror that -- present only when the daemon named it.
-	it("keeps a drain's consumedClientMutationIds on the decoded receipt when the daemon named some", async () => {
-		const { client, service } = setup();
-		client.on(
-			"turn/drainAsSteer",
-			() =>
-				({
-					receipt: makeReceipt("steer", {
-						consumedClientMutationIds: ["queued-1", "queued-2"],
-					}),
-				}) as TurnDrainAsSteerResponse,
-		);
-		await service.open("ref-1");
-		const receipt = await service.steer(textInput("steer this"), 4);
-		expect(receipt.consumedClientMutationIds).toEqual(["queued-1", "queued-2"]);
-	});
-	it("omits consumedClientMutationIds from the decoded receipt when the daemon consumed nothing", async () => {
-		const { client, service } = setup();
-		client.on("turn/drainAsSteer", () => ({ receipt: makeReceipt("steer") }) as TurnDrainAsSteerResponse);
-		await service.open("ref-1");
-		const receipt = await service.steer(textInput("steer this"), 4);
-		expect(receipt).not.toHaveProperty("consumedClientMutationIds");
-	});
-	it("rejects a drain receipt with an empty consumedClientMutationIds array", async () => {
-		const { client, service } = setup();
-		client.on(
-			"turn/drainAsSteer",
-			() =>
-				({
-					receipt: makeReceipt("steer", {
-						consumedClientMutationIds: [],
-					}),
-				}) as TurnDrainAsSteerResponse,
-		);
-		await service.open("ref-1");
-		await expect(service.steer(textInput("steer this"), 4)).rejects.toThrow(/ConversationService/);
-	});
 	// #1759: a receipt may carry additive keys a shipped build has never seen;
 	// the decoder ignores them rather than rejecting the whole receipt.
 	it("ignores an additive receipt key the decoder does not know", async () => {
 		const { client, service } = setup();
 		client.on(
-			"turn/drainAsSteer",
+			"turn/interrupt",
 			() =>
 				({
-					receipt: makeReceipt("steer", {
+					receipt: makeReceipt("interrupt", {
 						futureAdditiveField: "ignored",
 					} as Partial<MutationReceipt>),
-				}) as TurnDrainAsSteerResponse,
+				}) as TurnInterruptResponse,
 		);
 		await service.open("ref-1");
-		const receipt = await service.steer(textInput("steer this"), 4);
+		const receipt = await service.interrupt();
 		expect(receipt).toMatchObject({
 			clientMutationId: "cmid-1",
 			disposition: "applied",
 			threadId: "thread-1",
-			projectionState: "pending",
+			projectionState: "reflected",
 			turnId: "turn-1",
 		});
 		expect(receipt).not.toHaveProperty("futureAdditiveField");
 	});
-	it("ignores an additive receipt key on a mutation other than drain", async () => {
+	it("ignores an additive receipt key on a queue too", async () => {
 		const { client, service } = setup();
 		client.on(
 			"turn/queue",
@@ -2735,10 +2571,10 @@ describe("observed queue guards", () => {
 	});
 	it("still rejects a receipt missing a key the decoder requires", async () => {
 		const { client, service } = setup();
-		const { threadId: _omitted, ...withoutThreadId } = makeReceipt("steer");
-		client.on("turn/drainAsSteer", () => ({ receipt: withoutThreadId }) as unknown as TurnDrainAsSteerResponse);
+		const { threadId: _omitted, ...withoutThreadId } = makeReceipt("interrupt");
+		client.on("turn/interrupt", () => ({ receipt: withoutThreadId }) as unknown as TurnInterruptResponse);
 		await service.open("ref-1");
-		await expect(service.steer(textInput("steer this"), 4)).rejects.toThrow(/ConversationService/);
+		await expect(service.interrupt()).rejects.toThrow(/ConversationService/);
 	});
 	it("still rejects a known receipt key on a mutation kind that does not expect it", async () => {
 		const { client, service } = setup();

@@ -8,22 +8,29 @@
 
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
-import { Button, Chip, ConfirmDialog, Sheet, Switch, useToasts } from "../../../../widgets";
+import {
+  Button,
+  ConfirmDialog,
+  PropertyList,
+  type PropertyListRow,
+  Sheet,
+  Switch,
+  useFocusRehome,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
+import { pluginStatusChips } from "./pluginStatusChips";
 
 const CLASS = {
   sheetDesc: requireClass(styles.sheetDesc, "marketplacesPlugins.module.css", "sheetDesc"),
   chipRow: requireClass(styles.chipRow, "marketplacesPlugins.module.css", "chipRow"),
   metaList: requireClass(styles.metaList, "marketplacesPlugins.module.css", "metaList"),
-  metaRow: requireClass(styles.metaRow, "marketplacesPlugins.module.css", "metaRow"),
-  metaLabel: requireClass(styles.metaLabel, "marketplacesPlugins.module.css", "metaLabel"),
-  metaValue: requireClass(styles.metaValue, "marketplacesPlugins.module.css", "metaValue"),
   switchRows: requireClass(styles.switchRows, "marketplacesPlugins.module.css", "switchRows"),
-  rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
+  focusRoot: requireClass(styles.focusRoot, "marketplacesPlugins.module.css", "focusRoot"),
 };
 
 export interface PluginDetailSheetProps {
@@ -41,11 +48,19 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const toasts = useToasts();
 
   const [pendingRemove, setPendingRemove] = useState(false);
+  // Any commit that takes away the control holding the keyboard - the
+  // Upgrade button a successful upgrade unmounts, or the remove confirm's
+  // buttons disabled while the remove runs - would drop focus to <body>; the
+  // shared hook keeps it in the sheet or confirm (their first control), and
+  // leaves alone focus the user had already moved.
+  const focusRoot = useRef<HTMLDivElement>(null);
+  useFocusRehome(focusRoot);
 
   const entry =
     target === null || plugins === null
       ? undefined
       : plugins.find((p) => p.plugin === target.plugin && p.marketplace === target.marketplace);
+  const chips = entry === undefined ? [] : pluginStatusChips(entry);
 
   // The entry can vanish under an open sheet - a remove completing (this
   // sheet's own or another client's), or a refetch after external change.
@@ -89,7 +104,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
     if (target === null) return;
     try {
       await store.getState().upgradePlugin(target.plugin, target.marketplace);
-      toasts.push("success", `Checked ${target.plugin} for upgrades`);
+      toasts.push("success", `Upgraded ${target.plugin}`);
     } catch (err) {
       toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Upgrade failed: ${errorText(err)}`);
     }
@@ -118,7 +133,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const marketplaceEntry = entry === undefined ? undefined : marketplaces.find((m) => m.name === entry.marketplace);
 
   return (
-    <>
+    <div ref={focusRoot} className={CLASS.focusRoot}>
       <Sheet
         open={open}
         onClose={onClose}
@@ -127,9 +142,13 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
         footer={
           entry !== undefined && (
             <>
-              <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={hubWriteBusy}>
-                Upgrade
-              </Button>
+              {/* Offered only when the hub's update check found one; an older hub
+                  without the check offers none. */}
+              {entry.updateAvailable && (
+                <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={hubWriteBusy}>
+                  Upgrade
+                </Button>
+              )}
               <Button variant="danger" disabled={hubWriteBusy} onClick={() => setPendingRemove(true)}>
                 Remove
               </Button>
@@ -139,31 +158,20 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
       >
         {entry !== undefined && (
           <>
-            {(entry.broken || !entry.enabled || entry.autoUpgrade) && (
-              <div className={CLASS.chipRow}>
-                {entry.broken && <Chip tone="danger">broken</Chip>}
-                {!entry.enabled && <Chip tone="neutral">off by default</Chip>}
-                {entry.autoUpgrade && <Chip tone="neutral">auto-upgrade</Chip>}
-              </div>
-            )}
+            {chips.length > 0 && <div className={CLASS.chipRow}>{chips}</div>}
             {description !== undefined && <p className={CLASS.sheetDesc}>{description}</p>}
             <div className={CLASS.metaList}>
-              <div className={CLASS.metaRow}>
-                <span className={CLASS.metaLabel}>Version</span>
-                <span className={`${CLASS.metaValue} ${CLASS.rowMeta}`}>{`v${entry.version || "unknown"}`}</span>
-              </div>
-              <div className={CLASS.metaRow}>
-                <span className={CLASS.metaLabel}>Marketplace</span>
-                <span className={CLASS.metaValue}>{entry.marketplace}</span>
-              </div>
-              {marketplaceEntry !== undefined && (
-                <div className={CLASS.metaRow}>
-                  <span className={CLASS.metaLabel}>Source</span>
-                  <span className={`${CLASS.metaValue} ${CLASS.rowMeta}`}>
-                    {marketplaceSourceLabel(marketplaceEntry.source)}
-                  </span>
-                </div>
-              )}
+              <PropertyList
+                rows={
+                  [
+                    { label: "Version", value: `v${entry.version || "unknown"}`, mono: true },
+                    { label: "Marketplace", value: entry.marketplace },
+                    ...(marketplaceEntry !== undefined
+                      ? [{ label: "Source", value: marketplaceSourceLabel(marketplaceEntry.source), mono: true }]
+                      : []),
+                  ] satisfies PropertyListRow[]
+                }
+              />
             </div>
             <div className={CLASS.switchRows}>
               <Switch
@@ -192,6 +200,6 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
       >
         {target !== null ? `Remove plugin "${target.plugin}"?` : ""}
       </ConfirmDialog>
-    </>
+    </div>
   );
 }

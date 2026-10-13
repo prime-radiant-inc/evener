@@ -37,7 +37,10 @@ func toolRoundTailSession(t *testing.T, adapter *agenttest.FakeAdapter) *Session
 	t.Helper()
 	client := llm.NewClient()
 	client.Register(adapter)
-	s, err := NewSession(client, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	// The text-only gpt-5.2-codex row: a session model that sees tool-result
+	// images natively skips image descriptions by default, and this fixture
+	// is about the round's tail behavior around the describing call.
+	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2-codex"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

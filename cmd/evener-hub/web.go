@@ -24,6 +24,7 @@ import (
 
 // WebServer wires routes and middleware.
 type WebServer struct {
+	pairings   *devicePairings
 	cfg        hubcore.WebConfig
 	appRPC     *appserver.Server
 	navigation *NavigationService
@@ -206,8 +207,9 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		web.cfg.LaunchModels = web.fetchLaunchModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}, SubagentParent: web.navigationSubagentParent, Logf: navigationStatsLogfFor(web.cfg)})
-	server, hostAdmin, hostManage, notices, auth := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	server, hostAdmin, hostManage, notices, auth, pairings := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
+	web.pairings = pairings
 	// A launch model list a picker was served stale has been refreshed with a
 	// different one. evener/auth/updated's no-data form is the broadcast the
 	// hub sends when a model listing changes what clients show, and every
@@ -329,7 +331,14 @@ func (s *WebServer) Handler() http.Handler {
 	// Optional opt-in (EVENER_RECORD_HTTP) inbound-request recorder for fuzz-corpus
 	// harvesting; identity middleware when unset, so the stack is unchanged.
 	record := newHTTPRequestRecorder(s.cfg.HubStateRoot)
-	return record(auth(httpsec.CSPMiddleware(mux)))
+	guarded := record(auth(httpsec.CSPMiddleware(mux)))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/device-pairing" {
+			s.pairings.serveHTTP(w, r)
+			return
+		}
+		guarded.ServeHTTP(w, r)
+	})
 }
 
 // serveAppWireRPC wraps the AppWire edge so a connection presenting the

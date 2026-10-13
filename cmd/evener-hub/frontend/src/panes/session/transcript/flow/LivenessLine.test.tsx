@@ -1,15 +1,20 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { connectionStore } from "../../../../stores/connection";
+import { sessionActivitySnapshot } from "../../../../stores/sessionActivity";
+import { activityClient, activitySummary } from "../../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { seedCurrentDelegate } from "../tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests, turnScopeKey, upsertSubagentRow } from "../tools/subagentModuleStore";
 import { LivenessLine } from "./LivenessLine";
+import { describeLiveness, formatExactGap, formatQuietBucket } from "./liveness";
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   resetSubagentModuleStoreForTests();
   resetThreadsStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
 });
 
 test("renders nothing while the thread is not active, regardless of gap", () => {
@@ -25,14 +30,15 @@ test("renders nothing for a fresh/active thread (gap below the quiet threshold)"
 test("renders the quiet phrase once the gap crosses the quiet threshold", () => {
   render(<LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef={undefined} turnId={undefined} />);
   const el = screen.getByTestId("liveness-line");
-  expect(el.textContent).toContain("~30s");
+  expect(el.getAttribute("data-level")).toBe("quiet");
+  expect(el.textContent).toContain(formatQuietBucket(30_000));
 });
 
 test("renders the stalled phrase once the gap crosses the stall threshold, for an active turn tracking no children at all", () => {
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId="turn_0" />);
   const el = screen.getByTestId("liveness-line");
-  expect(el.textContent!.toLowerCase()).toContain("stalled");
-  expect(el.textContent).toContain("3m 5s");
+  expect(el.getAttribute("data-level")).toBe("stalled");
+  expect(el.textContent).toContain(formatExactGap(185_000));
 });
 
 // Cadence's own doc comment ("pure: no timers, no Date.now()") is the
@@ -66,12 +72,12 @@ function seedRunningChildren(count: number) {
   }
 }
 
-test("renders 'Waiting on 1 subagent' instead of the quiet phrase once a running child is tracked for the active turn", () => {
+test("reads as waiting on one subagent instead of quiet once a running child is tracked for the active turn", () => {
   seedRunningChildren(1);
   render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
   const el = screen.getByTestId("liveness-line");
-  expect(el.textContent).toBe("Waiting on 1 subagent");
-  expect(el.textContent!.toLowerCase()).not.toContain("quiet");
+  expect(el.getAttribute("data-level")).toBe("waiting");
+  expect(el.textContent).toBe(describeLiveness(60_000, true, 1).text);
 });
 
 // Past the stall threshold the line stops taking the child's word for it and
@@ -80,15 +86,17 @@ test("renders 'Waiting on 1 subagent' instead of the quiet phrase once a running
 test("past the stall threshold, a tracked running child still surfaces the silence rather than hiding it", () => {
   seedRunningChildren(1);
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId="turn_0" />);
-  const text = screen.getByTestId("liveness-line").textContent ?? "";
-  expect(text).toContain("Waiting on 1 subagent");
-  expect(text).toContain("no updates for");
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("stalled");
+  expect(el.textContent).toBe(describeLiveness(185_000, true, 1).text);
 });
 
-test("renders 'Waiting on N subagents' (plural) once past the quiet threshold, pre-empting the quiet phrase too", () => {
+test("counts every running child once past the quiet threshold, pre-empting the quiet phrase too", () => {
   seedRunningChildren(3);
   render(<LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" />);
-  expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 3 subagents");
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("waiting");
+  expect(el.textContent).toBe(describeLiveness(30_000, true, 3).text);
 });
 
 test("a done/failed row alone does not explain a wait - falls back to the ordinary stalled decision", () => {
@@ -96,13 +104,13 @@ test("a done/failed row alone does not explain a wait - falls back to the ordina
   upsertSubagentRow(scopeKey, { rowKey: "dlg:1", receiptStatus: "done", resultPreview: "ok" });
   upsertSubagentRow(scopeKey, { rowKey: "dlg:2", receiptStatus: "failed", resultPreview: "boom" });
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId="turn_0" />);
-  expect(screen.getByTestId("liveness-line").textContent!.toLowerCase()).toContain("stalled");
+  expect(screen.getByTestId("liveness-line").textContent).toBe(describeLiveness(185_000, true, 0).text);
 });
 
 test("an undefined turnId (no active turn yet) reads as zero running children even if rows exist for a real turn in the same session", () => {
   seedRunningChildren(1);
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId={undefined} />);
-  expect(screen.getByTestId("liveness-line").textContent!.toLowerCase()).toContain("stalled");
+  expect(screen.getByTestId("liveness-line").textContent).toBe(describeLiveness(185_000, true, 0).text);
 });
 
 test("a historical running receipt cannot explain a current wait without owner evidence", () => {
@@ -157,17 +165,18 @@ test("renders the retry cause and wait instead of the quiet phrase", () => {
     <LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,
   );
   const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("retrying");
   expect(el.textContent).toBe("rate limited — attempt 9/11 — retrying in 60s — 5s on this call");
-  expect(el.textContent!.toLowerCase()).not.toContain("quiet");
 });
 
 test("past the stall threshold a retry still surfaces the silence rather than hiding it", () => {
   render(
     <LivenessLine lastFrameAt={0} now={630_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,
   );
-  const text = screen.getByTestId("liveness-line").textContent ?? "";
-  expect(text).toContain("rate limited — attempt 9/11");
-  expect(text).toContain("no updates for");
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("stalled");
+  expect(el.textContent).toContain("9/11");
+  expect(el.textContent).toContain(formatExactGap(630_000));
 });
 
 // Component 1's second honesty rule: the denominator must be the effective
@@ -256,7 +265,7 @@ test("shows the retry group's elapsed time from groupElapsedMs", () => {
       retry={rawRetry({ groupElapsedMs: 14 * 60_000 })}
     />,
   );
-  expect(screen.getByTestId("liveness-line").textContent).toContain("14m on this call");
+  expect(screen.getByTestId("liveness-line").textContent).toContain(formatExactGap(14 * 60_000));
 });
 
 // Web-only difference from the TUI (task 11 brief): once a delta has landed
@@ -297,4 +306,61 @@ test("renders 'in progress' once the reported delay has elapsed, even with no ne
   expect(screen.getByTestId("liveness-line").textContent).toBe(
     "rate limited — attempt 9/11 — in progress — 5s on this call",
   );
+});
+
+// --- the hub's count (#3797) ------------------------------------------------
+
+// The hub's count of running subagents, known only from the subtree activity
+// summary, so a line that says it proves the subtree read was the source.
+function hubCounting(known: boolean, active: number) {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: known && scope === "subtree", total: active, active, failed: 0, completed: 0 },
+  }));
+  connectionStore.getState().connect(client);
+  return client;
+}
+
+// The hub counts a session's running subagents one way everywhere: those whose
+// run is open, at every depth (the subtree activity summary, the Live row's
+// tally, the phone's Board). Once that count is known it is the one the line
+// says, whatever this pane's transcript rows hold - here two subagents a level
+// down that the active turn's own rows never show.
+test("says the hub's subtree count of running subagents once it is known", async () => {
+  hubCounting(true, 2);
+  render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 2 subagents"));
+});
+
+// Once known, the hub's count wins over the turn's rows downward too: a row
+// still marked running for a child whose run the hub has seen end explains
+// nothing.
+test("a known hub count of zero overrides a turn row still marked running", async () => {
+  seedRunningChildren(1);
+  hubCounting(true, 0);
+  render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Quiet ~1m"));
+});
+
+// Until the hub knows its count (an unindexed journal, an older hub), the
+// active turn's rows stand in.
+test("an unknown hub count falls back to the active turn's rows", async () => {
+  seedRunningChildren(1);
+  const client = hubCounting(false, 0);
+  render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  await waitFor(() => expect(sessionActivitySnapshot(client, "s1", "subtree")?.summary).toBeTruthy());
+  expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 1 subagent");
+});
+
+// The line holds the hub's count for its session whether or not a turn is
+// running, so when a turn starts the count is already there: its first
+// words are the hub's, never a flash of the turn's own rows first.
+test("a turn's first words are the hub's count, read before the turn started", async () => {
+  seedRunningChildren(1);
+  const client = hubCounting(true, 2);
+  const view = render(<LivenessLine lastFrameAt={0} now={60_000} active={false} sessionRef="s1" turnId="turn_0" />);
+  await waitFor(() => expect(sessionActivitySnapshot(client, "s1", "subtree")?.summary).toBeTruthy());
+  view.rerender(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 2 subagents");
 });

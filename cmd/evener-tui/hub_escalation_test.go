@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 )
 
 func escalationNotif(ref, id, tool, path string) hubNotificationMsg {
@@ -35,7 +36,7 @@ func TestHubModelSandboxEscalation_NotificationSurfacesPromptForViewed(t *testin
 	}
 	found := false
 	for _, msg := range got.session.messages {
-		if strings.Contains(msg.Text, "/etc/hosts") && strings.Contains(msg.Text, "requested by evener") &&
+		if msg.Kind == transcript.MsgSystem && strings.Contains(msg.Text, "/etc/hosts") &&
 			strings.Contains(msg.Text, "ctrl+y") && strings.Contains(msg.Text, "ctrl+g") {
 			found = true
 		}

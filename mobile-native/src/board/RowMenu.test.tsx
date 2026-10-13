@@ -3,12 +3,15 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { render, renderedText } from "../renderNative.testkit";
+import { markers } from "../markerTestUtils";
+import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { BoardRow } from "./BoardRow";
 import type { RowAction } from "./rowActions";
 import { ROW_ACTION_SYMBOLS, RowMenu, type RowMenuHost, RowMenuSheet, RowPreviewCard, rowMenuHosts } from "./RowMenu";
+import { FreshDot } from "../reader/FreshDot";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn() }));
 
@@ -60,11 +63,15 @@ describe("the preview card (spec 7.3)", () => {
 		const tree = render(<RowPreviewCard item={item("failed")} hostLabel={hostLabel} onPress={open} />);
 		const text = renderedText(tree);
 		expect(text).toContain("Fix retry loop");
-		expect(text).toContain("Failed");
-		expect(text).toContain("open the session to see what went wrong");
+		// The state's word and its reason: the why line a failed row shows.
+		expect(markers(tree, "why-line")).toEqual(["reason"]);
 		expect(text).toContain("evener");
 		expect(text).toContain("Studio Mac");
-		expect(flatten(textNode(tree, "Failed").props.style)).toMatchObject({
+		expect(
+			flatten(
+				tree.root.find((node) => node.type === ("Text" as never) && node.props.testID === "why-word").props.style,
+			),
+		).toMatchObject({
 			fontWeight: "600",
 			color: palette.dangerInk,
 		});
@@ -80,6 +87,26 @@ describe("the preview card (spec 7.3)", () => {
 		);
 		expect(flatten(textNode(tree, "Idle").props.style)).toMatchObject({ color: palette.inkMid });
 		expect(renderedText(tree)).not.toContain(" · ");
+	});
+
+	it("shows the blue dot after the title for an unseen session, and none for a seen one", () => {
+		const unseen = render(
+			<RowPreviewCard
+				item={{ ...item("idle", { state: "idle" }), unseen: true }}
+				hostLabel={hostLabel}
+				onPress={() => {}}
+			/>,
+		);
+		expect(unseen.root.findAllByType(FreshDot)).toHaveLength(1);
+		const seen = render(
+			<RowPreviewCard item={item("idle", { state: "idle" })} hostLabel={hostLabel} onPress={() => {}} />,
+		);
+		expect(seen.root.findAllByType(FreshDot)).toHaveLength(0);
+		// VoiceOver hears the unread state too: the seen card's label, and more.
+		const unseenLabel: string = unseen.root.findByType("Pressable" as never).props.accessibilityLabel;
+		const seenLabel: string = seen.root.findByType("Pressable" as never).props.accessibilityLabel;
+		expect(unseenLabel.startsWith(seenLabel)).toBe(true);
+		expect(unseenLabel.length).toBeGreaterThan(seenLabel.length);
 	});
 
 	it("says what a working session is doing", () => {
@@ -113,29 +140,24 @@ describe("the row menu sheet (ruling 28)", () => {
 		return { provided, calls };
 	}
 	const owner = {};
-	// Every sheet a test mounts, so one that fails before its own unmount
-	// can't leave a sheet behind that answers the next test's host.
-	const sheets: ReactTestRenderer[] = [];
 	afterEach(() => {
-		for (const tree of sheets.splice(0)) act(() => tree.unmount());
+		unmountMountedTrees();
 		rowMenuHosts.release(sheetKey("hub-1"), owner);
 	});
 	function mountSheet(provided: RowMenuHost | undefined, ref = "studio:fix", archived = false) {
 		if (provided) rowMenuHosts.provide(sheetKey("hub-1"), owner, provided);
-		const tree = render(
+		return render(
 			<RowMenuSheet
 				route={{ key: "menu", name: "RowMenuSheet", params: { hubId: "hub-1", ref, archived } } as never}
 				navigation={navigation as never}
 			/>,
 		);
-		sheets.push(tree);
-		return tree;
 	}
 
 	it("shows Close, the card and the row's actions in order, Shut down in dangerInk", () => {
 		const { provided } = host();
 		const tree = mountSheet(provided);
-		expect(renderedText(tree)).toContain("Close");
+		expect(tree.root.findByType(Sheet).props.done).toBeDefined();
 		expect(pressableLabelled(tree, "Open Fix retry loop")).toBeDefined();
 		const labels = ["Pin to category…", "Stop", "Shut down", "Archive", "Rename"];
 		const rows = tree.root.findAll(
@@ -202,11 +224,11 @@ describe("the row menu sheet (ruling 28)", () => {
 describe("the row's long press, with the sheet", () => {
 	it("opens the sheet after a 500ms press", () => {
 		const openSheet = vi.fn();
-		const shown = item("finished", { state: "idle" });
+		const shown = item("idle", { state: "idle" });
 		const tree = render(
 			<RowMenu
 				item={shown}
-				actions={["markRead"]}
+				actions={["pin"]}
 				hostLabel={hostLabel}
 				onOpenSession={() => {}}
 				onAction={() => {}}

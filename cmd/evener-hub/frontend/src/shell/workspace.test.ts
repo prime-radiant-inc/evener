@@ -1,5 +1,4 @@
-// @vitest-environment node
-
+import { bindFilePath, parseFileReference } from "@evener/appwire-client/docContent";
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -9,6 +8,7 @@ import {
   cancelPaneFocus,
   consumePaneFocus,
   currentSessionRef,
+  documentPaneState,
   isPaneOpen,
   type OpenPaneRecord,
   registerDockviewApi,
@@ -266,6 +266,90 @@ describe("openPane", () => {
     expect(() => workspaceStore.getState().openPane("not-a-real-pane-type" as PaneTypeId, {})).toThrow(
       /not-a-real-pane-type/,
     );
+  });
+});
+
+describe("source-aware document placement", () => {
+  test("promotes the exact secondary opener and retains its parent", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const parentRef = "local:034MXwo6BpPH0QQCgdICSf";
+    const childRef = "local:02wMz5TxvEMoJEDTDGOTil";
+    const state = workspaceStore.getState();
+    const parentId = state.openPane("session", { ref: parentRef });
+    const sourceId = state.openPane("transcript", { ref: childRef, parentRef }, { slot: "secondary" });
+    const parent = workspaceStore.getState().panes.find((pane) => pane.id === parentId);
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+    const reference = bindFilePath("docs/a.md", "/work/child");
+    if (!reference || !parent || !source) throw new Error("fixture did not create bound panes");
+    openDocBeside({ session: childRef, reference, sourcePaneId: sourceId });
+    const panes = workspaceStore.getState().panes;
+    expect(panes).toContain(parent);
+    expect(panes).toContain(source);
+    expect(source.slot).toBe("main");
+    expect(parent.slot).toBe("secondary");
+    const document = panes.find((pane) => pane.type === "doc");
+    if (!document) throw new Error("document did not open");
+    expect(documentPaneState(document)?.origin).toBe(source);
+  });
+
+  test("aliases reuse one document while retaining the latest binding, origin, and reopen generation", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const session = "local:02wMz5TxvEMoJEDTDGOTil";
+    const workspace = workspaceStore.getState();
+    const firstId = workspace.openPane("session", { ref: session });
+    const secondId = workspace.openPane("transcript", { ref: session }, { slot: "secondary" });
+    const first = workspaceStore.getState().panes.find((pane) => pane.id === firstId);
+    const second = workspaceStore.getState().panes.find((pane) => pane.id === secondId);
+    const absolute = bindFilePath("/work/child/docs/a.md", "/work/child");
+    const located = parseFileReference("docs/a.md:17:4", "code", "/work/child");
+    if (!absolute || !located || !first || !second) throw new Error("fixture did not create aliases and sources");
+
+    openDocBeside({ session, reference: absolute, sourcePaneId: first.id });
+    const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    if (!document) throw new Error("document did not open");
+    expect(documentPaneState(document)).toEqual({ reference: absolute, origin: first, reopen: 0 });
+
+    openDocBeside({ session, reference: located, sourcePaneId: second.id });
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toEqual([document]);
+    expect(documentPaneState(document)).toEqual({ reference: located, origin: second, reopen: 1 });
+  });
+
+  test("closing a document retires its binding", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const session = "local:02wMz5TxvEMoJEDTDGOTil";
+    const workspace = workspaceStore.getState();
+    const sourceId = workspace.openPane("session", { ref: session });
+    const reference = bindFilePath("docs/a.md", "/work/child");
+    if (!reference) throw new Error("fixture did not bind the document");
+    openDocBeside({ session, reference, sourcePaneId: sourceId });
+    const oldDocument = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    if (!oldDocument) throw new Error("document did not open");
+    workspace.closePane(oldDocument.id);
+    expect(documentPaneState(oldDocument)).toBeUndefined();
+  });
+
+  test("reset retires a still-bound document before pane ids are reused", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const session = "local:02wMz5TxvEMoJEDTDGOTil";
+    const workspace = workspaceStore.getState();
+    const sourceId = workspace.openPane("session", { ref: session });
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+    const reference = bindFilePath("docs/a.md", "/work/child");
+    if (!reference || !source) throw new Error("fixture did not bind the document and source");
+    openDocBeside({ session, reference, sourcePaneId: sourceId });
+    const oldDocument = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    if (!oldDocument) throw new Error("document did not open");
+    expect(documentPaneState(oldDocument)).toEqual({ reference, origin: source, reopen: 0 });
+
+    resetWorkspaceStoreForTests();
+    workspaceStore.getState().openPane("session", { ref: session });
+    const reusedId = workspaceStore.getState().openPane("doc", oldDocument.params);
+    const replacement = workspaceStore.getState().panes.find((pane) => pane.id === reusedId);
+    if (!replacement) throw new Error("replacement document did not open");
+    expect(replacement.id).toBe(oldDocument.id);
+    expect(replacement).not.toBe(oldDocument);
+    expect(documentPaneState(oldDocument)).toBeUndefined();
+    expect(documentPaneState(replacement)).toBeUndefined();
   });
 });
 
@@ -774,12 +858,82 @@ describe("exact Open origin lifetime", () => {
     expect(transcriptOpenOrigin(restoredLeaf)).toBeUndefined();
   });
 
-  test.each(["same identities", "reused identities"])(
-    "layout restoration with %s clears non-persisted origin edges",
+  test.each(["saved", "empty", "invalid"])(
+    "live reconstruction with %s geometry retains exact records and document/transcript state",
+    async (shape) => {
+      const { openDocBeside } = await import("../panes/doc/openDoc");
+      const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+      const reference = bindFilePath("/work/owner/docs/a.md:12", "/work/owner");
+      if (!reference) throw new Error("reference did not bind");
+      openDocBeside({ session: "local:owner", reference, sourcePaneId: owner.id });
+      openDocBeside({ session: "local:owner", reference, sourcePaneId: owner.id });
+      const before = workspaceStore.getState();
+      const document = before.panes.find((pane) => pane.type === "doc");
+      if (!document) throw new Error("document did not open");
+      const documentState = documentPaneState(document);
+      expect(documentState).toEqual({ reference, origin: owner, reopen: 1 });
+      const fake = new FakeDockviewApi();
+      registerDockviewApi(asDockviewApi(fake));
+      registerDockviewApi(null);
+      registerDockviewApi(asDockviewApi(fake));
+      fake.fromJSONBehavior = () => {
+        if (shape === "invalid") throw new Error("invalid layout");
+        fake.panels =
+          shape === "empty"
+            ? []
+            : before.panes.map((pane) => ({
+                id: pane.id,
+                params: { paneType: pane.type, paneParams: pane.params },
+              }));
+        fake.activePanel = { id: leaf.id };
+      };
+
+      expect(workspace.restoreLayout({}, { preserveLivePanes: true })).toBe(shape !== "invalid");
+
+      expect(workspaceStore.getState().panes).toBe(before.panes);
+      expect(workspaceStore.getState().focusedPaneId).toBe(document.id);
+      expect(documentPaneState(document)).toBe(documentState);
+      expect(transcriptOpenOrigin(leaf)).toBe(owner);
+    },
+  );
+
+  test("live reconstruction does not resurrect closed panes from stale geometry or discard phone-created records", async () => {
+    const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+    const fake = new FakeDockviewApi();
+    registerDockviewApi(asDockviewApi(fake));
+    registerDockviewApi(null);
+    workspace.closePane(leaf.id);
+    const replacementId = workspace.openPane("transcript", leaf.params);
+    const replacement = workspaceStore.getState().panes.find((pane) => pane.id === replacementId);
+    const before = workspaceStore.getState();
+    fake.fromJSONBehavior = () => {
+      fake.panels = [owner, leaf].map((pane) => ({
+        id: pane.id,
+        params: { paneType: pane.type, paneParams: pane.params },
+      }));
+      fake.activePanel = { id: leaf.id };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    workspace.restoreLayout({}, { preserveLivePanes: true });
+
+    expect(workspaceStore.getState().panes).toBe(before.panes);
+    expect(workspaceStore.getState().panes).toContain(replacement);
+    expect(workspaceStore.getState().panes).not.toContain(leaf);
+    expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+    if (!replacement) throw new Error("replacement did not open");
+    expect(transcriptOpenOrigin(replacement)).toBeUndefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(replacementId);
+  });
+
+  test.each(["same identities", "reused identities", "invalid layout"])(
+    "layout restoration with %s replaces origins only after successful restore",
     async (shape) => {
       const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+      const before = workspaceStore.getState();
       const fake = new FakeDockviewApi();
       fake.fromJSONBehavior = () => {
+        if (shape === "invalid layout") throw new Error("invalid layout");
         fake.panels = [
           {
             id: owner.id,
@@ -789,9 +943,15 @@ describe("exact Open origin lifetime", () => {
         ];
       };
       registerDockviewApi(asDockviewApi(fake));
-      expect(workspace.restoreLayout({})).toBe(true);
-      expect(transcriptOpenOrigin(leaf)).toBeUndefined();
-      for (const pane of workspaceStore.getState().panes) expect(transcriptOpenOrigin(pane)).toBeUndefined();
+      expect(workspace.restoreLayout({})).toBe(shape !== "invalid layout");
+      if (shape === "invalid layout") {
+        expect(workspaceStore.getState().panes).toBe(before.panes);
+        expect(workspaceStore.getState().focusedPaneId).toBe(before.focusedPaneId);
+        expect(transcriptOpenOrigin(leaf)).toBe(owner);
+      } else {
+        expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+        for (const pane of workspaceStore.getState().panes) expect(transcriptOpenOrigin(pane)).toBeUndefined();
+      }
       expect(workspaceStore.getState().panes).toHaveLength(2);
     },
   );

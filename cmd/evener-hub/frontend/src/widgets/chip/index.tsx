@@ -8,6 +8,9 @@ export interface ChipProps {
   children: ReactNode;
   tone?: ChipTone;
   onRemove?: () => void;
+  /** What the chip marks, rendered as `data-kind` so callers and tests can
+   * tell one chip from another without reading its label. */
+  kind?: string;
 }
 
 const BASE_CLASS = {
@@ -41,9 +44,9 @@ function removeLabelFor(children: ReactNode): string {
 
 /** A small labeled pill, optionally removable. tone maps to the four
  * semantic families (chip is pre-allowlisted in token-contract.test.ts). */
-export function Chip({ children, tone = "neutral", onRemove }: ChipProps) {
+export function Chip({ children, tone = "neutral", onRemove, kind }: ChipProps) {
   return (
-    <span className={`${BASE_CLASS.chip} ${TONE_CLASS[tone]}`}>
+    <span className={`${BASE_CLASS.chip} ${TONE_CLASS[tone]}`} data-kind={kind}>
       {children}
       {onRemove !== undefined && (
         <button type="button" className={BASE_CLASS.remove} aria-label={removeLabelFor(children)} onClick={onRemove}>

@@ -170,6 +170,7 @@ export function RunRow({
 				</View>
 			) : (
 				<Pressable
+					testID="run-fold"
 					accessibilityRole="button"
 					accessibilityLabel={`${runSummaryText(summary)}, ${open ? "expanded" : "collapsed"}`}
 					accessibilityState={{ expanded: open }}

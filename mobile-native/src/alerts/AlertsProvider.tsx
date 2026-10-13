@@ -11,7 +11,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { liveBands } from "../board/attention";
 import { createBoardController } from "../board/boardData";
-import { boardSeen } from "../board/nativeBoardMemory";
 import { type Notice, notices } from "../board/notices";
 import { useConnection } from "../ConnectionProvider";
 import { haptic } from "../haptics";
@@ -87,7 +86,6 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		feed.rebaseline();
 		if (!board || hubId === null) return;
-		const seen = boardSeen(hubId);
 		// Read in the callback, never in a render: a snapshot a render took
 		// before the client changed could otherwise reach the new baseline.
 		const stop = board.subscribe(() => {
@@ -99,10 +97,11 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 			// by design (ruling 1): every session that needs you is in the
 			// complete Needs you section anyway, and a session that moves onto
 			// Live's first page in any other state is no news, since only
-			// entering a needs-you state or finishing from Working alerts.
+			// entering a needs-you state alerts. The alerts read each row's
+			// state alone, never its blue dot, so every row counts as seen.
 			if (live.loaded && needsYou.loaded && needsYou.remaining === 0)
 				feed.observeSessions(
-					liveBands(live.rows, needsYou.rows, (row) => seen.isSeen(row)),
+					liveBands(live.rows, needsYou.rows, () => true),
 					new Set(rows.filter((row) => row.offline).map((row) => row.ref)),
 				);
 			// The notice baseline is this controller's own first notice read.

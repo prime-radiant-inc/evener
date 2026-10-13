@@ -13,7 +13,7 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-func TestLoadSessionJobOutputTail(t *testing.T) {
+func TestLoadSessionJobOutputPage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
@@ -49,17 +49,17 @@ func TestLoadSessionJobOutputTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantJournal := mustReadonlyFileState(t, jobsPath)
-	tail, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_x", 0, 4)
+	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_x", nil, 4)
 	if err != nil || !found {
 		t.Fatalf("tail: found=%v err=%v", found, err)
 	}
-	if tail.Tail != "6789" || tail.TotalBytes != 10 || !tail.Truncated {
+	if tail.Data != "6789" || tail.TotalBytes != 10 || tail.OffsetBytes != 6 || tail.BytesReturned != 4 || tail.RetainedStartBytes != 0 || tail.Encoding != "utf8" {
 		t.Errorf("tail: %+v", tail)
 	}
 	if got := mustReadonlyFileState(t, jobsPath); !reflect.DeepEqual(got, wantJournal) {
 		t.Fatalf("historical output-tail read changed journal bytes or metadata:\n got=%#v\nwant=%#v", got, wantJournal)
 	}
-	if _, found, err := LoadSessionJobOutputTail(dir, sessionID, "job_nope", 0, 4); err != nil || found {
+	if _, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_nope", nil, 4); err != nil || found {
 		t.Errorf("unknown job: found=%v err=%v", found, err)
 	}
 }

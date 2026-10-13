@@ -410,6 +410,86 @@ func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T)
 	}
 }
 
+// TestModelListContinuationWithoutBoundsReusesTheCursors pins the recovery
+// for a continuation that omits max_count and max_bytes: it pages with the
+// bounds the cursor was issued for instead of failing on the defaults.
+func TestModelListContinuationWithoutBoundsReusesTheCursors(t *testing.T) {
+	t.Parallel()
+	// Enough models that the snapshot is listed by model_list, not inlined.
+	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
+	for i := range models {
+		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
+	}
+	adapter := &modelAvailabilityAdapter{models: models}
+	adapter.name = "openai"
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile(models[0].ID), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	const maxBytes = 512
+	first := executeModelListPage(t, sess, "", modelavailability.DefaultPageMaxCount, maxBytes)
+	if first.Next == "" {
+		t.Fatalf("first page = %+v, want a continuation", first)
+	}
+	args, err := json.Marshal(map[string]any{"cursor": first.Next})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "model-list-continue", Name: "model_list", Arguments: args,
+	})
+	if result.IsError {
+		t.Fatalf("continuation without bounds failed: %s", result.Output)
+	}
+	var next modelavailability.Page
+	if err := json.Unmarshal([]byte(result.Output), &next); err != nil {
+		t.Fatalf("decode model_list output: %v", err)
+	}
+	if len(next.Choices) == 0 || next.Choices[0] != sess.modelSnapshot.Choices[len(first.Choices)] {
+		t.Fatalf("continuation choices = %q, want them to start at %q", next.Choices, sess.modelSnapshot.Choices[len(first.Choices)])
+	}
+	if len([]byte(result.Output)) > maxBytes {
+		t.Fatalf("continuation output = %d bytes, want the cursor's max_bytes of %d", len([]byte(result.Output)), maxBytes)
+	}
+}
+
+// TestModelListContinuationWithChangedBoundsNamesTheCursors pins the error a
+// model sees when it changes page bounds mid-listing: the message names the
+// cursor's bounds, never an empty page object.
+func TestModelListContinuationWithChangedBoundsNamesTheCursors(t *testing.T) {
+	t.Parallel()
+	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
+	for i := range models {
+		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
+	}
+	adapter := &modelAvailabilityAdapter{models: models}
+	adapter.name = "openai"
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile(models[0].ID), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	first := executeModelListPage(t, sess, "", modelavailability.DefaultPageMaxCount, 512)
+	args, err := json.Marshal(map[string]any{"cursor": first.Next, "max_count": 5, "max_bytes": 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "model-list-changed", Name: "model_list", Arguments: args,
+	})
+	const want = "cursor was issued for max_count=128 and max_bytes=512; omit max_count and max_bytes or repeat those values with this cursor, or omit the cursor to start a new listing"
+	if !result.IsError || result.Output != want {
+		t.Fatalf("changed-bounds continuation = error %v, output %q; want error %q", result.IsError, result.Output, want)
+	}
+}
+
 func TestModelListToolPreservesJSONUnderConfiguredOutputLimit(t *testing.T) {
 	t.Parallel()
 	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)

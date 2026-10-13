@@ -20,7 +20,7 @@
 //     gather calls the reader saw separated by an answer;
 //   - a run has to be worth folding. Two rows are not clutter; three are.
 import { hasItemFailure, type ProjectedEntry, type ProjectedTurn } from "@evener/appwire-client";
-import { type ToolRendererDescriptor, type ToolSummaryContext, toolRendererFor } from "./toolRenderers";
+import { type ResolvedToolRendererDescriptor, type ToolSummaryContext, toolRendererFor } from "./toolRenderers";
 
 export type ToolItemEntry = Extract<ProjectedEntry, { kind: "item" }>;
 
@@ -35,7 +35,9 @@ export interface ToolRun {
 export interface FoldOptions {
   /** False while the turn is still running - see the header. */
   turnSettled: boolean;
-  descriptorFor: (toolName: string) => Pick<ToolRendererDescriptor, "summary" | "fold" | "failed" | "autoExpand">;
+  descriptorFor: (
+    toolName: string,
+  ) => Pick<ResolvedToolRendererDescriptor, "summary" | "fold" | "failed" | "autoExpand">;
 }
 
 // Two folded rows save one row and cost a click; three start to read as

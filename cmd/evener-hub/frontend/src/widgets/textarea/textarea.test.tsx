@@ -140,6 +140,25 @@ test("seamless adds its modifier class alongside the unchanged base class", () =
   expect(classes).toContain(rawStyles.seamless);
 });
 
+test("monospace adds its modifier class alongside the unchanged base class", () => {
+  const { rerender } = render(<Textarea value="" onChange={() => {}} monospace />);
+  const classes = screen.getByRole("textbox").className.split(" ");
+  expect(classes).toContain(rawStyles.textarea);
+  expect(classes).toContain(rawStyles.monospace);
+
+  rerender(<Textarea value="" onChange={() => {}} />);
+  expect(screen.getByRole("textbox").className.split(" ")).not.toContain(rawStyles.monospace);
+});
+
+// The iOS 16px rule: a mono face must not drag the field under the phone's
+// control-size floor, so the modifier changes the face and nothing else.
+test("the monospace modifier sets the mono face and leaves the base size floor alone", () => {
+  const css = moduleCss().replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = /\.monospace\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("font-family: var(--font-mono)");
+  expect(rule).not.toMatch(/font-size|font:/);
+});
+
 test("the seamless modifier removes the field's own box and its focus ring", () => {
   const css = moduleCss();
   const rule = /\.seamless\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";

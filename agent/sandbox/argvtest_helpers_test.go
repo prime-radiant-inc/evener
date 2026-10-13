@@ -108,3 +108,18 @@ func resolveFixture(t *testing.T, mode Mode, netOn bool) (ResolvedPolicy, string
 	}
 	return rp, cwd, home
 }
+
+// overlayFixtureDir is a fresh directory outside /tmp. bwrap gives each spawn a private
+// /tmp, so cache roots reached through a link there are not overlaid and go
+// env files there are unknown to a spawn; fixtures that mean to exercise the
+// ordinary case live elsewhere.
+func overlayFixtureDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/var/tmp", "evener-sandbox-test-")
+	if err != nil {
+		// A sandboxed run may grant writes only to the workspace and /tmp.
+		t.Skipf("needs a writable directory outside /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}

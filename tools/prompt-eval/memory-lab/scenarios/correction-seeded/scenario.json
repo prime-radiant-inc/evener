@@ -1,0 +1,15 @@
+{
+  "fixture_from": "quirk",
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "B",
+      "seed_project_memory": "seed",
+      "before": "perl -pi -e 's/INVENTORY_FIXTURES/INVENTORY_DATA/' inventory_test.go && git commit -qam 'tests: rename fixture env var to INVENTORY_DATA'",
+      "prompt": "washer-8 sits exactly at its reorder level but the reorder report doesn't list it. Fix that, and make sure the test suite really exercises the fix before you call it done.",
+      "checks": [{"name": "reorder fixed", "run": "INVENTORY_DATA=testdata go test -count=1 -run TestNeedsReorder ./..."}],
+      "trace": [{"name": "ran real suite", "tool": "shell", "regex": "INVENTORY_DATA="}],
+      "memory": [{"name": "page corrected", "regex": "INVENTORY_DATA", "scope": "project"}, {"name": "stale command gone", "regex": "INVENTORY_FIXTURES=", "scope": "project", "absent": true}]
+    }
+  ]
+}

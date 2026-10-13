@@ -8,7 +8,13 @@ import {
   SESSION_CACHE_DATABASE_VERSION,
   upgradeSessionCache,
 } from "../sessionCacheSchema";
-import { bumpCacheEpochRow, holdIndexedDBEvent, holdNextWriteTransaction } from "./stalledIndexedDB";
+import {
+  bumpCacheEpochRow,
+  holdIndexedDBEvent,
+  holdNextWriteTransaction,
+  nextRealTask,
+  wedgeDatabaseOpens,
+} from "./stalledIndexedDB";
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -157,4 +163,32 @@ test("bumpCacheEpochRow updates the entry cache epoch without requesting a downg
   );
   expect(epoch).toEqual({ historyKey: CLEAR_EPOCH_KEY, epoch: 7 });
   reopened.close();
+});
+
+// The wedge is selective: only the named database's open is held, and any other
+// database still opens against the real factory. The returned spy is the
+// restore seam, so the real open comes back when the test restores it.
+test("wedgeDatabaseOpens wedges only the named database until restored", async () => {
+  const factory = new IDBFactory();
+  const spy = wedgeDatabaseOpens(factory, "wedge-named");
+
+  const wedged = factory.open("wedge-named", 1);
+  let settled = false;
+  wedged.addEventListener("success", () => {
+    settled = true;
+  });
+  wedged.addEventListener("error", () => {
+    settled = true;
+  });
+
+  const other = await requestResult(factory.open("wedge-other", 1));
+  expect(other.name).toBe("wedge-other");
+  await nextRealTask();
+  expect(settled, "the named database's open must never settle while wedged").toBe(false);
+
+  spy.mockRestore();
+  const restored = await requestResult(factory.open("wedge-named", 1));
+  expect(restored.name).toBe("wedge-named");
+  restored.close();
+  other.close();
 });

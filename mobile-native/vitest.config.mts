@@ -17,6 +17,9 @@ export default defineConfig({
 		// `<key>/<subpath>`, so the specific entries have to come first or the
 		// root entry swallows them.
 		alias: {
+			"@evener/appwire-client/pairing": fileURLToPath(
+				new URL("../appwire-client/typescript/pairing.ts", import.meta.url),
+			),
 			"@evener/appwire-client/docContent": fileURLToPath(
 				new URL("../appwire-client/typescript/docContent.ts", import.meta.url),
 			),
@@ -47,6 +50,7 @@ export default defineConfig({
 			zustand: fileURLToPath(new URL("./node_modules/zustand", import.meta.url)),
 			anser: fileURLToPath(new URL("./node_modules/anser/lib/index.js", import.meta.url)),
 			tinykeys: fileURLToPath(new URL("./node_modules/tinykeys/dist/tinykeys.mjs", import.meta.url)),
+			tweetnacl: fileURLToPath(new URL("./node_modules/tweetnacl", import.meta.url)),
 		},
 	},
 });

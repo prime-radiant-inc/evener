@@ -15,10 +15,12 @@ import {
   type ActivityWatchRow,
   activityDelegateDiagnostics,
   activityDelegateState,
+  decodeJobOutputText,
   delegateTiming,
   findEntityView,
   formatClockTime,
   jobCommandLabel,
+  parseJobOutputPage,
   splitMandate,
   watchDeliveryInstants,
   watchFacts,
@@ -29,10 +31,9 @@ import { connectionStore } from "../../../stores/connection";
 import { useNavigationStore } from "../../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { useEntityViews } from "../../../transcriptDisplay/entityViews";
-import { Markdown, MarkdownBubble } from "../../../widgets";
+import { Disclosure, Markdown, MarkdownBubble } from "../../../widgets";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
-import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { navigationSummaryFor } from "../threadTitle";
 import { EntityRef } from "../transcript/EntityRef";
@@ -62,7 +63,7 @@ const CLASS = {
 // The one line a condition watch shows where a timeline would go: there is no
 // period to draw, because the firing is decided by a job's output or an event,
 // not by a clock.
-export const WATCH_NO_SCHEDULE_LINE =
+const WATCH_NO_SCHEDULE_LINE =
   "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
 
 // The now marker is taller than a delivery dot, and a dot at the rail's far end
@@ -147,10 +148,8 @@ function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: numbe
   // The marks are hidden from assistive tech, so the marker's own instant is
   // named in the label when neither end holds it.
   const floatingNow = !markerAtStart && !markerAtEnd ? `, now ${clockFromMillis(now)}` : "";
-  const caption =
-    watch.watch.deliveries <= instants.length
-      ? "Delivered"
-      : `Last ${instants.length} of ${watch.watch.deliveries} deliveries`;
+  const complete = watch.watch.deliveries <= instants.length;
+  const caption = complete ? "Delivered" : `Last ${instants.length} of ${watch.watch.deliveries} deliveries`;
   return (
     <div className={CLASS.watchTimeline} data-testid="watch-timeline">
       <div
@@ -186,7 +185,11 @@ function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: numbe
         <span data-testid="watch-timeline-start">{startLabel}</span>
         <span data-testid="watch-timeline-end">{endLabel}</span>
       </div>
-      <p className={CLASS.timelineCaption} data-testid="watch-timeline-caption">
+      <p
+        className={CLASS.timelineCaption}
+        data-testid="watch-timeline-caption"
+        data-state={complete ? "complete" : "partial"}
+      >
         {caption}
       </p>
     </div>
@@ -276,14 +279,6 @@ function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): strin
 // the job last said, small enough that expanding a row is never a log dump.
 const previewBytes = 256;
 
-// tailText validates the untyped evener/jobs/output data field down to the one
-// member the preview needs (same wire-shape caution as JobLog's own parser).
-function tailText(data: unknown): string | null {
-  if (typeof data !== "object" || data === null) return null;
-  const tail = (data as Record<string, unknown>).tail;
-  return typeof tail === "string" ? tail : null;
-}
-
 // JobOutputPreview shows the latest bytes of a shell job's log inside the
 // detail strip. It stays silent on every failure mode - a missing log, an
 // old daemon, a dropped connection - because the strip's meta line already
@@ -304,7 +299,8 @@ function JobOutputPreview({ ownerRef, jobId }: { ownerRef: string; jobId: string
         .then(
           (data) => {
             if (cancelled) return;
-            const text = tailText(data);
+            const page = parseJobOutputPage(data);
+            const text = page ? decodeJobOutputText(page.bytes) : null;
             setTail(text !== null && text.length > 0 ? text : null);
           },
           () => {

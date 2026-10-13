@@ -1,8 +1,7 @@
 import { useMemo } from "react";
 import { selectNeedsYouCount } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { Badge, IconButton } from "../../widgets";
-import styles from "./treedrawer.module.css";
+import { IconButton } from "../../widgets";
 
 function SessionsIcon() {
   return (
@@ -21,13 +20,12 @@ export function TreeDrawer({ onToggle }: TreeDrawerProps) {
   const needsYou = useMemo(() => selectNeedsYouCount(navigation), [navigation]);
 
   return (
-    <span className={styles.triggerWrap}>
-      <IconButton label="Sessions" icon={<SessionsIcon />} variant="quiet" onClick={onToggle} />
-      {needsYou > 0 && (
-        <span className={styles.badgeOverlay}>
-          <Badge count={needsYou} tone="attention" />
-        </span>
-      )}
-    </span>
+    <IconButton
+      label={needsYou > 0 ? `Sessions (${needsYou} need attention)` : "Sessions"}
+      icon={<SessionsIcon />}
+      variant="quiet"
+      onClick={onToggle}
+      badge={needsYou > 0 ? { count: needsYou, tone: "attention" } : undefined}
+    />
   );
 }

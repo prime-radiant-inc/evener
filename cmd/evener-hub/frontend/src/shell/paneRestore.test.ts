@@ -26,10 +26,12 @@
 // cleared===false still hold - the skip, including its synchronous
 // removePanel, is graceful on this double, which is exactly why the
 // pane-presence assertions are the ones that must carry the net).
+import { bindFilePath } from "@evener/appwire-client/docContent";
 import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
+import { openDocBeside } from "../panes/doc/openDoc";
 import { paneFor } from "./paneRegistry";
-import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import { documentPaneState, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 import "./AppShell"; // side effect: the boot-time pane-type registrations under test
 
 // A minimal DockviewApi double covering only what workspace.ts touches
@@ -71,6 +73,48 @@ beforeEach(() => {
 });
 
 describe("boot-time registration lets a persisted layout with lazy panes restore", () => {
+  test("cold restore with reused IDs restores saved focus but never a previous exact document owner or binding", () => {
+    const session = "local:02wMz5TxvEMoJEDTDGOTil";
+    const sourceId = workspaceStore.getState().openPane("session", { ref: session });
+    const reference = bindFilePath("/work/A/notes.md", "/work/A");
+    if (!reference) throw new Error("reference did not bind");
+    openDocBeside({ session, reference, sourcePaneId: sourceId });
+    openDocBeside({ session, reference, sourcePaneId: sourceId });
+    const oldPanes = workspaceStore.getState().panes;
+    const oldDocument = oldPanes.find((pane) => pane.type === "doc");
+    if (!oldDocument) throw new Error("document did not open");
+    expect(documentPaneState(oldDocument)?.reopen).toBe(1);
+    const saved = JSON.parse(
+      JSON.stringify(
+        oldPanes.map((pane) => ({
+          id: pane.id,
+          params: { paneType: pane.type, paneParams: pane.params },
+        })),
+      ),
+    );
+    const fake = new FakeDockviewApi();
+    registerDockviewApi(asDockviewApi(fake));
+    registerDockviewApi(null);
+    resetWorkspaceStoreForTests();
+    fake.fromJSONBehavior = () => {
+      fake.panels = saved;
+      fake.activePanel = { id: oldDocument.id };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    expect(workspaceStore.getState().restoreLayout({})).toBe(true);
+
+    const restored = workspaceStore.getState().panes.find((pane) => pane.id === oldDocument.id);
+    if (!restored) throw new Error("document did not restore");
+    expect(restored).not.toBe(oldDocument);
+    expect(documentPaneState(oldDocument)).toBeUndefined();
+    expect(documentPaneState(restored)).toBeUndefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(oldDocument.id);
+    expect(workspaceStore.getState().openPane("doc", { session, path: "new.md", kind: "file" })).not.toBe(
+      oldDocument.id,
+    );
+  });
+
   // doc and transcript are the original wave-8 lazy registrations this file
   // exists to protect (see the header's mutation net); the session panels are
   // the later additions. One fixture carries all of them so dropping ANY

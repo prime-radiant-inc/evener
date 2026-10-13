@@ -135,10 +135,8 @@ func FuzzResolve(f *testing.F) {
 		// Invariant 3a: no granted root is at/under a masked path.
 		roots := slices.Concat(rp.FileTool.ReadRoots, rp.FileTool.WriteRoots, rp.Spawned.ReadRoots, rp.Spawned.WriteRoots)
 		for _, r := range roots {
-			for _, m := range rp.MaskedPaths {
-				if r == m || pathUnder(r, m) {
-					t.Fatalf("resolved policy grants root %q at/under masked path %q (mode=%v)", r, m, mode)
-				}
+			if rp.Masks(r) {
+				t.Fatalf("resolved policy grants root %q at/under masked path %q (mode=%v)", r, rp.MaskedPaths, mode)
 			}
 		}
 

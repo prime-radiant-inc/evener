@@ -29,6 +29,15 @@ type threadHistories struct {
 	// thread/clear replaces the served root, whose new session is another
 	// thread). It holds one number per thread the process ever served.
 	lastEpoch map[string]uint64
+	// unclosed counts the histories created here whose close has not
+	// finished, detached ones included: a replace or release closes what it
+	// detached on its own goroutine, and close waits for those as well
+	// before it closes the shared cache (#4064).
+	unclosed sync.WaitGroup
+	// closing is set, under mu, when close begins: from then on nothing is
+	// registered, so every history counted in unclosed exists before close
+	// waits and is closed by it or by the caller that detached it.
+	closing bool
 }
 
 // newThreadHistories returns an empty registry backed by a cache of the
@@ -44,7 +53,8 @@ func newThreadHistories(cacheCapacity, budgetBytes int) *threadHistories {
 // ensure returns threadID's history, creating it over path with a fresh
 // overlay charged against the registry's shared budget if this is the first
 // call for threadID; a later call for an already-registered threadID
-// returns the existing history and ignores every other argument.
+// returns the existing history and ignores every other argument. Once the
+// registry is closing it creates nothing and returns nil.
 // recordedLength seeds the new history's projection with the length already
 // recorded before any entry reaches its hook (a transcript.Writer's
 // in-memory RecordedLength(), never a stat), so a read before the first
@@ -102,6 +112,9 @@ func (r *threadHistories) ensureLocked(
 	if h := r.get(threadID); h != nil {
 		return h
 	}
+	if r.closing {
+		return nil
+	}
 	epoch = max(epoch, r.lastEpoch[threadID])
 	h := newThreadHistory(threadHistoryConfig{
 		threadID:       threadID,
@@ -115,7 +128,12 @@ func (r *threadHistories) ensureLocked(
 		recordedLength: recordedLength,
 		epoch:          epoch,
 		bootGeneration: bootGeneration,
+		onClosed:       r.unclosed.Done,
 	})
+	// Counted once it exists (construction panics on a missing boot
+	// generation) and before anything can close it: closes reach a history
+	// only through the registry, after it is stored under r.mu.
+	r.unclosed.Add(1)
 	r.threads.Store(threadID, h)
 	return h
 }
@@ -179,10 +197,15 @@ func (r *threadHistories) detachExcept(keep string) []*threadHistory {
 	return detached
 }
 
-// close closes every registered history and its overlay, then the shared
-// cache, and leaves the registry empty.
+// close closes every registered history and its overlay, waits for any
+// detached history still closing elsewhere, then closes the shared cache, and
+// leaves the registry empty.
 func (r *threadHistories) close() {
+	r.mu.Lock()
+	r.closing = true
+	r.mu.Unlock()
 	closeHistories(r.detachExcept(""))
+	r.unclosed.Wait()
 	_ = r.cache.Close()
 }
 

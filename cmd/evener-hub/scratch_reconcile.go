@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	agentsandbox "primeradiant.com/evener/agent/sandbox"
@@ -22,7 +23,8 @@ func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
 	if err != nil {
 		return
 	}
-	for _, id := range agentsandbox.SessionScratchTreeRootIDs() {
+	daemonTempDirs := recordedScratchTempDirs(cfg.Past)
+	for _, id := range agentsandbox.SessionScratchTreeRootIDs(daemonTempDirs...) {
 		entry, known := cfg.Past.FindIndexed(id)
 		if !known {
 			continue
@@ -36,9 +38,22 @@ func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
 		}
 		// Best-effort: a tree it cannot take now is retried on the next pass.
 		if pastArchived(entry, decisions, now) {
-			_ = agentsandbox.RemoveSessionScratchTree(id)
+			_ = agentsandbox.RemoveSessionScratchTree(id, daemonTempDirs...)
 		}
 	}
+}
+
+// recordedScratchTempDirs is each distinct temp dir the past sessions' daemons
+// recorded (SessionMeta.ScratchTempDir). A daemon started with its own TMPDIR
+// keeps its scratch there, out of the hub's own temp dir.
+func recordedScratchTempDirs(past *hubcore.PastIndex) []string {
+	var dirs []string
+	for _, entry := range past.All() {
+		if dir := entry.Meta.ScratchTempDir; dir != "" && !slices.Contains(dirs, dir) {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
 // scratchReconciler runs reconcileArchivedScratch on its own goroutine, one

@@ -287,7 +287,7 @@ test("job_status: body shows a disclosure for a multi-paragraph mandate", () => 
   });
   render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
   expect(screen.getByText("First paragraph of the mandate.")).toBeTruthy();
-  expect(screen.getByText("Show full mandate")).toBeTruthy();
+  expect(screen.getByTestId("delegate-mandate-rest")).toBeTruthy();
 });
 
 test("job_status: body renders available tools with a count", () => {
@@ -619,32 +619,39 @@ test("job_list: rows state the command-outcome statuses under the card's display
 
   const rows = screen.getAllByTestId("job-list-row");
   expect(rows).toHaveLength(ids.length);
-  const [exited, killed] = rows;
-  expect(exited?.textContent ?? "").toContain("Command failed");
-  expect(exited?.textContent ?? "").not.toContain("command_exited_nonzero");
-  expect(killed?.textContent ?? "").toContain("Command killed");
-  expect(killed?.textContent ?? "").not.toContain("command_killed");
+  const [exited, killed] = rows.map((row, index) => (row.textContent ?? "").replace(ids[index] ?? "", ""));
+  expect(exited).not.toContain("command_exited_nonzero");
+  expect(killed).not.toContain("command_killed");
+  // The two endings read as two different words.
+  expect(exited).not.toBe(killed);
 });
 
 test("job_list: rows join a legacy failed record to the display word by its reason", () => {
   const d = toolRendererFor("job_list");
   const Body = d.body!;
   render(
-    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(["job_l1"])}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(["job_l1", "job_l2"])}>
       <Body
         item={item({
           toolName: "job_list",
           raw: {
-            items: [{ id: "job_l1", type: "shell", status: "failed", reason: "exit_nonzero" }],
-            count: 1,
-            total: 1,
+            items: [
+              { id: "job_l1", type: "shell", status: "failed", reason: "exit_nonzero" },
+              { id: "job_l2", type: "shell", status: "command_exited_nonzero" },
+            ],
+            count: 2,
+            total: 2,
           },
         })}
         live={false}
       />
     </TranscriptRenderProvider>,
   );
-  expect(screen.getAllByTestId("job-list-row")[0]?.textContent ?? "").toContain("Command failed");
+  // The legacy record reads exactly as the current one with the same ending.
+  const [legacy, current] = screen
+    .getAllByTestId("job-list-row")
+    .map((row, index) => (row.textContent ?? "").replace(["job_l1", "job_l2"][index] ?? "", ""));
+  expect(legacy).toBe(current);
 });
 
 // --- job_stop -----------------------------------------------------------
@@ -760,11 +767,13 @@ function renderDelegateSendBody({
   argumentsJSON = JSON.stringify({ to: "dlg_abc123", message: "Inspect the parser.\nReport exact findings." }),
   output = "Found two call sites.\nBoth need coverage.\n[delegate_id dlg_abc123 · delivered · completed]",
   raw,
+  startedAt,
 }: {
   toolName?: "delegate_send" | "job_send_message";
   argumentsJSON?: string;
   output?: string;
   raw?: unknown;
+  startedAt?: string;
 } = {}) {
   const Body = toolRendererFor(toolName).body!;
   render(
@@ -774,6 +783,7 @@ function renderDelegateSendBody({
         argumentsJSON,
         output,
         raw,
+        ...(startedAt ? { startedAt } : {}),
       })}
       live={false}
     />,
@@ -795,6 +805,76 @@ test("delegate_send: expanded body renders the sent message as an outgoing chat 
   expect(within(reply).getByRole("button", { name: "Copy response" })).toBeTruthy();
 
   expect(screen.queryByText(/delegate_id dlg_abc123 · delivered · completed/)).toBeNull();
+});
+
+// A send whose wait carried results its caller had not yet received (#3906)
+// shows each as an earlier incoming bubble, oldest first, above the reply: a
+// failed one with no text by its reason, its status in the bubble's name.
+test("delegate_send: earlier results a wait carried render as incoming bubbles ahead of the reply", () => {
+  const entry = (status: string, output: string, reason?: string) => ({
+    delegate_id: "dlg_abc123",
+    type: "delegate",
+    status,
+    ...(reason ? { reason } : {}),
+    running_in_background: false,
+    action: "completed",
+    output,
+    truncated: false,
+  });
+  renderDelegateSendBody({
+    raw: {
+      ...entry("completed", "Third result"),
+      earlier_results: [entry("completed", "First result"), entry("failed", "", "the run crashed")],
+    },
+    startedAt: "2026-10-06T12:00:00Z",
+  });
+
+  const earlier = screen.getAllByTestId("delegate-send-earlier-response");
+  expect(earlier.map((section) => within(section).getByTestId("user-bubble").textContent)).toEqual([
+    "First result",
+    "the run crashed",
+  ]);
+  expect(within(earlier[0]!).getByText("dlg_abc123 (delegate, earlier reply 1 of 2)")).toBeTruthy();
+  expect(within(earlier[1]!).getByText("dlg_abc123 (delegate, earlier reply 2 of 2 · failed)")).toBeTruthy();
+  expect(within(earlier[1]!).getByRole("button", { name: "Copy earlier reply 2 of 2 · failed" })).toBeTruthy();
+  // An earlier result arrived before the send, so its bubble shows no time;
+  // the reply keeps the send's.
+  expect(earlier.map((section) => section.querySelector("time"))).toEqual([null, null]);
+  expect(screen.getByTestId("delegate-send-response").querySelector("time")).not.toBeNull();
+  const reply = screen.getByTestId("delegate-send-response");
+  expect(within(reply).getByTestId("user-bubble").textContent).toBe("Third result");
+  expect(earlier[1]!.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+// An update the wait carried (action "update", no status) is headed as an
+// update, never as an earlier reply.
+test("delegate_send: an update a wait carried renders as an earlier update", () => {
+  renderDelegateSendBody({
+    raw: {
+      delegate_id: "dlg_abc123",
+      type: "delegate",
+      status: "completed",
+      running_in_background: false,
+      action: "completed",
+      output: "Third result",
+      truncated: false,
+      earlier_results: [
+        {
+          delegate_id: "dlg_abc123",
+          type: "delegate",
+          running_in_background: false,
+          action: "update",
+          output: "Which table?",
+          truncated: false,
+        },
+      ],
+    },
+    startedAt: "2026-10-06T12:00:00Z",
+  });
+
+  const [earlier] = screen.getAllByTestId("delegate-send-earlier-response");
+  expect(within(earlier!).getByText(/dlg_abc123/)).toBeTruthy();
+  expect(within(earlier!).getByTestId("user-bubble").textContent).toBe("Which table?");
 });
 
 test("delegate_send: canonical raw output preserves the delegate response when formatted output has trailing metadata", () => {

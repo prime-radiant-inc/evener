@@ -33,6 +33,16 @@ type Manager struct {
 	storeChangedMu      sync.Mutex
 	pendingStoreChanged StoreChanged
 	onStoreChanged      func(StoreChanged)
+
+	// remoteHeads holds, by registry key, what the last CheckUpdates found
+	// for each git-backed plugin (updates.go).
+	remoteHeadsMu   sync.Mutex
+	remoteHeads     map[string]checkedHead
+	checkGeneration uint64
+	// checkRefreshResumeAt names the marketplace the last check's refresh
+	// budget left unrefreshed first ("" when it refreshed them all). Guarded
+	// by remoteHeadsMu, like the check state above.
+	checkRefreshResumeAt string
 }
 
 // NewManager returns a Manager rooted at root, or DefaultRoot() when root == "".
@@ -46,7 +56,7 @@ func NewManager(root string) *Manager {
 // DefaultRoot is ~/.config/evener/plugins, honoring XDG_CONFIG_HOME the same way
 // the rest of evener does (envvars.XDGConfigHome).
 func DefaultRoot() string {
-	return userdirs.Subdir(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), pluginUserHomeDir), "plugins")
+	return userdirs.PluginStore(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), pluginUserHomeDir))
 }
 
 // The store's own files and directories, named once so storePath and the
@@ -60,9 +70,10 @@ const (
 	// outlives the run: a marketplace's other names can still be recorded in a
 	// later one.
 	migrationRecordFileName = "marketplace-migration.json"
-	bundledDirName          = "bundled"
-	cacheDirName            = "cache"
+	bundledDirName          = userdirs.PluginBundledDirName
+	cacheDirName            = userdirs.PluginCacheDirName
 	marketplacesDirName     = "marketplaces"
+	cloneLocksDirName       = "clone-locks"
 )
 
 // storePath derives a path inside the store, refusing a root that resolves

@@ -5,6 +5,8 @@ package agent
 import (
 	"errors"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/turnwindow"
 )
 
 // FuzzTranscriptRangeSpec drives the transcript read-range grammar, whose input
@@ -19,10 +21,11 @@ import (
 //     exactly what an empty spec resolves to, which is the documented fallback.
 //   - Bounds are always inside the entry list. These indexes are used to slice
 //     entries, so an unclamped value is an out-of-range panic in a tool call,
-//     and clampRange is the only thing standing between the model and that.
+//     and turnwindow's clamp is the only thing standing between the model and that.
 //   - The two entry points agree whenever the strict one accepts. If they
 //     diverge, the tool layer reports one range and renders another.
-//   - An empty entry list is not an error; it is the empty range (0, -1).
+//   - An empty entry list is not an error, and a reversed "N-M" selects
+//     nothing; both are the empty range (0, -1).
 //   - The grammar's anchors hold: "last:N" always ends at the final entry, and
 //     "start:N" always begins at the first.
 func FuzzTranscriptRangeSpec(f *testing.F) {
@@ -64,6 +67,14 @@ func FuzzTranscriptRangeSpec(f *testing.F) {
 			return
 		}
 
+		// A reversed "N-M" selects nothing: the empty range (0, -1).
+		if lo, hi, ok := turnwindow.ParseDash(spec); ok && lo > hi {
+			if start != 0 || end != -1 {
+				t.Fatalf("reversed %q resolved to (%d, %d), want the empty range (0, -1)", spec, start, end)
+			}
+			return
+		}
+
 		if start < 0 || start > entryCount-1 {
 			t.Fatalf("parseRange(%q, %d) start %d is outside [0, %d]", spec, entryCount, start, entryCount-1)
 		}
@@ -73,7 +84,7 @@ func FuzzTranscriptRangeSpec(f *testing.F) {
 
 		strictStart, strictEnd, err := parseRangeErr(spec, entryCount)
 		if err != nil {
-			if !errors.Is(err, errBadRange) {
+			if !errors.Is(err, turnwindow.ErrMalformed) {
 				t.Fatalf("parseRangeErr(%q, %d) failed with an unexpected error: %v", spec, entryCount, err)
 			}
 			// The lenient path must land exactly where an empty spec lands.
@@ -95,12 +106,12 @@ func FuzzTranscriptRangeSpec(f *testing.F) {
 
 		// Grammar anchors: these two forms are defined relative to an end of the
 		// list, so clamping must never move them off it.
-		if n, ok := parsePositiveInt(trimPrefixOrEmpty(spec, "last:")); ok && n > 0 {
+		if n, ok := turnwindow.ParsePositiveInt(trimPrefixOrEmpty(spec, "last:")); ok && n > 0 {
 			if end != entryCount-1 {
 				t.Fatalf("%q ended at %d, want the final entry %d", spec, end, entryCount-1)
 			}
 		}
-		if n, ok := parsePositiveInt(trimPrefixOrEmpty(spec, "start:")); ok && n > 0 {
+		if n, ok := turnwindow.ParsePositiveInt(trimPrefixOrEmpty(spec, "start:")); ok && n > 0 {
 			if start != 0 {
 				t.Fatalf("%q started at %d, want the first entry 0", spec, start)
 			}

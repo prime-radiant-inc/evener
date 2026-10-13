@@ -74,7 +74,7 @@ export function SystemEvent({
 				<View style={{ flex: 1, minWidth: 0 }}>{line}</View>
 			</Pressable>
 			{label && expanded ? (
-				<View style={{ paddingLeft: 16, gap: 4 }}>
+				<View testID="system-event-body" style={{ paddingLeft: 16, gap: 4 }}>
 					{children ?? (
 						<Text allowFontScaling={allowFontScaling} style={quiet}>
 							{text}

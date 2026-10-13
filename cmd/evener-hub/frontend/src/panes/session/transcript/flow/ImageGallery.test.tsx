@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import dialogStyles from "../../../../widgets/dialog/dialog.module.css";
 import { ImageGallery } from "./ImageGallery";
-import styles from "./imagegallery.module.css";
 
 afterEach(() => {
   cleanup();
@@ -48,19 +47,21 @@ test("no lightbox is open before any thumbnail is clicked", () => {
 // --- size="large" (read_file image reads: the image displays at up to
 // 600px square instead of the default 96px thumbnail) ---------------------
 
-test('size="large" renders the large (up-to-600px) thumb variant classes on the button and its img', () => {
+// jsdom computes no layout: the 600px cap itself is the layoutguard case
+// read-file-image-600px. Here, the size picks whether the img reserves the
+// fixed 96px thumbnail box.
+test('size="large" shows the image whole instead of reserving a 96px thumbnail box', () => {
   render(<ImageGallery images={[{ src: "/s/ref/images/aaa" }]} size="large" />);
-  const thumb = screen.getByTestId("image-gallery-thumb");
-  expect(thumb.className.split(/\s+/)).toContain(styles.thumbLarge);
-  expect(thumb.querySelector("img")!.className.split(/\s+/)).toContain(styles.thumbImgLarge);
+  const img = screen.getByTestId("image-gallery-thumb").querySelector("img")!;
+  expect(img.hasAttribute("width")).toBe(false);
+  expect(img.hasAttribute("height")).toBe(false);
 });
 
-test("the default size keeps the plain 96px thumbnail classes, not the large variant", () => {
+test("the default size reserves the 96px thumbnail box", () => {
   render(<ImageGallery images={[{ src: "/s/ref/images/aaa" }]} />);
-  const thumb = screen.getByTestId("image-gallery-thumb");
-  expect(thumb.className.split(/\s+/)).toContain(styles.thumb);
-  expect(thumb.className.split(/\s+/)).not.toContain(styles.thumbLarge);
-  expect(thumb.querySelector("img")!.className.split(/\s+/)).not.toContain(styles.thumbImgLarge);
+  const img = screen.getByTestId("image-gallery-thumb").querySelector("img")!;
+  expect(img.getAttribute("width")).toBe("96");
+  expect(img.getAttribute("height")).toBe("96");
 });
 
 test("clicking a thumbnail opens the lightbox showing that image", () => {

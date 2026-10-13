@@ -25,10 +25,20 @@ export class WireError extends Error {
   }
 }
 
-// Wire values of appwire's CodeInvalidRequest / CodeInvalidParams
-// (appwire/errors.go), the standard JSON-RPC codes.
+// Wire values of appwire's CodeInvalidRequest / CodeMethodNotFound /
+// CodeInvalidParams (appwire/errors.go), the standard JSON-RPC codes.
 const CODE_INVALID_REQUEST = -32600;
+const CODE_METHOD_NOT_FOUND = -32601;
 const CODE_INVALID_PARAMS = -32602;
+
+/** The hub or daemon doesn't know the method: an older build, whose refusal is
+ * a client's cue to keep its fallback. appwire.MethodNotFound stamps both the
+ * code and the discriminator. */
+export function isMethodNotFound(error: unknown): boolean {
+  return (
+    error instanceof WireError && (error.code === CODE_METHOD_NOT_FOUND || error.evenerErrorInfo === "methodNotFound")
+  );
+}
 
 // refusedBeforeRunning says whether the hub refused a request on its shape
 // alone, before running any of it (a validation refusal): nothing the request
@@ -320,6 +330,21 @@ export function friendlyErrorMessage(error: unknown): string {
   }
   if (isClientUnreachableError(error)) return HUB_UNREACHABLE_MESSAGE;
   return GENERIC_ERROR_MESSAGE;
+}
+
+// StoreMessageError is a failure a store throws itself with a message written
+// for the user (a malformed hub reply), so storeErrorText keeps its text.
+export class StoreMessageError extends Error {}
+
+// storeErrorText is the stored failure text for a store whose catch sees both
+// request rejections and StoreMessageErrors it threw itself. A
+// StoreMessageError keeps its message; everything else - a hub WireError, the
+// client's own timeout, closed or lost socket, any other exception - takes
+// friendlyErrorMessage's form, so the client's wiring text never reaches the
+// screen. A store whose catch sees only request rejections stores
+// friendlyErrorMessage(err) instead.
+export function storeErrorText(error: unknown): string {
+  return error instanceof StoreMessageError ? error.message : friendlyErrorMessage(error);
 }
 
 // DAEMON_MISSING_MESSAGE is what friendlyLaunchErrorMessage shows for the

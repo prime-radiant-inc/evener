@@ -17,11 +17,14 @@ import {
 	type Thread,
 	type ThreadCapabilities,
 	threadUsageSummary,
+	taskSettledCount,
 	type UsageSummary,
 } from "@evener/appwire-client";
 
 // --- view model types --------------------------------------------------------
 
+// "done" names the terminal group; its count is settled tasks (done plus
+// cancelled), the finished set the open count's complement describes.
 export type TaskGroupStatus = "active" | "open" | "done";
 
 export interface TaskGroup {
@@ -381,7 +384,7 @@ function projectTasks(tasks: TaskAggregate | undefined): TaskGroup[] {
 	return [
 		{ status: "active", count: 0 },
 		{ status: "open", count: open },
-		{ status: "done", count: tasks.done },
+		{ status: "done", count: taskSettledCount(tasks) },
 	];
 }
 

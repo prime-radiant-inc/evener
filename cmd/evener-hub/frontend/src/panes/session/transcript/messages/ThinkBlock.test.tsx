@@ -40,6 +40,22 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 // expandByDefault is false.
 const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
 
+// The block's live flag: what the "Thinking…" eyebrow tells a reader.
+function thinkBlockLive(): string | undefined {
+  return screen.getByTestId("think-block").dataset.live;
+}
+
+// The settled summary's parts: the measured duration and the preview line,
+// each undefined when the summary leaves it out.
+function thoughtSummaryParts(root: ParentNode = document): { durationMs?: string; preview?: string } {
+  const summary = root.querySelector('[data-testid="think-block"] summary');
+  if (!summary) throw new Error("Missing settled thought summary");
+  return {
+    durationMs: summary.querySelector<HTMLElement>("[data-duration-ms]")?.dataset.durationMs,
+    preview: summary.querySelector('[data-slot="preview"]')?.textContent ?? undefined,
+  };
+}
+
 function renderTools(node: ReactElement) {
   return render(
     <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="tb:tools">
@@ -81,7 +97,7 @@ test("live shows a Thinking label and renders the reasoning text open (not colla
   render(
     <ThinkBlock item={item({ reasoningSummaries: [["thinking about ", "the problem"]] })} turn={turn} live={true} />,
   );
-  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(thinkBlockLive()).toBe("true");
   expect(screen.getByTestId("think-block-live-body").textContent?.trim()).toBe("thinking about the problem");
   // Open while live: no collapsed <details> present at all.
   expect(document.querySelector("details")).toBeNull();
@@ -98,9 +114,9 @@ test("contentFree renders only the Loader placeholder and an approximate token c
       contentFree={true}
     />,
   );
-  expect(screen.getByText(/Thinking…/)).toBeTruthy();
+  expect(thinkBlockLive()).toBe("true");
   // 16 characters -> characters/4 -> 4, marked approximate.
-  expect(screen.getByText(/~4 tokens/)).toBeTruthy();
+  expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBe("4");
   expect(screen.getByTestId("loader-grid")).toBeTruthy();
   // No body, no settled disclosure, and above all no thought text.
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
@@ -110,8 +126,8 @@ test("contentFree renders only the Loader placeholder and an approximate token c
 
 test("contentFree with no chunks yet shows the label alone, never a fabricated token count", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [] })} turn={turn} live={true} contentFree={true} />);
-  expect(screen.getByText("Thinking…")).toBeTruthy();
-  expect(screen.queryByText(/tokens/)).toBeNull();
+  expect(thinkBlockLive()).toBe("true");
+  expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBeUndefined();
 });
 
 // The live and settled rows pull their bulb glyph into the icon rail via the
@@ -213,17 +229,17 @@ test("the thought icon is a centred flex-none glyph (baseline alignment would se
   expect(rule![1]).toContain("align-self: center");
 });
 
-test("the thought icon rails at 50% opacity in the speaker-avatar column, gutter-pulled only above the breakpoint", () => {
+test("the thought icon rails at 50% opacity in the speaker-avatar column; only the live eyebrow pulls into the gutter", () => {
   const css = thinkCss();
   const rule = /\.icon\s*\{([^}]*)\}/.exec(css);
   expect(rule).not.toBeNull();
   expect(rule![1]).toContain("opacity: 0.5");
   expect(rule![1]).toContain("width: var(--speaker-avatar-size)");
   expect(rule![1]).toContain("margin-right: var(--speaker-gap)");
-  // The pull is on the CONTAINERS, never on the icon: .summary's overflow:
-  // hidden would clip a negatively-margined child away entirely (qrv1).
+  // The pull is on the live eyebrow row, never on the icon; the settled
+  // thought is a Disclosure in the content column.
   expect(rule![1]).not.toContain("margin-left: calc(-1 * var(--speaker-gutter))");
-  const mediaRule = /@media \(min-width: 700px\) \{\s*\.label,\s*\.summary\s*\{([^}]*)\}/.exec(css);
+  const mediaRule = /@media \(min-width: 700px\) \{\s*\.label\s*\{([^}]*)\}/.exec(css);
   expect(mediaRule).not.toBeNull();
   expect(mediaRule![1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
 });
@@ -256,7 +272,7 @@ test("ThinkBlock quiets the live markdown body through the Markdown widget's ink
 
 test("live with zero chunks so far still shows the open Thinking label (a reasoning item exists the instant it starts)", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: undefined })} turn={turn} live={true} />);
-  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(thinkBlockLive()).toBe("true");
 });
 
 test("live joins every summaryIndex into ONE markdown document, blank-line separated so each stays its own block", () => {
@@ -329,22 +345,22 @@ test("an inProgress reasoning item that is no longer the turn's tail renders the
   };
   renderTools(<ThinkBlock item={think} turn={{ ...turn, items: [think, later] }} live={true} />);
   const summary = document.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · final line");
+  expect(thoughtSummaryParts()).toEqual({ durationMs: undefined, preview: "final line" });
   expect(summary?.textContent).not.toMatch(/\d/);
-  expect(screen.queryByText("Thinking…")).toBeNull();
+  expect(thinkBlockLive()).toBe("false");
 });
 
 test("an inProgress reasoning item that IS the turn's tail stays live", () => {
   const think = item({ id: "think_tail", status: "inProgress", reasoningSummaries: [["still going"]] });
   render(<ThinkBlock item={think} turn={{ ...turn, items: [think] }} live={true} />);
-  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(thinkBlockLive()).toBe("true");
   expect(document.querySelector("details")).toBeNull();
 });
 
 test("through TurnBlock: a later item landing in the turn collapses the live thought to its disclosure", () => {
   const think = item({ id: "think_flow", status: "inProgress", reasoningSummaries: [["deep thought line"]] });
   const { rerender } = renderTurnTools(<TurnBlock turn={{ ...turn, items: [think] }} />);
-  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(thinkBlockLive()).toBe("true");
 
   const later: ItemModel = {
     id: "msg_next",
@@ -358,10 +374,8 @@ test("through TurnBlock: a later item landing in the turn collapses the live tho
       <TurnBlock turn={{ ...turn, items: [think, later] }} />
     </TranscriptRenderProvider>,
   );
-  expect(screen.queryByText("Thinking…")).toBeNull();
-  expect(document.querySelector('[data-testid="think-block"] summary')?.textContent).toBe(
-    "Thought · deep thought line",
-  );
+  expect(thinkBlockLive()).toBe("false");
+  expect(thoughtSummaryParts()).toEqual({ durationMs: undefined, preview: "deep thought line" });
 });
 
 // --- live: open and unbounded while running ---------------------------------
@@ -450,8 +464,7 @@ test("settled collapses to a closed details with duration and the final nonblank
   const details = screen.getByRole("group") as HTMLDetailsElement;
   expect(details.tagName).toBe("DETAILS");
   expect(details.open).toBe(false);
-  const summary = details.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · more reasoning");
+  expect(thoughtSummaryParts()).toEqual({ durationMs: undefined, preview: "more reasoning" });
 });
 
 test("opening the disclosure drops the preview from the summary", () => {
@@ -460,11 +473,9 @@ test("opening the disclosure drops the preview from the summary", () => {
     reasoningSummaries: [["First line of reasoning\n\nsecond paragraph"]],
   });
   renderTools(<ThinkBlock item={think} turn={turn} live={false} />);
-  const summary = screen.getByText(/Thought/);
-  const preview = summary.textContent?.split("·")[1]?.trim() ?? "";
-  expect(preview).toBeTruthy();
-  fireEvent.click(summary);
-  expect(summary.textContent).not.toContain(preview);
+  expect(thoughtSummaryParts().preview).toBe("second paragraph");
+  fireEvent.click(document.querySelector("summary")!);
+  expect(thoughtSummaryParts().preview).toBeUndefined();
 });
 
 test("the open disclosure keeps the dot-joined duration label - never the old 'for' phrasing", () => {
@@ -480,42 +491,29 @@ test("the open disclosure keeps the dot-joined duration label - never the old 'f
       live={false}
     />,
   );
-  const summary = document.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · 4s · content");
-  fireEvent.click(summary!);
-  expect(summary?.textContent).toBe("Thought · 4s");
+  expect(thoughtSummaryParts()).toEqual({ durationMs: "4000", preview: "content" });
+  fireEvent.click(document.querySelector("summary")!);
+  expect(thoughtSummaryParts()).toEqual({ durationMs: "4000", preview: undefined });
 });
 
-// --- the trailing chevron: mockup #4's disclosure affordance ----------------
-// The draft restyle's collapsed line is "close to today plus a chevron" - the
-// same shared widgets/chevron every disclosure uses, riding at the tail of the
-// summary and turning 90° when open (ToolRow's data-open idiom).
+// --- the settled thought is a Disclosure ------------------------------------
 
-test("the settled summary trails with a chevron that tracks the open state", () => {
+test("the settled summary opens and closes the thought", () => {
   renderTools(
-    <ThinkBlock
-      item={item({ id: "think_chevron", reasoningSummaries: [["deep thought"]] })}
-      turn={turn}
-      live={false}
-    />,
+    <ThinkBlock item={item({ id: "think_toggle", reasoningSummaries: [["deep thought"]] })} turn={turn} live={false} />,
   );
-  const summary = document.querySelector("summary");
-  const chevron = screen.getByTestId("think-block-chevron");
-  expect(chevron.getAttribute("aria-hidden")).toBe("true");
-  expect(chevron.querySelector("svg")).not.toBeNull();
-  expect(summary?.lastElementChild).toBe(chevron);
-  expect(chevron.dataset.open).toBe("false");
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  const summary = details.querySelector("summary");
+  expect(details.open).toBe(false);
   fireEvent.click(summary!);
-  expect(chevron.dataset.open).toBe("true");
+  expect(details.open).toBe(true);
+  fireEvent.click(summary!);
+  expect(details.open).toBe(false);
 });
 
-test("the live eyebrow carries no chevron - there is nothing to disclose while streaming", () => {
+test("the live eyebrow is not a disclosure - there is nothing to disclose while streaming", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [["streaming"]] })} turn={turn} live={true} />);
-  expect(screen.queryByTestId("think-block-chevron")).toBeNull();
-});
-
-test("the chevron turns via the shared rotate-on-open idiom, scoped to data-open (declaration-level, jsdom runs no cascade)", () => {
-  expect(thinkCss()).toMatch(/\.chevron\[data-open="true"\]\s*>\s*svg\s*\{[^}]*transform:\s*rotate\(90deg\)/);
+  expect(document.querySelector("summary")).toBeNull();
 });
 
 test("the summary text ellipsizes in its own span so the trailing chevron is never pushed out of view", () => {
@@ -525,7 +523,7 @@ test("the summary text ellipsizes in its own span so the trailing chevron is nev
   expect(rule![1]).toContain("text-overflow: ellipsis");
 });
 
-test("the collapsed summary keeps the final context even though the expanded body remains complete", () => {
+test("the collapsed summary keeps the final context and opening mounts the complete body", () => {
   const { container } = renderTools(
     <ThinkBlock
       item={item({ reasoningSummaries: [["Delegating simple directory inspection task\n\nmore detail"]] })}
@@ -534,7 +532,10 @@ test("the collapsed summary keeps the final context even though the expanded bod
     />,
   );
   const summary = container.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · more detail");
+  // The collapsed line previews the fixture's final context, not its first line.
+  expect(thoughtSummaryParts(container).preview).toBe("more detail");
+  expect(screen.queryByText(/Delegating simple directory inspection task/)).toBeNull();
+  fireEvent.click(summary!);
   expect(screen.getByText(/Delegating simple directory inspection task/)).toBeTruthy();
 });
 
@@ -547,9 +548,12 @@ test("the plain context removes common Markdown decoration while the expanded bo
     />,
   );
   const summary = container.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · Delegating simple directory inspection task");
+  expect(thoughtSummaryParts(container).preview).toBe("Delegating simple directory inspection task");
   expect(summary?.textContent).not.toMatch(/\*/);
-  expect(screen.getByText("Delegating simple directory inspection task").tagName).toBe("STRONG");
+  fireEvent.click(summary!);
+  expect(container.querySelector("details > div strong")?.textContent).toBe(
+    "Delegating simple directory inspection task",
+  );
 });
 
 test("a long final context line is honestly truncated in the collapsed summary", () => {
@@ -709,7 +713,7 @@ test("the same settled think item id has independent disclosure state in differe
 test("no fabricated duration: without real item.startedAt/completedAt, the label omits a number entirely (never invents one)", () => {
   renderTools(<ThinkBlock item={item({ reasoningSummaries: [["content"]] })} turn={turn} live={false} />);
   const summary = document.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · content");
+  expect(thoughtSummaryParts()).toEqual({ durationMs: undefined, preview: "content" });
   expect(summary?.textContent).not.toMatch(/\d/);
 });
 
@@ -725,7 +729,7 @@ test("a replay item's real startedAt/completedAt pair produces a duration label"
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought · 4s · content");
+  expect(thoughtSummaryParts()).toEqual({ durationMs: "4000", preview: "content" });
 });
 
 test("a live-observed timing pair (no wire pair) produces a real duration label once settled", () => {
@@ -740,7 +744,7 @@ test("a live-observed timing pair (no wire pair) produces a real duration label 
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought · 3s · content");
+  expect(thoughtSummaryParts()).toEqual({ durationMs: "3000", preview: "content" });
 });
 
 test("the wire pair wins over the observed pair when both are present", () => {
@@ -757,7 +761,7 @@ test("the wire pair wins over the observed pair when both are present", () => {
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought · 4s · content");
+  expect(thoughtSummaryParts()).toEqual({ durationMs: "4000", preview: "content" });
 });
 
 test("a completed sub-second thought reports milliseconds, not a rounded second", () => {
@@ -772,7 +776,7 @@ test("a completed sub-second thought reports milliseconds, not a rounded second"
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought · 250ms · content");
+  expect(thoughtSummaryParts()).toEqual({ durationMs: "250", preview: "content" });
 });
 
 test("an in-progress streaming thought never shows a duration summary", () => {
@@ -788,8 +792,8 @@ test("an in-progress streaming thought never shows a duration summary", () => {
       live={true}
     />,
   );
-  expect(screen.getByText("Thinking…")).toBeTruthy();
-  expect(screen.queryByText(/Thought/)).toBeNull();
+  expect(thinkBlockLive()).toBe("true");
+  expect(document.querySelector("summary")).toBeNull();
   expect(document.querySelector("details")).toBeNull();
 });
 
@@ -797,7 +801,7 @@ test("an in-progress item stays live even if a stale caller passes live=false", 
   render(
     <ThinkBlock item={item({ status: "inProgress", reasoningSummaries: [["still live"]] })} turn={turn} live={false} />,
   );
-  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(thinkBlockLive()).toBe("true");
   expect(document.querySelector("details")).toBeNull();
 });
 
@@ -830,8 +834,8 @@ test("live streaming settles cleanly into the collapsed disclosure, no leftover 
   );
 
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
-  expect(screen.queryByText("Thinking…")).toBeNull();
-  expect(screen.getByText("Thought · thinking...")).toBeTruthy();
+  expect(thinkBlockLive()).toBe("false");
+  expect(thoughtSummaryParts().preview).toBe("thinking...");
 });
 
 test("a reset (a new item id replacing the live one) discards prior streamed text without residue", () => {

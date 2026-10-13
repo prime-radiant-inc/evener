@@ -714,7 +714,7 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 	name := strings.ToLower(strings.TrimSpace(instance))
 	rec, ok := r.recordFor(name)
 	if !ok {
-		return Resolved{}, fmt.Errorf("unknown instance %q", name)
+		return Resolved{}, fmt.Errorf("%w %q", ErrUnknownInstance, name)
 	}
 	if ref := ParseRef(strings.TrimSpace(model)); strings.EqualFold(ref.Instance, name) {
 		model = ref.Model
@@ -1156,6 +1156,9 @@ func (r *Registry) validateDefault() error {
 	return fmt.Errorf("default = %q names neither an explicit instance nor an implicit provider (add a [providers.%s] entry)", r.userDefault, r.userDefault)
 }
 
+// errNoDefaultInstance reports a registry with no instance to default to.
+var errNoDefaultInstance = errors.New("no default instance: set `default` in providers.toml or export a provider key")
+
 // DefaultInstance picks the default instance (spec §5.1): `default` when it
 // is an instance here; else the first ranked instance with a default model.
 // A `default` that is a credential-less or hidden implicit id warns and
@@ -1178,7 +1181,7 @@ func (r *Registry) DefaultInstance() (string, []string, error) {
 	}
 	ranked := r.rankedInstances()
 	if len(ranked) == 0 {
-		return "", warnings, errors.New("no default instance: set `default` in providers.toml or export a provider key")
+		return "", warnings, errNoDefaultInstance
 	}
 	var without []string
 	for _, inst := range ranked {

@@ -33,7 +33,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { connectPage, devtoolsHttpURL, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
+import { connectOnlyPage, devtoolsHttpURL, evaluate, navigateTo, REFUSED_BUTTON_SELECTOR, waitForHttp } from "../browserGuardCdp.mjs";
 import {
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
@@ -267,7 +267,7 @@ class Driver {
     });
     this.endpoint = await announced;
     await waitForHttp(devtoolsHttpURL(this.endpoint, "/json/version"), "chrome devtools endpoint");
-    this.page = await connectPage(this.endpoint);
+    this.page = await connectOnlyPage(this.endpoint);
     await this.page.send("Page.enable").catch(() => {});
     await this.page.send("Runtime.enable").catch(() => {});
     await this.page.send("Network.enable").catch(() => {});
@@ -453,7 +453,7 @@ class Driver {
         if (root === null) return null;
         const b = [...root.querySelectorAll("button")].find((btn) => {
           const label = (btn.getAttribute("aria-label") ?? "").trim() || btn.textContent.trim();
-          return label === ${JSON.stringify(text)} && !btn.disabled;
+          return label === ${JSON.stringify(text)} && !btn.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)});
         });
         if (b === undefined) return null;
         b.scrollIntoView({ block: "center" });
@@ -478,7 +478,7 @@ class Driver {
         if (root === null) return null;
         const b = [...root.querySelectorAll("button[role='radio']")].find((btn) => {
           const label = (btn.getAttribute("aria-label") ?? "").trim() || btn.textContent.trim();
-          return label.startsWith(${JSON.stringify(labelPrefix)}) && !btn.disabled;
+          return label.startsWith(${JSON.stringify(labelPrefix)}) && !btn.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)});
         });
         if (b === undefined) return null;
         b.scrollIntoView({ block: "center" });

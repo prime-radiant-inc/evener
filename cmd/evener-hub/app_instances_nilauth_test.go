@@ -11,7 +11,7 @@ package hub
 // of refusing.
 
 import (
-	"strings"
+	"errors"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -92,8 +92,8 @@ func TestInstances_BareControllerRefusesChanges(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%s on a bare controller returned nil; want the missing-credential-controller refusal", tc.name)
 			}
-			if !strings.Contains(err.Error(), "no credential controller") {
-				t.Fatalf("%s error = %v; want it to name the missing credential controller", tc.name, err)
+			if !errors.Is(err, errNoCredentialController) {
+				t.Fatalf("%s error = %v; want the missing-credential-controller refusal", tc.name, err)
 			}
 		})
 	}

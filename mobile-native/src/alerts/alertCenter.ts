@@ -8,13 +8,13 @@
 import type { WhyLine } from "../board/attention";
 
 /** The Board states that put a session in Needs you (spec 13.2). */
-export type NeedsYouKind = "failed" | "question" | "approval" | "warning" | "restartNeeded";
+export type NeedsYouKind = "failed" | "question" | "needsYou" | "approval" | "warning" | "restartNeeded";
 
 export interface SessionAlert {
 	/** "started": a session you started opened while you were somewhere else
 	 * (New session's start landing after you left the sheet), so it could be
 	 * started twice without it. */
-	kind: NeedsYouKind | "finished" | "started";
+	kind: NeedsYouKind | "started";
 	ref: string;
 	title: string;
 	why: WhyLine | null;
@@ -46,9 +46,8 @@ export type Alert = SessionAlert | NoticeAlert | StartFailedAlert;
  * hold the same object. */
 export interface AlertPreferences {
 	readonly failures: boolean;
-	/** Questions and approvals. */
+	/** Questions, approvals and turns that ended waiting for your reply. */
 	readonly questions: boolean;
-	readonly finished: boolean;
 	/** Hold alerts while reading or typing. */
 	readonly hold: boolean;
 	readonly haptics: boolean;
@@ -57,7 +56,6 @@ export interface AlertPreferences {
 export const DEFAULT_ALERT_PREFERENCES: AlertPreferences = {
 	failures: true,
 	questions: true,
-	finished: false,
 	hold: true,
 	haptics: true,
 };
@@ -115,10 +113,10 @@ const RECENT_LIMIT = 20;
 const NEEDS_YOU: Record<Alert["kind"], boolean> = {
 	failed: true,
 	question: true,
+	needsYou: true,
 	approval: true,
 	warning: true,
 	restartNeeded: true,
-	finished: false,
 	started: false,
 	notice: false,
 	startFailed: false,
@@ -140,10 +138,10 @@ function followsInTurn(alert: Alert): boolean {
 	return alert.kind === "started" || alert.kind === "startFailed";
 }
 
-/** An alert that brings news rather than asks for you: no haptic, and it
- * never joins, replaces or waits behind another banner. */
+/** An alert that brings news rather than asks for you: a session you
+ * started. It never buzzes, and its banner is edged in the accent. */
 export function quiet(alert: Alert): boolean {
-	return alert.kind === "finished" || alert.kind === "started";
+	return alert.kind === "started";
 }
 
 function subject(alert: Alert): string {
@@ -192,12 +190,8 @@ export class AlertCenter {
 	offer(alert: Alert): void {
 		if (!this.wanted(alert)) return;
 		if (needsYou(alert)) this.remember(alert.ref);
-		// A finished result is the quietest alert: it never joins or replaces a
-		// banner that is up, a notice's included, and never waits (spec 13.3;
-		// the prototype's EV.alert drops it behind any banner).
-		if (alert.kind === "finished" && (this.banner !== null || this.holding())) return;
 		// A session you started, or a start that failed, never joins or replaces
-		// a banner that is up either, but it is never lost: it follows that
+		// a banner that is up, but it is never lost: it follows that
 		// banner, or waits out a hold. It lands while you're elsewhere, often
 		// reading or typing, and without it you may start it again.
 		if (followsInTurn(alert) && this.banner !== null && !this.holding()) {
@@ -345,10 +339,10 @@ export class AlertCenter {
 	private wanted(alert: Alert): boolean {
 		// A start that failed is about what you just did, whatever the settings.
 		if (alert.kind === "startFailed") return true;
-		const { failures, questions, finished } = this.preferences;
+		const { failures, questions } = this.preferences;
 		if (alert.kind === "failed" && !failures) return false;
-		if ((alert.kind === "question" || alert.kind === "approval") && !questions) return false;
-		if (alert.kind === "finished" && !finished) return false;
+		if ((alert.kind === "question" || alert.kind === "needsYou" || alert.kind === "approval") && !questions)
+			return false;
 		// Nothing alerts about what is on screen: the session you're looking
 		// at, or a notice while the Board, which lists it, is up.
 		if (alert.kind === "notice") return this.screen.kind !== "board";

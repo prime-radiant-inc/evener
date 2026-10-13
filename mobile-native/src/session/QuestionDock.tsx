@@ -351,7 +351,9 @@ function QuestionOptions({
 							>
 								{option.shown?.label ?? option.label}
 								{option.recommended ? (
-									<Text style={{ fontSize: 13 * scale, color: palette.inkMid }}> · Recommended</Text>
+									<Text testID="option-recommended" style={{ fontSize: 13 * scale, color: palette.inkMid }}>
+										{" · Recommended"}
+									</Text>
 								) : null}
 							</Text>
 							{option.shown?.detail ? (
@@ -422,6 +424,8 @@ function AnswerBar({
 				</Text>
 			</Pressable>
 			<Pressable
+				// Filled, it sends; otherwise it moves to the next question.
+				testID={filled ? "question-primary:send" : "question-primary:next"}
 				accessibilityRole="button"
 				accessibilityLabel={primaryAccessibility}
 				accessibilityState={{ disabled: primaryOff }}

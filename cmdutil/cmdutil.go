@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/schema"
@@ -157,6 +156,10 @@ func MaxRoundsToConfig(cliValue int) int {
 	}
 }
 
+// ErrNoSavedSessions identifies a resume of the most recent session in a state
+// directory that holds none.
+var ErrNoSavedSessions = errors.New("no saved sessions")
+
 // ResolveSessionMeta loads a session meta by ID or finds the most recent one.
 func ResolveSessionMeta(stateDir, sessionID string, resumeLast bool) (schema.SessionMeta, error) {
 	if resumeLast {
@@ -165,7 +168,7 @@ func ResolveSessionMeta(stateDir, sessionID string, resumeLast bool) (schema.Ses
 			return schema.SessionMeta{}, fmt.Errorf("list sessions: %w", err)
 		}
 		if len(list) == 0 {
-			return schema.SessionMeta{}, fmt.Errorf("no saved sessions in %s", stateDir)
+			return schema.SessionMeta{}, fmt.Errorf("%w in %s", ErrNoSavedSessions, stateDir)
 		}
 		return list[0], nil
 	}
@@ -217,7 +220,7 @@ func ModelDescriptorFromResolved(res registry.Resolved) appwire.ModelDescriptor 
 		d.SupportsTools = new(*caps.Tools)
 	}
 	if len(caps.InputModalities) > 0 {
-		d.SupportsVision = new(slices.Contains(caps.InputModalities, "image"))
+		d.SupportsVision = new(caps.AcceptsModality("image"))
 	}
 	if caps.WebSearch != nil {
 		d.SupportsWebSearch = new(*caps.WebSearch)

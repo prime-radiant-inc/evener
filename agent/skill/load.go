@@ -60,7 +60,11 @@ func Load(d Descriptor) (LoadedSkill, []Diagnostic, error) {
 		return LoadedSkill{}, append(diagnostics, diagnostic), fmt.Errorf("skill source identity changed from %q to %q", d.Meta.Name, current.Meta.Name)
 	}
 
-	document, err := frontmatter.Parse(string(data))
+	// The helper returns the source unchanged when it is already well formed,
+	// and with the restored delimiter when it recovered one, so the body never
+	// repeats the frontmatter as instructions.
+	bodySource, _ := recoverMissingOpeningDelimiter(data)
+	document, err := frontmatter.Parse(string(bodySource))
 	if err != nil {
 		return LoadedSkill{}, diagnostics, fmt.Errorf("parsing skill frontmatter: %w", err)
 	}
