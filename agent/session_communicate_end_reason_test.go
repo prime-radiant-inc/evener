@@ -105,7 +105,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 				offersEndReason:        tc.offered,
 			}
 			reg := tool.NewRegistry()
-			registerCommunicateTool(reg, deps)
+			_ = registerCommunicateTool(reg, deps)
 			args := map[string]any{"message": "report"}
 			maps.Copy(args, tc.args)
 			res := reg.ExecuteCall(context.Background(), nil, communicateCallArgs("comm-1", args))

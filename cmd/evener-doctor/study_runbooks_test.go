@@ -108,6 +108,21 @@ func writeRunTimeoutJobs(t *testing.T, jobsPath, sid string, n int) {
 	mustWrite(t, jobsPath, strings.Join(lines, "\n")+"\n")
 }
 
+// errorLoopCheckTitle names the bundled error-loop runbook's i'th audit check:
+// a finding carries its check's title as its identity, so this tells which
+// check fired without restating the runbook's wording.
+func errorLoopCheckTitle(t *testing.T, i int) string {
+	t.Helper()
+	runbook, err := loadRunbook("error-loop")
+	if err != nil {
+		t.Fatalf("load error-loop runbook: %v", err)
+	}
+	if len(runbook.Checks) != 2 {
+		t.Fatalf("error-loop runbook has %d checks, want the identical-run and loop-detector checks", len(runbook.Checks))
+	}
+	return runbook.Checks[i].Title
+}
+
 // studyAuditJSON runs `evener-doctor audit --runbook name --sessions
 // sessions... --json` against the REAL bundled runbook (no bundledSkills
 // substitution) and decodes the result.
@@ -191,8 +206,8 @@ func TestRun_AuditErrorLoopBundledRunbook(t *testing.T) {
 	if f.Severity != "medium" || f.Category != "error_loop" {
 		t.Errorf("finding severity/category = %q/%q, want medium/error_loop", f.Severity, f.Category)
 	}
-	if f.Title != "Long identical-error tool-call run" {
-		t.Errorf("finding title = %q", f.Title)
+	if f.Title != errorLoopCheckTitle(t, 0) {
+		t.Errorf("finding title = %q, want the identical-run check", f.Title)
 	}
 	if len(f.Evidence.SessionRefs) != 1 || !strings.Contains(f.Evidence.SessionRefs[0], tripSID) {
 		t.Errorf("finding sessionRefs = %v, want only %s", f.Evidence.SessionRefs, tripSID)
@@ -258,7 +273,7 @@ func TestRun_AuditErrorLoopBundledRunbook_LoopDetectorCatchesInBandMCPLoop(t *te
 		t.Fatalf("Findings = %+v, want exactly 1 (the loop-detector check only -- free-text args and in-band errors defeat the identical-run check)", res.Findings)
 	}
 	f := res.Findings[0]
-	if f.Title != "Runtime loop-detector fired" {
+	if f.Title != errorLoopCheckTitle(t, 1) {
 		t.Errorf("finding title = %q, want the loop-detector check -- the identical-run check must NOT have tripped for this session", f.Title)
 	}
 	if f.Severity != "medium" || f.Category != "error_loop" {

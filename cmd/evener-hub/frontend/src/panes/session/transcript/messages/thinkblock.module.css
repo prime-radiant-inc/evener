@@ -4,8 +4,8 @@
  * read as footnotes, and they are not footnotes). The body is italic in
  * both states at reduced contrast (Jesse, 2026-08-03: always italic, with
  * marked-up emphasis inverted to roman), at whatever height its own text
- * needs; settled collapses to a single ink-low summary line with a trailing
- * chevron.
+ * needs; settled collapses to a Disclosure whose one-line summary names the
+ * thought.
  *
  * Both live and expanded-settled are STACKED ROWS, never a label-beside-
  * body column (Jesse, second review pass: the gutter layout squeezed the
@@ -42,9 +42,8 @@
  * text, into the gutter; the kind is ambient context, not content). The slot
  * is --speaker-avatar-size wide so the glyph centres on the same column the
  * speaker avatars occupy; the widget strokes currentColor, and both .label
- * and .summary set --ink-mid, so no colour is declared here. align-self:
- * center because .summary's baseline alignment would seat the icon's box on
- * its bottom edge instead of centring the glyph on the text.
+ * and the Disclosure summary set --ink-mid, so no colour is declared here.
+ * align-self: center seats the glyph on the text's centre line.
  *
  * The deliberate NON-consumer of the shared rail seat
  * (styles/railseat.module.css): the label row is single-line, so there is no
@@ -52,9 +51,9 @@
  * a fixed 14px stroke, not a text glyph in a wrapping row), .label's center
  * alignment seats it (align-self: center, not the seat's flex-start), and its
  * margin-right is the FULL speaker gap because the label flex row has no
- * column gap for the seat's netting arithmetic to subtract. The pull rides
- * the CONTAINERS below (for the .summary clipping reason documented there),
- * so .gutterPull is not composed either. railseat.contract.test.ts pins this
+ * column gap for the seat's netting arithmetic to subtract. Only the live
+ * eyebrow pulls into the rail (below); the settled thought is a Disclosure
+ * and sits in the content column, so .gutterPull is not composed either. railseat.contract.test.ts pins this
  * stance, so a future "compose the seat" cleanup has to argue with it rather
  * than silently change the thought row's seating. */
 .icon {
@@ -68,17 +67,22 @@
   opacity: 0.5;
 }
 
+/* The same glyph leading the settled Disclosure summary: the summary sits in
+ * the content column like every Disclosure, so the glyph takes only its own
+ * box and the summary's gap, at the rail's ambient 50%. */
+.summaryIcon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.5;
+}
+
 /* Above the breakpoint the block sits inside runContent's --speaker-gutter
- * of reserved padding. The gutter pull goes on the CONTAINERS, not on
- * .icon: .summary's overflow: hidden (qrv1 - the ellipsizing guard below)
- * clips at its own border box, so a negatively-margined icon INSIDE it
- * would be clipped away entirely; pulling the whole summary instead seats
- * the icon (its first child, inside the box) in the rail while the label
- * text lands exactly at the content edge, 24px + 10px in. Same mechanism
- * for the live eyebrow's block-level flex row. */
+ * of reserved padding. The live eyebrow's flex row pulls into it, seating the
+ * icon (its first child) in the rail while the label text lands exactly at
+ * the content edge. */
 @media (min-width: 700px) {
-  .label,
-  .summary {
+  .label {
     margin-left: calc(-1 * var(--speaker-gutter));
   }
 }
@@ -107,75 +111,17 @@
   --markdown-ink: var(--ink-mid);
 }
 
-.details {
-  padding: 0;
-}
-
-/* qrv1: a bare <summary> is block-level (the UA default is display:
- * list-item) and stretches to the full turn width, so its short "Thought
- * for Ns" text left a wide strip of empty box to the right - and a focus
- * ring drawn around that whole empty strip read as a blank text input,
- * not a collapsed disclosure. inline-flex shrinks the box to its own
- * content, so hover/focus decoration only ever wraps the words actually on
- * screen. Since the chevron landed, every child is a flex item - icon,
- * .summaryText, chevron - so the width guard for the rare too-long label
- * lives on .summaryText (its own overflow/ellipsis below); max-width and
- * overflow here just bound the box and clip hard if everything else
- * fails. nowrap is load-bearing: .summaryText inherits it. */
-.summary {
-  display: inline-flex;
-  align-items: baseline;
-  max-width: 100%;
-  cursor: pointer;
-  overflow: hidden;
-  white-space: nowrap;
-  border-radius: var(--radius-control);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
-  color: var(--ink-mid);
-}
-
-/* The label text as its own flex item so it - not the chevron after it - is
- * what gives way under width pressure: overflow + ellipsis let the span
- * shrink (a flex item with overflow set has an automatic minimum of zero),
- * keeping the trailing chevron on screen at the end of whatever text
- * survives. The JS-side 120-char preview clamp remains the primary bound;
- * this is the same rare-case guard .summary's own ellipsis used to be. */
+/* The label text as its own flex item inside the Disclosure summary, so it -
+ * not the widget's chevron after it - gives way under width pressure:
+ * overflow + ellipsis let the span shrink (a flex item with overflow set has
+ * an automatic minimum of zero), keeping the chevron on screen at the end of
+ * whatever text survives. The JS-side 120-char preview clamp remains the
+ * primary bound. */
 .summaryText {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* Mockup #4's trailing disclosure affordance: the shared widgets/chevron at
- * the tail of the collapsed line, in the same ink-mid ToolRow's chevron uses
- * so it reads a step firmer than the ink-low words it opens. flex: none - the
- * summaryText span ahead of it absorbs all shrink; align-self: center because
- * .summary aligns items to baseline, which would seat the svg's box on its
- * bottom edge (the same fix .icon documents). The turn rotates the SQUARE svg
- * itself, never this wrapper - toolcallitem.module.css's own comment records
- * why a non-square box must not be the thing that rotates. */
-.chevron {
-  flex: none;
-  align-self: center;
-  display: inline-flex;
-  margin-left: var(--space-2);
-  color: var(--ink-mid);
-}
-
-/* Same ink-wash idiom as ToolCallItem's own summary.row:hover - a tint of
- * the ink reads as "clickable" against whatever surface it sits on. */
-.summary:hover {
-  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
-}
-
-/* Same token, same shape as every other focus ring in the app (see
- * widgets/textarea's :focus-visible and ToolCallItem's summary.row - qrv1's
- * ring was loud not because a focus indicator is wrong here, but because
- * this element had never been given the app's OWN semantic ring; it drew
- * whatever the browser's bare default was instead, at full row width. */
-.summary:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
+  white-space: nowrap;
 }
 
 /* A settled thought renders through the Markdown widget, which sets its own
@@ -189,7 +135,6 @@
  * as a narrow offset column, not a thought). Markdown owns its own block
  * layout inside. */
 .body {
-  margin-top: var(--space-1);
   font-style: italic;
   --markdown-ink: var(--ink-mid);
 }
@@ -253,38 +198,4 @@
 .liveBody :where(em),
 .body :where(em) {
   font-style: normal;
-}
-
-/* Same subtle open as every other disclosure in the app (A6): an opacity fade
- * at --motion-duration-overlay, gated behind prefers-reduced-motion the way
- * widgets/cadence/cadence.module.css does it. The <details> body here is always
- * mounted (unlike widgets/disclosure's), so the animation is scoped to the open
- * state via the parent's [open] attribute - otherwise a collapsed block would
- * "animate" invisibly on every render. */
-@media (prefers-reduced-motion: no-preference) {
-  .details[open] > .body {
-    animation: thinkblock-body-in var(--motion-duration-overlay) var(--motion-easing-standard);
-  }
-
-  /* The chevron's turn eases on the same tokens (ToolRow's idiom); under
-   * reduced motion it snaps instead. */
-  .chevron > svg {
-    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
-  }
-}
-
-/* Down here, not beside .chevron: this selector outranks the transition
- * selector above, and biome's noDescendingSpecificity wants the lower-
- * specificity rule first in source order. */
-.chevron[data-open="true"] > svg {
-  transform: rotate(90deg);
-}
-
-@keyframes thinkblock-body-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }

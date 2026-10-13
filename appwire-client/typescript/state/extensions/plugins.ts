@@ -17,7 +17,7 @@
 // the current client on each call.
 
 import type { AppwireClientLike, RequestPort } from "../../clientLike";
-import { errorText, isMethodNotFound } from "../../errors";
+import { friendlyErrorMessage, isMethodNotFound } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { HostRequestMethod, PluginEntry, PluginListResponse } from "../../types.gen";
 import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
@@ -29,8 +29,9 @@ export type PluginsClient = RequestPort<HostRequestMethod> & Pick<AppwireClientL
 export interface PluginsState {
   plugins: PluginEntry[] | null;
   pluginsLoading: boolean;
-  /** The failed list request's own text (errorText), for the host to
-   * translate at render; null once a list succeeds. */
+  /** The failed list request's friendlyErrorMessage, translated while the
+   * error still has its type so a hub's own WireError explanation survives;
+   * render it as-is. null once a list succeeds. */
   pluginsError: string | null;
   /** How many evener/plugin/updated notifications a started store has seen,
    * moved synchronously as each arrives - ahead of the debounced refetch - so
@@ -153,7 +154,7 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
         // write's list.
         return readRevisioned(listRevision, () => client.request("evener/plugin/list", {}), {
           onAnswer: (resp) => () => set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null }),
-          onFailure: (err) => () => set({ pluginsLoading: false, pluginsError: errorText(err) }),
+          onFailure: (err) => () => set({ pluginsLoading: false, pluginsError: friendlyErrorMessage(err) }),
         });
       },
 

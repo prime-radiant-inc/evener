@@ -19,10 +19,10 @@ const BASE_CLASS = {
 };
 
 const TONE_CLASS: Record<MeterTone, string> = {
-  neutral: requireClass(styles.neutral, "meter.module.css", "neutral"),
-  attention: requireClass(styles.attention, "meter.module.css", "attention"),
-  alive: requireClass(styles.alive, "meter.module.css", "alive"),
-  danger: requireClass(styles.danger, "meter.module.css", "danger"),
+  neutral: requireClass(styles.fillNeutral, "meter.module.css", "fillNeutral"),
+  attention: requireClass(styles.fillAttention, "meter.module.css", "fillAttention"),
+  alive: requireClass(styles.fillAlive, "meter.module.css", "fillAlive"),
+  danger: requireClass(styles.fillDanger, "meter.module.css", "fillDanger"),
 };
 
 /** A horizontal fill readout - disk/token/quota usage. Passive (role=meter,

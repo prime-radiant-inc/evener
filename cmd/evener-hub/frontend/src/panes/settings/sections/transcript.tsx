@@ -10,9 +10,8 @@ import {
   transcriptDisplayStore,
   useTranscriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
-import { Button } from "../../../widgets/button";
+import { Button, InlineNotice, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { useToasts } from "../../../widgets/toast";
 import { TranscriptDisplayCard } from "./TranscriptDisplayCard";
 import styles from "./transcript.module.css";
 
@@ -21,7 +20,6 @@ const CLASS = {
   intro: requireClass(styles.intro, "transcript.module.css", "intro"),
   cards: requireClass(styles.cards, "transcript.module.css", "cards"),
   status: requireClass(styles.status, "transcript.module.css", "status"),
-  error: requireClass(styles.error, "transcript.module.css", "error"),
 };
 
 type Layout = "desktop" | "mobile";
@@ -108,14 +106,16 @@ export function TranscriptSection() {
   // store-wide hubError, so a set hubError is always the read's to report.
   const serverIssue = hubError !== null;
   const disabled = hubSupport !== "supported" || hubLoading || serverIssue;
-  let status: string | undefined;
+  let status: { reason: "hub-unknown" | "unsupported" | "loading"; text: string } | undefined;
   if (hubSupport === "unknown") {
-    status = "Waiting for the hub connection to report transcript display support.";
+    status = { reason: "hub-unknown", text: "Waiting for the hub connection to report transcript display support." };
   } else if (hubSupport === "unsupported") {
-    status =
-      "This older hub does not support synced transcript defaults. Update the hub to edit Desktop and Mobile defaults.";
+    status = {
+      reason: "unsupported",
+      text: "This older hub does not support synced transcript defaults. Update the hub to edit Desktop and Mobile defaults.",
+    };
   } else if (hubLoading) {
-    status = "Loading transcript display defaults from the hub.";
+    status = { reason: "loading", text: "Loading transcript display defaults from the hub." };
   }
 
   return (
@@ -125,26 +125,28 @@ export function TranscriptSection() {
       </p>
 
       {storageWarning !== null && (
-        <p className={CLASS.error} role="alert">
-          Browser-local storage warning: {storageWarning}
-        </p>
+        <InlineNotice tone="danger">Browser-local storage warning: {storageWarning}</InlineNotice>
       )}
       {status !== undefined && (
-        <p className={CLASS.status} role="status" aria-live="polite">
-          {status}
+        <p className={CLASS.status} role="status" aria-live="polite" data-reason={status.reason}>
+          {status.text}
         </p>
       )}
       {serverIssue && (
-        <div className={CLASS.error} role="alert">
-          <span>Could not load transcript display defaults: {hubError}</span>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => void transcriptDisplayStore.getState().refreshHubDefaults()}
-          >
-            Retry
-          </Button>
-        </div>
+        <InlineNotice
+          tone="danger"
+          action={
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void transcriptDisplayStore.getState().refreshHubDefaults()}
+            >
+              Retry
+            </Button>
+          }
+        >
+          Could not load transcript display defaults: {hubError}
+        </InlineNotice>
       )}
 
       <div className={CLASS.cards}>

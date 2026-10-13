@@ -1,12 +1,19 @@
 import { createHubUpdateController, WireError } from "@evener/appwire-client";
 import type { NativeStackNavigationOptions, NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { ReactElement } from "react";
-import { act } from "react-test-renderer";
+import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { alertRequests, render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
+import {
+	alertRequests,
+	render,
+	renderedText,
+	settle,
+	testIDSuffixes,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { HostEditPage } from "./HostEditPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -131,22 +138,33 @@ it("titles the page for its host and fills every field from the host's row", asy
 	expect(page.field("Evener path").props.value).toBe("");
 	expect(page.field("Roots").props.value).toBe("/srv/b\n/srv/a");
 	expect(page.field("Roots").props.multiline).toBe(true);
-	const text = renderedText(page.tree);
-	expect(text).toContain("Hub config path");
+	expect(testIDSuffixes(page.tree, "host-field-")).toContain("configPath");
 });
+
+/** The page's own reports in render order: field containers, help and errors. */
+const hostTestIDs = (page: { tree: ReactTestRenderer }) => testIDSuffixes(page.tree, "host-");
+
+/** The errors and help one field's container holds. */
+const inField = (page: { tree: ReactTestRenderer }, field: string) => {
+	const [container] = page.tree.root.findAll(
+		(node) => typeof node.type === "string" && node.props.testID === `host-field-${field}`,
+	);
+	if (!container) throw new Error(`no ${field} field`);
+	return testIDSuffixes(container, "host-").filter((id) => id !== `field-${field}`);
+};
 
 it("says once that only the SSH address is required, and what each empty field means (audit M4)", async () => {
 	const page = await mount(scriptedFleet([attic]), "attic");
-	const text = renderedText(page.tree);
-	expect(text).toContain("SSH destination, e.g. host.example or user@host.example.");
-	expect(text).toContain("Only the SSH address is required.");
-	expect(text).not.toMatch(/\bOptional\b/);
-	expect(page.field("User").props.placeholder).toBe("From the address or SSH config");
-	expect(page.field("Key path").props.placeholder).toBe("From your SSH config");
-	expect(page.field("Evener path").props.placeholder).toBe("evener on PATH");
-	expect(page.field("Hub config path").props.placeholder).toBe("The default hub.toml");
-	expect(page.field("Hub address").props.placeholder).toBe("The default address");
-	expect(page.field("Roots").props.placeholder).toBe("No project roots. One per line.");
+	// Only the required field explains itself beneath it, and has no placeholder.
+	expect(hostTestIDs(page).filter((id) => id === "help")).toHaveLength(1);
+	expect(inField(page, "address")).toEqual(["help"]);
+	expect(page.field("SSH address").props.placeholder).toBeUndefined();
+	// Each optional field says in its own placeholder what empty means.
+	const placeholders = ["User", "Key path", "Evener path", "Hub config path", "Hub address", "Roots"].map(
+		(label) => page.field(label).props.placeholder,
+	);
+	for (const placeholder of placeholders) expect(placeholder).toBeTruthy();
+	expect(new Set(placeholders).size).toBe(placeholders.length);
 });
 
 it("saves every field trimmed and the roots one per line, then goes back", async () => {
@@ -181,12 +199,10 @@ it("puts a refusal that names a field under that field, and stays", async () => 
 	const page = await mount(fleet, "attic");
 	page.type("SSH address", "");
 	await page.save();
-	const text = renderedText(page.tree);
-	const message = 'host "attic": missing ssh destination';
-	expect(text).toContain(message);
-	// Under the SSH address field, before the next field's label.
-	expect(text.indexOf(message)).toBeGreaterThan(text.indexOf("SSH destination, e.g."));
-	expect(text.indexOf(message)).toBeLessThan(text.indexOf("User"));
+	expect(renderedText(page.tree)).toContain('host "attic": missing ssh destination');
+	// Under the SSH address field, after its help, and nowhere else.
+	expect(inField(page, "address")).toEqual(["help", "error-field"]);
+	expect(hostTestIDs(page).filter((id) => id.startsWith("error-"))).toEqual(["error-field"]);
 	expect(page.navigation.goBack).not.toHaveBeenCalled();
 });
 
@@ -195,8 +211,10 @@ it("puts any other refusal above the fields", async () => {
 	fleet.refuse.update = new WireError("the registry is read-only right now", -32000);
 	const page = await mount(fleet, "attic");
 	await page.save();
-	const text = renderedText(page.tree);
-	expect(text.indexOf("the registry is read-only right now")).toBeLessThan(text.indexOf("SSH address"));
+	expect(renderedText(page.tree)).toContain("the registry is read-only right now");
+	const ids = hostTestIDs(page);
+	expect(ids.indexOf("error-refused")).toBeGreaterThan(-1);
+	expect(ids.indexOf("error-refused")).toBeLessThan(ids.indexOf("field-address"));
 });
 
 it("scrolls a refusal that names a field into view, however far down the page was", async () => {
@@ -326,9 +344,9 @@ it("refuses an edit made while someone else changed the host, and never saves ov
 	const updates = fleet.calls.filter((call) => call.method === "evener/host/update");
 	expect(updates.map((call) => (call.params as { expectedGeneration: number }).expectedGeneration)).toEqual([1]);
 	expect(fleet.hosts[0]?.address).toBe("attic.other");
-	const text = renderedText(page.tree);
-	expect(text).toContain("This host changed since you opened it. Cancel, then open it again to see the change.");
-	expect(text.indexOf("This host changed")).toBeLessThan(text.indexOf("SSH address"));
+	const ids = hostTestIDs(page);
+	expect(ids.filter((id) => id.startsWith("error-"))).toEqual(["error-changed"]);
+	expect(ids.indexOf("error-changed")).toBeLessThan(ids.indexOf("field-address"));
 	expect(page.navigation.goBack).not.toHaveBeenCalled();
 });
 
@@ -348,8 +366,9 @@ it("asks before a Cancel, a swipe or Back throws away an edit (spec 6)", async (
 	expect(guard.prevented).toBe(true);
 	// The stack routes Cancel's goBack, a swipe and Back through the guard.
 	act(() => guard.onPrevent?.({ data: { action: leave } }));
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
-	expect(alertRequests.at(-1)?.buttons?.map((button) => button.text)).toEqual(["Keep editing", "Discard"]);
+	expect(alertRequests).toHaveLength(1);
+	// Keeping the edit is the safe answer, so it comes first.
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 	expect(page.navigation.dispatch).not.toHaveBeenCalled();
 	act(() =>
 		alertRequests

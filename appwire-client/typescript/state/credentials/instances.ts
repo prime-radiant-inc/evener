@@ -27,7 +27,7 @@
 
 import type { AppwireClient, ConnectionState } from "../../client";
 import { CONNECTION_REPLACED_ERROR } from "../../credentialLabels";
-import { errorText } from "../../errors";
+import { friendlyErrorMessage } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
   AnyNotification,
@@ -94,6 +94,9 @@ export interface CredentialInstancesState {
   userLayer: string;
   writesRefused: boolean;
   loading: boolean;
+  /** The failed read's friendlyErrorMessage, translated while the error still
+   * has its type so a hub's own WireError explanation survives; render it
+   * as-is. null once a read succeeds. */
   error: string | null;
   // True while `instances` holds a listing that was NOT read on the
   // connection the store would write to now: a REPLACED client leaves the
@@ -645,7 +648,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       return true;
     } catch (err) {
       if (version !== requestVersion || !connectionStillCurrent(client)) return false;
-      store.setState({ loading: false, error: errorText(err), ...mark() });
+      store.setState({ loading: false, error: friendlyErrorMessage(err), ...mark() });
       return false;
     }
   }

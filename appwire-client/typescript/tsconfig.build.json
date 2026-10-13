@@ -155,6 +155,7 @@
     "draftCheckpointPort.ts",
     "settingsHubGeneration.ts",
     "checkpointedDraftEditor.ts",
-    "transcriptDisplayStore.ts"
+    "transcriptDisplayStore.ts",
+    "pairing.ts"
   ]
 }

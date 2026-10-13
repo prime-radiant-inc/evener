@@ -36,7 +36,7 @@
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isEditableTarget, isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets/virtuallist";
+import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets";
 import type { TranscriptReadView } from "../transcriptReadView";
 import { isDormantTranscript } from "../transcriptVisibility";
 import {
@@ -413,19 +413,14 @@ function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadat
   return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
 }
 
-// A closed disclosure that owns the anchor: an intent-group entry's anchor
-// sits INSIDE its <details>, a folded tool run's anchor wraps its own
-// <details> (TurnBlock's runAnchorFor), so the two are looked up from
-// opposite directions. Either way the summary is the thing to focus.
+// A closed disclosure that owns the anchor: a folded tool run and an intent
+// group each wrap their own <details> in one anchor that lists its members
+// (TurnBlock's foldedAnchorFor), and their entries mount only while open, so
+// while closed the summary is the thing to measure and focus.
 function closedGroupSummary(anchor: HTMLElement): HTMLElement | undefined {
-  const id = anchor.dataset.viewAnchorId ?? "";
-  let summary: Element | null | undefined;
-  if (id.startsWith("intent:")) {
-    const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
-    summary = details?.querySelector(":scope > summary");
-  } else if (id.startsWith("run:")) {
-    summary = anchor.querySelector(':scope > details[data-testid="tool-run"]:not([open]) > summary');
-  }
+  const summary = anchor.querySelector(
+    ':scope > details:is([data-testid="tool-run"], [data-testid="intent-group"]):not([open]) > summary',
+  );
   return summary instanceof HTMLElement ? summary : undefined;
 }
 
@@ -914,7 +909,7 @@ function totalItemCount(model: ThreadModel | undefined): number {
 }
 
 // Attention follows liveness.ts's raw-status mapping to needs-you.
-// shell/SessionStatusIndicator.tsx maps normalized navigation summaries.
+// shell/sessionStatus.ts maps normalized navigation summaries.
 // askPending is independent because it need not coincide with status.type.
 function isAttentionWorthy(model: ThreadModel | undefined): boolean {
   if (!model) return false;

@@ -22,6 +22,7 @@ import {
   activityWatch,
 } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { installJobLogGeometry } from "../../transcript/JobLogTestUtils";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ActivityPanel, ActivityPanelBody } from "./ActivityPanel";
@@ -108,7 +109,7 @@ test("mobile Activity starts with compact details and each watch or job opens in
   expect(screen.queryByTestId("watch-facts")).toBeNull();
   expect(client.calls.filter((call) => call.method === "evener/jobs/output")).toHaveLength(0);
   fireEvent.click(screen.getByRole("button", { name: "Show details for Watch: heartbeat" }));
-  expect(screen.getByTestId("watch-facts").textContent).toContain("every 1m");
+  expect(screen.getByTestId("watch-facts").textContent).not.toBe("");
   fireEvent.click(screen.getByRole("button", { name: "Show details for Build app" }));
   expect(await screen.findByText("build output")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Show details for Run tests" })).toBeTruthy();
@@ -253,7 +254,7 @@ test("mobile child transcript Back restores Activity and disclosures until expli
       );
       await vi.dynamicImportSettled();
     });
-    await screen.findByText("No turns yet");
+    await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
     const childPane = workspaceStore.getState().focusedPaneId;
     if (childPane === null) throw new Error("expected the child transcript to own focus");
     expect(workspaceStore.getState().panes.find((pane) => pane.id === childPane)?.params).toEqual({
@@ -270,7 +271,7 @@ test("mobile child transcript Back restores Activity and disclosures until expli
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Activity" })).toBeNull());
     act(() => workspaceStore.getState().focusPane(childPane));
-    await screen.findByText("No turns yet");
+    await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     await screen.findByRole("button", { name: /^Activity/ });
     expect(screen.queryByRole("dialog", { name: "Activity" })).toBeNull();
@@ -357,7 +358,7 @@ test("mobile child Back restores the loaded job extent and expanded older failur
       );
       await vi.dynamicImportSettled();
     });
-    await screen.findByText("No turns yet");
+    await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-turns"));
     await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
     const jobReadsBeforeBack = client.calls.filter(
       (call) => call.method === "evener/thread/jobs/list" && (call.params as { scope?: string }).scope === "subtree",

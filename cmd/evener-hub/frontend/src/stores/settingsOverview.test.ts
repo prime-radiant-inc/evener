@@ -1,4 +1,4 @@
-import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage, type SettingsOverviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -114,7 +114,7 @@ describe("fetch", () => {
     const state = settingsOverviewStore.getState();
     expect(state.data).toBeNull();
     expect(state.loading).toBe(false);
-    expect(state.error).toBe("boom");
+    expect(state.error).toBe(friendlyErrorMessage(new Error("boom")));
   });
 
   test("a subsequent fetch after a failure retries (failure is not cached)", async () => {
@@ -123,7 +123,7 @@ describe("fetch", () => {
       throw new Error("boom");
     });
     await settingsOverviewStore.getState().fetch();
-    expect(settingsOverviewStore.getState().error).toBe("boom");
+    expect(settingsOverviewStore.getState().error).toBe(friendlyErrorMessage(new Error("boom")));
 
     fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
     await settingsOverviewStore.getState().fetch();
@@ -138,7 +138,9 @@ describe("fetch", () => {
     const state = settingsOverviewStore.getState();
     expect(state.data).toBeNull();
     expect(state.error).toBe(
-      "settingsOverview store: no client connected; call connectionStore.getState().connect(client) first",
+      friendlyErrorMessage(
+        new Error("settingsOverview store: no client connected; call connectionStore.getState().connect(client) first"),
+      ),
     );
   });
 });
@@ -166,7 +168,7 @@ describe("refresh", () => {
 
     const state = settingsOverviewStore.getState();
     expect(state.data).toEqual(SAMPLE_RESPONSE); // stale data kept, not blanked
-    expect(state.error).toBe("network down");
+    expect(state.error).toBe(friendlyErrorMessage(new Error("network down")));
   });
 });
 

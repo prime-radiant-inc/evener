@@ -1,11 +1,45 @@
 import type { AuthDeviceStartResponse, AuthLoginStartResponse, AuthStatusResponse } from "@evener/appwire-client";
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 
+/** What went wrong in a sign-in, or what it couldn't confirm. */
+export type SignInProblem =
+	| "connectionChanged"
+	| "startFailed"
+	| "statusUnconfirmed"
+	| "notConfirmed"
+	| "checkFailed"
+	| "redirectMissing"
+	| "completionUnconfirmed"
+	| "statusCheckFailed";
+
+// What happened and the one thing to do (spec 5). The sheet's title names the
+// provider, and its status line says when the connection itself is down.
+const SIGN_IN_PROBLEMS: Record<SignInProblem, string> = {
+	connectionChanged:
+		"Sign-in could not be confirmed before the connection changed. See whether Providers shows it signed in before trying again.",
+	startFailed: "The hub couldn't start signing in. Start again.",
+	statusUnconfirmed:
+		"Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again.",
+	notConfirmed: "Sign-in has not been confirmed. See whether Providers shows it signed in before starting again.",
+	checkFailed: "Could not check authorization. Retry the check when connected.",
+	redirectMissing: "Paste the full redirect URL.",
+	completionUnconfirmed:
+		"Sign-in completion could not be confirmed. See whether Providers shows it signed in before submitting again.",
+	statusCheckFailed: "Could not check credential status.",
+};
+
+/** A problem as the state carries it: its token, and its words. */
+function reporting(problem: SignInProblem | null): Pick<SignInState, "problem" | "error"> {
+	return { problem, error: problem === null ? null : SIGN_IN_PROBLEMS[problem] };
+}
+
 interface SignInState {
 	phase: "idle" | "starting" | "device" | "browser" | "authorized" | "expired" | "error";
 	device?: AuthDeviceStartResponse;
 	browser?: AuthLoginStartResponse;
 	busy: boolean;
+	problem: SignInProblem | null;
+	/** The problem in the person's terms. */
 	error: string | null;
 	credentialState: "configured" | "unconfigured" | "unknown";
 }
@@ -25,7 +59,7 @@ export class ProviderSignIn {
 	private state: SignInState = {
 		phase: "idle",
 		busy: false,
-		error: null,
+		...reporting(null),
 		credentialState: "unknown",
 	};
 	private listeners = new Set<() => void>();
@@ -95,12 +129,7 @@ export class ProviderSignIn {
 		this.publish({
 			busy: false,
 			...(this.state.phase === "starting" ? { phase: "error" as const } : {}),
-			...(interruptedWrite || interruptedPoll
-				? {
-						error:
-							"Sign-in could not be confirmed before the connection changed. See whether Providers shows it signed in before trying again.",
-					}
-				: {}),
+			...(interruptedWrite || interruptedPoll ? reporting("connectionChanged") : {}),
 		});
 		this.schedule();
 	}
@@ -118,7 +147,7 @@ export class ProviderSignIn {
 		this.publish({
 			phase: "starting",
 			busy: true,
-			error: null,
+			...reporting(null),
 			device: undefined,
 			browser: undefined,
 			credentialState: "unknown",
@@ -168,10 +197,7 @@ export class ProviderSignIn {
 				this.publish({
 					phase: "error",
 					busy: false,
-					// What happened and the one thing to do (spec 5). The sheet's title
-					// names the provider, and its status line says when the connection
-					// itself is down.
-					error: "The hub couldn't start signing in. Start again.",
+					...reporting("startFailed"),
 				});
 		}
 	};
@@ -189,7 +215,7 @@ export class ProviderSignIn {
 		const generation = this.generation;
 		const flowId = this.state.device.flowId;
 		this.pendingOperation = "devicePoll";
-		this.publish({ busy: true, error: null });
+		this.publish({ busy: true, ...reporting(null) });
 		try {
 			const response = await this.store.getState().devicePoll(this.provider, flowId);
 			if (!this.current(generation)) return;
@@ -207,7 +233,7 @@ export class ProviderSignIn {
 					phase: "expired",
 					busy: false,
 					device: undefined,
-					error: "Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again.",
+					...reporting("statusUnconfirmed"),
 				});
 			} else if (response.state === "pending") {
 				this.publish({ busy: false });
@@ -216,7 +242,7 @@ export class ProviderSignIn {
 				this.uncertain = true;
 				this.publish({
 					busy: false,
-					error: "Sign-in has not been confirmed. See whether Providers shows it signed in before starting again.",
+					...reporting("notConfirmed"),
 				});
 			}
 		} catch {
@@ -224,7 +250,7 @@ export class ProviderSignIn {
 				this.uncertain = true;
 				this.publish({
 					busy: false,
-					error: "Could not check authorization. Retry the check when connected.",
+					...reporting("checkFailed"),
 				});
 				this.pendingOperation = null;
 			}
@@ -248,13 +274,13 @@ export class ProviderSignIn {
 			return;
 		const redirectUrl = value.trim();
 		if (!redirectUrl) {
-			this.publish({ error: "Paste the full redirect URL." });
+			this.publish(reporting("redirectMissing"));
 			return;
 		}
 		const generation = this.generation;
 		this.pendingOperation = "completion";
 		const flowId = this.state.browser.flowId;
-		this.publish({ busy: true, error: null });
+		this.publish({ busy: true, ...reporting(null) });
 		try {
 			const response = await this.store.getState().loginComplete(this.provider, flowId, redirectUrl);
 			if (this.current(generation)) {
@@ -276,8 +302,7 @@ export class ProviderSignIn {
 				this.uncertain = true;
 				this.publish({
 					busy: false,
-					error:
-						"Sign-in completion could not be confirmed. See whether Providers shows it signed in before submitting again.",
+					...reporting("completionUnconfirmed"),
 				});
 				this.pendingOperation = null;
 			}
@@ -288,16 +313,14 @@ export class ProviderSignIn {
 		const generation = this.generation;
 		this.clearTimer();
 		this.pendingOperation = "status";
-		this.publish({ busy: true, error: null });
+		this.publish({ busy: true, ...reporting(null) });
 		try {
 			const status = await this.store.getState().authStatus(this.provider);
 			if (!this.current(generation) || !this.validStatus(status)) throw new Error();
 			this.pendingOperation = null;
 			this.publish({
 				busy: false,
-				error: this.uncertain
-					? "Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again."
-					: null,
+				...reporting(this.uncertain ? "statusUnconfirmed" : null),
 				credentialState: status.signedIn && status.hasStoredOAuth ? "configured" : "unconfigured",
 			});
 			if (!this.state.error && !this.uncertain) this.schedule();
@@ -306,7 +329,7 @@ export class ProviderSignIn {
 				this.pendingOperation = null;
 				this.publish({
 					busy: false,
-					error: "Could not check credential status.",
+					...reporting("statusCheckFailed"),
 				});
 			}
 		}

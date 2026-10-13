@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogClient";
-import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
+import {
+  EnvMapField,
+  McpServerListField,
+  ModelListField,
+  PathListField,
+  parseMcpServerEntry,
+} from "./collectionFields";
 
 // modelList adds come from the shared searchable ModelCatalog picker, which
 // calls model/list; the wire loader is mocked so these stay hermetic.
@@ -264,12 +270,12 @@ describe("PathListField", () => {
   test("an invalid path shows an inline error and does not add the row", async () => {
     const user = userEvent.setup();
     connectPathLister({});
-    const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "path does not exist" });
+    const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "validator-refusal" });
     const onChange = vi.fn();
     render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
     await typePath(user, "/nope");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    await waitFor(() => expect(screen.getByText("path does not exist")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("validator-refusal")).toBeTruthy());
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -301,7 +307,7 @@ describe("PathListField", () => {
     );
     await typePath(user, "/opt/skills");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    expect(await screen.findByText("Already added.")).toBeTruthy();
+    expect(await screen.findByRole("alert")).toBeTruthy();
     expect(validatePath).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
   });
@@ -363,7 +369,7 @@ describe("PathListField", () => {
     expect(within(localRow).getByRole("button", { name: "Remove /opt/local-skills" })).toBeTruthy();
     // Ghost row has no remove button and is tagged (default).
     expect(ghost.textContent).toContain("/etc/defaults/skills");
-    expect(ghost.textContent).toContain("(default)");
+    expect(ghost.getAttribute("data-kind")).toBe("inherited");
     expect(within(ghost).queryByRole("button")).toBeNull();
   });
 
@@ -510,7 +516,7 @@ describe("ModelListField", () => {
     const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
     expect(within(localRow).getByRole("button", { name: "Remove openai/gpt-5-mini" })).toBeTruthy();
     expect(ghost.textContent).toContain("anthropic/claude-haiku-4-5");
-    expect(ghost.textContent).toContain("(default)");
+    expect(ghost.getAttribute("data-kind")).toBe("inherited");
     expect(within(ghost).queryByRole("button")).toBeNull();
   });
 
@@ -616,7 +622,7 @@ describe("EnvMapField", () => {
     const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
     expect(within(localRow).getByRole("button", { name: "Remove LOCAL=1" })).toBeTruthy();
     expect(ghost.textContent).toContain("EDITOR=vim");
-    expect(ghost.textContent).toContain("(default)");
+    expect(ghost.getAttribute("data-kind")).toBe("inherited");
     expect(within(ghost).queryByRole("button")).toBeNull();
   });
 
@@ -632,7 +638,7 @@ describe("EnvMapField", () => {
 
     const list = screen.getByRole("list", { name: "Environment variables" });
     expect(within(list).getByText("EDITOR=vim")).toBeTruthy();
-    expect(within(list).queryByText(/No environment variables configured/i)).toBeNull();
+    expect(list.querySelector("[data-reason='empty']")).toBeNull();
   });
 });
 
@@ -673,13 +679,32 @@ describe("McpServerListField", () => {
 
   test("an invalid command is rejected inline and not added", async () => {
     const user = userEvent.setup();
-    const validateCommand = vi.fn().mockResolvedValue({ path: "", valid: false, error: "invalid command" });
+    const validateCommand = vi.fn().mockResolvedValue({ path: "", valid: false, error: "validator-refusal" });
     const onChange = vi.fn();
     render(<McpServerListField option={mcpOption} items={[]} onChange={onChange} validateCommand={validateCommand} />);
     await user.type(screen.getByPlaceholderText("name command args..."), "fs not-a-real-binary");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    await waitFor(() => expect(screen.getByText("invalid command")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("validator-refusal")).toBeTruthy());
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  test("removing one server keeps another whose args differ only in how they split", async () => {
+    const quoted = { name: "fs", command: "mcp-fs", args: ["a b"] };
+    const split = { name: "fs", command: "mcp-fs", args: ["a", "b"] };
+    const onChange = vi.fn();
+    render(
+      <McpServerListField
+        option={mcpOption}
+        items={[quoted, split]}
+        onChange={onChange}
+        validateCommand={async () => ({ path: "mcp-fs", valid: true })}
+      />,
+    );
+    const list = screen.getByRole("list", { name: "MCP servers" });
+    const [removeQuoted] = within(list).getAllByRole("button");
+    if (removeQuoted === undefined) throw new Error("no rows rendered");
+    await userEvent.setup().click(removeQuoted);
+    expect(onChange).toHaveBeenCalledWith([split]);
   });
 
   test("missing a command token is rejected without calling validateCommand at all", async () => {
@@ -710,7 +735,7 @@ describe("McpServerListField", () => {
     const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
     expect(within(localRow).getByRole("button", { name: /Remove fs → mcp-fs/i })).toBeTruthy();
     expect(ghost.textContent).toContain("docs → npx docs-mcp");
-    expect(ghost.textContent).toContain("(default)");
+    expect(ghost.getAttribute("data-kind")).toBe("inherited");
     expect(within(ghost).queryByRole("button")).toBeNull();
   });
 
@@ -727,6 +752,44 @@ describe("McpServerListField", () => {
 
     const list = screen.getByRole("list", { name: "MCP servers" });
     expect(within(list).getByText("docs → npx docs-mcp")).toBeTruthy();
-    expect(within(list).queryByText(/No MCP servers configured/i)).toBeNull();
+    expect(list.querySelector("[data-reason='empty']")).toBeNull();
+  });
+});
+
+describe("parseMcpServerEntry", () => {
+  test("a quoted token keeps its spaces, so a command path may contain them", () => {
+    expect(parseMcpServerEntry("fs \"/opt/My Tools/server\" --root '/srv/a b'")).toEqual({
+      name: "fs",
+      command: "/opt/My Tools/server",
+      args: ["--root", "/srv/a b"],
+    });
+  });
+
+  test("unquoted entries still split on whitespace", () => {
+    expect(parseMcpServerEntry("fs  /usr/bin/fs-mcp --ro")).toEqual({
+      name: "fs",
+      command: "/usr/bin/fs-mcp",
+      args: ["--ro"],
+    });
+  });
+
+  test("quoted and unquoted fragments with no space between them are one token", () => {
+    expect(parseMcpServerEntry("fs \"/opt/My Tools/server\"-dev --tag='a b'")).toEqual({
+      name: "fs",
+      command: "/opt/My Tools/server-dev",
+      args: ["--tag=a b"],
+    });
+  });
+
+  test("a backslash escapes the next character, as in a shell", () => {
+    expect(parseMcpServerEntry('fs server --message "say \\"hello\\"" a\\ b')).toEqual({
+      name: "fs",
+      command: "server",
+      args: ["--message", 'say "hello"', "a b"],
+    });
+  });
+
+  test("an unterminated quote is a usage error, not a guess", () => {
+    expect(parseMcpServerEntry('fs "/opt/My Tools/server')).toBeNull();
   });
 });

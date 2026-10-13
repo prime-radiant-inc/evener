@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { ErrorMarketplaceRemoveApplied, WireError } from "../../errors";
+import { ErrorMarketplaceRemoveApplied, friendlyErrorMessage, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
 import { permissiveHubWriteGate } from "../../testing/hubWriteGate";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
@@ -161,11 +161,11 @@ describe("store shape", () => {
     expect(first.store.getState().marketplacesError).toBeNull();
     expect(second.store.getState().marketplaces).toBeNull();
     expect(second.store.getState().browseCatalogs.size).toBe(0);
-    expect(second.store.getState().marketplacesError).toBe("boom");
+    expect(second.store.getState().marketplacesError).toBe(friendlyErrorMessage(new Error("boom")));
 
     first.store.reset();
     expect(first.store.getState().marketplaces).toBeNull();
-    expect(second.store.getState().marketplacesError).toBe("boom");
+    expect(second.store.getState().marketplacesError).toBe(friendlyErrorMessage(new Error("boom")));
   });
 });
 
@@ -201,8 +201,23 @@ describe("fetches never throw, mutations reject", () => {
     expect(store.getState()).toMatchObject({
       marketplaces: null,
       marketplacesLoading: false,
-      marketplacesError: "network down",
+      marketplacesError: friendlyErrorMessage(new Error("network down")),
     });
+  });
+
+  // The list error is translated while it still has its type: a hub's own
+  // WireError explanation survives, and a client-side failure gets the shared
+  // friendly form. A host translating the stored text would lose the detail.
+  test.each([
+    ["a hub-reported WireError", new WireError("marketplace registry is locked", -32000)],
+    ["a client-side Error", new Error("AppwireClient internal detail")],
+  ])("a failed list stores %s in its friendly form", async (_label, err) => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => {
+      throw err;
+    });
+    await store.getState().fetchMarketplaces();
+    expect(store.getState().marketplacesError).toBe(friendlyErrorMessage(err));
   });
 
   test("a failed browse is cached as status:error and resolves", async () => {

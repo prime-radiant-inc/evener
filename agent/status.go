@@ -155,6 +155,7 @@ type DelegateStatusInfo struct {
 	RunStartedAt        string                       `json:"run_started_at,omitempty"`
 	RunEndedAt          string                       `json:"run_ended_at,omitempty"`
 	LatestActivityAt    string                       `json:"latest_activity_at,omitempty"`
+	LatestIntent        string                       `json:"latest_intent,omitempty"`
 	RunningForMS        *int64                       `json:"running_for_ms,omitempty"`
 	QuietForMS          *int64                       `json:"quiet_for_ms,omitempty"`
 	DurationMS          *int64                       `json:"duration_ms,omitempty"`
@@ -252,10 +253,12 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		ds.Tools = append(ds.Tools, ToolInfo{Name: name, Source: source})
 	}
 
-	// Inspection retains every winner; completion uses only the user view.
+	// Inspection retains every winner; completion uses only the user view, and
+	// only for skills this session can actually load (a session without the
+	// memory save tools does not offer the gardening-memory completion).
 	ds.SkillCatalog = s.skills.InspectionEntries()
 	for _, descriptor := range ds.SkillCatalog {
-		if descriptor.Unavailable || !descriptor.Controls.UserInvocable {
+		if descriptor.Unavailable || !descriptor.Controls.UserInvocable || !s.skillAvailableToSession(descriptor.CatalogName) {
 			continue
 		}
 		meta := descriptor.Meta
@@ -511,6 +514,7 @@ func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boun
 		OriginItemID:        descriptor.OriginItemID,
 		RunStartedAt:        timing.RunStartedAt,
 		LatestActivityAt:    timing.LatestActivityAt,
+		LatestIntent:        row.latestIntent,
 		RunningForMS:        cloneInt64(timing.RunningForMS),
 		QuietForMS:          cloneInt64(timing.QuietForMS),
 		DurationMS:          cloneInt64(timing.DurationMS),
@@ -581,7 +585,8 @@ func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdat
 		Model: info.Model, ReasoningEffort: info.ReasoningEffort, OriginTurnID: info.OriginTurnID,
 		OriginToolCallID: info.OriginToolCallID, OriginItemID: info.OriginItemID, RunStartedAt: info.RunStartedAt,
 		RunEndedAt: info.RunEndedAt, LatestActivityAt: info.LatestActivityAt, RunningForMS: cloneInt64(info.RunningForMS),
-		QuietForMS: cloneInt64(info.QuietForMS), DurationMS: cloneInt64(info.DurationMS), PacketKind: info.PacketKind,
+		LatestIntent: info.LatestIntent,
+		QuietForMS:   cloneInt64(info.QuietForMS), DurationMS: cloneInt64(info.DurationMS), PacketKind: info.PacketKind,
 		Message: append(json.RawMessage(nil), info.Message...), StructuredResult: append(json.RawMessage(nil), info.StructuredResult...),
 		StructuredValid: cloneBool(info.StructuredValid), StructuredReason: info.StructuredReason,
 		Warnings: append([]string(nil), info.Warnings...), Diagnostics: append([]string(nil), info.Diagnostics...),

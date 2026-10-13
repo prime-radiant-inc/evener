@@ -10,7 +10,8 @@
 // banner, the toasts and the command palette all stay up.
 
 import { Component, type LazyExoticComponent, lazy, type ReactNode, Suspense, useState } from "react";
-import { Button, EmptyState } from "../widgets";
+import { Button, EmptyState, Loader } from "../widgets";
+import styles from "./DockRegion.module.css";
 import { isStaleDockHostChunkError, loadDockHost } from "./dockHostChunk";
 import { reloadPage } from "./pageReload";
 
@@ -49,19 +50,16 @@ class DockChunkBoundary extends Component<DockChunkBoundaryProps, DockChunkBound
         title="Couldn't load the workspace"
         hint={this.state.failure}
         action={
-          <span>
+          <>
             <Button size="sm" onClick={this.retry}>
               Retry
             </Button>
             {this.props.reloadAvailable && isStaleDockHostChunkError(this.state.failure) && (
-              <>
-                {" "}
-                <Button size="sm" variant="quiet" onClick={reloadPage}>
-                  Reload page
-                </Button>
-              </>
+              <Button size="sm" variant="quiet" onClick={reloadPage}>
+                Reload page
+              </Button>
             )}
-          </span>
+          </>
         }
       />
     );
@@ -113,14 +111,12 @@ export function DockRegion() {
     <DockChunkBoundary onRetry={retry} reloadAvailable={retryCount > 0}>
       <Suspense
         fallback={
-          <EmptyState
-            title="Loading the workspace…"
-            action={
-              <Button size="sm" onClick={retry}>
-                Retry
-              </Button>
-            }
-          />
+          <div className={styles.loading} data-testid="dock-loading">
+            <Loader label="Loading the workspace…" />
+            <Button size="sm" onClick={retry}>
+              Retry
+            </Button>
+          </div>
         }
       >
         <Host />

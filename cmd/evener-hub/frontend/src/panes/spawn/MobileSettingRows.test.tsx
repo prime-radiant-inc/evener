@@ -252,7 +252,7 @@ test("plugin preview error allows only safe removal from the last preview and ex
   });
 
   const pluginRow = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Plugins"]') as HTMLElement;
-  expect(pluginRow.textContent).toContain("Couldn't inspect plugins");
+  expect(pluginRow.dataset.state).toBe("error");
   await user.click(within(pluginRow).getByRole("button"));
   const dialog = await screen.findByRole("dialog", { name: "Plugins for this session" });
   expect((within(dialog).getByRole("switch", { name: "alpha" }) as HTMLButtonElement).disabled).toBe(false);

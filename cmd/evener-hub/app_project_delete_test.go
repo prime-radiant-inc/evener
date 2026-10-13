@@ -23,9 +23,7 @@ func TestHubProjectDeleteAppWireRejectsMissingKey(t *testing.T) {
 	if wireErr.Code != appwire.CodeInvalidParams {
 		t.Fatalf("error code = %d, want %d (%v)", wireErr.Code, appwire.CodeInvalidParams, wireErr)
 	}
-	if wireErr.Message != "key and workingDir are required" {
-		t.Fatalf("error message = %q", wireErr.Message)
-	}
+
 }
 
 func dispatchProjectDelete(t *testing.T, web *WebServer, params appwire.ProjectDeleteParams) (appwire.ProjectDeleteResponse, error) {

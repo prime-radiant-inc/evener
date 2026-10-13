@@ -103,7 +103,7 @@
    tokens.css, so it is only consumed under the same query here (the
    RailRow treatment) — on desktop the token is undefined and the rows keep
    their content height. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .row {
     min-height: var(--tap-min);
   }
@@ -135,32 +135,4 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.disclosureSummary {
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  list-style: none;
-}
-
-@media (pointer: coarse) {
-  .disclosureSummary {
-    min-height: var(--tap-min);
-  }
-}
-
-.disclosureSummary::-webkit-details-marker {
-  display: none;
-}
-
-.disclosureSummary:hover {
-  color: var(--ink-hi);
-}
-
-.disclosureSummary:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
 }

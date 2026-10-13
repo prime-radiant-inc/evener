@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // vertexInstanceToml is one gcp-adc instance under a custom name with its
@@ -62,7 +64,7 @@ func TestAuth_CredentialJsonSet_StoresForGCPADCInstance(t *testing.T) {
 func TestAuth_CredentialJsonSet_RejectsMalformedJSON(t *testing.T) {
 	ctrl, dir := newVertexController(t)
 	_, err := ctrl.CredentialJsonSet(appwire.AuthCredentialJsonSetParams{Provider: "vertex", Value: `{"type":"authorized_user"`})
-	if err == nil || !strings.Contains(err.Error(), "credential JSON") {
+	if !errors.Is(err, registry.ErrCredentialJSONInvalid) {
 		t.Fatalf("err = %v; want an invalid-params error naming the credential JSON", err)
 	}
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -74,7 +76,7 @@ func TestAuth_CredentialJsonSet_RejectsMalformedJSON(t *testing.T) {
 func TestAuth_CredentialJsonSet_RejectsCredentialWithoutKeyMaterial(t *testing.T) {
 	ctrl, dir := newVertexController(t)
 	_, err := ctrl.CredentialJsonSet(appwire.AuthCredentialJsonSetParams{Provider: "vertex", Value: `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com"}`})
-	if err == nil || !strings.Contains(err.Error(), "missing private_key") {
+	if !errors.Is(err, registry.ErrCredentialFieldsMissing) {
 		t.Fatalf("err = %v; want a refusal naming the missing key material", err)
 	}
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -86,7 +88,7 @@ func TestAuth_CredentialJsonSet_RejectsCredentialWithoutKeyMaterial(t *testing.T
 func TestAuth_CredentialJsonSet_RejectsUnusableKeyMaterial(t *testing.T) {
 	ctrl, dir := newVertexController(t)
 	_, err := ctrl.CredentialJsonSet(appwire.AuthCredentialJsonSetParams{Provider: "vertex", Value: `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key"}`})
-	if err == nil || !strings.Contains(err.Error(), "unusable private_key") {
+	if !errors.Is(err, registry.ErrCredentialPrivateKeyUnusable) {
 		t.Fatalf("err = %v; want a refusal naming the key material the signer cannot parse", err)
 	}
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -101,7 +103,7 @@ func TestAuth_CredentialJsonSet_RejectsAForeignTokenEndpoint(t *testing.T) {
 	// accepted.
 	ctrl, dir := newVertexController(t)
 	_, err := ctrl.CredentialJsonSet(appwire.AuthCredentialJsonSetParams{Provider: "vertex", Value: `{"type":"authorized_user","client_id":"cid","client_secret":"csecret","refresh_token":"rtoken","token_uri":"https://attacker.example/token"}`})
-	if err == nil || !strings.Contains(err.Error(), "token_uri") {
+	if !errors.Is(err, registry.ErrCredentialTokenEndpoint) {
 		t.Fatalf("err = %v; want an invalid-params error naming token_uri", err)
 	}
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -115,7 +117,7 @@ func TestAuth_CredentialJsonSet_RefusesNonGCPADCInstance(t *testing.T) {
 	dir := t.TempDir()
 	ctrl := newTestAuthController(t, dir, t.TempDir(), writeProvidersToml(t, dir, bearerInstanceToml))
 	_, err := ctrl.CredentialJsonSet(appwire.AuthCredentialJsonSetParams{Provider: "work-ant", Value: authorizedUserJSON})
-	if err == nil || !strings.Contains(err.Error(), "apiKey/set") {
+	if !errors.Is(err, errNotGCPADCInstance) {
 		t.Fatalf("err = %v; want a refusal pointing at apiKey/set", err)
 	}
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -127,7 +129,7 @@ func TestAuth_CredentialJsonSet_RefusesNonGCPADCInstance(t *testing.T) {
 func TestAuth_ApiKeySet_RefusesGCPADCInstance(t *testing.T) {
 	ctrl, dir := newVertexController(t)
 	_, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "vertex", Value: "AQ.not-a-json"})
-	if err == nil || !strings.Contains(err.Error(), "credentialJson/set") {
+	if !errors.Is(err, errAPIKeyForGCPADCInstance) {
 		t.Fatalf("err = %v; want a refusal pointing at credentialJson/set", err)
 	}
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -159,7 +161,7 @@ func TestAuth_CredentialJsonSetRechecksTheInstanceUnderTheCredentialLock(t *test
 
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "apiKey/set") {
+		if !errors.Is(err, errNotGCPADCInstance) {
 			t.Fatalf("CredentialJsonSet = %v, want the refusal for the name the rename left behind", err)
 		}
 	case <-time.After(10 * time.Second):

@@ -646,7 +646,7 @@ async function openPeek(ref, kind) {
 // Each runtime state's exact hover and screen-reader text and its
 // session-list signal in the compact spine.
 const spineStatus = {
-  active: { text: "Active", signalLabel: "Running" },
+  active: { text: "Active", signalLabel: "Working" },
   idle: { text: "Idle", signalLabel: null },
   awaiting: { text: "Awaiting", signalLabel: "Needs you" },
 };
@@ -674,7 +674,7 @@ async function assertSpineStatus(ref, ...states) {
   assert.notEqual(status.hiddenFromAT, "true");
   assert.ok(status.labelWidth <= 1 && status.labelHeight <= 1, "runtime text does not paint horizontally in the spine");
   assert.equal(status.signalLabel, signalLabel, "ancestor uses the session-list signal family");
-  if (signalLabel === "Running" && reducedMotion) {
+  if (signalLabel === "Working" && reducedMotion) {
     assert.equal(status.animation, "none", "reduced motion keeps the running indicator still");
   }
   driver.milestone("compact-spine-status", { ref, ...status });

@@ -7,6 +7,7 @@ import { useEffect, useRef } from "react";
 import { AccessibilityInfo, Pressable, Text, TextInput, View } from "react-native";
 import { allowFontScaling, searchFieldStyle, useColors, useTextScale } from "../ui";
 import { headerRowFill } from "../design/systemGlass";
+import type { MatchPosition } from "./findInSession";
 import { SymbolButton } from "./SymbolButton";
 
 export function FindBar({
@@ -15,6 +16,8 @@ export function FindBar({
 	searchingOlder,
 	error,
 	settled,
+	exhausted = false,
+	matches = null,
 	onQuery,
 	onStep,
 	onDone,
@@ -29,6 +32,11 @@ export function FindBar({
 	error?: string;
 	/** The label is the search's answer, not a step on the way to it. */
 	settled: boolean;
+	/** Paging has reached the start of history: no older match is left. */
+	exhausted?: boolean;
+	/** Where you are among the matches, as structure: its
+	 * `find-matches:<position>:<count>` marker. Null while there is no query. */
+	matches?: MatchPosition | null;
 	onQuery(query: string): void;
 	onStep(direction: 1 | -1): void;
 	onDone(): void;
@@ -53,6 +61,7 @@ export function FindBar({
 	}, [shown, settled, searchingOlder, error]);
 	return (
 		<View
+			testID={exhausted ? "find-bar:exhausted" : undefined}
 			style={{
 				flexDirection: "row",
 				alignItems: "center",
@@ -80,6 +89,7 @@ export function FindBar({
 			<Text
 				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
+				testID={matches ? `find-matches:${matches.position}:${matches.count}` : undefined}
 				style={{
 					flexShrink: 1,
 					color: palette.inkMid,

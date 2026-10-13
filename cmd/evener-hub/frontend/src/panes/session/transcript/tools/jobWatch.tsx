@@ -42,7 +42,7 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Chip } from "../../../../widgets";
+import { Button, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -62,7 +62,6 @@ const CLASS = {
   rowStatic: requireClass(styles.rowStatic, "jobWatch.module.css", "rowStatic"),
   rowId: requireClass(styles.rowId, "jobWatch.module.css", "rowId"),
   rowCondition: requireClass(styles.rowCondition, "jobWatch.module.css", "rowCondition"),
-  disclosureSummary: requireClass(styles.disclosureSummary, "jobWatch.module.css", "disclosureSummary"),
 };
 
 // NOTE_CLAMP_LINES is the note policy, not a measurement: notes at or under
@@ -93,18 +92,14 @@ function NoteSection({ note }: { note: string }) {
         {note}
       </div>
       {clamped || open ? (
-        <details data-testid="job-watch-note-disclosure" open={open}>
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled for the same single-source-of-truth reason as ToolRow */}
-          <summary
-            className={CLASS.disclosureSummary}
-            onClick={(event) => {
-              event.preventDefault();
-              setOpen((previous) => !previous);
-            }}
-          >
-            {open ? "Show less" : "Show full note"}
-          </summary>
-        </details>
+        <Button
+          variant="link"
+          data-testid="job-watch-note-disclosure"
+          aria-expanded={open}
+          onClick={() => setOpen((previous) => !previous)}
+        >
+          {open ? "Show less" : "Show full note"}
+        </Button>
       ) : null}
     </div>
   );

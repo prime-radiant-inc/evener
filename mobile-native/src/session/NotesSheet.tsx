@@ -147,27 +147,32 @@ function NotesBody({
 			return next.size === previous.size ? previous : next;
 		});
 	}, [session.sessionUrls]);
-	if (!writable && !human && !session.agentNote.trim() && links.length === 0) return <Copy muted>No shared notes</Copy>;
+	if (!writable && !human && !session.agentNote.trim() && links.length === 0)
+		return (
+			<View testID="empty-state:nothingShared">
+				<Copy muted>No shared notes</Copy>
+			</View>
+		);
 	return (
 		<>
 			{writable ? (
-				<Group title="Your note">
+				<Group section="yours" title="Your note">
 					<NoteEditor notes={host.notes} working={session.status.type === "active"} focus={focusEditor} />
 				</Group>
 			) : human ? (
-				<Group title="Your note">
+				<Group section="yours" title="Your note">
 					<Copy variant="yourMessage">{session.humanNote}</Copy>
 				</Group>
 			) : null}
-			<Group title="Agent">
+			<Group section="agent" title="Agent">
 				{session.agentNote.trim() ? (
 					<Copy variant="yourMessage">{session.agentNote}</Copy>
 				) : (
-					<Quiet>No agent note yet</Quiet>
+					<Quiet testID="empty-state:noAgentNote">No agent note yet</Quiet>
 				)}
 			</Group>
-			<Group title="Links">
-				{links.length === 0 ? <Quiet>No links yet</Quiet> : null}
+			<Group section="links" title="Links">
+				{links.length === 0 ? <Quiet testID="empty-state:noLinks">No links yet</Quiet> : null}
 				{links.map((link) => (
 					<LinkRow
 						key={link.id}
@@ -181,18 +186,29 @@ function NotesBody({
 					/>
 				))}
 				{writable && links.length > 0 ? (
-					<Quiet small>The agent adds links as it works. Swipe left on one to remove it.</Quiet>
+					<Quiet small testID="links-hint">
+						The agent adds links as it works. Swipe left on one to remove it.
+					</Quiet>
 				) : null}
 			</Group>
 		</>
 	);
 }
 
-function Group({ title, children }: { title: string; children: ReactNode }) {
+/** One of the sheet's groups, marked `notes-section:<section>`. */
+function Group({
+	section,
+	title,
+	children,
+}: {
+	section: "yours" | "agent" | "links";
+	title: string;
+	children: ReactNode;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ gap: 8 }}>
+		<View testID={`notes-section:${section}`} style={{ gap: 8 }}>
 			<Text
 				accessibilityRole="header"
 				allowFontScaling={allowFontScaling}
@@ -212,11 +228,12 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 }
 
 /** Secondary text: 15/20 inkMid, or 13/18 inkLow when `small`. */
-function Quiet({ children, small = false }: { children: string; small?: boolean }) {
+function Quiet({ children, small = false, testID }: { children: string; small?: boolean; testID?: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
 		<Text
+			testID={testID}
 			allowFontScaling={allowFontScaling}
 			style={{
 				fontSize: (small ? 13 : 15) * scale,
@@ -239,7 +256,7 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 	// announce each change there; Android reads the polite region on its own, and
 	// announcing too would say it twice. The first render is skipped: the line
 	// starts as the note's standing explanation, not a change to speak (#2903).
-	const status = noteStatusLine(note.phase, working);
+	const { kind: statusKind, text: status } = noteStatusLine(note.phase, working);
 	const announced = useRef(status);
 	useEffect(() => {
 		if (status === announced.current) return;
@@ -290,6 +307,7 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 				}}
 			/>
 			<Text
+				testID={`note-status:${statusKind}`}
 				allowFontScaling={allowFontScaling}
 				accessibilityLiveRegion="polite"
 				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
@@ -350,9 +368,9 @@ function LinkRow({
 		void notes.removeLink(link.id).then((removed) => {
 			if (removed) {
 				onRemoved();
-				toast.show({ text: "Link removed. Only the agent can add links." });
+				toast.show({ kind: "link:removed", text: "Link removed. Only the agent can add links." });
 			} else {
-				toast.show({ text: "Couldn't remove that link." });
+				toast.show({ kind: "link:removeFailed", text: "Couldn't remove that link." });
 			}
 		});
 	// VoiceOver names the swipe's remove in full; the panel has room for one word.

@@ -29,8 +29,8 @@ func TestRunAgentShardsBadCount(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("runAgentShards with bad count = %d, want 1", code)
 	}
-	if !strings.Contains(buf.String(), "must be a positive integer") {
-		t.Fatalf("stderr = %q, want 'must be a positive integer'", buf.String())
+	if !strings.Contains(buf.String(), "AGENT_SHARD_COUNT") {
+		t.Fatalf("stderr = %q, want AGENT_SHARD_COUNT named", buf.String())
 	}
 }
 
@@ -89,8 +89,8 @@ func TestRunAgentShardsBadParallel(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("runAgentShards with bad parallel = %d, want 1", code)
 	}
-	if !strings.Contains(buf.String(), "must be a positive integer") {
-		t.Fatalf("stderr = %q, want 'must be a positive integer'", buf.String())
+	if !strings.Contains(buf.String(), "AGENT_SHARD_PARALLEL") {
+		t.Fatalf("stderr = %q, want AGENT_SHARD_PARALLEL named", buf.String())
 	}
 }
 
@@ -114,8 +114,8 @@ func TestRunAgentShardsBadSurveyParallel(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("runAgentShards with bad survey parallel = %d, want 1", code)
 	}
-	if !strings.Contains(buf.String(), "must be a positive integer") {
-		t.Fatalf("stderr = %q, want 'must be a positive integer'", buf.String())
+	if !strings.Contains(buf.String(), "AGENT_SHARD_SURVEY_PARALLEL") {
+		t.Fatalf("stderr = %q, want AGENT_SHARD_SURVEY_PARALLEL named", buf.String())
 	}
 }
 
@@ -206,7 +206,7 @@ func TestInterrupterInterruptWithPgids(t *testing.T) {
 // TestRunShardsScratchError covers the scratch.Acquire error path in runShards.
 func TestRunShardsScratchError(t *testing.T) {
 	// Set TMPDIR to a file (not a directory) so scratch.Acquire fails.
-	conflict := filepath.Join(t.TempDir(), "notadir")
+	conflict := filepath.Join(canonicalTempDir(t), "notadir")
 	if err := os.WriteFile(conflict, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,10 @@ func TestRunShardsScratchError(t *testing.T) {
 	if rc != 2 {
 		t.Fatalf("runShards with bad TMPDIR = %d, want 2; stderr=%s", rc, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "could not create a scratch directory") {
-		t.Fatalf("stderr = %q, want scratch error", stderr.String())
+	if !strings.Contains(stderr.String(), conflict) {
+		t.Fatalf("stderr = %q, want the unusable TMPDIR %s named", stderr.String(), conflict)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("a run that never got scratch printed progress: %q", stdout.String())
 	}
 }

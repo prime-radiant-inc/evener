@@ -53,7 +53,10 @@ function mount(state: { model?: ModelDescriptor | null; recentModels?: ModelDesc
 
 it("puts Hub default first, checked while no model is chosen", () => {
 	const picker = mount({});
-	expect(picker.titles()[0]).toBe("Hub default");
+	// The hub's default leads the eight models, and is the row checked.
+	const [first, ...models] = picker.titles();
+	expect(models).toHaveLength(8);
+	expect(pressable(picker.tree, "Hub default")).toBe(pressable(picker.tree, first ?? ""));
 	expect(pressable(picker.tree, "Hub default")?.props.accessibilityState).toMatchObject({ selected: true });
 	const chosen = mount({ model: glm });
 	expect(pressable(chosen.tree, "Hub default")?.props.accessibilityState).toMatchObject({ selected: false });

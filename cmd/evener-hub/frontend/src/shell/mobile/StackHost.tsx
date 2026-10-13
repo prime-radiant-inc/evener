@@ -167,9 +167,13 @@ export interface StackHostProps {
   // owns that condition and passes it down; StackHost's only duty is not to
   // publish a URL over a route in that state. See the URL-sync effect.
   routeDeferred?: boolean;
+  // True on a single-pane route (the /thread/{ref} share link). The drawer
+  // opens the sidebar/search/settings chrome floor §2.3 forbids there, so its
+  // trigger is not rendered at all.
+  singlePane?: boolean;
 }
 
-export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = {}) {
+export function StackHost({ railSlot, routeDeferred = false, singlePane = false }: StackHostProps = {}) {
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   // The focused pane's title, published host-agnostically by its
@@ -426,12 +430,12 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
             />
           )}
         </div>
-        <span className={styles.title} data-testid="topbar-title">
+        <span className={styles.stackTitle} data-testid="topbar-title">
           {paneTitle}
         </span>
-        <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />
+        {!singlePane && <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />}
       </div>
-      <div className={styles.body}>
+      <div className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
         {focusedPane && (
           // key forces a fresh mount on every distinct pane id, including
           // switching BACK to a previously-seen one - without it, two

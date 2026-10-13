@@ -68,6 +68,35 @@ function rowFor(title: string): HTMLElement {
   return row;
 }
 
+/** The key names a chord renders as, one per <kbd>, in order. */
+function keysOf(element: HTMLElement): (string | null)[] {
+  return [...element.querySelectorAll("kbd")].map((kbd) => kbd.textContent);
+}
+
+function isCustomized(row: HTMLElement): boolean {
+  return row.hasAttribute("data-customized");
+}
+
+function isUnbound(row: HTMLElement): boolean {
+  return row.hasAttribute("data-unbound");
+}
+
+function customizedActions(): (string | null)[] {
+  return [...document.querySelectorAll("li[data-customized]")].map((row) => row.getAttribute("data-action"));
+}
+
+/** Why the section is read-only, from its status line. */
+function readOnlyReason(): string | null {
+  return screen.getByRole("status").getAttribute("data-reason");
+}
+
+/** The reason of each skipped-override warning, in list order. */
+function warningReasons(): (string | null)[] {
+  return [...document.querySelectorAll("[role='status'] li[data-reason]")].map((warning) =>
+    warning.getAttribute("data-reason"),
+  );
+}
+
 test("lists every default action with its title and effective chord, none customized", () => {
   render(<KeybindingsSection />);
 
@@ -75,48 +104,26 @@ test("lists every default action with its title and effective chord, none custom
   // never a hand-maintained copy: one row per ACTION (the cheatsheet's two
   // trigger entries share one action id), in default-map order.
   const rows = screen.getAllByRole("listitem");
-  expect(rows).toHaveLength(new Set(DEFAULT_BINDINGS.map((b) => b.actionId)).size);
-  expect(rows.map((row) => row.textContent)).toEqual([
-    expect.stringContaining("Open the command palette"),
-    expect.stringContaining("Toggle the sidebar"),
-    expect.stringContaining("Focus the composer"),
-    expect.stringContaining("Go to the next session needing you"),
-    expect.stringContaining("Quote the selection into the composer"),
-    expect.stringContaining("Open settings"),
-    expect.stringContaining("Focus the next session pane"),
-    expect.stringContaining("Focus the previous session pane"),
-    expect.stringContaining("Go to the next live session"),
-    expect.stringContaining("Go to the previous live session"),
-    expect.stringContaining("Scroll the transcript up one line"),
-    expect.stringContaining("Scroll the transcript down one line"),
-    expect.stringContaining("Scroll the transcript up one page"),
-    expect.stringContaining("Scroll the transcript down one page"),
-    expect.stringContaining("Scroll the transcript to the top"),
-    expect.stringContaining("Scroll the transcript to the bottom"),
-    expect.stringContaining("Close settings"),
-    expect.stringContaining("Show the keyboard shortcuts overlay"),
-    expect.stringContaining("Close the keyboard shortcuts overlay"),
+  expect(rows.map((row) => row.getAttribute("data-action"))).toEqual([
+    ...new Set(DEFAULT_BINDINGS.map((b) => b.actionId)),
   ]);
-  expect(screen.queryByText("Customized")).toBeNull();
+  expect(customizedActions()).toEqual([]);
 
   // jsdom resolves $mod to Control, so palette.open's effective chord renders
   // as the Ctrl + K kbd pair via the KeyHint widget.
-  const paletteRow = rowFor("Open the command palette");
-  expect(within(paletteRow).getByText("Ctrl")).toBeTruthy();
-  expect(within(paletteRow).getByText("K")).toBeTruthy();
+  expect(keysOf(rowFor("Open the command palette"))).toEqual(["Ctrl", "K"]);
   // settings.close's default chord lists every modifier as optional, so only
   // the Escape key renders.
-  const settingsRow = rowFor("Close settings");
-  expect(within(settingsRow).getByText("Escape")).toBeTruthy();
+  expect(keysOf(rowFor("Close settings"))).toEqual(["Escape"]);
 });
 
 test("the cheatsheet row shows the platform $mod chord (its ? trigger is a second entry of the same action)", () => {
   render(<KeybindingsSection />);
   const row = rowFor("Show the keyboard shortcuts overlay");
   // jsdom resolves $mod to Control; the section's single-chord display shows
-  // the base entry (keybindings/display.ts's displayBindingFor).
-  expect(within(row).getByText("Ctrl")).toBeTruthy();
-  expect(within(row).getByText("/")).toBeTruthy();
+  // the base entry (keybindings/display.ts's displayBindingFor); the "?" is
+  // the conditional trigger's read-only note after it.
+  expect(keysOf(row)).toEqual(["Ctrl", "/", "?"]);
 });
 
 test("the character-key toggle persists through the prefs store", async () => {
@@ -137,8 +144,8 @@ test("the character-key toggle persists through the prefs store", async () => {
 
 test("with no hub connection the section waits quietly and still shows the defaults", () => {
   render(<KeybindingsSection />);
-  expect(screen.getByRole("status").textContent).toContain("Waiting for the hub");
-  expect(rowFor("Open the command palette").textContent).toContain("K");
+  expect(readOnlyReason()).toBe("hub-unknown");
+  expect(keysOf(rowFor("Open the command palette"))).toEqual(["Ctrl", "K"]);
 });
 
 test("an applied override marks the action customized and shows the override chord", async () => {
@@ -150,12 +157,12 @@ test("an applied override marks the action customized and shows the override cho
   render(<KeybindingsSection />);
 
   const paletteRow = rowFor("Open the command palette");
-  expect(within(paletteRow).getByText("Customized")).toBeTruthy();
+  expect(isCustomized(paletteRow)).toBe(true);
   expect(within(paletteRow).getByText("P")).toBeTruthy();
   expect(within(paletteRow).queryByText("K")).toBeNull();
   // Untouched actions keep their default chords and no marker.
   const railRow = rowFor("Toggle the sidebar");
-  expect(within(railRow).queryByText("Customized")).toBeNull();
+  expect(isCustomized(railRow)).toBe(false);
   expect(within(railRow).getByText("B")).toBeTruthy();
 });
 
@@ -168,8 +175,8 @@ test("an unbound action renders Unbound and counts as customized", async () => {
   render(<KeybindingsSection />);
 
   const paletteRow = rowFor("Open the command palette");
-  expect(within(paletteRow).getByText("Unbound")).toBeTruthy();
-  expect(within(paletteRow).getByText("Customized")).toBeTruthy();
+  expect(isUnbound(paletteRow)).toBe(true);
+  expect(isCustomized(paletteRow)).toBe(true);
 });
 
 test("a hub that predates the feature shows a quiet unsupported status and the defaults", async () => {
@@ -178,7 +185,7 @@ test("a hub that predates the feature shows a quiet unsupported status and the d
   await wireClient(client, false);
   render(<KeybindingsSection />);
 
-  expect(screen.getByRole("status").textContent).toContain("does not support synced keybinding overrides");
+  expect(readOnlyReason()).toBe("unsupported");
   expect(screen.queryByRole("alert")).toBeNull();
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
 });
@@ -206,11 +213,9 @@ test("validation warnings from the applied payload are listed quietly", async ()
   await wireClient(client, true);
   render(<KeybindingsSection />);
 
-  const status = screen.getByRole("status");
-  expect(status.textContent).toContain('unknown keybinding action "no.such.action"');
-  expect(status.textContent).toContain('chord "Control+W" is reserved');
+  expect(warningReasons()).toEqual(["unknown-action", "reserved-chord"]);
   // Both bad rules were skipped: every action stays on its default.
-  expect(screen.queryByText("Customized")).toBeNull();
+  expect(customizedActions()).toEqual([]);
 });
 
 // --- Phase 4b: the capture-based editor ------------------------------------
@@ -233,8 +238,13 @@ function patchCallsOf(client: FakeClient) {
   return client.calls.filter((c) => c.method === "evener/settings/keybindings/patch");
 }
 
+// The capture box is the section's only textbox.
 function captureBox(): HTMLElement {
-  return screen.getByRole("textbox", { name: /Press the new shortcut/ });
+  return screen.getByRole("textbox");
+}
+
+function captureState(box: HTMLElement): string | null {
+  return box.getAttribute("data-state");
 }
 
 async function enterCapture(title: string): Promise<HTMLElement> {
@@ -248,7 +258,7 @@ test("an unsupported hub keeps every row read-only (no editing affordances)", as
   await wireClient(client, false);
   render(<KeybindingsSection />);
 
-  expect(screen.getByRole("status").textContent).toContain("does not support synced keybinding overrides");
+  expect(readOnlyReason()).toBe("unsupported");
   expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
   expect(screen.queryByRole("button", { name: "Unbind" })).toBeNull();
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
@@ -277,7 +287,7 @@ test("the section is read-only while the hub's overrides are still loading, then
   // hubSupport is "supported" but nothing is loaded for THIS hub yet: no
   // editing affordances, and a status line says why.
   expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
-  expect(screen.getByRole("status").textContent).toContain("read-only until they arrive");
+  expect(readOnlyReason()).toBe("loading");
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
 
   // The refresh lands: editing unlocks and a save round-trips.
@@ -303,7 +313,7 @@ test("a refresh error leaves the section read-only with a truthful status", asyn
 
   expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
   expect(screen.getByRole("alert").textContent).toContain("socket went away");
-  expect(screen.getByRole("status").textContent).toContain("Editing is unavailable");
+  expect(readOnlyReason()).toBe("load-failed");
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
 });
 
@@ -319,8 +329,7 @@ test("clicking a chord enters capture mode with the prompt focused", async () =>
 
   const box = await enterCapture("Open the command palette");
 
-  expect(box.textContent).toContain("Press new shortcut…");
-  expect(box.textContent).toContain("Enter to save");
+  expect(captureState(box)).toBe("idle");
   expect(document.activeElement).toBe(box);
 });
 
@@ -330,14 +339,14 @@ test("held modifiers render live while capturing, before any key is recorded", a
   const box = await enterCapture("Focus the composer");
 
   fireEvent.keyDown(box, { key: "Control", ctrlKey: true });
-  expect(within(box).getByText("Ctrl")).toBeTruthy();
+  expect(keysOf(box)).toEqual(["Ctrl"]);
   fireEvent.keyDown(box, { key: "Shift", ctrlKey: true, shiftKey: true });
-  expect(within(box).getByText("Shift")).toBeTruthy();
+  expect(keysOf(box)).toEqual(["Ctrl", "Shift"]);
   // Releasing keeps the preview in step.
   fireEvent.keyUp(box, { key: "Shift", ctrlKey: true });
-  expect(within(box).queryByText("Shift")).toBeNull();
-  // No chord recorded yet, and no hub write.
-  expect(box.textContent).toContain("Enter to save");
+  expect(keysOf(box)).toEqual(["Ctrl"]);
+  // No chord recorded yet.
+  expect(captureState(box)).toBe("holding");
 });
 
 test("Enter saves the captured chord through patchOverrides and the row shows the new chord", async () => {
@@ -356,8 +365,8 @@ test("Enter saves the captured chord through patchOverrides and the row shows th
   });
   // The confirmed payload reconciled: capture closed, row shows the override.
   await waitFor(() => expect(within(rowFor("Open the command palette")).getByText("P")).toBeTruthy());
-  expect(screen.queryByText("Press new shortcut…")).toBeNull();
-  expect(within(rowFor("Open the command palette")).getByText("Customized")).toBeTruthy();
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(isCustomized(rowFor("Open the command palette"))).toBe(true);
 });
 
 test("Escape cancels the capture without a hub write and leaves the chord unchanged", async () => {
@@ -368,11 +377,11 @@ test("Escape cancels the capture without a hub write and leaves the chord unchan
   fireEvent.keyDown(box, { key: "p", ctrlKey: true });
   fireEvent.keyDown(box, { key: "Escape" });
 
-  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
   expect(patchCallsOf(client)).toHaveLength(0);
   const row = rowFor("Open the command palette");
   expect(within(row).getByText("K")).toBeTruthy();
-  expect(within(row).queryByText("Customized")).toBeNull();
+  expect(isCustomized(row)).toBe(false);
   // A keyboard-ended capture returns focus to the chord button it started
   // from (a click-away cancel does not - focus went where the user put it).
   expect(document.activeElement).toBe(
@@ -415,11 +424,11 @@ test("after capture, modifier presses do not replace the preview and Escape stil
   fireEvent.keyUp(box, { key: "Shift" });
   fireEvent.keyDown(box, { key: "Escape" });
 
-  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
   expect(patchCallsOf(client)).toHaveLength(0);
   const row = rowFor("Open the command palette");
   expect(within(row).getByText("K")).toBeTruthy();
-  expect(within(row).queryByText("Customized")).toBeNull();
+  expect(isCustomized(row)).toBe(false);
 });
 
 // Plain Escape is cancel, permanently: it cannot be assigned through the
@@ -434,13 +443,12 @@ test("plain Escape cancels but Shift+Escape records as a chord", async () => {
   let box = await enterCapture("Open the command palette");
 
   fireEvent.keyDown(box, { key: "Escape" });
-  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
   expect(patchCallsOf(client)).toHaveLength(0);
 
   box = await enterCapture("Close settings");
   fireEvent.keyDown(box, { key: "Escape", shiftKey: true });
-  expect(within(box).getByText("Shift")).toBeTruthy();
-  expect(within(box).getByText("Escape")).toBeTruthy();
+  expect(keysOf(box)).toEqual(["Shift", "Escape"]);
   fireEvent.keyDown(box, { key: "Enter" });
 
   await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
@@ -497,7 +505,7 @@ test("pointerdown outside the capture box cancels without refocusing the chord b
   fireEvent.keyDown(box, { key: "p", ctrlKey: true });
   fireEvent.pointerDown(document.body);
 
-  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
   expect(patchCallsOf(client)).toHaveLength(0);
   const row = rowFor("Open the command palette");
   expect(within(row).getByText("K")).toBeTruthy();
@@ -515,8 +523,7 @@ test("pointerdown INSIDE the capture box does not cancel", async () => {
 
   fireEvent.pointerDown(box);
 
-  expect(captureBox()).toBeTruthy();
-  expect(screen.getByText("Press new shortcut…")).toBeTruthy();
+  expect(captureState(captureBox())).toBe("idle");
 });
 
 test("the outside-pointerdown listener is removed when the capture closes", async () => {
@@ -533,7 +540,7 @@ test("the outside-pointerdown listener is removed when the capture closes", asyn
     const listener = added[added.length - 1]?.[1];
 
     fireEvent.keyDown(captureBox(), { key: "Escape" });
-    expect(screen.queryByText("Press new shortcut…")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
 
     expect(
       removeSpy.mock.calls.some((call) => call[0] === "pointerdown" && call[1] === listener && call[2] === true),
@@ -552,8 +559,8 @@ test("an unrelated edit preserves a hub rule validation skips (unknown action su
   render(<KeybindingsSection />);
 
   // The skipped rule stays a quiet warning; nothing is customized.
-  expect(screen.getByRole("status").textContent).toContain('unknown keybinding action "future.new.action"');
-  expect(screen.queryByText("Customized")).toBeNull();
+  expect(warningReasons()).toEqual(["unknown-action"]);
+  expect(customizedActions()).toEqual([]);
 
   const box = await enterCapture("Open the command palette");
   fireEvent.keyDown(box, { key: "p", ctrlKey: true });
@@ -574,7 +581,7 @@ test("an unrelated edit preserves a hub rule validation skips (unknown action su
   // The preserved rule's pre-existing warning did not block the save, and
   // the confirmed payload still lists it as a (skipped) warning.
   await waitFor(() => expect(within(rowFor("Open the command palette")).getByText("P")).toBeTruthy());
-  expect(screen.getByRole("status").textContent).toContain('unknown keybinding action "future.new.action"');
+  expect(warningReasons()).toEqual(["unknown-action"]);
 });
 
 test("a plain Enter with nothing captured neither saves nor cancels", async () => {
@@ -584,7 +591,7 @@ test("a plain Enter with nothing captured neither saves nor cancels", async () =
 
   fireEvent.keyDown(box, { key: "Enter" });
 
-  expect(screen.getByText("Press new shortcut…")).toBeTruthy();
+  expect(captureState(captureBox())).toBe("idle");
   expect(patchCallsOf(client)).toHaveLength(0);
 });
 
@@ -598,7 +605,7 @@ test("capturing Space records the canonical name and the chord round-trips throu
   const box = await enterCapture("Focus the composer");
 
   fireEvent.keyDown(box, { key: " " });
-  expect(within(box).getByText("Space")).toBeTruthy();
+  expect(keysOf(box)).toEqual(["Space"]);
   fireEvent.keyDown(box, { key: "Enter" });
 
   await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
@@ -609,7 +616,7 @@ test("capturing Space records the canonical name and the chord round-trips throu
   // The saved chord parses back to the same press (it would throw on " ").
   expect(serializeChord(parseChord(parseKeybinding, "Space"))).toBe("Space");
   // The confirmed payload reconciled onto the registry with the same chord.
-  await waitFor(() => expect(within(rowFor("Focus the composer")).getByText("Space")).toBeTruthy());
+  await waitFor(() => expect(keysOf(rowFor("Focus the composer"))).toEqual(["Space"]));
 });
 
 // IME composition keydowns (isComposing, key "Process"/"Unidentified") are
@@ -622,7 +629,7 @@ test("IME composition events neither record nor save; a non-composing press stil
   // Mid-composition keydowns: no chord recorded.
   fireEvent.keyDown(box, { key: "Process", isComposing: true });
   fireEvent.keyDown(box, { key: "a", isComposing: true });
-  expect(box.textContent).toContain("Press new shortcut…");
+  expect(captureState(box)).toBe("idle");
   // A composition-commit Enter does NOT save...
   fireEvent.keyDown(box, { key: "Enter", isComposing: true });
   fireEvent.keyDown(box, { key: "Unidentified" });
@@ -649,7 +656,7 @@ test("a keydown reported only via keyCode 229 records nothing and does not save"
   const box = await enterCapture("Focus the composer");
 
   fireEvent.keyDown(box, { key: "a", keyCode: 229 });
-  expect(box.textContent).toContain("Press new shortcut…");
+  expect(captureState(box)).toBe("idle");
   fireEvent.keyDown(box, { key: "Enter", keyCode: 229 });
   expect(patchCallsOf(client)).toHaveLength(0);
   expect(captureBox()).toBeTruthy();
@@ -686,17 +693,17 @@ test("a save resolving after a click-away cancel does not clobber a reopened cap
 
   // Click away: the capture cancels while the save is in flight...
   fireEvent.pointerDown(document.body);
-  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
 
   // ...and the user reopens the same row's capture.
   const reopened = await enterCapture("Open the command palette");
-  expect(reopened.textContent).toContain("Press new shortcut…");
+  expect(captureState(reopened)).toBe("idle");
 
   // The stale save resolves: the reopened capture stays open and untouched.
   resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
   await waitFor(() => expect(keybindingsStore.getState().revision).toBe(2));
-  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(reopened);
-  expect(reopened.textContent).toContain("Press new shortcut…");
+  expect(captureBox()).toBe(reopened);
+  expect(captureState(reopened)).toBe("idle");
 });
 
 test("a stale save's error does not surface into a reopened capture", async () => {
@@ -717,7 +724,7 @@ test("a stale save's error does not surface into a reopened capture", async () =
 
   fireEvent.pointerDown(document.body);
   const reopened = await enterCapture("Open the command palette");
-  expect(reopened.textContent).toContain("Press new shortcut…");
+  expect(captureState(reopened)).toBe("idle");
 
   // The old save FAILS: its error belongs to the cancelled capture and must
   // not surface on the ROW. (The store still records the failed patch as
@@ -734,7 +741,7 @@ test("a stale save's error does not surface into a reopened capture", async () =
   // must not strand in a section whose controls have all gone read-only.
   // The finding-13 guarantee this test pins is the error's containment, not
   // the capture's survival across an editability loss.
-  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
 });
 
 // Writes serialize at the store: an edit made while ANOTHER row's write is
@@ -779,7 +786,7 @@ test("a save queued behind another row's in-flight write lands in order and igno
 
   // The capture is cancelled before its save executes.
   fireEvent.pointerDown(document.body);
-  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
 
   // PATCH #1 lands: the queued save composes against the post-Reset state
   // (expectedRevision 2, rules WITHOUT the dropped palette override) and
@@ -794,7 +801,7 @@ test("a save queued behind another row's in-flight write lands in order and igno
 
   // ...but the cancelled capture is never touched: it stays closed, no row
   // error appears, focus is not stolen back to the chord button.
-  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
   expect(within(rowFor("Focus the composer")).queryByRole("alert")).toBeNull();
   expect(document.activeElement).not.toBe(
     screen.getByRole("button", { name: "Change the shortcut for Focus the composer" }),
@@ -857,10 +864,7 @@ test("a conflicting chord is rejected pre-flight: inline message, no hub write, 
   fireEvent.keyDown(box, { key: "p", ctrlKey: true });
   fireEvent.keyDown(box, { key: "Enter" });
 
-  const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain(
-    `chord "Control+P" in scope "global" is already bound by "Open the command palette" (${ACTIONS.paletteOpen})`,
-  );
+  await within(rowFor("Focus the composer")).findByRole("alert");
   expect(patchCallsOf(client)).toHaveLength(0);
   // The capture stays open so the user can try another chord or cancel...
   expect(captureBox()).toBeTruthy();
@@ -893,8 +897,7 @@ test("a platform-reserved chord is rejected pre-flight with the validation messa
   fireEvent.keyDown(box, { key: "w", ctrlKey: true });
   fireEvent.keyDown(box, { key: "Enter" });
 
-  const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain('chord "Control+W" is reserved');
+  await within(rowFor("Focus the composer")).findByRole("alert");
   expect(patchCallsOf(client)).toHaveLength(0);
 });
 
@@ -910,8 +913,8 @@ test("Unbind writes a chord:null rule and the row renders Unbound and Customized
     config: { version: 1, rules: [{ action: ACTIONS.paletteOpen, chord: null }] },
   });
   const row = rowFor("Open the command palette");
-  await waitFor(() => expect(within(row).getByText("Unbound")).toBeTruthy());
-  expect(within(row).getByText("Customized")).toBeTruthy();
+  await waitFor(() => expect(isUnbound(row)).toBe(true));
+  expect(isCustomized(row)).toBe(true);
   // An unbound action offers capture (to set a new chord) but not Unbind.
   expect(within(row).getByRole("button", { name: "Set a shortcut for Open the command palette" })).toBeTruthy();
   expect(within(row).queryByRole("button", { name: "Unbind" })).toBeNull();
@@ -922,7 +925,7 @@ test("Reset removes the action's rule and restores the default chord", async () 
   render(<KeybindingsSection />);
   const row = rowFor("Open the command palette");
   expect(within(row).getByText("P")).toBeTruthy();
-  expect(within(row).getByText("Customized")).toBeTruthy();
+  expect(isCustomized(row)).toBe(true);
 
   await userEvent.setup().click(within(row).getByRole("button", { name: "Reset" }));
 
@@ -934,7 +937,7 @@ test("Reset removes the action's rule and restores the default chord", async () 
     config: { version: 1, rules: [] },
   });
   await waitFor(() => expect(within(row).getByText("K")).toBeTruthy());
-  expect(within(row).queryByText("Customized")).toBeNull();
+  expect(isCustomized(row)).toBe(false);
   expect(within(row).queryByRole("button", { name: "Reset" })).toBeNull();
 });
 
@@ -994,7 +997,7 @@ test("a confirmed hub payload clears a stale row error - and leaves an unrelated
       params: overridesPayload(1, []),
     });
   });
-  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(box);
+  expect(captureBox()).toBe(box);
 });
 
 // The cheatsheet.toggle row is the one multi-entry action: the editor edits
@@ -1011,9 +1014,8 @@ test("the cheatsheet row shows the conditional ? trigger as a read-only note", a
   ).toBeTruthy();
   expect(within(row).getAllByRole("button", { name: /shortcut for/ })).toHaveLength(1);
   // ...and the "?" entry as a note, not a second editable chord.
-  const note = row.querySelector("p");
-  expect(note?.textContent).toContain("character-key setting");
-  expect(within(row).getByText("?")).toBeTruthy();
+  const note = within(row).getByTestId("conditional-trigger-note");
+  expect(keysOf(note)).toEqual(["?"]);
 });
 
 test("the ? note disappears with the conditional binding (character-key setting off)", async () => {
@@ -1022,7 +1024,7 @@ test("the ? note disappears with the conditional binding (character-key setting 
   render(<KeybindingsSection />);
 
   const row = rowFor("Show the keyboard shortcuts overlay");
-  expect(row.textContent).not.toContain("character-key setting");
+  expect(within(row).queryByTestId("conditional-trigger-note")).toBeNull();
 });
 
 test("an override on cheatsheet.toggle owns the whole chord set: no ? note", async () => {
@@ -1030,8 +1032,8 @@ test("an override on cheatsheet.toggle owns the whole chord set: no ? note", asy
   render(<KeybindingsSection />);
 
   const row = rowFor("Show the keyboard shortcuts overlay");
-  expect(row.textContent).not.toContain("character-key setting");
-  expect(within(row).getByText("Customized")).toBeTruthy();
+  expect(within(row).queryByTestId("conditional-trigger-note")).toBeNull();
+  expect(isCustomized(row)).toBe(true);
 });
 
 // While capture is active the window-level dispatcher must not act: the
@@ -1065,8 +1067,7 @@ test("a captured chord never reaches the dispatcher (rail.toggle opts out of def
       fireEvent.keyDown(box, { key: "b", ctrlKey: true });
 
       expect(railSpy).not.toHaveBeenCalled();
-      expect(within(box).getByText("Ctrl")).toBeTruthy();
-      expect(within(box).getByText("B")).toBeTruthy();
+      expect(keysOf(box)).toEqual(["Ctrl", "B"]);
     });
   } finally {
     unregister();
@@ -1086,7 +1087,7 @@ test("Escape cancels the capture and does NOT fire settings.close; outside captu
       fireEvent.keyDown(box, { key: "Escape" });
 
       // Capture cancelled, pane still open.
-      expect(screen.queryByText("Press new shortcut…")).toBeNull();
+      expect(screen.queryByRole("textbox")).toBeNull();
       expect(closeSpy).not.toHaveBeenCalled();
 
       // Not capturing: Escape reaches the settings scope's close binding.
@@ -1128,7 +1129,7 @@ test("editable flipping false mid-capture closes the box and a resolving in-flig
       features: { ...(await client.connect()).features, keybindingsSettings: false },
     });
   });
-  await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("textbox")).toBeNull());
   expect(screen.queryByRole("button", { name: /shortcut for Open the command palette/ })).toBeNull();
 
   // The stale save resolves: no capture reopens, no row-level error.
@@ -1136,7 +1137,7 @@ test("editable flipping false mid-capture closes the box and a resolving in-flig
     resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
     await pendingPatch;
   });
-  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
   expect(within(rowFor("Open the command palette")).queryByRole("alert")).toBeNull();
 });
 
@@ -1152,7 +1153,7 @@ test("editable true → false → true leaves the row read-only then editable ag
       features: { ...(await client.connect()).features, keybindingsSettings: false },
     });
   });
-  await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("textbox")).toBeNull());
   expect(screen.queryByRole("button", { name: /shortcut for Open the command palette/ })).toBeNull();
 
   // Support returns (the store re-refreshes the hub payload on its own):
@@ -1164,7 +1165,7 @@ test("editable true → false → true leaves the row read-only then editable ag
   });
   const chordButton = await screen.findByRole("button", { name: "Change the shortcut for Open the command palette" });
   await userEvent.setup().click(chordButton);
-  expect(captureBox().textContent).toContain("Press new shortcut…");
+  expect(captureState(captureBox())).toBe("idle");
 });
 
 // Reset availability derives from the hub's RAW rules: a persisted rule
@@ -1179,13 +1180,9 @@ test("a persisted rule skipped for conflicting with a default names the holder b
   await wireEditableClient([{ action: ACTIONS.composerFocus, chord: "Control+K" }]);
   render(<KeybindingsSection />);
 
-  await waitFor(() =>
-    expect(screen.getByRole("status").textContent).toContain(
-      `chord "Control+K" in scope "global" is already bound by "Open the command palette" (${ACTIONS.paletteOpen})`,
-    ),
-  );
+  await waitFor(() => expect(warningReasons()).toEqual(["conflict"]));
   // The skipped rule changed nothing: composer stays on its default.
-  expect(within(rowFor("Focus the composer")).queryByText("Customized")).toBeNull();
+  expect(isCustomized(rowFor("Focus the composer"))).toBe(false);
 });
 
 test("a persisted rule skipped by validation shows Reset, and clicking it drops the rule from the hub payload", async () => {
@@ -1200,7 +1197,7 @@ test("a persisted rule skipped by validation shows Reset, and clicking it drops 
   expect(within(rowFor("Open the command palette")).queryByRole("button", { name: "Reset" })).toBeNull();
   // The Customized marker stays on the effective bindings: the skipped rule
   // changed nothing, so no marker.
-  expect(within(row).queryByText("Customized")).toBeNull();
+  expect(isCustomized(row)).toBe(false);
 
   await userEvent.setup().click(reset);
   await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
@@ -1229,8 +1226,7 @@ test("a Reset preflight rejection's row error clears on the next confirmed paylo
   // still claims - an introduced conflict the hub write never sees.
   const row = rowFor("Open the command palette");
   await userEvent.setup().click(within(row).getByRole("button", { name: "Reset" }));
-  const alert = await within(row).findByRole("alert");
-  expect(alert.textContent).toContain(`already bound by "Open the command palette" (${ACTIONS.paletteOpen})`);
+  await within(row).findByRole("alert");
   expect(patchCallsOf(client)).toHaveLength(0);
   expect(keybindingsStore.getState().hubError).toBeNull();
 
@@ -1293,8 +1289,7 @@ test("a generation-fenced queued write's row error clears on the next confirmed 
   // composer row shows the error while hubError stays null.
   resolvePatch?.(overridesPayload(4, []));
   const composerRow = rowFor("Focus the composer");
-  const alert = await within(composerRow).findByRole("alert");
-  expect(alert.textContent).toContain("unavailable");
+  await within(composerRow).findByRole("alert");
   expect(keybindingsStore.getState().hubError).toBeNull();
   expect(patchCallsOf(client)).toHaveLength(1);
 
@@ -1335,15 +1330,12 @@ test("a wedged support loss keeps the overrides firing and the status does not c
     });
   });
 
-  const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("still in effect");
-  const status = screen.getByRole("status");
-  expect(status.textContent).not.toContain("built-in defaults are in effect");
-  expect(status.textContent).toContain("still in effect");
+  await screen.findByRole("alert");
+  expect(readOnlyReason()).toBe("unsupported-overrides-retained");
   // ...and the listing backs it up: the palette override is still firing
   // and still marked Customized.
   const row = rowFor("Open the command palette");
-  expect(within(row).getByText("Customized")).toBeTruthy();
+  expect(isCustomized(row)).toBe(true);
   expect(within(row).getByText("P")).toBeTruthy();
 });
 
@@ -1414,8 +1406,8 @@ test("Retry does not appear on an unsupported hub, even with the rollback alert 
       features: { ...(await client.connect()).features, keybindingsSettings: false },
     });
   });
-  const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("still in effect");
+  await screen.findByRole("alert");
+  expect(readOnlyReason()).toBe("unsupported-overrides-retained");
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 });
 
@@ -1457,7 +1449,7 @@ test("Retry is disabled while a refresh is in flight through the rollback window
     });
   });
   await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
-  expect(keybindingsStore.getState().hubError).toContain("still in effect");
+  expect(keybindingsStore.getState().hubError).not.toBeNull();
 
   // Retry is mounted (supported hub, hubError present) but disabled for the
   // flight: clicking it fires no second get.

@@ -7,7 +7,7 @@ import { useConnectionStatusText } from "../board/connectionStatus";
 import { LOCAL_HOST, liveSessionsText } from "../hosts/liveCounts";
 import { Group, GroupedPage, Row } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
-import { hubConnectionWord } from "./hubHeader";
+import { hubConnectionState, hubConnectionWord } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useHostsOnScreen } from "./useHostsOnScreen";
 
@@ -19,7 +19,11 @@ export function OwnHostPage(_props: NativeStackScreenProps<HubRoutes, "OwnHost">
 		<GroupedPage>
 			<SheetStatus />
 			<Group>
-				<Row label="Status" value={hubConnectionWord(ready, connectionLine)} />
+				<Row
+					label="Status"
+					value={hubConnectionWord(ready, connectionLine)}
+					testID={`hub-connection-${hubConnectionState(ready, connectionLine)}`}
+				/>
 				<Row label="Version" value={hubVersion ?? "Unknown"} />
 				{/* Out of reach while the phone can't reach the hub, as a host's are. */}
 				<Row label="Sessions" value={liveSessionsText(liveCount(LOCAL_HOST), !ready)} />

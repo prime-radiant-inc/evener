@@ -10,6 +10,7 @@ import { connectJobOutputPeer } from "@evener/appwire-client/testing/jobOutputPe
 import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
+import { hasTestID, markers } from "../markerTestUtils";
 import { render, renderedText, screenConnection, settle } from "../renderNative.testkit";
 import { forgetSubagentTrees } from "./subagentTree";
 import { ShellJobScreen } from "./ShellJobScreen";
@@ -193,10 +194,10 @@ it("names no exit code for a job that is running or exited cleanly", async () =>
 			endedAt: undefined,
 		}),
 	);
-	expect(renderedText(await mount())).not.toContain("Exited");
+	expect(hasTestID(await mount(), "job-exit-code")).toBe(false);
 	act(() => forgetSubagentTrees("hub-1"));
 	tree = treeWith(shellJob("j-test", { status: "completed", outcome: "success", exitCode: 0 }));
-	expect(renderedText(await mount())).not.toContain("Exited");
+	expect(hasTestID(await mount(), "job-exit-code")).toBe(false);
 });
 
 // Behind another screen the running job isn't read on a pace, so what reads
@@ -252,20 +253,20 @@ it("says when the job wrote nothing, when its output can't be read, and when it'
 	output = () => ({
 		data: { offsetBytes: 0, bytesReturned: 0, totalBytes: 0, retainedStartBytes: 0, encoding: "utf8", data: "" },
 	});
-	expect(renderedText(await mount())).toContain("No output.");
+	expect(markers(await mount(), "output-note")).toEqual(["empty"]);
 
 	act(() => forgetSubagentTrees("hub-1"));
 	output = () => Promise.reject(new Error("job not found: j-test"));
-	expect(renderedText(await mount())).toContain("The output couldn't be read right now.");
+	expect(markers(await mount(), "output-note")).toEqual(["failed"]);
 
 	act(() => forgetSubagentTrees("hub-1"));
 	output = () => ({ data: { tail: 3 } });
-	expect(renderedText(await mount())).toContain("The output couldn't be read right now.");
+	expect(markers(await mount(), "output-note")).toEqual(["failed"]);
 
 	act(() => forgetSubagentTrees("hub-1"));
 	tree = { revision: 1, root: session("local:coord", COORDINATOR.title, []) };
 	const gone = await mount();
-	expect(renderedText(gone)).toContain("This job is no longer listed.");
+	expect(markers(gone, "job-gone")).toEqual(["unlisted"]);
 	expect(outputCalls().filter((call) => call.params.jobId === "j-test")).toHaveLength(3);
 });
 
@@ -275,7 +276,7 @@ it("drops the output it showed once the job leaves the tree", async () => {
 	const screen = await mount();
 	expect(renderedText(screen)).toContain("--- FAIL: TestSettle (0.01s)");
 	await treeChanges({ revision: 2, root: session("local:coord", COORDINATOR.title, []) });
-	expect(renderedText(screen)).toContain("This job is no longer listed.");
+	expect(markers(screen, "job-gone")).toEqual(["unlisted"]);
 	expect(renderedText(screen)).not.toContain("--- FAIL: TestSettle (0.01s)");
 });
 
@@ -325,13 +326,12 @@ it("says the job can't be listed right now while the tree is partial, not that i
 		root: { ...session("local:coord", COORDINATOR.title, []), branch: { truncated: true, continuation: "page-2" } },
 	};
 	const screen = await mount();
-	expect(renderedText(screen)).not.toContain("This job is no longer listed.");
-	expect(renderedText(screen)).toContain("This job couldn't be read right now.");
+	expect(markers(screen, "job-gone")).toEqual(["failed"]);
 });
 
 it("says when the kept output starts partway through", async () => {
 	output = () => ({ data: { ...PAGE, totalBytes: 9000, offsetBytes: 8947 } });
-	expect(renderedText(await mount())).toContain("Showing the end of the output");
+	expect(markers(await mount(), "output-note")).toEqual(["tail"]);
 });
 
 it("reads output for the selected owner when another session has the same raw job ID", async () => {
@@ -431,7 +431,7 @@ it.each([
 		await act(async () => peer.reply(request, page));
 		const shown = renderedText(screen);
 		expect(shown).toContain(expected);
-		expect(shown.includes("Showing the end of the output.")).toBe(partial);
+		expect(markers(screen, "output-note").includes("tail")).toBe(partial);
 		expect(shown).toContain("go test ./agent/... -run TestSettle");
 	} finally {
 		act(() => realClient.close());
@@ -449,9 +449,7 @@ it("shows a structured pruning failure instead of an empty native output", async
 				totalBytes: 105,
 			}),
 		);
-		const shown = renderedText(screen);
-		expect(shown).toContain("The output couldn't be read right now.");
-		expect(shown).not.toContain("No output.");
+		expect(markers(screen, "output-note")).toEqual(["failed"]);
 	} finally {
 		act(() => realClient.close());
 	}

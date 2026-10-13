@@ -1,10 +1,12 @@
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
+import { cleanup, type RenderOptions, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
+import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { MobileSection } from "./mobile";
+import { statusReasons } from "./reasonTestUtils";
 
 // Lets one test simulate a rejected `import("qrcode.react")` chunk load: the
 // mock only throws while the flag is set, so every other test imports the
@@ -87,10 +89,10 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
 
     // The failure stays scoped to the QR slot: an error fallback instead of
     // the QR, with the section and its copy-pairing-link action intact.
-    expect(await screen.findByText("Couldn't load the QR renderer")).toBeTruthy();
-    expect(screen.getByText(/pairing link below still works/i)).toBeTruthy();
+    await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+    expect(emptyStateReasons(document.body)).toEqual([]);
     expect(screen.getByRole("button", { name: "Copy pairing link" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Mobile app" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Scan with your phone" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();
     expect(onCaughtError).toHaveBeenCalledTimes(1);
     const caughtError = onCaughtError.mock.calls[0]?.[0];
@@ -110,8 +112,8 @@ test("renders HTTP observation and reusable-capability warnings for a mixed-case
 
   expect(await screen.findByRole("img", { name: "Mobile app pairing QR code" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Copy pairing link" })).toBeTruthy();
-  expect(screen.getByText(/anyone who can observe this network can observe the pairing capability/i)).toBeTruthy();
-  expect(screen.getByText(/this link remains valid and can be reused/i)).toBeTruthy();
+  expect(screen.getByTestId("mobile-http-warning")).toBeTruthy();
+  expect(screen.getByTestId("mobile-reuse-warning")).toBeTruthy();
   expect(client.calls).toEqual([{ method: "evener/mobile/pairing", params: { origin: window.location.origin } }]);
 });
 
@@ -122,8 +124,8 @@ test("renders the reusable-capability warning for HTTPS without the HTTP observa
   renderMobileSection();
 
   expect(await screen.findByRole("img", { name: "Mobile app pairing QR code" })).toBeTruthy();
-  expect(screen.getByText(/this link remains valid and can be reused/i)).toBeTruthy();
-  expect(screen.queryByText(/anyone who can observe this network/i)).toBeNull();
+  expect(screen.getByTestId("mobile-reuse-warning")).toBeTruthy();
+  expect(screen.queryByTestId("mobile-http-warning")).toBeNull();
 });
 
 test("renders resolved QR svg output inside the labelled image wrapper", async () => {
@@ -140,7 +142,7 @@ test("renders resolved QR svg output inside the labelled image wrapper", async (
   expect(svg.querySelector("path")).not.toBeNull();
 });
 
-test("shows configuration guidance instead of a QR when the Hub has no reachable origin", async () => {
+test("does not offer a direct credential QR when no destination is available", async () => {
   client.on("evener/mobile/pairing", () => {
     throw new WireError("mobile pairing requires a reachable non-loopback Hub origin", -32013, {
       evenerErrorInfo: "conflict",
@@ -149,7 +151,6 @@ test("shows configuration guidance instead of a QR when the Hub has no reachable
 
   renderMobileSection();
 
-  expect(await screen.findByText("Mobile pairing needs a reachable Hub origin")).toBeTruthy();
-  expect(screen.getByText(/configure mobile_base_url/i)).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["needs-configuration"]));
   expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();
 });

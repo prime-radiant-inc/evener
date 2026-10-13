@@ -72,7 +72,7 @@
 import type { AskBatch, AskResolution } from "@evener/appwire-client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import { Button, useToasts } from "../../../../widgets";
+import { Button, Card, useToasts, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { requestComposerFocus } from "../composerFocus";
 import { AskQuestionCard } from "./AskQuestionCard";
@@ -86,9 +86,8 @@ const CLASS = {
   tabs: requireClass(styles.tabs, "askdock.module.css", "tabs"),
   tab: requireClass(styles.tab, "askdock.module.css", "tab"),
   tabCheck: requireClass(styles.tabCheck, "askdock.module.css", "tabCheck"),
-  footer: requireClass(styles.footer, "askdock.module.css", "footer"),
+  batchFooter: requireClass(styles.batchFooter, "askdock.module.css", "batchFooter"),
   count: requireClass(styles.count, "askdock.module.css", "count"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "askdock.module.css", "visuallyHidden"),
 };
 
 export interface AskDockProps {
@@ -290,61 +289,64 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
     // CSS-module class name. While sending, every editing control inside is
     // disabled, so the container itself takes tabIndex -1 as the jump's
     // focus-landing fallback (focusBatchEntry's last resort - the card is
-    // otherwise never in the tab order).
-    // biome-ignore lint/a11y/noStaticElementInteractions: catches Mod+Enter/Enter bubbling up from the batch's own controls (radios, the free-text input) - the div is a layout container, not itself interactive, same precedent as Settings.tsx's own Escape-catching wrapper
-    <div
-      className={CLASS.batch}
+    // otherwise never in the tab order). onKeyDown catches Mod+Enter/Enter
+    // bubbling up from the batch's own controls (radios, the free-text
+    // input); the card is a container, not itself interactive.
+    <Card
+      tone="attention"
       onKeyDown={handleBatchKeyDown}
       data-ask-batch={batch.id}
       tabIndex={batch.sending ? -1 : undefined}
     >
-      {total > 1 && (
-        // key="tabs"/key="panel" on both siblings: when a late ask_user call
-        // grows a single-question batch past one question, the tab strip
-        // INSERTS before the card wrapper - keyed siblings let React reuse
-        // the wrapper instead of remounting it, which is what keeps an
-        // in-progress answer's focus alive across exactly that transition
-        // (test-ask-card.js's "does not steal focus" contract).
-        <div key="tabs" className={CLASS.tabs} role="tablist" aria-label="Questions" onKeyDown={handleTabsKeyDown}>
-          {batch.questions.map((question, index) => {
-            const answered = answerFor(answers, question.key).resolution !== null;
-            const selected = question.key === activeKey;
-            return (
-              <button
-                key={question.key}
-                ref={(el) => {
-                  tabRefs.current[index] = el;
-                }}
-                type="button"
-                role="tab"
-                id={tabId(index)}
-                aria-selected={selected}
-                aria-controls={panelId}
-                // Roving tabindex: only the selected tab is in the tab order -
-                // the strip is one stop, not N, and arrows move within it.
-                tabIndex={selected ? 0 : -1}
-                className={CLASS.tab}
-                onClick={() => selectTab(index, false)}
-                // aria-label, not a visually-hidden suffix inside the
-                // content: the answered state must read identically
-                // everywhere ("1. First (answered)"), and content-derived
-                // names get implementation-defined whitespace at element
-                // boundaries. The ✓ glyph stays aria-hidden decoration for
-                // sighted readers.
-                aria-label={answered ? `${index + 1}. ${question.header} (answered)` : undefined}
-              >
-                {index + 1}. {question.header}
-                {answered && (
-                  <span className={CLASS.tabCheck} aria-hidden="true">
-                    ✓
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {/* The card wrapper is ALWAYS a key="panel" div (never the cards as
+      <div className={CLASS.batch}>
+        {total > 1 && (
+          // key="tabs"/key="panel" on both siblings: when a late ask_user call
+          // grows a single-question batch past one question, the tab strip
+          // INSERTS before the card wrapper - keyed siblings let React reuse
+          // the wrapper instead of remounting it, which is what keeps an
+          // in-progress answer's focus alive across exactly that transition
+          // (test-ask-card.js's "does not steal focus" contract).
+          <div key="tabs" className={CLASS.tabs} role="tablist" aria-label="Questions" onKeyDown={handleTabsKeyDown}>
+            {batch.questions.map((question, index) => {
+              const answered = answerFor(answers, question.key).resolution !== null;
+              const selected = question.key === activeKey;
+              return (
+                <button
+                  key={question.key}
+                  ref={(el) => {
+                    tabRefs.current[index] = el;
+                  }}
+                  type="button"
+                  role="tab"
+                  id={tabId(index)}
+                  aria-selected={selected}
+                  aria-controls={panelId}
+                  // Roving tabindex: only the selected tab is in the tab order -
+                  // the strip is one stop, not N, and arrows move within it.
+                  tabIndex={selected ? 0 : -1}
+                  className={CLASS.tab}
+                  data-state={answered ? "answered" : "open"}
+                  onClick={() => selectTab(index, false)}
+                  // aria-label, not a visually-hidden suffix inside the
+                  // content: the answered state must read identically
+                  // everywhere ("1. First (answered)"), and content-derived
+                  // names get implementation-defined whitespace at element
+                  // boundaries. The ✓ glyph stays aria-hidden decoration for
+                  // sighted readers.
+                  aria-label={answered ? `${index + 1}. ${question.header} (answered)` : undefined}
+                >
+                  {index + 1}. {question.header}
+                  {answered && (
+                    <span className={CLASS.tabCheck} aria-hidden="true">
+                      ✓
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {/* The card wrapper is ALWAYS a key="panel" div (never the cards as
           direct batch children - see the key="tabs" comment above), so the
           1 -> 2 question transition swaps only its props (plain wrapper ->
           tabpanel), never remounts it. Two static branches, not conditional
@@ -353,20 +355,20 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
           it, only the active question's card mounts once tabs exist - the
           whole point of kata 99yf is that the other N-1 questions are not
           on the screen at all. */}
-      {total > 1 ? (
-        <div key="panel" role="tabpanel" id={panelId} aria-labelledby={tabId(activeIndex)}>
-          {activeQuestion !== undefined && renderCard(activeQuestion, activeIndex)}
-        </div>
-      ) : (
-        <div key="panel">{batch.questions.map((question, index) => renderCard(question, index))}</div>
-      )}
-      <div className={CLASS.footer}>
-        {/* Visual count only - NOT a live region (virtualized remounts would
+        {total > 1 ? (
+          <div key="panel" role="tabpanel" id={panelId} aria-labelledby={tabId(activeIndex)}>
+            {activeQuestion !== undefined && renderCard(activeQuestion, activeIndex)}
+          </div>
+        ) : (
+          <div key="panel">{batch.questions.map((question, index) => renderCard(question, index))}</div>
+        )}
+        <div className={CLASS.batchFooter}>
+          {/* Visual count only - NOT a live region (virtualized remounts would
             re-announce it; AskDockAnnouncements owns count announcements). */}
-        <span className={CLASS.count}>
-          {answeredCount} of {total} {total === 1 ? "question" : "questions"} answered
-        </span>
-        {/* Blue primary, same pattern as sandboxEscalation's Allow button
+          <span className={CLASS.count} data-testid="ask-dock-count" data-answered={answeredCount} data-total={total}>
+            {answeredCount} of {total} {total === 1 ? "question" : "questions"} answered
+          </span>
+          {/* Blue primary, same pattern as sandboxEscalation's Allow button
             (topic 16: amber owns the container above, blue owns the one
             action that resolves it) - Button's own primary variant is the
             token-contract-ungated --accent, so this needs no allowlisting.
@@ -374,11 +376,12 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
             "Send answers" while actually just moving the reader to another
             question, and Send stays disabled while a multi-question batch
             still has an unanswered question nobody is being walked to. */}
-        <Button variant="primary" size="sm" disabled={sendDisabled} onClick={handlePrimaryAction}>
-          {advanceTarget !== undefined ? "Next question" : "Send answers"}
-        </Button>
+          <Button variant="primary" size="sm" disabled={sendDisabled} onClick={handlePrimaryAction}>
+            {advanceTarget !== undefined ? "Next question" : "Send answers"}
+          </Button>
+        </div>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -392,11 +395,23 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
 // count moving (the old in-row count span's text), and resolution clearing
 // the region. The composer owns the exit half ("Message composer ready.")
 // for the same reason it always has.
+// What the live region last announced: the prompt a pending set activates
+// with, or the answered count moving.
+type AnnouncementKind = "prompt" | "progress";
+
+interface Announcement {
+  text: string;
+  kind?: AnnouncementKind;
+  // The answered-of-total count a "progress" announcement carries.
+  progress?: { answered: number; total: number };
+  key: number;
+}
+
 export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
   const epoch = useAskDockStore((s) => s.byRef.get(sessionRef)?.activationEpoch ?? 0);
-  const [announcement, setAnnouncement] = useState({ text: "", key: 0 });
+  const [announcement, setAnnouncement] = useState<Announcement>({ text: "", key: 0 });
   const prevRef = useRef<{ ref: string; pending: boolean; count: string; epoch: number }>({
     ref: sessionRef,
     pending: false,
@@ -412,7 +427,11 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   );
   const count = pending ? `${answered} of ${total} ${total === 1 ? "question" : "questions"} answered` : "";
 
-  const announce = useCallback((text: string) => setAnnouncement((a) => ({ text, key: a.key + 1 })), []);
+  const announce = useCallback(
+    (text: string, kind?: AnnouncementKind, progress?: Announcement["progress"]) =>
+      setAnnouncement((a) => ({ text, kind, progress, key: a.key + 1 })),
+    [],
+  );
 
   useEffect(() => {
     const prev = prevRef.current;
@@ -423,7 +442,8 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
     // audible at all - a live region announces content mutations, and
     // unchanged text is no mutation.
     if (prev.ref !== sessionRef) {
-      announce(pending ? "Answer the agent’s questions." : "");
+      if (pending) announce("Answer the agent’s questions.", "prompt");
+      else announce("");
       return;
     }
     // Every activation announces the prompt - including an atomic
@@ -431,19 +451,26 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
     // true throughout and the new set may carry an identical answered
     // count, so neither other signal moves.
     if (epoch !== prev.epoch && epoch > 0) {
-      announce("Answer the agent’s questions.");
+      announce("Answer the agent’s questions.", "prompt");
       return;
     }
     if (pending && count !== prev.count) {
-      announce(count);
+      announce(count, "progress", { answered, total });
     } else if (!pending && prev.pending) {
       announce("");
     }
-  }, [sessionRef, pending, count, epoch, announce]);
+  }, [sessionRef, pending, count, answered, total, epoch, announce]);
 
   return (
-    <div className={CLASS.visuallyHidden} role="status" aria-live="polite" data-testid="ask-dock-announcements">
-      <span key={announcement.key}>{announcement.text}</span>
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="ask-dock-announcements"
+      data-kind={announcement.kind}
+      data-answered={announcement.progress?.answered}
+      data-total={announcement.progress?.total}
+    >
+      <VisuallyHidden key={announcement.key}>{announcement.text}</VisuallyHidden>
     </div>
   );
 }

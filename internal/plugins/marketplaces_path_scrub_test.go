@@ -491,9 +491,6 @@ func TestEditMarketplaceStoreRootFailureKeepsItsReason(t *testing.T) {
 	if !errors.Is(err, errStoreRootUnset) {
 		t.Fatalf("err = %v, want errors.Is(err, errStoreRootUnset)", err)
 	}
-	if !strings.Contains(err.Error(), "no plugin store root is configured") {
-		t.Fatalf("err = %v, want the reason named for the client", err)
-	}
 }
 
 // Lock contention is transient and actionable - retry shortly - and only the

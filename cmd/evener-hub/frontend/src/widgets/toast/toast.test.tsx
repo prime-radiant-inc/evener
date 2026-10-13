@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { Toast, type ToastKind, useToasts } from "./index";
-import { resetToastStoreForTests } from "./store";
+import { getToasts, pushToast, resetToastStoreForTests } from "./store";
 
 afterEach(() => {
   cleanup();
@@ -188,4 +188,24 @@ test("dismissing one toast leaves an independently-timed toast alone", () => {
 
   advance(3000); // Late's clock: 5000 elapsed.
   expect(screen.queryByText("Late")).toBeNull();
+});
+
+test("a toast carries its kind and, when the caller names one, its reason", () => {
+  render(<Toast />);
+  act(() => {
+    pushToast("success", "first", "removed");
+    pushToast("error", "second");
+  });
+  expect(getToasts().map(({ kind, reason }) => ({ kind, reason }))).toEqual([
+    { kind: "success", reason: "removed" },
+    { kind: "error", reason: undefined },
+  ]);
+  const shown = [...document.querySelectorAll("[data-kind]")].map((toast) => [
+    toast.getAttribute("data-kind"),
+    toast.getAttribute("data-reason"),
+  ]);
+  expect(shown).toEqual([
+    ["success", "removed"],
+    ["error", null],
+  ]);
 });

@@ -14,6 +14,15 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+// Both launch-layer editors mount together once the layer has loaded.
+async function launchLayerLoaded(): Promise<void> {
+  await screen.findByRole("textbox", { name: "Inline MCP servers" });
+}
+
+function discoveredBlock(): Element | null {
+  return document.querySelector("[data-section='mcp-discovered']");
+}
+
 function overviewHook(overrides: Partial<SettingsOverviewLike> = {}): () => SettingsOverviewLike {
   const state: SettingsOverviewLike = {
     data: null,
@@ -53,7 +62,7 @@ test("renders discovered servers from the injected overview data with a status p
     mcpDiscovered: {
       servers: [
         { name: "local-tool", transport: "stdio", status: "available" },
-        { name: "remote-api", transport: "http", status: "unreachable", error: "connection refused" },
+        { name: "remote-api", transport: "http", status: "unreachable", error: "probe-error-from-hub" },
       ],
     },
   };
@@ -63,7 +72,7 @@ test("renders discovered servers from the injected overview data with a status p
   expect(screen.getByText("available")).toBeTruthy();
   expect(screen.getByText(/remote-api/)).toBeTruthy();
   expect(screen.getByText("unreachable")).toBeTruthy();
-  expect(screen.getByText("connection refused")).toBeTruthy();
+  expect(screen.getByText("probe-error-from-hub")).toBeTruthy();
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
@@ -73,7 +82,7 @@ test("shows the discovered-servers empty state", async () => {
   connectFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { servers: [] } } })} />);
-  expect(screen.getByText("No MCP servers configured.")).toBeTruthy();
+  expect(screen.getByTestId("mcp-discovered-empty")).toBeTruthy();
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
@@ -93,8 +102,8 @@ test("a top-level probe failure replaces the discovered-servers list with one me
   connectFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { error: "probe timed out" } } })} />);
-  expect(screen.getByText("Failed to load")).toBeTruthy();
-  expect(screen.getByText("probe timed out")).toBeTruthy();
+  expect(screen.queryByRole("list", { name: "Discovered MCP servers" })).toBeNull();
+  expect(screen.getByRole("alert").textContent).toContain("probe timed out");
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
@@ -121,7 +130,7 @@ test("adding a config file validates as kind:file and saves mcpConfigs", async (
   });
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No MCP config files. Add one below.");
+  await launchLayerLoaded();
   await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await screen.findByRole("combobox", { name: "Path" });
   await user.keyboard("/etc/mcp.json");
@@ -142,7 +151,7 @@ test("the config-file add row browses files, and picking one fills the add field
     return { data: ["/etc/mcp/", "/etc/mcp.json"] };
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No MCP config files. Add one below.");
+  await launchLayerLoaded();
   await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.click(await screen.findByRole("option", { name: /mcp\.json/ }));
   await waitFor(() =>
@@ -164,6 +173,29 @@ test("removing a config file confirms first, then saves with it filtered out", a
   expect(screen.getByRole("dialog", { name: "Remove config file" })).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await waitFor(() => expect(screen.queryByText("/etc/mcp.json")).toBeNull());
+});
+
+// The inline-server add field takes "name command [args...]" and submits
+// through the Add button of its own form (the config-file list has another).
+async function addInlineServer(user: ReturnType<typeof userEvent.setup>, entry: string): Promise<void> {
+  const field = screen.getByRole("textbox", { name: "Inline MCP servers" });
+  await user.type(field, entry);
+  const form = field.closest("form");
+  if (form === null) throw new Error("the inline-server add form did not render");
+  await user.click(within(form).getByRole("button", { name: "Add" }));
+}
+
+test("an inline server entry without a command is refused before validating", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  const validateSpy = vi.fn();
+  fake.on("evener/path/validate", validateSpy);
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await launchLayerLoaded();
+  await addInlineServer(user, "search");
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(validateSpy).not.toHaveBeenCalled();
 });
 
 test("renders inline MCP servers as '{name} → {command} {args}'", async () => {
@@ -193,12 +225,8 @@ test("adding an inline server validates the command as kind:command and saves mc
     return { effective: {}, layers: {}, provenance: {} };
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No inline MCP servers. Add one below.");
-  await user.type(screen.getByPlaceholderText("name"), "search");
-  await user.type(screen.getByPlaceholderText("command"), "/usr/bin/search-mcp");
-  await user.type(screen.getByPlaceholderText("args (space-separated)"), "--port 9000");
-  const addButtons = screen.getAllByRole("button", { name: "Add" });
-  await user.click(addButtons[addButtons.length - 1]!);
+  await launchLayerLoaded();
+  await addInlineServer(user, "search /usr/bin/search-mcp --port 9000");
   expect(await screen.findByText("search → /usr/bin/search-mcp --port 9000")).toBeTruthy();
 });
 
@@ -206,16 +234,13 @@ test("an invalid command shows the inline error and does not save", async () => 
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
-  fake.on("evener/path/validate", () => ({ path: "nope", valid: false, error: "command not found" }));
+  fake.on("evener/path/validate", () => ({ path: "nope", valid: false, error: "validator-refusal" }));
   const setLayerSpy = vi.fn();
   fake.on("evener/launch/setLayer", setLayerSpy);
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No inline MCP servers. Add one below.");
-  await user.type(screen.getByPlaceholderText("name"), "search");
-  await user.type(screen.getByPlaceholderText("command"), "nope");
-  const addButtons = screen.getAllByRole("button", { name: "Add" });
-  await user.click(addButtons[addButtons.length - 1]!);
-  expect(await screen.findByText("command not found")).toBeTruthy();
+  await launchLayerLoaded();
+  await addInlineServer(user, "search nope");
+  expect(await screen.findByText("validator-refusal")).toBeTruthy();
   expect(setLayerSpy).not.toHaveBeenCalled();
 });
 
@@ -277,18 +302,18 @@ test("adding a config file with invalid path shows error without saving", async 
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
-  fake.on("evener/path/validate", () => ({ path: "", valid: false, error: "path does not exist" }));
+  fake.on("evener/path/validate", () => ({ path: "", valid: false, error: "validator-refusal" }));
   const setLayerSpy = vi.fn();
   fake.on("evener/launch/setLayer", setLayerSpy);
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No MCP config files. Add one below.");
+  await launchLayerLoaded();
   await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.keyboard("/bad/path");
   await user.keyboard("{Enter}");
   const addButtons = screen.getAllByRole("button", { name: "Add" });
   await user.click(addButtons[0]!);
-  expect(await screen.findByText("path does not exist")).toBeTruthy();
+  expect(await screen.findByText("validator-refusal")).toBeTruthy();
   expect(setLayerSpy).not.toHaveBeenCalled();
 });
 
@@ -298,18 +323,18 @@ test("adding a config file when setLayer fails returns error to PathListEditor",
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
   fake.on("evener/path/validate", () => ({ path: "/etc/mcp.json", valid: true }));
   fake.on("evener/launch/setLayer", () => {
-    throw new WireError("server error", -1);
+    throw new WireError("set-layer-failure", -1);
   });
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No MCP config files. Add one below.");
+  await launchLayerLoaded();
   await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.keyboard("/etc/mcp.json");
   await user.keyboard("{Enter}");
   const addButtons = screen.getAllByRole("button", { name: "Add" });
   await user.click(addButtons[0]!);
   // The add fails — the error text should appear (friendlyErrorMessage converts WireError)
-  await screen.findByText("server error");
+  await screen.findByText("set-layer-failure");
 });
 
 test("adding an inline server when setLayer fails shows error message", async () => {
@@ -321,11 +346,8 @@ test("adding an inline server when setLayer fails shows error message", async ()
     throw new WireError("persist failed", -1);
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
-  await screen.findByText("No inline MCP servers. Add one below.");
-  await user.type(screen.getByPlaceholderText("name"), "srv");
-  await user.type(screen.getByPlaceholderText("command"), "/usr/bin/srv");
-  const addButtons = screen.getAllByRole("button", { name: "Add" });
-  await user.click(addButtons[addButtons.length - 1]!);
+  await launchLayerLoaded();
+  await addInlineServer(user, "srv /usr/bin/srv");
   expect(await screen.findByText("persist failed")).toBeTruthy();
 });
 
@@ -380,9 +402,9 @@ test("under a remote host the discovered-servers block is not shown, and this hu
     mcpDiscovered: { servers: [{ name: "controller-tool", transport: "stdio", status: "available" }] },
   };
   render(<McpSection host="beta" useOverviewStore={overviewHook({ data, fetch: fetchFn })} />);
-  await screen.findByPlaceholderText("name");
+  await screen.findByRole("textbox", { name: "Inline MCP servers" });
 
-  expect(screen.queryByText("Discovered servers")).toBeNull();
+  expect(discoveredBlock()).toBeNull();
   expect(screen.queryByText(/controller-tool/)).toBeNull();
   expect(fetchFn).not.toHaveBeenCalled();
 });
@@ -395,8 +417,177 @@ test("the local hub still renders the discovered-servers block", async () => {
   };
   render(<McpSection useOverviewStore={overviewHook({ data })} />);
 
-  expect(screen.getByText("Discovered servers")).toBeTruthy();
+  expect(discoveredBlock()).not.toBeNull();
   expect(screen.getByText(/local-tool/)).toBeTruthy();
   // The mount's launch-layer read lands before the test ends, not in the next.
-  await screen.findByText("No inline MCP servers. Add one below.");
+  await launchLayerLoaded();
+});
+
+test("an unsaved inline-server entry survives a failed refresh and the recovery after it", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let failRefresh = false;
+  fake.on("evener/launch/getLayer", () => {
+    if (failRefresh) throw new WireError("refresh failed", -1);
+    return { mcpConfigs: [], mcps: [] };
+  });
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  const field = await screen.findByRole("textbox", { name: "Inline MCP servers" });
+  await user.type(field, "fs /usr/bin/fs-mcp");
+
+  failRefresh = true;
+  await act(() => extensionsStore.getState().fetchLaunchLayer());
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  failRefresh = false;
+  await act(() => extensionsStore.getState().fetchLaunchLayer());
+
+  expect(screen.getByRole("textbox", { name: "Inline MCP servers" })).toHaveProperty("value", "fs /usr/bin/fs-mcp");
+});
+
+// Editing a layer that has not loaded yet would save a layer holding only the
+// new entry, so the editors wait for the first load, however late the
+// connection becomes ready.
+test("the inline-server editor waits for the launch layer's first load", async () => {
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  expect(screen.queryByRole("textbox", { name: "Inline MCP servers" })).toBeNull();
+  const fake = new FakeClient("ready");
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  act(() => connectionStore.getState().connect(fake));
+  expect(await screen.findByRole("textbox", { name: "Inline MCP servers" })).toBeTruthy();
+});
+
+// A failed refresh leaves the last good layer on screen, possibly stale, so
+// nothing saves until a refresh succeeds: a write from that snapshot could
+// overwrite edits made to the file elsewhere. The typed entry stays.
+test("while a refresh has failed, saves are refused and keep the typed entry", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let failReads = false;
+  fake.on("evener/launch/getLayer", () => {
+    if (failReads) throw new WireError("read failed", -1);
+    return { mcpConfigs: [], mcps: [] };
+  });
+  fake.on("evener/path/validate", () => ({ path: "/usr/bin/fs-mcp", valid: true }));
+  const setLayerSpy = vi.fn();
+  fake.on("evener/launch/setLayer", setLayerSpy);
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  const field = await screen.findByRole("textbox", { name: "Inline MCP servers" });
+
+  failReads = true;
+  await act(() => extensionsStore.getState().fetchLaunchLayer());
+  await addInlineServer(user, "fs /usr/bin/fs-mcp");
+
+  expect(await screen.findAllByRole("alert")).not.toHaveLength(0);
+  expect(setLayerSpy).not.toHaveBeenCalled();
+  expect(field).toHaveProperty("value", "fs /usr/bin/fs-mcp");
+});
+
+test("removing one of two identical servers removes the one confirmed", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const a = { name: "a", command: "/bin/a", args: [] };
+  const b = { name: "b", command: "/bin/b", args: [] };
+  // Distinct objects, as the wire decodes them: identical entries are equal,
+  // never the same object.
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [{ ...a }, { ...b }, { ...a }] }));
+  const setLayerSpy = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+  fake.on("evener/launch/setLayer", setLayerSpy);
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  const list = await screen.findByRole("list", { name: "Inline MCP servers" });
+  const removes = within(list).getAllByRole("button");
+  const last = removes[removes.length - 1];
+  if (last === undefined) throw new Error("no rows rendered");
+  await user.click(last);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove" }));
+  await waitFor(() => expect(setLayerSpy).toHaveBeenCalledTimes(1));
+  const [params] = setLayerSpy.mock.calls[0] as unknown as [{ config: { mcps: unknown[] } }];
+  expect(params.config.mcps).toEqual([a, b]);
+});
+
+test("saves stay refused while a recovery refresh is still in flight, and resume on its fresh layer", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let mode: "ok" | "fail" | "hold" = "ok";
+  let release: (layer: Record<string, unknown>) => void = () => {};
+  fake.on("evener/launch/getLayer", () => {
+    if (mode === "fail") throw new WireError("read failed", -1);
+    if (mode === "hold") return new Promise((resolve) => (release = resolve));
+    return { mcpConfigs: [], mcps: [] };
+  });
+  fake.on("evener/path/validate", () => ({ path: "/usr/bin/fs-mcp", valid: true }));
+  const setLayerSpy = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+  fake.on("evener/launch/setLayer", setLayerSpy);
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByRole("textbox", { name: "Inline MCP servers" });
+
+  mode = "fail";
+  await act(() => extensionsStore.getState().fetchLaunchLayer());
+  mode = "hold";
+  let recovery: Promise<void> = Promise.resolve();
+  act(() => {
+    recovery = extensionsStore.getState().fetchLaunchLayer();
+  });
+  await addInlineServer(user, "fs /usr/bin/fs-mcp");
+  expect(await screen.findAllByRole("alert")).not.toHaveLength(0);
+  expect(setLayerSpy).not.toHaveBeenCalled();
+
+  await act(async () => {
+    release({ mcpConfigs: [], mcps: [], skillsDirs: ["/skills/changed-elsewhere"] });
+    await recovery;
+  });
+  await user.click(
+    within(screen.getByRole("textbox", { name: "Inline MCP servers" }).closest("form") as HTMLElement).getByRole(
+      "button",
+      { name: "Add" },
+    ),
+  );
+  await waitFor(() => expect(setLayerSpy).toHaveBeenCalledTimes(1));
+  const [params] = setLayerSpy.mock.calls[0] as unknown as [{ config: Record<string, unknown> }];
+  expect(params.config.skillsDirs).toEqual(["/skills/changed-elsewhere"]);
+});
+
+// A row's meta is one truncated line, so a failed probe's error renders in
+// full in its own wrapping notice under the row, never as the row's meta.
+test("a discovered server's probe error is shown in full beneath its row", async () => {
+  connectFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
+  const longError = `dial unix /run/mcp/${"deep/".repeat(30)}server.sock: connect: no such file or directory`;
+  render(
+    <McpSection
+      useOverviewStore={overviewHook({
+        data: {
+          mcpDiscovered: { servers: [{ name: "broken-tool", transport: "stdio", status: "error", error: longError }] },
+        },
+      })}
+    />,
+  );
+  const list = screen.getByRole("list", { name: "Discovered MCP servers" });
+  const notice = list.querySelector('[data-reason="probe-failed"]');
+  expect(notice?.textContent).toBe(longError);
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
+});
+
+// A long server name keeps the label to itself, apart from the transport, and
+// renders in full: the layoutguard case mcp-discovered-long-name proves it
+// wraps inside the row instead of truncating, which jsdom cannot measure.
+test("a discovered server's transport sits apart from a long name, and the full name is rendered", async () => {
+  connectFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
+  const longName = `team-shared-${"knowledge-".repeat(8)}server`;
+  render(
+    <McpSection
+      useOverviewStore={overviewHook({
+        data: { mcpDiscovered: { servers: [{ name: longName, transport: "streamable-http", status: "available" }] } },
+      })}
+    />,
+  );
+  const list = screen.getByRole("list", { name: "Discovered MCP servers" });
+  const name = within(list).getByText(longName);
+  expect(within(list).getByText("streamable-http")).not.toBe(name);
+  expect(name.textContent).toBe(longName);
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
 });

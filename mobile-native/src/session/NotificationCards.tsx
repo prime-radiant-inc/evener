@@ -4,7 +4,12 @@
 // beneath. It looks nothing like the subagent's own row, so a subagent that
 // reported never reads as two subagents. Tapping opens the subagent, or shows
 // a job's output in place the way a step's evidence opens.
-import { type EvenerDelegateInfo, lineCount, type SteeringFragment } from "@evener/appwire-client";
+import {
+	type EvenerDelegateInfo,
+	isNotificationRemnant,
+	lineCount,
+	type SteeringFragment,
+} from "@evener/appwire-client";
 import { Pressable, Text, View } from "react-native";
 import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -39,7 +44,11 @@ export function NotificationCards({
 						disclosureId={key}
 					/>
 				) : (
-					<QuietText key={key} text={notificationText(fragment.text)} />
+					<QuietText
+						key={key}
+						text={notificationText(fragment.text)}
+						testID={isNotificationRemnant(fragment.text) ? "notification-unreadable" : undefined}
+					/>
 				);
 			})}
 		</View>
@@ -74,20 +83,26 @@ function NotificationCard({
 				<SystemEventMark />
 				<Text
 					allowFontScaling={allowFontScaling}
+					testID="notification-headline"
 					style={{ ...quiet, flex: 1, color: line.failed ? palette.dangerInk : palette.inkLow }}
 				>
 					{line.headline}
 				</Text>
 			</View>
 			{line.detail ? (
-				<Text allowFontScaling={allowFontScaling} numberOfLines={2} style={{ ...quiet, paddingLeft: 16 }}>
+				<Text
+					allowFontScaling={allowFontScaling}
+					testID="notification-detail"
+					numberOfLines={2}
+					style={{ ...quiet, paddingLeft: 16 }}
+				>
 					{line.detail}
 				</Text>
 			) : null}
 		</>
 	);
 	return (
-		<View style={{ gap: 4 }}>
+		<View testID={`notification:${line.kind}`} style={{ gap: 4 }}>
 			{onPress ? (
 				<Pressable
 					accessibilityRole="button"
@@ -113,10 +128,10 @@ function NotificationCard({
 	);
 }
 
-function QuietText({ text }: { text: string }) {
+function QuietText({ text, testID }: { text: string; testID?: string }) {
 	const quiet = useQuietText();
 	return (
-		<Text allowFontScaling={allowFontScaling} numberOfLines={2} style={{ ...quiet, paddingLeft: 16 }}>
+		<Text allowFontScaling={allowFontScaling} testID={testID} numberOfLines={2} style={{ ...quiet, paddingLeft: 16 }}>
 			{text}
 		</Text>
 	);

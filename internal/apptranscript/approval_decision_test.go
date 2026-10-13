@@ -2,6 +2,7 @@ package apptranscript
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,35 +14,35 @@ import (
 // says what was decided and whose raw detail carries the decision, so a client
 // draws "Allowed: …" or "Denied: …" without parsing prose (S16).
 func TestApprovalDecisionNoticeProjectsItsDecision(t *testing.T) {
-	for _, tc := range []struct {
-		approved bool
-		text     string
-	}{
-		{true, "Allowed write_file to access /Users/j/sites/docs"},
-		{false, "Denied write_file access to /Users/j/sites/docs"},
-	} {
+	texts := map[bool]string{}
+	for _, approved := range []bool{true, false} {
 		entry := schema.Turn{Kind: schema.TurnNotice, Format: schema.TurnFormatIdentity, Notice: &schema.NoticeInfo{
 			Kind: schema.NoticeApprovalDecision,
 			ApprovalDecision: &schema.ApprovalDecisionNotice{
-				EscalationID: "esc_1", Approved: tc.approved, Tool: "write_file", Kind: "file_tool", DeniedPath: "/Users/j/sites/docs",
+				EscalationID: "esc_1", Approved: approved, Tool: "write_file", Kind: "file_tool", DeniedPath: "/Users/j/sites/docs",
 			},
 		}}
 		items, parts := ProjectEntryParts("turn_4", 9, entry, nil, nil, nil)
 		if len(items) != 1 || len(parts) != 1 {
-			t.Fatalf("approved=%v projected %d items, want one", tc.approved, len(items))
+			t.Fatalf("approved=%v projected %d items, want one", approved, len(items))
 		}
 		item := items[0]
-		if item.Type != "systemMessage" || item.EventKind != appwire.ThreadItemEventKindApprovalDecision || item.Text != tc.text || item.Description != "Approval" {
-			t.Fatalf("approved=%v item = %+v", tc.approved, item)
+		if item.Type != "systemMessage" || item.EventKind != appwire.ThreadItemEventKindApprovalDecision ||
+			!strings.Contains(item.Text, "write_file") || !strings.Contains(item.Text, "/Users/j/sites/docs") {
+			t.Fatalf("approved=%v item = %+v, want an approval decision naming the tool and path", approved, item)
 		}
+		texts[approved] = item.Text
 		var raw map[string]map[string]any
 		if err := json.Unmarshal(item.Raw, &raw); err != nil {
 			t.Fatalf("raw %s: %v", item.Raw, err)
 		}
 		got := raw["approvalDecision"]
-		if got["escalationId"] != "esc_1" || got["approved"] != tc.approved || got["tool"] != "write_file" || got["kind"] != "file_tool" || got["deniedPath"] != "/Users/j/sites/docs" {
-			t.Fatalf("approved=%v raw = %s", tc.approved, item.Raw)
+		if got["escalationId"] != "esc_1" || got["approved"] != approved || got["tool"] != "write_file" || got["kind"] != "file_tool" || got["deniedPath"] != "/Users/j/sites/docs" {
+			t.Fatalf("approved=%v raw = %s", approved, item.Raw)
 		}
+	}
+	if texts[true] == texts[false] {
+		t.Fatalf("an allow and a deny read the same: %q", texts[true])
 	}
 }
 

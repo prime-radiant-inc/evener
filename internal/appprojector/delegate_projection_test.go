@@ -86,6 +86,52 @@ func TestDelegateProjection_BoundsPreviewAndProseWithSharedHelper(t *testing.T) 
 	}
 }
 
+// The frame's latest intent is bounded with the same Excerpt the activity read
+// applies, over the exact values that flatten differently under lesser rules:
+// newline- and tab- and multi-space-laden text must project to one single-line
+// excerpt, identical to what the read projects for the same intent.
+func TestDelegateProjection_BoundsLatestIntentLikeTheRead(t *testing.T) {
+	p := NewAppEventProjector("root", "local:root")
+	data := delegateProjectionFixture()
+	data.OwnerSessionID = "root"
+	data.LatestIntent = "Reading  the\tvery\nmessy   board's row tests " + strings.Repeat("and more words ", 60)
+	got := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", data))).Delegate
+	want := appwire.Excerpt(data.LatestIntent, appwire.MaxIntentRunes)
+	if got.LatestIntent != want {
+		t.Fatalf("projected intent = %q, want the read's exact excerpt %q", got.LatestIntent, want)
+	}
+	if strings.ContainsAny(got.LatestIntent, "\n\t") {
+		t.Fatalf("projected intent keeps flattened whitespace: %q", got.LatestIntent)
+	}
+	if runes := len([]rune(got.LatestIntent)); runes > appwire.MaxIntentRunes {
+		t.Fatalf("projected intent is %d runes, want at most %d", runes, appwire.MaxIntentRunes)
+	}
+}
+
+// An older daemon's frame carries no latest_intent key at all. It must decode
+// and project with an empty field, the same fallback every other omitted
+// optional takes, and never drop the row.
+func TestDelegateProjection_OlderFrameWithoutLatestIntentStillProjects(t *testing.T) {
+	raw := []byte(`{
+		"run_generation": 2, "delegate_id": "dlg_projection", "owner_session_id": "root",
+		"root_session_id": "root", "child_session_id": "child", "transcript_ref": "local:child",
+		"type": "delegate", "lifecycle": "idle", "phase": "idle", "status": "idle",
+		"resumable": true, "needs_attention": false, "projection_revision": 7
+	}`)
+	var data events.DelegateUpdatedData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatalf("decode an older frame: %v", err)
+	}
+	p := NewAppEventProjector("root", "local:root")
+	got := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", data))).Delegate
+	if got.LatestIntent != "" {
+		t.Fatalf("older frame projected a latest intent %q, want empty", got.LatestIntent)
+	}
+	if got.DelegateID != "dlg_projection" {
+		t.Fatalf("older frame's row degraded: %+v", got)
+	}
+}
+
 // An open run still owns its predecessor's packet, so it carries no preview.
 func TestDelegateProjection_OpenRunHasNoPreview(t *testing.T) {
 	p := NewAppEventProjector("root", "local:root")

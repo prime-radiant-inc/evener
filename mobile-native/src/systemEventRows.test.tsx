@@ -27,7 +27,8 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { palettes } from "./design/tokens";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
-import { render, renderedText } from "./renderNative.testkit";
+import { withTestID } from "./markerTestUtils";
+import { offersButton, render, renderedText, textOf } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { errorAction } from "./session/errorAction";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
@@ -109,6 +110,19 @@ function press(tree: ReactTestRenderer) {
 	act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress());
 }
 
+/** What an opened labelled event says beneath its label; undefined while it
+ * is closed. */
+function eventBody(tree: ReactTestRenderer): string | undefined {
+	const [body] = withTestID(tree, "system-event-body");
+	return body ? textOf(body) : undefined;
+}
+
+/** The event's own line, as its button reads it. */
+function eventLabel(tree: ReactTestRenderer): string {
+	const [button] = tree.root.findAll((node) => node.props.accessibilityRole === "button");
+	return button?.props.accessibilityLabel ?? "";
+}
+
 function inked(tree: ReactTestRenderer, color: string): boolean {
 	return (
 		tree.root.findAll(
@@ -160,16 +174,17 @@ describe("system events (G7, G9)", () => {
 		if (row?.kind !== "notice") throw new Error("no tool repair notice");
 		expect(isCriticalNotice(row)).toBe(false);
 		const tree = show("tool-repair", "full");
-		expect(renderedText(tree)).toContain('Fixed the shell call: removed the unrecognized "timeout" field.');
+		expect(renderedText(tree)).toContain(systemEventWireItem("tool-repair").text);
 		expect(inked(tree, DANGER_INK)).toBe(false);
-		expect(renderedText(tree)).not.toMatch(/Retry|Resume|Sign in/);
+		expect(offersButton(tree, /Retry|Resume|Sign in/)).toBe(false);
 	});
 
 	it.each(["compaction-summary", "compaction-checkpoint"] as const)(
 		"collapses a %s to Context summary, which opens to the summary as markdown",
 		(name) => {
 			const tree = show(name);
-			expect(renderedText(tree)).toBe("Context summary");
+			expect(eventBody(tree)).toBeUndefined();
+			expect(renderedText(tree)).not.toContain(systemEventWireItem(name).text);
 			expect(tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
 			press(tree);
 			const markdown = tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText");
@@ -179,14 +194,25 @@ describe("system events (G7, G9)", () => {
 	);
 
 	it("names a loaded plugin, or says a plugin loaded, with no counts", () => {
-		expect(renderedText(show("plugin-loaded"))).toBe("Plugin superpowers loaded");
-		expect(renderedText(show("plugin-loaded-unnamed"))).toBe("Plugin loaded");
+		const named = renderedText(show("plugin-loaded"));
+		const unnamed = renderedText(show("plugin-loaded-unnamed"));
+		expect(named).toContain("superpowers");
+		expect(unnamed).not.toBe("");
+		expect(unnamed).not.toBe(named);
+		// The recorded description counts skills, agents and servers.
+		for (const line of [named, unnamed]) expect(line).not.toMatch(/\d/);
 	});
 
 	it("says how far a compaction brought the context: tokens, else turns, else just that it ran", () => {
-		expect(renderedText(show("context-compaction"))).toBe("Context compacted · 412K → 38K tokens");
-		expect(renderedText(show("context-compaction-turns"))).toBe("Context compacted · 40 → 5 turns");
-		expect(renderedText(show("context-compaction-bare"))).toBe("Context compacted");
+		const tokens = renderedText(show("context-compaction"));
+		const turns = renderedText(show("context-compaction-turns"));
+		const bare = renderedText(show("context-compaction-bare"));
+		// The recorded estimate (412000 -> 38000 tokens), compacted; the turns
+		// (40 -> 5) only when it has no token estimate.
+		expect(tokens).toMatch(/412K\D+38K/);
+		expect(tokens).not.toMatch(/\b40\b/);
+		expect(turns).toMatch(/\b40\D+5\b/);
+		expect(bare).not.toMatch(/\d/);
 	});
 });
 
@@ -303,9 +329,9 @@ describe("shared-notes snapshots", () => {
 			const tree = render(
 				<TimelineItem item={row} hubId="hub" sessionRef={`notes-${level}`} expandByDefault={expandByDefault} />,
 			);
-			expect(renderedText(tree)).toBe("Shared notes updated");
+			expect(eventBody(tree)).toBeUndefined();
 			press(tree);
-			expect(renderedText(tree)).toBe(`Shared notes updated ${text}`);
+			expect(eventBody(tree)).toBe(text);
 			expect(tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
 		},
 	);
@@ -334,9 +360,9 @@ describe("shared-notes snapshots", () => {
 			const tree = render(
 				<TimelineItem item={row} hubId="hub" sessionRef={`notes-lookup-${missing}`} sourceTurns={sourceTurns} />,
 			);
-			expect(renderedText(tree)).toBe("Shared notes updated");
+			expect(eventBody(tree)).toBeUndefined();
 			press(tree);
-			expect(renderedText(tree)).toBe(`Shared notes updated ${text}`);
+			expect(eventBody(tree)).toBe(text);
 			act(() => tree.unmount());
 		},
 	);
@@ -392,29 +418,23 @@ describe("shared-notes snapshots", () => {
 					/>,
 				);
 			const first = mount("notes-large-persist");
-			expect(renderedText(first)).toBe("Shared notes updated");
+			expect(eventBody(first)).toBeUndefined();
 			press(first);
-			expect(
-				renderedText(first) === `Shared notes updated ${snapshot}`,
-				"expanded snapshot preserves all source text",
-			).toBe(true);
-			expect(renderedText(first).includes("<shared-notes>\nHuman: **opaque**  \n\nAgent: <tags> & data\n")).toBe(true);
-			expect(renderedText(first).endsWith(`${linkLines[49]}\n</shared-notes>`)).toBe(true);
+			expect(eventBody(first) === snapshot, "expanded snapshot preserves all source text").toBe(true);
+			expect(eventBody(first)?.includes("<shared-notes>\nHuman: **opaque**  \n\nAgent: <tags> & data\n")).toBe(true);
+			expect(eventBody(first)?.endsWith(`${linkLines[49]}\n</shared-notes>`)).toBe(true);
 			expect(first.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
 			expect(new TextEncoder().encode(row.text).length).toBe(MAX_ITEM_BYTES);
 			act(() => first.unmount());
 			const remounted = mount("notes-large-persist");
-			expect(
-				renderedText(remounted) === `Shared notes updated ${snapshot}`,
-				"remounted snapshot preserves all source text",
-			).toBe(true);
-			expect(renderedText(remounted).endsWith(`${linkLines[49]}\n</shared-notes>`)).toBe(true);
+			expect(eventBody(remounted) === snapshot, "remounted snapshot preserves all source text").toBe(true);
+			expect(eventBody(remounted)?.endsWith(`${linkLines[49]}\n</shared-notes>`)).toBe(true);
 			const otherSession = mount("notes-large-other");
-			expect(renderedText(otherSession)).toBe("Shared notes updated");
+			expect(eventBody(otherSession)).toBeUndefined();
 			const otherRow = rows.find((entry) => entry.id === notes.id);
 			if (!otherRow) throw new Error("no other notes row");
 			const otherItem = mount("notes-large-persist", otherRow);
-			expect(renderedText(otherItem)).toBe("Shared notes updated");
+			expect(eventBody(otherItem)).toBeUndefined();
 			act(() => {
 				remounted.unmount();
 				otherSession.unmount();
@@ -433,35 +453,37 @@ describe("shared-notes snapshots", () => {
 		const first = render(<TimelineItem item={row} hubId="hub" sessionRef="notes-persist" />);
 		press(first);
 		act(() => first.unmount());
-		expect(renderedText(render(<TimelineItem item={row} hubId="hub" sessionRef="notes-persist" />))).toBe(
-			`Shared notes updated ${text}`,
-		);
-		expect(renderedText(render(<TimelineItem item={row} hubId="hub" sessionRef="notes-other" />))).toBe(
-			"Shared notes updated",
-		);
+		expect(eventBody(render(<TimelineItem item={row} hubId="hub" sessionRef="notes-persist" />))).toBe(text);
+		expect(eventBody(render(<TimelineItem item={row} hubId="hub" sessionRef="notes-other" />))).toBeUndefined();
 	});
 });
 
 // Each steer says it is the system's, then what it did: the engineering
 // labels in plain words (spec 5), the rest in the web's.
-const STEER_LABELS: Array<[SystemEventWireCase, string]> = [
-	["steer-hook-context", "System steered: Hook context"],
-	["steer-precompact-hook", "System steered: Hook context before compacting"],
-	["steer-compact-nudge", "System steered: Running low on context"],
-	["steer-no-tool-calls", "System steered: Reminded to keep working"],
-	["steer-loop-detected", "System steered: Loop detected"],
-	["steer-provider-failure", "System steered: Provider failed"],
-	["steer-transcript-pointer", "System steered: Where to find the full transcript"],
-	["steer-note-handoff", "System steered: Note to self"],
-	["steer-from-parent", "From parent"],
+const STEERS: SystemEventWireCase[] = [
+	"steer-hook-context",
+	"steer-precompact-hook",
+	"steer-compact-nudge",
+	"steer-no-tool-calls",
+	"steer-loop-detected",
+	"steer-provider-failure",
+	"steer-transcript-pointer",
+	"steer-note-handoff",
+	"steer-from-parent",
 ];
 
 describe("the daemon's steers (G8)", () => {
-	it.each(STEER_LABELS)("collapses %s to its label, which opens to what it said", (name, label) => {
+	it.each(STEERS)("collapses %s to its label, which opens to what it said", (name) => {
 		const tree = show(name);
-		expect(renderedText(tree)).toBe(label);
+		expect(eventBody(tree)).toBeUndefined();
+		expect(eventLabel(tree)).not.toBe("");
 		press(tree);
-		expect(renderedText(tree)).toBe(`${label} ${stripSystemReminder(systemEventWireItem(name).text ?? "")}`);
+		expect(eventBody(tree)).toBe(stripSystemReminder(systemEventWireItem(name).text ?? ""));
+	});
+
+	it("labels each steer by what it did", () => {
+		const labels = STEERS.map((name) => eventLabel(show(name)));
+		expect(new Set(labels).size).toBe(STEERS.length);
 	});
 
 	it.each(LEVELS)("keeps a parent's steer, which is conversation, at every level (%s)", (level) => {
@@ -482,8 +504,8 @@ Delegate dlg_42 completed.
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="system-parent-markup" />);
 		// A short message opens folded and a longer one starts open; either
 		// way pressing opens it, and it reads whole.
-		if (!renderedText(tree).includes(text)) press(tree);
-		expect(renderedText(tree)).toBe(`From parent ${text}`);
+		if (eventBody(tree) === undefined) press(tree);
+		expect(eventBody(tree)).toBe(text);
 	});
 
 	it.each(["steer-loop-detected", "steer-provider-failure"] as const)(

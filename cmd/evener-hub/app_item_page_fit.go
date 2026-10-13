@@ -253,8 +253,12 @@ func packedOlderCursor(result transcriptItemCandidateResult, before appwire.Thre
 	if result.Candidates.OlderCursor == "" {
 		return "", errors.New("transcript item source has older candidates without cursor identity")
 	}
-	return "", errors.New("legacy transcript item source cannot page without cursor identity")
+	return "", errLegacyItemSourceUnpageable
 }
+
+// errLegacyItemSourceUnpageable refuses paging a legacy transcript item
+// source whose page carries no cursor identity.
+var errLegacyItemSourceUnpageable = errors.New("legacy transcript item source cannot page without cursor identity")
 
 func packedResultSize[T any](response T) error {
 	_, err := packedResultSizeValue(response)

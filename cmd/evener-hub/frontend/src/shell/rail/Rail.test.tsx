@@ -305,14 +305,16 @@ describe("resource-backed Rail", () => {
       ),
     ]);
     render(<Rail />);
-    for (const label of ["Live", "Projects"]) {
-      expect(screen.getByRole("heading", { name: label }).className).toMatch(/staticSectionLabel/);
+    // A static label is set in the Eyebrow inside its disclosure; an authored
+    // pin name is the disclosure's own bare text, so it keeps its casing.
+    for (const label of ["Live", "Projects", "Archived sessions"]) {
+      const disclosure = within(screen.getByRole("heading", { name: new RegExp(label) })).getByRole("button");
+      expect(disclosure.firstChild?.nodeType).toBe(Node.ELEMENT_NODE);
+      expect(disclosure.firstChild?.contains(disclosure.querySelector("svg"))).toBe(false);
     }
-    expect(screen.getByRole("heading", { name: /Archived sessions/ }).className).toMatch(/staticSectionLabel/);
     const authored = screen.getByRole("heading", { name });
     const disclosure = within(authored).getByRole("button", { name });
-    expect(authored.className).not.toMatch(/staticSectionLabel/);
-    expect(disclosure.className).not.toMatch(/staticSectionLabel/);
+    expect(disclosure.firstChild?.nodeType).toBe(Node.TEXT_NODE);
     expect(disclosure.textContent).toContain(name);
     const expanded = disclosure.getAttribute("aria-expanded");
     disclosure.focus();
@@ -320,21 +322,11 @@ describe("resource-backed Rail", () => {
     expect(disclosure.getAttribute("aria-expanded")).not.toBe(expanded);
     expect(document.activeElement).toBe(disclosure);
 
-    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
-      /\/\*[\s\S]*?\*\//g,
-      "",
-    );
-    const recipe = css.match(/\.staticSectionLabel\s*\{([^}]*)\}/)?.[1];
-    expect(recipe).toBeDefined();
-    for (const declaration of [
-      "font-size: var(--font-size-caption)",
-      "font-weight: var(--font-weight-medium)",
-      "color: var(--ink-mid)",
-      "text-transform: uppercase",
-      "letter-spacing: var(--tracking-eyebrow)",
-    ])
-      expect(recipe).toContain(declaration);
-    for (const shared of ["sectionTitle", "sectionDisclosure"]) {
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../../widgets/disclosureheading/disclosureheading.module.css"),
+      "utf8",
+    ).replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const shared of ["headingTitle", "headingToggle"]) {
       const rule = css.match(new RegExp(`\\.${shared}\\s*\\{([^}]*)\\}`))?.[1];
       expect(rule).toBeDefined();
       expect(rule).not.toContain("text-transform: uppercase");
@@ -463,7 +455,8 @@ describe("resource-backed Rail", () => {
       const disclosure = sectionDisclosure(name);
       const chevron = disclosure.querySelector("svg");
       expect(chevron).toBeTruthy();
-      expect(disclosure.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+      expect(disclosure.firstChild).not.toBe(chevron);
+      expect(disclosure.firstChild?.contains(chevron)).toBe(false);
       expect(disclosure.lastElementChild).toBe(chevron);
     }
   });
@@ -2377,6 +2370,33 @@ describe("resource-backed Rail", () => {
       { method: "evener/pin-section/delete", params: { sectionId: "pins" } },
     ]);
     expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
+  });
+  test("refuses an empty pin-section name with an alert the name field describes", async () => {
+    installState([
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "pins", name: "Pins", count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "pins", offset: 0, limit: 50 },
+        { generation_id: "g1", revision: 1, sessions: [summary({ title: "Pinned" })], remaining: 0, truncated: false },
+      ),
+    ]);
+    const client = new FakeClient();
+    render(<Rail />, client);
+    fireEvent.click(screen.getByRole("button", { name: /actions for pins/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Section name" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename section" }));
+    const alert = screen.getByRole("alert");
+    expect(input.getAttribute("aria-describedby")).toBe(alert.id);
+    expect(client.calls).toEqual([]);
+    expect(screen.getByRole("textbox", { name: "Section name" })).toBe(input);
+    expect((input as HTMLInputElement).value).toBe("   ");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(input.hasAttribute("aria-describedby")).toBe(false);
   });
   test("shows a project root retry while retaining the summary row after a load error", async () => {
     const loadProject = vi.fn().mockRejectedValue(new Error("offline"));

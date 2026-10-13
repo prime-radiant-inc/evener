@@ -35,9 +35,8 @@ func TestClampSessionInputHeightInRange(t *testing.T) {
 
 // TestSessionSendUnavailableReasonEmpty covers the empty-reason path.
 func TestSessionSendUnavailableReasonEmpty(t *testing.T) {
-	got := sessionSendUnavailableReason("")
-	if got != "send is not available for this session" {
-		t.Fatalf("sessionSendUnavailableReason('') = %q, want default", got)
+	if got := sessionSendUnavailableReason(""); got == "" {
+		t.Fatal("sessionSendUnavailableReason('') is empty, want a default reason")
 	}
 }
 

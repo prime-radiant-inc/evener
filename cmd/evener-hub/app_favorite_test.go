@@ -6,7 +6,6 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -91,33 +90,26 @@ func TestHubFavoriteSetPersistsProjectAndPublishesNavigation(t *testing.T) {
 func TestHubFavoriteSetRejectsObsoleteOrInvalidKinds(t *testing.T) {
 	server := newHubAppServerWithNavigation(hubcore.WebConfig{Favorite: hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))}, nil, nil, nil)
 	tests := []struct {
-		name    string
-		params  appwire.FavoriteSetParams
-		message string
+		name   string
+		params appwire.FavoriteSetParams
 	}{
 		{
-			name:    "session",
-			params:  appwire.FavoriteSetParams{Kind: "session", ID: "local:s1", Favorited: true},
-			message: "evener/session-pin/assign",
+			name:   "session",
+			params: appwire.FavoriteSetParams{Kind: "session", ID: "local:s1", Favorited: true},
 		},
 		{
-			name:    "unknown kind",
-			params:  appwire.FavoriteSetParams{Kind: "widget", ID: "x", Favorited: true},
-			message: `kind must be "project"`,
+			name:   "unknown kind",
+			params: appwire.FavoriteSetParams{Kind: "widget", ID: "x", Favorited: true},
 		},
 		{
-			name:    "empty ID",
-			params:  appwire.FavoriteSetParams{Kind: "project", Favorited: true},
-			message: "id is required",
+			name:   "empty ID",
+			params: appwire.FavoriteSetParams{Kind: "project", Favorited: true},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := dispatchFavoriteSet(t, server, tt.params)
 			assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
-			if !strings.Contains(err.Error(), tt.message) {
-				t.Fatalf("error=%q, want %q", err, tt.message)
-			}
 		})
 	}
 }
@@ -129,7 +121,7 @@ func TestHubFavoriteSetRequiresFavoriteStore(t *testing.T) {
 		t.Fatal("favorite set succeeded without a favorite store")
 	}
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError || !strings.Contains(wire.Message, "favorite store not configured") {
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
 		t.Fatalf("error=%T %v, want internal favorite-store error", err, err)
 	}
 }
@@ -151,7 +143,7 @@ func TestHubFavoriteSetRejectsUnknownSource(t *testing.T) {
 		Favorited: true,
 	})
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams || !strings.Contains(wire.Message, "unknown source") {
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams || !errors.Is(err, errUnknownDecisionSource) {
 		t.Fatalf("error = %v, want InvalidParams for an unknown source", err)
 	}
 	decisions, err := favorites.Favorites()

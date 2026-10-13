@@ -157,7 +157,7 @@ func bothScopesMemoryContext() schema.Turn {
 	return memoryContext(
 		apptranscript.MemoryIndexSection("personal", "current", false, "- [a](a.md) — personal note\n"),
 		apptranscript.MemoryIndexSection("project", "missing", false, ""),
-		apptranscript.MemoryPageChangesSection("personal", []apptranscript.MemoryPageChange{{Path: "a.md"}}),
+		apptranscript.MemoryPageChangesSection("personal", []string{"a.md"}),
 	)
 }
 

@@ -2,10 +2,16 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { makeTranscriptDisplayConfig, projectThread, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import {
+  ACTION_SUMMARY_UNAVAILABLE,
+  makeTranscriptDisplayConfig,
+  projectThread,
+  type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { memo, type ReactNode } from "react";
 import { afterEach, expect, test } from "vitest";
+import { accessibleName } from "../../../accessibleNameTestUtils";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { isItemLive, TurnBlock } from "./TurnBlock";
@@ -133,7 +139,7 @@ test("wires a content-free thinking entry through TurnBlock to the placeholder (
     config,
   );
   render(withConfig(config, <TurnBlock turn={projected} />));
-  expect(screen.getByText(/Thinking…/)).toBeTruthy();
+  expect(screen.getByTestId("think-block").getAttribute("data-live")).toBe("true");
   expect(screen.getByTestId("loader-grid")).toBeTruthy();
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
   expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
@@ -147,7 +153,8 @@ test("redacts a critical reasoning row on a terminal turn", () => {
     config,
   );
   render(withConfig(config, <TurnBlock turn={projected} />));
-  expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought failed");
+  expect(screen.getByTestId("think-block").getAttribute("data-redacted")).toBe("true");
+  expect(screen.getByTestId("think-block-redacted").textContent).not.toBe("");
   expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
   expect(document.querySelector("details")).toBeNull();
@@ -328,15 +335,16 @@ test("an intent-less tool shows its own derived summary at chat and tools levels
   });
   const { rerender } = render(withConfig(config, <TurnBlock turn={turn([blankIntent], {}, config)} />));
 
-  // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
-  // <details> children), so it is present even when the group is closed.
+  // A closed intent group mounts its rows only once opened.
+  fireEvent.click(screen.getByTestId("intent-group").querySelector("summary")!);
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
+  // Derived from the call's own arguments (the fixture's command).
+  expect(screen.getByTestId("tool-row-summary").textContent).toContain("echo derived-summary");
 
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   rerender(withConfig(tools, <TurnBlock turn={turn([blankIntent], {}, tools)} />));
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
+  expect(screen.getByTestId("tool-row-summary").textContent).toContain("echo derived-summary");
 });
 
 // Regression for session 034MY2rfMj2ho4Nj6J0jFB: an intent-less read_file row
@@ -356,8 +364,11 @@ test("an intent-less read_file shows the Read summary, never 'Action summary una
   for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     const { unmount } = render(withConfig(config, <TurnBlock turn={turn([read], {}, config)} />));
-    expect(screen.getByTestId("tool-row-summary").textContent).toBe("Read src/foo.ts · lines 1-2");
-    expect(screen.queryByText("Action summary unavailable")).toBeNull();
+    const group = screen.queryByTestId("intent-group") as HTMLDetailsElement | null;
+    if (group && !group.open) fireEvent.click(group.querySelector("summary")!);
+    // The descriptor's own summary names the fixture's path; the neutral
+    // projected fallback would not.
+    expect(screen.getByTestId("tool-row-summary").textContent).toContain("src/foo.ts");
     unmount();
   }
 });
@@ -376,9 +387,8 @@ test("Chat renders a closed action group that expands reasons without tool UI (c
 
   const group = screen.getByTestId("intent-group");
   expect(group.hasAttribute("open")).toBe(false);
-  // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
-  // <details> children), so it is present even when the group is closed.
-  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  // A closed group mounts none of its rows.
+  expect(screen.queryByTestId("tool-call-item")).toBeNull();
 
   const summary = group.querySelector("summary");
   if (summary === null) throw new Error("Chat intent summary did not render");
@@ -468,7 +478,10 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
   render(withConfig(config, <TurnBlock turn={turn([failedAction], { status: "completed" }, config)} />));
 
   expect(screen.getByTestId("intent-group")).toBeTruthy();
-  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  // Announced by name: the glyph's meaning must not live in its color alone.
+  const glyph = screen.getByTestId("failure-glyph");
+  expect(screen.getAllByRole("img")).toContain(glyph);
+  expect(accessibleName(glyph).trim()).not.toBe("");
   // ToolCallItem renders eagerly inside the intent group. A failed row no
   // longer force-expands: it settles collapsed, and the body opens on the
   // reader's own toggle. "Action summary unavailable" is still never shown,
@@ -476,7 +489,7 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
   expect(screen.queryByTestId("tool-call-body")).toBeNull();
   expect(screen.queryByText("command failed")).toBeNull();
-  expect(screen.queryByText("Action summary unavailable")).toBeNull();
+  expect(screen.queryByText(ACTION_SUMMARY_UNAVAILABLE)).toBeNull();
   // The row stays an expandable disclosure: opening it surfaces the body's
   // error output as the single representation of the command.
   fireEvent.click(screen.getByTestId("tool-row-trigger"));
@@ -672,7 +685,7 @@ test("promptLoaded off hides the system-prompt scaffold disclosure; on shows it"
   expect(screen.queryByTestId("system-notice-scaffold")).toBeNull();
 
   rerender(withConfig(shown, <TurnBlock turn={turn(items, {}, shown)} />));
-  expect(screen.getByTestId("system-notice-scaffold").textContent).toContain("System prompt");
+  expect(screen.getByTestId("system-notice-scaffold-body").textContent).toContain("You are a helpful assistant.");
 });
 
 test("items no toggle governs are untouched with every toggle off", () => {
@@ -809,6 +822,15 @@ test("the gutter indent is one media query at exactly 700px with padding-left: v
   expect(css).toMatch(
     /@media\s*\(min-width:\s*700px\)\s*\{\s*\.runContent\s*\{\s*padding-left:\s*var\(--speaker-gutter\);\s*\}\s*\}/,
   );
+});
+
+test("an intent group's rule spans the turn column while its members take the gutter indent", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "..", "session.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(
+    /@media\s*\(min-width:\s*700px\)\s*\{\s*\.intentGroupItems\s*\{\s*padding-left:\s*var\(--speaker-gutter\);\s*\}\s*\}/,
+  );
+  expect(css).not.toMatch(/\.intentGroup\s*\{[^}]*padding/);
 });
 
 test("the speaker geometry is declared once on .turn: 34px gutter = 24px avatar + 10px gap", () => {

@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "widgets/eyebrow/eyebrow.module.css",
     "panes/session/chrome/notespanel.module.css",
     "panes/session/chrome/topnotespanel.module.css"
   ],

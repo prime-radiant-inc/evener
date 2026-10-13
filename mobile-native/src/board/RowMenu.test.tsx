@@ -3,7 +3,9 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
+import { markers } from "../markerTestUtils";
 import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { BoardRow } from "./BoardRow";
@@ -61,11 +63,15 @@ describe("the preview card (spec 7.3)", () => {
 		const tree = render(<RowPreviewCard item={item("failed")} hostLabel={hostLabel} onPress={open} />);
 		const text = renderedText(tree);
 		expect(text).toContain("Fix retry loop");
-		expect(text).toContain("Failed");
-		expect(text).toContain("open the session to see what went wrong");
+		// The state's word and its reason: the why line a failed row shows.
+		expect(markers(tree, "why-line")).toEqual(["reason"]);
 		expect(text).toContain("evener");
 		expect(text).toContain("Studio Mac");
-		expect(flatten(textNode(tree, "Failed").props.style)).toMatchObject({
+		expect(
+			flatten(
+				tree.root.find((node) => node.type === ("Text" as never) && node.props.testID === "why-word").props.style,
+			),
+		).toMatchObject({
 			fontWeight: "600",
 			color: palette.dangerInk,
 		});
@@ -92,11 +98,15 @@ describe("the preview card (spec 7.3)", () => {
 			/>,
 		);
 		expect(unseen.root.findAllByType(FreshDot)).toHaveLength(1);
-		expect(unseen.root.findByType("Pressable" as never).props.accessibilityLabel).toMatch(/, unread$/);
 		const seen = render(
 			<RowPreviewCard item={item("idle", { state: "idle" })} hostLabel={hostLabel} onPress={() => {}} />,
 		);
 		expect(seen.root.findAllByType(FreshDot)).toHaveLength(0);
+		// VoiceOver hears the unread state too: the seen card's label, and more.
+		const unseenLabel: string = unseen.root.findByType("Pressable" as never).props.accessibilityLabel;
+		const seenLabel: string = seen.root.findByType("Pressable" as never).props.accessibilityLabel;
+		expect(unseenLabel.startsWith(seenLabel)).toBe(true);
+		expect(unseenLabel.length).toBeGreaterThan(seenLabel.length);
 	});
 
 	it("says what a working session is doing", () => {
@@ -147,7 +157,7 @@ describe("the row menu sheet (ruling 28)", () => {
 	it("shows Close, the card and the row's actions in order, Shut down in dangerInk", () => {
 		const { provided } = host();
 		const tree = mountSheet(provided);
-		expect(renderedText(tree)).toContain("Close");
+		expect(tree.root.findByType(Sheet).props.done).toBeDefined();
 		expect(pressableLabelled(tree, "Open Fix retry loop")).toBeDefined();
 		const labels = ["Pin to category…", "Stop", "Shut down", "Archive", "Rename"];
 		const rows = tree.root.findAll(

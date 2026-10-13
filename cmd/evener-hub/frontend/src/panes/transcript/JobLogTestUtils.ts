@@ -7,6 +7,12 @@ export function jobLogOutputText(root: HTMLElement): string {
     .join("");
 }
 
+/** The command the job log pins above its output, as displayed: the shell
+ * command block's code text, without its copy control's label. */
+export function jobLogCommandText(root: HTMLElement): string {
+  return root.querySelector("code")?.textContent ?? "";
+}
+
 /** Project Range geometry through the test's existing element layout seam. */
 export function installJobLogRangeGeometry(): () => void {
   const rangeRect = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");

@@ -80,7 +80,7 @@ func TestHubThreadStartEmptySourceDefaultsLocal(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := hubThreadStart(t.Context(), hubcore.WebConfig{}, appsource.NewRegistry(), params)
-			if err == nil || !strings.Contains(err.Error(), "spawner not configured") {
+			if !errors.Is(err, errSpawnerNotConfigured) {
 				t.Fatalf("err = %v, want local spawner path (spawner not configured)", err)
 			}
 		})
@@ -180,7 +180,7 @@ func TestHubThreadStartRefusesRemoteOriginatedHostRouting(t *testing.T) {
 
 	t.Run("local resolution still spawns locally", func(t *testing.T) {
 		_, err := hubThreadStart(remoteOrigin, hubcore.WebConfig{}, appsource.NewRegistry(), appwire.ThreadStartParams{Source: "local", CWD: "/tmp"})
-		if err == nil || !strings.Contains(err.Error(), "spawner not configured") {
+		if !errors.Is(err, errSpawnerNotConfigured) {
 			t.Fatalf("err = %v, want the local spawner path", err)
 		}
 	})

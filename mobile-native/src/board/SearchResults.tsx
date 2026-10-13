@@ -125,7 +125,7 @@ function Found(props: SearchResultsProps) {
 }
 
 function Sessions({ search, scope, connected, onOpen }: SearchResultsProps) {
-	if (search.failed) return <Note text="Couldn't search this hub's sessions." />;
+	if (search.failed) return <Note reason="failed" text="Couldn't search this hub's sessions." />;
 	if (search.results) {
 		const rows = sessionResults(search.results, scope);
 		return rows.length ? (
@@ -139,11 +139,11 @@ function Sessions({ search, scope, connected, onOpen }: SearchResultsProps) {
 				))}
 			</>
 		) : (
-			<Note text="No sessions match." />
+			<Note reason="noMatch" text="No sessions match." />
 		);
 	}
-	if (!connected) return <Note text="Search works when the hub is connected." />;
-	return search.searching ? <Note text="Searching…" /> : null;
+	if (!connected) return <Note reason="disconnected" text="Search works when the hub is connected." />;
+	return search.searching ? <Note reason="searching" text="Searching…" /> : null;
 }
 
 function Scopes({ scope, onScope }: { scope: SearchScope; onScope: (scope: SearchScope) => void }) {
@@ -301,11 +301,15 @@ function ProjectResultRow({
 	);
 }
 
-function Note({ text }: { text: string }) {
+/** Why the Sessions group shows a note in place of results. */
+export type SearchNoteReason = "failed" | "noMatch" | "disconnected" | "searching";
+
+function Note({ reason, text }: { reason: SearchNoteReason; text: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
 		<Text
+			testID={`search-note:${reason}`}
 			allowFontScaling={allowFontScaling}
 			style={{
 				paddingHorizontal: 16,

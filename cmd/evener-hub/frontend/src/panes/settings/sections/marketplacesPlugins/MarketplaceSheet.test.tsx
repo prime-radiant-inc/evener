@@ -209,9 +209,9 @@ test("prefills the name, the source kind, and its field; shows install location 
   expect((screen.getByPlaceholderText("owner/repo") as HTMLInputElement).value).toBe("acme/plugins");
   expect(screen.queryByPlaceholderText("https://github.com/owner/repo.git")).toBeNull();
   expect(screen.getByText("/home/u/.config/evener/plugins/marketplaces/acme")).toBeTruthy();
-  expect(screen.getByText("Last updated")).toBeTruthy();
+  expect(screen.getByTestId("marketplace-last-updated")).toBeTruthy();
   // Nothing has been touched, so nothing is about to be re-fetched.
-  expect(screen.queryByText(/Saving re-fetches/)).toBeNull();
+  expect(screen.queryByTestId("marketplace-refetch-note")).toBeNull();
 });
 
 test("Save is disabled until something changes, and a rename alone promises no re-fetch", async () => {
@@ -220,7 +220,7 @@ test("Save is disabled until something changes, and a rename alone promises no r
   const user = userEvent.setup();
   await user.type(field("Name"), "2");
   expect(saveButton().disabled).toBe(false);
-  expect(screen.queryByText(/Saving re-fetches/)).toBeNull();
+  expect(screen.queryByTestId("marketplace-refetch-note")).toBeNull();
 });
 
 test("switching the kind shows only that kind's field and the re-fetch note", async () => {
@@ -229,7 +229,7 @@ test("switching the kind shows only that kind's field and the re-fetch note", as
   await user.click(screen.getByRole("radio", { name: "Git URL" }));
   expect(screen.getByPlaceholderText("https://github.com/owner/repo.git")).toBeTruthy();
   expect(screen.queryByPlaceholderText("owner/repo")).toBeNull();
-  expect(screen.getByText(/Saving re-fetches the marketplace/)).toBeTruthy();
+  expect(screen.getByTestId("marketplace-refetch-note")).toBeTruthy();
 });
 
 test("a kind picked but not filled in keeps Save disabled, even with the name edited", async () => {
@@ -252,7 +252,7 @@ test("emptying the source field disables Save and keeps the re-fetch note up", a
   // Mid-edit of the source, so the note is guidance rather than a promise
   // about a save that cannot happen yet.
   expect(saveButton().disabled).toBe(true);
-  expect(screen.getByText(/Saving re-fetches/)).toBeTruthy();
+  expect(screen.getByTestId("marketplace-refetch-note")).toBeTruthy();
 });
 
 test("Save sends a rename and the section re-selects the new name without the sheet closing", async () => {
@@ -360,7 +360,7 @@ test("an entry whose source kind this frontend cannot represent can still be ren
   // The Git URL field is empty because the source carries no url, not because
   // the user emptied it - so this is a rename, with no source to re-fetch.
   expect((screen.getByPlaceholderText("https://github.com/owner/repo.git") as HTMLInputElement).value).toBe("");
-  expect(screen.queryByText(/Saving re-fetches/)).toBeNull();
+  expect(screen.queryByTestId("marketplace-refetch-note")).toBeNull();
   expect(saveButton().disabled).toBe(false);
   await user.click(saveButton());
   await waitFor(() => expect(onRenamed).toHaveBeenCalledWith("acme2"));
@@ -501,13 +501,13 @@ test("a local path browses for a new directory and locks the field while saving"
     });
   });
   renderSheet(LOCAL);
-  expect(screen.getByText("not fetched yet")).toBeTruthy();
-  expect(screen.getByText("never")).toBeTruthy();
+  expect(screen.getByTestId("marketplace-install-location").getAttribute("data-state")).toBe("unfetched");
+  expect(screen.getByTestId("marketplace-last-updated").getAttribute("data-state")).toBe("never");
   const user = userEvent.setup();
   await user.click(screen.getByLabelText("Local path"));
   await user.click(await screen.findByRole("button", { name: "Open /srv/mkt/inner" }));
   await user.click(screen.getByRole("button", { name: "Use this folder" }));
-  expect(screen.getByText(/Saving re-fetches the marketplace/)).toBeTruthy();
+  expect(screen.getByTestId("marketplace-refetch-note")).toBeTruthy();
   await user.click(saveButton());
   await waitFor(() => expect((screen.getByLabelText("Local path") as HTMLButtonElement).disabled).toBe(true));
   act(() => release?.());

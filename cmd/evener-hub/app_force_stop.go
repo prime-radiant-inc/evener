@@ -44,6 +44,10 @@ func forceStopRemoteThread(ctx context.Context, cfg hubcore.WebConfig, params ap
 	return remote.ForceStopThread(ctx, params)
 }
 
+// errPersistSessionRecovery refuses a force stop whose recovery record could
+// not be written before the signal.
+var errPersistSessionRecovery = errors.New("persist session recovery")
+
 // forceStopThread bypasses daemon RPC only after verifying the local process.
 // The session remains reserved until the exact process has exited.
 func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadForceStopParams, sources *appsource.Registry) (stopErr error) {
@@ -400,7 +404,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			// nothing: like every other such refusal it stays admission-neutral
 			// — an unrejected Finish would mint an epoch and sequence advance
 			// for a record that never landed.
-			return refuseStop(appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err)))
+			return refuseStop(wireRefusal(appwire.Unavailable, fmt.Errorf("%w: %w", errPersistSessionRecovery, err)))
 		}
 		// The record landed (the rename committed; a later sync step failed):
 		// the recovery obligation is installed, so this refusal DID mutate the
@@ -414,7 +418,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 				fence.Reject()
 			}
 		}
-		return appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err))
+		return wireRefusal(appwire.Unavailable, fmt.Errorf("%w: %w", errPersistSessionRecovery, err))
 	}
 	if exited {
 		if err := cfg.ResumeLocks.ConfirmForceStop(target.SessionID); err != nil {

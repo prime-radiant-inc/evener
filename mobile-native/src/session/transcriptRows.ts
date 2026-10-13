@@ -341,6 +341,13 @@ export interface RunPart {
 	key: string;
 	family: ToolFamily;
 	text: string;
+	/** How many of the run's steps the part holds. */
+	count: number;
+	/** The one program, skill or MCP server every step in the part names,
+	 * when they all name the same one. */
+	name?: string;
+	/** How many of a memory part's steps changed memory, not only read it. */
+	changes?: number;
 	/** Drawn after the text as "(2 failed)", in red ink even when folded. */
 	failed: number;
 }
@@ -415,13 +422,18 @@ function namedBy(family: ToolFamily, step: RunStep): string | undefined {
 	return undefined;
 }
 
+// The one name every step in a part gives, when each gives one and they agree.
+function oneNameOf(group: Group): string | undefined {
+	const [only] = [...group.names];
+	return group.names.size === 1 && group.unnamed === 0 ? only : undefined;
+}
+
 function partText(group: Group): string {
 	const n = group.count;
 	const plural = (one: string, many: string) => (n === 1 ? one : many);
 	const times = n === 1 ? "once" : `${n} times`;
 	// Named only when every step in the part is known and the same.
-	const [only] = [...group.names];
-	const oneName = group.names.size === 1 && group.unnamed === 0 ? only : undefined;
+	const oneName = oneNameOf(group);
 	switch (group.family) {
 		case "read":
 			return `read ${n} ${plural("file", "files")}`;
@@ -521,12 +533,18 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 	return {
 		steps: steps.length,
 		...(durationMs === undefined ? {} : { durationMs }),
-		parts: [...groups.values()].map((group) => ({
-			key: group.key,
-			family: group.family,
-			text: partText(group),
-			failed: group.failed,
-		})),
+		parts: [...groups.values()].map((group) => {
+			const name = oneNameOf(group);
+			return {
+				key: group.key,
+				family: group.family,
+				text: partText(group),
+				count: group.count,
+				...(name === undefined ? {} : { name }),
+				...(group.family === "memory" ? { changes: group.memoryMutations } : {}),
+				failed: group.failed,
+			};
+		}),
 		failed,
 	};
 }

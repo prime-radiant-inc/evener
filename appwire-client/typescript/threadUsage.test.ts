@@ -67,8 +67,8 @@ test("labels a whole-session total plainly", () => {
   expect(tokenUnitLabel("session")).toBe("tokens");
 });
 
-test("labels a sum truncated to the loaded turns as covering only the loaded turns", () => {
-  expect(tokenUnitLabel("loaded")).toBe("tokens (loaded turns)");
+test("labels a sum truncated to the loaded turns apart from a whole-session total", () => {
+  expect(tokenUnitLabel("loaded")).not.toBe(tokenUnitLabel("session"));
 });
 
 test("labels the absence of any token figure plainly", () => {

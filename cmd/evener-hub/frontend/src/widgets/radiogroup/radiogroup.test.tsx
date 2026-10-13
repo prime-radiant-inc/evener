@@ -46,6 +46,27 @@ test("has role=radiogroup labelled by the visible legend text", () => {
   expect(screen.getByText("Theme")).toBeTruthy();
 });
 
+test("a description describes the radiogroup", () => {
+  render(
+    <RadioGroup
+      label="Theme"
+      value="dark"
+      options={THEME_OPTIONS}
+      onChange={() => {}}
+      description={<span data-testid="group-detail">detail</span>}
+    />,
+  );
+  const group = screen.getByRole("radiogroup", { name: "Theme" });
+  const describedBy = group.getAttribute("aria-describedby");
+  expect(describedBy).toBeTruthy();
+  expect(document.getElementById(describedBy ?? "")?.contains(screen.getByTestId("group-detail"))).toBe(true);
+});
+
+test("without a description the radiogroup has no aria-describedby", () => {
+  render(<RadioGroup label="Theme" value="dark" options={THEME_OPTIONS} onChange={() => {}} />);
+  expect(screen.getByRole("radiogroup").hasAttribute("aria-describedby")).toBe(false);
+});
+
 test("renders one visible radio per option", () => {
   render(<RadioGroup label="Theme" value="dark" options={THEME_OPTIONS} onChange={() => {}} />);
   expect(screen.getByRole("radio", { name: "System" })).toBeTruthy();

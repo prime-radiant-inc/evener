@@ -802,25 +802,13 @@ func transportForConfigWithEnv(cfg mcpconfig.ServerConfig, environ func() []stri
 		cmd.Env = mergeEnvInto(environ(), cfg.Env)
 		return &mcpsdk.CommandTransport{Command: cmd, TerminateDuration: commandTerminateDuration}, nil
 
-	case "sse":
-		if cfg.URL == "" {
-			return nil, errors.New("sse transport requires a url")
-		}
-		t := &mcpsdk.SSEClientTransport{Endpoint: cfg.URL}
-		if len(cfg.Headers) > 0 {
-			t.HTTPClient = mcphttp.ClientWithHeaders(nil, cfg.URL, cfg.Headers)
-		}
-		return t, nil
-
-	case "http":
-		if cfg.URL == "" {
-			return nil, errors.New("http transport requires a url")
-		}
-		t := &mcpsdk.StreamableClientTransport{Endpoint: cfg.URL}
-		if len(cfg.Headers) > 0 {
-			t.HTTPClient = mcphttp.ClientWithHeaders(nil, cfg.URL, cfg.Headers)
-		}
-		return t, nil
+	case "sse", "http":
+		// The http and sse transports come from the builder the reachability
+		// probe uses too (#2396): one policy for which SDK transport a
+		// configured type means, its endpoint, header injection and the empty-URL
+		// refusal. A nil client keeps the SDK's own, as the manager has always
+		// done; the probe passes the client it pools.
+		return mcphttp.BuildTransport(cfg.Type, cfg.URL, cfg.Headers, nil)
 
 	default:
 		return nil, fmt.Errorf("unknown MCP transport type %q", cfg.Type)

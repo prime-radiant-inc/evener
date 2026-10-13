@@ -118,7 +118,8 @@ save reminder. Pages that
 contradict what the agent observes are corrected in the same turn. Saving
 sessions are also told the shape of a useful page (one durable fact with its reason and
 when it bears on work, with a frontmatter description that says what the page
-holds and topic tags that reuse the index's) and to keep run details that go
+holds, a `when` line naming the topic and situation (the line the index shows),
+and topic tags that reuse the index's) and to keep run details that go
 stale within days (commit SHAs, branch names, ids, scratch paths, test counts)
 out of memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
@@ -147,10 +148,14 @@ the index in full. A scope with a baseline is read only at the first
 model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. When another
 session changed a known index, that read adds one change section for the
-scope instead of the full index: the quoted page lines added and removed since the
-baseline (the tag header and the not-shown line are never listed). A change whose section would pass 2 KiB is reported as counts of
-added and removed lines. The new index becomes the baseline, so an unchanged
-turn appends nothing.
+scope instead of the full index: the quoted page lines added since the
+baseline (the tag header and the not-shown line are never listed). A change
+whose section would pass 2 KiB is reported as a count of added lines. Removed
+lines are never reported, so a page another session deleted adds nothing, and a
+changed `when` arrives as its new line only. A changed description on a page
+with a `when` changes no line and reports nothing. The new index becomes the
+baseline even when nothing is reported, so an unchanged turn or a removal-only
+change appends nothing and a removal is never reported later.
 
 The session also keeps a record (a content digest, or absence) of each page it
 read with `memory_read`, other than `MEMORY.md`. The record is taken from the
@@ -158,8 +163,9 @@ bytes that read loaded, so a change another session makes right after it is
 noticed; an `offset` or `limit` read loads the whole page too, so it records
 the whole page as of that read. Its own write, edit or delete of such a page
 updates the record from a read-back of the file. The same first-model-call read rechecks
-those pages, and when another session changed or removed one, adds one
-notice section per scope naming each such page as changed or removed. A notice
+those pages, and when another session changed one, adds one notice section per
+scope naming each such page. A page another session removed is not reported;
+its record still advances, so a page that returns is reported as changed. A notice
 never carries page contents and never names a page the
 session has not read. The session tracks at most the 32 pages per scope it
 most recently read with `memory_read`; reading a 33rd stops tracking the least
@@ -212,7 +218,7 @@ memory updates can join a Responses continuation delta after a valid active
 anchor. Compaction without a new valid anchor still requires full history;
 unsafe content and the other continuation eligibility checks remain unchanged.
 
-Pages carry frontmatter (`description`, optional `tags` and `evidence`; Evener
+Pages carry frontmatter (`description`, optional `when`, `tags` and `evidence`; Evener
 adds `updated` and `by`). A page without a description still appears, under its
 fallback description. Other content has no required schema, extension or link
 rule. An optional `log.md` is ordinary model-authored content, not a
@@ -223,7 +229,12 @@ The bundled `gardening-memory` skill is explicitly activated through
 contradictions, remove duplicates, split sprawling pages, fix descriptions and
 tags, merge pages that share tags, delete stale pages, and remove recorded
 approvals, plan status and progress while keeping any durable fact on the same
-page. It does not activate automatically or run background work.
+page. It does not activate automatically or run background work. It is
+advertised in a session's skill catalog, and loads, only while the session can
+save memory: a delegate, a `--disable-memory` session, or a root whose profile
+denies a save tool does not list it in its skill catalog and cannot activate
+it, and a refusal fails visibly instead of delivering instructions the session
+cannot follow.
 
 ## Generated index
 
@@ -252,6 +263,7 @@ saved with CRLF line endings keeps its frontmatter:
 ```markdown
 ---
 description: Money is integer cents, never floats
+when: Formatting or storing a price
 tags: [money, formatting]
 evidence: file:shop/price.go:Format
 updated: 2026-10-08
@@ -262,7 +274,11 @@ Prices are stored and computed as integer cents...
 ```
 
 `description` is one line; newlines collapse to spaces when it is rendered, and
-a value that is not a YAML string counts as missing. `tags` is a YAML list (a
+a value that is not a YAML string counts as missing. `when` is one line saying
+when a future session needs the page, written like a skill's trigger, and names
+the topic and the situation. The index line shows it instead of the description;
+the description stays on the page for whoever opens it. A non-string or empty
+value counts as missing, and the line shows the description. `tags` is a YAML list (a
 single string is one tag); each tag is trimmed and lowercased, runs of
 whitespace become `-`, and empty and duplicate tags are dropped. Tags are plain:
 there is no primary tag, reserved tag or type field. `evidence` is free-form and
@@ -280,7 +296,7 @@ does not parse is still a page; it renders as
 
 ```text
 Tags: formatting (3), money (2), vitest (6)
-- [Integer cents](cents.md) — Money is integer cents, never floats [money, formatting] (updated 2026-10-08)
+- [Integer cents](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)
 - [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
 ```
 
@@ -347,12 +363,13 @@ keeping every other byte, except that a stamped page's line endings become
 unstamped. The stamps land in the tool's one write, never a second
 read-modify-write, so a stamp cannot undo another session's later write or
 delete of the page. A failed write writes nothing. Before stamping, a
-top-level `description` or `evidence` value YAML can't read as written, such
+top-level `description`, `when` or `evidence` value YAML can't read as written, such
 as an unquoted scalar holding `: ` or ending in `:`
 (``description: like `shop: add Count` ``), is written as a quoted
 YAML string, when that makes the frontmatter parse, so the model needs no
 second call to fix it. A written page with no description gets a note asking
-for one, and a page whose frontmatter still does not parse is left as written
+for one, a page with a readable description and no `when` gets a note asking
+for a `when`, and a page whose frontmatter still does not parse is left as written
 and gets its own note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
@@ -457,8 +474,9 @@ deletion. Reopening the same project identity sees its surviving files.
 `--disable-memory` defaults to false on `evener` and `evener serve`. Disabled
 sessions expose no native memory tools, add no automatic memory guidance or
 index context, and perform no native wiki I/O. Ordinary tools, skills and
-session notes remain available. Loading `gardening-memory` does not grant a
-disabled session memory capability.
+session notes remain available; `gardening-memory` is not among them, because a
+disabled session cannot save memory and so neither sees it in its catalog nor
+loads it, exactly like a delegate or a root whose profile denies a save tool.
 
 The choice is sticky across resume and compaction. Omitting the flag on resume
 preserves it; passing the flag can additionally disable an enabled session.

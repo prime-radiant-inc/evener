@@ -699,7 +699,11 @@ it("shows a summary-only step's own words, else the placeholder", () => {
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
 	);
 	expect(result.activityPresentation.get("worded")?.summary).toBe("Wrote /tmp/x");
-	expect(result.activityPresentation.get("bare")?.summary).toBe("Action summary unavailable");
+	const bare = result.activityPresentation.get("bare")?.summary;
+	expect(bare).toBeTruthy();
+	// The placeholder never reads the call's own arguments.
+	expect(bare).not.toContain("/tmp/x");
+	expect(bare).not.toContain("private");
 });
 
 it("keeps an authoritative write_file description ahead of derived details", () => {

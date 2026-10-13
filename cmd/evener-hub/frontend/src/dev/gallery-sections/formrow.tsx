@@ -34,6 +34,18 @@ export default function FormRowGallerySection() {
           <FormRow label="Hub address" htmlFor="gallery-formrow-plain">
             <Input id="gallery-formrow-plain" value="127.0.0.1:9180" onChange={() => {}} disabled />
           </FormRow>
+          <FormRow label="Proxy (group: no single control)" help="Host and port of the outbound proxy.">
+            <div className={styles.pair}>
+              <Input aria-label="Proxy host" value="proxy.internal" onChange={() => {}} />
+              <Input aria-label="Proxy port" value="3128" onChange={() => {}} />
+            </div>
+          </FormRow>
+          <FormRow label="Proxy (group with error)" error="Port must be a number.">
+            <div className={styles.pair}>
+              <Input aria-label="Proxy host, invalid example" value="proxy.internal" onChange={() => {}} />
+              <Input aria-label="Proxy port, invalid example" value="squid" onChange={() => {}} />
+            </div>
+          </FormRow>
         </div>
       </ThemeFlip>
     </section>

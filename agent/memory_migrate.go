@@ -251,7 +251,7 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	return []byte(out)
 }
 
-// repairMemoryFrontmatter is raw with each top-level description or evidence
+// repairMemoryFrontmatter is raw with each top-level description, when or evidence
 // line quoted (memoryYAMLField) whose value YAML can't read as written, such
 // as an unquoted scalar holding ": " or ending in ":", a mistake easy to make
 // in free text ("like `shop: add Count`"). Only these free-text keys are
@@ -276,7 +276,7 @@ func repairMemoryFrontmatter(raw []byte) []byte {
 		// its line, and YAML may quote it or leave space before its colon.
 		keyText, value, found := strings.Cut(strings.TrimSuffix(line, "\n"), ":")
 		var key string
-		if !found || strings.TrimLeft(keyText, " \t") != keyText || yaml.Unmarshal([]byte(keyText), &key) != nil || (key != "description" && key != "evidence") {
+		if !found || strings.TrimLeft(keyText, " \t") != keyText || yaml.Unmarshal([]byte(keyText), &key) != nil || (key != "description" && key != "evidence" && key != "when") {
 			continue
 		}
 		if yaml.Unmarshal([]byte(line), new(any)) == nil {
