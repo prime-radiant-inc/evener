@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -630,6 +631,35 @@ func TestACorruptTurnIDReferenceRefusesAndRepairs(t *testing.T) {
 	}
 	if _, err := x.Latest(5); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestASpanReadOverAnOverUpdateSlotRefusesInsteadOfPanicking pins the
+// reader-crash chain a corrupt update row drives through ChangedSince, at
+// the span step it reaches: the row's Slot — MaxUint64, the value that
+// wraps an additive bounds check — enters the changed-slot maps,
+// changedSince calls span(slot, slot+1), and span's neighbour-inclusive
+// read wraps to a negative slice offset. The corrupt classification must
+// answer instead of panicking the reader.
+func TestASpanReadOverAnOverUpdateSlotRefusesInsteadOfPanicking(t *testing.T) {
+	path, dir := openCommittedSidecar(t, preludeFixture())
+	x := openRefusing(t, path, dir)
+	if err := x.CatchUp(); err != nil {
+		t.Fatal(err)
+	}
+
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	r := newReader(x)
+	// The +1 wraps at runtime, exactly as changedSince's span(slot, slot+1)
+	// does when the slot itself is MaxUint64.
+	var overSlot uint64 = math.MaxUint64
+	_, err := x.span(r, overSlot, overSlot+1)
+	if err == nil {
+		t.Fatal("a span read over an overflowing slot should fail")
+	}
+	if !errors.Is(err, errCorrupt) && !errors.Is(err, ErrRebuildRequired) {
+		t.Fatalf("span over an overflowing slot = %v, want the corrupt refusal, not a panic", err)
 	}
 }
 

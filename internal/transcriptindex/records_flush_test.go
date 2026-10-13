@@ -267,6 +267,26 @@ func TestACorruptStringReferenceCannotOverflowTheBoundsCheck(t *testing.T) {
 	}
 }
 
+// TestACorruptSlotCannotOverflowTheReadBoundsCheck pins the table read's
+// sibling of the string-reference overflow: a corrupt record slot of
+// MaxUint64 wraps an additive slot+count check into passing, and the
+// buffered slice then panics at a negative offset where the unbuffered
+// ReadAt answered an error. A negative count must be rejected before make
+// can see it.
+func TestACorruptSlotCannotOverflowTheReadBoundsCheck(t *testing.T) {
+	tbl, _ := openCountingTable(t, itemRecordSize, 4)
+
+	if _, err := tbl.read(math.MaxUint64, 1); !errors.Is(err, errCorrupt) {
+		t.Fatalf("read at an overflowing slot = %v, want the corrupt error, not a panic", err)
+	}
+	if _, err := tbl.read(0, -1); !errors.Is(err, errCorrupt) {
+		t.Fatalf("read with a negative count = %v, want the corrupt error", err)
+	}
+	if _, err := tbl.read(4, 1); !errors.Is(err, errCorrupt) {
+		t.Fatalf("read at the table's end = %v, want the corrupt error", err)
+	}
+}
+
 // A buffered truncate only shrinks buf; the flush that publishes it must
 // still shrink the file, or rows past the counts would survive a restart.
 func TestATruncateShrinkReachesTheFileOnFlush(t *testing.T) {

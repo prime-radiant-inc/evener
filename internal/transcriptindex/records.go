@@ -406,7 +406,11 @@ type table struct {
 }
 
 func (t *table) read(slot uint64, count int) ([]byte, error) {
-	if slot+uint64(count) > t.n {
+	// Reject by subtraction — an additive slot+count check wraps around
+	// MaxUint64 and lets a corrupt slot through to the slice below, panicking
+	// the buffered read at a negative offset where the unbuffered ReadAt
+	// answered an error — and a negative count before make can see it.
+	if count < 0 || slot > t.n || uint64(count) > t.n-slot {
 		return nil, fmt.Errorf("%w: records %d..%d past %d", errCorrupt, slot, slot+uint64(count), t.n)
 	}
 	buf := make([]byte, int64(count)*t.size)
