@@ -33,6 +33,9 @@ type modelEntry struct {
 	Architecture        struct {
 		InputModalities []string `json:"input_modalities"`
 	} `json:"architecture"`
+	Capabilities struct {
+		Vision *bool `json:"vision"`
+	} `json:"capabilities"`
 	Reasoning struct {
 		Mandatory        *bool    `json:"mandatory"`
 		DefaultEnabled   *bool    `json:"default_enabled"`
@@ -88,6 +91,9 @@ func (m modelEntry) row() registry.Model {
 	}
 	if len(m.Architecture.InputModalities) > 0 {
 		caps.InputModalities = dedupStrings(m.Architecture.InputModalities)
+	} else if registry.BoolValue(m.Capabilities.Vision) {
+		// A gateway may publish vision under capabilities, not architecture.
+		caps.InputModalities = []string{"text", "image"}
 	}
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {

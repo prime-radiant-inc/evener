@@ -808,23 +808,20 @@ func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetail(t *tes
 	}
 }
 
-// Only the Responses builder injects the row's configured image detail (and a
-// "high" default when the row sets none): the chat builder sends the image's own
-// detail or nothing at all (chatcompletions/messages.go), so a chat row's
-// image_detail never reaches the wire and the estimate must not bill for it.
-func TestEstimateMessagesInputTokensForResolved_ChatRowDoesNotApplyTheRowsImageDetail(t *testing.T) {
+// A chat row's configured image detail reaches the chat wire now (the builder
+// maps it exactly as ChatImageDetail does), so the estimate must bill the
+// low-detail formula for a chat row that configures it, mirroring the request.
+func TestEstimateMessagesInputTokensForResolved_ChatRowAppliesTheRowsImageDetail(t *testing.T) {
 	low := "low"
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
 	}}}
-	withCap := registry.Resolved{
+	row := registry.Resolved{
 		Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIChat,
 		Caps: registry.Caps{ImageDetail: &low},
 	}
-	withoutCap := registry.Resolved{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIChat}
-	got := EstimateMessagesInputTokensForResolved(withCap, messages).Tokens
-	if want := EstimateMessagesInputTokensForResolved(withoutCap, messages).Tokens; got != want {
-		t.Fatalf("chat row image history = %d, want %d: the chat builder never injects the row's detail", got, want)
+	if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, 85; got != want {
+		t.Fatalf("low-detail chat row image history = %d, want %d: the row's image_detail reaches the chat wire", got, want)
 	}
 }
 
@@ -917,8 +914,8 @@ func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetailWithout
 	if got := EstimateMessagesInputTokensForResolved(row(registry.ProtocolOpenAIResponses, nil), remote("low")).Tokens; got != 85 {
 		t.Fatalf("image's own low detail = %d, want 85: both builders send the image's own detail", got)
 	}
-	if got := EstimateMessagesInputTokensForResolved(row(registry.ProtocolOpenAIChat, &low), remote("")).Tokens; got != fallback {
-		t.Fatalf("chat row remote image = %d, want the undecoded fallback %d: the chat builder never injects the row's detail", got, fallback)
+	if got := EstimateMessagesInputTokensForResolved(row(registry.ProtocolOpenAIChat, &low), remote("")).Tokens; got != 85 {
+		t.Fatalf("chat row remote image = %d, want the fixed low-detail cost 85: the row's image_detail reaches the chat wire", got)
 	}
 }
 
