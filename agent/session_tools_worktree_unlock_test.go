@@ -660,10 +660,13 @@ func TestManageWorktreeUnlockAbortsWhenSidecarRefreshFails(t *testing.T) {
 	}
 }
 
-// TestManageWorktreeUnlockAbortsWhenResidentReleaseFails is the High-9
-// regression: when the resident runtime cannot be released, unlock must fail and
-// restore the lane lock, retaining the child rather than stranding a partially
-// released runtime.
+// TestManageWorktreeUnlockAbortsWhenResidentReleaseFails is the resident-
+// release-failure regression (High-9; issue #2066): when the resident runtime
+// cannot be released, unlock must fail with the child retained and the lane lock
+// STILL HELD. The lock is never dropped, so there is nothing to restore; the
+// test reads the lock AT the moment of the attempt, where the old order had
+// already released it — the window in which another session could take the lane
+// while the child was still resident.
 func TestManageWorktreeUnlockAbortsWhenResidentReleaseFails(t *testing.T) {
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
@@ -672,16 +675,28 @@ func TestManageWorktreeUnlockAbortsWhenResidentReleaseFails(t *testing.T) {
 	r.s.subagents.mu.Lock()
 	r.s.subagents.subs[childID] = &subagent{id: childID, sess: child}
 	r.s.subagents.mu.Unlock()
+
+	lockHeldAtRelease := false
+	reasonAtRelease := ""
 	installWorktreeSeams(t, r.s, worktreeTestSeams{
-		releaseChildRuntime: func(*Session) error { return errors.New("release failed") },
+		releaseChildRuntime: func(*Session) error {
+			lockHeldAtRelease, reasonAtRelease = r.lockedReasonOf(t, lanePath)
+			return errors.New("release failed")
+		},
 	})
 
 	_, err := r.unlockOp(t, map[string]any{"id": id})
 	if err == nil || !strings.Contains(err.Error(), "resident runtime failed") {
 		t.Fatalf("unlock with a failed resident release = %v, want the abort", err)
 	}
+	// The lane is not handed off while the child is resident: at the instant the
+	// eviction is attempted the delegate's own marker must still hold the lane.
+	if !lockHeldAtRelease || reasonAtRelease != worktree.FormatDelegateMarker(id, r.s.id) {
+		t.Fatalf("lane lock while the resident release was attempted = (%t, %q), want it still held with %q: the lane was handed off with the child still resident",
+			lockHeldAtRelease, reasonAtRelease, worktree.FormatDelegateMarker(id, r.s.id))
+	}
 	if locked, reason := r.lockedReasonOf(t, lanePath); !locked || reason != worktree.FormatDelegateMarker(id, r.s.id) {
-		t.Fatalf("release-failure lane lock = (%t, %q), want the marker re-taken", locked, reason)
+		t.Fatalf("release-failure lane lock = (%t, %q), want the marker still held", locked, reason)
 	}
 	r.s.subagents.mu.Lock()
 	stillPresent := r.s.subagents.subs[childID] != nil
@@ -689,4 +704,107 @@ func TestManageWorktreeUnlockAbortsWhenResidentReleaseFails(t *testing.T) {
 	if !stillPresent {
 		t.Fatal("child was removed despite the failed release")
 	}
+}
+
+// TestManageWorktreeUnlockEvictsResidentChildThenUnlocksLane is the success-path
+// companion to the failure regression: with a resident child, a successful
+// unlock must evict the child (release its runtime, drop the subagent entry and
+// clear the controller's live pointer) and only then release the lane lock,
+// leaving the delegate resumable and the lane switchable. It also pins the
+// ordering directly: the child is released while the lane lock is still held.
+func TestManageWorktreeUnlockEvictsResidentChildThenUnlocksLane(t *testing.T) {
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedStableIsolationLane(t)
+	childID := "child-" + id
+	child := newSession(t)
+	r.s.subagents.mu.Lock()
+	r.s.subagents.subs[childID] = &subagent{id: childID, sess: child}
+	r.s.subagents.mu.Unlock()
+	r.s.delegateController.mu.Lock()
+	r.s.delegateController.live[id] = &delegateLiveState{runtime: child}
+	r.s.delegateController.mu.Unlock()
+
+	lockHeldAtRelease := false
+	installWorktreeSeams(t, r.s, worktreeTestSeams{
+		releaseChildRuntime: func(*Session) error {
+			lockHeldAtRelease, _ = r.lockedReasonOf(t, lanePath)
+			return nil
+		},
+	})
+
+	res, err := r.unlockOp(t, map[string]any{"id": id})
+	if err != nil {
+		t.Fatalf("unlock with a resident child: %v", err)
+	}
+	if !lockHeldAtRelease {
+		t.Fatal("the resident child was released after the lane lock dropped: the lane was handed off with the child still resident")
+	}
+	if res["status"] != "unlocked" {
+		t.Fatalf("unlock status = %v, want unlocked", res["status"])
+	}
+	if locked, reason := r.lockedReasonOf(t, lanePath); locked {
+		t.Fatalf("lane still locked after a successful unlock with %q", reason)
+	}
+	r.s.subagents.mu.Lock()
+	_, stillPresent := r.s.subagents.subs[childID]
+	r.s.subagents.mu.Unlock()
+	if stillPresent {
+		t.Fatal("resident child was not evicted by a successful unlock")
+	}
+	r.s.delegateController.mu.Lock()
+	live := r.s.delegateController.live[id]
+	gotRuntime := live != nil && live.runtime != nil
+	r.s.delegateController.mu.Unlock()
+	if gotRuntime {
+		t.Fatal("controller live pointer was not cleared for the evicted child")
+	}
+	assertStableWorktreeResumable(t, r.s.delegateController, id, true)
+}
+
+// TestManageWorktreeUnlockRetainsLaneWhenLockReleaseFails covers the state the
+// reorder introduces on the OTHER failure path: the resident child is evicted
+// successfully, but the lane's git release then fails. The lane must stay
+// locked — the child is gone and the delegate stays resumable, so a later
+// delegate_send restores it in place under the held lock — and the error must
+// disclose that the child was already evicted rather than reading as "nothing
+// changed".
+func TestManageWorktreeUnlockRetainsLaneWhenLockReleaseFails(t *testing.T) {
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedStableIsolationLane(t)
+	childID := "child-" + id
+	child := newSession(t)
+	r.s.subagents.mu.Lock()
+	r.s.subagents.subs[childID] = &subagent{id: childID, sess: child}
+	r.s.subagents.mu.Unlock()
+
+	installWorktreeSeams(t, r.s, worktreeTestSeams{
+		releaseChildRuntime: func(*Session) error { return nil },
+	})
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" {
+				return "", errors.New("scripted unlock failure")
+			}
+			return inner(args...)
+		}
+	}
+
+	_, err := r.unlockOp(t, map[string]any{"id": id})
+	if err == nil {
+		t.Fatal("unlock with a failing lane release = nil error, want the failure")
+	}
+	if !strings.Contains(err.Error(), "already evicted") {
+		t.Fatalf("lane-release failure = %v, want it to disclose the child was already evicted", err)
+	}
+	if locked, reason := r.lockedReasonOf(t, lanePath); !locked || reason != worktree.FormatDelegateMarker(id, r.s.id) {
+		t.Fatalf("lane lock after a failed release = (%t, %q), want the marker still held", locked, reason)
+	}
+	r.s.subagents.mu.Lock()
+	_, stillPresent := r.s.subagents.subs[childID]
+	r.s.subagents.mu.Unlock()
+	if stillPresent {
+		t.Fatal("resident child was not evicted before the lane release was attempted")
+	}
+	assertStableWorktreeResumable(t, r.s.delegateController, id, true)
 }

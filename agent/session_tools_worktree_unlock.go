@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
@@ -186,33 +185,47 @@ func (s *Session) unlockStableDelegateLane(ctx context.Context, id string) (Work
 	if err := s.updateWorktreeSidecar(metaDir, id, func(*worktree.Sidecar) {}); err != nil {
 		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: refreshing %s's sidecar before releasing its lane: %w", id, err)
 	}
-	if _, err := run("worktree", "unlock", lanePath); err != nil {
-		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: releasing the lock on %s: %w", lanePath, err)
-	}
-	// Evict the resident idle child so nothing can drive it in the now-unlocked
-	// lane (issue #481 review). Its resumability and the lane are untouched; a
-	// later delegate_send restores it and re-applies the lane lock. Without this
-	// a resident child stays bound to the lane and a later notification/attention
-	// wake would run it alongside a parent that switched in — two writers in one
-	// worktree, exactly what the occupancy lock prevents.
+	// Evict the resident idle child FIRST, while the delegate's lane lock is
+	// still held (issue #2066). The lane must never be handed off with the child
+	// still resident, so the order is load-bearing: evicting first reaches only
+	// (child resident, lane locked) → (child evicted, lane locked) → (child
+	// evicted, lane unlocked), never (child resident, lane unlocked) — the state
+	// in which another session can switch in before the child is gone.
+	//
+	// Without the eviction a resident child stays bound to the lane and a later
+	// notification/attention wake would run it alongside a parent that switched
+	// in — two writers in one worktree, exactly what the occupancy lock prevents.
+	childEvicted := false
 	if sub != nil && sub.sess != nil {
 		// Non-terminal release: unlock is documented as non-destructive, so a
 		// resident child is released WITHOUT the terminal close cascade (which
 		// would, for a coordinator child, dispose its own sub-delegates' lanes).
+		// Its resumability and the lane are untouched; a later delegate_send
+		// restores it and re-applies the lane lock.
 		released := sub.sess
 		if relErr := s.releaseChildRuntimeForUnlock(ctx, released); relErr != nil {
-			// Do NOT remove the child or clear its runtime pointer on a partial
-			// release: re-take the delegate's own marker so the lane is not left
-			// loose under a runtime we could not release, and fail the unlock.
-			if _, lockErr := run("worktree", "lock", "--reason", worktree.FormatDelegateMarker(id, s.id), lanePath); lockErr != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("manage_worktree unlock: re-locking delegate %s's lane after a failed runtime release also failed: %v", id, lockErr)})
-			}
-			return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: releasing delegate %s's resident runtime failed; the lane lock was restored and the child retained: %w", id, relErr)
+			// The lane lock was never dropped, so there is nothing to
+			// compensate: leave it held, retain the child, and fail the unlock.
+			return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: releasing delegate %s's resident runtime failed; the lane lock is still held and the child retained: %w", id, relErr)
 		}
+		childEvicted = true
 		s.subagents.removeSession(state.descriptor.ChildSessionID, released)
 		// Clear the controller's live pointer for the released runtime, or a
 		// later delegate_send's fresh restore collides with it in AttachRuntime.
 		s.delegateController.releaseDelegateRuntimePointer(id, released)
+	}
+	// Only now that the child is evicted release the lane lock. If this fails the
+	// lane stays locked with the child already gone — a safe state: the delegate
+	// remains resumable and a later send restores it in place under the lock.
+	if _, err := run("worktree", "unlock", lanePath); err != nil {
+		// The eviction (if any) already happened and cannot be undone; say so
+		// rather than letting the caller read a bare git failure as "nothing
+		// changed".
+		evictedNote := ""
+		if childEvicted {
+			evictedNote = "; its resident child was already evicted"
+		}
+		return WorktreeUnlockResult{}, fmt.Errorf("manage_worktree unlock: releasing the lock on %s failed and the lane lock remains held%s: %w", lanePath, evictedNote, err)
 	}
 	return WorktreeUnlockResult{
 		DelegateID: id,
