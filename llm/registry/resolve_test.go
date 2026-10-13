@@ -262,6 +262,32 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
 		t.Fatalf("an alias with its own recorded controls must derive level: %+v", alias.Caps.ThinkingShape)
 	}
+
+	// An alias on a custom provider (defaulting to openai-chat) whose target
+	// row overrides to google, but whose own transport override blocks
+	// protocol inheritance, must not inherit the target's shape
+	// (roborev round 8).
+	r5 := fixtureLoad(t, map[string]string{"OPENROUTER_API_KEY": "k"}, "[providers.custom]\nbase_url = \"https://example.test/v1\"\nprotocol = \"openai-chat\"\n[providers.custom.models.gemini-via-transport]\nalias_of = \"openrouter/google/gemini-3.1-pro-preview\"\ntransport = \"vertex-gemini\"\n")
+	alias = mustResolve(t, r5, "custom/gemini-via-transport")
+	if alias.Protocol == ProtocolGoogle {
+		t.Fatalf("transport override must prevent protocol inheritance: %s", alias.Protocol)
+	}
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("a transport-overriding alias must not inherit the target's shape, got %v", *alias.Caps.ThinkingShape)
+	}
+
+	// Controls supplied through a config glob on the target count as
+	// recorded evidence: the glob layer is a real configuration layer, not
+	// derivation (roborev round 8).
+	r6 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.openrouter.models.\"google/gemini-3-pro-image\"]\nreasoning_controls = [\"effort\"]\n[providers.google.models.img-glob-alias]\nalias_of = \"openrouter/google/gemini-3-pro-image\"\n")
+	target = mustResolve(t, r6, "openrouter/google/gemini-3-pro-image")
+	if target.Provenance["ReasoningControls"] == "derived" {
+		t.Fatalf("the glob must record the control, not derivation: %v", target.Provenance)
+	}
+	alias = mustResolve(t, r6, "google/img-glob-alias")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
+		t.Fatalf("alias of a glob-configured target must derive level: %+v", alias.Caps.ThinkingShape)
+	}
 }
 
 // A shape verdict is protocol-specific: a cross-protocol target's shape is

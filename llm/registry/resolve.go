@@ -763,14 +763,16 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 			warnings = append(warnings, "dangling alias: "+err.Error())
 		} else {
 			aliasTargetProtocol = target.Protocol
-			// The target's provenance says whether its catalog row recorded
-			// the effort control or derivation invented it.
-			aliasControlsRecorded = target.Provenance["ReasoningControls"] == "snapshot/row" || target.Provenance["ReasoningControls"] == "cache/row" || target.Provenance["ReasoningControls"] == "config/row"
+			// The target's provenance says whether a real layer recorded the
+			// effort control or derivation invented it. Any catalog or config
+			// layer counts; "derived" does not.
+			aliasControlsRecorded = target.Provenance["ReasoningControls"] != "" && target.Provenance["ReasoningControls"] != provDerived
 			// The alias's effective protocol is its own override, else the
-			// target's when the replay below will inherit it, else the
-			// provider default.
-			aliasProto := rec.head.Models[hit.rowID].Protocol
-			if aliasProto == "" && same && target.Model.Protocol != "" {
+			// target's when the replay below will inherit it (same provider,
+			// no transport override), else the provider default.
+			aliasRow := rec.head.Models[hit.rowID]
+			aliasProto := aliasRow.Protocol
+			if aliasProto == "" && same && aliasRow.Transport == nil && target.Model.Protocol != "" {
 				aliasProto = target.Model.Protocol
 			}
 			if aliasProto == "" {

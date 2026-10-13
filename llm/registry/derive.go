@@ -93,13 +93,16 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty:
 			// The effort control must be recorded evidence: one derivation
 			// invented for an empty list says nothing about what the model
-			// accepts. For an alias, the provenance tag says whether the
-			// control was inherited from the target's catalog row or restated
-			// by a real layer on this side. Cross-protocol catalog evidence
-			// transfers when the target names the same model — the catalog
-			// describes the model, not the protocol — but not across model
-			// families, where a different model's controls say nothing.
-			if !in.Aliased || prov["ReasoningControls"] != provAlias || (in.AliasControlsRecorded && strings.HasPrefix(m.Family, "gemini")) {
+			// accepts. After the full replay, the provenance tag is final:
+			// "alias" means the controls were inherited from the target,
+			// and whether they are evidence depends on whether the target's
+			// own catalog recorded them (AliasControlsRecorded) — but only
+			// within the same model family, since a different model's
+			// controls say nothing about this one. Any other tag means a
+			// real layer on this side restated them.
+			aliasInvented := in.Aliased && prov["ReasoningControls"] == provAlias && !in.AliasControlsRecorded
+			crossFamily := in.Aliased && !strings.HasPrefix(m.Family, "gemini")
+			if !aliasInvented && !crossFamily {
 				shape = "level"
 			}
 		}
