@@ -41,6 +41,32 @@ test("is not in the tab order - it's a status indicator, not a control", () => {
   expect(screen.getByRole("img").getAttribute("tabindex")).toBeNull();
 });
 
+// The opt-in a caller uses when its own adjacent text already names the status
+// (the compact ancestor spine's exact runtime label): the glyph stays for its
+// shape, geometry and motion but leaves the accessibility tree, so the status
+// is never announced twice.
+test("decorative drops the glyph's own role and accessible name", () => {
+  render(<StatusDot state="working" decorative />);
+  expect(screen.queryByRole("img")).toBeNull();
+  const glyph = document.querySelector("[data-state]");
+  expect(glyph?.getAttribute("aria-hidden")).toBe("true");
+  expect(glyph?.getAttribute("aria-label")).toBeNull();
+  expect(glyph?.getAttribute("data-state")).toBe("working");
+  expect(glyph?.classList.contains(requireClass(rawStyles.working, "statusdot.module.css", "working"))).toBe(true);
+});
+
+test("decorative keeps the shared geometry: the failed diamond and the round dots", () => {
+  for (const [state, shape] of [
+    ["failed", "diamond"],
+    ["idle", "dot"],
+    ["needs-you", "dot"],
+  ] as const) {
+    const { unmount } = render(<StatusDot state={state} decorative />);
+    expect(document.querySelector("[data-state]")?.getAttribute("data-shape")).toBe(shape);
+    unmount();
+  }
+});
+
 // vitest leaves CSS Modules unprocessed, so the motion contract is read off
 // disk: the working spinner turns only inside the no-preference gate, and
 // under reduced motion the working state is the plain static alive dot.

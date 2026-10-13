@@ -10,12 +10,6 @@ agent/internal/tool/repair/explain_oneof_test.go	TestExplainSchemaError_Multiple
 agent/internal/tool/repair/suggest_test.go	TestUnknownToolMessage_NoSuggestionWhenFar	Unknown-tool repair message to the model (deferred model-facing text); TestSuggestToolName_NoMatchBeyondThreshold covers the structured half (#4415).
 agent/job_watch_branches_test.go	TestCallbackWatchesCancelledAtRestartMessage	System notification to the model (deferred model-facing text; #4424).
 agent/session_tools_jobs_list_test.go	TestDefJobListDescriptionMentionsActiveWatches	Tool description the model reads (deferred model-facing text; #4424).
-appwire-client/typescript/displayFormat.test.ts	firstLine: takes the first line of a multi-line string	False positive: fixture text in, its first line out (#4424).
-cmd/evener-hub/frontend/src/accessibleNameTestUtils.test.tsx	an aria-label override replaces the content	Tests the name-computation helper itself; "Override" is a fixture fed in and read back out (#4436).
-cmd/evener-hub/frontend/src/notifications/title.test.ts	title on, count 0: no prefix	Pure function: the base title is a fixture passed through; the claim is that no count prefix is added (#4436).
-cmd/evener-hub/frontend/src/notifications/title.test.ts	title OFF: no prefix even with a high count	Pure function: the base title is a fixture passed through; the claim is that the prefix stays off (#4436).
-cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx	a rejected control shows the daemon's reason	The reason is fixture data, found inside the data-kind="refused" row, so the test also proves the row is marked refused (#4436).
-cmd/evener-hub/frontend/src/widgets/panescaffold/panescaffold.test.tsx	the title rule truncates overflow with an ellipsis	False positive: checks a CSS declaration, a machine contract (#4436).
 cmd/evener-tui/internal/launchconfig/launch_schema_covtest_test.go	TestCovDefaultStringEmpty	"(default)" is the in-band unset marker launchOptionValue and applyEdit compare against: a contract inside the package (#4415).
 internal/appwirets/emit_test.go	TestTypeExprNavigationArrayRendersAsSlice	False positive: a generated TypeScript type expression, a machine contract (#4424).
 llm/providers/chatcompletions/recompute_test.go	TestExtractRecordedResponse_SSE	False positive: scripted SSE deltas reassemble into the response text (#4424).

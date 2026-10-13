@@ -27,6 +27,9 @@ export interface BannerProps {
   tone: BannerTone;
   message: string;
   action?: BannerAction;
+  /** Why the banner is up, as `data-reason`, so a caller's tests can tell
+   * its states apart without reading the message. */
+  reason?: string;
 }
 
 const BASE_CLASS = {
@@ -45,9 +48,9 @@ const TONE_CLASS: Record<BannerTone, string> = {
  * must establish a positioning context (position: relative/absolute/fixed);
  * in production that is AppShell's `.shell`.
  */
-export function Banner({ tone, message, action }: BannerProps) {
+export function Banner({ tone, message, action, reason }: BannerProps) {
   return (
-    <div className={`${BASE_CLASS.banner} ${TONE_CLASS[tone]}`} role="status" aria-live="polite">
+    <div className={`${BASE_CLASS.banner} ${TONE_CLASS[tone]}`} role="status" aria-live="polite" data-reason={reason}>
       <span className={styles.message}>{message}</span>
       {action && (
         <Button variant="quiet" size="sm" onClick={action.onClick} disabled={action.inFlight}>

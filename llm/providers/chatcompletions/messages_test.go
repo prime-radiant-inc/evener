@@ -101,3 +101,83 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 		t.Fatalf("empty reasoning_content on assistant turns: %v", out[0])
 	}
 }
+
+// chatImageMessage is a user message with a text prompt and one image part
+// carrying the given detail.
+func chatImageMessage(detail string) llm.Message {
+	return llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "look"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{1}, MediaType: "image/png", Detail: detail}},
+	}}
+}
+
+// imageCaps is caps carrying an image_detail, or no cap when the value is empty.
+func imageCaps(detail string) registry.Caps {
+	if detail == "" {
+		return registry.Caps{}
+	}
+	return registry.Caps{ImageDetail: &detail}
+}
+
+// imageWireDetail is the detail the chat wire carries for the single image part
+// of msg under caps, or nil when the field is absent.
+func imageWireDetail(t *testing.T, caps registry.Caps, msg llm.Message) any {
+	t.Helper()
+	out, err := toChatMessages([]llm.Message{msg}, caps, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, ok := out[0]["content"].([]map[string]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("content = %#v", out[0]["content"])
+	}
+	return parts[1]["image_url"].(map[string]any)["detail"]
+}
+
+// TestToChatMessages_ImageDetailHonorsRowCap pins the wire detail an image part
+// carries. The chat wire accepts only auto|low|high: the cap vocabulary's
+// "original" (full resolution) reaches it as "high", "omit" drops the field,
+// and a part that names no detail takes the row's cap. A part's own detail
+// otherwise wins.
+func TestToChatMessages_ImageDetailHonorsRowCap(t *testing.T) {
+	if got := imageWireDetail(t, imageCaps("original"), chatImageMessage("")); got != "high" {
+		t.Fatalf(`image_detail "original" wire detail = %v, want "high"`, got)
+	}
+	if got := imageWireDetail(t, imageCaps("omit"), chatImageMessage("")); got != nil {
+		t.Fatalf(`image_detail "omit" must drop the detail field, got %v`, got)
+	}
+	if got := imageWireDetail(t, imageCaps("low"), chatImageMessage("")); got != "low" {
+		t.Fatalf(`image_detail "low" wire detail = %v, want "low"`, got)
+	}
+	if got := imageWireDetail(t, registry.Caps{}, chatImageMessage("")); got != nil {
+		t.Fatalf("no image_detail must drop the field, got %v", got)
+	}
+	if got := imageWireDetail(t, registry.Caps{}, chatImageMessage("original")); got != "high" {
+		t.Fatalf(`part detail "original" must map to "high", got %v`, got)
+	}
+	if got := imageWireDetail(t, imageCaps("low"), chatImageMessage("high")); got != "high" {
+		t.Fatalf("a part's own detail must win over the row cap, got %v", got)
+	}
+	if got := imageWireDetail(t, imageCaps("omit"), chatImageMessage("low")); got != nil {
+		t.Fatalf(`image_detail "omit" must drop the field even when the part names a detail, got %v`, got)
+	}
+}
+
+// TestToChatMessages_NeverEmitsAnInvalidImageDetail pins the #4489 invariant:
+// the chat wire accepts only auto|low|high, so no combination of row cap and
+// part detail may put any other value on it.
+func TestToChatMessages_NeverEmitsAnInvalidImageDetail(t *testing.T) {
+	for _, capDetail := range []string{"", "original", "omit", "low", "high"} {
+		for _, partDetail := range []string{"", "original", "low", "high", "auto", "medium", "ORIGINAL"} {
+			d := imageWireDetail(t, imageCaps(capDetail), chatImageMessage(partDetail))
+			if d == nil {
+				continue
+			}
+			switch d {
+			case "auto", "low", "high":
+			default:
+				t.Fatalf("cap %q part %q emitted the invalid detail %v", capDetail, partDetail, d)
+			}
+		}
+	}
+}

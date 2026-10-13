@@ -234,13 +234,31 @@ never dropped.
 
 Clients show the line in place of the status word only while the row is
 non-terminal and the line is non-empty; every other row state keeps today's
-status text, and the status word stays reachable — the sidebar row's title,
-the activity tree's row description and glyph tone, and the phone's
-accessibility label keep reading it. The merge rides the existing bounded
+status text on the web, and the status word stays reachable — the sidebar
+row's dot label and title, the activity tree's row description, and the
+phone's accessibility label keep reading it. The merge rides the existing bounded
 preview gate: a client that has not advertised it keeps the read path alone,
 and an absent, over-long or malformed value applies as omitted rather than
 dropping the row. Older daemons never send the field, and their rows keep
 today's status word everywhere.
+
+A subagent row's leading mark is the session status dot on every surface, with
+one state the session vocabulary does not have: quiet. An open run shows the
+alive dot while fresh, dims it to quiet ink once its latest activity passes
+the shared twenty-second threshold, reads amber for attention and red for
+failure (a diamond on the web, so failure never depends on hue alone), and
+shows no mark once settled, a settled failure excepted: its red mark is its
+outcome. One shared client rule computes the state and the
+threshold, so the web sidebar, the web activity tree's delegate rows and the
+phone's list read the same dot and flip at the same instant: the sidebar times
+one threshold wake per running row, the tree's live tick covers its rows, and
+the phone reuses its existing quiet wake. Quiet stays truthful, moving from
+the word to the dot: the phone's why line shows the intent, else the running
+command, else the subagents it waits on, and otherwise stays empty while the
+dot alone speaks, its failed xmark and done checkmark retired beside the band
+headers that already carry those states. Shell-job rows keep their own marks
+and status words everywhere; the timeline, tray and board keep their own
+quiet-word contracts.
 
 Both the delegate list and transcript roster carry the authoritative
 `runGeneration`. The phone joins a report only when owner, delegate identity and
@@ -859,7 +877,9 @@ failures, under its existing per-session Inactive folds. Counts include every
 entry grouped there. Opening a fold reveals rows in their original order with
 details collapsed by default. Active descendants and the ancestors needed to
 reach them remain outside the folds, regardless of an ancestor's settled outcome.
-Settled row glyphs and status text use ordinary quiet ink. True outcomes remain
+Settled jobs keep their glyphs and status text in ordinary quiet ink; a settled
+delegate shows the dot's settled vocabulary instead - no mark done, the red
+diamond failed. True outcomes remain
 available to assistive technology even when duration replaces visible status;
 live questions, approvals and current errors retain their attention treatment.
 Detail, action and read failures remain recovery information, not settled outcomes.

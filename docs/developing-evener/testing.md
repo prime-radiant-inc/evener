@@ -89,18 +89,36 @@ When the text really is the contract (an enum token, a wire field, a CLI flag,
 a file format), assert it through its structured form, as above. When it is
 copy a person reads, review it in the diff and test the behavior around it.
 
-`copyonly_audit_test.go` enforces the rule against tests whose whole claim is
-that some copy exists. It runs `internal/devtool/copyonly` over every tracked
-Go and TypeScript test and fails on a test whose name says it shows, renders or
-says something and whose every check compares output with production copy. It
-skips expected errors, counts, attributes, machine-contract tokens, and text
-the test supplied itself. When it flags your test, assert the behavior instead.
-If the copy must stay the oracle (model-facing text whose conversion is
-deferred, or a false positive), add a row to
-`internal/devtool/copyonly/allowlist.tsv`: the file, the test name, and the
-reason it is kept, tab-separated. Rows are keyed by file and test name, not
-line. The audit also fails on a row whose test is no longer flagged, so remove
-the row when you convert, delete or rename the test.
+Two audits enforce the rule against tests whose whole claim is that some copy
+exists. Each fails on a test whose name says it shows, renders or says
+something and whose every check compares output with production copy:
+
+- `copyonly_audit_test.go` (part of `go test`) runs `internal/devtool/copyonly`
+  over every tracked Go test. Its allowlist is
+  `internal/devtool/copyonly/allowlist.tsv`.
+- `cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts` (part of
+  `make test-web`) reads every tracked TypeScript test in the frontend,
+  `mobile-native`, `mobile/src` and `appwire-client/typescript` with the
+  TypeScript compiler. Its allowlist is
+  `cmd/evener-hub/frontend/src/dev/copyonly/allowlist.tsv`.
+
+Both skip expected errors, counts, attribute and state reads, spy assertions,
+role queries, machine-contract tokens, and text the test supplied itself. When
+an audit flags your test, assert the behavior instead. If the copy must stay
+the oracle (model-facing text whose conversion is deferred, or a false
+positive), add a row to that language's allowlist: the file, the test name,
+and the reason it is kept, tab-separated. Rows are keyed by file and test name,
+not line. Each audit also fails on a row whose test is no longer flagged, so
+remove the row when you convert, delete or rename the test.
+
+To find what is left to convert, `go run ./cmd/evener-dev/bin dev copy-oracle`
+inventories every assertion whose oracle is production copy, per package and
+category, using the same two scanners. `--hits FILE` writes each one as TSV,
+`--copy-only FILE` lists the copy-only tests instead, and `--path PREFIX` and
+`--only ts|go` narrow the scan. The TypeScript half runs under `node` with the
+frontend's install, so run `make web-preflight` first, or pass `--only go`.
+After converting a test, `tools/copy-oracle/mutate.sh` breaks the behavior it
+now checks and confirms the test fails.
 
 ## Flakes and Timeouts
 
@@ -1285,7 +1303,9 @@ IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
   scroll port itself shrinks (the pane header growing). Paged-open readiness
   waits through asynchronous cache/read admission until the actual scroll port
   mounts and its geometry settles. An explicitly deferred read exercises those
-  pre-mount frames without a fixed delay or a wider readiness deadline.
+  pre-mount frames without a fixed delay or a wider readiness deadline. A pane
+  that unmounts under any post-settle wait must report it by name ("unmounted
+  during the scroll-away wait"), never as the harness's own mount error.
 - **`node scripts/sessioncacheguard/run.mjs`** drives TWO REAL TABS through the
   real session-cache store, native BroadcastChannel and IndexedDB, with only
   AppWire scripted. It proves sibling deletion suppression and refusal to

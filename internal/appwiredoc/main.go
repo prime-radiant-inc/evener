@@ -160,10 +160,14 @@ func build() docData {
 	// the array but document none of its fields (archived, hits, hitCount
 	// included). SearchHit and SearchSnippetPart are in turn SearchResult.Hits'
 	// and SearchHit.Snippet's own element types, so they need the same
-	// explicit registration (roborev review of PR 25).
+	// explicit registration (roborev review of PR 25). SearchTopLevel is
+	// SearchResult.TopLevel's own nested type — the search grouping wire — so
+	// it needs the same registration or its anchor fields (ref, state, ask and
+	// approval flags) would go undocumented.
 	register(appwire.SearchResult{})
 	register(appwire.SearchHit{})
 	register(appwire.SearchSnippetPart{})
+	register(appwire.SearchTopLevel{})
 	// HostRow and RemovedRow are the row shapes the registry mutations' union
 	// arms carry — HostMutationCommitted.Host, the teardown-failure arms' Host,
 	// HostMutationAmbiguous.ObservedRow, HostMutationCollisionDropped.Host and

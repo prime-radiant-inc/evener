@@ -190,7 +190,7 @@ no router (reserved).
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a hub or daemon timestamp the client showed (a row's turn end, or a session's last-moved time), or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen and seen_through from the hub's marker. |
-| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
+| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. Each matching subagent names the top-level session it renders under, so clients group it there. |
 | `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time, the newest tool intent and when the tree last moved, of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
@@ -2328,6 +2328,7 @@ _(no fields)_
 | `archived` | `bool` | yes |  |
 | `hits` | `[]appwire.SearchHit` | yes |  |
 | `hitCount` | `int` | yes |  |
+| `topLevel` | `*appwire.SearchTopLevel` | yes |  |
 
 
 ### `SearchSnippetPart`
@@ -2336,6 +2337,20 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `text` | `string` |  |  |
 | `match` | `bool` | yes |  |
+
+
+### `SearchTopLevel`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `title` | `string` |  |  |
+| `project` | `string` | yes |  |
+| `state` | `string` |  |  |
+| `age` | `string` | yes |  |
+| `askPending` | `bool` | yes |  |
+| `approvalPending` | `bool` | yes |  |
 
 
 ### `SessionActivityAncestor`
