@@ -349,6 +349,13 @@ type hubModel struct {
 	// or its same-ref apply — and on reconnect, whose fresh connection
 	// carries no reads (#4343 round-16 medium 2).
 	liveNavEntryPendingSeq int
+	// entryRepairReadInFlight marks the armed entry-repair retry's re-read
+	// as a flight reconciliation must respect: a superseded response
+	// landing while the retry's own read is running defers, since a
+	// recovery read would race the retry's replacement. Set when the tick
+	// issues the re-read; cleared at the re-read's landing (any outcome)
+	// and when the retry retires (#4343 round-17 medium 3).
+	entryRepairReadInFlight bool
 	// liveNavNeedsReconcile records that a stale recovery response was
 	// dropped while a newer read was still pending: its server-side
 	// replacement may have landed after the newer read's, so once the newest

@@ -82,12 +82,16 @@ func (m *hubModel) issuePickedSessionRead(ref appwire.Ref) tea.Cmd {
 // re-pointed the connection's subscriptions server-side. When a session is
 // displayed and no newer navigation read is pending, its subscription is
 // re-established, since nothing else will. While a newer read IS pending —
-// a cycling read's target, or a picked read's generation — the newer read
-// owns the server-side subscription while it is in flight: reconciling now
-// would race it, this read's replacement landing after the newer read's
-// and stealing the subscription back, so the newer response would apply
-// with the subscription pointing at the older session (round-16 medium 2).
-// The obligation is recorded instead, and the newer navigation's landing
+// a cycling read's target, a picked read whose generation is still the
+// current one, or the armed entry-repair retry's own running re-read — the
+// newer read owns the server-side subscription while it is in flight:
+// reconciling now would race it, this read's replacement landing after the
+// newer read's and stealing the subscription back, so the newer response
+// would apply with the subscription pointing at the older session
+// (round-16 medium 2, round-17 mediums 1 and 3). A picked generation that
+// has been superseded does not count: its navigation is gone, and deferring
+// on it would strand the obligation with nothing left to settle it. The
+// obligation is recorded instead, and the newer navigation's landing
 // settles it through the tagged reconcile (both settle points — the entry
 // branch and the same-ref apply — already consume it). On a non-session
 // surface there is nothing displayed to repair.
@@ -95,7 +99,9 @@ func (m hubModel) discardSupersededSessionRead() (hubModel, tea.Cmd) {
 	if m.mode != hubModeSession {
 		return m, nil
 	}
-	if m.liveNavPendingRef != "" || m.liveNavEntryPendingSeq != 0 {
+	pendingCycle := m.liveNavPendingRef != ""
+	pendingPick := m.liveNavEntryPendingSeq != 0 && m.liveNavEntryPendingSeq == m.liveNavSeq
+	if pendingCycle || pendingPick || m.entryRepairReadInFlight {
 		m.liveNavNeedsReconcile = true
 		return m, nil
 	}

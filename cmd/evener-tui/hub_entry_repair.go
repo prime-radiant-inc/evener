@@ -99,6 +99,10 @@ func (m *hubModel) entryRepairRetire() {
 	m.entryRepairRef = appwire.Ref{}
 	m.entryRepairDelay = 0
 	m.entryRepairSeq = 0
+	// A retired retry has no flight worth deferring for: its in-flight
+	// read, when one still lands, is superseded and discarded on the
+	// standing navigation's own terms (#4343 round-17 medium 3).
+	m.entryRepairReadInFlight = false
 }
 
 // updateHubEntryRepairTick lands an armed retry. A tick for a superseded
@@ -130,5 +134,8 @@ func (m *hubModel) updateHubEntryRepairTick(msg hubEntryRepairTickMsg) (tea.Mode
 		return *m, nil
 	}
 	m.entryRepairDelay = min(m.entryRepairDelay*2, hubEntryRepairCapDelay)
+	// The re-read is a flight reconciliation must respect: a superseded
+	// response landing while it runs defers to it (#4343 round-17 medium 3).
+	m.entryRepairReadInFlight = true
 	return *m, m.retryHubSessionRead(msg.ref)
 }

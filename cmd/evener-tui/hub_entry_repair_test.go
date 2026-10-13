@@ -1496,3 +1496,189 @@ func TestASupersededDiscardDefersWhileAPickIsPending(t *testing.T) {
 		t.Fatal("the settle point issued no tagged reconcile for the entered session")
 	}
 }
+
+// A cycling press supersedes a picked read: after the cycle lands, the
+// obsolete pick's late response must not defer reconciliation on its stale
+// pending generation — the displayed session's subscription is repaired
+// immediately, since no current navigation remains in flight.
+func TestASupersededPickResponseAfterTheCycleLandsReconcilesImmediately(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m, _, cleanup := newLiveCycleModel(t, "local:01C", liveCycleTree())
+	defer cleanup()
+	refB := mustParseRef(t, "local:01B")
+
+	// The user picks B, then cycles before B's read answers.
+	picked := m
+	pickCmd := picked.issuePickedSessionRead(refB)
+
+	// The cycle supersedes the pick; its response lands and enters the
+	// cycle's target.
+	afterPress, _ := picked.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	pressed := afterPress.(hubModel)
+	cycleSeq := pressed.liveNavSeq
+	cycleTarget := pressed.liveNavPendingRef
+	entered, _ := pressed.Update(hubSessionMsg{
+		ref:        cycleTarget,
+		detail:     hubSessionDetail{Ref: cycleTarget, SessionID: "sess_cycle", State: appwire.ThreadStatusIdle},
+		liveNavSeq: cycleSeq,
+	})
+	shown := entered.(hubModel)
+	if shown.detail.Ref != cycleTarget {
+		t.Fatalf("setup: the cycle's response did not enter its target: %v", shown.detail.Ref)
+	}
+
+	// The superseded pick's late response lands: discarded, and — with the
+	// cycle settled and the pick's generation obsolete — reconciled NOW,
+	// not deferred on the stale pending generation forever.
+	afterLate, lateCmd := shown.Update(pickCmd().(hubSessionMsg))
+	late := afterLate.(hubModel)
+	if late.liveNavNeedsReconcile {
+		t.Fatal("the superseded pick's response deferred reconciliation on its obsolete pending generation")
+	}
+	if lateCmd == nil {
+		t.Fatal("the superseded pick's response did not reconcile the displayed session's subscription")
+	}
+	recovery, ok := lateCmd().(hubSessionMsg)
+	if !ok || !recovery.liveNavRecovery || recovery.ref != cycleTarget {
+		t.Fatalf("the reconciliation produced %T, want the displayed session's recovery read", lateCmd())
+	}
+}
+
+// A stale cycling response defers while the newer PICK is pending: the old
+// branches checked only the cycling target, which the pick cleared at
+// issuance — the recovery must not race the pick's own replacement, and
+// the pick's landing settles the recorded obligation.
+func TestAStaleCycleResponseDefersWhileTheNewerPickIsPending(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m, _, cleanup := newLiveCycleModel(t, "local:01C", liveCycleTree())
+	defer cleanup()
+	refB := mustParseRef(t, "local:01B")
+
+	// A cycling press is in flight when the user picks B: the pick
+	// supersedes the cycle and puts B's read in flight.
+	afterPress, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	pressed := afterPress.(hubModel)
+	cycleSeq := pressed.liveNavSeq
+	cycleTarget := pressed.liveNavPendingRef
+	pickCmd := pressed.issuePickedSessionRead(refB)
+
+	// The stale cycling response lands: discarded, and its reconciliation
+	// DEFERS on the pending pick — no recovery read races B's replacement.
+	afterStale, staleCmd := pressed.Update(hubSessionMsg{
+		ref:        cycleTarget,
+		detail:     hubSessionDetail{Ref: cycleTarget, SessionID: "sess_cycle", State: appwire.ThreadStatusIdle},
+		liveNavSeq: cycleSeq,
+	})
+	stale := afterStale.(hubModel)
+	if staleCmd != nil {
+		t.Fatal("the stale cycling response issued a recovery read that races the pending pick")
+	}
+	if !stale.liveNavNeedsReconcile {
+		t.Fatal("the stale cycling response dropped its reconciliation obligation instead of recording it")
+	}
+
+	// B's response lands and settles: B enters with the obligation consumed.
+	entered, settleCmd := stale.Update(pickCmd().(hubSessionMsg))
+	shown := entered.(hubModel)
+	if shown.mode != hubModeSession || shown.detail.Ref != refB.String() {
+		t.Fatalf("the pick's response did not enter B: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	if shown.liveNavNeedsReconcile {
+		t.Fatal("the settle point did not consume the recorded obligation")
+	}
+	settled := false
+	if settleCmd != nil {
+		for _, c := range flattenBatch(t, settleCmd) {
+			if recovery, ok := c().(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == refB.String() {
+				settled = true
+			}
+		}
+	}
+	if !settled {
+		t.Fatal("the settle point issued no tagged reconcile for the entered session")
+	}
+}
+
+// The retry's own re-read is a flight reconciliation must respect: an older
+// retry response landing while a newer retry read is running defers, and
+// the newer read's landing settles the obligation.
+func TestAnOlderRetryResponseDefersWhileTheNewerRetryReadRuns(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+
+	// Session C is displayed when a palette pick of A answers rebuilding:
+	// the retry arms and its first re-read goes in flight.
+	enteredC, _ := m.Update(hubSessionMsg{
+		ref:    "local:01C",
+		detail: hubSessionDetail{Ref: "local:01C", SessionID: "sess_c", State: appwire.ThreadStatusIdle},
+	})
+	watching := enteredC.(hubModel)
+	updated, cmd := watching.Update(hubSessionMsg{ref: refA.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	oldSeq := armed.entryRepairSeq
+	armed.Update(executeEntryRepairCmd(t, cmd)) // the older re-read in flight
+
+	// A reconnect rebinds the retry and paces a fresh tick: its re-read is
+	// the newer flight.
+	freshClient, freshFeed, cleanup2 := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup2()
+	after, _ := armed.Update(hubReconnectMsg{client: freshClient, frames: freshFeed})
+	rebound := after.(hubModel)
+	newSeq := rebound.entryRepairSeq
+	afterTick, reread := rebound.Update(hubEntryRepairTickMsg{ref: refA, seq: newSeq})
+	if reread == nil {
+		t.Fatal("setup: the rebound tick issued no read")
+	}
+
+	// The older re-read's late response lands, tagged with the superseded
+	// generation: discarded, and its reconciliation DEFERS on the newer
+	// retry read's flight — no recovery read races it.
+	afterOld, oldCmd := afterTick.(hubModel).Update(hubSessionMsg{
+		ref:           refA.String(),
+		err:           rebuildingEntryError(t),
+		entryRetrySeq: oldSeq,
+	})
+	stale := afterOld.(hubModel)
+	if oldCmd != nil {
+		t.Fatal("the older retry response issued a recovery read that races the newer retry's read")
+	}
+	if !stale.liveNavNeedsReconcile {
+		t.Fatal("the older retry response dropped its reconciliation obligation instead of recording it")
+	}
+
+	// The newer re-read succeeds: it enters its target with the obligation
+	// settled through the tagged reconcile.
+	msg := reread().(hubSessionMsg)
+	entered, settleCmd := stale.Update(msg)
+	shown := entered.(hubModel)
+	if shown.mode != hubModeSession || shown.detail.Ref != refA.String() {
+		t.Fatalf("the newer re-read did not enter its target: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	if shown.liveNavNeedsReconcile {
+		t.Fatal("the newer read's landing did not consume the recorded obligation")
+	}
+	settled := false
+	if settleCmd != nil {
+		for _, c := range flattenBatch(t, settleCmd) {
+			if recovery, ok := c().(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == refA.String() {
+				settled = true
+			}
+		}
+	}
+	if !settled {
+		t.Fatal("the landing issued no tagged reconcile for the entered session")
+	}
+}

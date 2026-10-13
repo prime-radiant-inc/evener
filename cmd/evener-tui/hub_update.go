@@ -77,6 +77,13 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// server-side, so when a session is displayed its subscription is
 		// re-established — the same obligation the live-nav guards carry.
 		if msg.entryRetrySeq > 0 {
+			// This landing concludes the armed generation's own flight — an
+			// older generation's response (a dead connection's, a
+			// superseded round's) leaves the current flight standing
+			// (#4343 round-17 medium 3).
+			if m.entryRepairSeq == msg.entryRetrySeq {
+				m.entryRepairReadInFlight = false
+			}
 			if m.entryRepairRef.String() != msg.ref || m.entryRepairSeq != msg.entryRetrySeq {
 				return m.discardSupersededSessionRead()
 			}
@@ -145,8 +152,9 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// no newer read is in flight: hand the displayed session's
 				// back — through the tagged helper, so a yet-newer press
 				// cannot be hijacked by the re-read's response (round-13
-				// medium 1).
-				return m.reestablishDisplayedSubscription()
+				// medium 1) — deferring instead when a newer navigation
+				// read IS in flight (round-17 medium 2).
+				return m.discardSupersededSessionRead()
 			}
 			// Current: fall through to the ordinary same-ref apply. The
 			// cycling guards below do not apply to it (it never switches
@@ -231,12 +239,11 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// replacement. But the stale replacement may have landed
 					// after the newer read's own request completed, so the
 					// settle point must reconcile once the pending state
-					// clears (round-15 medium 1).
-					if m.liveNavPendingRef != "" {
-						m.liveNavNeedsReconcile = true
-						return m, nil
-					}
-					return m.reestablishDisplayedSubscription()
+					// clears (round-15 medium 1). The shared discard helper
+					// owns the deferral now: any newer navigation read in
+					// flight — cycling, picked, or the entry retry's own —
+					// records the obligation instead (round-17 medium 2).
+					return m.discardSupersededSessionRead()
 				}
 				if msg.err != nil {
 					// A failed recovery read left the connection's
@@ -289,15 +296,14 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// reverting the UI to the older session (roborev PR #1044
 				// round-10 medium). Only the settled-display case (below,
 				// once the pending target has been consumed) re-establishes.
-				if m.liveNavPendingRef != "" {
-					return m, nil
-				}
 				// The settled-display resub goes through the tagged recovery
 				// path for the same reason as the newer-read drop above: an
 				// untagged resub response can land after a yet-newer press
 				// applied and revert the UI (roborev PR #1044 round-13
-				// medium 1).
-				return m.reestablishDisplayedSubscription()
+				// medium 1). The shared discard helper owns the deferral
+				// when a newer navigation read is in flight — recording the
+				// obligation for its landing to settle (round-17 medium 2).
+				return m.discardSupersededSessionRead()
 			}
 			// Composing began while the read was in flight: the draft is newer
 			// intent than the navigation. The press-time guard cannot cover
