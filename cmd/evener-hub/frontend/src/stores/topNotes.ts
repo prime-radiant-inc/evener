@@ -17,6 +17,12 @@ export interface PendingTopNotesFocus {
   // active control. A request born writable was just asked for and
   // focuses normally.
   originReadOnly: boolean;
+  // The pane the request was addressed to, or null when it names none. One
+  // conversation can hold two notes panels at once (an ordinary session pane
+  // and a cascade column), so a request that names its seat is served only by
+  // that panel; an unaddressed request is served by whichever mounted panel
+  // for the ref gets it.
+  paneId: string | null;
 }
 
 export interface TopNotesStoreState {
@@ -25,16 +31,16 @@ export interface TopNotesStoreState {
   isExpanded(ref: string): boolean;
   hasPendingFocus(ref: string): boolean;
   // Serves at most one outstanding request: true exactly once per request.
-  takePendingFocus(ref: string): boolean;
+  takePendingFocus(ref: string, paneId?: string): boolean;
   setExpanded(ref: string, expanded: boolean): void;
   toggle(ref: string): void;
   // Expand and leave a focus request for the panel to take - immediately
   // when it is already mounted, on mount otherwise.
-  openAndFocus(ref: string): void;
+  openAndFocus(ref: string, paneId?: string): void;
   // Toggle that requests editor focus when it lands on open - the one
   // action every opener that means "show me my notes" (the /notes command)
   // wants, so no caller re-derives the request bookkeeping.
-  toggleAndFocus(ref: string): void;
+  toggleAndFocus(ref: string, paneId?: string): void;
   resetForTests(): void;
 }
 
@@ -47,8 +53,12 @@ export const topNotesStore = createStore<TopNotesStoreState>((set, get) => ({
   hasPendingFocus(ref: string): boolean {
     return get().pendingFocus.get(ref) !== undefined;
   },
-  takePendingFocus(ref: string): boolean {
-    if (!get().pendingFocus.get(ref)) return false;
+  takePendingFocus(ref: string, paneId?: string): boolean {
+    const request = get().pendingFocus.get(ref);
+    if (!request) return false;
+    // An addressed request belongs to its seat alone: the other panel showing
+    // the same conversation must leave it for the addressed one.
+    if (request.paneId !== null && request.paneId !== paneId) return false;
     set((state) => {
       const next = new Map(state.pendingFocus);
       next.delete(ref);
@@ -71,13 +81,13 @@ export const topNotesStore = createStore<TopNotesStoreState>((set, get) => ({
       return { expanded: next };
     });
   },
-  openAndFocus(ref: string): void {
+  openAndFocus(ref: string, paneId?: string): void {
     // The origin era is judged from the same predicate the panel uses to
     // serve the request, read from the store at issue time: the panel's
     // props can lag a pane-reuse or remount boundary, but the request's
     // era must not.
     const model = threadsStore.getState().threads.get(ref);
-    const request: PendingTopNotesFocus = { originReadOnly: !canWriteHumanNote(model) };
+    const request: PendingTopNotesFocus = { originReadOnly: !canWriteHumanNote(model), paneId: paneId ?? null };
     set((state) => {
       const nextExpanded = new Map(state.expanded);
       nextExpanded.set(ref, true);
@@ -86,10 +96,10 @@ export const topNotesStore = createStore<TopNotesStoreState>((set, get) => ({
       return { expanded: nextExpanded, pendingFocus: nextPending };
     });
   },
-  toggleAndFocus(ref: string): void {
+  toggleAndFocus(ref: string, paneId?: string): void {
     const current = get().expanded.get(ref) ?? false;
     if (current) get().setExpanded(ref, false);
-    else get().openAndFocus(ref);
+    else get().openAndFocus(ref, paneId);
   },
   resetForTests(): void {
     set({ expanded: new Map(), pendingFocus: new Map() });

@@ -667,7 +667,7 @@ export function buildCommands(): Command[] {
             workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
           }
         }
-        topNotesStore.getState().toggleAndFocus(ctx.sessionRef);
+        topNotesStore.getState().toggleAndFocus(ctx.sessionRef, ctx.sessionPaneId ?? undefined);
       },
     },
     {

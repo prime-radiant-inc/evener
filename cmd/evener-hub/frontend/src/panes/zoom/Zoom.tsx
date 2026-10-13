@@ -124,10 +124,15 @@ function ScopeConversation({
       // focus plumbing acts.
       focused: false,
       // A resumed conversation replaces its path entry in place; a cascade
-      // column has no route of its own to navigate. The session menu
-      // belongs to the conversation pane.
+      // column has no route of its own to navigate. The seat declares the
+      // fallback session menu so the conversation's own gate can render it in
+      // the one state whose only recovery it carries - a local notLoaded
+      // snapshot whose composer shows no card, and so no menu of its own -
+      // exactly as a standalone pane does. Every other state keeps its menu
+      // through the composer or the column's activity chrome, and the gate
+      // never fires there.
       onResumedIdentity: (resumedRef) => resumeCascadeScope(lifetime, scope.requestedRef, resumedRef),
-      sessionMenu: false,
+      sessionMenu: true,
     }),
     [view, composer, leaf, pane, lifetime, scope.requestedRef],
   );

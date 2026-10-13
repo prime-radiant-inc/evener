@@ -74,7 +74,7 @@ function CommittedZoom() {
   return <Zoom paneId={pane.id} params={pane.params as SessionZoomParams} focused />;
 }
 
-function fixture(ancestryKnown = true) {
+function fixture(ancestryKnown = true, leafRef = "child") {
   const fake = new FakeClient("ready");
   const statuses = new Map<string, string>();
   const identities = new Map([
@@ -162,9 +162,9 @@ function fixture(ancestryKnown = true) {
   }));
   connectionStore.getState().connect(fake);
   const params: SessionZoomParams = {
-    ref: "child",
+    ref: leafRef,
     source: { type: "session", params: { ref: "root" } },
-    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+    edges: [{ ownerRef: "root", childRef: leafRef, delegateId: "d1" }],
   };
   const pane: OpenPaneRecord = { id: "cascade", type: "sessionZoom", slot: "main", params };
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
@@ -391,6 +391,33 @@ test("a cascade with no live origin keeps the readable parent column", async () 
   await screen.findByText("root content old-root");
   await screen.findByText("child content child-id");
   expect(columnRefs()).toEqual(["root", "child"]);
+});
+
+test("a local notLoaded column with no send surface keeps its session actions menu", async () => {
+  // The drilled column's conversation is a local notLoaded snapshot with
+  // send:false, no recovery obligation and no retained owner. The embedded
+  // composer cannot render its card (or its own session menu) in that state,
+  // and the column's Open conversation control is gone, so the column must
+  // keep the fallback session menu a standalone pane shows here - its Force
+  // shutdown action is the only recovery this column can offer.
+  const { fake, statuses } = fixture(true, "local:child");
+  statuses.set("local:child", "notLoaded");
+  fake.on("evener/thread/forceStop", () => {
+    statuses.set("local:child", "idle");
+    return {};
+  });
+  mount(fake);
+  await screen.findByText("local:child content local:child");
+  const leaf = cascadeScope("local:child", "cascade-column");
+  expect(leaf.querySelector("[data-composer] [role='textbox']")).toBeNull();
+  const trigger = within(leaf).getByRole("button", { name: "Session actions" });
+  fireEvent.click(trigger);
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Force shutdown…" }));
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
+  // Recovery: the confirmed shutdown refreshes the snapshot and the column's
+  // composer card returns, so the fallback menu's one recovery action leads
+  // back to a usable conversation in the column.
+  await waitFor(() => expect(leaf.querySelector("[data-composer] [role='textbox']")).not.toBeNull());
 });
 
 test.each(["deleted", "missing"] as const)(

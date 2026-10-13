@@ -1084,6 +1084,9 @@ test("/notes expands in an addressed cascade column without opening another pane
 
   expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
   expect(topNotesStore.getState().hasPendingFocus("ref_a")).toBe(true);
+  // Addressed to the column the command ran from, so an ordinary pane showing
+  // the same conversation cannot serve it first.
+  expect(topNotesStore.getState().pendingFocus.get("ref_a")?.paneId).toBe("zoom");
   expect(workspaceStore.getState().focusedPaneId).toBe("zoom");
   expect(workspaceStore.getState().panes).toHaveLength(1);
 });

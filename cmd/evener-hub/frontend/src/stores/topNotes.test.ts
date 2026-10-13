@@ -77,7 +77,7 @@ test("a writable-origin focus request is dropped when the session loses write ca
     threadsStore.setState({ threads: new Map([["ref_1", makeModel()]]) });
     topNotesStore.getState().openAndFocus("ref_1");
   });
-  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: false });
+  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: false, paneId: null });
 
   act(() => {
     threadsStore.setState({ threads: new Map([["ref_1", makeModel({ status: { type: "ended" } })]]) });
@@ -99,7 +99,7 @@ test("a read-only-origin focus request survives the capability flips", () => {
     threadsStore.setState({ threads: new Map([["ref_1", makeModel({ status: { type: "ended" } })]]) });
     topNotesStore.getState().openAndFocus("ref_1");
   });
-  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: true });
+  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: true, paneId: null });
 
   act(() => {
     threadsStore.setState({ threads: new Map([["ref_1", makeModel()]]) });
@@ -147,6 +147,24 @@ test("openAndFocus expands and leaves exactly one servable focus request", () =>
   expect(topNotesStore.getState().takePendingFocus("ref_1")).toBe(false);
 });
 
+test("an addressed focus request is served only by the pane it names", () => {
+  // One conversation can hold two notes panels (an ordinary session pane and a
+  // cascade column). A request keyed only by ref would let whichever panel's
+  // effect runs first focus its own editor, even when the command came from
+  // the other pane.
+  topNotesStore.getState().openAndFocus("ref_1", "pane_b");
+
+  expect(topNotesStore.getState().takePendingFocus("ref_1", "pane_a")).toBe(false);
+  expect(topNotesStore.getState().hasPendingFocus("ref_1")).toBe(true);
+  expect(topNotesStore.getState().takePendingFocus("ref_1", "pane_b")).toBe(true);
+  expect(topNotesStore.getState().hasPendingFocus("ref_1")).toBe(false);
+});
+
+test("an unaddressed focus request is still served by any pane", () => {
+  topNotesStore.getState().openAndFocus("ref_1");
+  expect(topNotesStore.getState().takePendingFocus("ref_1", "pane_a")).toBe(true);
+});
+
 test("toggleAndFocus opens with a focus request, then collapses without one", () => {
   topNotesStore.getState().toggleAndFocus("ref_1");
   expect(topNotesStore.getState().isExpanded("ref_1")).toBe(true);
@@ -190,7 +208,7 @@ test("useTopNotesExpanded and usePendingTopNotesFocus reflect store updates", ()
 
   expect(exp.current).toBe(true);
   // No thread model exists for ref_1, so the request is born read-only.
-  expect(pending.current).toEqual({ originReadOnly: true });
+  expect(pending.current).toEqual({ originReadOnly: true, paneId: null });
 });
 
 // --- eviction: state lives inside the session pane -------------------------

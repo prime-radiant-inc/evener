@@ -60,6 +60,8 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activ
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { resetDockChunkForTests } from "./DockRegion";
+import { focusedSessionRef } from "./focusedSession";
+import { resolveFocusedComposer } from "./holdhints/HoldHints";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { navigate, refParam } from "./routing";
@@ -1111,6 +1113,61 @@ test("Mod+I is a no-op while a Dialog/Sheet ([aria-modal=true]) is open", async 
   expect(focusSpy).not.toHaveBeenCalled();
   focusSpy.mockRestore();
   modal.remove();
+});
+
+// --- hold hints: the composer chip agrees with composer.focus on a cascade --
+
+test("the composer hold-hint targets a focused cascade's leaf composer, not the neighbouring parent conversation", () => {
+  // A parent conversation pane sits beside a focused cascade. composer.focus
+  // (AppShell's registerAction) reads the FOCUSED session through
+  // focusedSessionRef/focusedSessionPaneId, which name the cascade's LEAF -
+  // so the hold-hint chip must anchor to that leaf's composer. Anchoring only
+  // ordinary session panes (the pre-fix resolver) missed the cascade and fell
+  // back to the first composer in the document, the parent's.
+  const parent = document.createElement("div");
+  parent.setAttribute("data-composer", "local:parent");
+  const child = document.createElement("div");
+  child.setAttribute("data-composer", "local:child");
+  document.body.append(parent, child);
+  const cascadeParams: SessionZoomParams = {
+    ref: "local:child",
+    source: { type: "session", params: { ref: "local:parent" } },
+    edges: [],
+  };
+  workspaceStore.setState({
+    panes: [
+      { id: "pane_parent", type: "session", params: { ref: "local:parent" }, slot: "main" },
+      { id: "pane_cascade", type: "sessionZoom", params: cascadeParams, slot: "secondary" },
+    ],
+    focusedPaneId: "pane_cascade",
+  });
+  try {
+    // The shortcut focuses the cascade's leaf ref ...
+    expect(focusedSessionRef()).toBe("local:child");
+    // ... and the hint resolves to that same leaf's composer, not the parent's.
+    expect(resolveFocusedComposer()).toBe(child);
+  } finally {
+    parent.remove();
+    child.remove();
+  }
+});
+
+test("the composer hold-hint still falls back to the first composer when no session is focused", () => {
+  const first = document.createElement("div");
+  first.setAttribute("data-composer", "local:first");
+  const second = document.createElement("div");
+  second.setAttribute("data-composer", "local:second");
+  document.body.append(first, second);
+  try {
+    // No session is focused (the reset workspace focuses none): the chord
+    // no-ops, and the pre-change single-composer behavior (the first anchor)
+    // holds.
+    expect(focusedSessionRef()).toBeNull();
+    expect(resolveFocusedComposer()).toBe(first);
+  } finally {
+    first.remove();
+    second.remove();
+  }
 });
 
 // --- Mod+J cycles needs-you sessions (UX fix) -----------------------------
