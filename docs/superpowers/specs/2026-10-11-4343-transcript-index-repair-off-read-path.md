@@ -185,9 +185,12 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      during our own repair the lock is held by the repair, so this is
      the path concurrent retries take, and the answer must keep telling
      the truth. Contention with no in-flight repair — a writer
-     mid-extension, or a foreign rebuild — answers an ordinary
-     transient error without registering, and the client's existing
-     ordinary-failure retry converges.
+     mid-extension, or a foreign rebuild — answers the typed
+     lock-contention answer (retryable, nothing registered), and each
+     client's retry owner converges it: the web's tracked
+     ordinary-failure retry, and the TUI's paced entry retry, which has
+     no ordinary-error retry and would otherwise strand a first entry
+     on the bare error.
    - Repair registry: keyed by transcript path, in package hub. Its
      single-flight start must never block a registrant: a mutex plus an
      in-flight map (or `singleflight`'s `DoChan` with the result
@@ -339,22 +342,23 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      only `upgradeRequired` or `targetDeleted` (`historyPaging.ts:111`),
      so this holds by construction; the test plan pins it anyway.
    - TUI (`cmd/evener-tui`): session entry reads that fail with the
-     rebuilding code retry under the same paced owner the browser store
-     uses (base 500ms, cap 15s, retry-forever), scoped to the current
-     navigation intent. An entry failure leaves the model on the surface
-     it was on — the dashboard, entering from the session list — so the
-     status shows on the model's error line, the surface that would
-     otherwise carry the entry failure: "Repairing session history"
-     instead of the error, standing while the retry stands. Any other
-     outcome replaces it: a successful read enters the session; a
+     rebuilding or lock-contention code retry under the same paced owner
+     the browser store uses (base 500ms, cap 15s, retry-forever), scoped
+     to the current navigation intent. An entry failure leaves the model
+     on the surface it was on — the dashboard, entering from the session
+     list — so the status shows on the model's error line, the surface
+     that would otherwise carry the entry failure: "Repairing session
+     history" instead of the error, standing while the retry stands. Any
+     other outcome replaces it: a successful read enters the session; a
      history-failed answer — or one of the web owner's permanent
      answers, upgradeRequired or a target deletion — ends the paced
      retry and shows the error on the same line (the TUI's own rule —
      its error line is the diagnostic; the budget's terminal answer
      deserves it); an ordinary transient failure keeps the paced retry
      armed with the status standing, mirroring the browser owner —
-     mid-repair lock contention with no repair in flight answers an
-     ordinary transient, and the entry must not strand on it. The
+     mid-repair lock contention with no repair in flight answers the
+     typed lock-contention code, which arms the same paced retry, so the
+     entry must not strand on it. The
      automatic completion holds for the displayed session's unsent work
      and open overlays exactly as the cycling switch and focus trap
      do: a successful re-read that would switch away from a composer
@@ -450,8 +454,9 @@ redundant double catch-up on every cold read: one inside `Open`, one at
   incrementally behave exactly as today, at every lock depth: the
   catch-up and the window reads take non-blocking locks and proceed when
   free. A read colliding with a writer for the milliseconds of an
-  extension answers an ordinary transient error rather than blocking,
-  and the client's retry converges.
+  extension answers the typed lock-contention answer (retryable, nothing
+  registered) rather than blocking, and each client's retry owner
+  converges it.
 - No daemonless read ever performs a full rebuild inline, on any
   trigger, at any lock depth, warm or cold cache; and no daemonless read
   ever blocks on the sidecar lock: an in-flight repair, a daemon's own
@@ -650,10 +655,10 @@ being repaired.
    demand owner keeps the code unresolved (retryable), and a later read
    completes the page.
 6. TUI tests (`cmd/evener-tui`): a session entry read rejected with the
-   rebuilding code arms the paced retry and shows "Repairing session
-   history" on the model's error line — the surface the entry failure
-   itself occupies — in place of the error; a later successful read
-   enters the session. The pacing shape is asserted against an
+   rebuilding or lock-contention code arms the paced retry and shows
+   "Repairing session history" on the model's error line — the surface
+   the entry failure itself occupies — in place of the error; a later
+   successful read enters the session. The pacing shape is asserted against an
    injected delay schedule, not lived waits: the owner takes a
    test-injectable delay function (the suite has no fake clock for
    tea.Tick), asserted as 500ms, 1s, 2s, 4s, 8s, 15s, 15s. The
