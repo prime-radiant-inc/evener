@@ -476,9 +476,14 @@ func confinedReferencedFiles(candidates, writable []string) []string {
 	out := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		clean := filepath.Clean(c)
+		// A spelling the kernel still has to resolve — a `..`, a `.`, a doubled
+		// separator — is refused rather than granted under its cleaned name: git opens
+		// the path as written, so it would have to traverse ancestors the sandbox does
+		// not hold, and a grant of the cleaned spelling would promise a file git never
+		// manages to open (`~/unused/../global-ignore` is the case the review raised).
 		// The symlink walk runs on the SPELLING git hands the kernel (`c`), the
 		// containment walk on the spelling the policy will carry (`clean`).
-		if !symlinkFree(c) || underAnyIdentity(clean, writableInfos) {
+		if clean != c || !symlinkFree(c) || underAnyIdentity(clean, writableInfos) {
 			continue
 		}
 		out = append(out, clean)

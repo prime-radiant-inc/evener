@@ -129,6 +129,13 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		if reboundRO[r] || !pathExists(r) {
 			continue
 		}
+		// The same referenced-file rule as the read-root loop above: this rebind is
+		// another bind of the literal name, and it runs for every root under /tmp and
+		// /dev/shm, so a name swapped for a link since the policy was resolved must not
+		// be bound here either.
+		if slices.Contains(rp.GitReferencedFiles, r) && !referencedFileGrantable(r, rp) {
+			continue
+		}
 		reboundRO[r] = true
 		add("--ro-bind", r, r)
 	}

@@ -768,6 +768,35 @@ func TestGlobalGitReferencedFileUnderASymlinkedDirectoryIsRefused(t *testing.T) 
 	}
 }
 
+// TestGlobalGitReferencedFileWithAnUncleanSpellingIsRefused: git opens the pathname as
+// written, so a value the kernel still has to resolve (`~/sub/../ignore`) would need
+// ancestors the sandbox does not hold; granting the cleaned spelling instead would
+// promise a file git never manages to open. The value is refused, symlink-free or not.
+func TestGlobalGitReferencedFileWithAnUncleanSpellingIsRefused(t *testing.T) {
+	t.Parallel()
+	home := clean(t.TempDir())
+	sub := filepath.Join(home, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	referenced := filepath.Join(home, "ignore")
+	writeFixtureFile(t, referenced, "ignored.txt\n")
+	dotted := sub + string(filepath.Separator) + ".." + string(filepath.Separator) + "ignore"
+
+	host := darwinSeatbeltHost()
+	host.Home = home
+	host.GitGlobalReferencedPaths = []string{dotted}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, root := range []string{dotted, referenced} {
+		if slices.Contains(rp.Spawned.ReadRoots, root) {
+			t.Errorf("a spelling the kernel still has to resolve must not be granted (%q): %v", root, rp.Spawned.ReadRoots)
+		}
+	}
+}
+
 // TestGlobalGitReferencedFileHardlinkedToAMaskedFileIsDropped pins the mask judgement
 // by FILE IDENTITY, which runs on any filesystem: a hard link is another name for one
 // file, so a config naming a hard link to a masked file names that file, and a

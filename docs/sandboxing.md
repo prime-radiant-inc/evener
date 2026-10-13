@@ -298,11 +298,15 @@ unsandboxed root's `TMPDIR` is not in the tree.
   - **git's own path rules.** `~/x` is expanded against your home the way git
     expands it, and an absolute path is granted as written — never lexically
     cleaned, because git hands the pathname to the kernel, so a `..` that follows a
-    symlink resolves *through* the link. A value the sandbox cannot resolve to one
-    file is refused rather than guessed: a relative path (git resolves it against the
-    working directory of the git command, not to a stable file), `~user/...` (another
-    user's home), a bare `~` (the home directory), a directory, and a path that does
-    not exist (git ignores a missing file silently, so there is nothing to grant).
+    symlink resolves *through* the link. A spelling the kernel still has to resolve —
+    a `..`, a `.`, a doubled separator — is refused rather than granted under its
+    cleaned name: git opens the path as written, which would need ancestors the
+    sandbox does not hold, so a grant of the cleaned spelling would promise a file git
+    never manages to open. A value the sandbox cannot resolve to one file is refused
+    rather than guessed: a relative path (git resolves it against the working
+    directory of the git command, not to a stable file), `~user/...` (another user's
+    home), a bare `~` (the home directory), a directory, and a path that does not
+    exist (git ignores a missing file silently, so there is nothing to grant).
   - **Only the bare `[core]` section is read**, matching git: a `[core "x"]`
     subsection or the legacy `[core.excludesfile]` header names a different key, and
     a file named there is never opened by git.

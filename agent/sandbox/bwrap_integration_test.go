@@ -806,4 +806,32 @@ printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
 			t.Errorf("a file swapped for a link after resolution must not be bound again; stdout:\n%s", after)
 		}
 	})
+
+	t.Run("the same holds for a named file under /tmp, which is rebound privately", func(t *testing.T) {
+		// A root under /tmp is bound, shadowed by the private /tmp tmpfs, and then
+		// re-bound: that second bind is another bind of the literal name and must carry
+		// the same rule, or a swapped file would slip back in through it.
+		tmpDir, err := os.MkdirTemp("/tmp", "evener-4234-rebind-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+		target := filepath.Join(tmpDir, "swappable-ignore")
+		writeFixtureFile(t, target, "inner.txt\n")
+		rp, facts := resolveFixtureHome(t, "[core]\n\texcludesFile = "+target+"\n")
+		before, _ := runWithPolicy(t, rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, target)
+		if !strings.Contains(before, "inner.txt") {
+			t.Fatalf("the granted file must be readable at first; stdout:\n%s", before)
+		}
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(secret, target); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := runWithPolicy(t, rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, target)
+		if strings.Contains(after, secretText) {
+			t.Errorf("a /tmp-held file swapped for a link after resolution must not be bound again; stdout:\n%s", after)
+		}
+	})
 }
