@@ -121,7 +121,15 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
 
   expect(screen.getByText("Couldn't load the workspace")).toBeTruthy();
   expect(screen.getByText(CHUNK_ERROR)).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  // Scope the Retry to the dock's own failure state. The shell can also show another
+  // empty-state Retry (the rail's own load failure paints a tick later), so a bare
+  // shell-wide query finds none before that tick and two after it. The loading
+  // placeholder test below scopes its Retry with within() for the same reason.
+  const dockFailure = screen
+    .getByText("Couldn't load the workspace")
+    .closest<HTMLElement>("[data-testid='empty-state']");
+  if (dockFailure === null) throw new Error("dock failure state is not an empty state");
+  expect(within(dockFailure).getByRole("button", { name: "Retry" })).toBeTruthy();
 
   // The rest of the shell is untouched: the rail (and with it every other
   // chrome element outside the dock) is still mounted, where before this

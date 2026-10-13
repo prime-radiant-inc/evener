@@ -67,6 +67,15 @@ class IndexLines(Root):
         self.put("projects/p/memory/sub/MEMORY.md", "---\ndescription: short\n---\n" + "x" * 300 + "\n")
         self.assertEqual(self.run_cmd("index-lines"), 0)
 
+    def test_long_when_fails(self):
+        self.put("projects/p/memory/a.md", "---\nwhen: " + "y" * 201 + "\n---\n")
+        self.assertEqual(self.run_cmd("index-lines"), 1)
+
+    def test_short_when_hides_a_long_description(self):
+        # The index shows the when line in place of the description.
+        self.put("projects/p/memory/a.md", "---\ndescription: " + "y" * 201 + "\nwhen: short\n---\n")
+        self.assertEqual(self.run_cmd("index-lines"), 0)
+
     def test_page_without_a_description_has_no_index_line_to_measure(self):
         self.put("projects/p/memory/a.md", "# " + "t" * 300 + "\n")
         self.assertEqual(self.run_cmd("index-lines"), 0)
@@ -102,32 +111,36 @@ class ProjectScope(unittest.TestCase):
 class NewPages(Root):
     def test_no_new_page_fails(self):
         self.put("projects/p/memory/seed.md", "---\ndescription: d\ntags: [a]\nby: seed-fixture\n---\n")
-        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+        self.assertEqual(self.run_cmd("new-pages", "--require-when"), 1)
 
     def test_memory_md_is_not_a_new_page(self):
         self.put("projects/p/memory/MEMORY.md", "- a line\n")
         self.assertEqual(self.run_cmd("new-pages"), 1)
 
     def test_nested_memory_md_is_a_new_page(self):
-        self.put("projects/p/memory/sub/MEMORY.md", "---\ndescription: d\n---\n")
-        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
+        self.put("projects/p/memory/sub/MEMORY.md", "---\nwhen: w\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-when"), 0)
 
-    def test_empty_description_fails(self):
-        self.put("projects/p/memory/a.md", "---\ndescription:\ntags: [a]\n---\n")
-        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+    def test_empty_when_fails(self):
+        self.put("projects/p/memory/a.md", "---\nwhen:\ntags: [a]\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-when"), 1)
 
-    def test_described_page_passes(self):
+    def test_page_with_a_when_passes(self):
+        self.put("projects/p/memory/a.md", "---\nwhen: yes\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-when"), 0)
+
+    def test_page_with_only_a_description_fails(self):
         self.put("projects/p/memory/a.md", "---\ndescription: yes\n---\n")
-        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 0)
+        self.assertEqual(self.run_cmd("new-pages", "--require-when"), 1)
 
-    def test_unreadable_description_does_not_count(self):
-        self.put("projects/p/memory/a.md", "---\ndescription: Cart rule 7: whole numbers\n---\n")
-        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+    def test_unreadable_when_does_not_count(self):
+        self.put("projects/p/memory/a.md", "---\nwhen: Cart rule 7: whole numbers\n---\n")
+        self.assertEqual(self.run_cmd("new-pages", "--require-when"), 1)
 
-    def test_non_markdown_page_is_a_new_page_without_a_description(self):
-        self.put("projects/p/memory/notes.txt", "---\ndescription: d\n---\n")
+    def test_non_markdown_page_is_a_new_page_without_a_when(self):
+        self.put("projects/p/memory/notes.txt", "---\nwhen: w\n---\n")
         self.assertEqual(self.run_cmd("new-pages"), 0)
-        self.assertEqual(self.run_cmd("new-pages", "--require-description"), 1)
+        self.assertEqual(self.run_cmd("new-pages", "--require-when"), 1)
 
     def test_tags_inside_seed_set_pass(self):
         self.put("projects/p/memory/a.md", "---\ntags: [A, 'b']\n---\n")
@@ -163,7 +176,7 @@ class NewPages(Root):
         scope = os.path.join(self.root, "evener", "projects", "p", "memory")
         built = memcheck.MEMSCOPE
         self.addCleanup(setattr, memcheck, "MEMSCOPE", built)
-        full = {"path": "a.md", "description": "d", "has_description": True, "frontmatter": True,
+        full = {"path": "a.md", "description": "d", "has_description": True, "when": "", "frontmatter": True,
                 "unreadable": False, "by": ""}
         # A memscope built before a field existed leaves it out; one built
         # before tags were always a list emits null for none.

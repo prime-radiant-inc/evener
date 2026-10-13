@@ -106,6 +106,37 @@ rounds, main agent writing memory, no librarian.
 
 The decision: show `when` instead of the description, falling back to the description.
 
+## Slim memory_write
+
+`memory_write` takes `scope`, `file_path`, `when` (required, non-blank) and `body`, and nothing
+else. Evener writes the frontmatter block holding `when`, stamps `updated` and `by`, then writes
+the body, so the model never writes frontmatter. New pages carry no `description`; pages that have
+one keep it and keep rendering. The guidance for each part lives in the parameter descriptions
+(the `when` description asks for the moments the page matters and one page per fact; the `body`
+description asks for a first heading naming the page's topic, not its rule), and the `## Memory`
+prompt section points at the fields instead of describing frontmatter. A blank `when` and a body
+that opens with its own frontmatter block are refused and write nothing. `memory_edit` stays a
+plain string edit.
+
+The memory lab compared this tool with the one that takes frontmatter inside a `content` string,
+over 12-rep downstream tasks on deepseek and glm: recall tied and lines came out 5% to 18%
+shorter. The tool is smaller and the model has less to get wrong, so it replaced the
+`content` tool outright.
+
+Write notes follow: a page that has a `when` gets no description note, a page left without a `when`
+(an edit removed it) gets the missing-`when` note, and the unreadable-frontmatter note stays. The
+`(no description)` marker never appears on a page that has a `when`.
+
+## Index lines link the path
+
+Each index line links the page's path as the link text, not its first heading:
+`- [git/commit-prefix.md](git/commit-prefix.md) — Writing a commit message in this repo [git] (updated 2026-10-11)`.
+A heading change no longer changes a line, so it never shows in an index delta. The memory lab
+(spike/memory-when-prompt) compared the two renderings: glm opened the page that mattered 12/12
+times without titles against 8/12 with them (the skippers said the title gave them the rule), every
+other model and task cell tied, and lines came out 10% to 25% shorter, so about 53 pages fit the
+8 KiB projection of a 120-page store instead of about 47.
+
 ## Out of scope
 
 - Tool-call triggers derived from `when` text (paths, commands) and keyword ranking for indexes

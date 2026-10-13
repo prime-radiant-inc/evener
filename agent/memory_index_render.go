@@ -40,9 +40,13 @@ func sortedMemoryPages(pages []memoryPage) []memoryPage {
 	return sorted
 }
 
-// memoryTitleEscaper escapes a title for its index link, so the title's
-// closing "](" is the line's first unescaped one (memoryIndexLineFor).
-var memoryTitleEscaper = strings.NewReplacer(`\`, `\\`, `]`, `\]`)
+// memoryTextEscaper escapes a page's path as its index link text, so the
+// text's closing "](" is the line's first unescaped one (memoryIndexLineFor).
+// Only "\" and "]" need it: the index is text the model reads, not Markdown a
+// renderer draws, and memoryIndexLineFor finds a line by its first unescaped
+// "](" alone. Escaping "[", backticks or emphasis marks would change what the
+// model reads as the path to pass to memory_read.
+var memoryTextEscaper = strings.NewReplacer(`\`, `\\`, `]`, `\]`)
 
 // memoryAngleEscaper escapes a path written as an angle-bracket link
 // destination, where "<" and ">" may appear only escaped, and so a backslash
@@ -72,7 +76,7 @@ const memoryInvalidUTF8PathNote = "(no link: the name holds a control character 
 // a control character (execenv.PathHasControl). No Markdown link destination
 // can hold one, so the line has no link: the path quoted
 // (execenv.QuoteControlPath), as a JSON string a tool call can pass back as
-// file_path, then memoryUnlinkedPathNote, and no title, description or tags.
+// file_path, then memoryUnlinkedPathNote, and no link text, description or tags.
 // A name holding invalid UTF-8, which no JSON string and so no tool call can
 // carry, is Go-quoted instead, and its note is memoryInvalidUTF8PathNote.
 func memoryUnlinkedIndexLine(rel string) string {
@@ -102,7 +106,7 @@ func memoryIndexLine(p memoryPage) string {
 	if p.When != "" {
 		summary = p.When
 	}
-	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), memoryLinkTarget(p.Path), summary)
+	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTextEscaper.Replace(p.Path), memoryLinkTarget(p.Path), summary)
 	if p.Unreadable {
 		b.WriteString(" " + memoryFrontmatterUnreadable)
 	}
@@ -116,26 +120,26 @@ func memoryIndexLine(p memoryPage) string {
 }
 
 // memoryIndexLineFor reports whether line is the index line of the page at
-// rel: its leading link "- [Title](rel) — ". The title ends at its first
-// unescaped "](" (memoryIndexLine escapes "\\" and "]" in titles), and the
-// path is matched whole from there, so neither a link inside the title nor
+// rel: its leading link "- [text](rel) — ". The text ends at its first
+// unescaped "](" (memoryIndexLine escapes "\\" and "]" in it), and the
+// path is matched whole from there, so neither a link inside the text nor
 // one quoted in the description is read as this line's page. A path holding
 // a control character has the one line memoryUnlinkedIndexLine writes.
 func memoryIndexLineFor(line, rel string) bool {
 	if execenv.PathHasControl(rel) {
 		return line == memoryUnlinkedIndexLine(rel)
 	}
-	title, ok := strings.CutPrefix(line, "- [")
+	text, ok := strings.CutPrefix(line, "- [")
 	if !ok {
 		return false
 	}
 	link := "](" + memoryLinkTarget(rel) + ") — "
-	for i := 0; i < len(title); i++ {
+	for i := 0; i < len(text); i++ {
 		switch {
-		case title[i] == '\\':
+		case text[i] == '\\':
 			i++
-		case strings.HasPrefix(title[i:], "]("):
-			return strings.HasPrefix(title[i:], link)
+		case strings.HasPrefix(text[i:], "]("):
+			return strings.HasPrefix(text[i:], link)
 		}
 	}
 	return false

@@ -55,6 +55,11 @@ func outstandingWorkReasons(s *Session) []string {
 		if running || finalizing || driving {
 			reasons = append(reasons, fmt.Sprintf("subagent active(running=%v finalizing=%v driving=%v)", running, finalizing, driving))
 		}
+		// A delegate whose finish append failed holds drain work the run flags do
+		// not show; name it so a failure here says why the tree was outstanding.
+		if s.childDelegateRecoveryHeld(child) {
+			reasons = append(reasons, "child "+child.id+": delegate finalization recovery held")
+		}
 		if child != nil {
 			for _, r := range outstandingWorkReasons(child) {
 				reasons = append(reasons, "child "+child.id+": "+r)

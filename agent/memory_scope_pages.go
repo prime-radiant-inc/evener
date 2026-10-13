@@ -7,7 +7,9 @@ import (
 )
 
 // MemoryScopePage is one page of a memory scope as the generated index reads
-// it. Description is the page's own when HasDescription, else its fallback.
+// it. Description is the page's own when HasDescription, else its fallback:
+// the first heading or line, marked as having no description unless the page
+// has a When, which stands in for one.
 type MemoryScopePage struct {
 	Path           string   `json:"path"`
 	Description    string   `json:"description"`

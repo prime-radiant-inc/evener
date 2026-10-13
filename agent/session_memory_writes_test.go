@@ -19,6 +19,10 @@ func memoryWritesSession(t *testing.T) (*Session, string) {
 	return s, filepath.Join(root, "memory")
 }
 
+// memoryWhenBlock is the frontmatter and blank line memory_write puts before
+// the body of a page written with the when line "w".
+const memoryWhenBlock = "---\nwhen: w\n---\n\n"
+
 // memoryOwnStamps is the frontmatter a session's own write of a page sets:
 // today's updated date and the session's id.
 func memoryOwnStamps(s *Session) string {
@@ -32,17 +36,17 @@ func TestMemoryIndexWritesRefused(t *testing.T) {
 	s, scope := memoryWritesSession(t)
 	for _, name := range []string{"MEMORY.md", "./MEMORY.md", "memory.md"} {
 		for tool, args := range map[string]map[string]any{
-			"memory_write":  {"scope": "personal", "file_path": name, "content": "x"},
+			"memory_write":  {"scope": "personal", "file_path": name, "when": "w", "body": "x"},
 			"memory_edit":   {"scope": "personal", "file_path": name, "old_string": "x", "new_string": "y"},
 			"memory_delete": {"scope": "personal", "file_path": name},
 		} {
 			res := memoryExec(t, s, tool, args)
-			if !res.IsError || !strings.Contains(res.Output, "MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead") {
+			if !res.IsError || !strings.Contains(res.Output, "MEMORY.md is generated from each page's frontmatter; edit a page's when line or tags instead") {
 				t.Fatalf("%s %s: %+v", tool, name, res)
 			}
 		}
 	}
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "sub/MEMORY.md", "content": "---\ndescription: nested\n---\n"}); res.IsError {
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "sub/MEMORY.md", "when": "w", "body": "# Nested\n"}); res.IsError {
 		t.Fatalf("sub/MEMORY.md is a page: %+v", res)
 	}
 	if _, err := os.Stat(filepath.Join(scope, "MEMORY.md")); !os.IsNotExist(err) {
@@ -72,7 +76,7 @@ func TestMemoryControlCharacterPathsRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 		for tool, args := range map[string]map[string]any{
-			"memory_write": {"scope": "personal", "file_path": name, "content": "y"},
+			"memory_write": {"scope": "personal", "file_path": name, "when": "w", "body": "y"},
 			"memory_edit":  {"scope": "personal", "file_path": name, "old_string": "x", "new_string": "y"},
 		} {
 			res := memoryExec(t, s, tool, args)
@@ -95,7 +99,7 @@ func TestMemoryControlCharacterPathsRefused(t *testing.T) {
 			t.Fatalf("%q still present after delete: %v", name, err)
 		}
 	}
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "tab\there.md", "content": "---\ndescription: tabbed\n---\n"}); res.IsError {
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "tab\there.md", "when": "w", "body": "# Tabbed\n"}); res.IsError {
 		t.Fatalf("tab refused: %+v", res)
 	}
 }
@@ -105,12 +109,11 @@ func TestMemoryControlCharacterPathsRefused(t *testing.T) {
 func TestMemoryWriteStampsThePage(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
-	body := "---\ndescription: Money is integer cents\nodd:   kept  \n---\n# Cents\nbody\n"
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "cents.md", "content": body}); res.IsError {
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "cents.md", "when": "When code handles money", "body": "# Cents\nbody\n"}); res.IsError {
 		t.Fatal(res.Output)
 	}
 	raw, _ := os.ReadFile(filepath.Join(scope, "cents.md"))
-	want := "---\ndescription: Money is integer cents\nodd:   kept  \n" + memoryOwnStamps(s) + "---\n# Cents\nbody\n"
+	want := "---\nwhen: When code handles money\n" + memoryOwnStamps(s) + "---\n\n# Cents\nbody\n"
 	if string(raw) != want {
 		t.Fatalf("got %q\nwant %q", raw, want)
 	}
@@ -121,50 +124,53 @@ func TestMemoryWriteStampsThePage(t *testing.T) {
 	if raw, _ := os.ReadFile(filepath.Join(scope, "cents.md")); string(raw) != before {
 		t.Fatalf("failed edit changed the page: %q", raw)
 	}
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "notes.txt", "content": "plain"}); res.IsError {
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "notes.txt", "when": "w", "body": "plain"}); res.IsError {
 		t.Fatal(res.Output)
 	}
-	if raw, _ := os.ReadFile(filepath.Join(scope, "notes.txt")); string(raw) != "plain" {
+	if raw, _ := os.ReadFile(filepath.Join(scope, "notes.txt")); string(raw) != "---\nwhen: w\n---\n\nplain" {
 		t.Fatalf("non-Markdown file stamped: %q", raw)
 	}
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": ".drafts/x.md", "content": "draft"}); res.IsError {
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": ".drafts/x.md", "when": "w", "body": "draft"}); res.IsError {
 		t.Fatal(res.Output)
 	}
-	if raw, _ := os.ReadFile(filepath.Join(scope, ".drafts", "x.md")); string(raw) != "draft" {
+	if raw, _ := os.ReadFile(filepath.Join(scope, ".drafts", "x.md")); string(raw) != "---\nwhen: w\n---\n\ndraft" {
 		t.Fatalf("dot path stamped: %q", raw)
 	}
 }
 
-// readMemoryPage reads back the page a tool wrote at name in scope and parses
-// it the way the index does.
-func readMemoryPage(t *testing.T, scope, name string) memoryPage {
+// seedMemoryPage writes a page into scope outside the tools, as a page left
+// by an older Evener or edited by hand.
+func seedMemoryPage(t *testing.T, scope, name, content string) {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(scope, name))
-	if err != nil {
-		t.Fatalf("%s not persisted: %v", name, err)
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(scope, name)), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	return parseMemoryPage(name, raw, time.Time{})
+	if err := os.WriteFile(filepath.Join(scope, name), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
-// A page with no description is saved anyway and its index entry has none;
-// the note's exact wording is pinned by TestMemoryWriteNotesGoldens.
-func TestMemoryWriteNotesMissingDescription(t *testing.T) {
+// memory_edit stamps a page with a description and no when, keeps its
+// description, and notes the missing when; a page with neither gets the same
+// note.
+func TestMemoryEditNotesMissingWhen(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
-	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "# A heading\n"})
-	if res.IsError || readMemoryPage(t, scope, "a.md").HasDescription {
-		t.Fatalf("%+v", res)
-	}
-	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "b.md", "content": "---\ndescription: has one\n---\n"})
-	if res.IsError || !readMemoryPage(t, scope, "b.md").HasDescription {
-		t.Fatalf("%+v", res)
+	seedMemoryPage(t, scope, "described.md", "---\ndescription: has one\n---\n# Described\nold\n")
+	seedMemoryPage(t, scope, "bare.md", "# Bare\nold\n")
+	seedMemoryPage(t, scope, "when.md", "---\nwhen: Writing a commit message\n---\n# When\nold\n")
+	for name, wantNote := range map[string]bool{"described.md": true, "bare.md": true, "when.md": false} {
+		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "old_string": "old", "new_string": "new"})
+		if res.IsError || strings.HasSuffix(res.Output, memoryMissingWhenNote) != wantNote || strings.Contains(res.Output, "description") {
+			t.Fatalf("%s: %+v", name, res)
+		}
 	}
 }
 
-// A written page whose frontmatter is not valid YAML, for a reason the
-// write can't repair, gets a note asking to fix it, and its frontmatter is
-// left as written apart from the stamps.
-func TestMemoryWriteNotesUnreadableFrontmatter(t *testing.T) {
+// An edited page whose frontmatter is not valid YAML, for a reason the edit
+// can't repair, gets a note asking to fix it, and its frontmatter is left as
+// written apart from the stamps.
+func TestMemoryEditNotesUnreadableFrontmatter(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
 	for name, block := range map[string]string{
@@ -172,21 +178,22 @@ func TestMemoryWriteNotesUnreadableFrontmatter(t *testing.T) {
 		"other-key.md": "description: Fix: use cents\nsummary: Fix: use cents\n",
 		"indented.md":  "description: Fix: use cents\n  continued: here\n",
 	} {
-		res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": name, "content": "---\n" + block + "---\n# Cents\n"})
-		if res.IsError || !readMemoryPage(t, scope, name).Unreadable {
+		seedMemoryPage(t, scope, name, "---\n"+block+"---\n# Cents\nold\n")
+		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "old_string": "old", "new_string": "new"})
+		if res.IsError || !strings.HasSuffix(res.Output, memoryUnreadableFrontmatterNote) {
 			t.Fatalf("%s: %+v", name, res)
 		}
-		if raw, _ := os.ReadFile(filepath.Join(scope, name)); string(raw) != "---\n"+block+memoryOwnStamps(s)+"---\n# Cents\n" {
+		if raw, _ := os.ReadFile(filepath.Join(scope, name)); string(raw) != "---\n"+block+memoryOwnStamps(s)+"---\n# Cents\nnew\n" {
 			t.Fatalf("%s: frontmatter changed: %q", name, raw)
 		}
 	}
 }
 
-// memory_write and memory_edit quote a top-level description or evidence
-// value YAML can't read as written, such as an unquoted scalar holding ": ",
-// ending in ":", or starting with a YAML indicator, so the page parses with
-// no second call. A valid line beside it is left as written.
-func TestMemoryWriteQuotesAnUnquotedColonValue(t *testing.T) {
+// memory_edit quotes a top-level description, when or evidence value YAML
+// can't read as written, such as an unquoted scalar holding ": ", ending in
+// ":", or starting with a YAML indicator, so the page parses with no second
+// call. A valid line beside it is left as written.
+func TestMemoryEditQuotesAnUnquotedColonValue(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
 	for name, tc := range map[string]struct{ block, want string }{
@@ -203,38 +210,33 @@ func TestMemoryWriteQuotesAnUnquotedColonValue(t *testing.T) {
 		"when.md":        {"description: d\nwhen: Running `make: test`\n", "description: d\nwhen: 'Running `make: test`'\n"},
 		"quoted-kept.md": {"evidence: \"file: a.go\"\ndescription: a: b\nwhen: w\n", "evidence: \"file: a.go\"\ndescription: 'a: b'\nwhen: w\n"},
 	} {
-		res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": name, "content": "---\n" + tc.block + "---\n# Page\n"})
+		seedMemoryPage(t, scope, name, "---\n"+tc.block+"---\n# Page\nold\n")
+		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "old_string": "old", "new_string": "new"})
 		if res.IsError || strings.Contains(res.Output, "\n\n") {
 			t.Fatalf("%s: %+v", name, res)
 		}
-		if raw, _ := os.ReadFile(filepath.Join(scope, name)); string(raw) != "---\n"+tc.want+memoryOwnStamps(s)+"---\n# Page\n" {
+		if raw, _ := os.ReadFile(filepath.Join(scope, name)); string(raw) != "---\n"+tc.want+memoryOwnStamps(s)+"---\n# Page\nnew\n" {
 			t.Fatalf("%s: got %q", name, raw)
 		}
-	}
-	res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "trailing.md", "old_string": "description: 'Fix:'", "new_string": "description: Use cents: never floats"})
-	if res.IsError || strings.Contains(res.Output, "\n\n") {
-		t.Fatalf("edit: %+v", res)
-	}
-	if raw, _ := os.ReadFile(filepath.Join(scope, "trailing.md")); string(raw) != "---\ndescription: 'Use cents: never floats'\nwhen: w\n"+memoryOwnStamps(s)+"---\n# Page\n" {
-		t.Fatalf("edit: got %q", raw)
 	}
 }
 
 // A page whose valid frontmatter can't take another key line (a flow
-// mapping, or a block closed by "...") is left unstamped rather than made
-// unreadable, and keeps its description.
-func TestMemoryWriteLeavesUnextendableFrontmatterUnstamped(t *testing.T) {
+// mapping, or a block closed by "...") is left unstamped by an edit rather
+// than made unreadable, and keeps its when.
+func TestMemoryEditLeavesUnextendableFrontmatterUnstamped(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
 	for name, body := range map[string]string{
 		"flow.md":  "---\n{description: Flow page, when: w}\n---\n# Flow\n",
 		"ended.md": "---\ndescription: Ended page\nwhen: w\n...\n---\n# Ended\n",
 	} {
-		res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": name, "content": body})
+		seedMemoryPage(t, scope, name, body)
+		res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": name, "old_string": "#", "new_string": "##"})
 		if res.IsError || strings.Contains(res.Output, "\n\n") {
 			t.Fatalf("%s: %+v", name, res)
 		}
-		if raw, err := os.ReadFile(filepath.Join(scope, name)); err != nil || string(raw) != body {
+		if raw, err := os.ReadFile(filepath.Join(scope, name)); err != nil || string(raw) != strings.Replace(body, "#", "##", 1) {
 			t.Fatalf("%s: got %q, %v", name, raw, err)
 		}
 	}
@@ -272,7 +274,7 @@ func TestMemoryReadRendersTheIndex(t *testing.T) {
 }
 
 // memory_edit applies its edit and sets the stamps in one write, and notes a
-// page the edit leaves with no description.
+// page the edit leaves with no when.
 func TestMemoryEditStampsInItsOwnWrite(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
@@ -280,19 +282,19 @@ func TestMemoryEditStampsInItsOwnWrite(t *testing.T) {
 	if err := os.MkdirAll(scope, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(page, []byte("---\ndescription: old fact\n---\nbody\n"), 0o600); err != nil {
+	if err := os.WriteFile(page, []byte("---\nwhen: old fact\n---\nbody\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	res := memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "old fact", "new_string": "new fact"})
-	if res.IsError || strings.Contains(res.Output, "no description") {
+	if res.IsError || strings.Contains(res.Output, "\n\n") {
 		t.Fatalf("%+v", res)
 	}
-	want := "---\ndescription: new fact\n" + memoryOwnStamps(s) + "---\nbody\n"
+	want := "---\nwhen: new fact\n" + memoryOwnStamps(s) + "---\nbody\n"
 	if raw, _ := os.ReadFile(page); string(raw) != want {
 		t.Fatalf("got %q\nwant %q", raw, want)
 	}
-	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "description: new fact\n", "new_string": ""})
-	if res.IsError || readMemoryPage(t, scope, "a.md").HasDescription {
+	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "when: new fact\n", "new_string": ""})
+	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingWhenNote) {
 		t.Fatalf("%+v", res)
 	}
 }
@@ -391,41 +393,33 @@ func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 	}
 }
 
-func TestMemoryWriteNotesMissingWhen(t *testing.T) {
-	t.Parallel()
-	s, scope := memoryWritesSession(t)
-	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "---\ndescription: has one\n---\n"})
-	if page := readMemoryPage(t, scope, "a.md"); res.IsError || !page.HasDescription || page.When != "" {
-		t.Fatalf("%+v %+v", res, page)
-	}
-	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "b.md", "content": "---\ndescription: has one\nwhen: Writing a commit message\n---\n"})
-	if page := readMemoryPage(t, scope, "b.md"); res.IsError || page.When != "Writing a commit message" {
-		t.Fatalf("%+v %+v", res, page)
-	}
-	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "c.md", "content": "# A heading\n"})
-	if page := readMemoryPage(t, scope, "c.md"); res.IsError || page.HasDescription {
-		t.Fatalf("%+v %+v", res, page)
-	}
-}
-
-// What a memory write tells the model about its page is prompt-facing text,
-// pinned whole per case in testdata/memorywritenotes; regenerate after an
-// intended wording change with
+// What a memory write or edit tells the model about its page is prompt-facing
+// text, pinned whole per case in testdata/memorywritenotes; regenerate after
+// an intended wording change with
 //
 //	go test ./agent -run 'TestMemoryWriteNotesGoldens$' -count=1 -update-prompt
 func TestMemoryWriteNotesGoldens(t *testing.T) {
 	t.Parallel()
-	cases := []struct{ name, content string }{
-		{"complete", "---\ndescription: has one\nwhen: Writing a commit message\n---\n"},
-		{"missing-description", "# A heading\n"},
-		{"missing-when", "---\ndescription: has one\n---\n"},
-		{"unreadable-frontmatter", "---\ndescription: Fix: use cents\ntags: [money\n---\n"},
+	cases := []struct {
+		name string
+		// seed is a page left outside the tools; the case edits it when set,
+		// else writes a page with when and body.
+		seed string
+	}{
+		{"complete", ""},
+		{"missing-when", "---\ndescription: has one\n---\n# Page\nold\n"},
+		{"unreadable-frontmatter", "---\ndescription: Fix: use cents\ntags: [money\n---\n# Page\nold\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			s, _ := memoryWritesSession(t)
-			res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "page.md", "content": tc.content})
+			s, scope := memoryWritesSession(t)
+			args, tool := map[string]any{"scope": "personal", "file_path": "page.md", "when": "Writing a commit message", "body": "# Page\nfact\n"}, "memory_write"
+			if tc.seed != "" {
+				seedMemoryPage(t, scope, "page.md", tc.seed)
+				args, tool = map[string]any{"scope": "personal", "file_path": "page.md", "old_string": "old", "new_string": "new"}, "memory_edit"
+			}
+			res := memoryExec(t, s, tool, args)
 			if res.IsError {
 				t.Fatalf("%+v", res)
 			}

@@ -19,7 +19,6 @@ import (
 // memoryPage is one page of a memory scope, as its generated index line needs it.
 type memoryPage struct {
 	Path           string // slash-separated, relative to the scope root
-	Title          string
 	Description    string // one line; the fallback when HasDescription is false
 	HasDescription bool
 	When           string // one line: when a future session needs the page; "" when there is none
@@ -105,7 +104,7 @@ func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) st
 // non-Markdown file, or a page that could not be read.
 func filenameMemoryPage(rel string, modTime time.Time) memoryPage {
 	base := path.Base(rel)
-	return memoryPage{Path: rel, Title: strings.TrimSuffix(base, path.Ext(base)), Description: base, ModTime: modTime}
+	return memoryPage{Path: rel, Description: base, ModTime: modTime}
 }
 
 // parseMemoryPage builds the index entry for the page at rel from its bytes.
@@ -123,18 +122,15 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 	p.Unreadable = err != nil
 	p.Frontmatter = hasBlock
 	heading := firstMarkdownHeading(body)
-	if heading != "" {
-		p.Title = heading
-	}
 	if description, ok := doc.Meta["description"].(string); ok {
 		p.Description = collapseWhitespace(description)
 		p.HasDescription = p.Description != ""
 	}
-	if !p.HasDescription {
-		p.Description = memoryFallbackDescription(heading, body)
-	}
 	if when, ok := doc.Meta["when"].(string); ok {
 		p.When = collapseWhitespace(when)
+	}
+	if !p.HasDescription {
+		p.Description = memoryFallbackDescription(heading, body, p.When != "")
 	}
 	p.Tags = normalizeMemoryTags(doc.Meta["tags"])
 	p.Updated = memoryStampDate(doc.Meta["updated"])
@@ -196,8 +192,9 @@ func fenceRun(line string) string {
 
 // memoryFallbackDescription is the description of a page without one: its
 // first heading, else its first non-blank line, cut to memoryFallbackRunes
-// characters and marked as having no description.
-func memoryFallbackDescription(heading, body string) string {
+// characters and marked as having no description, unless the page has a when
+// line, which stands in for a description.
+func memoryFallbackDescription(heading, body string, hasWhen bool) string {
 	text := heading
 	if text == "" {
 		for line := range strings.SplitSeq(body, "\n") {
@@ -207,7 +204,10 @@ func memoryFallbackDescription(heading, body string) string {
 		}
 	}
 	text = tool.TruncateRunes(text, memoryFallbackRunes)
-	if text == "" {
+	switch {
+	case hasWhen:
+		return text
+	case text == "":
 		return memoryNoDescription
 	}
 	return text + " " + memoryNoDescription
