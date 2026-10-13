@@ -315,6 +315,20 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     );
   }, [work, ports, key, retireAuthority]);
 
+  // A leaseless expiry-pending reader lost its fence, and ANY committed wake may
+  // be the replacement epoch a repository retry just committed — the expired
+  // epoch's rows are suppressed, so an empty list is the EXPECTED wake shape
+  // here and the reset-proof gate must not gate this too. Schedule a current
+  // read: an unchanged world merely re-validates through real acceptance, and
+  // a committed replacement adopts fresh authority without waiting for a
+  // foreground event or a remount. The read itself never wakes, so this
+  // cannot loop.
+  const recoverLeaselessExpiryOnWake = useCallback(() => {
+    if (work.lease === null && work.attempted === null && work.phase === "expiry-pending") {
+      setReadNonce((value) => value + 1);
+    }
+  }, [work]);
+
   // View refresh through the actual repository subscription. A committed wake
   // (a save/handoff, a namespace reset, a peer) refreshes the visible receipts
   // and revalidates the retained authority against the durable incarnation. The
@@ -328,11 +342,16 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       void ports.repository.listAnnotations(key).then(
         (next) => {
           setViews(next);
+          if (!onWake) return;
           // A committed wake that leaves NO visible receipt while retained
           // authority exists could be a namespace reset; prove it by comparing
           // the durable incarnation. An empty list alone is not proof, so an
           // ordinary empty result merely compares equal and changes nothing.
-          if (onWake && next.length === 0) revalidateOnWake();
+          if (next.length === 0) revalidateOnWake();
+          // The leaseless expiry-pending recovery runs on every committed wake
+          // regardless of the list's emptiness: the expired epoch's rows are
+          // suppressed, so an empty list is the expected shape here.
+          recoverLeaselessExpiryOnWake();
         },
         () => {},
       );
@@ -341,7 +360,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     return ports.repository.subscribe(key, () => {
       load(true);
     });
-  }, [ports, key, revalidateOnWake]);
+  }, [ports, key, revalidateOnWake, recoverLeaselessExpiryOnWake]);
 
   // Retire the stale capture/attempt for an expiry-pending read while keeping
   // the exact editable note; the runtime drops the local failed operation.

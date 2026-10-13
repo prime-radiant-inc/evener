@@ -1467,6 +1467,59 @@ test("a failed expiry fence keeps the pending phase, suppresses the stale highli
   );
 });
 
+test("a committed expiry retry wakes the leaseless expiry-pending reader back to usable authority", async () => {
+  let failFence = true;
+  const f = await fixture("reader-expiry-retry-wake", {
+    beforeCommit: (operation) => {
+      if (operation === "expiry" && failFence) throw new Error("fence fault");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const seam = new DocumentGeometrySeam();
+  seam.install();
+  cleanupAfterTest(() => seam.restore());
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  mountAnnotated(f, ports, client, "doc-expiry-retry-wake");
+
+  await screen.findByText("First occurrence: same");
+
+  // An edit plus changed content drives the expiry fence, which faults: the
+  // reader is expiry-pending with no retained lease or attempt.
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  fireEvent(document, new Event("visibilitychange"));
+
+  const work = documentReaderWork("doc-expiry-retry-wake", f.document, ports);
+  await waitFor(() => expect(work.phase).toBe("expiry-pending"));
+  expect(work.lease).toBeNull();
+  expect(work.attempted).toBeNull();
+
+  // The repository's own retry commits the replacement epoch, and the wake it
+  // publishes must recover the leaseless reader WITHOUT any foreground event
+  // or remount.
+  let wakes = 0;
+  const unsubscribeWake = f.repo.subscribe(f.document, () => {
+    wakes += 1;
+  });
+  cleanupAfterTest(unsubscribeWake);
+  failFence = false;
+  await act(async () => {
+    await f.repo.retryPending("storage-recovered");
+  });
+  // The retry genuinely committed the replacement epoch and published its
+  // wake: the proof the recovery below rides on.
+  expect(wakes).toBeGreaterThan(0);
+  await waitFor(() => expect(work.phase).not.toBe("expiry-pending"));
+  // The replacement lease and its real bound map are ready, so selection is
+  // usable again.
+  await waitForCurrentBoundMap(work, maps);
+});
+
 test("a namespace reset expires the stale capture, suppresses old-lease Send, then a current read and fresh selection produce a settled new save", async () => {
   let fail = false;
   const f = await fixture("reader-reset", {
