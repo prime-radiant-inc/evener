@@ -26,7 +26,7 @@ import (
 // version is dropped and rebuilt rather than migrated. Bump it when what the
 // index keeps changes too (searchableMessage), so every transcript is read
 // again.
-const messageSearchSchemaVersion = 1
+const messageSearchSchemaVersion = 2
 
 // messageSearchSchema is the index's layout. messages holds each message's
 // text once, under its session and the transcript key a thread read gives its
@@ -472,12 +472,13 @@ func transcriptItemCursorStale(err error) bool {
 }
 
 // searchableMessage reports whether the index keeps item: what the user typed
-// (a message, or a steer the user sent) and what the agent said. Reasoning,
-// tool calls and their output, and system notices are not messages. An item
-// without a key cannot be opened at, and one with no text has nothing to find.
+// (a message, or a steer the user or a delegate's parent sent) and what the
+// agent said. Reasoning, tool calls and their output, and system notices are
+// not messages. An item without a key cannot be opened at, and one with no
+// text has nothing to find.
 func searchableMessage(item appwire.ThreadItem) bool {
 	message := item.Type == "userMessage" || item.Type == "agentMessage" ||
-		(item.Type == "steering" && item.Source == events.SteeringSourceUser)
+		(item.Type == "steering" && (item.Source == events.SteeringSourceUser || item.Source == events.SteeringSourceParent))
 	return message && item.TranscriptKey != "" && item.Position != nil && strings.TrimSpace(item.Text) != ""
 }
 

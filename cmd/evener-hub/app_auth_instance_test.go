@@ -6,10 +6,11 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
@@ -167,7 +168,7 @@ func TestAuth_InstanceApiKeySet_RefusesCommandExpression(t *testing.T) {
 	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
 
 	_, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-ant", Value: "$(get-gateway-token)"})
-	if err == nil || !strings.Contains(err.Error(), "credential header") {
+	if !errors.Is(err, errStoredCommandExpression) {
 		t.Fatalf("err = %v; want a refusal pointing at the credential header field", err)
 	}
 	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -560,15 +561,12 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 		if err == nil {
 			t.Fatal("the spawn gate accepted an unconfigured google-vertex provider")
 		}
-		msg := err.Error()
-		if !strings.Contains(msg, "not configured: set GOOGLE_VERTEX_LOCATION, GOOGLE_VERTEX_PROJECT") {
-			t.Fatalf("err = %q, want it to name the unset base-URL variables", msg)
+		refusal, ok := errors.AsType[*launchCredentialError](err)
+		if !ok || refusal.remedy != remedyConfigureProvider || len(refusal.problems) != 0 {
+			t.Fatalf("err = %v, want it to send the user to configure the base URL", err)
 		}
-		if strings.Contains(msg, "GOOGLE_APPLICATION_CREDENTIALS") {
-			t.Fatalf("err = %q, must not name the credential variable while the base URL is unresolvable", msg)
-		}
-		if strings.Contains(msg, "apiKey/set") {
-			t.Fatalf("err = %q, must not tell an unconfigured gcp-adc provider to use apiKey/set", msg)
+		if want := []string{"GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"}; !slices.Equal(refusal.unset, want) {
+			t.Fatalf("unset = %v, want the unset base-URL variables %v", refusal.unset, want)
 		}
 	})
 
@@ -578,21 +576,10 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 		if err == nil {
 			t.Fatal("the spawn gate accepted a google-vertex provider with no credential")
 		}
-		msg := err.Error()
-		if !strings.Contains(msg, "credentialJson/set") || !strings.Contains(msg, "application-default login") {
-			t.Fatalf("err = %q, want it to name credentialJson/set and application-default login", msg)
-		}
-		if strings.Contains(msg, "apiKey/set") {
-			t.Fatalf("err = %q, must not tell an unconfigured gcp-adc provider to use apiKey/set", msg)
-		}
-		if !strings.Contains(msg, "(run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)") {
-			t.Fatalf("err = %q, want the ADC alternatives parenthesised together", msg)
-		}
-		if strings.Contains(msg, ", set GOOGLE_APPLICATION_CREDENTIALS,") {
-			t.Fatalf("err = %q, must not read as if GOOGLE_APPLICATION_CREDENTIALS were a required middle step", msg)
-		}
-		if strings.Contains(msg, "GOOGLE_VERTEX_PROJECT") || strings.HasSuffix(msg, " set") {
-			t.Fatalf("err = %q, must not list the base-URL variables once they are set", msg)
+		// The base URL resolves, so what is missing is the credential, and the
+		// remedy is the one a gcp-adc provider reads.
+		if refusal, ok := errors.AsType[*launchCredentialError](err); !ok || refusal.remedy != remedyApplicationDefaultCredentials {
+			t.Fatalf("err = %v, want it to name application-default credentials or a stored credential JSON", err)
 		}
 	})
 
@@ -604,12 +591,12 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 		if err == nil {
 			t.Fatal("the spawn gate accepted a google-vertex provider with an invalid location")
 		}
-		msg := err.Error()
-		if !strings.Contains(msg, `not configured: invalid GOOGLE_VERTEX_LOCATION "bad.host"`) {
-			t.Fatalf("err = %q, want it to explain what is wrong with the location", msg)
+		refusal, ok := errors.AsType[*launchCredentialError](err)
+		if !ok || refusal.remedy != remedyConfigureProvider || len(refusal.problems) == 0 {
+			t.Fatalf("err = %v, want it to explain what is wrong with the location", err)
 		}
-		if strings.Contains(msg, "set GOOGLE_VERTEX_LOCATION") {
-			t.Fatalf("err = %q, must not tell the user to set a variable that is already set", msg)
+		if len(refusal.unset) != 0 {
+			t.Fatalf("unset = %v, must not tell the user to set a variable that is already set", refusal.unset)
 		}
 	})
 }
@@ -627,12 +614,8 @@ func TestAuth_ImplicitProviderRemediationFollowsRowScheme(t *testing.T) {
 	if err == nil {
 		t.Fatal("the spawn gate accepted an unconfigured bedrock whose default row needs ADC")
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "application-default credentials") {
-		t.Fatalf("err = %q, want the ADC remedy the default row's scheme asks for", msg)
-	}
-	if strings.Contains(msg, "apiKey/set") {
-		t.Fatalf("err = %q, must not offer the api-key flow a gcp-adc row cannot read", msg)
+	if refusal, ok := errors.AsType[*launchCredentialError](err); !ok || refusal.remedy != remedyApplicationDefaultCredentials {
+		t.Fatalf("err = %v, want the ADC remedy the default row's scheme asks for", err)
 	}
 }
 
@@ -678,8 +661,8 @@ func TestAuth_InstanceGateRefusesADisabledNamedModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("the spawn gate accepted a launch the child always refuses")
 	}
-	if msg := err.Error(); !strings.Contains(msg, "disabled") {
-		t.Fatalf("err = %q, want the model's disabled verdict", msg)
+	if !errors.Is(err, registry.ErrModelDisabled) {
+		t.Fatalf("err = %v, want the model's disabled verdict", err)
 	}
 }
 
@@ -697,12 +680,11 @@ func TestAuth_ImplicitProviderGateRefusesADisabledNamedModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("the spawn gate accepted a launch the child always refuses")
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "disabled") {
-		t.Fatalf("err = %q, want the model's own disabled verdict", msg)
+	if !errors.Is(err, registry.ErrModelDisabled) {
+		t.Fatalf("err = %v, want the model's own disabled verdict", err)
 	}
-	if strings.Contains(msg, "application-default credentials") || strings.Contains(msg, "apiKey/set") {
-		t.Fatalf("err = %q, must refuse the launch, not offer a credential remedy it will never read", msg)
+	if _, offered := errors.AsType[*launchCredentialError](err); offered {
+		t.Fatalf("err = %v, must refuse the launch, not offer a credential remedy it will never read", err)
 	}
 }
 

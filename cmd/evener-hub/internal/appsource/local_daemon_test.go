@@ -461,7 +461,7 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	var outputParams appwire.JobsOutputParams
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsOutput, func(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		outputParams = params
-		return appwire.JobsOutputResponse{Data: appwire.JobOutputTail{Tail: "hello", TotalBytes: 5}}, nil
+		return appwire.JobsOutputResponse{Data: appwire.JobOutputPage{BytesReturned: 5, TotalBytes: 5, Encoding: "utf8", Data: "hello"}}, nil
 	})
 	var getParams appwire.JobsGetParams
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsGet, func(_ context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
@@ -503,8 +503,8 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 		t.Fatalf("JobOutput: %v", err)
 	}
 	tail := out.Data
-	if tail.Tail != "hello" || tail.TotalBytes != 5 {
-		t.Fatalf("JobOutput data = %#v, want the daemon's own tail payload", out.Data)
+	if tail.Data != "hello" || tail.TotalBytes != 5 || tail.BytesReturned != 5 || tail.OffsetBytes != 0 || tail.RetainedStartBytes != 0 || tail.Encoding != "utf8" {
+		t.Fatalf("JobOutput data = %#v, want the daemon's own page payload", out.Data)
 	}
 	if outputParams.JobID != "job_1" || outputParams.MaxBytes != 1024 {
 		t.Fatalf("params forwarded = %+v", outputParams)

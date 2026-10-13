@@ -30,7 +30,7 @@ import {
   webSearchSummary,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import { ContextCard } from "../../../../widgets/contextcard";
+import { ContextCard } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 

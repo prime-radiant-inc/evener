@@ -35,7 +35,7 @@ export function SessionNotice({
 	const label = busy ? copy.busy : copy.button;
 	const off = busy || disabled;
 	return (
-		<View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 12 }}>
+		<View testID={`session-notice:${kind}`} style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 12 }}>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale }}
@@ -44,6 +44,7 @@ export function SessionNotice({
 			</Text>
 			{error ? (
 				<Text
+					testID="session-notice-error"
 					accessibilityRole="alert"
 					allowFontScaling={allowFontScaling}
 					style={{ color: palette.dangerInk, fontSize: 13 * scale, lineHeight: 18 * scale }}

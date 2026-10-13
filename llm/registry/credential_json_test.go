@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -16,89 +17,89 @@ func TestCheckCredentialJSON(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		raw  string
-		want string // substring of the error, or "" for nil
+		want error // the refusal reason, or nil for an accepted credential
 	}{
 		{
 			name: "authorized_user",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`,
-			want: "",
+			want: nil,
 		},
 		{
 			name: "service_account",
 			raw:  testServiceAccountJSON(t),
-			want: "",
+			want: nil,
 		},
 		{
 			name: "external_account",
 			raw:  `{"type":"external_account","audience":"x"}`,
-			want: "not supported",
+			want: ErrCredentialTypeUnsupported,
 		},
 		{
 			name: "service_account with no fields",
 			raw:  `{"type":"service_account"}`,
-			want: "service_account credential JSON is missing client_email, private_key",
+			want: ErrCredentialFieldsMissing,
 		},
 		{
 			name: "authorized_user with only a client id",
 			raw:  `{"type":"authorized_user","client_id":"a"}`,
-			want: "missing client_secret, refresh_token",
+			want: ErrCredentialFieldsMissing,
 		},
 		{
 			name: "service_account with an empty private key",
 			raw:  `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":""}`,
-			want: "missing private_key",
+			want: ErrCredentialFieldsMissing,
 		},
 		{
 			name: "service_account with a non-string private key",
 			raw:  `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":1}`,
-			want: "missing private_key",
+			want: ErrCredentialFieldsMissing,
 		},
 		{
 			name: "service_account with a PKCS#1 private key",
 			raw:  serviceAccountJSONWithKey(t, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(testRSAKey(t))})),
-			want: "",
+			want: nil,
 		},
 		{
 			name: "service_account with key material that will not parse",
 			raw:  `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key"}`,
-			want: "unusable private_key",
+			want: ErrCredentialPrivateKeyUnusable,
 		},
 		{
 			name: "service_account with an ECDSA private key",
 			raw:  serviceAccountJSONWithKey(t, testECDSAKeyPEM(t)),
-			want: "not an RSA key",
+			want: ErrCredentialPrivateKeyUnusable,
 		},
 		{
 			name: "authorized_user naming Google's token endpoint",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":"https://oauth2.googleapis.com/token"}`,
-			want: "",
+			want: nil,
 		},
 		{
 			name: "authorized_user naming a foreign token endpoint",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":"https://attacker.example/token"}`,
-			want: `token_uri "https://attacker.example/token" is not Google's OAuth token endpoint`,
+			want: ErrCredentialTokenEndpoint,
 		},
 		{
 			name: "service_account naming an internal token endpoint",
 			raw:  `{"token_uri":"http://169.254.169.254/token",` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
-			want: "is not Google's OAuth token endpoint",
+			want: ErrCredentialTokenEndpoint,
 		},
 		{
 			name: "authorized_user with a non-string token_uri",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":7}`,
-			want: "is not Google's OAuth token endpoint",
+			want: ErrCredentialTokenEndpoint,
 		},
 		{
 			// encoding/json matches the library's json:"token_uri" tag case-
 			// insensitively, so the gate must see the field the same way.
 			name: "authorized_user naming a foreign token endpoint under a case variant of the key",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","Token_Uri":"https://attacker.example/token"}`,
-			want: "is not Google's OAuth token endpoint",
+			want: ErrCredentialTokenEndpoint,
 		},
 		{
 			name: "service_account naming Google's legacy token endpoint",
 			raw:  `{"token_uri":"https://accounts.google.com/o/oauth2/token",` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
-			want: "",
+			want: nil,
 		},
 		{
 			// Google's parser treats a top-level web/installed block as an
@@ -106,90 +107,90 @@ func TestCheckCredentialJSON(t *testing.T) {
 			// token source; the gate refuses it up front.
 			name: "authorized_user carrying an OAuth client configuration block",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","installed":{"redirect_uris":["http://localhost"]}}`,
-			want: "OAuth client configuration",
+			want: ErrCredentialClientConfig,
 		},
 		{
 			name: "authorized_user carrying a web client block under a case variant",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","Web":{"redirect_uris":["http://localhost"]}}`,
-			want: "OAuth client configuration",
+			want: ErrCredentialClientConfig,
 		},
 		{
 			// The library's decode is case-insensitive and last-wins, so the
 			// key it will actually sign with is the later Private_Key.
 			name: "service_account whose later case-variant private_key overrides a good one",
 			raw:  strings.TrimSuffix(testServiceAccountJSON(t), "}") + `,"Private_Key":"not-a-real-key"}`,
-			want: "unusable private_key",
+			want: ErrCredentialPrivateKeyUnusable,
 		},
 		{
 			name: "authorized_user whose fields are all case variants",
 			raw:  `{"type":"authorized_user","Client_Id":"a","CLIENT_SECRET":"b","Refresh_Token":"c"}`,
-			want: "",
+			want: nil,
 		},
 		{
 			// Google's parser decodes quota_project_id as a string; a value of
 			// another type fails there, so the gate must fail first.
 			name: "authorized_user with a non-string quota_project_id",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","quota_project_id":7}`,
-			want: "credential JSON:",
+			want: ErrCredentialJSONMalformed,
 		},
 		{
 			name: "service_account with a non-string universe_domain",
 			raw:  `{"universe_domain":["googleapis.com"],` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
-			want: "credential JSON:",
+			want: ErrCredentialJSONMalformed,
 		},
 		{
 			// The parser decodes every field of its credential file before it
 			// looks at type, external-account fields included.
 			name: "authorized_user with a non-list delegates",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","delegates":"sa@example.iam.gserviceaccount.com"}`,
-			want: "credential JSON:",
+			want: ErrCredentialJSONMalformed,
 		},
 		{
 			name: "service_account with a malformed credential_source block",
 			raw:  `{"credential_source":{"headers":"x"},` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
-			want: "credential JSON:",
+			want: ErrCredentialJSONMalformed,
 		},
 		{
 			name: "authorized_user with a string token_lifetime_seconds",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","service_account_impersonation":{"token_lifetime_seconds":"3600"}}`,
-			want: "credential JSON:",
+			want: ErrCredentialJSONMalformed,
 		},
 		{
 			name: "authorized_user with a malformed source_credentials block",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","source_credentials":{"client_id":5}}`,
-			want: "credential JSON:",
+			want: ErrCredentialJSONMalformed,
 		},
 		{
 			name: "service_account with an unrelated field Go cannot represent",
 			raw:  `{"x":1e999,` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
-			want: "",
+			want: nil,
 		},
 		{
 			name: "empty object",
 			raw:  `{}`,
-			want: `no "type"`,
+			want: ErrCredentialJSONUntyped,
 		},
 		{
 			name: "json array",
 			raw:  `[1,2]`,
-			want: `no "type"`,
+			want: ErrCredentialJSONUntyped,
 		},
 		{
 			name: "not json",
 			raw:  `not json`,
-			want: "not valid JSON",
+			want: ErrCredentialJSONInvalid,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := CheckCredentialJSON([]byte(tt.raw))
-			if tt.want == "" {
+			if tt.want == nil {
 				if err != nil {
 					t.Fatalf("CheckCredentialJSON(%q) = %v, want nil", tt.raw, err)
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("CheckCredentialJSON(%q) = %v, want an error containing %q", tt.raw, err, tt.want)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("CheckCredentialJSON(%q) = %v, want %v", tt.raw, err, tt.want)
 			}
 		})
 	}
@@ -224,17 +225,18 @@ func TestCredentialJSONType(t *testing.T) {
 func TestCheckCredentialJSONBoundsWhatItEchoes(t *testing.T) {
 	long := strings.Repeat("S", 400)
 	for _, tt := range []struct {
-		name, raw, want string
+		name, raw string
+		want      error
 	}{
 		{
 			name: "unsupported type",
 			raw:  `{"type":"` + long + `"}`,
-			want: "is not supported",
+			want: ErrCredentialTypeUnsupported,
 		},
 		{
 			name: "foreign token_uri",
 			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":"https://attacker.example/` + long + `"}`,
-			want: "is not Google's OAuth token endpoint",
+			want: ErrCredentialTokenEndpoint,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -242,8 +244,8 @@ func TestCheckCredentialJSONBoundsWhatItEchoes(t *testing.T) {
 			if err == nil {
 				t.Fatal("want a refusal")
 			}
-			if !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("err = %q, want it to say %q", err, tt.want)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("err = %q, want %v", err, tt.want)
 			}
 			if strings.Contains(err.Error(), long) {
 				t.Fatalf("err repeats the whole value: %q", err)

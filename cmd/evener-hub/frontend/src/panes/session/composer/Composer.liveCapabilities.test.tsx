@@ -42,7 +42,7 @@ import { connectionStore } from "../../../stores/connection";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
@@ -602,7 +602,7 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
     ref: REF,
     input: [{ type: "text", text: "go left" }],
   });
-  expect(screen.queryByText(/no active turn/i)).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 // A genuine turn failure ends with turn/completed{status: "failed"} followed

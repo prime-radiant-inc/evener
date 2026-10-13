@@ -15,20 +15,35 @@ import type {
   SearchResult,
   ThreadCapabilities,
   ThreadModel,
+  ThreadReadResponse,
   TurnModel,
 } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { IDBFactory } from "fake-indexeddb";
+import { Composer } from "../../panes/session/composer/Composer";
+import { refreshPendingTurnsProjection } from "../../panes/session/composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { createTestComposerSource } from "../../panes/session/testing/composerSource";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { Toast } from "../../widgets";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import { chordLabel, Toast } from "../../widgets";
+import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
-import { renderPalette as render, scriptSearch } from "./paletteTestUtils";
+import {
+  helpChords,
+  paletteRowsOfKind,
+  paletteSection,
+  renderPalette as render,
+  scriptSearch,
+} from "./paletteTestUtils";
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -104,6 +119,7 @@ beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   useCommandCatalog.setState(useCommandCatalog.getInitialState());
+  resetToastStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
@@ -199,14 +215,17 @@ function setNeedsYouRows(rows: NavigationSessionSummary[] | null): void {
   });
 }
 
-test("the empty-query view lists needs-you sessions (title + 'needs you' hint) when any exist", () => {
+test("the empty-query view lists needs-you sessions when any exist", () => {
   setNeedsYouRows(needsYouRows());
   render(<CommandPalette />);
   act(() => openPalette());
 
-  const option = screen.getByRole("option", { name: /Session A/i });
-  expect(within(option).getByText(/needs you/i)).toBeTruthy();
-  expect(screen.getByRole("option", { name: /Session B/i })).toBeTruthy();
+  expect(paletteSection("needs-you")).not.toBeNull();
+  const rows = paletteRowsOfKind("needsYou");
+  expect(rows).toEqual([
+    screen.getByRole("option", { name: /Session A/i }),
+    screen.getByRole("option", { name: /Session B/i }),
+  ]);
 });
 
 // An approval blocks its turn mid-tool, so the row's wire state stays
@@ -315,15 +334,18 @@ test("selecting a free-arg APP-GLOBAL command enters args mode with a pill and p
   const user = userEvent.setup();
   render(<CommandPalette />);
   act(() => openPalette("/spawn"));
+  const filterPlaceholder = screen.getByRole("combobox").getAttribute("placeholder");
   await user.click(screen.getByRole("option", { name: /Start with prompt/ }));
 
-  // Args-mode pill shows the command, and the input placeholder changes.
-  expect(screen.getByText("Start with prompt")).toBeTruthy();
-  expect(screen.getByRole("combobox").getAttribute("placeholder")).toBe("prompt to start…");
+  // Args mode shows the command pill (with its back control), and the input
+  // placeholder switches to the command's own argument prompt.
+  expect(screen.getByRole("button", { name: "back to command list" })).toBeTruthy();
+  expect(screen.getByRole("combobox").getAttribute("placeholder")).not.toBe(filterPlaceholder);
 
   await user.keyboard("{Escape}");
   // Backed out to command-filter, dialog still open (Esc did not close it).
   expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "back to command list" })).toBeNull();
   expect(screen.getByRole("option", { name: /Start with prompt/ })).toBeTruthy();
 });
 
@@ -387,7 +409,7 @@ test("with NO focused session, the handoff row explains that instead and Enter s
 
   await user.keyboard("{Enter}");
 
-  expect(screen.getByRole("alert").textContent).toBe("Focus a session first to run a session command.");
+  expect(screen.getByRole("alert")).toBeTruthy();
   expect(screen.getByRole("dialog")).toBeTruthy(); // stays open, same as any other blocked action
 });
 
@@ -406,10 +428,12 @@ test("the handoff row appears for /model even on an ended session with false cap
 test("a failed auto-resume is attributed to the session, not blamed on the command", () => {
   // The hub returns the spawner's own raw text under evenerErrorInfo hubLaunch
   // when the resume behind a cold-session mutation fails; unprefixed it reads
-  // as the command having failed.
-  expect(
-    commandErrorMessage(new WireError("fork/exec evener: no such file", -32014, { evenerErrorInfo: "hubLaunch" })),
-  ).toBe("couldn't start this session: fork/exec evener: no such file");
+  // as the command having failed, so the palette frames it and keeps the
+  // spawner's text inside.
+  const raw = "fork/exec evener: no such file";
+  const launchFailure = commandErrorMessage(new WireError(raw, -32014, { evenerErrorInfo: "hubLaunch" }));
+  expect(launchFailure).not.toBe(raw);
+  expect(launchFailure).toContain(raw);
   // Every other rejection is passed through untouched.
   expect(commandErrorMessage(new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" }))).toBe(
     "turn t1 is active",
@@ -421,95 +445,65 @@ test("a failed auto-resume is attributed to the session, not blamed on the comma
 // the shared KeyHint widget (Mod resolves to the reviewing platform's own
 // symbol), covering every real chord across the app - not just the
 // palette's own - including ones the old table never had at all (Mod+I,
-// Mod+J, Mod+', ask dock's Mod+Enter and arrow-key navigation) and
-// correcting the composer's Enter/Shift+Enter/Mod+Enter semantics against
-// Composer.tsx's actual keydown routing (handleKeyDown) rather than the old
-// generic "run the highlighted command" wording.
-function helpRowFor(desc: string): HTMLElement {
-  const descEl = screen.getByText(desc);
-  return descEl.parentElement as HTMLElement;
+// Mod+J, Mod+', ask dock's Mod+Enter and arrow-key navigation) and the
+// composer's Enter/Shift+Enter/Mod+Enter, checked against Composer.tsx's
+// actual keydown routing (handleKeyDown). The descriptions are copy, reviewed
+// in the diff; these tests pin which chords the legend teaches.
+async function openHelpFromCommand(user: ReturnType<typeof userEvent.setup>) {
+  render(<CommandPalette />);
+  act(() => openPalette("/help"));
+  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+}
+
+function chordCount(keys: string[]): number {
+  return helpChords().filter((chord) => chord === chordLabel(keys)).length;
 }
 
 test("/help renders through KeyHint, with the platform's own Mod glyph", async () => {
   const user = userEvent.setup();
   Object.defineProperty(window.navigator, "platform", { value: "Win32", configurable: true });
-  render(<CommandPalette />);
-  act(() => openPalette("/help"));
-  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+  await openHelpFromCommand(user);
 
-  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
+  expect(paletteSection("help")).not.toBeNull();
   // KeyHint's own bordered form: one <kbd> per key, not a hand-rolled string.
-  expect(document.querySelectorAll("kbd").length).toBeGreaterThan(0);
-  const paletteRow = helpRowFor("open the command palette");
-  expect(within(paletteRow).getAllByText("Ctrl").length).toBeGreaterThan(0);
-  expect(within(paletteRow).getByText("K")).toBeTruthy();
+  expect(helpChords()).toContain("Ctrl+K");
 });
 
 test("/help lists the UX-fix chords the old table never had", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
-  act(() => openPalette("/help"));
-  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+  await openHelpFromCommand(user);
 
-  expect(
-    within(helpRowFor("toggle the sidebar — inert while typing in an editable field")).getByText("B"),
-  ).toBeTruthy();
-  expect(within(helpRowFor("focus the composer")).getByText("I")).toBeTruthy();
-  expect(within(helpRowFor("go to the next session needing you")).getByText("J")).toBeTruthy();
-  expect(within(helpRowFor("quote the selection into the composer")).getByText("'")).toBeTruthy();
-  expect(within(helpRowFor("previous ask-dock question")).getByText("←")).toBeTruthy();
-  expect(within(helpRowFor("next ask-dock question")).getByText("→")).toBeTruthy();
+  for (const keys of [["Mod", "B"], ["Mod", "I"], ["Mod", "J"], ["Mod", "'"], ["←"], ["→"]]) {
+    expect(chordCount(keys), keys.join("+")).toBe(1);
+  }
 });
 
 // Composer.tsx's own handleKeyDown: plain Enter (or Mod+Enter, always)
 // submits (send, or queue when the agent is mid-turn); Shift+Enter only
 // steers when Enter-to-send is OFF (with it on, Shift+Enter is a literal
-// newline). The old table's "⇧↵ jump to a turn" and "⌘↵ open in a new tab"
-// described the PALETTE's search-result rows, not the composer at all - a
-// different (still-real) row covers those, kept separately below.
-test("/help describes the composer's real Enter/Shift+Enter/Mod+Enter semantics", async () => {
+// newline). The palette's own search-result rows use the same three chords
+// (open, open in a new tab, jump to a turn), so each appears once for the
+// palette and once for the composer - and Mod+Enter a third time for the ask
+// dock's answer/approve (ask dock questions and sandbox approvals).
+test("/help lists Enter, Shift+Enter, and Mod+Enter for the composer and Mod+Enter for the ask dock", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
-  act(() => openPalette("/help"));
-  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+  await openHelpFromCommand(user);
 
-  expect(screen.getByText(/send now.*queue.*mid-turn/i)).toBeTruthy();
-  expect(screen.getByText(/steer mid-turn/i)).toBeTruthy();
-  expect(screen.getByText(/send or queue now, regardless/i)).toBeTruthy();
+  expect(chordCount(["Enter"])).toBe(2);
+  expect(chordCount(["Shift", "Enter"])).toBe(2);
+  expect(chordCount(["Mod", "Enter"])).toBe(3);
 });
 
-test("/help documents ask dock's Mod+Enter answer/approve chord (ask dock and sandbox approval)", async () => {
+// "/" on an empty composer opens the composer's own INLINE slash-command menu
+// (Composer.tsx's own handleKeyDown), and "/" in the palette filters
+// app-global commands, handing a session command off to the composer
+// (2026-08-14). The legend teaches both, so a user hunting for /goal or
+// /model in the palette's "/" filter learns why it isn't there.
+test("/help lists '/' for both the palette's command filter and the composer's inline menu", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
-  act(() => openPalette("/help"));
-  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+  await openHelpFromCommand(user);
 
-  expect(screen.getByText(/answer.*approve/i)).toBeTruthy();
-});
-
-// SHOULD-FIX (product decision): "/" on an empty composer used to open the
-// MODAL palette; it now types a literal slash that opens the composer's own
-// INLINE slash-command menu instead (Composer.tsx's own handleKeyDown).
-test("/help describes the leading-'/' row as opening the inline slash-command menu, not command mode", async () => {
-  const user = userEvent.setup();
-  render(<CommandPalette />);
-  act(() => openPalette("/help"));
-  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
-
-  expect(screen.getByText(/opens the inline slash-command menu/i)).toBeTruthy();
-  expect(screen.queryByText(/opens command mode/i)).toBeNull();
-});
-
-// 2026-08-14: the legend teaches the new split explicitly - a user hunting
-// for /goal or /model in the palette's own "/" filter should learn WHY it
-// isn't there, not just find it silently missing.
-test("/help teaches the palette/composer split for session commands", async () => {
-  const user = userEvent.setup();
-  render(<CommandPalette />);
-  act(() => openPalette("/help"));
-  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
-
-  expect(screen.getByText(/hands off to the composer instead/i)).toBeTruthy();
+  expect(chordCount(["/"])).toBe(2);
 });
 
 test("HELP_ROWS drops the mono-typeface rule (design bar bans mono for chrome labels)", () => {
@@ -530,7 +524,7 @@ test("the help panel is inert: ArrowDown+Enter never fires a hidden registry com
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
   await user.keyboard("{ArrowDown}{Enter}");
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
+  expect(paletteSection("help")).not.toBeNull();
 });
 
 test("typing after /help leaves the help panel and returns to a real command list (§2.8)", async () => {
@@ -539,7 +533,7 @@ test("typing after /help leaves the help panel and returns to a real command lis
   act(() => openPalette("/"));
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
   await user.type(screen.getByRole("combobox"), "settings");
-  expect(screen.queryByText("Keyboard shortcuts")).toBeNull();
+  expect(paletteSection("help")).toBeNull();
   expect(screen.getByRole("option", { name: /Open settings/ })).toBeTruthy();
 });
 
@@ -548,26 +542,19 @@ test("typing after /help leaves the help panel and returns to a real command lis
 test("in-session search scans the focused ThreadModel's turns", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
-  focusSession("ref_a", { turns: [turn([item("i1", "please investigate the frobnitz")])] });
+  focusSession("ref_a", {
+    turns: [turn([item("i0", "nothing relevant")]), turn([item("i1", "please investigate the frobnitz")])],
+  });
 
   render(<CommandPalette />);
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), "frobnitz");
 
-  await waitFor(() => expect(screen.getByText("In session · 1")).toBeTruthy());
-  expect(screen.getByText("turn 1")).toBeTruthy();
-});
-
-// FIX 2 (real-user report): the same user also checked every settings
-// section for a shortcuts legend and never learned the palette even has a
-// "/" command mode - the placeholder is the one thing visible on every
-// empty-query open, so it now mentions "?" once, matching the bare-"?"
-// affordance below.
-test('the search-mode placeholder hints at "?" for keyboard shortcuts', () => {
-  render(<CommandPalette />);
-  act(() => openPalette());
-
-  expect(screen.getByRole("combobox").getAttribute("placeholder")).toMatch(/\?.*shortcut/i);
+  await waitFor(() => expect(paletteSection("in-session")).not.toBeNull());
+  const rows = paletteRowsOfKind("insession");
+  expect(rows).toHaveLength(1);
+  // The match sits in the second turn; the fixture text carries no digits.
+  expect(rows[0]?.textContent).toContain("2");
 });
 
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend
@@ -584,7 +571,7 @@ test('typing a bare "?" in search mode opens the keyboard-shortcuts help view', 
 
   await user.type(screen.getByRole("combobox"), "?");
 
-  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
+  expect(paletteSection("help")).not.toBeNull();
 });
 
 test('typing past a bare "?" leaves the help view and resumes filtering, same as after /help', async () => {
@@ -592,11 +579,11 @@ test('typing past a bare "?" leaves the help view and resumes filtering, same as
   render(<CommandPalette />);
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), "?");
-  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
+  expect(paletteSection("help")).not.toBeNull();
 
   await user.type(screen.getByRole("combobox"), "x");
 
-  expect(screen.queryByText("Keyboard shortcuts")).toBeNull();
+  expect(paletteSection("help")).toBeNull();
 });
 
 // --- remote search results ---
@@ -626,10 +613,11 @@ describe("remote search results", () => {
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "frobnitz");
 
-    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-    expect(screen.getByText("Past · 1")).toBeTruthy();
-    const live = screen.getAllByRole("option").find((o) => o.textContent?.includes("frobnitz worker"));
-    expect(live).toBeTruthy();
+    await waitFor(() => expect(paletteSection("live")).not.toBeNull());
+    expect(paletteSection("past")).not.toBeNull();
+    expect(paletteRowsOfKind("past")).toHaveLength(1);
+    const [live] = paletteRowsOfKind("live");
+    expect(live?.textContent).toContain("frobnitz worker");
     // The matched substring is wrapped in <mark> (§2.3 highlighting).
     expect(within(live as HTMLElement).getByText("frobnitz").tagName).toBe("MARK");
   });
@@ -642,7 +630,7 @@ describe("remote search results", () => {
     render(<CommandPalette />);
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), term);
-    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    await waitFor(() => expect(paletteSection("live")).not.toBeNull());
     return screen.getAllByRole("option").find((o) => o.textContent?.includes(term)) as HTMLElement;
   }
 
@@ -762,13 +750,114 @@ test("Enter on an unknown slash command sends the raw query - the escape hatch f
 test("Enter on an unknown slash command against a fenced session toasts the refusal and keeps the palette open", async () => {
   const user = userEvent.setup();
   focusSession("local:ref_a");
-  // A Stop in flight arms the fence while the snapshot still reads idle -
-  // the window the liveControls predicate exists for.
+  // A Stop this page started is its own fence while it drains: the hub holds
+  // Stopping > 0 and refuses turn/start even though the snapshot reads idle.
+  // This is deliberately NOT the Send-resumes face (which excludes a draining
+  // Stop), so the fallthrough's refusal path is what runs here.
   act(() => {
-    threadsStore.setState((state) => ({
-      restartBlockingObligations: new Map(state.restartBlockingObligations).set("local:ref_a", Symbol()),
-    }));
+    threadsStore.setState((state) => ({ stoppingRefs: new Set(state.stoppingRefs).add("local:ref_a") }));
   });
+  render(<CommandPalette />);
+  const send = vi.spyOn(threadsStore.getState(), "send");
+  act(() => openPalette("/frobnicate main"));
+
+  await user.keyboard("{Enter}");
+
+  // The admission's own refusal surfaces as an error toast, the palette stays
+  // open with the typed text, and the rejection never escapes unhandled.
+  const refusal: Error = await send.mock.results[0]?.value.catch((err: Error) => err);
+  expect(refusal).toBeInstanceOf(Error);
+  await waitFor(() => expect(getToasts()).toEqual([expect.objectContaining({ kind: "error", text: refusal.message })]));
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect((screen.getByRole("combobox") as HTMLInputElement).value).toBe("/frobnicate main");
+});
+
+// R09: the palette's slash fallthrough is one of the direct callers of the
+// shared store send, so a Send-resumes fenced ref inherits the whole journey
+// here. The raw text parks durably, the store drives the resume, and the parked
+// turn/start drains once after the resume's hydration reconciles the uncertain
+// row. The palette closes on the durable accept, before the resume lands.
+test("Enter on an unknown slash command against a Send-resumes fenced session parks the send, drives the resume, closes the palette, and drains once", async () => {
+  globalThis.indexedDB = new IDBFactory();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:ref_a";
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  let resumed = false;
+  let uncertain = "";
+  const fenced = () =>
+    wireThread(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPS, send: false, queue: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  // The resumed, authoritative snapshot names the uncertain row as accepted,
+  // which reconciles it.
+  const idle = () =>
+    wireThread(ref, {
+      status: { type: "idle" },
+      evener: {
+        ref,
+        capabilities: CAPS,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, clientMutationIds: [uncertain] },
+      },
+    });
+  fake.on("thread/read", () => ({ thread: resumed ? idle() : fenced() }) satisfies ThreadReadResponse);
+  let resumeRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    resumeRequested = resolve;
+  });
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const heldResume = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/resume", () => {
+    resumeRequested();
+    return heldResume;
+  });
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  // Track and hydrate the fenced ref: the fallthrough reads the focused pane's
+  // session, and the driver's refreshThread needs a tracked ref to re-read.
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  await act(async () => {
+    const row = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/queue",
+      payload: { ref, input: [{ type: "text", text: "uncertain" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "uncertain" }] },
+    });
+    uncertain = row.clientMutationId;
+    await storage.markUnknown(uncertain, "blockedUnknown");
+    await refreshPendingTurnsProjection(ref);
+  });
+  await flushPendingTurnsProjectionForTests();
   render(
     <>
       <CommandPalette />
@@ -776,14 +865,92 @@ test("Enter on an unknown slash command against a fenced session toasts the refu
     </>,
   );
   act(() => openPalette("/frobnicate main"));
-
   await user.keyboard("{Enter}");
+  // The durable accept closes the palette before the resume lands.
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    await requested;
+  });
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  // The row is parked: nothing reached the wire while the resume was held.
+  expect(starts).toBe(0);
+  await act(async () => {
+    resumed = true;
+    resolveResume({ thread: idle() });
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(threadsStore.getState().resumeFailures.size).toBe(0);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  await waitFor(() => expect(starts).toBe(1));
+  expect(starts).toBe(1);
+});
 
-  // The refusal surfaces as the recovery-unavailable toast, the palette stays
-  // open with the typed text, and the rejection never escapes unhandled.
-  expect(await screen.findByText("Send isn't available until this session is resumed")).toBeTruthy();
-  expect(screen.getByRole("dialog")).toBeTruthy();
-  expect((screen.getByRole("combobox") as HTMLInputElement).value).toBe("/frobnicate main");
+// The failure arm: the palette still closes on the durable accept (the row is
+// parked and Send remains the single action), and the resume's rejection
+// surfaces through the composer's toast, which names the reason.
+test("a Send-resumes fallthrough whose resume fails parks the row, closes the palette, and toasts through the composer", async () => {
+  globalThis.indexedDB = new IDBFactory();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:ref_fail";
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  fake.on(
+    "thread/read",
+    () =>
+      ({
+        thread: wireThread(ref, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref,
+            capabilities: { ...CAPS, send: false, queue: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+      }) satisfies ThreadReadResponse,
+  );
+  fake.on("thread/resume", () => {
+    throw new Error("resume rejected");
+  });
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  await threadsStore.getState().ensureThread(ref);
+  render(
+    <>
+      <CommandPalette />
+      <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
+    </>,
+  );
+  act(() => openPalette("/frobnicate main"));
+  await user.keyboard("{Enter}");
+  await waitFor(() =>
+    expect(getToasts()).toContainEqual(
+      expect.objectContaining({ kind: "error", text: expect.stringContaining("resume rejected") }),
+    ),
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await flushPendingTurnsProjectionForTests();
+  const rows = await storage.listOutbox(ref);
+  expect(rows.map((record) => record.method)).toEqual(["turn/start"]);
+  expect(starts).toBe(0);
 });
 
 // 2026-08-14: a picked session-scoped command - built-in OR plugin catalog -

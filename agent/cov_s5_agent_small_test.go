@@ -75,9 +75,12 @@ func TestS5Cov_TaskReminderFull(t *testing.T) {
 func TestS5Cov_FormatCurrentTaskSteering(t *testing.T) {
 	t.Parallel()
 	out := formatCurrentTaskSteering(taskpkg.Task{ID: 7, Description: "title", Prompt: "  instructions  "}, true)
-	for _, want := range []string{`id="7"`, "<TITLE>title</TITLE>", "<INSTRUCTIONS>", "instructions", "mark task 7 as done"} {
+	for _, want := range []string{`id="7"`, "<TITLE>title</TITLE>", "<INSTRUCTIONS>", "instructions"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("steering missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "task_list") {
+		t.Errorf("steering should not instruct a task_list update:\n%s", out)
 	}
 }

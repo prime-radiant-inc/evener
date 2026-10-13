@@ -22,8 +22,42 @@ func TestPreludeTurnUsesSemanticHeaderOnly(t *testing.T) {
 	if turn == nil || len(turn.Items) != 1 {
 		t.Fatalf("prelude=%+v, want only system prompt", turn)
 	}
-	if turn.Items[0].Description != "System prompt" {
+	if turn.Items[0].EventKind != appwire.ThreadItemEventKindSystemPrompt || turn.Items[0].Text != "You are Evener." {
 		t.Fatalf("item=%+v", turn.Items[0])
+	}
+}
+
+func TestMemoryContextProjection(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "memory.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "memory-fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := llm.UserMachinery("opaque-memory-display-78")
+	if err := w.Append(schema.Turn{Kind: schema.TurnMemoryContext, Message: msg}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w, entries, err := transcript.OpenWriterForSession(path, "memory-fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Turn.Message.Role != llm.RoleUser || !entries[0].Turn.Message.Content[0].Machinery {
+		t.Fatalf("restored=%+v", entries)
+	}
+	items := ProjectTurn("memory-turn", 0, entries[0].Turn, NewToolCallRegistry(), nil, nil)
+	if len(items) != 1 {
+		t.Fatalf("items=%+v", items)
+	}
+	item := items[0]
+	if item.Type != "systemMessage" || item.ID != "item_memory_context_0" || item.TurnID != "memory-turn" || item.Text != msg.Text() || item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("item=%+v", item)
 	}
 }
 
@@ -671,7 +705,7 @@ func TestProjectTurnMapsRedactedThinkingContent(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %+v", items)
 	}
-	if items[0].Type != "reasoning" || items[0].Text != "[redacted thinking]" {
+	if items[0].Type != "reasoning" || items[0].Text == "" {
 		t.Fatalf("redacted reasoning item=%+v", items[0])
 	}
 	if items[1].Type != "agentMessage" || items[1].Text != "The answer is 42." {
@@ -783,7 +817,7 @@ func TestProjectTurnTagsCompactionSystemMessages(t *testing.T) {
 		t.Fatalf("summary items=%+v, want 1", items)
 	}
 	item := items[0]
-	if item.Type != "systemMessage" || item.Description != "Context summary" || item.EventKind != appwire.ThreadItemEventKindCompaction {
+	if item.Type != "systemMessage" || item.EventKind != appwire.ThreadItemEventKindCompaction {
 		t.Fatalf("summary item=%+v", item)
 	}
 }

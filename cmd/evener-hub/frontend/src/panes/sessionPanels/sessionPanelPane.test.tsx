@@ -127,7 +127,7 @@ function readResponse(ref: string): ThreadReadResponse {
 test("renders a scaffold loading state before the session model hydrates", () => {
   render(<SessionPanelPane params={{ ref: "ref_a" }} paneId="panel-1" focused kind="tasks" />);
 
-  expect(screen.getByText("Loading session panel…")).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Loading session panel" })).toBeTruthy();
 });
 
 test("keeps the scaffold heading consistent with the registered title after rename", async () => {

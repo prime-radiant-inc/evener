@@ -13,6 +13,10 @@ import (
 
 var ErrNotificationOverflow = errors.New("appwire notification buffer overflow")
 
+// errClientClosed is the close cause reported when the client was closed
+// without a more specific one.
+var errClientClosed = errors.New("appwire client closed")
+
 // NotificationBufferCap sizes the Notifications() channel. Overflow is a
 // deliberate loud failure (the connection is torn down rather than silently
 // dropping or buffering without bound), so the capacity must hold any single
@@ -60,10 +64,18 @@ type pendingRequest struct {
 // pendingResult is one delivery to a waiting request: the response or error
 // frame to hand back plus whether the client synthesized it because its read
 // loop is gone. The flag is what lets request wrap a synthesized failure as a
-// TransportFailureError without putting local provenance on the wire type.
+// TransportFailureError without putting local provenance on the wire type;
+// cause is the failure that ended the read loop, which the wrapper keeps.
 type pendingResult struct {
 	msg   Message
 	local bool
+	cause error
+}
+
+// localFailure is the error frame the client synthesizes for request id when
+// its read loop ended with err.
+func localFailure(id ID, err error) pendingResult {
+	return pendingResult{msg: ErrorMessage(id, InternalError(err.Error())), local: true, cause: err}
 }
 
 func NewClient(transport Transport) *Client {
@@ -374,10 +386,7 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 		case res = <-ch:
 		default:
 			c.removePending(id)
-			res = pendingResult{
-				msg:   ErrorMessage(id, InternalError(c.closedError().Error())),
-				local: true,
-			}
+			res = localFailure(id, c.closedError())
 		}
 	}
 
@@ -389,7 +398,7 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 			// The client made this failure; the peer never answered. Wrap it so
 			// adapters can tell a lost response from an InternalError that
 			// arrived intact (see TransportFailureError).
-			return TransportFailureError{WireError: wire}
+			return TransportFailureError{WireError: wire, Cause: res.cause}
 		}
 		return wire
 	}
@@ -444,7 +453,7 @@ func (c *Client) closedError() error {
 	if c.closeErr != nil {
 		return c.closeErr
 	}
-	return errors.New("appwire client closed")
+	return errClientClosed
 }
 
 func (c *Client) removePending(id ID) {
@@ -458,10 +467,7 @@ func (c *Client) failPending(err error) {
 	defer c.pendingMu.Unlock()
 	for id, pending := range c.pending {
 		delete(c.pending, id)
-		pending.ch <- pendingResult{
-			msg:   ErrorMessage(pending.id, InternalError(err.Error())),
-			local: true,
-		}
+		pending.ch <- localFailure(pending.id, err)
 	}
 }
 
@@ -922,6 +928,12 @@ func (c *Client) PluginList(ctx context.Context) (PluginListResponse, error) {
 	return out, err
 }
 
+func (c *Client) PluginCheckUpdates(ctx context.Context) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodEvenerPluginCheckUpdates, EmptyParams{}, &out)
+	return out, err
+}
+
 func (c *Client) PluginPreview(ctx context.Context, params PluginPreviewParams) (PluginPreviewResponse, error) {
 	var out PluginPreviewResponse
 	err := c.request(ctx, MethodEvenerPluginPreview, params, &out)
@@ -967,5 +979,26 @@ func (c *Client) PluginDisable(ctx context.Context, params PluginRefParams) (Plu
 func (c *Client) PluginSetAutoUpgrade(ctx context.Context, params PluginSetAutoUpgradeParams) (PluginListResponse, error) {
 	var out PluginListResponse
 	err := c.request(ctx, MethodEvenerPluginSetAutoUpgrade, params, &out)
+	return out, err
+}
+
+func (c *Client) DevicePairingCreate(ctx context.Context, params DevicePairingCreateParams) (DevicePairingInvitation, error) {
+	var out DevicePairingInvitation
+	err := c.request(ctx, MethodEvenerDevicePairingCreate, params, &out)
+	return out, err
+}
+func (c *Client) DevicePairingRead(ctx context.Context, params DevicePairingParams) (DevicePairingStatus, error) {
+	var out DevicePairingStatus
+	err := c.request(ctx, MethodEvenerDevicePairingRead, params, &out)
+	return out, err
+}
+func (c *Client) DevicePairingApprove(ctx context.Context, params DevicePairingApproveParams) (DevicePairingStatus, error) {
+	var out DevicePairingStatus
+	err := c.request(ctx, MethodEvenerDevicePairingApprove, params, &out)
+	return out, err
+}
+func (c *Client) DevicePairingCancel(ctx context.Context, params DevicePairingParams) (DevicePairingStatus, error) {
+	var out DevicePairingStatus
+	err := c.request(ctx, MethodEvenerDevicePairingCancel, params, &out)
 	return out, err
 }

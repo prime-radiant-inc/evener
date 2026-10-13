@@ -37,11 +37,18 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 		CallID: entry.Communicate.CallID,
 		Status: appwire.TurnStatusCompleted,
 	}
-	if !entry.Timestamp.IsZero() {
-		ms := entry.Timestamp.UnixMilli()
-		item.StartedAt = &ms
-	}
+	item.StartedAt = entryStartedAt(entry)
 	return item, true
+}
+
+// entryStartedAt is an entry's recorded instant as a startedAt, or nil when
+// the entry has no timestamp.
+func entryStartedAt(entry schema.Turn) *int64 {
+	if entry.Timestamp.IsZero() {
+		return nil
+	}
+	ms := entry.Timestamp.UnixMilli()
+	return &ms
 }
 
 // NoticeItem projects a NOTICE entry as the systemMessage the live projector
@@ -61,6 +68,7 @@ func NoticeItem(turnID string, entryIndex int, entry schema.Turn) (appwire.Threa
 		return appwire.ThreadItem{}, false
 	}
 	item.TranscriptEntryIndex = entryIndex
+	item.StartedAt = entryStartedAt(entry)
 	return item, true
 }
 
@@ -74,6 +82,8 @@ func noticeAnnouncement(notice schema.NoticeInfo) (NoticeAnnouncement, bool) {
 		return TurnLimitAnnouncement(*notice.TurnLimit), true
 	case notice.Kind == schema.NoticeSkillActivated && notice.SkillActivated != nil:
 		return SkillActivatedAnnouncement(*notice.SkillActivated), true
+	case notice.Kind == schema.NoticeApprovalDecision && notice.ApprovalDecision != nil:
+		return ApprovalDecisionAnnouncement(*notice.ApprovalDecision), true
 	default:
 		return NoticeAnnouncement{}, false
 	}
@@ -201,4 +211,29 @@ func TurnLimitAnnouncement(notice schema.TurnLimitNotice) NoticeAnnouncement {
 // that no use_skill tool item absorbed.
 func SkillActivatedAnnouncement(notice schema.SkillActivatedNotice) NoticeAnnouncement {
 	return NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindSkillActivated, Description: "Skill activated", Text: "Activated skill: " + notice.Name}
+}
+
+// ApprovalDecisionAnnouncement is the history line a human's Allow or Deny on
+// a sandbox escalation leaves (S16). Its Raw carries the decision under
+// "approvalDecision", so a client draws the approval history row without
+// parsing the text.
+func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAnnouncement {
+	text := fmt.Sprintf("Denied %s access to %s", notice.Tool, notice.DeniedPath)
+	if notice.Approved {
+		text = fmt.Sprintf("Allowed %s to access %s", notice.Tool, notice.DeniedPath)
+	}
+	// The conversion keeps the wire's field list tied to
+	// ApprovalDecisionNotice's: Go ignores tags when converting between
+	// struct types with identical fields.
+	// Marshal cannot fail: every field is a string or a bool.
+	raw, _ := json.Marshal(map[string]any{
+		"approvalDecision": struct {
+			EscalationID string `json:"escalationId"` //nolint:tagliatelle // AppWire Raw payload the clients read (camelCase wire).
+			Approved     bool   `json:"approved"`
+			Tool         string `json:"tool"`
+			Kind         string `json:"kind"`
+			DeniedPath   string `json:"deniedPath"` //nolint:tagliatelle // AppWire Raw payload the clients read (camelCase wire).
+		}(notice),
+	})
+	return NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindApprovalDecision, Description: "Approval", Text: text, Raw: raw}
 }

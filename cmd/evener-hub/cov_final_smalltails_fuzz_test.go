@@ -2,13 +2,9 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -63,22 +59,11 @@ func FuzzFinalSmalltails(f *testing.F) {
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
-		status := daemonStatus{Model: "status-model", State: "active", Turns: 4, WorkingDir: "/status/work", ContextPressure: .5,
-			ContextUsed: 5, ContextWindow: 10, ContextRemaining: 5, WorkMillis: 2222,
-			Usage: &appwire.EvenerUsage{InputTokens: 4, OutputTokens: 2, TotalTokens: 6}}
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(status) }))
-		defer ts.Close()
 		roster := hubcore.NewRosterWithEntries(
-			hubcore.LiveEntry{SessionID: "live", Status: "idle", Entry: rendezvous.Entry{SessionID: "live", Address: strings.TrimPrefix(ts.URL, "http://"), PID: 42, Model: "roster-model"}},
-			hubcore.LiveEntry{SessionID: "status-only", Status: "idle", Entry: rendezvous.Entry{SessionID: "status-only", Address: strings.TrimPrefix(ts.URL, "http://"), PID: 43}},
+			hubcore.LiveEntry{SessionID: "live", Status: "idle", Entry: rendezvous.Entry{SessionID: "live", PID: 42, Model: "roster-model"}},
+			hubcore.LiveEntry{SessionID: "status-only", Status: "idle", Entry: rendezvous.Entry{SessionID: "status-only", PID: 43}},
 		)
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, StateDir: state, PokeAttention: func() {}})
-
-		_ = web.workspaceData("live")
-		_ = web.workspaceData("status-only")
-		status.Model, status.WorkingDir, status.State, status.Usage, status.WorkMillis, status.ContextWindow = "", "", "", nil, 0, 0
-		_ = web.workspaceData("live")
-		_ = workspaceDataFromAppThread(appwire.Thread{Status: appwire.ThreadStatus{}, Evener: appwire.EvenerThread{Goal: &appwire.GoalState{Status: "active", Iterations: 2}}})
 
 		bad := filepath.Join(root, "bad-state")
 		if err := os.WriteFile(bad, []byte("x"), 0o600); err != nil {

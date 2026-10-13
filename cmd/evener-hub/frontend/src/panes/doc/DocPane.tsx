@@ -12,18 +12,25 @@ import {
   sourcePositions,
 } from "@evener/appwire-client";
 import {
+  bindFilePath,
   DOC_FILE_MAX_BYTES,
   type DocFileContent,
   DocFileError,
   type DocFileErrorKind,
-  docImageURL,
+  docImageReadURL,
+  type FileReference,
   readDocFile,
+  rebindFileReference,
 } from "@evener/appwire-client/docContent";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
+import { usePaneVisible } from "../../shell/paneVisibility";
+import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
+import { connectionStore } from "../../stores/connection";
 import type { DocumentAnnotationPorts } from "../../stores/documentAnnotationRuntime";
 import { createSecureUUID } from "../../stores/secureUUID";
-import { Chip, Dialog, EmptyState, PaneScaffold, Skeleton } from "../../widgets";
+import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { Button, Chip, CodeBlock, Dialog, EmptyState, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { DocumentMarkdown } from "../../widgets/markdown/DocumentMarkdown";
 import type { BoundDocumentMap } from "../../widgets/markdown/documentSourceMap";
@@ -43,6 +50,7 @@ import {
 } from "./documentReadState";
 import { observeFinishedDocumentSelections } from "./documentSelection";
 import type { DocOpeningOrigin, DocParams } from "./openDoc";
+import { useDocumentRead } from "./useDocumentRead";
 
 const CLASS = {
   markdown: requireClass(styles.markdown, "docpane.module.css", "markdown"),
@@ -55,11 +63,6 @@ const CLASS = {
   status: requireClass(styles.status, "docpane.module.css", "status"),
 };
 
-// Error kind -> empty-state copy. The raw endpoint shares the HTML variant's
-// guard/status contract exactly (cmd/evener-hub/doc_serve.go): 403 for a path
-// that escapes the session cwd, 404 for a missing file or an unknown session,
-// 501 for a session whose host predates remote document reads
-// (cmd/evener-hub/doc_proxy.go), and a generic error for anything else.
 const ERROR_COPY: Record<DocFileErrorKind, { title: string; hint: string }> = {
   forbidden: { title: "Access denied", hint: "This path is outside the session's working directory." },
   "not-found": { title: "File not available", hint: "This file was not found in the session's working directory." },
@@ -81,39 +84,17 @@ function errorKind(err: unknown): DocFileErrorKind {
 
 // The read-only renderer, kept unchanged for the annotation-less path (an older
 // injected-port absence or a document whose annotation port is unavailable).
-function DocFileView({ session, path }: { session: string; path: string }) {
-  const [state, setState] = useState<FileState>({ status: "loading" });
+// The annotation-less file view: presentational over the content the
+// workspace's reference-bound read hook supplies, rendering markdown through
+// the same provenance-aware DocumentMarkdown the annotated reader uses,
+// with a static identity and no map consumer.
+function DocFileView({ content, path }: { content: DocFileContent; path: string }) {
   const displayId = useIdFallback();
-
-  useEffect(() => {
-    let cancelled = false;
-    setState({ status: "loading" });
-    readDocFile(session, path, browserDocPort).then(
-      (content) => {
-        if (!cancelled) setState({ status: "ok", content });
-      },
-      (err: unknown) => {
-        if (!cancelled) setState({ status: "error", kind: errorKind(err) });
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [session, path]);
-
-  if (state.status === "loading") return <Skeleton />;
-  if (state.status === "error") {
-    const copy = ERROR_COPY[state.kind];
-    return <EmptyState title={copy.title} hint={copy.hint} />;
-  }
-
-  const { content } = state;
   if (content.binary) {
     return (
       <EmptyState title="Binary file not shown" hint={`${filenameOf(path)} (${formatDocBytes(content.sizeBytes)})`} />
     );
   }
-
   return (
     <>
       {content.truncated && <TruncationNotice content={content} />}
@@ -126,7 +107,7 @@ function DocFileView({ session, path }: { session: string; path: string }) {
           />
         </div>
       ) : (
-        <pre className={CLASS.pre}>{content.text}</pre>
+        <CodeBlock text={content.text} fold={false} />
       )}
     </>
   );
@@ -613,28 +594,16 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   );
 }
 
-function DocImageView({ session, path }: { session: string; path: string }) {
-  const [failed, setFailed] = useState(false);
+function DocImageView({ src, path }: { src: string; path: string }) {
   const [zoomed, setZoomed] = useState(false);
   const name = filenameOf(path);
-  const src = docImageURL(browserDocPort.origin, session, path);
-
-  if (failed) {
-    return (
-      <EmptyState
-        title="Image not available"
-        hint="This image could not be loaded from the session's working directory."
-      />
-    );
-  }
-
   return (
     <>
       <button type="button" aria-label="Zoom image" className={CLASS.imageButton} onClick={() => setZoomed(true)}>
-        <img data-testid="doc-image" className={CLASS.image} src={src} alt={name} onError={() => setFailed(true)} />
+        <img data-testid="doc-image" className={CLASS.image} src={src} alt={name} />
       </button>
       {zoomed && (
-        <Dialog open onClose={() => setZoomed(false)} title={name}>
+        <Dialog open onClose={() => setZoomed(false)} title={name} size="large">
           <img data-testid="doc-lightbox-img" className={CLASS.lightboxImg} src={src} alt={name} />
         </Dialog>
       )}
@@ -642,19 +611,64 @@ function DocImageView({ session, path }: { session: string; path: string }) {
   );
 }
 
-// The native doc-viewer pane: an image (raw bytes via /doc/image, in a
-// click-to-zoom lightbox) or a file (raw bytes via /doc/file?format=raw,
-// rendered as sanitized markdown, escaped text, or a binary notice). It
-// replaces the legacy iframe-to-HTML-page boundary the rewrite removes.
-// Opened beside a specific session (a file/image tool card's "Open beside"
-// button, the ONLY producer - see fileOpenBeside.tsx), so params.session
-// already IS the parent session ref.
+function BoundDocument({
+  params,
+  paneId,
+  focused,
+  reference,
+  reopen,
+  visible,
+}: PaneProps<DocParams> & { reference: FileReference; reopen: number; visible: boolean }) {
+  const read = useDocumentRead(params.session, reference, reopen, visible);
+  const hasContent = read.content !== undefined || read.imageGeneration !== undefined;
+  let body: ReactNode;
+  if (params.kind === "image" && read.imageGeneration) {
+    body = (
+      <DocImageView
+        key={JSON.stringify([params.session, reference])}
+        path={reference.path}
+        src={docImageReadURL(browserDocPort.origin, params.session, reference.readTarget, read.imageGeneration)}
+      />
+    );
+  } else if (read.content) body = <DocFileView content={read.content} path={reference.path} />;
+  else if (read.errorKind) {
+    const copy = ERROR_COPY[read.errorKind];
+    body =
+      params.kind === "image" ? (
+        <EmptyState title="Image not available" hint={read.notice} />
+      ) : (
+        <EmptyState title={copy.title} hint={copy.hint} />
+      );
+  } else body = <Skeleton />;
+  return (
+    <PaneScaffold
+      title={filenameOf(reference.path)}
+      paneId={paneId}
+      focused={focused}
+      actions={
+        <Button size="sm" variant="quiet" onClick={read.reload}>
+          Reload
+        </Button>
+      }
+    >
+      {hasContent && read.notice && (
+        <div className={CLASS.notice} role="status">
+          <span className={CLASS.noticeText}>{read.notice}</span>
+        </div>
+      )}
+      {body}
+    </PaneScaffold>
+  );
+}
+
 export default function DocPane({
   params,
   paneId,
   focused,
   annotations,
 }: PaneProps<DocParams> & { annotations?: DocumentAnnotationPorts }) {
+  // This wrapper owns no hooks, so the annotated-reader return below cannot
+  // reorder the workspace component's hooks.
   let ports: DocumentAnnotationPorts | undefined = annotations;
   if (!ports) {
     try {
@@ -664,9 +678,9 @@ export default function DocPane({
     }
   }
 
-  // The annotated reader owns its own PaneScaffold so its comment controls can
-  // occupy the scaffold footer; the image and annotation-less readers keep the
-  // plain scaffold below.
+  // The annotated reader owns its own PaneScaffold and read loop: its
+  // accepted-read tickets precede its raw fetches, so it does not ride the
+  // workspace's reference/reopen machinery.
   if (params.kind !== "image" && ports) {
     return (
       <DocReader
@@ -679,14 +693,61 @@ export default function DocPane({
       />
     );
   }
+  return <WorkspaceDocument params={params} paneId={paneId} focused={focused} />;
+}
 
+// The reference-bound doc pane: the workspace's retained file reference, reopen
+// generation and visibility drive one shared read hook for images and
+// annotation-less files.
+function WorkspaceDocument({ params, paneId, focused }: PaneProps<DocParams>) {
+  const visible = usePaneVisible();
+  const panes = useWorkspaceStore((state) => state.panes);
+  const pane = panes.find((candidate) => candidate.id === paneId);
+  const retained = pane && documentPaneState(pane);
+  const cwd = useThreadsStore((state) => state.threads.get(params.session)?.cwd);
+
+  useEffect(() => {
+    let started = false;
+    const tryStart = () => {
+      if (started || connectionStore.getState().state !== "ready") return;
+      started = true;
+      threadsStore
+        .getState()
+        .ensureThread(params.session)
+        .catch(() => {});
+    };
+    tryStart();
+    const unsubscribe = connectionStore.subscribe(tryStart);
+    return () => {
+      unsubscribe();
+      if (started) threadsStore.getState().releaseThread(params.session);
+    };
+  }, [params.session]);
+
+  let reference: FileReference | undefined;
+  if (retained) {
+    if (cwd && cwd !== retained.reference.cwd) reference = rebindFileReference(retained.reference, cwd);
+    else reference = retained.reference;
+  } else if (cwd) reference = bindFilePath(params.path, cwd);
+  useLayoutEffect(() => {
+    if (!pane || !reference || retained?.reference === reference) return;
+    recordDocumentPaneState(pane, { reference, origin: retained?.origin, reopen: retained?.reopen ?? 0 });
+  }, [pane, reference, retained]);
+
+  if (!reference)
+    return (
+      <PaneScaffold title={filenameOf(params.path)} paneId={paneId} focused={focused}>
+        <Skeleton />
+      </PaneScaffold>
+    );
   return (
-    <PaneScaffold title={filenameOf(params.path)} paneId={paneId} focused={focused} scaffoldMarker="doc-reader-scroll">
-      {params.kind === "image" ? (
-        <DocImageView session={params.session} path={params.path} />
-      ) : (
-        <DocFileView session={params.session} path={params.path} />
-      )}
-    </PaneScaffold>
+    <BoundDocument
+      params={params}
+      paneId={paneId}
+      focused={focused}
+      reference={reference}
+      reopen={retained?.reopen ?? 0}
+      visible={visible}
+    />
   );
 }

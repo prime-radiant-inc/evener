@@ -4,16 +4,14 @@
   height: 100%;
   min-height: 0;
   min-width: 0;
+  /* The pane body hosting the spines and columns never scrolls as a unit.
+   * clip makes it a true non-scroller — a hidden box can still be shifted
+   * programmatically (focus chains, scrollIntoView) and sticky-shifted back
+   * asynchronously — and hidden stays as the fallback for engines that
+   * predate clip. */
   overflow: hidden;
-}
-
-.path {
-  display: flex;
-  flex: 0 0 auto;
-  gap: var(--space-2);
-  overflow-x: auto;
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--edge);
+  /* biome-ignore lint/suspicious/noDuplicateProperties: clip supersedes hidden as a true non-scroller where supported; hidden is the fallback for engines that predate it */
+  overflow: clip;
 }
 
 .hint {
@@ -22,6 +20,11 @@
   padding: var(--space-2) var(--space-3);
   color: var(--ink-low);
   font-size: var(--font-size-caption);
+}
+
+.returnRow {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-3);
 }
 
 .track {
@@ -65,6 +68,12 @@
   border-bottom: 1px solid var(--edge);
 }
 
+.columnFooterBar {
+  composes: header;
+  border-bottom: 0;
+  border-top: 1px solid var(--edge);
+}
+
 .title {
   overflow: hidden;
   margin: 0;
@@ -91,13 +100,32 @@
   color: var(--accent-ink);
 }
 
+.stateIndicator {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  height: 8px;
+}
+
+.stateLabel {
+  composes: visuallyHidden from "../../widgets/visuallyhidden/visuallyhidden.module.css";
+  margin: 0;
+  clip: auto;
+  clip-path: inset(50%);
+}
+
 .content {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  overflow: hidden;
+  /* Each column's transcript viewport scrolls internally; the column's
+   * header above and activity controls below stay fixed within the column. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .spine {
@@ -145,7 +173,7 @@
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--edge);
+  border-top: 1px solid var(--edge);
 }
 
 .activityChip {
@@ -191,11 +219,6 @@
   display: none;
 }
 
-.spine .state {
-  width: 100%;
-  text-align: center;
-}
-
 .peek {
   width: min(400px, calc(100vw - 32px));
 }
@@ -224,5 +247,13 @@
 
   .column .activityLabel {
     display: none;
+  }
+
+  /* The cascade pane renders flush, and on the phone its column's activity
+   * controls are the pane's last tappable row: they own the home-indicator
+   * clearance the composer dock owns elsewhere (the inset yields when the
+   * on-screen keyboard covers the home-indicator band). */
+  .column .activityControls {
+    padding-bottom: calc(var(--space-2) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
   }
 }

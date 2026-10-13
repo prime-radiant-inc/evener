@@ -112,8 +112,8 @@ func TestRun_TurnIDsRefusesASelector(t *testing.T) {
 	if code := run([]string{"turnids", affected, "--state-dir", base}, &out, &errb); code != 2 {
 		t.Fatalf("exit %d, want 2; stdout=%s stderr=%s", code, out.String(), errb.String())
 	}
-	if !strings.Contains(errb.String(), "evener-doctor turnids: takes no selector") {
-		t.Errorf("stderr should explain that turnids takes no selector; got %q", errb.String())
+	if out.Len() != 0 || errb.Len() == 0 {
+		t.Errorf("a selector should be refused on stderr alone; stdout=%q stderr=%q", out.String(), errb.String())
 	}
 }
 

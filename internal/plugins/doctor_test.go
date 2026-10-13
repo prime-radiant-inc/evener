@@ -26,9 +26,22 @@ func findFinding(t *testing.T, findings []DoctorFinding, substr string) DoctorFi
 	return DoctorFinding{}
 }
 
-func hasFinding(findings []DoctorFinding, substr string) bool {
+// findCheck returns the first finding the named check produced, or fails the
+// test.
+func findCheck(t *testing.T, findings []DoctorFinding, check string) DoctorFinding {
+	t.Helper()
 	for _, f := range findings {
-		if strings.Contains(f.Message, substr) {
+		if f.Check == check {
+			return f
+		}
+	}
+	t.Fatalf("no %s finding; findings=%+v", check, findings)
+	return DoctorFinding{}
+}
+
+func hasCheck(findings []DoctorFinding, check string) bool {
+	for _, f := range findings {
+		if f.Check == check {
 			return true
 		}
 	}
@@ -77,7 +90,7 @@ func TestDoctor_OrphanEntryNotADirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, "not a directory")
+	f := findCheck(t, findings, checkInstallPathNotDir)
 	if f.Level != LevelFail {
 		t.Errorf("level = %s, want %s", f.Level, LevelFail)
 	}
@@ -119,7 +132,7 @@ func TestDoctor_OrphanCacheDir_NoneWhenReferenced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if hasFinding(findings, "orphaned cache directory") {
+	if hasCheck(findings, checkOrphanCacheDir) {
 		t.Errorf("referenced cache dir flagged as orphan: %+v", findings)
 	}
 }
@@ -170,7 +183,7 @@ func TestDoctor_OrphanCacheDir_ReadsTheRegistryAMaterializeLeftBehind(t *testing
 	if got.err != nil {
 		t.Fatalf("Doctor: %v", got.err)
 	}
-	if hasFinding(got.findings, "orphaned cache directory") {
+	if hasCheck(got.findings, checkOrphanCacheDir) {
 		t.Errorf("a materialize in flight was reported as an orphan: %+v", got.findings)
 	}
 }
@@ -197,10 +210,10 @@ func TestDoctor_OrphanCacheDir_ReportsAHeldStoreLockInsteadOfGuessing(t *testing
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if hasFinding(findings, "orphaned cache directory") {
+	if hasCheck(findings, checkOrphanCacheDir) {
 		t.Errorf("orphan claimed while a writer holds the store lock: %+v", findings)
 	}
-	f := findFinding(t, findings, "unreferenced cache directories")
+	f := findCheck(t, findings, checkOrphanScanSkipped)
 	if f.Level != LevelWarn {
 		t.Errorf("skipped check level = %s, want %s", f.Level, LevelWarn)
 	}
@@ -275,7 +288,7 @@ func TestDoctor_VersionMismatchWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, "does not match")
+	f := findCheck(t, findings, checkVersionMismatch)
 	if f.Level != LevelWarn {
 		t.Errorf("version mismatch level = %s, want %s", f.Level, LevelWarn)
 	}
@@ -299,16 +312,16 @@ func TestDoctor_VersionMatch_NoWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if hasFinding(findings, "does not match") {
+	if hasCheck(findings, checkVersionMismatch) {
 		t.Errorf("matching versions should not warn: %+v", findings)
 	}
 }
 
 // TestDoctor_VersionMismatch_DirectorySource_HonestRemediation reproduces the
-// Important finding where a directory (or Rel) source's version-mismatch WARN
-// pointed at `evener plugin upgrade`, which Manager.Upgrade always no-ops for
-// such a source (sourceCannotUpgrade): following the remediation could never
-// clear the warning. The remediation must instead be honest about that.
+// Important finding where an in-place install's (usedInPlace) version-mismatch
+// WARN pointed at `evener plugin upgrade`, which Manager.Upgrade always no-ops
+// for it: following the remediation could never clear the warning. The
+// remediation must instead be honest about that.
 func TestDoctor_VersionMismatch_DirectorySource_HonestRemediation(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "widget")
@@ -324,12 +337,12 @@ func TestDoctor_VersionMismatch_DirectorySource_HonestRemediation(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, "does not match")
+	f := findCheck(t, findings, checkVersionMismatch)
 	if strings.Contains(f.Remediation, "evener plugin upgrade") {
 		t.Errorf("directory-source version mismatch must not point at the no-op upgrade command: %q", f.Remediation)
 	}
-	if !strings.Contains(f.Remediation, "directory") {
-		t.Errorf("directory-source version mismatch remediation should explain the directory-source situation: %q", f.Remediation)
+	if !strings.Contains(f.Remediation, "evener plugin remove widget@acme") || !strings.Contains(f.Remediation, "evener plugin install widget@acme") {
+		t.Errorf("directory-source version mismatch remediation should point at remove and reinstall: %q", f.Remediation)
 	}
 }
 
@@ -355,7 +368,7 @@ func TestDoctor_VersionMismatch_GitSource_PointsAtUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, "does not match")
+	f := findCheck(t, findings, checkVersionMismatch)
 	if !strings.Contains(f.Remediation, "evener plugin upgrade widget@acme") {
 		t.Errorf("git-backed version mismatch should still point at upgrade: %q", f.Remediation)
 	}
@@ -378,7 +391,7 @@ func TestDoctor_BrokenComponentFailsValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, "widget@acme")
+	f := findCheck(t, findings, checkComponentInvalid)
 	if f.Level != LevelFail || f.Category != "component" {
 		t.Errorf("broken component finding = %+v, want FAIL/component", f)
 	}
@@ -401,7 +414,7 @@ func TestDoctor_DisabledBrokenPluginSkipsComponentCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if hasFinding(findings, "widget@acme") {
+	if hasCheck(findings, checkComponentInvalid) || hasCheck(findings, checkComponentLoads) {
 		t.Errorf("disabled broken plugin should not surface a component finding: %+v", findings)
 	}
 }
@@ -424,13 +437,15 @@ func TestDoctor_AutoUpgradeOnDirectorySourceWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, "auto-upgrade is on")
+	f := findCheck(t, findings, checkAutoUpgradeInPlace)
 	if f.Level != LevelWarn || f.Category != "autoupgrade" {
 		t.Errorf("autoupgrade sanity finding = %+v, want WARN/autoupgrade", f)
 	}
 }
 
-func TestDoctor_AutoUpgradeOnRelSourceWarns(t *testing.T) {
+// A relative source upgrades from its marketplace clone, so auto-upgrade on
+// it is no mistake.
+func TestDoctor_AutoUpgradeOnRelSource_NoWarning(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "widget")
 	writePlugin(t, dir, "widget", nil)
@@ -448,8 +463,8 @@ func TestDoctor_AutoUpgradeOnRelSourceWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if !hasFinding(findings, "auto-upgrade is on") {
-		t.Errorf("expected autoupgrade sanity warning for a Rel source; findings=%+v", findings)
+	if hasCheck(findings, checkAutoUpgradeInPlace) {
+		t.Errorf("autoupgrade sanity warning for a Rel source, which can upgrade; findings=%+v", findings)
 	}
 }
 
@@ -471,7 +486,7 @@ func TestDoctor_AutoUpgradeOnGitSource_NoWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if hasFinding(findings, "auto-upgrade is on") {
+	if hasCheck(findings, checkAutoUpgradeInPlace) {
 		t.Errorf("git-backed auto-upgrade should not warn: %+v", findings)
 	}
 }
@@ -506,7 +521,7 @@ func TestDoctor_MarketplaceBadJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, "marketplace.json invalid")
+	f := findCheck(t, findings, checkMarketplaceCatalogInvalid)
 	if f.Level != LevelFail {
 		t.Errorf("bad marketplace.json level = %s, want %s", f.Level, LevelFail)
 	}
@@ -527,8 +542,8 @@ func TestDoctor_MarketplaceSeededPointerIsOK(t *testing.T) {
 	if f.Level != LevelOK {
 		t.Errorf("seeded pointer level = %s, want %s; finding=%+v", f.Level, LevelOK, f)
 	}
-	if !strings.Contains(f.Message, "not yet fetched") {
-		t.Errorf("seeded pointer message should say not yet fetched: %q", f.Message)
+	if f.Check != checkMarketplaceUnfetched {
+		t.Errorf("seeded pointer finding = %+v, want it reported as not yet fetched", f)
 	}
 }
 
@@ -554,7 +569,7 @@ func TestDoctor_MarketplaceNotAGitRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, "not a valid git repository")
+	f := findCheck(t, findings, checkMarketplaceNotGitRepo)
 	if f.Level != LevelFail {
 		t.Errorf("non-repo clone level = %s, want %s", f.Level, LevelFail)
 	}
@@ -589,8 +604,8 @@ func TestDoctor_MarketplaceStaleWarns(t *testing.T) {
 	if f.Level != LevelWarn {
 		t.Errorf("stale marketplace level = %s, want %s; finding=%+v", f.Level, LevelWarn, f)
 	}
-	if !strings.Contains(f.Message, "last updated") {
-		t.Errorf("stale message should mention last updated: %q", f.Message)
+	if f.Check != checkMarketplaceStale {
+		t.Errorf("stale marketplace finding = %+v, want it reported as stale", f)
 	}
 }
 
@@ -640,8 +655,8 @@ func TestDoctor_MarketplaceUnderARefusedNameIsAPendingRename(t *testing.T) {
 	if f.Level != LevelWarn {
 		t.Errorf("level = %s, want %s; finding=%+v", f.Level, LevelWarn, f)
 	}
-	if !strings.Contains(f.Message, "no longer accepts") {
-		t.Errorf("message = %q, want it to say the name is no longer accepted", f.Message)
+	if f.Check != checkMarketplacePendingRename {
+		t.Errorf("finding = %+v, want the pending rename", f)
 	}
 	if !strings.Contains(f.Remediation, "evener plugin marketplace list") {
 		t.Errorf("remediation = %q, want it to point at a listing, which renames", f.Remediation)
@@ -672,16 +687,16 @@ func TestDoctor_EnvironmentWritable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, "is writable")
+	f := findCheck(t, findings, checkStoreRootWritable)
 	if f.Level != LevelOK {
 		t.Errorf("writable store level = %s, want %s", f.Level, LevelOK)
 	}
 
-	wantGitLevel := LevelWarn
+	wantGitLevel, wantGitCheck := LevelWarn, checkGitMissing
 	if gitAvailable() {
-		wantGitLevel = LevelOK
+		wantGitLevel, wantGitCheck = LevelOK, checkGitAvailable
 	}
-	g := findFinding(t, findings, "git")
+	g := findCheck(t, findings, wantGitCheck)
 	if g.Level != wantGitLevel {
 		t.Errorf("git environment finding level = %s, want %s", g.Level, wantGitLevel)
 	}
@@ -778,11 +793,11 @@ func TestDoctor_ReportsARootThatIsNotResolvedWithoutWriting(t *testing.T) {
 	tests := []struct {
 		name    string
 		root    string
-		wantErr string
+		wantErr error
 	}{
-		{"no root could be resolved", "", "no plugin store root is configured"},
-		{"the root is the working directory", ".", "not an absolute path"},
-		{"the root names a relative directory", "store", "not an absolute path"},
+		{"no root could be resolved", "", errStoreRootUnset},
+		{"the root is the working directory", ".", errStoreRootNotAbsolute},
+		{"the root names a relative directory", "store", errStoreRootNotAbsolute},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -816,15 +831,15 @@ func TestDoctor_ReportsARootThatIsNotResolvedWithoutWriting(t *testing.T) {
 				t.Fatalf("findings = %+v, want the git finding and the unusable-root finding", findings)
 			}
 			git := findings[0]
-			if git.Level != LevelWarn || git.Category != catEnvironment || !strings.Contains(git.Message, "git not found on PATH") {
+			if git.Level != LevelWarn || git.Category != catEnvironment || git.Check != checkGitMissing {
 				t.Errorf("first finding = %+v, want git availability reported despite the root", git)
 			}
 			got := findings[1]
-			if got.Level != LevelFail || got.Category != catEnvironment {
-				t.Errorf("finding = %+v, want a FAIL under %q", got, catEnvironment)
+			if got.Level != LevelFail || got.Category != catEnvironment || got.Check != checkStoreUnusable {
+				t.Errorf("finding = %+v, want an unusable-store FAIL under %q", got, catEnvironment)
 			}
-			if !strings.Contains(got.Message, test.wantErr) {
-				t.Errorf("finding message = %q, want it to contain %q", got.Message, test.wantErr)
+			if rootErr := m.storeRootError(); !errors.Is(rootErr, test.wantErr) {
+				t.Errorf("store root error = %v, want %v", rootErr, test.wantErr)
 			}
 			if got.Remediation == "" {
 				t.Error("finding has no remediation")
@@ -885,11 +900,67 @@ func TestDoctor_ASingleNameNoFilesystemCanHoldIsAPendingRename(t *testing.T) {
 	}
 	found := false
 	for _, f := range findings {
-		if f.Category == catMarketplace && strings.Contains(f.Message, "no longer accepts") {
+		if f.Check == checkMarketplacePendingRename {
 			found = true
 		}
 	}
 	if !found {
 		t.Fatalf("findings = %+v, want the pending rename for a name no filesystem can hold", findings)
+	}
+}
+
+// A relative plugin in a directory marketplace is used from the marketplace's
+// own folder, so like a directory source it can never upgrade: doctor's
+// version-mismatch advice must not point at upgrade, and auto-upgrade on it is
+// still warned about.
+func TestDoctor_RelSourceInADirectoryMarketplaceIsUsedInPlace(t *testing.T) {
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", "local"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
+		t.Fatalf("SetAutoUpgrade: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugins", "widget", ".claude-plugin", "plugin.json"), []byte(`{"name":"widget","version":"2.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if f := findCheck(t, findings, checkVersionMismatch); strings.Contains(f.Remediation, "evener plugin upgrade") {
+		t.Errorf("an in-place plugin's version mismatch points at the no-op upgrade: %q", f.Remediation)
+	}
+	if !hasCheck(findings, checkAutoUpgradeInPlace) {
+		t.Errorf("no auto-upgrade warning for an in-place plugin; findings=%+v", findings)
+	}
+}
+
+// Upgrade all and the auto-upgrade sweep take a relative plugin in a
+// directory marketplace without error: it is served from the marketplace's
+// own folder (stagePlugin returns before any fetch), so its upgrade is a
+// no-op and the sweep reports nothing.
+func TestUpgrade_RelSourceInADirectoryMarketplaceIsANoOp(t *testing.T) {
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", "local"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
+		t.Fatalf("SetAutoUpgrade: %v", err)
+	}
+	if _, err := m.UpdateAll(context.Background()); err != nil {
+		t.Fatalf("UpdateAll: %v", err)
+	}
+	if upgraded, err := m.UpdateAutoUpgrade(context.Background()); err != nil || len(upgraded) != 0 {
+		t.Fatalf("UpdateAutoUpgrade = %+v (%v), want a no-op", upgraded, err)
 	}
 }

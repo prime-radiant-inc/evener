@@ -72,8 +72,15 @@ test("distinct child reads and owner projections never derive current lifecycle 
   expect(items.find((item) => item.id === "failure")).toMatchObject({ status: "failed" });
   expect(items.find((item) => item.id === "active")).toMatchObject({ status: "inProgress" });
   const native = items.find((item) => item.id === "long")?.output ?? "";
-  expect(native.split("\n")).toHaveLength(120);
-  expect(native).toContain("120\tconst fixtureLine120");
+  expect(native.split("\n")).toHaveLength(160);
+  expect(native).toContain("160\tconst fixtureLine160");
+  // The long line must survive read_file's 8,000-char retention budget whole
+  // (bodies.tsx's TAIL_MAX_CHARS): a sample over that budget drops its head -
+  // most of the long line included - before the fold ever runs, and the
+  // documented "Show 60 earlier lines" count (160 - 100) no longer matches
+  // what renders (docs/web-ui/editorial-preview.md and
+  // scripts/editorial-preview-browser.mjs).
+  expect(native.length).toBeLessThanOrEqual(8000);
 });
 
 test("fixture answer is reflected once, clears attention, and publishes real notifications", async () => {

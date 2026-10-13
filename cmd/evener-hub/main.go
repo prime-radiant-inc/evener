@@ -626,6 +626,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
+	scratchReconcile := newScratchReconciler(hubcore.WebConfig{Past: past, Archive: archive, Roster: roster})
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -660,6 +661,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		CredentialsPath:           credentialsPath,
 		NoUserLayer:               noUserLayer,
 		PokeAttention:             pokeAttention,
+		ScratchReconcile:          scratchReconcile.Kick,
 		Inputs:                    inputs,
 		RemoteThreadCache:         remoteCache,
 		RemoteHosts:               hostEntries,
@@ -831,6 +833,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
 	// how many daemons are live.
 	roster.Refresh()
+	// With live daemons known, catch up on archived sessions' scratch: ones that
+	// aged into the archive and ones whose daemon exited while the hub was down.
+	startBackground(func() { scratchReconcile.Run(ctx) })
+	scratchReconcile.Kick()
 	// Start the resettable navigation scheduler only after the initial roster
 	// seed, so its first capture cannot publish a transient empty generation.
 	startBackground(func() { web.navigation.Start(ctx) })

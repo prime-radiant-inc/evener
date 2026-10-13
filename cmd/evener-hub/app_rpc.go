@@ -90,7 +90,14 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		// subscribers to re-read.
 		// The roster's resolved session id is passed along: a legacy entry names
 		// no session of its own, and its relay session is keyed by the resolved one.
-		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry, gone.SessionID) })
+		// An archived session's scratch outlives a daemon still running at
+		// archive time, so a daemon's exit kicks the reconcile that removes it.
+		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) {
+			local.AnnounceDaemonGone(gone.Entry, gone.SessionID)
+			if cfg.ScratchReconcile != nil {
+				cfg.ScratchReconcile()
+			}
+		})
 		registry.Add(local)
 	}
 	if len(cfg.RemoteHosts) > 0 {
@@ -980,7 +987,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
@@ -992,7 +999,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 // server directly, for a caller that never builds through newWebServer
 // (most tests, and any embedder calling this constructor's exported
 // wrappers directly).
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices, *hubAuthController) {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices, *hubAuthController, *devicePairings) {
 	// One fallback registry when cfg carries no live one, built once here so
 	// every host surface below — attach, management, and the admin proxy —
 	// validates against the same instance: a host added at runtime must be
@@ -1033,6 +1040,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		RequestAdmissionContext: func(ctx context.Context, message appwire.Message) context.Context {
 			return admitSessionRecovery(ctx, cfg, message)
 		},
+		ConcurrentRequest: forwardedHostRead,
 		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
@@ -1174,6 +1182,8 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerLaunchHandlers(server, launchController)
 	registerPluginHandlers(server, pluginsController)
 	registerMobilePairingHandler(server, cfg)
+	pairings := newDevicePairings(cfg)
+	registerDevicePairingHandlers(server, pairings)
 	registerNavigationReadHandler(server, navigation)
 	registerArchivedListHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
@@ -1255,7 +1265,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// push) instead of a nil store one of them dereferences.
 	credsStore, credsErr := authController.credentialStore()
 	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, credsStore, credsErr)
-	return server, hostAdmin, hostManage, notices, authController
+	return server, hostAdmin, hostManage, notices, authController, pairings
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
@@ -1283,13 +1293,13 @@ func registerThreadHandlers(
 	// the controller's host-qualified image routes proxy through it to the hub
 	// that owns the session (multi-host component 05). It resolves only against
 	// this hub's own local session state.
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(_ context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
-		return sessionImageFromHub(cfg, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(ctx context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
+		return sessionImageFromHub(ctx, cfg, sources, params)
 	})
 	// evener/session/document is the AppWire counterpart of the raw /doc/file
 	// read, for the controller's /doc/file proxy (S7).
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(_ context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
-		return sessionDocumentFromHub(cfg, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(ctx context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+		return sessionDocumentFromHub(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
@@ -2236,6 +2246,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
 		return pluginsController.SetAutoUpgrade(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginCheckUpdates, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.CheckUpdates(ctx)
 	})
 }
 

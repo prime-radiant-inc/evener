@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,7 +81,7 @@ func TestGenerateErrorsOnMkWithNoDestinationDoc(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error: make/mystery.mk has no destination doc")
 	}
-	if !strings.Contains(err.Error(), "mystery") {
+	if !errors.Is(err, errNoDestinationDoc) || !strings.Contains(err.Error(), "mystery") {
 		t.Fatalf("error %q does not name the orphan family", err)
 	}
 }
@@ -100,7 +101,7 @@ func TestGenerateErrorsOnDocRegionWithNoMatchingMk(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error: linting.md's region names make/linting.mk, which does not exist")
 	}
-	if !strings.Contains(err.Error(), "linting") {
+	if !errors.Is(err, errRegionForMissingFamily) || !strings.Contains(err.Error(), "linting") {
 		t.Fatalf("error %q does not name the orphan region", err)
 	}
 
@@ -356,7 +357,7 @@ func TestGenerateErrorsWhenRootHoldsNoFamilyFiles(t *testing.T) {
 	if err == nil {
 		t.Fatal("generate succeeded with no make/*.mk under root; a wrong root must fail loudly, not regenerate nothing")
 	}
-	if !strings.Contains(err.Error(), "matched no family files") {
+	if !errors.Is(err, errNoFamilyFiles) {
 		t.Fatalf("error does not name the empty family set: %v", err)
 	}
 }
@@ -371,7 +372,7 @@ func TestPrintHelpErrorsWhenRootHoldsNoFamilyFiles(t *testing.T) {
 	if err == nil {
 		t.Fatal("printHelp succeeded with no make/*.mk under root")
 	}
-	if !strings.Contains(err.Error(), "matched no family files") {
+	if !errors.Is(err, errNoFamilyFiles) {
 		t.Fatalf("error does not name the empty family set: %v", err)
 	}
 }

@@ -25,6 +25,7 @@ import {
   resetBrowserDraftRepositoryForTests,
   type StoredComposerDraft,
 } from "./browserDraftRepository";
+import { serializeSessionKey } from "./compositionRevision";
 import {
   ANNOTATION_NAMESPACES_STORE,
   COMPOSER_DRAFTS_STORE,
@@ -253,6 +254,7 @@ test("an interrupted post-commit cleanup retains source bytes and markers, and r
   if (!imported) throw new Error("transferred draft missing");
   // The complete imported public row: exact value shape plus the token fields.
   expect(imported).toEqual({
+    editedAt: expect.any(Number),
     text: sourceBytes,
     skillNames: [],
     key: key("root"),
@@ -505,6 +507,7 @@ test("commitEdit treats omitted and explicit empty mentions as distinct editor v
   );
   expect(explicitEmpty.token.sessionRevision).toBe(seeded.token.sessionRevision + 1);
   expect(explicitEmpty).toEqual({
+    editedAt: expect.any(Number),
     ...explicitEmptyValue,
     key: key("mentions"),
     token: explicitEmpty.token,
@@ -556,6 +559,7 @@ test("commitEdit preserves complete nonempty skill and command mention metadata"
 
   const edited = committed(await repository.commitEdit(key("mention-metadata"), seeded.token, value, () => true));
   expect(edited).toEqual({
+    editedAt: expect.any(Number),
     ...value,
     key: key("mention-metadata"),
     token: edited.token,
@@ -595,6 +599,162 @@ test("seedDraft creates only an absent row, an explicit empty revision wins over
   if (!durable) throw new Error("durable row missing");
   expect(durable.text).toBe("");
   expect(await readStoreRows(indexedDB, "seed-once", DRAFT_CONFLICTS_STORE)).toEqual([]);
+});
+
+// R09 cross-ref carry, ported from the localStorage draft lane onto the
+// repository that now owns durability: a store-driven resume hands the old
+// ref's in-flight draft to the resumed identity, ordering the two durable rows
+// by the wall-clock stamp every genuine draft write records. The source copy
+// stays under the old ref either way, and rows written before the stamp
+// existed rank as unstamped and keep the destination - exactly the migration
+// case this merge creates for every pre-existing row.
+test("carryDraft lets the genuinely newer source draft win and keeps the source copy", async () => {
+  const indexedDB = new IDBFactory();
+  const repository = createBrowserDraftRepository({
+    indexedDB,
+    databaseName: "carry-newer-source",
+    storage: new MemoryStorage(),
+  });
+  closeAfterTest(() => repository.close());
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(1_000);
+  committed(await repository.seedDraft(key("carry-to"), { text: "older destination draft", skillNames: [] }));
+  now.mockReturnValue(2_000);
+  committed(await repository.seedDraft(key("carry-from"), { text: "newer in-flight draft", skillNames: [] }));
+  await repository.carryDraft(key("carry-from"), key("carry-to"));
+  expect((await repository.load(key("carry-to")))!.text).toBe("newer in-flight draft");
+  expect((await repository.load(key("carry-from")))!.text).toBe("newer in-flight draft");
+  now.mockRestore();
+});
+
+test("carryDraft preserves a newer destination draft", async () => {
+  const indexedDB = new IDBFactory();
+  const repository = createBrowserDraftRepository({
+    indexedDB,
+    databaseName: "carry-newer-destination",
+    storage: new MemoryStorage(),
+  });
+  closeAfterTest(() => repository.close());
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(3_000);
+  committed(await repository.seedDraft(key("carry-from"), { text: "stale in-flight draft", skillNames: [] }));
+  now.mockReturnValue(4_000);
+  committed(await repository.seedDraft(key("carry-to"), { text: "newer destination draft", skillNames: [] }));
+  await repository.carryDraft(key("carry-from"), key("carry-to"));
+  expect((await repository.load(key("carry-to")))!.text).toBe("newer destination draft");
+  expect((await repository.load(key("carry-from")))!.text).toBe("stale in-flight draft");
+  now.mockRestore();
+});
+
+// A row an older build wrote carries no stamp at all; two such rows are the
+// migration case and keep the destination, like an exact tie of stamps does.
+async function putUnstampedRow(
+  indexedDB: IDBFactory,
+  databaseName: string,
+  rowKey: BrowserDraftKey,
+  value: { text: string; skillNames: string[] },
+  incarnation: string,
+): Promise<void> {
+  const database = await openRawDatabase(indexedDB, databaseName);
+  try {
+    const write = database.transaction(COMPOSER_DRAFTS_STORE, "readwrite");
+    write.objectStore(COMPOSER_DRAFTS_STORE).put({
+      serializedKey: serializeSessionKey(rowKey),
+      key: rowKey,
+      ...value,
+      token: { namespaceIncarnation: incarnation, sessionRevision: 1 },
+    });
+    await transactionCompletion(write);
+  } finally {
+    database.close();
+  }
+}
+
+test("carryDraft keeps the destination on a stamp tie and when neither row is stamped", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "carry-tie";
+  const repository = createBrowserDraftRepository({ indexedDB, databaseName, storage: new MemoryStorage() });
+  closeAfterTest(() => repository.close());
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(5_000);
+  committed(await repository.seedDraft(key("tie-from"), { text: "source tie", skillNames: [] }));
+  committed(await repository.seedDraft(key("tie-to"), { text: "destination tie", skillNames: [] }));
+  await repository.carryDraft(key("tie-from"), key("tie-to"));
+  expect((await repository.load(key("tie-to")))!.text).toBe("destination tie");
+  const seeded = await repository.load(key("tie-to"));
+  if (!seeded) throw new Error("seeded row missing");
+  await putUnstampedRow(
+    indexedDB,
+    databaseName,
+    key("old-from"),
+    { text: "old source", skillNames: [] },
+    seeded.token.namespaceIncarnation,
+  );
+  await putUnstampedRow(
+    indexedDB,
+    databaseName,
+    key("old-to"),
+    { text: "old destination", skillNames: [] },
+    seeded.token.namespaceIncarnation,
+  );
+  await repository.carryDraft(key("old-from"), key("old-to"));
+  expect((await repository.load(key("old-to")))!.text).toBe("old destination");
+  now.mockRestore();
+});
+
+test("carryDraft fills a blank destination regardless of stamps", async () => {
+  const indexedDB = new IDBFactory();
+  const repository = createBrowserDraftRepository({
+    indexedDB,
+    databaseName: "carry-blank-destination",
+    storage: new MemoryStorage(),
+  });
+  closeAfterTest(() => repository.close());
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(6_000);
+  committed(await repository.seedDraft(key("carry-blank-from"), { text: "only draft", skillNames: [] }));
+  now.mockReturnValue(9_000);
+  committed(await repository.seedDraft(key("carry-blank-to"), { text: "", skillNames: [] }));
+  await repository.carryDraft(key("carry-blank-from"), key("carry-blank-to"));
+  expect((await repository.load(key("carry-blank-to")))!.text).toBe("only draft");
+  now.mockRestore();
+});
+
+test("carryDraft is a no-op for an absent, blank or same-ref source", async () => {
+  const indexedDB = new IDBFactory();
+  const repository = createBrowserDraftRepository({
+    indexedDB,
+    databaseName: "carry-noop-source",
+    storage: new MemoryStorage(),
+  });
+  closeAfterTest(() => repository.close());
+  committed(await repository.seedDraft(key("carry-noop-to"), { text: "destination draft", skillNames: [] }));
+  committed(await repository.seedDraft(key("carry-blank-source"), { text: "", skillNames: [] }));
+  const same = key("carry-noop-to");
+  await repository.carryDraft(key("carry-absent-source"), same);
+  await repository.carryDraft(key("carry-blank-source"), same);
+  await repository.carryDraft(same, same);
+  expect((await repository.load(same))!.text).toBe("destination draft");
+});
+
+test("seed and commit edits stamp the row's wall-clock write time", async () => {
+  const indexedDB = new IDBFactory();
+  const repository = createBrowserDraftRepository({
+    indexedDB,
+    databaseName: "carry-stamp",
+    storage: new MemoryStorage(),
+  });
+  closeAfterTest(() => repository.close());
+  const now = vi.spyOn(Date, "now");
+  now.mockReturnValue(7_000);
+  const seeded = committed(await repository.seedDraft(key("stamped"), { text: "first", skillNames: [] }));
+  expect(seeded.editedAt).toBe(7_000);
+  now.mockReturnValue(8_000);
+  const edited = committed(
+    await repository.commitEdit(key("stamped"), seeded.token, { text: "second", skillNames: [] }, () => true),
+  );
+  expect(edited.editedAt).toBe(8_000);
+  now.mockRestore();
 });
 
 test("captureDraftSettlementGuard copies the caller's token and backing and freezes only the copy", () => {
@@ -874,7 +1034,7 @@ test("a namespace advance fences both the row and the expected token, and lazy l
     mentions: [{ kind: "skill" as const, name: "skill", offset: 0 }],
   };
   const seeded = committed(await repository.seedDraft(key("fenced"), value));
-  expect(seeded).toEqual({ ...value, key: key("fenced"), token: seeded.token });
+  expect(seeded).toEqual({ ...value, key: key("fenced"), token: seeded.token, editedAt: expect.any(Number) });
 
   // Advance the durable namespace FIRST, then test BOTH fences against the
   // still-OLD stored row before any lazy load.
@@ -913,6 +1073,7 @@ test("a namespace advance fences both the row and the expected token, and lazy l
   const refreshed = await repository.load(key("fenced"));
   if (!refreshed) throw new Error("refreshed row missing");
   expect(refreshed).toEqual({
+    editedAt: expect.any(Number),
     ...value,
     key: key("fenced"),
     token: { namespaceIncarnation: "fixture-incarnation-2", sessionRevision: seeded.token.sessionRevision },
@@ -1561,12 +1722,14 @@ test("a real duplicate-key request failure rolls back namespace, drafts and mark
   expect(await retry.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
   // Complete fresh durable values/metadata, not a partial text/skills match.
   expect(await retry.load(key("first"))).toEqual({
+    editedAt: expect.any(Number),
     text: "first legacy",
     skillNames: [],
     key: key("first"),
     token: { namespaceIncarnation: expect.any(String), sessionRevision: expect.any(Number) },
   });
   expect(await retry.load(key("second"))).toEqual({
+    editedAt: expect.any(Number),
     text: "second legacy",
     skillNames: [],
     key: key("second"),

@@ -1,6 +1,7 @@
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderHook, renderedText } from "./renderNative.testkit";
+import { markers } from "./markerTestUtils";
+import { pressable, render, renderHook, renderedText, unmountMountedTrees } from "./renderNative.testkit";
 import { TOAST_ACTION_MS, TOAST_MS, Toast, useToast } from "./Toast";
 
 const announce = vi.hoisted(() => vi.fn());
@@ -10,7 +11,10 @@ vi.mock("react-native", async () => ({
 }));
 
 beforeEach(() => vi.useFakeTimers());
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+	unmountMountedTrees();
+	vi.useRealTimers();
+});
 
 it("shows a toast, announces it once, and clears it after four seconds", () => {
 	const hook = renderHook(() => useToast());
@@ -90,4 +94,11 @@ it("dismisses before running the action, so a follow-up toast the action shows s
 	);
 	act(() => pressable(tree, "Undo")?.props.onPress());
 	expect(renderedText(tree)).toContain("Restored");
+});
+
+it("carries what happened as its marker, so a screen's tests can tell its toasts apart", () => {
+	const kinded = render(<Toast toast={{ id: 1, text: "Stopped", kind: "stop:stopped" }} dismiss={() => {}} />);
+	expect(markers(kinded, "toast")).toEqual(["stop:stopped"]);
+	const plain = render(<Toast toast={{ id: 2, text: "Stopped" }} dismiss={() => {}} />);
+	expect(markers(plain, "toast")).toEqual([]);
 });

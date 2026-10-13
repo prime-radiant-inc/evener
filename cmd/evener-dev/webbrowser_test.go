@@ -231,7 +231,32 @@ func TestBrowserGateSuccessIsConcise(t *testing.T) {
 		want.WriteString("PASS  web-" + guard + " (0.0s)\n")
 	}
 	if tg.stdout.String() != want.String() || tg.stderr.Len() != 0 {
-		t.Fatalf("stdout = %q, stderr = %q; want only the guards' verdicts", tg.stdout.String(), tg.stderr.String())
+		t.Fatalf("stdout = %q, stderr = %q; want one verdict per guard", tg.stdout.String(), tg.stderr.String())
+	}
+}
+
+// The memory-refresh guard is part of the canonical browser gate: registered
+// in verdict order before the never-signalled tail, and launched as the
+// standard node guard so its own Vite dev server boots inside the gate's
+// scratch. This is the registry pin the gate's own spec has no other test for.
+func TestBrowserGuardIncludesMemoryGuard(t *testing.T) {
+	if !slices.Contains(browserGuards, "memoryguard") {
+		t.Fatalf("memoryguard missing from browserGuards: %q", browserGuards)
+	}
+	for i, guard := range browserGuards {
+		if guard == "memoryguard" && i >= len(browserGuards)-4 {
+			t.Fatalf("memoryguard must precede the never-signalled tail: %q", browserGuards)
+		}
+	}
+	spec := browserGuardSpec("memoryguard", filepath.Join(t.TempDir(), "root"))
+	if spec.name != "memoryguard" || !slices.Equal(spec.argv, []string{"node", "scripts/memoryguard/run.mjs"}) {
+		t.Fatalf("memoryguard spec = %+v", spec)
+	}
+	if spec.dir != frontendDir {
+		t.Fatalf("memoryguard dir = %q, want %q", spec.dir, frontendDir)
+	}
+	if spec.needsBuild {
+		t.Fatalf("memoryguard needsBuild = true; it is a node guard like its sibling guards")
 	}
 }
 
@@ -247,6 +272,20 @@ func TestBrowserGateReportsCascadeVerdict(t *testing.T) {
 	}
 	if !strings.Contains(tg.stdout.String(), "PASS  web-cascadeguard (0.0s)\n") {
 		t.Fatalf("cascade evidence omitted from the browser gate:\n%s", tg.stdout.String())
+	}
+}
+
+func TestBrowserGateReportsBackgroundJobsVerdict(t *testing.T) {
+	launcher := newFakeLauncher()
+	tg := startTestGate(t, launcher, len(browserGuards), false)
+	for _, guard := range startAll(t, launcher) {
+		guard.exit <- 0
+	}
+	if result := tg.await(t); result.status != 0 {
+		t.Fatalf("gate result = %+v", result)
+	}
+	if !strings.Contains(tg.stdout.String(), "PASS  web-backgroundjobsguard (0.0s)\n") {
+		t.Fatalf("background Jobs evidence omitted from the browser gate:\n%s", tg.stdout.String())
 	}
 }
 
@@ -272,7 +311,7 @@ func TestBrowserGateBuildFailureFencesCascade(t *testing.T) {
 	if result.status != 17 {
 		t.Fatalf("gate result = %+v", result)
 	}
-	for _, name := range []string{"skillguard", "cascadeguard"} {
+	for _, name := range []string{"skillguard", "cascadeguard", "backgroundjobsguard"} {
 		if !strings.Contains(tg.stderr.String(), "FAIL  web-"+name+" (frontend build, exit 17)") {
 			t.Errorf("%s bypassed failed production build:\n%s\n%s", name, tg.stdout.String(), tg.stderr.String())
 		}
@@ -365,31 +404,20 @@ func TestBrowserGateBuildFailureFailsOnlyTheProductionGuards(t *testing.T) {
 	launcher.buildStatus = 17
 	launcher.buildOutput = "vite build exploded\n"
 	tg := startTestGate(t, launcher, len(browserGuards), true)
-	for _, guard := range browserGuards {
-		if slices.Contains(tg.gate.needsBuild, guard) {
-			continue
-		}
+	for range len(browserGuards) - 4 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	r := tg.await(t)
 	if r.status != 17 {
 		t.Fatalf("status = %d, want the build's 17", r.status)
 	}
-	for _, guard := range tg.gate.needsBuild {
-		if launcher.guard(guard) != nil {
-			t.Fatal("a production guard started without a built frontend")
-		}
-		if !strings.Contains(tg.stderr.String(), "FAIL  web-"+guard+" (frontend build, exit 17)") {
-			t.Errorf("web-%s has no build-fence verdict", guard)
-		}
+	if launcher.guard(skillGuard) != nil || launcher.guard(cascadeGuard) != nil || launcher.guard(backgroundJobsGuard) != nil || launcher.guard(docAnnotationJourney) != nil {
+		t.Fatal("a production guard started without a built frontend")
 	}
 	if !strings.Contains(tg.stdout.String(), "vite build exploded") {
 		t.Fatalf("stdout = %s\nstderr = %s", tg.stdout.String(), tg.stderr.String())
 	}
-	for _, guard := range browserGuards {
-		if slices.Contains(tg.gate.needsBuild, guard) {
-			continue
-		}
+	for _, guard := range browserGuards[:len(browserGuards)-4] {
 		if !strings.Contains(tg.stdout.String(), "PASS  web-"+guard+" (0.0s)\n") {
 			t.Errorf("web-%s did not reach its verdict", guard)
 		}
@@ -452,7 +480,7 @@ func TestBrowserGateRunsEveryGuardAfterASuccessfulBuild(t *testing.T) {
 		t.Fatal("the gate did not build the missing frontend")
 	}
 	var want strings.Builder
-	want.WriteString("building the production frontend for web-skillguard, web-cascadeguard, web-docannotationjourney…\n")
+	want.WriteString("building the production frontend for web-skillguard, web-cascadeguard, web-backgroundjobsguard, web-docannotationjourney…\n")
 	for _, guard := range browserGuards {
 		want.WriteString("PASS  web-" + guard + " (0.0s)\n")
 	}
@@ -493,7 +521,7 @@ func TestBrowserGateFinishesWhenTheLastGuardNeverStarts(t *testing.T) {
 	launcher := newFakeLauncher()
 	launcher.buildStatus = 17
 	tg := startTestGate(t, launcher, 1, true)
-	for range len(browserGuards) - len(tg.gate.needsBuild) {
+	for range len(browserGuards) - 4 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	if r := tg.await(t); r.status != 17 {
@@ -532,8 +560,11 @@ func TestBrowserGateReplaysAFailedGuardSetup(t *testing.T) {
 	if !strings.Contains(tg.stdout.String(), "No space left on device") {
 		t.Errorf("the setup's output was not replayed; stdout = %s", tg.stdout.String())
 	}
-	if !strings.Contains(tg.stderr.String(), "FAIL  web-retirementguard (exit 1)") || strings.Contains(tg.stderr.String(), "no such file") {
-		t.Errorf("stderr = %s", tg.stderr.String())
+	// The replay reads the setup's log; a guard that never started has no log
+	// of its own, and stderr must not complain that one is missing.
+	stderr := tg.stderr.String()
+	if !strings.Contains(stderr, "FAIL  web-retirementguard (exit 1)\n") || strings.Contains(stderr, retirementGuard+".log") {
+		t.Errorf("stderr = %s", stderr)
 	}
 }
 
@@ -555,7 +586,7 @@ func TestBrowserGateBuildsOnlyAMissingFrontend(t *testing.T) {
 // each is a go test (the retirement guard's behind npm) whose driver, Chrome
 // and helper daemons are cleaned up by the test binary's own t.Cleanup, which
 // a TERM would skip, and a TERM to npm alone would orphan.
-var waitedNotSignalled = []string{retirementGuard, skillGuard, cascadeGuard, docAnnotationJourney}
+var waitedNotSignalled = []string{retirementGuard, skillGuard, cascadeGuard, backgroundJobsGuard, docAnnotationJourney}
 
 // An interrupt TERMs every running guard except the go-test guards, and waits
 // for all of them before the gate exits.
@@ -757,9 +788,9 @@ func TestBrowserGateLaunchesEachGuardContained(t *testing.T) {
 			t.Errorf("%s shares its Vite cache with %s", guard, other)
 		}
 		vites[vite] = guard
-		if guard == skillGuard || guard == cascadeGuard || guard == docAnnotationJourney {
+		if guard == skillGuard || guard == cascadeGuard || guard == backgroundJobsGuard || guard == docAnnotationJourney {
 			if !slices.Equal(spec.argv[:4], []string{"go", "test", "-tags", "browserguard"}) {
-				t.Errorf("skill guard argv = %q", spec.argv)
+				t.Errorf("%s argv = %q", guard, spec.argv)
 			}
 			continue
 		}

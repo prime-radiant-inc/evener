@@ -33,9 +33,10 @@ func TestProtocolVersionMismatchErrorError(t *testing.T) {
 func TestClientMarkClosedIdempotent(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)
-	client.markClosed(errors.New("first error"))
+	first := errors.New("first error")
+	client.markClosed(first)
 	client.markClosed(errors.New("second error"))
-	if client.closedError().Error() != "first error" {
+	if !errors.Is(client.closedError(), first) {
 		t.Fatalf("closedError after double markClosed should be first error, got %v", client.closedError())
 	}
 }
@@ -50,8 +51,8 @@ func TestClientClosedErrorDefault(t *testing.T) {
 	if err == nil {
 		t.Fatalf("closedError should return non-nil when closeErr is nil")
 	}
-	if err.Error() != "appwire client closed" {
-		t.Fatalf("closedError = %q, want %q", err.Error(), "appwire client closed")
+	if !errors.Is(err, errClientClosed) {
+		t.Fatalf("closedError = %v, want errClientClosed", err)
 	}
 }
 

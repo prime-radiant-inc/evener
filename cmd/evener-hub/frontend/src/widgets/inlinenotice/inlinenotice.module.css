@@ -1,0 +1,47 @@
+/* InlineNotice: an in-flow message, no box of its own. The message wraps
+   and the action keeps to the trailing edge, dropping below the text when
+   the row is too narrow to hold both.
+
+   inlinenotice is allowlisted (src/styles/token-contract.test.ts) for its
+   danger tone: an error message's ink is the "something failed" hue. Text
+   uses the -ink companion, never the bare hue (design-system §2). */
+.notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+}
+
+.body {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.title {
+  margin: 0 0 var(--space-1);
+  font-weight: var(--font-weight-semibold);
+}
+
+.action {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.neutral {
+  color: var(--ink-mid);
+}
+
+.neutral .title {
+  color: var(--ink-hi);
+}
+
+.danger {
+  color: var(--danger-ink);
+}

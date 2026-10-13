@@ -38,7 +38,7 @@ func TestInbandError_ResourceExhausted_TypedRateLimit(t *testing.T) {
 	if streamErr == nil {
 		t.Fatal("expected a terminal stream error, got none")
 	}
-	if strings.Contains(streamErr.Error(), "ended without completion") {
+	if _, ok := errors.AsType[*llm.StreamError](streamErr); ok {
 		t.Fatalf("in-band error degraded to generic incomplete-stream error: %v", streamErr)
 	}
 	var le llm.Error
@@ -98,7 +98,7 @@ func TestInbandError_LineNoiseStillSkipped(t *testing.T) {
 	if text != "x" {
 		t.Fatalf("delivered text = %q, want %q", text, "x")
 	}
-	if streamErr == nil || !strings.Contains(streamErr.Error(), "ended without completion") {
+	if _, ok := errors.AsType[*llm.StreamError](streamErr); !ok {
 		t.Fatalf("expected generic incomplete-stream error for noise+EOF, got: %v", streamErr)
 	}
 }

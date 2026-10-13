@@ -26,6 +26,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// errResultCrossesToolRound rejects an archive whose tool result answers a
+// call from an earlier tool round than the one it was recorded in.
+var errResultCrossesToolRound = errors.New("crosses a tool-round boundary")
+
 type reconstructionReport struct {
 	SessionID                  string    `json:"session_id"`
 	SourceDatabase             string    `json:"source_database"`
@@ -441,7 +445,7 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			toolRoundOrdinal = m.Ordinal
 		}
 		switch turn.Kind {
-		case schema.TurnUserInput, schema.TurnSteering, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnNotesContext:
+		case schema.TurnUserInput, schema.TurnSteering, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnNotesContext, schema.TurnMemoryContext:
 			turn.Message.Role = llm.RoleUser
 			if turn.Kind == schema.TurnUserInput || (turn.Kind == schema.TurnSteering && m.PromptSource == "user") {
 				turn.ClientMutationID = mutations[m.StableID]
@@ -500,7 +504,7 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			}
 			for _, r := range results[m.Ordinal] {
 				if r.CallOrdinal != toolRoundOrdinal {
-					return fail(fmt.Errorf("archived tool result at ordinal %d crosses a tool-round boundary", m.Ordinal))
+					return fail(fmt.Errorf("archived tool result at ordinal %d %w", m.Ordinal, errResultCrossesToolRound))
 				}
 				c := callLocations[[2]int{r.CallOrdinal, r.CallIndex}]
 				text := r.Content

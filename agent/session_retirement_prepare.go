@@ -90,15 +90,9 @@ func (c *RetirementController) Prepare(ctx context.Context, claim *RetirementCla
 	// before its owner, then the root last, so reconstruction prerequisites are
 	// proven bottom-up. No Session lock is held across the I/O inside.
 	for _, child := range sessions {
-		if err := child.scratchRetentionPersistenceError(); err != nil {
-			return nil, fmt.Errorf("retirement preparation: child session %q retained scratch persistence: %w", child.id, err)
-		}
 		if err := child.validateRetirementRestore(ctx); err != nil {
 			return nil, err
 		}
-	}
-	if err := root.scratchRetentionPersistenceError(); err != nil {
-		return nil, fmt.Errorf("retirement preparation: retained scratch persistence: %w", err)
 	}
 	if err := root.validateRetirementRestore(ctx); err != nil {
 		return nil, err
@@ -119,11 +113,6 @@ func (c *RetirementController) Prepare(ctx context.Context, claim *RetirementCla
 		return nil, err
 	}
 	lanes = append(lanes, rootLanes...)
-	// Required scratch dependencies must still exist at their original paths
-	// under exact ownership before any release is attempted.
-	if err := root.validateRetainedScratchPresent(); err != nil {
-		return nil, fmt.Errorf("retirement preparation: %w", err)
-	}
 	// Durable stores must be readable from their primary files. The delegate
 	// store is validated through its strict Load; the job store rereads its
 	// journal rather than trusting a cached fold.

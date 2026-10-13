@@ -7,25 +7,15 @@
 // at all (the button renders nothing) - the same gate the legacy
 // fileOpenBesideSpec/cwdRelative applied (renderer.js:2201-2251).
 //
-// Routing note: this opens the doc pane through paneActions.openBeside with a
-// {type:"doc"} PaneRef - exactly what panes/doc/openDoc.ts's openDocBeside does
-// (openDocBeside IS openBeside({type:"doc", params})). It deliberately does NOT
-// import openDoc: openDoc.ts eagerly registers the doc pane (its own
-// `import "./index"`), which - pulled in through ToolCallItem - would force that
-// registration into the whole transcript tree at module load (and clobber the
-// doc-pane test fixtures other panes' tests register). The doc pane is already
-// registered at app boot by AppShell.tsx, and paneActions is already eagerly
-// loaded by this tree (subagentModule), so this adds no new module-load side
-// effect. The DocParams type is imported type-only (erased, no side effect).
-// The namespace import of paneActions (not a named one) lets the test spy
-// openBeside through the module object, the reliable vitest seam.
-import { cwdRelative, isImagePath } from "@evener/appwire-client/docContent";
-import * as paneActions from "../../../shell/paneActions";
+// Routing note: this delegates to panes/doc/openDoc.ts so filename actions use
+// the same source validation, retained binding, and real openBeside path as all
+// other document producers.
+import { bindFilePath, cwdRelative, isImagePath } from "@evener/appwire-client/docContent";
 import { useThreadsStore } from "../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
 import { OpenButton } from "../../../widgets";
 import { useDocOpeningOrigin } from "../../doc/docOpeningContext";
-import type { DocParams } from "../../doc/openDoc";
+import { type DocParams, openDocBeside } from "../../doc/openDoc";
 
 // fileDocParams builds the DocParams for openDocBeside, or undefined when the
 // ref/cwd is missing or the path is out of the cwd. A path to an image
@@ -43,10 +33,21 @@ export function fileDocParams(
   return { session: sessionRef, path: rel, kind: isImagePath(rel) ? "image" : "file" };
 }
 
-function FileOpenBesideButtonBody({ absPath, sessionRef, cwd }: { absPath: string; sessionRef: string; cwd?: string }) {
+function FileOpenBesideButtonBody({
+  absPath,
+  sessionRef,
+  sourcePaneId,
+  cwd,
+}: {
+  absPath: string;
+  sessionRef: string;
+  sourcePaneId: string;
+  cwd?: string;
+}) {
   const origin = useDocOpeningOrigin();
   const params = fileDocParams(absPath, sessionRef, cwd);
-  if (params === undefined) return null; // out-of-cwd / not hydrated yet → no affordance
+  const reference = cwd === undefined ? undefined : bindFilePath(absPath, cwd);
+  if (params === undefined || reference === undefined) return null; // out-of-cwd / not hydrated yet → no affordance
   // Merge the captured scope origin into the SAME params fileDocParams built;
   // its path checks and kind are untouched, and with no provider the params stay
   // origin-less.
@@ -56,27 +57,67 @@ function FileOpenBesideButtonBody({ absPath, sessionRef, cwd }: { absPath: strin
   // own affordance tests among them - still finds this control unchanged;
   // the path is appended for the same specificity the old dynamic title had.
   const name = `Open beside: ${docParams.path}`;
-  return <OpenButton label={name} onClick={() => paneActions.openBeside({ type: "doc", params: docParams })} />;
+  return (
+    <OpenButton
+      label={name}
+      onClick={() =>
+        openDocBeside({ session: sessionRef, reference, sourcePaneId, ...(origin === undefined ? {} : { origin }) })
+      }
+    />
+  );
 }
 
-function LegacyFileOpenBesideButton({ absPath, sessionRef }: { absPath: string; sessionRef: string }) {
+// A card mounted outside a transcript render context (a provider-wrapped
+// surface) binds against the retained thread's own hydrated cwd.
+function LegacyFileOpenBesideButton({
+  absPath,
+  sessionRef,
+  sourcePaneId,
+}: {
+  absPath: string;
+  sessionRef: string;
+  sourcePaneId: string;
+}) {
   const cwd = useThreadsStore((state) => state.threads.get(sessionRef)?.cwd);
-  return <FileOpenBesideButtonBody absPath={absPath} sessionRef={sessionRef} cwd={cwd} />;
+  return <FileOpenBesideButtonBody absPath={absPath} sessionRef={sessionRef} sourcePaneId={sourcePaneId} cwd={cwd} />;
 }
 
 export function FileOpenBesideButton({
   absPath,
   sessionRef,
   cwd,
+  sourcePaneId,
 }: {
   absPath: string;
   sessionRef: string;
   cwd?: string;
+  sourcePaneId?: string;
 }) {
   const context = useOptionalTranscriptRenderContext();
-  return context === null ? (
-    <LegacyFileOpenBesideButton absPath={absPath} sessionRef={sessionRef} />
-  ) : (
-    <FileOpenBesideButtonBody absPath={absPath} sessionRef={sessionRef} cwd={cwd ?? context.thread?.cwd} />
+  const providerOrigin = useDocOpeningOrigin();
+  // A live pane reading surface supplies the opening pane through the
+  // transcript render context; a scope that renders transcripts WITHOUT one
+  // (each Zoom column, a provider-wrapped card surface) still declares its
+  // opening pane through the doc-opening origin, whose pane identity is the
+  // same record the real open path keys on. No owner anywhere means no live
+  // producer surface, so no affordance.
+  const providerOriginPaneId =
+    providerOrigin === undefined
+      ? undefined
+      : providerOrigin.kind === "browser-origin"
+        ? providerOrigin.paneId
+        : providerOrigin.sourcePaneId;
+  const owner = sourcePaneId ?? context?.sourcePaneId ?? providerOriginPaneId;
+  if (owner === undefined) return null;
+  if (context === null && cwd === undefined) {
+    return <LegacyFileOpenBesideButton absPath={absPath} sessionRef={sessionRef} sourcePaneId={owner} />;
+  }
+  return (
+    <FileOpenBesideButtonBody
+      absPath={absPath}
+      sessionRef={sessionRef}
+      sourcePaneId={owner}
+      cwd={cwd ?? context?.thread?.cwd}
+    />
   );
 }

@@ -112,7 +112,11 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 	);
 	return (
 		<Sheet title="Review" onCancel={sheet.close} accessory={to}>
-			<ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 16 }}>
+			<ScrollView
+				automaticallyAdjustKeyboardInsets
+				keyboardDismissMode="on-drag"
+				contentContainerStyle={{ padding: 16, gap: 16 }}
+			>
 				<View style={{ gap: 8 }}>
 					<View style={{ flexDirection: "row", borderRadius: 10, backgroundColor: palette.inset, padding: 2 }}>
 						{VERDICTS.map((choice) => {
@@ -151,7 +155,11 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 						})}
 					</View>
 					{verdict === null ? (
-						<Text allowFontScaling={allowFontScaling} style={{ ...small, color: palette.inkMid }}>
+						<Text
+							testID="review-verdict-hint"
+							allowFontScaling={allowFontScaling}
+							style={{ ...small, color: palette.inkMid }}
+						>
 							Choose one to send your review.
 						</Text>
 					) : null}
@@ -183,17 +191,27 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 					/>
 				</View>
 				{why ? (
-					<Text allowFontScaling={allowFontScaling} style={{ ...small, color: palette.inkMid }}>
+					<Text
+						// Held for the connection, or because the session takes no message.
+						testID={`review-held:${online ? "unavailable" : "offline"}`}
+						allowFontScaling={allowFontScaling}
+						style={{ ...small, color: palette.inkMid }}
+					>
 						{why}
 					</Text>
 				) : null}
 				{failure !== null ? (
-					<Text allowFontScaling={allowFontScaling} style={{ ...small, color: palette.dangerInk }}>
+					<Text
+						testID="review-send-failed"
+						allowFontScaling={allowFontScaling}
+						style={{ ...small, color: palette.dangerInk }}
+					>
 						{`Couldn't send this: ${failure}`}
 					</Text>
 				) : null}
 				{comments.length === 0 ? (
 					<Text
+						testID="review-no-comments"
 						allowFontScaling={allowFontScaling}
 						style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
 					>

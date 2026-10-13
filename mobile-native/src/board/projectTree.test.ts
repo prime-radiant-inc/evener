@@ -149,8 +149,8 @@ describe("organized by host (spec 7.1, ruling 11)", () => {
 			"    Today",
 			"    paradise-park:b",
 		]);
-		expect(boardState(a, false, false)).toBe("working");
-		expect(boardState(b, false, false)).toBe("shutDown");
+		expect(boardState(a, false)).toBe("working");
+		expect(boardState(b, false)).toBe("shutDown");
 	});
 
 	it("the project's counts and its more rows read once, on the first host with loaded rows", () => {

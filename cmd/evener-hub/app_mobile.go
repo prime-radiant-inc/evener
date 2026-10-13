@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"golang.org/x/net/idna"
@@ -75,10 +74,10 @@ func safeMobileOrigin(raw string) (string, bool) {
 			return "", false
 		}
 	} else {
-		// Some clients accept inet_aton-style numeric addresses such as 127.1,
-		// 2130706433, or 0x7f000001. Reject those spellings deterministically
-		// rather than resolving a host while serving the pairing request.
-		if isLegacyIPv4Literal(host) {
+		// Browsers parse a numeric final label as IPv4, even when the input
+		// is malformed. Only canonical IPs accepted above can be shared with
+		// the browser; do not publish a numeric spelling as a DNS hostname.
+		if hasNumericHostSuffix(host) {
 			return "", false
 		}
 		if u.Scheme == "http" && !strings.HasSuffix(hostLower, ".local") {
@@ -88,36 +87,17 @@ func safeMobileOrigin(raw string) (string, bool) {
 	return strings.TrimRight(raw, "/"), true
 }
 
-func isLegacyIPv4Literal(host string) bool {
-	parts := strings.Split(host, ".")
-	if len(parts) > 4 {
+// hasNumericHostSuffix implements the WHATWG ends-in-a-number check on an
+// ASCII hostname whose trailing dots have already been removed.
+func hasNumericHostSuffix(host string) bool {
+	last := host[strings.LastIndexByte(host, '.')+1:]
+	if last == "" {
 		return false
 	}
-	for i, part := range parts {
-		base := 10
-		digits := part
-		if len(part) > 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
-			base = 16
-			digits = part[2:]
-		} else if len(part) > 1 && part[0] == '0' {
-			base = 8
-		}
-		if digits == "" {
-			return false
-		}
-		value, err := strconv.ParseUint(digits, base, 32)
-		if err != nil {
-			return false
-		}
-		bits := 8
-		if i == len(parts)-1 {
-			bits = 8 * (5 - len(parts))
-		}
-		if value >= uint64(1)<<bits {
-			return false
-		}
+	if strings.Trim(last, "0123456789") == "" {
+		return true
 	}
-	return true
+	return len(last) >= 2 && last[0] == '0' && (last[1] == 'x' || last[1] == 'X') && strings.Trim(last[2:], "0123456789abcdefABCDEF") == ""
 }
 
 func isPrivateMobileHTTPAddr(addr netip.Addr) bool {

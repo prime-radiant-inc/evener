@@ -183,7 +183,10 @@ func stpNewSession(t *testing.T, program []byte) (*Session, *agenttest.DenyEnv) 
 		minimalSystemPrompt: true,
 		noSyncJobStore:      true,
 	}
-	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, cfg)
+	// The text-only gpt-5.2-codex row: a session model that sees tool-result
+	// images natively skips image descriptions by default, and this program
+	// pins the tool-side state around the describing call.
+	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2-codex"), env, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

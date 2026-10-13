@@ -370,10 +370,10 @@ in-session fleet. What works:
   proved this deterministically; briefs now forbid the call outright.
 - **Fresh isolation worktrees have no `node_modules` symlink.** A
   frontend brief must carry the `ln -sfn` line itself. The
-  `editorial-preview` script tests skip with a stated reason when they see
-  that symlink (their isolated fixture server pins `fs.allow` to the
-  checkout, which a shared install cannot honor); they run fully only in a
-  checkout with its own `npm ci` install, such as CI.
+  `editorial-preview` script tests copy the frontend, AppWire package and
+  lockfile-matching dependencies into a private fixture, so they run fully
+  on a shared install. The production preview still refuses a shared
+  writable install; a separate fixture verifies that refusal.
 
 ## Model tiering
 

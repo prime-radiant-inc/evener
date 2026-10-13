@@ -120,9 +120,11 @@ describe("atomic recovery restore", () => {
 describe("recovered restore hint", () => {
 	it("distinguishes an occupied composer from a blocked draft", () => {
 		const { document, repository, destination } = setup();
+		expect(document.recoveredRestoreBlock()).toBeNull();
 		expect(document.recoveredRestoreHint()).toBeNull();
 		document.edit("typed");
-		expect(document.recoveredRestoreHint()).toContain("current draft");
+		expect(document.recoveredRestoreBlock()).toBe("occupied");
+		expect(document.recoveredRestoreHint()).not.toBeNull();
 
 		const failing = {
 			read: () => ({ draft: "", unconfirmed: null }),
@@ -133,8 +135,7 @@ describe("recovered restore hint", () => {
 		};
 		const blocked = new DraftDocument(() => failing, destination);
 		expect(blocked.restoreRecoveredDraft("recovered")).toBe(false);
-		const hint = blocked.recoveredRestoreHint();
-		expect(hint).toContain("Retry saving");
-		expect(hint).not.toContain("current draft");
+		expect(blocked.recoveredRestoreBlock()).toBe("unsaved");
+		expect(blocked.recoveredRestoreHint()).not.toBeNull();
 	});
 });

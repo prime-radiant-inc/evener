@@ -93,7 +93,7 @@ func familyFiles(root string) ([]string, error) {
 		return nil, err
 	}
 	if len(mkPaths) == 0 {
-		return nil, fmt.Errorf("%s matched no family files; run this from the repository root or pass -root", filepath.Join(dir, "*.mk"))
+		return nil, reject(errNoFamilyFiles, "%s matched no family files; run this from the repository root or pass -root", filepath.Join(dir, "*.mk"))
 	}
 	return mkPaths, nil
 }
@@ -137,7 +137,7 @@ func generate(root string) error {
 func generateOne(docDir, mkPath, stem string) error {
 	docName, ok := stemToDoc[stem]
 	if !ok {
-		return fmt.Errorf("%s has no destination doc; add %q to stemToDoc", mkPath, stem)
+		return reject(errNoDestinationDoc, "%s has no destination doc; add %q to stemToDoc", mkPath, stem)
 	}
 
 	src, err := os.ReadFile(mkPath)
@@ -196,11 +196,11 @@ func checkOrphanRegions(docDir string, stems map[string]bool) []error {
 		}
 		for _, family := range families {
 			if !stems[family] {
-				errs = append(errs, fmt.Errorf("%s: marked region references make/%s.mk, which does not exist", docPath, family))
+				errs = append(errs, reject(errRegionForMissingFamily, "%s: marked region references make/%s.mk, which does not exist", docPath, family))
 				continue
 			}
 			if canonicalDoc, ok := stemToDoc[family]; ok && filepath.Base(docPath) != canonicalDoc {
-				errs = append(errs, fmt.Errorf("%s: marked region for make/%s.mk belongs in %s, not %s", docPath, family, canonicalDoc, filepath.Base(docPath)))
+				errs = append(errs, reject(errRegionInWrongDoc, "%s: marked region for make/%s.mk belongs in %s, not %s", docPath, family, canonicalDoc, filepath.Base(docPath)))
 			}
 		}
 		if markerErr != nil {

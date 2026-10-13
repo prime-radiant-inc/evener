@@ -35,6 +35,14 @@ The default model-facing posture is:
 > Read shell bytes with `job:<job_id>` and delegate history with its session
 > `transcript_ref`. Do not poll.
 
+Shell start registration records background evidence for explicit background
+launches and foreground promotion before acknowledging the handoff. That evidence
+survives terminal outcomes, forwarding and journal reconstruction. Retained inline
+foreground output and a foreground runtime limit do not establish background
+eligibility. Detached processes have no managed job record. Older unmarked
+records retain their diagnostic history and output without claiming background
+execution.
+
 The shipped model intentionally does **not** expose:
 
 - `job_kill`
@@ -63,14 +71,19 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Use `delegate_send` for follow-up: a running delegate is steered; an idle,
   resumable delegate starts its next private run through the same call.
 - Use `delegate_send(to=<delegate_id>)` for follow-up on a durable child
-  conversation. From within a delegate, `delegate_send(to="caller")` sends a
-  non-terminal update to its controlling caller. Observer completion and final
-  results still use `communicate(end_turn=true)`. `delegate_send` rejects
-  `job_id`, `transcript_ref`, and unsupported runtime aliases.
+  conversation; it reaches only your own delegates. A delegate reaches its
+  parent only through `communicate`: `end_turn=false` for an update,
+  `end_turn=true` for observer completion and its final report.
+  `delegate_send` rejects `caller`, `job_id`, `transcript_ref`, and
+  unsupported runtime aliases.
+- A delegate's `communicate(end_turn=false)` is an update its parent receives
+  and may be woken by: delegates send one only when the parent needs to know
+  something or act, never as narration, and finish with
+  `communicate(end_turn=true)`.
 - When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
 - Evener injects typed terminal attention: `<job-notification>` for owner shell
-  jobs and `<delegate-notification delegate_id="dlg_...">` for direct delegates.
+  jobs and `<delegate-notification delegate_id="dlg_..." kind="report">` for direct delegates.
   Your delegates handle their own children's attention.
 - Use `job_watch` when a condition should notify the watcher. `source` is typed:
   `self`, granted `parent`, a stable `dlg_...`, or a visible shell `job_...`.
@@ -475,7 +488,7 @@ creates a fallback activation JobRecord.
 
 ### `delegate_send`
 
-`delegate_send` sends a message to one of your durable child delegate conversations by `delegate_id`. From inside a delegate, the contextual `caller` target sends a non-terminal update to that delegate's controlling caller. Final results and observer completion still use `communicate(end_turn=true)`.
+`delegate_send` sends a message to one of your durable child delegate conversations by `delegate_id`. It reaches only your own delegates: a delegate reaches its parent with `communicate` (`end_turn=false` for an update, `end_turn=true` for its report), and `to="caller"` is rejected with an error that says so, at the root as well as in a delegate.
 
 Target shape:
 
@@ -492,9 +505,8 @@ Core target resolution:
 | Target | Meaning |
 | --- | --- |
 | `dlg_...` | A durable delegate conversation owned by this session. |
-| `caller` | The current delegate's controlling caller. This contextual target is unavailable at the root. |
 
-`delegate_send` rejects `job_id` handles because they identify shell work, not
+`delegate_send` rejects `caller` with an error that points at `communicate`. It rejects `job_id` handles because they identify shell work, not
 delegates. It also rejects `transcript_ref` handles and unsupported runtime or
 legacy aliases such as `main` or `watched`.
 
@@ -502,13 +514,12 @@ Semantics:
 
 - If `to` identifies a running or currently-driven delegate, Evener injects the
   message into that exact generation. The return `action` is `steered`.
+  The injected steering turn has source `parent`, and the delegate's model reads
+  it after the line `Message from your parent agent:`; clients label it "From
+  parent". A message that starts an idle delegate opens its next generation as
+  user input, as the original brief does.
 - If `to` identifies an idle/resumable delegate, Evener starts its next private
   generation in the same child conversation. The return `action` is `started`.
-- If `to` is `caller`, a nested delegate steers its stable parent through the
-  parent's controller lifecycle admission; a top-level delegate uses the root
-  session's durable turn-boundary steering queue. The call returns
-  `action=delivered`, does not end the delegate's turn, and never writes into an
-  unfinished root tool round.
 - If `to` is a `job_id`, `transcript_ref`, unknown/unauthorized delegate,
   non-resumable delegate, or unsupported legacy alias, the call fails
   synchronously without minting another identity or JobRecord.
@@ -521,7 +532,7 @@ Semantics:
   is ignored explicitly through `wait_ignored_reason`.
 - `max_wait_ms` applies to concrete delegate targets.
 
-Watch-origin observer completion uses `communicate(end_turn=true)`. A delegate may use the contextual `caller` target for a non-terminal update without ending its turn; that route does not replace the observer callback or final result.
+Watch-origin observer completion uses `communicate(end_turn=true)`. A delegate sends a non-terminal update without ending its turn with `communicate(end_turn=false)`; an update does not replace the observer callback or final result.
 
 ```mermaid
 stateDiagram-v2
@@ -725,13 +736,13 @@ Observer/sidecar pattern:
 1. Parent starts a child with delegate(watch_parent:true).
 2. The child creates job_watch(operation="create", source="parent", ...).
 3. Matching parent frames are delivered to that child.
-4. The child reports useful findings with communicate(end_turn=true).
+4. The child sends updates with communicate(end_turn=false) while it watches and reports its findings with communicate(end_turn=true).
 5. The parent treats that communicate as the observer callback and finishes from it.
 ```
 
 Observer sidecars are composition, not a separate model-facing observer tool.
 Use `delegate_send(to=<delegate_id>)` for parent-to-child follow-up and
-`delegate_send(to="caller")` for a non-terminal update to the controlling caller.
+`communicate(end_turn=false)` for a non-terminal update to the parent.
 Use `communicate(end_turn=true)` for observer completion and final results.
 
 Practical observer guidance for agents:
@@ -739,8 +750,8 @@ Practical observer guidance for agents:
 - Start the observer with `watch_parent:true` when it needs to observe the parent.
 - Inside the observer, call `job_watch(source:"parent")`; omit trigger fields for the default bounded parent frame stream, or add `events`/`event_filter` for precision.
 - When the readiness delegate result carries `watching:true` and `watches`, treat the observer as watching and perform the planned watched action.
-- Report readiness or continuing status with `communicate(end_turn=false)` only when the observer will continue working in that same turn.
-- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as that observer delegate's ordinary terminal frame — a `<delegate-notification delegate_id="dlg_...">` block carrying the result packet — which arms delegate attention and wakes the parent.
+- Send an update with `communicate(end_turn=false)` only when the parent needs to know something or act: it reaches the parent and may wake it.
+- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as that observer delegate's ordinary terminal frame — a `<delegate-notification delegate_id="dlg_..." kind="report">` block carrying the result packet — which arms delegate attention and wakes the parent.
 - Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, typed source identity, event kind/status/arguments, and optional excerpt), what action to take, and when to stop.
 - A watch-origin observer delegate's terminal `communicate(end_turn=true)` is delivered to the parent as that generation's owner notification; there is no separate observer-callback frame and no suppression of the owner notification. Other typed terminal notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
 
@@ -784,7 +795,7 @@ Rules:
 - Event frames and output excerpts are bounded and filtered before notification or observer delivery. Implementations may apply redaction/scrubbing for cross-session or observer delivery, but this contract does not promise perfect secret detection; callers must not treat frames as guaranteed secret-free.
 - `progress_interval_ms` applies to concrete job sources only (min `1000`, max `3600000`, clamped; omitted/`0` means no periodic progress notification, and negatives fail `invalid_request`). Timers use `after_seconds` (60 to 86400) or `repeat_seconds` (60 to 3600) on `self`, rejected rather than clamped when out of range; an optional `note` labels any watch, timer or condition, and rides every fire; a present `0` or `null` reads as absent, the same way `progress_interval_ms: 0` does. At most 8 live timers per session. Session event watches use `events`/`event_filter` instead of combining events with periodic progress.
 - Integer arguments to `job_watch` (`every`, `progress_interval_ms`, `after_seconds`, `repeat_seconds`) must be integral JSON numbers; strings and fractional numbers fail `invalid_request` rather than being silently ignored.
-- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For parent-watch observer frames, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Evener either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.
+- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For parent-watch observer frames, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Evener either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure. A replaced frame gives up its delivery claim on the receiver when it is replaced, so only the frame still pending can hold up stopping that receiver or closing its tree. A delivery of the replaced frame already under way keeps the claim until it finishes, stands down without an error when it finds itself replaced, and then gives the claim up, unless the receiver took the frame and only the acknowledgement is being retried.
 - Each watch configuration has a model-facing delivery budget of 50 condition fires: output matches and event frames. Periodic ticks, timer or job progress, count as deliveries but never trip the budget, so the `deliveries` count `job_list` reports can run past the fires the budget counts. A watch that exhausts its budget is auto-cleared with one final notification saying how many times it matched and telling the caller to re-arm with a tighter condition (higher `every` or narrower `output_match`).
 - Terminal notification ordering: flush any queued watch notification/frame for a concrete job, then deliver the terminal notification. Both are facts about the same completion, so they arrive in ONE notification turn — the watch settlement first, then the terminal — rather than waking an idle owner twice for a single ending job.
 - If no watch condition is supplied (`output_match`, `events`, `progress_interval_ms`, `after_seconds`, or `repeat_seconds`) for `operation="create"`, the tool fails unless the source is a granted cross-session session source such as `parent`, where the default is the bounded public frame stream.
@@ -1122,7 +1133,10 @@ Return shape:
 (kata tpb0): who requested the stop, whether this exact delegate resource can
 still be resumed (the same classification `job_status` reports), and whatever
 partial scratch/worktree evidence its run loop had already gathered before
-being cancelled. All are omitted for a shell `job_stop`. `requested_by` is
+being cancelled. The scratch directory at `scratch_path` stays after the
+delegate finishes; it is deleted when the root session is archived or deleted.
+All are omitted for a
+shell `job_stop`. `requested_by` is
 reported on every delegate stop, including one that has not completed yet;
 `resumable`, `not_resumable_reason`, `scratch_path`, and `worktree` are read
 from the settled delegate and are omitted until the stop completes
@@ -1258,6 +1272,13 @@ Delegate generations never create job records. A shell job record contains:
 }
 ```
 
+A kept within-bound completion arms no completion notification: its tool reply
+already told the caller the job ended. Once that reply is durable in the
+transcript the job's notification is recorded `consumed`, the same settlement a
+terminal `job_status` read gets, so a restore never re-announces it. If the
+process stops before the reply is durable, the record is still `not_armed` and
+the restore arms its notification.
+
 `parent_job_id` links shell-to-shell work. `parent_delegate_id` names the stable
 delegate that caused a shell job; a shell never points at a private delegate
 generation. Fields that do not apply are omitted.
@@ -1350,11 +1371,60 @@ Direct-delegate completion uses the stable identity and canonical bounded
 terminal packet:
 
 ```xml
-<delegate-notification delegate_id="dlg_...">...</delegate-notification>
+<delegate-notification delegate_id="dlg_..." name="..." kind="report">{packet JSON}</delegate-notification>
 ```
 
-It never carries `job_id` or `job_type="delegate"`. The full conversation stays
-available through the delegate's `transcript_ref`.
+`kind="report"` marks the generation's terminal packet, whatever its outcome.
+A mid-work update (`communicate(end_turn=false)`) is
+`<delegate-notification delegate_id="dlg_..." name="..." kind="update">` with
+the delegate's message as the body, `<` escaped so it can neither close the
+frame nor open another. Clients decode the body's entities once, so a
+literal entity the delegate types, such as `&amp;`, reads as the character it
+names; job output excerpts share this remainder. The `name` attribute appears
+only for a named delegate. The quiet watchdog's frame carries neither `name` nor `kind`. A
+delegate frame never carries `job_id` or `job_type="delegate"`. The full
+conversation stays available through the delegate's `transcript_ref`. A
+`delegate_send` reply that carries an update ahead of its result lists it in
+`earlier_results` with `action: "update"` and the message as `output`.
+
+A running delegate's `communicate(end_turn=false)` is an update for its owner.
+Evener records it in the delegate's journal and delivers it through the same
+ordered queue and receiver-transcript attention as the terminal packet.
+
+- An idle owner is woken, and its notification turn takes everything pending
+  at once. A running owner sees the update at its next model boundary; an owner
+  waiting on that delegate in `delegate_send(max_wait_ms)` gets it in the
+  reply's `earlier_results`, ahead of the report. An owner awaiting an
+  `ask_user` reply gets it after the reply.
+- One delegate's updates arrive in the order sent, before that generation's
+  report, and survive restart like any pending attention.
+- The `communicate` result carries `delivery`: `delivered` (in the owner's
+  transcript), `queued` (durable and waiting behind the owner's turn or an
+  earlier delivery of the same delegate), or `not_delivered` with a `reason`
+  (the update could not be recorded, the delegate is stopping or its report is
+  being settled, its run is stale, or the session has no route to a parent
+  agent). A parent that is gone usually shows `queued`, since the update is
+  durable in the delegate's journal. A delegate parked in its finalization
+  drain after its terminal `communicate` can still send updates; they reach
+  the owner ahead of its report. Delivery never fails the call: the message is
+  already in the delegate's transcript.
+- Updates never feed Activity's `reportPreview`.
+- A delegate parked in its finalization drain can run further turns: an
+  update from a delegate it owns wakes it. A turn that ends with a terminal
+  `communicate` gives a newer report, and the newer report is the one the
+  parent receives and Activity previews; the earlier report stays in the
+  delegate's transcript. A turn that ends without a terminal `communicate`,
+  including one whose model returns bare text, leaves the earlier report
+  standing as the delegate's completed report.
+- The same holds for one-shot `evener run`: while it drains background work,
+  its answer is the root's latest terminal `communicate`. A drain turn driven
+  by a completion that reports again replaces the answer. A drain turn that
+  ends in bare text or an empty response leaves the earlier answer standing
+  and the run succeeds. Background-job announcement turns keep their own rule:
+  a report made on one does not replace the answer unless a completion
+  arrives during that turn.
+- A root's `communicate(end_turn=false)` is unchanged: a checkpoint for its
+  human partner.
 
 When a shell excerpt contains the complete output, the body says
 `Complete output below.` instead of nudging a redundant read. Otherwise it
@@ -1372,6 +1442,12 @@ Rules:
 - Attention renders only in its owner's turns. A parent drives an idle child so
   that child processes its own shell/watch attention; the parent renders only
   its own shells and direct delegates. There is no forwarded delegate JobRecord.
+- A delegate whose turn has ended while its generation waits on its own
+  delegates is idle, and an update from one of them wakes it: the wait runs a
+  turn that presents the update and consumes it, so no further generation
+  starts for it. A report from one of them gets no turn of its own: it waits
+  for the generation's end, when the next attention generation takes it with
+  everything else pending, unless an update's turn presents it first.
 - Receiver transcripts are the sole durable attention authority. Attention is
   appended and fsynced by exact private ID before a process-local wake. A
   successful notification turn appends and fsyncs the matching consumed marker;
@@ -1382,6 +1458,13 @@ Rules:
   fsyncs. A stopping subtree durably discards its own unresolved attention.
 - If the owner is mid-turn or awaiting an `ask_user` reply, attention waits for
   the next safe boundary. Wakes coalesce, but committed entries do not vanish.
+- Attention a turn already showed the model is consumed with that turn. When a
+  settled model request of a root turn, or of a delegate turn running in its
+  generation, carried an attention entry, the turn's successful end appends the
+  consumed marker, so the entry starts no further turn or attention generation.
+  This holds whether the attention was armed before the turn began or during
+  it. Attention appended after the turn's last request was built keeps its own
+  wake.
 - Duplicate terminal attention is suppressed by its durable source identity.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.

@@ -20,10 +20,8 @@ read-only posture, and it never touches the original corpus.
 ## Procedure
 
 1. **Copy first. NEVER resume a collected corpus in place.** Wave transcripts
-   and measurement state are inputs you cannot regenerate. A second reason is
-   mechanical: the scratch-retention manifest pins the session's original
-   state-dir path, so a full `--resume` of a moved copy is refused by design.
-   Copy, then work in the copy:
+   and measurement state are inputs you cannot regenerate. Copy, then work in
+   the copy:
 
        cp -r <state-dir> <scratch>/interrogate-<name>-state
 
@@ -37,9 +35,8 @@ read-only posture, and it never touches the original corpus.
          evener --state-dir <copy> --resume-with <session-id> \
          --api-log on --max-rounds 2 --model <provider/model> '<question>'
 
-   `--resume-with` seeds a new session from the old transcript (no
-   retained-scratch restore, so the moved copy works); the model keeps the
-   full history in context. Use the session's own provider/model so the
+   `--resume-with` seeds a new session from the old transcript; the model
+   keeps the full history in context. Use the session's own provider/model so the
    account comes from the same model that made the choices.
 
 4. **Ask in three numbered parts, and forbid tool use in the prompt itself:**

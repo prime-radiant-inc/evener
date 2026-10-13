@@ -30,7 +30,12 @@ const draftRevisions = new Map<string, number>();
 // (never prose): the submit boundary assembles them as {type: "skill", name}
 // input items after the ordinary text/attachment items, and a chip change is
 // a draft edit even when the text is byte-identical.
-export interface ComposerDraft extends SkillEditorValue {}
+export interface ComposerDraft extends SkillEditorValue {
+  // Wall-clock stamp of the last write, so two refs' drafts can be ordered when
+  // one is carried to the other (see carryComposerDraft). Absent on records an
+  // older build wrote.
+  editedAt?: number;
+}
 
 // A remount inherits the same draft revision. Editing or replacing its
 // contents changes ownership even when the resulting text is identical.
@@ -59,6 +64,7 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
     record.skillNames.every((name) => typeof name === "string") &&
     (record.commandNames === undefined ||
       (Array.isArray(record.commandNames) && record.commandNames.every((name) => typeof name === "string"))) &&
+    (record.editedAt === undefined || typeof record.editedAt === "number") &&
     (record.mentions === undefined ||
       (Array.isArray(record.mentions) &&
         record.mentions.every(
@@ -130,6 +136,14 @@ export function readComposerDraft(ref: string): ComposerDraft {
   } catch {
     return { text: "", skillNames: [] };
   }
+}
+
+// A draft with nothing to send: no prose and no selections. The one predicate
+// the durable write paths and the cross-ref carry share, so an empty draft is
+// never persisted and a blank source or destination never blocks a move.
+// Exported for the browser draft repository's carryDraft.
+export function isBlankDraft(value: ComposerDraft): boolean {
+  return value.text.trim() === "" && value.skillNames.length === 0 && !value.commandNames?.length;
 }
 
 // The text half of the structured draft, for callers that only compose prose

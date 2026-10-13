@@ -143,7 +143,7 @@ The Board is one native scrolling list: Live's bands, then pinned categories, Pr
 A row opens the Session, one conversation with its agent, recorded in "The Session" below. The Board's hub button opens the Hub, and its New session button opens New session: two sheets recorded in "The Sheets: New session and the Hub" at the end. The colors, type and shapes that follow serve all three.
 
 **Key Characteristics:**
-- Every live session in one list, ordered by who needs you, then finished, then working, then idle.
+- Every live session in one list, ordered by who needs you, then working, then idle.
 - Calm: a control appears only when it can act, and nothing moves unless its data moved.
 - Native actions, an automatic connection, and per-device state for what you've seen and which sections you folded.
 
@@ -179,14 +179,14 @@ Dimensions below describe React Native logical units (points on iOS). The `px` v
 
 ### Hierarchy
 - **Title** (SF Pro semibold, 17px, 22px line-height): Row title, one line (two for Needs you).
-- **Why line** (SF Pro, 15px, 20px line-height): The state word and reason for Needs you, or the current activity for Working: the intent of the newest tool call the session itself made ("Reading the board's row tests."), else the job the session is running, else the bare "Working". Finished rows carry no why line yet: the spec's last-message excerpt (Source Serif 15/21) waits for a server addition (S1).
+- **Why line** (SF Pro, 15px, 20px line-height): The state word and reason for Needs you, or the current activity for Working: the intent of the newest tool call the session itself made ("Reading the board's row tests."), else the job the session is running, else the bare "Working".
 - **Last line** (SF Pro, 13px, 18px line-height, ink-low): Task progress (with a checklist glyph) while a task is in progress, then the project (with a folder glyph) and the host (with a server glyph), each only when it differs from the fleet's usual one. With none of these, the row has no last line.
 - **Age** (SF Pro, 13px, tabular figures, ink-low): Trailing on line 1: "2m", "1h", "3d".
-- **Band header** (SF Pro semibold, 13px, uppercase, +0.4pt tracking, ink-mid): "NEEDS YOU · 4", "FINISHED · 4", "WORKING · 9".
+- **Band header** (SF Pro semibold, 13px, uppercase, +0.4pt tracking, ink-mid): "NEEDS YOU · 4", "WORKING · 9".
 
 ## Layout
 
-The Board is one native scrolling list. Each row reserves a 28-unit leading mark column and a 10-unit gap to its content, inset 16 logical units on each side. Hairline separators sit inset 54 units, clear of the mark, to the title (16 padding + 28 mark + 10 gap). Signal rows (Needs you, unseen Finished, and Working, in the Live section) run about 64 to 88 units depending on how many lines they carry; quiet rows (Idle's, today) hold to 48 units. Every tappable target keeps a native minimum of 44 units; the section chips (32 units) and the summary line's counts (30 units) draw smaller and reach 44 with hit slop.
+The Board is one native scrolling list. Each row reserves a 28-unit leading mark column and a 10-unit gap to its content, inset 16 logical units on each side. Hairline separators sit inset 54 units, clear of the mark, to the title (16 padding + 28 mark + 10 gap). Signal rows (Needs you and Working, in the Live section) run about 64 to 88 units depending on how many lines they carry; quiet rows (Idle's, today) hold to 48 units. Every tappable target keeps a native minimum of 44 units; the section chips (32 units) and the summary line's counts (30 units) draw smaller and reach 44 with hit slop.
 
 ## Elevation & Depth
 
@@ -218,21 +218,21 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 ### Band headers
 - **Shape:** Open text, no rule or card.
 - **Typography:** 13pt semibold, uppercase, ink-mid, +0.4pt letter-spacing.
-- **Behavior:** "NEEDS YOU · 4", "FINISHED · 4", "WORKING · 9". A band with nothing in it has no header.
+- **Behavior:** "NEEDS YOU · 4", "WORKING · 9". A band with nothing in it has no header.
 
 ### Board rows (signal and quiet)
-- **Shape:** Draw no separator of their own; the list draws hairlines inset to the title (54 units: 16 padding + 28 mark + 10 gap). Signal rows (Needs you, unseen Finished, and Working, in Live) run 64 to 88 units; quiet rows (Idle's, today) hold to 48 units and show only the title and age.
+- **Shape:** Draw no separator of their own; the list draws hairlines inset to the title (54 units: 16 padding + 28 mark + 10 gap). Signal rows (Needs you and Working, in Live) run 64 to 88 units; quiet rows (Idle's, today) hold to 48 units and show only the title and age.
 - **Typography:** Title semibold 17/22 (two lines for Needs you); why line 15/20, with the state word semibold in its hue when one applies; last line 13/18 in ink-low; age 13pt tabular figures in ink-low.
 - **Behavior:** A small blue "Draft" tag sits before the age when the session has an unsent draft. Tapping a row opens its session.
 
 ### State marks and the pulse meter
 - **Shape:** A 28-unit leading mark column, shared by every row.
-- **Marks:** SF Symbols through `SymbolView`, always pairing shape with color so they read without it: `xmark.octagon.fill` (Failed, danger), `questionmark.circle.fill` (Question, attention), `hand.raised.circle.fill` (Approval, attention), `exclamationmark.triangle.fill` (Warning, attention), `arrow.triangle.2.circlepath.circle.fill` (Restart needed, attention), and a small `circle.fill` dot (Finished, accent, 8pt).
+- **Marks:** SF Symbols through `SymbolView`, always pairing shape with color so they read without it: `xmark.octagon.fill` (Failed, danger), `questionmark.circle.fill` (Question, attention), `exclamationmark.bubble.fill` (Needs you, attention), `hand.raised.circle.fill` (Approval, attention), `exclamationmark.triangle.fill` (Warning, attention), `arrow.triangle.2.circlepath.circle.fill` (Restart needed, attention). A row with anything new since you last opened it, wherever it sits, carries a small blue dot after its title (accent, 8pt); folded, Idle's header carries it for the rows inside.
 - **Pulse meter:** A 22×15pt, 7-bar activity meter, shown on Working rows in the Live band and, every working session's bars summed minute by minute, as the fleet meter beside the Live summary's counts. One fixed log scale (full at 64 events per minute) so meters compare across sessions; a 1pt baseline always draws, older bars fade, and the meter grays when the connection is down. Each bar is a minute of real transcript and tool-output activity, read every 10 seconds from the hub while the Board is in front (S5, `evener/activity/read`); a read counts only while it's under 20 seconds old (two poll intervals) and the connection is up; a working row with no read yet, a hub that predates S5, a dropped connection, or a connected hub whose reads have silently stopped landing, all show a single bar in its newest minute instead - a stale read would otherwise keep ticking toward a false "stuck" as the gap runs long, whether or not the connection itself ever reported a drop. Quiet for 3 minutes reads "Quiet 4m" in the why line; past 10, "May be stuck · no updates for 12m" in amber, the meter itself goes flat and amber, and the row floats to the top of Working - unless the session is waiting on subagents, which is never quiet or stuck. Every read also carries what the session's own root turn last set out to do: the newest tool-call intent its daemon saw, one bounded line, dropped when a turn begins. That words the why line in place of the job the session is running - the intent says what the job is for - and a session waiting on subagents, quiet or stuck still says so first. The row takes a `moving` flag so a still copy of the same session elsewhere shows a plain dot instead, once a later PR renders sessions inline outside Live.
 
 ### The Idle fold
 - **Shape:** A single 48-unit row: "Idle · 3" in ink-mid at 15px (title case, not the band headers' uppercase), with a chevron that rotates 90° when open.
-- **Behavior:** Folded by default; the fold state persists per device. Unfolding, directly or by jumping from the summary line, reveals Idle's quiet rows.
+- **Behavior:** Folded by default; the fold state persists per device. Unfolding, directly or by jumping from the summary line, reveals Idle's quiet rows. Folded, it shows the blue dot while any session inside has something new; VoiceOver says "unread sessions inside".
 
 ### Section rows
 - **Shape:** Open 48-unit rows with a top hairline and a trailing chevron.
@@ -258,7 +258,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 ## Do's and Don'ts
 
 ### Do:
-- **Do** order every live session by who needs you, then finished, then working, then idle.
+- **Do** order every live session by who needs you, then working, then idle.
 - **Do** keep a Board control mounted and disabled, rather than hiding it, while it can't act. The Session hides a control that needs the hub while the hub is away (see the Session's rules below).
 - **Do** use human readable state words, and copy that says exactly what happened.
 - **Do** persist each section's collapsed state per device.
@@ -274,7 +274,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 This records the shipped Session, the screen a session opens to: one conversation, what the agent is doing now, and the one place you talk to it. The full design is `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`, section 8; this phase's plan is `docs/superpowers/plans/2026-09-26-iphone-redesign-phase3-session.md`. The Session uses the Board's palette, type roles and shapes above; what follows is what it adds.
 
 **Key Characteristics:**
-- One screen from top to bottom: the nav bar, the context chips and notes bar, the transcript, then whatever is live at the bottom (the tray, a dock, the ghosts, the composer).
+- One screen from top to bottom: the nav bar, the context chips and notes bar, the transcript ending in any ghosts, then whatever is live at the bottom (the tray, a dock, the composer).
 - One way to send: the composer's Send sends, or queues while the agent works. Stop lives in the tray; steering is something you do to a queued message.
 - The transcript shows as much of the agent's work as you choose, per session.
 
@@ -282,13 +282,13 @@ This records the shipped Session, the screen a session opens to: one conversatio
 
 #### The nav bar
 - **Back:** The chevron, then the amber count (17pt, attention-ink) of the other sessions that need you, so you know before leaving whether anything is waiting.
-- **Title:** The session's name (15pt semibold, one line) over its state line (13pt, ink-mid, tabular figures): a still state mark, the state ("Failed", "Restart needed", "Warning", "Shut down", "Asks a question", "Asks for approval", "Working · 7m", or "Working" before the turn's start is known, "Finished · 35m ago", or "Finished" when no turn has ended) and a small chevron. The mark never animates; the Session's one meter is the tray's. The whole title is one button that opens the Session sheet.
+- **Title:** The session's name (15pt semibold, one line) over its state line (13pt, ink-mid, tabular figures): a still state mark, the state ("Failed", "Restart needed", "Warning", "Shut down", "Asks a question", "Needs you", "Asks for approval", "Working · 7m", or "Working" before the turn's start is known, "Idle · 35m ago", or "Idle" when no turn has ended) and a small chevron. The mark never animates; the Session's one meter is the tray's. The whole title is one button that opens the Session sheet.
 - **Title swipe:** A horizontal pan on the title moves to the next session in Live order (to the left, as a page turns) or the previous one (to the right). It starts only once a drag goes 10pt sideways, and it moves after 60pt or a 500pt/s flick; a pan flicked back the other way moves nowhere. The session slides in from the side it came from. VoiceOver gets "Previous session" and "Next session" actions in its place.
-- **⋯ menu:** A native menu: Detail level (with the five levels inline), Find in session, then Files & artifacts, Subagents, Tasks and Notes & links, each only when it can act, Session info, Ask aside… (when the session can fork and the hub is reachable), Pin to category…, Archive, and Shut down (destructive, only when it can). Delete lives in the Session sheet.
+- **⋯ menu:** A native menu: Detail level (with the five levels inline), Find in session, then Files, Subagents, Tasks and Notes & links, each only when it can act, Session info, Ask aside… (when the session can fork and the hub is reachable), Pin to category…, Archive, and Shut down (destructive, only when it can). Delete lives in the Session sheet.
 
 #### The connection bar, context chips and notes bar
 - **Connection bar:** A 24pt line of 13pt ink-low text under the nav bar, with the Board toolbar's words: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" after 30, and "Update needed" at once when the hub speaks an incompatible protocol version. A live connection shows nothing.
-- **Context chips:** 32pt capsules (16-unit radius, 1pt border, inset fill) in one sideways-scrolling row, each only when it has content: Subagents with its count and "2 failed" in danger ink (`person.2`), Files with its count and a blue dot when a document is new or changed (`doc.text`), Tasks "3/7" (`checklist`), Goal (`target`, amber when blocked) and Queue with its depth (`tray`). Subagents and Tasks open live sheets, so they hide while disconnected; the others always show. Dragging the list down more than 8pt from where the scroll last turned slides the row up in 200ms, behind the connection bar when it shows and behind the nav bar otherwise; any upward scroll, or reaching the top, brings it back. Scrolls the app makes itself (restoring your place, following the latest message) never hide it. The slide is a transform, so the list and your place in it never move.
+- **Context chips:** 32pt capsules (16-unit radius, 1pt border, inset fill) in one sideways-scrolling row, each only when it has content: Subagents with its count and "2 failed" in danger ink (`person.2`), Files with its count and a blue dot when a document is new or changed (`doc.text`), Tasks "3/7" (`checklist`, settled: done plus cancelled), Goal (`target`, amber when blocked) and Queue with its depth (`tray`). Subagents and Tasks open live sheets, so they hide while disconnected; the others always show. Dragging the list down more than 8pt from where the scroll last turned slides the row up in 200ms, behind the connection bar when it shows and behind the nav bar otherwise; any upward scroll, or reaching the top, brings it back. Scrolls the app makes itself (restoring your place, following the latest message) never hide it. The slide is a transform, so the list and your place in it never move.
 - **Notes bar:** One 32pt line under the chips, in the same sliding row: "Your note: …" with a person glyph, else "Agent's note: …" with a sparkles glyph, else the one link's label or "3 links", 15pt in ink-hi, with a trailing "3 links" in 13pt ink-mid when a note shows beside links. It shows only when the hub offers shared notes and there is something to preview. Tapping it opens Notes & links.
 
 #### The transcript
@@ -304,7 +304,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **Document chip:** A document the agent named sits under its message: its kind and title, the file name, and how long ago the session wrote it. Tapping opens the Reader.
 - **System event:** A diamond in a 16pt gutter and the event in 13pt ink-low, two lines at most until tapped.
 - **Error:** A red left rule, the hub's words as they are, and at most one action: Resume when the session is paused, Sign in when a sign-in failed, otherwise Retry on the latest turn's own failure while Send can act.
-- **Scrolling:** A session opens at the right place and never moves what you are reading. New content below reads "↓ 3 new" in a floating capsule; tapping it scrolls to the end. Until the first read lands, three still blocks stand in for the conversation.
+- **Scrolling:** A session opens at the right place and never moves what you are reading. New content below reads "↓ 3 new" in a floating capsule (a ghost coming or going is never new content); tapping it scrolls to the end. Until the first read lands, three still blocks stand in for the conversation.
 
 #### The status tray and Stop
 - **Shape:** One 36pt line above the composer, only while the agent works: the session's pulse meter, the running turn's most recent nonblank tool-call intent in 15pt, and Stop (`stop.fill`) at the trailing edge in a 44pt target. Before a tool intent arrives, the line falls back to current progress such as "Running go test ./cmd/evener-hub/… · 5m", "Waiting on 32 subagents", "Thinking…", or "Quiet 40s".
@@ -314,6 +314,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **Next:** A capsule floating 10pt above the bottom while another session needs you: "Next" in accent ink, then that session's title and a chevron. A tap opens it; touch and hold lists everyone who needs you. The Next capsule, "↓ 3 new" and toasts share one column so none covers another.
 
 #### The ghosts
+- **Place:** The transcript's last rows, after its last message and just above the composer. They scroll with it, so they take none of its room; scrolled up in history, you don't see them.
 - **Shape:** A dashed, unfilled bubble (1pt `#B7B6AC` light, `#51514A` dark, 18-unit radius, at most 85% wide) where your message will land, its text in the your-message serif (17/25) in ink-mid, a 13pt ink-low caption beneath (danger ink for a refused message), and its actions as text buttons: Cancel and Discard in ink, the rest in accent ink.
 - **States:** Queued ("Queued · sends when this turn ends", with Steer now), held after a Stop ("Held · you stopped this turn", with Send now and Cancel), steering ("Steering · arrives at the next step"), sending ("Sending…"), unconfirmed ("Couldn't confirm this was sent", with Check and Discard) and refused ("Couldn't send this", with Edit and Discard).
 - **Behavior:** At most three queued messages show; the rest read "2 more queued", which opens the Queued messages sheet with every one and Steer all now. Tapping a bubble opens the rest of its actions (Edit, "Cancel message"). A queued or held message swipes left to Cancel. A queued message's actions hide while the hub is away; the message itself stays.
@@ -324,7 +325,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **Approval:** "Wants to write outside the workspace" with an amber hand, the tool and its target in Menlo (a path wraps only at its slashes), the session's scope ("This session can only write inside its project folder."), then "Allow this file only" (with "It will ask again for the next one") and Deny. There is no redirect, and the composer stays away while an approval waits.
 
 #### The composer
-- **Shape:** One rounded field (22-unit radius, 1pt border, raised fill: `#FCFBF8` light, `#232320` dark) holding any ghosts, then the text, which grows to six lines and then offers the full-screen editor, then one controls row that looks the same whether or not the agent works: +, the model chip, and Send.
+- **Shape:** One rounded field (22-unit radius, 1pt border, raised fill: `#FCFBF8` light, `#232320` dark) holding the text, which grows to six lines and then offers the full-screen editor, then one controls row that looks the same whether or not the agent works: +, the model chip, and Send.
 - **Send:** A 44pt paper airplane on the accent fill, the only Send. Its placeholder and VoiceOver label say what it will do: "Message" and Send, "Tell the agent something…" and Queue message while the agent works, "Message to resume" and Send and resume on a shut-down session, "Answer or ask…" and Send answer while a question is open.
 - **+ menu:** Photo library, Camera, and Commands and skills, which opens a sheet of the built-in commands, then skills and plugin commands grouped by plugin; a choice puts its "/name" at the start of the draft.
 - **Model chip:** "DeepSeek 4.1 Flash · XHigh ⌄" opens the model sheet: a search field and the Effort control (Low to Max, "Applies from the next turn") in its header, then Recent and each provider's models with their context. It steps aside while the composer answers an open question.

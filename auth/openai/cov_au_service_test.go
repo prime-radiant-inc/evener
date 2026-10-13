@@ -117,8 +117,7 @@ func TestLoginAuthorizeURLFailurePropagates(t *testing.T) {
 		return &stubCallbackServer{redirectURI: ""}, nil
 	}
 
-	if _, err := svc.Login(context.Background(), t.TempDir(), "openai"); err == nil ||
-		!strings.Contains(err.Error(), "redirect URI is required") {
+	if _, err := svc.Login(context.Background(), t.TempDir(), "openai"); !errors.Is(err, errRedirectURIRequired) {
 		t.Fatalf("Login() error = %v, want AuthorizeURL failure", err)
 	}
 }

@@ -4,6 +4,20 @@ import { computeTooltipPosition, TRIGGER_GAP } from "./computePosition";
 
 const VIEWPORT = { width: 1000, height: 800 };
 
+test("a supplied fallback gap keeps the same above, below and clamp policy", () => {
+  expect(computeTooltipPosition(rect(20, 300, 260, 40), { width: 240, height: 96 }, VIEWPORT, 12)).toEqual({
+    left: 30,
+    top: 192,
+  });
+  expect(computeTooltipPosition(rect(20, 40, 260, 40), { width: 240, height: 96 }, VIEWPORT, 12)).toEqual({
+    left: 30,
+    top: 92,
+  });
+  expect(
+    computeTooltipPosition(rect(20, 40, 260, 40), { width: 240, height: 96 }, { width: 500, height: 150 }, 12),
+  ).toEqual({ left: 30, top: 8 });
+});
+
 // A DOMRect-shaped literal is enough: computeTooltipPosition reads left, right,
 // top, bottom and width only.
 function rect(left: number, top: number, width: number, height: number): DOMRect {

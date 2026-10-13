@@ -154,6 +154,39 @@ func TestRunCLIProbeCutsTheFixtureOffFromAnEnclosingRepository(t *testing.T) {
 	}
 }
 
+// A CLI probe's `evener run` keeps its named scratch at exit, and no hub ever
+// archives a probe, so the harness removes the probe session's tree itself.
+func TestRunProbeRemovesTheCLISessionsScratchTree(t *testing.T) {
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	tree := filepath.Join(tmp, "evener-scratch-"+id)
+	bin := filepath.Join(t.TempDir(), "fake-evener")
+	// Like a real run: a root meta in --state-dir and a named scratch in TMPDIR.
+	mustWrite(t, bin, `#!/bin/sh
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--state-dir" ]; then state="$2"; fi
+  shift
+done
+mkdir -p "$state/sessions" "$TMPDIR/evener-scratch-`+id+`/`+id+`"
+printf '{"id":"`+id+`"}' > "$state/sessions/`+id+`.meta.json"
+`)
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := runConfig{evenerBin: bin, model: "openai/m", reasoningEffort: "low", outDir: t.TempDir(), timeout: time.Minute}
+	res := runProbe(cfg, probeFile{ID: "scratch", Prompt: "p"}, 1, nil, nil)
+	if res.SessionID != id {
+		t.Fatalf("probe session = %q, want %q (the fake run's meta was not read)", res.SessionID, id)
+	}
+	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
+		t.Errorf("the CLI probe left its session's scratch tree %s: %v", tree, err)
+	}
+}
+
 func fixtureGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

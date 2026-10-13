@@ -19,7 +19,7 @@ func TestHumanNoteConcurrentSameValueNotifiesOnce(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			if response.Note != "shared value" {
+			if response.Note != "shared\nvalue" {
 				t.Errorf("response = %+v", response)
 			}
 		})
@@ -39,7 +39,7 @@ func TestHumanNoteConcurrentSameValueNotifiesOnce(t *testing.T) {
 		t.Fatalf("same-value updates = %d", updates)
 	}
 	reloadHumanNoteStore(t, s)
-	if note, _ := s.notesSnapshot(); note != "shared value" {
+	if note, _ := s.notesSnapshot(); note != "shared\nvalue" {
 		t.Fatalf("restored note = %q", note)
 	}
 	if len(s.clientMutations.snapshot().SteeringOrder) != 1 {

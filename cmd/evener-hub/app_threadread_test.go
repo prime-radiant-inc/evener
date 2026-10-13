@@ -118,12 +118,12 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 	if thread.Evener.Diagnostics == nil {
 		t.Fatal("past thread has no diagnostics")
 	}
-	for _, want := range []string{"doctoring-evener", "project-skill", "extra-skill", "fixture-plugin:plugin-skill"} {
+	for _, want := range []string{"doctoring-evener", "project-skill", "extra-skill", "fixture-plugin:plugin-skill", "gardening-memory"} {
 		if !hasSkill(thread.Evener.Diagnostics.Skills, want) {
 			t.Fatalf("skills = %+v, missing %q", thread.Evener.Diagnostics.Skills, want)
 		}
 	}
-	wantNames := []string{"doctoring-evener", "extra-skill", "fixture-plugin:plugin-skill", "project-skill"}
+	wantNames := []string{"doctoring-evener", "extra-skill", "fixture-plugin:plugin-skill", "gardening-memory", "project-skill"}
 	if len(thread.Evener.Diagnostics.Skills) != len(wantNames) {
 		t.Fatalf("skill catalog = %+v, want exactly %d entries", thread.Evener.Diagnostics.Skills, len(wantNames))
 	}
@@ -139,6 +139,9 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 		"doctoring-evener":            "extra override",
 	}
 	for _, got := range thread.Evener.Diagnostics.Skills {
+		if got.Name == "gardening-memory" && strings.TrimSpace(got.Description) == "" {
+			t.Fatal("gardening-memory description must be nonempty")
+		}
 		if want, ok := descriptions[got.Name]; ok && got.Description != want {
 			t.Fatalf("%s description = %q, want %q", got.Name, got.Description, want)
 		}
@@ -1002,6 +1005,27 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 		if turn.Cost != "" {
 			t.Fatalf("turn.Cost=%q with no registry, want empty", turn.Cost)
 		}
+	}
+}
+
+// TestEvenerUsageFromCumulative pins the nil-when-zero convention (mirrors
+// evenerUsageFromLLM in cmd/evener/serve.go): an all-zero CumulativeUsage — a
+// fresh session or a meta written before WS2 — must map to a nil
+// *appwire.EvenerUsage so the usage cluster hides rather than rendering ↑0 ↓0.
+func TestEvenerUsageFromCumulative(t *testing.T) {
+	if got := evenerUsageFromCumulative(schema.CumulativeUsage{}); got != nil {
+		t.Fatalf("evenerUsageFromCumulative(zero) = %+v, want nil", got)
+	}
+
+	got := evenerUsageFromCumulative(schema.CumulativeUsage{
+		InputTokens:     100,
+		OutputTokens:    50,
+		CacheReadTokens: 10,
+		TotalTokens:     150,
+	})
+	want := &appwire.EvenerUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 150}
+	if got == nil || *got != *want {
+		t.Fatalf("evenerUsageFromCumulative = %+v, want %+v", got, want)
 	}
 }
 

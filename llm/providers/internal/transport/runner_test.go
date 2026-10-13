@@ -271,7 +271,7 @@ func TestRun_TerminalErrorHookReplacesTheIncompleteWrap(t *testing.T) {
 	if len(got) != 1 || got[0].Type != llm.StreamEventError || !errors.Is(got[0].Err, sentinel) {
 		t.Fatalf("events = %+v, want the hook's error verbatim", got)
 	}
-	if strings.Contains(got[0].Err.Error(), "responses stream ended without completion") {
+	if _, wrapped := errors.AsType[*llm.StreamError](got[0].Err); wrapped {
 		t.Fatalf("the hook must replace the IncompleteMsg wrap, not add to it: %v", got[0].Err)
 	}
 }

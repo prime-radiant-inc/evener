@@ -129,5 +129,5 @@ FYI/PASS noise. **Healthy ⇒ zero findings.** Full schema:
 | Treat any self-influenced delivery as a bug, or re-derive a loop from the `Chain` | Self-influence is normal; flag only a runaway — read the recorded breaker telemetry (`max_self_influence_depth`, `runaway_drops`) via `doctor_evener` `watches` with `self_loops: true` |
 | Emit a PASS / FYI / "looks fine" finding | Emit only confirmed, actionable problems; healthy ⇒ zero |
 | Silently apply a core-skill or doctor-tool repair | Propose only, behind review + the validation gate (`repair-guardrails.md`) |
-| Resume a collected or measurement session in place to question it | Copy the state dir first (`references/session-interrogation.md`); the corpus is an input you cannot regenerate, and the retention manifest refuses a moved full resume anyway |
+| Resume a collected or measurement session in place to question it | Copy the state dir first (`references/session-interrogation.md`); the corpus is an input you cannot regenerate |
 | Treat the model's self-account as wire truth | A verbatim schema recitation proves delivery; the api log is ground truth about the wire; cite the two separately |

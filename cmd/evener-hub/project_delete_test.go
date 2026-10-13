@@ -91,15 +91,15 @@ func TestProjectDeleteRefusesNonLocalSource(t *testing.T) {
 	})
 
 	for name, tc := range map[string]struct {
-		params appwire.ProjectDeleteParams
-		want   string
+		params  appwire.ProjectDeleteParams
+		unknown bool
 	}{
 		// A configured host is a source this hub cannot delete from...
-		"configured": {appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath, Source: "host-a"}, "local-only"},
+		"configured": {appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath, Source: "host-a"}, false},
 		// ... an unconfigured one is unknown, never silently a local delete.
-		"unknown": {appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath, Source: "host-b"}, "unknown source"},
+		"unknown": {appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath, Source: "host-b"}, true},
 		// The refusal precedes resolution: the target is never even inspected.
-		"unresolvable": {appwire.ProjectDeleteParams{Key: "not-a-project", WorkingDir: "/nonexistent", Source: "host-a"}, "local-only"},
+		"unresolvable": {appwire.ProjectDeleteParams{Key: "not-a-project", WorkingDir: "/nonexistent", Source: "host-a"}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := dispatchProjectDelete(t, web, tc.params)
@@ -107,8 +107,8 @@ func TestProjectDeleteRefusesNonLocalSource(t *testing.T) {
 			if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
 				t.Fatalf("error = %v, want an AppWire InvalidParams refusal", err)
 			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %q, want %q in the refusal", err, tc.want)
+			if errors.Is(err, errUnknownDecisionSource) != tc.unknown {
+				t.Fatalf("error = %q, want the unknown-source refusal: %v", err, tc.unknown)
 			}
 		})
 	}

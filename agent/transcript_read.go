@@ -423,6 +423,27 @@ func resumedDivergence(entries []transcript.Entry, divergence int, insertions []
 	return mapDivergenceThroughResumedHistory(historyIndex(entries, divergence), historyIndex(entries, retainedFrom(entries)), insertions)
 }
 
+// latestAttemptStarts maps each TurnID that recovery reopened to the index in
+// resumed history (resumeHistoryIndexed's, with its repair insertions) of
+// the first turn its latest attempt recorded: everything the turn recorded
+// before that belongs to an attempt the rerun replaced. A reopen marker is
+// transcript-only, so history alone cannot tell the attempts apart.
+func latestAttemptStarts(entries []transcript.Entry, insertions []int) map[string]int {
+	var starts map[string]int
+	for i, e := range entries {
+		if e.Turn.Kind != schema.TurnReopen || e.Turn.TurnID == "" {
+			continue
+		}
+		if starts == nil {
+			starts = map[string]int{}
+		}
+		// A reopen before the compaction anchor maps below zero: the whole
+		// retained window then belongs to the latest attempt.
+		starts[e.Turn.TurnID] = max(0, resumedDivergence(entries, i, insertions))
+	}
+	return starts
+}
+
 // historyIndex is the number of entries before index i that resume keeps in
 // history: i less the transcript-only entries before it.
 func historyIndex(entries []transcript.Entry, i int) int {

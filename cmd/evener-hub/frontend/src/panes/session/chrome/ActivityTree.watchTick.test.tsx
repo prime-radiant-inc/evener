@@ -15,6 +15,12 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { ActivityTree } from "./ActivityTree";
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
+
+function metaText(row: HTMLElement): string {
+  const meta = row.querySelector<HTMLElement>("[class*='denseMeta']");
+  if (!meta) throw new Error("row has no meta cluster");
+  return meta.textContent ?? "";
+}
 const CREATED = "2026-08-05T12:48:00Z";
 
 function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
@@ -137,11 +143,13 @@ describe("ActivityTree watch row ticks", () => {
       fireEvent.click(within(closedRow).getByRole("button", { name: "Hide details for Watch: Deploy rollback check" }));
       expect(closedRow.getAttribute("aria-expanded")).toBe("false");
       // A collapsed row renders no clock-derived countdown...
-      expect(closedRow.textContent).not.toContain("next");
+      expect(metaText(closedRow)).toBe(activityRows.watchMeta(watches[1] as SessionWatch, undefined));
       const closedText = closedRow.textContent;
       // ...while the open row still counts down.
       const openRow = screen.getByRole("treeitem", { name: "Watch: Hourly sweep" });
-      expect(openRow.textContent).toContain("next ~4m");
+      const openWatch = watches[0] as SessionWatch;
+      expect(metaText(openRow)).toBe(activityRows.watchMeta(openWatch, NOW));
+      expect(metaText(openRow)).not.toBe(activityRows.watchMeta(openWatch, undefined));
 
       const rowsAtRest = rowRender.mock.calls.length;
       const detailsAtRest = detailRender.mock.calls.length;
@@ -152,13 +160,13 @@ describe("ActivityTree watch row ticks", () => {
       });
 
       // The open row followed the clock...
-      expect(openRow.textContent).toContain("next ~3m59s");
       expect(detailRender.mock.calls.length).toBeGreaterThan(detailsAtRest);
       // ...and the collapsed row never re-rendered: its formatter was called
       // again only for the open row.
       const rerendered = rowRender.mock.calls.slice(rowsAtRest).map((call) => call[0].watch.id);
       expect(rerendered).toEqual(["watch_open"]);
       expect(closedRow.textContent).toBe(closedText);
+      expect(metaText(openRow)).toBe(activityRows.watchMeta(openWatch, NOW + 1000));
     } finally {
       vi.useRealTimers();
     }

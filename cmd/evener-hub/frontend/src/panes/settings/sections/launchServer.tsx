@@ -9,7 +9,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
-import { Button } from "../../../widgets";
+import { Button, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
@@ -34,7 +34,7 @@ type LoadState =
 function Diagnostics({ diagnostics }: { diagnostics: LaunchConfigDiagnostic[] }) {
   if (diagnostics.length === 0) return null;
   return (
-    <div className={CLASS.diagnostics} role="status" aria-live="polite">
+    <div className={CLASS.diagnostics} role="status" aria-live="polite" data-testid="launch-diagnostics">
       <p className={CLASS.diagnosticsHeading}>Warnings</p>
       <ul className={CLASS.diagnosticsList}>
         {diagnostics.map((d, index) => (
@@ -166,9 +166,9 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
       <p className={CLASS.help}>
         These values are applied to every evener spawn unless overridden by a project layer or per-launch.
       </p>
-      {load.phase === "loading" && <p className={CLASS.help}>Loading launch settings…</p>}
+      {load.phase === "loading" && <Loader label="Loading launch settings" />}
       {load.phase === "error" && (
-        <p className={CLASS.error}>
+        <p className={CLASS.error} data-reason="load-failed">
           Failed to load launch settings. {load.message}{" "}
           <Button type="button" onClick={() => retryLoad()}>
             Retry
@@ -178,7 +178,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
       {load.phase === "ready" && (
         <>
           {refreshError !== null && (
-            <p className={CLASS.error} role="status">
+            <p className={CLASS.error} role="status" data-reason="refresh-failed">
               Could not re-read this host's launch settings. {refreshError}{" "}
               <Button type="button" onClick={() => reload()}>
                 Retry

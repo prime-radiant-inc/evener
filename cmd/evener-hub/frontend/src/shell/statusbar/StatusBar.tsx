@@ -6,7 +6,7 @@
 
 import { type ReactNode, useMemo } from "react";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
-import { useSessionActivity } from "../../stores/sessionActivity";
+import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { ACTIVITY_TABS } from "../activitybar/activityTabs";
@@ -37,10 +37,11 @@ export function StatusBar({ sessionRef, paneId, leading }: StatusBarProps) {
   // Observe the shared session summary for context and authoritative counts.
   // The sidebar shares this owner; badges do not demand collection pages.
   const { snapshot } = useSessionActivity(sessionRef);
+  const subagents = useSubagentCounts(sessionRef);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
   const scope = useMemo(
-    () => deriveScope(navigationStore.getState(), sessionRef, snapshot),
-    [resources, sessionRef, snapshot],
+    () => deriveScope(navigationStore.getState(), sessionRef, snapshot, subagents),
+    [resources, sessionRef, snapshot, subagents],
   );
   const { counts } = scope;
   return (

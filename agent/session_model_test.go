@@ -1460,7 +1460,7 @@ func TestHandleModelError_ContentFilterRetry_PreservesConcurrentAppendDuringSlow
 		Responder: func(req llm.Request) llm.Response {
 			close(entered)
 			<-proceed
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 		},
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")

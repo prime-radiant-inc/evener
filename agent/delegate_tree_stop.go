@@ -737,7 +737,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 			continue
 		}
 		closed[child] = struct{}{}
-		teardownChildSession(ctx, child, retainChildScratch)
+		teardownChildSession(ctx, child)
 	}
 	if _, err := c.joinStopReconcileDriver(ctx); err != nil {
 		return err

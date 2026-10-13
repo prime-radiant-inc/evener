@@ -2,7 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
-	"strings"
+	"errors"
 	"testing"
 )
 
@@ -23,8 +23,9 @@ func TestValidateMutationParamsEmptyStringField(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty string field should return error")
 	}
-	if !strings.Contains(err.Error(), "clientMutationId is required") {
-		t.Fatalf("error should mention required field, got %v", err)
+	missing, ok := errors.AsType[MissingMutationFieldError](err)
+	if !ok || missing.Field != "clientMutationId" {
+		t.Fatalf("error = %v, want clientMutationId reported missing", err)
 	}
 }
 

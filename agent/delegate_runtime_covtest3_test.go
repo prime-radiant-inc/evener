@@ -50,11 +50,11 @@ func TestDelegateRuntimeSend_EmptyMessage(t *testing.T) {
 }
 
 // TestRuntimeForDelegateOwner_NilController covers the nil-controller guard
-// in runtimeForDelegateOwner (lines 1970-1972).
+// in runtimeForDelegateOwnerLocked.
 func TestRuntimeForDelegateOwner_NilController(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	if got := c.runtimeForDelegateOwner(delegateSnapshot{}); got != nil {
+	if got := c.runtimeForDelegateOwnerLocked(delegateSnapshot{}); got != nil {
 		t.Fatal("expected nil for nil controller")
 	}
 }

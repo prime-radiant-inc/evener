@@ -6,13 +6,14 @@ package dev
 // scripts/web/test-web-browser.sh keeps only the load-aware default for the
 // slot count and hands off here.
 //
-// The skill, cascade, annotation-journey and retirement guards are
-// never-signalled checks: each is a go test (the retirement guard's behind
-// `npm run`) whose driver, Chrome and helper daemons are cleaned up by the test
-// binary's own t.Cleanup, which a TERM to go test would skip and a TERM to npm
-// alone would orphan; an interrupt waits for them instead. The skill, cascade
-// and annotation-journey guards also need the built frontend (the hub serves
-// the embedded dist), which the gate builds first when it is missing.
+// The skill, cascade, background Jobs, annotation-journey and retirement
+// guards are never-signalled checks: each is a go test (the retirement
+// guard's behind `npm run`) whose driver, Chrome and helper daemons are
+// cleaned up by the test binary's own t.Cleanup, which a TERM to go test would
+// skip and a TERM to npm alone would orphan; an interrupt waits for them
+// instead. The skill, cascade, background Jobs and annotation-journey guards
+// also need the built frontend (the hub serves the embedded dist), which the
+// gate builds first when it is missing.
 
 import (
 	"fmt"
@@ -22,13 +23,18 @@ import (
 	"strings"
 )
 
-// browserGuards is every guard in verdict order.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "sessioncacheguard", "skillguard", "cascadeguard", "docannotationguard", "docannotationjourney"}
+// browserGuards is every guard in verdict order. The last four
+// (skillguard, cascadeguard, backgroundjobsguard, docannotationjourney) are
+// the never-signalled checks that also need the built production frontend
+// (needsBuild); retirementguard is never-signalled too, but needs no build.
+// Keep the building four last.
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "sessioncacheguard", "docannotationguard", "skillguard", "cascadeguard", "backgroundjobsguard", "docannotationjourney"}
 
 const (
 	skillGuard           = "skillguard"
 	cascadeGuard         = "cascadeguard"
 	retirementGuard      = "retirementguard"
+	backgroundJobsGuard  = "backgroundjobsguard"
 	docAnnotationGuard   = "docannotationguard"
 	docAnnotationJourney = "docannotationjourney"
 )
@@ -40,8 +46,6 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 		name:          "web-browser-guards",
 		checks:        browserGuards,
 		spec:          browserGuardSpec,
-		needsBuild:    []string{skillGuard, cascadeGuard, docAnnotationJourney},
-		unsignalled:   []string{retirementGuard, skillGuard, cascadeGuard, docAnnotationJourney},
 		slots:         slots,
 		buildFrontend: buildFrontend,
 	}
@@ -69,12 +73,23 @@ func privateFrontendEnv(root, vite string) []string {
 func browserGuardSpec(guard, root string) guardSpec {
 	vite := "BROWSER_GUARD_VITE_CACHE_DIR=" + filepath.Join(root, "vite-cache")
 	switch guard {
+	case backgroundJobsGuard:
+		return guardSpec{
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundJobsBrowser$", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
+		}
 	case cascadeGuard:
 		return guardSpec{
-			name: guard,
-			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestAgentCascadeBrowser$", "-count=1"},
-			dir:  ".",
-			env:  []string{vite},
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestAgentCascadeBrowser$", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
 		}
 	case skillGuard:
 		// web-skillguard is the full-stack guard: cmd/evener-hub's
@@ -83,21 +98,24 @@ func browserGuardSpec(guard, root string) guardSpec {
 		// real `evener serve` daemons. The TestSkillGuard* unit tests ride
 		// along: they need no browser and only this tag compiles them.
 		return guardSpec{
-			name: guard,
-			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard", "-count=1"},
-			dir:  ".",
-			env:  []string{vite},
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
 		}
 	case retirementGuard:
 		// retirementguard's contract is `npm run retirementguard`: it runs the
 		// isolated Go fixture (TestRetirementBrowser), which starts the fixture
 		// Hub and drives scripts/retirementguard/run.mjs against it.
 		return guardSpec{
-			name:          guard,
-			argv:          []string{"npm", "run", "retirementguard"},
-			dir:           frontendDir,
-			env:           []string{"TMPDIR=" + filepath.Join(root, "tmp"), "NODE_DISABLE_COMPILE_CACHE=1", vite},
-			privateGoHome: true,
+			name:            guard,
+			argv:            []string{"npm", "run", "retirementguard"},
+			dir:             frontendDir,
+			env:             []string{"TMPDIR=" + filepath.Join(root, "tmp"), "NODE_DISABLE_COMPILE_CACHE=1", vite},
+			privateGoHome:   true,
+			waitOnInterrupt: true,
 		}
 	case docAnnotationGuard:
 		// docannotationguard runs the small production-component cases
@@ -126,10 +144,12 @@ func browserGuardSpec(guard, root string) guardSpec {
 		// joins the provider observer and reaps the daemon rather than an
 		// interrupt skipping it.
 		return guardSpec{
-			name: guard,
-			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestDocumentAnnotationBrowserJourney$", "-count=1"},
-			dir:  ".",
-			env:  []string{vite},
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestDocumentAnnotationBrowserJourney$", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
 		}
 	default:
 		return guardSpec{

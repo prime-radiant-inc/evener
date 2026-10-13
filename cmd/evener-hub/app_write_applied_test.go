@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -168,9 +167,9 @@ func TestHubRPCInstanceCreateBroadcastsWhenTheRollbackCouldNotBeWritten(t *testi
 	if err == nil {
 		t.Fatal("evener/instance/create = nil, want the failed rollback reported")
 	}
-	if !strings.Contains(err.Error(), "restoring the previous config failed") {
-		t.Fatalf("evener/instance/create = %v, want the double failure this test is about", err)
-	}
+	// The rollback could not be written, so the entry this create wrote is
+	// still in the file: that leftover is the double failure this test is about.
+	authoredEntry(t, f.tomlPath, "mywork")
 	waitForAuthUpdatedBroadcast(t, client, "a create whose rollback could not be written")
 }
 
@@ -198,8 +197,12 @@ func TestHubRPCInstanceRemoveBroadcastsWhenTheRollbackCouldNotBeWritten(t *testi
 	if err == nil {
 		t.Fatal("evener/instance/remove = nil, want the failed rollback reported")
 	}
-	if !strings.Contains(err.Error(), "the removal stands in the config") {
-		t.Fatalf("evener/instance/remove = %v, want the double failure this test is about", err)
+	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
+	if readErr != nil {
+		t.Fatalf("ReadConfigFile: %v", readErr)
+	}
+	if _, kept := l.Providers["doomed"]; kept {
+		t.Fatal("providers.toml still has [providers.doomed], want the removal standing in the config the rollback could not rewrite")
 	}
 	// The removal stood, so the client is told so through the wire data rather
 	// than left to retry a failed remove against an instance that is gone.
@@ -297,10 +300,10 @@ func TestInstances_RemoveMarksAppliedWhenTheConfigWriteFailsAndTheCredentialCann
 	if _, applied := errors.AsType[removeAppliedError](err); applied {
 		t.Fatalf("Remove = %v (%T), want a plain applied write: [providers.work] never moved", err, err)
 	}
-	if !strings.Contains(err.Error(), "the instance is still configured") {
+	if !errors.Is(err, errInstanceStillConfigured) {
 		t.Fatalf("Remove = %v, want the configured frame: [providers.work] never moved", err)
 	}
-	if strings.Contains(err.Error(), "the removal stands") {
+	if errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want no standing frame: the authored entry never moved", err)
 	}
 }
@@ -343,13 +346,13 @@ func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheStoredKeyCan
 	if err == nil {
 		t.Fatal("Remove = nil, want the config write failure reported")
 	}
-	if strings.Contains(err.Error(), "the instance is still configured") {
+	if errors.Is(err, errInstanceStillConfigured) {
 		t.Fatalf("Remove = %v, want no configured frame: the key that carried the instance stayed deleted", err)
 	}
-	if !strings.Contains(err.Error(), "the removal stands") {
+	if !errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want the standing removal named", err)
 	}
-	if !strings.Contains(err.Error(), "stored key could not be restored") {
+	if !errors.Is(err, errStoredKeyNotRestored) {
 		t.Fatalf("Remove = %v, want the unrestored layer named", err)
 	}
 	if !writeDidApply(err) {
@@ -398,13 +401,13 @@ func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheOAuthRecordC
 	if err == nil {
 		t.Fatal("Remove = nil, want the failed restore reported")
 	}
-	if strings.Contains(err.Error(), "the instance is still configured") {
+	if errors.Is(err, errInstanceStillConfigured) {
 		t.Fatalf("Remove = %v, want no configured frame: the record that carried the instance stayed deleted", err)
 	}
-	if !strings.Contains(err.Error(), "the removal stands") {
+	if !errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want the standing removal named", err)
 	}
-	if !strings.Contains(err.Error(), "OAuth record could not be restored") {
+	if !errors.Is(err, errOAuthRecordNotRestored) {
 		t.Fatalf("Remove = %v, want the unrestored layer named", err)
 	}
 	if !writeDidApply(err) {
@@ -450,13 +453,13 @@ func TestInstances_RemoveRollsBackWhenTheImplicitConfigWriteFailsAndTheCarryingR
 	if err == nil {
 		t.Fatal("Remove = nil, want the config write failure reported")
 	}
-	if strings.Contains(err.Error(), "the removal stands") {
+	if errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want a rollback: the carrying record is back", err)
 	}
 	if _, applied := errors.AsType[removeAppliedError](err); applied {
 		t.Fatalf("Remove = %v (%T), want no standing-removal discriminator: the carrying record is back", err, err)
 	}
-	if !strings.Contains(err.Error(), "some credentials were not put back") {
+	if _, leftover := errors.AsType[removalLeftoversError](err); !leftover {
 		t.Fatalf("Remove = %v, want the leftover stray key reported", err)
 	}
 	if !writeDidApply(err) {
@@ -562,10 +565,10 @@ func TestInstances_RemoveRollsBackWhenTheCarryingRecordIsRestored(t *testing.T) 
 	if err == nil {
 		t.Fatal("Remove = nil, want the failed reload reported")
 	}
-	if strings.Contains(err.Error(), "the removal stands") {
+	if errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want a rollback: the carrying record is back", err)
 	}
-	if !strings.Contains(err.Error(), "was rolled back") {
+	if !errors.Is(err, errRemovalRolledBack) {
 		t.Fatalf("Remove = %v, want the rollback reported", err)
 	}
 	if !writeDidApply(err) {
@@ -609,7 +612,7 @@ func TestInstances_RemoveStandsWhenTheCarryingRecordCannotBeRestored(t *testing.
 	if err == nil {
 		t.Fatal("Remove = nil, want the failed restore reported")
 	}
-	if !strings.Contains(err.Error(), "the removal stands") {
+	if !errors.Is(err, errRemovalStands) {
 		t.Fatalf("Remove = %v, want the removal to stand: the carrying record is gone", err)
 	}
 	if !writeDidApply(err) {
@@ -716,11 +719,10 @@ func TestHubRPCInstanceRemoveBroadcastsWhenAPartialRollbackLeavesACredentialDele
 	if err == nil {
 		t.Fatal("evener/instance/remove = nil, want the partial rollback reported")
 	}
-	if strings.Contains(err.Error(), "the removal stands") || !strings.Contains(err.Error(), "was rolled back") {
+	// A rollback, so the client is not told the removal stands: the carrying
+	// record is back, and the stray key's deletion is checked below.
+	if _, data := wireErrorData(t, err); data.EvenerErrorInfo == appwire.ErrorInstanceRemoveApplied {
 		t.Fatalf("evener/instance/remove = %v, want a rollback: the carrying record is back", err)
-	}
-	if !strings.Contains(err.Error(), "some credentials were not put back") {
-		t.Fatalf("evener/instance/remove = %v, want the leftover stray key reported", err)
 	}
 	if info, statErr := os.Stat(filepath.Dir(f.credsPath)); statErr != nil || info.Mode().Perm()&0o200 != 0 {
 		t.Fatalf("credentials dir = %v (err %v), want the unwritable directory this case needs", info, statErr)

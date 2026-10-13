@@ -44,12 +44,8 @@ export interface DetailsPanelProps {
   /** Current wall-clock ms, so the work-time figure keeps counting during an
    * in-flight turn (owned by SessionChrome's useNowTick, same as StatusRow). */
   now: number;
-  // True once SessionChrome's own row has measured too narrow to show this
-  // panel's own inline trigger beside Tasks and the "..." menu without
-  // wrapping to a second row (kata vybn) - SessionChrome renders a "Details"
-  // item in that menu instead, opening this SAME Sheet through the
-  // imperative handle below. Omitted (the default) is every existing
-  // caller/test, which never suppresses this trigger.
+  /** Hides the standalone Sheet's inline trigger. Callers can still open
+   * this Sheet through DetailsPanelHandle, independently of Overview. */
   hideTrigger?: boolean;
 }
 
@@ -58,10 +54,7 @@ export interface DetailsPanelBodyProps {
   now: number;
 }
 
-/** Lets SessionChrome open this panel's Sheet from a collapsed menu item,
- * without lifting `open` out of this component (which would touch every
- * existing render site in DetailsPanel.test.tsx for no behavioral gain -
- * see this task's report). */
+/** Opens the standalone Details Sheet while keeping its open state local. */
 export interface DetailsPanelHandle {
   open: () => void;
 }
@@ -89,9 +82,20 @@ function isEndedStatus(type: string): boolean {
   return type === "ended" || type === "closed";
 }
 
-function DetailRow({ label, testId, children }: { label: string; testId: string; children: React.ReactNode }) {
+function DetailRow({
+  label,
+  testId,
+  scope,
+  children,
+}: {
+  label: string;
+  testId: string;
+  /** What the row's figure counts, when that can vary (the token total). */
+  scope?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className={CLASS.row} data-testid={testId}>
+    <div className={CLASS.row} data-testid={testId} data-scope={scope}>
       <dt className={CLASS.label}>{label}</dt>
       <dd className={CLASS.value}>{children}</dd>
     </div>
@@ -181,7 +185,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
           </DetailRow>
         )}
         {tokens && (
-          <DetailRow label={tokensLabel} testId="session-details-tokens">
+          <DetailRow label={tokensLabel} testId="session-details-tokens" scope={tokens.scope}>
             <span>↑{formatTokenCount(tokens.inputTokens)}</span>
             <span>↓{formatTokenCount(tokens.outputTokens)}</span>
           </DetailRow>

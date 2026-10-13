@@ -142,10 +142,16 @@ type NavigationProjectPage struct {
 // NavigationSessionLocation is the top-level owner and current summary for a
 // session referenced by a deep link.
 type NavigationSessionLocation struct {
-	GenerationID string                    `json:"generation_id"`
-	Revision     uint64                    `json:"revision"`
-	Ref          string                    `json:"ref"`
-	TopLevelRef  string                    `json:"top_level_ref"`
+	GenerationID string `json:"generation_id"`
+	Revision     uint64 `json:"revision"`
+	Ref          string `json:"ref"`
+	TopLevelRef  string `json:"top_level_ref"`
+	// Catalog is the catalog ("projects", "archived_projects" or "test_runs")
+	// whose project ProjectKey names: a key can be in several, and a project
+	// or project_page read naming this catalog returns the project holding
+	// the session. Absent outside a project, and from an older hub, which
+	// also refuses a catalog on those reads.
+	Catalog      string                    `json:"catalog,omitempty"`
 	ProjectKey   string                    `json:"project_key,omitempty"`
 	TopLevel     bool                      `json:"top_level"`
 	Tier         string                    `json:"tier,omitempty"`
@@ -282,6 +288,13 @@ type NavigationSessionSummary struct {
 	// the Board, and Idle when absent. It is only ever set on a row that
 	// carries TurnEndedAt.
 	Unseen bool `json:"unseen,omitempty"`
+	// SeenThrough is the hub's seen-through mark for a live row, floored at
+	// the seen store's start, so a client can tell output that moved after it
+	// (an activity read's lastMovedAt) from output already seen, even
+	// mid-turn. It does not reflect an explicit "Mark as unread", so a client
+	// also reads Unseen. Absent on a row that isn't live, and from a hub with
+	// no seen store or an older hub.
+	SeenThrough *time.Time `json:"seen_through,omitempty"`
 	// Own-session activity counts are captured before navigation fitting.
 	// RunningJobCommand is the first available command, bounded for display.
 	RunningJobCount   int    `json:"running_job_count,omitempty"`

@@ -3,7 +3,7 @@
 import type { AnyNotification, PluginEntry } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
-import { renderHook } from "../renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { PLUGIN_COUNT_RETRY_MS, useInstalledPluginCount } from "./useInstalledPluginCount";
 
 vi.mock("react-native", async () => ({
@@ -11,6 +11,7 @@ vi.mock("react-native", async () => ({
 }));
 
 afterEach(() => {
+	unmountMountedTrees();
 	vi.useRealTimers();
 });
 

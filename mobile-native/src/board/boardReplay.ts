@@ -13,6 +13,7 @@
 // ready connection.
 import type { AppwireClientLike, EvenerThread } from "@evener/appwire-client";
 import type { NavigationActions } from "../navigationActions";
+import type { ToastMessage } from "../Toast";
 import type { BoardHold, HeldAction, HeldRecord } from "./boardHold";
 import { turnStillSeen } from "./boardHold";
 import { type StopOutcome, stopToast } from "./boardStops";
@@ -33,13 +34,16 @@ import type { BoardOrganization } from "./useBoardOrganization";
 export interface ReplayDeps {
 	/** The Board's Stop (BoardStops.stop), with a held Stop's guard. */
 	stop(client: AppwireClientLike, ref: string, guard: (thread: EvenerThread) => boolean): Promise<StopOutcome>;
-	toast(text: string): void;
+	toast(message: ToastMessage): void;
 }
 
 const AT_ONCE: ReadonlySet<HeldAction["kind"]> = new Set(["stop", "shutDown", "rename"]);
 
 /** A held Shut down that finds a newer turn running than the one you saw. */
-export const SHUT_DOWN_DROPPED = "A newer turn started, so the session wasn't shut down";
+export const SHUT_DOWN_DROPPED: ToastMessage = {
+	kind: "shutDown:dropped",
+	text: "A newer turn started, so the session wasn't shut down",
+};
 
 export class BoardReplay {
 	#sending = new NewestAsk<[AppwireClientLike, () => boolean]>((client, isLive) => this.#sendAll(client, isLive));

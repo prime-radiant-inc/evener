@@ -69,7 +69,7 @@ it("a start from a replaced connection's listing is refused and reads as not sta
 	connect(replacement.client);
 	await flow.start();
 	expect(flow.getSnapshot().phase).toBe("error");
-	expect(flow.getSnapshot().error).toContain("couldn't start signing in");
+	expect(flow.getSnapshot().problem).toBe("startFailed");
 	expect(authCalls(replacement.calls)).toEqual([]);
 	flow.dispose();
 });
@@ -167,9 +167,7 @@ it("says to look at Providers when a poll answers with a state it doesn't know",
 	await flow.start();
 	io.request = async () => ({ state: "surprising" });
 	await vi.advanceTimersByTimeAsync(20000);
-	expect(flow.getSnapshot().error).toBe(
-		"Sign-in has not been confirmed. See whether Providers shows it signed in before starting again.",
-	);
+	expect(flow.getSnapshot().problem).toBe("notConfirmed");
 	flow.dispose();
 });
 it("retains the flow after a poll transport failure and retries only on request", async () => {
@@ -303,9 +301,7 @@ it("keeps browser continuation across reconnect without replaying completion", a
 	connect(signInClient({ request }, []));
 	expect(request).not.toHaveBeenCalled();
 	expect(flow.getSnapshot().phase).toBe("browser");
-	expect(flow.getSnapshot().error).toBe(
-		"Sign-in could not be confirmed before the connection changed. See whether Providers shows it signed in before trying again.",
-	);
+	expect(flow.getSnapshot().problem).toBe("connectionChanged");
 	expect(flow.getSnapshot().browser?.flowId).toBe("browser-flow");
 	flow.dispose();
 });
@@ -557,14 +553,10 @@ it("keeps the re-check prompt after a failed completion", async () => {
 	expect(flow.getSnapshot().phase).toBe("browser");
 
 	await flow.complete("https://example.test/callback?code=fixture");
-	expect(flow.getSnapshot().error).toBe(
-		"Sign-in completion could not be confirmed. See whether Providers shows it signed in before submitting again.",
-	);
+	expect(flow.getSnapshot().problem).toBe("completionUnconfirmed");
 
 	// A completion that could not be confirmed leaves the flow uncertain, so a
 	// later status check must keep saying so rather than reading clean.
 	await flow.checkStatus();
-	expect(flow.getSnapshot().error).toBe(
-		"Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again.",
-	);
+	expect(flow.getSnapshot().problem).toBe("statusUnconfirmed");
 });

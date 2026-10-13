@@ -3,11 +3,19 @@ import { AccessibilityInfo, Animated, Text } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { composerFocusedAs, keyboard, render, renderedText, renderHook } from "../renderNative.testkit";
+import { hasTestID } from "../markerTestUtils";
+import {
+	composerFocusedAs,
+	keyboard,
+	render,
+	renderedText,
+	renderHook,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import type { ComposerFocus } from "./composerFocus";
 import { NotesBar } from "./NotesBar";
 import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
-import type { ChipKind, ContextChip } from "./sessionState";
+import { contextChips, type ChipKind, type ContextChip } from "./sessionState";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -21,22 +29,23 @@ vi.mock("../ConnectionProvider", () => ({
 const palette = paletteFor("light");
 
 afterEach(() => {
+	unmountMountedTrees();
 	keyboard.reset();
 	vi.restoreAllMocks();
 });
 
-const subagents: ContextChip = {
-	kind: "subagents",
-	label: "Subagents 3",
-	failed: "1 failed",
-	attention: false,
-	accessibilityLabel: "Subagents, 3, 1 failed",
-};
+const subagents = contextChips(
+	{ delegates: [], tasks: null, goal: null, queue: null },
+	true,
+	{ count: 0, fresh: false },
+	{ known: true, total: 5, active: 2, failed: 3, completed: 0 },
+)[0];
+if (!subagents) throw new Error("missing authoritative Subagents chip");
 const tasks: ContextChip = {
 	kind: "tasks",
 	label: "Tasks 2/5",
 	attention: false,
-	accessibilityLabel: "Tasks, 2 of 5 done",
+	accessibilityLabel: "Tasks, 2 of 5 settled",
 };
 const goal: ContextChip = { kind: "goal", label: "Goal", attention: false, accessibilityLabel: "Goal" };
 const blockedGoal: ContextChip = { ...goal, attention: true, accessibilityLabel: "Goal, blocked" };
@@ -92,7 +101,7 @@ describe("the connection bar (spec 8.1, 14)", () => {
 		for (const status of ["Reconnecting…", "Offline · updated 3m ago", "Update needed"]) {
 			expect(renderedText(render(header({ status, chips: [goal] })))).toContain(status);
 		}
-		expect(renderedText(render(header({ chips: [goal] })))).toBe("Goal");
+		expect(hasTestID(render(header({ chips: [goal] })), "connection-status")).toBe(false);
 	});
 
 	it("is 13/18 low ink, centered, in tabular figures, 24pt tall and never hides", () => {
@@ -137,16 +146,16 @@ describe("the connection bar (spec 8.1, 14)", () => {
 });
 
 describe("the chips row (spec 8.1)", () => {
-	it("renders each chip's label with its symbol, and a failure count in danger ink", () => {
+	it("renders the authoritative Subagents total with a quiet label and symbol", () => {
 		const tree = render(header({ chips: [subagents, tasks, goal, queue] }));
-		expect(renderedText(tree)).toBe("Subagents 3  ·  1 failed Tasks 2/5 Goal Queue 2");
+		expect(renderedText(tree)).toBe("Subagents 5 Tasks 2/5 Goal Queue 2");
 		expect(tree.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual([
 			"person.2",
 			"checklist",
 			"target",
 			"tray",
 		]);
-		expect(textNode(tree, "1 failed").props.style).toMatchObject({ color: palette.dangerInk });
+		expect(textNode(tree, "Subagents 5").props.style).toMatchObject({ color: palette.inkHi });
 		expect(textNode(tree, "Tasks 2/5").props.style).toMatchObject({
 			fontSize: 15,
 			lineHeight: 20,
@@ -199,14 +208,52 @@ describe("the chips row (spec 8.1)", () => {
 		const tree = render(header({ chips: [subagents, tasks, goal, queue], onChip }));
 		const chips = chipButtons(tree);
 		expect(chips.map((chip) => chip.props.accessibilityLabel)).toEqual([
-			"Subagents, 3, 1 failed",
-			"Tasks, 2 of 5 done",
+			"Subagents, 5",
+			"Tasks, 2 of 5 settled",
 			"Goal",
 			"2 queued messages",
 		]);
 		expect(chips.map((chip) => chip.props.accessibilityRole)).toEqual(["button", "button", "button", "button"]);
 		for (const chip of chips) act(() => chip.props.onPress());
 		expect(onChip.mock.calls.map(([kind]) => kind)).toEqual(["subagents", "tasks", "goal", "queue"]);
+	});
+
+	it("keeps unknown-count Subagents access and hides it while disconnected", () => {
+		const source = {
+			delegates: [
+				{
+					delegateId: "d1",
+					ownerSessionId: "root",
+					rootSessionId: "root",
+					childSessionId: "child",
+					transcriptRef: "local:child",
+					type: "delegate",
+					lifecycle: "idle",
+					phase: "completed",
+					status: "idle",
+					resumable: false,
+					terminal: true,
+					outcome: "failed",
+					needsAttention: false,
+					runGeneration: 1,
+					projectionRevision: 1,
+				},
+			],
+			tasks: null,
+			goal: null,
+			queue: null,
+		};
+		const unknown = { known: false, total: 5, active: 2, failed: 3, completed: 0 };
+		const opened: ChipKind[] = [];
+		const chips = contextChips(source, true, { count: 0, fresh: false }, unknown);
+		const tree = render(header({ chips, onChip: (kind) => opened.push(kind) }));
+		// No count to show: the chip names itself alone.
+		expect(renderedText(tree)).not.toMatch(/\d/);
+		expect(chipButtons(tree).map((chip) => chip.props.accessibilityLabel)).toEqual(["Subagents, count unknown"]);
+		act(() => chipButtons(tree)[0]?.props.onPress());
+		expect(opened).toEqual(["subagents"]);
+		act(() => tree.update(header({ chips: contextChips(source, false, { count: 0, fresh: false }, unknown) })));
+		expect(chipButtons(tree)).toEqual([]);
 	});
 
 	it("scrolls sideways with 16pt sides and an 8pt gap, fading its trailing edge only when it overflows", () => {
@@ -407,15 +454,10 @@ it("shows nothing with no chips and no status, its empty panel still floating fo
 	});
 });
 
-it("never says Reconnect, Connected or Refresh", () => {
+it("never offers Reconnect or Refresh: whatever the status, its only controls are its chips", () => {
 	for (const status of ["Reconnecting…", "Offline · updated 3m ago", "Offline", "Update needed", null]) {
 		const tree = render(header({ status, chips: [subagents, tasks, blockedGoal, queue] }));
-		const labels = tree.root
-			.findAll((node) => typeof node.props.accessibilityLabel === "string")
-			.map((node) => node.props.accessibilityLabel as string);
-		for (const said of [renderedText(tree), ...labels]) {
-			expect(said).not.toMatch(/Reconnect\b|Connected|Refresh/);
-		}
+		expect(chipButtons(tree)).toHaveLength(4);
 	}
 });
 

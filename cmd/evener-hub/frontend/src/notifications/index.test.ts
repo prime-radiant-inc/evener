@@ -5,6 +5,7 @@ import type {
   NavigationReadResponse,
   NavigationSessionSummary,
 } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { navigationRootContainerKey, type ResourceKey } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest } from "@evener/appwire-client/testing/navigation";
@@ -20,7 +21,7 @@ const navigationCapability = capability;
 const navigationManifest = (generationId = "generation_test") => manifest({ generation_id: generationId });
 const navigationInitialize = (generationId = "generation_test"): InitializeResponse => ({
   serverInfo: { name: "fake", version: "1" },
-  protocolVersion: "evener-appwire-v6",
+  protocolVersion: APPWIRE_PROTOCOL_VERSION,
   sourceId: "fake",
   features: {
     threadList: false,
@@ -104,6 +105,9 @@ function attentionFromNodes(nodes: NavigationSessionSummary[]) {
       level: n.state === "errored" ? "error" : "needs_you",
       askPending: n.ask_pending === true,
       approvalPending: n.approval_pending === true,
+      // The hub's rule: awaiting with no question is the needs_response rest.
+      // Absent when false, as the hub's omitempty encodes it.
+      ...(n.state === "awaiting" && n.ask_pending !== true ? { needsResponse: true } : {}),
       prevLevel: "idle",
     })),
     summary: { needsYou, error, working: 0 },
@@ -204,7 +208,7 @@ async function boot(baseline: {
     client = new FakeClient("ready");
     client.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v6",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -234,7 +238,7 @@ describe("initNotifications lifecycle", () => {
     scriptNavigationManifest(client);
     client.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v6",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -264,7 +268,7 @@ describe("initNotifications lifecycle", () => {
     const client = new FakeClient("ready");
     client.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v6",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability("generation_test", 2),
@@ -476,21 +480,23 @@ describe("edge-fire", () => {
 });
 
 describe("loudScope", () => {
-  test("asks: a plain your-move needs_you is silent; an ask fires", async () => {
+  // A plain reply rests idle and never enters attention; a needs_response
+  // rest asks for a reply and is as loud as a question.
+  test("asks: a warning is silent; a needs_response rest fires", async () => {
     armPrefs("asks");
     await boot(attentionFromNodes([]));
-    navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting", false)]) });
+    navigationStore.setState({ attention: attentionFromNodes([node("local:w", "warning")]) });
     expect(fires()).toEqual({ os: 0, sound: 0 });
     navigationStore.setState({
-      attention: attentionFromNodes([node("local:a", "awaiting", false), node("local:b", "awaiting", true)]),
+      attention: attentionFromNodes([node("local:w", "warning"), node("local:a", "awaiting", false)]),
     });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 
-  test("all: a plain your-move needs_you fires", async () => {
+  test("all: a warning fires", async () => {
     armPrefs("all");
     await boot(attentionFromNodes([]));
-    navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting", false)]) });
+    navigationStore.setState({ attention: attentionFromNodes([node("local:w", "warning")]) });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 
@@ -564,7 +570,7 @@ describe("reconnect re-baselines silently", () => {
         releaseOld = resolve;
       }).then((cap) => ({
         serverInfo: { name: "old", version: "1" },
-        protocolVersion: "evener-appwire-v6",
+        protocolVersion: APPWIRE_PROTOCOL_VERSION,
         sourceId: "old",
         features: {} as never,
         navigation: cap,
@@ -594,7 +600,7 @@ describe("reconnect re-baselines silently", () => {
     const fake = new FakeClient("ready");
     fake.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v6",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -637,7 +643,7 @@ describe("reconnect re-baselines silently", () => {
     const fake = new FakeClient("ready");
     fake.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v6",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -726,7 +732,7 @@ describe("reconnect re-baselines silently", () => {
     scriptNavigationManifest(client);
     client.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v6",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -746,7 +752,7 @@ describe("reconnect re-baselines silently", () => {
     const fake = new FakeClient("ready");
     fake.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v6",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),

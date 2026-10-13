@@ -15,8 +15,10 @@ type promptData struct {
 	// Resolution context
 	NonInteractive           bool
 	BaseInstructionsOverride string
-	// IsSubagent is true for a delegate session (depth above zero): delegates
-	// get their own delegation guidance and none of the root-only sections.
+	// IsSubagent is true for a delegate session (isSubagentSession: a live
+	// spawn, or a session whose persisted meta marks it a subagent, never a
+	// forked root): delegates get their own delegation guidance and none of
+	// the root-only sections.
 	IsSubagent bool
 	// Surface is the provider surface the session's profile speaks
 	// ("openai", "anthropic", ...), for surface-specific guidance.
@@ -29,6 +31,16 @@ type promptData struct {
 	// background shell job still running then is stopped instead of waking the
 	// session later.
 	TurnEndsProcess bool
+	// MemoryRead gates the memory guidance section: memory is enabled, bound,
+	// and memory_read is callable. MemorySearch additionally requires
+	// memory_search.
+	MemoryRead   bool
+	MemorySearch bool
+	// MemorySaves is true when the session may be told to save memory (the
+	// memory save tools are callable).
+	MemorySaves bool
+	// ProjectMemory is true when memory is readable and a project id is set.
+	ProjectMemory bool
 
 	// Environment
 	WorkingDir      string
@@ -82,6 +94,10 @@ type promptData struct {
 	// HasAskUser gates the ask-user prompt section (spec §4.5): true exactly
 	// when ask_user is registered, i.e. an interactive root session (spec §7).
 	HasAskUser bool
+
+	// HasEndReason gates the end_reason guidance: true exactly when the
+	// session's communicate takes end_reason, i.e. a root someone can answer.
+	HasEndReason bool
 
 	// Delegation capability (spec §1, §5): CanDelegate is true when this session
 	// has a grantable allowance (> 0) and the delegation tools are actually

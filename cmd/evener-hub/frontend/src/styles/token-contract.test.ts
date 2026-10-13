@@ -425,6 +425,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "collectioneditor", // inline add-validation error text (wave 7)
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
   "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
+  "inlinenotice", // danger tone: an inline error message's ink is the "something failed" hue
 ];
 
 const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
@@ -435,16 +436,10 @@ const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
 // be called button.module.css) can't ride along on a real widget's entry.
 const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 
-// shell/rail/RailRow.module.css renders the compact rail's needs-you and broken
-// status dots with their semantic families; running uses a neutral grey ring.
-// RailRow.module.css is a shell stylesheet, not a
-// widget (it lives under shell/rail/, not widgets/<name>/), so it can never
-// match WIDGET_STYLESHEET_RE no matter how SEMANTIC_USE_ALLOWLIST is
-// extended - this is a deliberate, exact-path exception, the same shape as
-// the dockview-theme.css naming exception above, scoped to this one file so
-// a same-named stylesheet elsewhere can't ride along on it. (The rail's
-// signal hues live with the row content in RailRow.module.css; Rail.module.
-// css itself carries none.)
+// shell/rail/RailRow.module.css uses the session status families for
+// context-card status text. It is a shell stylesheet, so it cannot match
+// WIDGET_STYLESHEET_RE. Exact-path exceptions keep same-named stylesheets
+// elsewhere from inheriting permission to use semantic colors.
 //
 // kata 3h80: panes/session/transcript/tools/subagentmodule.module.css earns
 // the same exception for the same structural reason - it lives under

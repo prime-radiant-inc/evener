@@ -163,6 +163,33 @@ func TestResponsesContinuationAnchorCandidateAllowsEnvironmentDelta(t *testing.T
 	}
 }
 
+func TestResponsesContinuationMemoryDelta(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		message    llm.Message
+		wantMode   llm.HistoryMode
+		wantReason string
+	}{
+		{"text", llm.User("opaque-memory-delta-3730"), llm.HistoryModeResponsesDelta, "continuation_anchor_candidate"},
+		{"image", llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.test/image.png"}}}}, llm.HistoryModeFullHistory, "continuation_delta_unsafe_content"},
+		{"thinking", llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "opaque-thinking-3730"}}}}, llm.HistoryModeFullHistory, "continuation_delta_unsafe_content"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, []schema.Turn{
+				responsesContinuationEligibleAssistantTurn("resp_memory"),
+				schema.NewTurn(schema.TurnMemoryContext, tc.message),
+			})
+			if decision.HistoryMode != tc.wantMode || decision.Reason != tc.wantReason {
+				t.Fatalf("decision=%+v, want %s/%s", decision, tc.wantMode, tc.wantReason)
+			}
+			if tc.wantMode == llm.HistoryModeResponsesDelta && (len(candidate.Delta) != 1 || candidate.Delta[0].Kind != schema.TurnMemoryContext || candidate.Delta[0].Message.Text() != "opaque-memory-delta-3730") {
+				t.Fatalf("selected delta lost memory: %+v", candidate.Delta)
+			}
+		})
+	}
+}
+
 func TestResponsesContinuationAnchorCandidateRejectsUnsafeEnvironmentDeltaContent(t *testing.T) {
 	t.Parallel()
 	history := []schema.Turn{

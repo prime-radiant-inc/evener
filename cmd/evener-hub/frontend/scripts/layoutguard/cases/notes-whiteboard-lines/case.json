@@ -1,0 +1,17 @@
+{
+  "name": "notes-whiteboard-lines",
+  "description": "Whiteboards keep their line breaks: the Notes panel's read-only agent note renders a three-line note as three visual lines, and the collapsed notes summary keeps a two-line note's breaks but clamps a five-line note to three visible lines, clipping the rest.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/chrome/notespanel.module.css",
+    "panes/session/chrome/topnotespanel.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 800, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "notespanel.module.css: .prose { white-space: pre-wrap } (deleted); topnotespanel.module.css: .clampedText { white-space: pre-line } and { -webkit-line-clamp: 3 } (each deleted)",
+    "verified": "2026-10-05",
+    "expect": "fail",
+    "note": "Each declaration was deleted separately and re-run on 2026-10-05: without pre-wrap the 3-line agent note renders 1 visual line; without pre-line the 2-line summary renders 1 line and the 5-line summary 2 unclipped lines; without the clamp the 5-line summary shows 5 lines, unclipped."
+  }
+}

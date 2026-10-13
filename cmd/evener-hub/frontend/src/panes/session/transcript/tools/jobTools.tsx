@@ -3,6 +3,8 @@ import type { ItemModel } from "@evener/appwire-client";
 import {
   clip,
   delegateSendBase,
+  delegateSendEarlierLabel,
+  delegateSendEarlierResponses,
   delegateSendResponse,
   delegateSendSummary,
   delegateSendTarget,
@@ -138,8 +140,9 @@ function delegateSendTranscriptRef(item: ItemModel): string | undefined {
 
 // DelegateSendBody renders the exchange as a two-party conversation through
 // the transcript's own slack-lean message view: the sent message as an
-// outgoing bubble from the agent to the delegate, and - when the call waited
-// for one - the delegate's reply as an incoming bubble below it. The
+// outgoing bubble from the agent to the delegate, then any earlier results
+// its wait carried and - when the call waited for one - the delegate's reply,
+// each as an incoming bubble below it. The
 // section testids (delegate-send-message/-response) are the longstanding
 // contract of this body and are unchanged.
 function DelegateSendBody(props: ToolRenderProps) {
@@ -147,10 +150,13 @@ function DelegateSendBody(props: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
   const message = str(args, "message");
   const response = delegateSendResponse(item);
+  // Results the caller had not yet received, which the wait carried ahead of
+  // its own reply (#3906), oldest first.
+  const earlier = delegateSendEarlierResponses(item);
   const waitIgnoredReason = delegateSendWaitIgnoredReason(item);
   const target = clip(delegateSendTarget(item), ID_CLIP);
 
-  if (!message && !response) return null;
+  if (!message && !response && earlier.length === 0) return null;
   return (
     <div data-testid="delegate-send-body">
       {message ? (
@@ -165,6 +171,24 @@ function DelegateSendBody(props: ToolRenderProps) {
           />
         </section>
       ) : null}
+      {earlier.map((entry, index) => {
+        const label = delegateSendEarlierLabel(entry, index, earlier.length);
+        const { text } = entry;
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: earlier results are a fixed, ordered list
+          <section key={index} data-testid="delegate-send-earlier-response">
+            <UserMessageView
+              // An earlier result arrived before this send; the send's own
+              // times would date it wrongly, so the bubble shows none.
+              item={{ ...item, text, startedAt: undefined, completedAt: undefined }}
+              speaker="agent"
+              name={target === "" ? `Delegate, ${label}` : `${target} (delegate, ${label})`}
+              opensExchange={false}
+              actions={<CopyButton text={text} label={`Copy ${label}`} />}
+            />
+          </section>
+        );
+      })}
       {response ? (
         <section data-testid="delegate-send-response">
           <UserMessageView

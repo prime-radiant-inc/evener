@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
+import createDOMPurify from "dompurify";
 import { describe, expect, it } from "vitest";
 import { sanitizeMermaidSvg } from "./security";
 
@@ -73,4 +74,41 @@ describe("sanitizeMermaidSvg against hostile markup", () => {
     const clean = sanitizeMermaidSvg(hostile);
     expect(clean).not.toContain("<image");
   });
+});
+
+describe("DOMPurify detached-subtree protection", () => {
+  it.each(["afterSanitizeElements", "afterSanitizeAttributes"] as const)(
+    "neutralizes descendants when an %s hook removes their parent",
+    (hook) => {
+      // Isolate this dependency guard from the renderers' shared sanitizer hooks.
+      const purifier = createDOMPurify(window);
+      const root = document.createElement("div");
+      const wrapper = document.createElement("section");
+      const image = document.createElement("img");
+      image.setAttribute("onerror", "void 0");
+      wrapper.append(image);
+      root.append(wrapper);
+      document.body.append(root);
+      const removeWrapper = (node: Node) => {
+        if (node === wrapper) {
+          wrapper.remove();
+        }
+      };
+      if (hook === "afterSanitizeElements") {
+        purifier.addHook(hook, removeWrapper);
+      } else {
+        purifier.addHook(hook, removeWrapper);
+      }
+
+      try {
+        purifier.sanitize(root, { IN_PLACE: true });
+
+        expect(root.contains(wrapper)).toBe(false);
+        expect(image.getAttribute("onerror")).toBeNull();
+      } finally {
+        root.remove();
+        purifier.removeAllHooks();
+      }
+    },
+  );
 });

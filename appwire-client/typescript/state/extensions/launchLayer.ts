@@ -26,7 +26,7 @@ import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { HostRequestMethod, LaunchConfigLayer } from "../../types.gen";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
-import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { attachLifecycle, createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
 export type LaunchLayerClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
@@ -40,9 +40,7 @@ export interface LaunchLayerState {
   setLaunchLayer(next: LaunchConfigLayer): Promise<void>;
 }
 
-export interface LaunchLayerStore
-  extends FrameworkFreeStore<LaunchLayerState>,
-    Omit<StoreLifecycle<LaunchLayerState>, "guard"> {
+export interface LaunchLayerStore extends FrameworkFreeStore<LaunchLayerState>, HostLifecycle<LaunchLayerState> {
   /** Follows evener/launch/updated, which the hub broadcasts to every client
    * after any client's successful setLayer, so a change made in one window
    * reaches every other window's loaded layer after a short debounce.

@@ -29,9 +29,7 @@
 // sentence-case "Failed turn" (more legible as a phrase, consistent with
 // WarningItem's own sentence-case fallback "Warning") - the count itself is
 // never shown once upgraded, same as the needs-you branch.
-import { Badge, Chevron, Chip } from "../../../../widgets";
-import { requireClass } from "../../../../widgets/internal/requireClass";
-import styles from "./newcontentpill.module.css";
+import { Badge, Button, Chevron, Chip } from "../../../../widgets";
 
 export interface NewContentPillProps {
   /** Items rendered since the reader scrolled away from the bottom. */
@@ -57,11 +55,6 @@ export interface NewContentPillProps {
   onClick: () => void;
 }
 
-const CLASS = {
-  pill: requireClass(styles.pill, "newcontentpill.module.css", "pill"),
-  arrow: requireClass(styles.arrow, "newcontentpill.module.css", "arrow"),
-};
-
 export function NewContentPill({
   count,
   visible = false,
@@ -78,17 +71,22 @@ export function NewContentPill({
   // primary case (the `visible` prop), not an edge: the reader needs the
   // jump-to-latest offer even when no items ever arrived while away.
   if (!visible && count <= 0 && !error) return null;
+  const kind = error ? "failed-turn" : needsYou ? "needs-you" : count > 0 ? "count" : "latest";
 
   return (
-    <button type="button" data-testid="new-content-pill" className={CLASS.pill} onClick={onClick}>
-      <span className={CLASS.arrow} aria-hidden="true">
-        <Chevron direction={pillArrowDirection} />
-      </span>
-      {error ? (
+    <Button
+      variant="secondary"
+      size="sm"
+      icon={<Chevron direction={pillArrowDirection} />}
+      data-testid="new-content-pill"
+      data-kind={kind}
+      onClick={onClick}
+    >
+      {kind === "failed-turn" ? (
         <Chip tone="danger">Failed turn</Chip>
-      ) : needsYou ? (
+      ) : kind === "needs-you" ? (
         <Chip tone="attention">needs you</Chip>
-      ) : count > 0 ? (
+      ) : kind === "count" ? (
         <>
           <Badge count={count} tone="neutral" />
           <span>new</span>
@@ -96,6 +94,6 @@ export function NewContentPill({
       ) : (
         <span>latest</span>
       )}
-    </button>
+    </Button>
   );
 }

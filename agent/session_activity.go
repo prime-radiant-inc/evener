@@ -63,7 +63,9 @@ func (s *Session) activityRead(ctx context.Context, params appwire.SessionActivi
 		return nil, err
 	}
 	read := &sessionActivityRead{scope: scope, index: index, root: root, stateDir: s.stateDir, rootID: rootID, budget: activityMaxWorkUnits, bytes: 4 << 20}
-	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "live"}
+	// ReportPreview advertises the producer capability the push design gates the
+	// no-read delegate merge on (appwire.SessionActivityContext.ReportPreview).
+	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "live", ReportPreview: true}
 	if controller == nil {
 		read.context.AncestryKnown = true
 		return read.withBoundedContext()
@@ -137,7 +139,9 @@ func retainedActivityRead(ctx context.Context, stateDir, sessionID string, param
 		return nil, err
 	}
 	read := &sessionActivityRead{scope: scope, index: index, stateDir: stateDir, rootID: rootID, budget: activityMaxWorkUnits, bytes: 4 << 20}
-	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "retained", AncestryKnown: id == rootID}
+	// The retained loader is a producer too, so it authors the same capability
+	// the live read and the delegate frame carry.
+	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "retained", AncestryKnown: id == rootID, ReportPreview: true}
 	if id != rootID {
 		read.context.AncestryKnown = activityContextFromDelegates(&read.context, rootID, index.delegates)
 		if !read.context.AncestryKnown {
@@ -171,6 +175,21 @@ func sessionActivityDelegateOwner(state delegatestore.State, row *delegatestore.
 		return parent.Descriptor.ChildSessionID
 	}
 	return ""
+}
+
+// sessionSubtreeDelegateIDs lists, in id order, the delegates in sessionID's
+// subtree: for a root its whole tree, for a subagent the delegates its own
+// delegation chain reaches.
+func sessionSubtreeDelegateIDs(state delegatestore.State, sessionID string) []string {
+	owners := sessionSubtreeOwners(state, sessionID)
+	var ids []string
+	for id, row := range state {
+		if row != nil && owners[sessionActivityDelegateOwner(state, row)] {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // Immutable Created descriptors prove lineage independently of status history.
@@ -339,11 +358,16 @@ func (read *sessionActivityRead) state() delegatestore.State {
 	return read.index.delegates
 }
 func (read *sessionActivityRead) owners() map[string]bool {
-	owners := map[string]bool{read.context.SessionID: true}
 	if read.scope == appwire.SessionActivityScopeSession {
-		return owners
+		return map[string]bool{read.context.SessionID: true}
 	}
-	state := read.state()
+	return sessionSubtreeOwners(read.state(), read.context.SessionID)
+}
+
+// sessionSubtreeOwners is sessionID and every session below it in state's
+// delegate tree.
+func sessionSubtreeOwners(state delegatestore.State, sessionID string) map[string]bool {
+	owners := map[string]bool{sessionID: true}
 	// Membership inspection is in-memory; Created parentage is the authority.
 	changed := true
 	for changed {
@@ -462,7 +486,7 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 			break
 		}
 		for _, job := range index.Jobs {
-			if string(job.Type) != "shell" {
+			if !activityJobEligible(job) {
 				continue
 			}
 			terminal, outcome := activityOutcome(job.Status)

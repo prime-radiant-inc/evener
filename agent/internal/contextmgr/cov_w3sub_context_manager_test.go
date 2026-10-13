@@ -73,7 +73,7 @@ func TestW3Sub_SummarizeSteered_HistoryCharCap(t *testing.T) {
 	history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User("tail")))
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	client := ctxmgr_scriptedClient(profile.ID(), "summary", nil)
+	client := ctxmgr_scriptedClient(profile.ID(), "## Progress\nsummary", nil)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	result, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, "")

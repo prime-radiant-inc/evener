@@ -1,4 +1,5 @@
 import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -110,7 +111,7 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
   scriptNavigationManifest(client);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {} as never,
     navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [3] },

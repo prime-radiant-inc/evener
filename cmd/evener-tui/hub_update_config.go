@@ -550,7 +550,7 @@ func readCredentialFile(path string) (string, error) {
 		return "", credentialPathError(err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", errors.New("credential JSON: the path it was read as is not a regular file")
+		return "", fmt.Errorf("%w: %w", errCredentialJSONUnreadable, errCredentialPathNotRegular)
 	}
 	// One byte past the bound, so a file at exactly the bound still reads and
 	// anything longer is refused however it grew.
@@ -559,7 +559,7 @@ func readCredentialFile(path string) (string, error) {
 		return "", credentialPathError(err)
 	}
 	if len(data) > maxCredentialFileBytes {
-		return "", fmt.Errorf("credential JSON: the file it was read as is too large (over %d bytes)", maxCredentialFileBytes)
+		return "", fmt.Errorf("%w: %w (over %d bytes)", errCredentialJSONUnreadable, errCredentialFileTooLarge, maxCredentialFileBytes)
 	}
 	return string(data), nil
 }
@@ -576,8 +576,19 @@ func credentialPathError(err error) error {
 	if pathErr, ok := errors.AsType[*fs.PathError](err); ok {
 		err = pathErr.Err
 	}
-	return fmt.Errorf("credential JSON: it does not start with %q, and the path it was read as could not be opened: %w", "{", err)
+	return fmt.Errorf("%w: it does not start with %q, and the path it was read as could not be opened: %w", errCredentialJSONUnreadable, "{", err)
 }
+
+var (
+	// errCredentialJSONUnreadable marks a credential JSON submission that
+	// could be read neither as a document nor as a path to one.
+	errCredentialJSONUnreadable = errors.New("credential JSON")
+	// errCredentialPathNotRegular refuses a path that is not a regular file,
+	// before it is read.
+	errCredentialPathNotRegular = errors.New("the path it was read as is not a regular file")
+	// errCredentialFileTooLarge refuses a file past maxCredentialFileBytes.
+	errCredentialFileTooLarge = errors.New("the file it was read as is too large")
+)
 
 func (m hubModel) handleAuthApiKeySetResult(msg launchconfig.AuthApiKeySetResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
@@ -697,6 +708,25 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 		return m, cmd
 	}
 	return m, nil
+}
+
+// pluginsPanelReads is everything the plugins panel reads when it opens, and
+// again on reconnect while it is open: the marketplace and plugin lists, the
+// update check, and the catalog open on the Browse tab (only ever after a
+// reconnect: a panel opens on its picker). The check starts only once the
+// first plugin list has landed, so that list, read before the check, can never
+// replace the one the check's re-read brings.
+func (m *hubModel) pluginsPanelReads() []tea.Cmd {
+	return []tea.Cmd{m.marketplaceListRead(), tea.Sequence(launchconfig.CmdPluginList(m.client), launchconfig.CmdPluginCheckUpdates(m.client)), m.openCatalogRead()}
+}
+
+// openCatalogRead re-reads the catalog open on the plugins panel's Browse tab,
+// or is nil when the tab shows its picker.
+func (m *hubModel) openCatalogRead() tea.Cmd {
+	if name := m.pluginsPanel.BrowseMarketplace(); name != "" {
+		return launchconfig.CmdMarketplaceBrowse(m.client, name)
+	}
+	return nil
 }
 
 // marketplaceListRead returns the marketplace-list read this model should

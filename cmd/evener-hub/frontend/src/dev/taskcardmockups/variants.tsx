@@ -19,7 +19,14 @@
 // variant's proposal.
 
 import type { ItemModel, TaskRow } from "@evener/appwire-client";
-import { freshNotes, mutationRows, parseTaskListData, SUMMARY_MARK, taskAggregateLabel } from "@evener/appwire-client";
+import {
+  freshNotes,
+  mutationRows,
+  parseTaskListData,
+  SUMMARY_MARK,
+  taskAggregateLabel,
+  taskSettledCount,
+} from "@evener/appwire-client";
 import type { ComponentType, ReactNode } from "react";
 import type { ToolRenderProps } from "../../panes/session/transcript/toolRenderers";
 import { registerToolRenderer } from "../../panes/session/transcript/toolRenderers";
@@ -98,7 +105,7 @@ function ProgressFoot({ progress }: { progress: Progress | undefined }) {
       <span className={C.footMeter}>
         <Meter
           label={`Task progress: ${label}`}
-          value={progress.done + (progress.cancelled ?? 0)}
+          value={taskSettledCount(progress)}
           max={progress.total}
           tone="neutral"
         />
@@ -230,7 +237,7 @@ function LedgerBody({ item }: ToolRenderProps) {
           <span className={P.progress}>{label}</span>
           <Meter
             label={`Task progress: ${label}`}
-            value={progress.done + (progress.cancelled ?? 0)}
+            value={taskSettledCount(progress)}
             max={progress.total}
             tone="neutral"
           />
@@ -310,7 +317,7 @@ function StripBody({ item }: ToolRenderProps) {
             className={C.strip}
             role="meter"
             aria-label={`Task progress: ${label}`}
-            aria-valuenow={progress.done + (progress.cancelled ?? 0)}
+            aria-valuenow={taskSettledCount(progress)}
             aria-valuemin={0}
             aria-valuemax={progress.total}
           >

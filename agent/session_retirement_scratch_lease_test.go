@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
 
@@ -69,12 +68,11 @@ func TestRetirementReleaseOfASharedChildKeepsTheParentScratchLease(t *testing.T)
 	}
 }
 
-// TestRetirementReleaseRetainsOwnEnvironmentScratch pins the positive direction
+// TestRetirementSettlesOwnEnvironmentScratch pins the positive direction
 // the trap section warns about: a ROOT has parentSharedEnv nil, so the ownership
-// guard must skip nothing and the root's own current and parked scratch leases
-// must still be released by retirement, with the directories kept for the
-// handoff and the manifest left unreleased.
-func TestRetirementReleaseRetainsOwnEnvironmentScratch(t *testing.T) {
+// guard must skip nothing and retirement must settle the root's own current and
+// parked scratch.
+func TestRetirementSettlesOwnEnvironmentScratch(t *testing.T) {
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	t.Cleanup(func() { root.Close() })
@@ -103,27 +101,13 @@ func TestRetirementReleaseRetainsOwnEnvironmentScratch(t *testing.T) {
 	root.worktreeRestoreEnv = parked
 	root.mu.Unlock()
 
-	root.releaseRetirementScratch()
+	root.endRetirementScratch()
+	root.endOwnedCurrentScratch()
 
+	// Retirement is not archive: the root's named scratch is kept with its lease
+	// released, and the disposable parked one is removed.
 	for name, scratch := range map[string]string{"current": currentScratch, "parked": parkedScratch} {
-		if _, err := os.Stat(scratch); err != nil {
-			t.Errorf("retirement removed the root's %s scratch %s, want it kept for the handoff: %v", name, scratch, err)
-		}
-		if scratchLeaseHeld(t, scratch) {
-			t.Errorf("the root's own %s scratch %s lease is still held after retirement", name, scratch)
-		}
-	}
-
-	owner, ok := root.scratchRetentionOwner()
-	if !ok {
-		t.Fatal("the root has no scratch retention owner")
-	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Released {
-		t.Error("retirement wrote the Released tombstone")
+		assertScratchSettledAtEnd(t, name, scratch)
 	}
 }
 
@@ -166,10 +150,40 @@ func TestRetirementReleaseOfAnOwningChildReleasesItsOwnScratch(t *testing.T) {
 		t.Fatalf("releaseChildRuntimeForRetirement: %v", err)
 	}
 
-	if _, err := os.Stat(childScratch); err != nil {
-		t.Errorf("retirement removed the owning child's scratch %s, want it kept for the handoff: %v", childScratch, err)
+	assertScratchSettledAtEnd(t, "owning child", childScratch)
+}
+
+// TestRetirementSurvivesScratchRemovedUnderTheDaemon pins that scratch is not
+// part of what a retirement must preserve. Scratch lives under the system temp
+// directory, which can be cleaned while a daemon sits idle; a preparation that
+// required it would fail on every idle tick and the daemon would never retire
+// (#4270). A session whose scratch directory vanished under it still prepares,
+// commits and releases.
+func TestRetirementSurvivesScratchRemovedUnderTheDaemon(t *testing.T) {
+	root, c, claim := retirementPrepareFixture(t)
+	rootLocal, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("root env = %T, want a local environment", root.currentEnv())
 	}
-	if scratchLeaseHeld(t, childScratch) {
-		t.Errorf("the owning child's scratch %s lease is still held after retirement", childScratch)
+	if _, err := rootLocal.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand to mint the root's scratch: %v", err)
+	}
+	scratch := heldParentScratch(t, rootLocal)
+	if err := os.RemoveAll(scratch); err != nil {
+		t.Fatalf("remove the scratch from under the session: %v", err)
+	}
+
+	prepared, err := c.Prepare(context.Background(), claim)
+	if err != nil {
+		t.Fatalf("Prepare with the scratch removed: %v", err)
+	}
+	if err := c.Commit(claim); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := c.DrainReaders(context.Background()); err != nil {
+		t.Fatalf("DrainReaders: %v", err)
+	}
+	if err := root.ReleaseForRetirement(context.Background(), prepared); err != nil {
+		t.Fatalf("ReleaseForRetirement with the scratch removed: %v", err)
 	}
 }

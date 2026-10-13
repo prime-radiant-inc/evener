@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import { ActivityIndicator, ScrollView, TextInput, View } from "react-native";
 import { updating } from "./navigationPages";
 import type { PinAssignmentSelection } from "./pinAssignmentDrafts";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export type PinAssignmentSection = { id: string; name: string; count: number };
 export interface PinAssignmentEditorProps {
@@ -27,6 +28,16 @@ export interface PinAssignmentEditorProps {
 	unpin(): void;
 	close(): void;
 }
+
+/** Why the editor can't change the assignment right now, as its
+ * `pin-status:<reason>` line says it. */
+const BLOCKED = {
+	"previous-change": "Check the previous pin change before editing it.",
+	unread: "Check this session's pins before editing.",
+	checking: "Checking the pin assignment…",
+	offline: "You can change pin assignments once the hub is back.",
+};
+
 function validName(name: string) {
 	const length = Array.from(name.trim()).length;
 	return length >= 1 && length <= 80;
@@ -58,14 +69,14 @@ export function PinAssignmentEditor({
 	const valid =
 		(selection?.kind === "existing" && sections.some((section) => section.id === selection.sectionId)) ||
 		(selection?.kind === "new" && validName(selection.name));
-	const reason = uncertain
+	const reason: keyof typeof BLOCKED | null = uncertain
 		? previousChange
-			? "Check the previous pin change before editing it."
-			: "Check this session's pins before editing."
+			? "previous-change"
+			: "unread"
 		: pending
-			? "Checking the pin assignment…"
+			? "checking"
 			: !connected
-				? "You can change pin assignments once the hub is back."
+				? "offline"
 				: null;
 	return (
 		<View style={[styles.fill, { backgroundColor: colors.background }]}>
@@ -89,7 +100,11 @@ export function PinAssignmentEditor({
 					<Copy muted>{hubName}</Copy>
 				</View>
 				<ErrorMessage message={error} />
-				{reason ? <Copy muted>{reason}</Copy> : null}
+				{reason ? (
+					<View testID={`pin-status:${reason}`}>
+						<Copy muted>{BLOCKED[reason]}</Copy>
+					</View>
+				) : null}
 				<View accessibilityRole="radiogroup" accessibilityLabel="Pinned section" style={{ gap: 4 }}>
 					{sections.map((section) => (
 						<Choice
@@ -131,28 +146,24 @@ export function PinAssignmentEditor({
 					{selection?.kind === "new" && !validName(selection.name) ? <Copy muted>Use 1–80 characters.</Copy> : null}
 				</View>
 				<View style={[styles.row, { flexWrap: "wrap" }]}>
-					<Action tone="primary" disabled={blocked || !valid} onPress={save}>
-						{selection?.kind === "new" ? "Create and pin" : "Pin to section"}
-					</Action>
-					<Action tone="quiet" disabled={blocked} onPress={unpin}>
-						Unpin
-					</Action>
+					<Button
+						primary
+						compact
+						label={selection?.kind === "new" ? "Create and pin" : "Pin to section"}
+						disabled={blocked || !valid}
+						onPress={save}
+					/>
+					<Button text quiet label="Unpin" disabled={blocked} onPress={unpin} />
 				</View>
 				{loading ? <ActivityIndicator accessibilityLabel="Loading pinned sections" /> : null}
 				{updating({ loading, error, stale, remaining }) ? <Copy muted>Updating…</Copy> : null}
 				{!loading && remaining > 0 ? (
-					<Action disabled={blocked} onPress={more}>
-						{`Load more sections (${remaining} remaining)`}
-					</Action>
+					<Button text label={`Load more sections (${remaining} remaining)`} disabled={blocked} onPress={more} />
 				) : null}
 				{uncertain ? (
-					<Action tone="quiet" disabled={!connected || loading || pending} onPress={refresh}>
-						Check again
-					</Action>
+					<Button text quiet label="Check again" disabled={!connected || loading || pending} onPress={refresh} />
 				) : null}
-				<Action tone="quiet" onPress={close}>
-					Close
-				</Action>
+				<Button text quiet label="Close" onPress={close} />
 			</ScrollView>
 		</View>
 	);

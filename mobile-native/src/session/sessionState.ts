@@ -1,11 +1,12 @@
 // What the Session's header says: the nav bar's state line with its still
 // mark (spec 8.1), and the context chips under it. The mark reuses the
 // Board's states (src/board/attention.ts). A session you are looking at is
-// never unread, so a finished one is Idle, with no dot.
-import { subagentState, summaryTally } from "../subagents/subagentModel";
-import type { EvenerDelegateInfo, ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
+// never unread, so one whose turn ended is Idle, with no dot.
+import { summaryTally } from "../subagents/subagentModel";
+import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
+import { taskSettledCount } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
-import { compactDuration } from "./format";
+import { compactDuration, timeAgo } from "./format";
 
 export interface SessionStateLine {
 	state: BoardState;
@@ -38,15 +39,17 @@ export function sessionStateLine(session: StateSource, now: number, runMs?: numb
 	// A question outranks an approval, as on the Board.
 	if (type === "awaiting" && session.askPending) return { state: "question", text: "Asks a question" };
 	if (session.pendingEscalations.length > 0) return { state: "approval", text: "Asks for approval" };
+	// Awaiting without a question: the turn ended on needs_response (#4093).
+	if (type === "awaiting") return { state: "needsYou", text: "Needs you" };
 	if (type === "active") {
 		if (typeof runMs === "number") return { state: "working", text: `Working · ${compactDuration(runMs)}` };
 		const started = hubTime(session.activeTurnStartedAt);
 		return { state: "working", text: started === null ? "Working" : `Working · ${compactDuration(now - started)}` };
 	}
-	const finished = lastCompletion(session.turns);
+	const ended = lastCompletion(session.turns);
 	return {
 		state: "idle",
-		text: finished === null ? "Finished" : `Finished · ${compactDuration(now - finished)} ago`,
+		text: ended === null ? "Idle" : `Idle · ${timeAgo(now - ended)}`,
 	};
 }
 
@@ -65,23 +68,11 @@ export interface SubagentTally {
 	done: number;
 }
 
-/** Classifies loaded roster evidence for dev fixtures, never whole-scope chip counts. */
-export function subagentTally(delegates: readonly EvenerDelegateInfo[] | undefined): SubagentTally {
-	const tally: SubagentTally = { total: 0, running: 0, failed: 0, done: 0 };
-	for (const delegate of delegates ?? []) {
-		tally.total += 1;
-		tally[subagentState(delegate)] += 1;
-	}
-	return tally;
-}
-
 export type ChipKind = "subagents" | "files" | "tasks" | "goal" | "queue";
 
 export interface ContextChip {
 	kind: ChipKind;
 	label: string;
-	/** "2 failed", drawn in red ink after the label. */
-	failed?: string;
 	/** Amber: the goal is blocked. */
 	attention: boolean;
 	/** A blue dot after the label: a document is new or changed (Files). */
@@ -110,13 +101,11 @@ export function contextChips(
 	const chips: ContextChip[] = [];
 	const tally = summaryTally(subagents ?? undefined);
 	if (connected && tally && tally.total > 0) {
-		const failed = tally.failed > 0 ? `${tally.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
 			label: `Subagents ${tally.total}`,
-			failed,
 			attention: false,
-			accessibilityLabel: failed ? `Subagents, ${tally.total}, ${failed}` : `Subagents, ${tally.total}`,
+			accessibilityLabel: `Subagents, ${tally.total}`,
 		});
 	} else if (connected && !tally && (session.delegates?.length ?? 0) > 0) {
 		chips.push({
@@ -135,13 +124,17 @@ export function contextChips(
 			accessibilityLabel: `Files, ${files.count}${files.fresh ? ", new or changed" : ""}`,
 		});
 	const tasks = session.tasks;
-	if (connected && tasks && tasks.total > 0)
+	// The Tasks sheet's groups and the web's activity chips read the same
+	// count, so the chip must too.
+	if (connected && tasks && tasks.total > 0) {
+		const settled = taskSettledCount(tasks);
 		chips.push({
 			kind: "tasks",
-			label: `Tasks ${tasks.done}/${tasks.total}`,
+			label: `Tasks ${settled}/${tasks.total}`,
 			attention: false,
-			accessibilityLabel: `Tasks, ${tasks.done} of ${tasks.total} done`,
+			accessibilityLabel: `Tasks, ${settled} of ${tasks.total} settled`,
 		});
+	}
 	if (session.goal) {
 		const blocked = session.goal.status === "blocked";
 		chips.push({

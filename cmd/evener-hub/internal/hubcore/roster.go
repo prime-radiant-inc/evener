@@ -255,14 +255,21 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 }
 
 // cloneDaemonLifecycle deep-copies a lifecycle snapshot (including its blocker
-// list) so a roster hand-off can never alias the probe's copy; nil stays nil
-// so "capability unknown" survives intact.
+// lists and last attempt) so a roster hand-off can never alias the probe's
+// copy; nil stays nil so "capability unknown" survives intact.
 func cloneDaemonLifecycle(in *appwire.DaemonLifecycle) *appwire.DaemonLifecycle {
 	if in == nil {
 		return nil
 	}
 	out := *in
 	out.Blockers = append([]appwire.DaemonBlocker(nil), in.Blockers...)
+	if in.LastAttempt != nil {
+		attempt := *in.LastAttempt
+		// slices.Clone keeps an empty list non-nil, so an error-only attempt
+		// still encodes "blockers": [].
+		attempt.Blockers = slices.Clone(in.LastAttempt.Blockers)
+		out.LastAttempt = &attempt
+	}
 	return &out
 }
 

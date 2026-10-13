@@ -404,20 +404,19 @@ func TestSessionHeaderShowsFailedChip(t *testing.T) {
 		},
 		width: 200,
 	}
+	uncounted := withFailures
+	uncounted.detail.FailedToolCalls = nil
+	plain := strings.Join(uncounted.sessionHeaderLines(), "\n")
 	got := strings.Join(withFailures.sessionHeaderLines(), "\n")
-	if !strings.Contains(got, "failed 3") {
+	if got == plain || !strings.Contains(got, "3") {
 		t.Errorf("meta strip missing failed chip:\n%s", got)
 	}
 
 	zero := 0
-	for _, detail := range []hubSessionDetail{
-		{Title: "Clean session", SourceLabel: "evener", FailedToolCalls: &zero},
-		{Title: "Uncounted session", SourceLabel: "evener"},
-	} {
-		got = strings.Join((hubModel{detail: detail, width: 200}).sessionHeaderLines(), "\n")
-		if strings.Contains(got, "failed") {
-			t.Errorf("meta strip should omit failed chip:\n%s", got)
-		}
+	clean := withFailures
+	clean.detail.FailedToolCalls = &zero
+	if got = strings.Join(clean.sessionHeaderLines(), "\n"); got != plain {
+		t.Errorf("meta strip should omit failed chip for a measured zero:\n%s", got)
 	}
 }
 

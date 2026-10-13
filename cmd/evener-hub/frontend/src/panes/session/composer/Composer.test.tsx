@@ -34,7 +34,7 @@ import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { settleProjectionWorkForTests } from "../../../stores/projectionWork";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
-import { activitySummary } from "../../../stores/sessionActivityTestUtils";
+import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
@@ -47,6 +47,7 @@ import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { errorToastsNaming, toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource as createTrackedComposerSource } from "../testing/composerSource";
@@ -56,6 +57,7 @@ import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import type { PendingAttachment } from "./attachments/useAttachments";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
+import { steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
 import { composerDraftStorageKey, draftStorageKey, readComposerDraft, readDraft } from "./draft";
 import {
   publishOutboxRecordForTests,
@@ -349,6 +351,12 @@ async function mountComposerWithHandle(
   // holds or observes that work open asks to keep it in flight.
   if (!options.holdMountProjection) await flushPendingTurnsProjectionForTests();
   return { fake, source, ...view };
+}
+
+// Which editor the composer shows: "message" for a live session, "follow-up"
+// for an ended one awaiting a follow-up.
+function composerMode(): string | undefined {
+  return screen.getByTestId("composer-form").dataset.mode;
 }
 
 async function mountComposer(
@@ -657,7 +665,6 @@ test("while ask_pending is open, the message textbox is hidden and the dock is n
   // contract: hiding the input row while a question is pending.
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
   expect(screen.queryByTestId("current-work")).toBeNull();
-  expect(screen.queryByText("Answer the agent’s questions.")).toBeNull();
   expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
 });
 
@@ -676,7 +683,7 @@ test("the current-work goal row carries the goal's live status", async () => {
     evener: currentWorkEvener({ goal: true }),
   });
 
-  expect(screen.getByTestId("current-work-goal-status").textContent).toBe("Active");
+  expect(screen.getByTestId("current-work-goal-status").dataset.state).toBe("active");
 });
 
 test("clicking the current goal fills and focuses an empty composer with an editable goal command", async () => {
@@ -1312,11 +1319,7 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
     {},
     {
       focused: true,
-      prepare: (fake) =>
-        fake.on("evener/thread/activity/read", (params) => ({
-          ...activitySummary(params.ref),
-          scope: params.scope ?? "session",
-        })),
+      prepare: (fake) => fake.on("evener/thread/activity/read", answerActivityRead),
     },
   );
   act(() => {
@@ -1433,10 +1436,12 @@ test("the real live Composer mount discovers initial activity without a test-sup
   const ref = "ref_activity_live";
   const fake = connectFakeClient();
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () => readResponse(ref));
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+    return answerActivityRead(params);
   });
   await threadsStore.getState().ensureThread(ref);
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
@@ -1449,6 +1454,10 @@ test("the real live Composer mount discovers initial activity without a test-sup
   );
 
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+
+  // One shared subagent count read, however many surfaces show it.
+
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
@@ -1458,6 +1467,7 @@ test("a saved notLoaded session with sending enabled discovers activity while it
   const ref = "ref_activity_saved";
   const fake = connectFakeClient();
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   fake.on("thread/read", () =>
     readResponse(ref, {
       status: { type: "notLoaded" },
@@ -1465,8 +1475,9 @@ test("a saved notLoaded session with sending enabled discovers activity while it
     }),
   );
   fake.on("evener/thread/activity/read", (params) => {
-    activityRefs.push(params.ref);
-    return activitySummary(params.ref);
+    // Discovery is the session read; the subtree read is the subagent count's own.
+    (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+    return answerActivityRead(params);
   });
   await threadsStore.getState().ensureThread(ref);
 
@@ -1479,6 +1490,8 @@ test("a saved notLoaded session with sending enabled discovers activity while it
   expect(textarea().style.minHeight).toBe("1lh");
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+  // One shared subagent count read, however many surfaces show it.
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
@@ -1869,7 +1882,7 @@ test("Stop renders as the word in the dangerQuiet variant, not as an icon", asyn
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  expect(stopButton().textContent).toBe("Stop");
+  expect(stopButton().textContent).not.toBe("");
   expect(stopButton().querySelector("svg")).toBeNull();
   expect(stopButton().className.split(" ")).toContain(buttonStyles.dangerQuiet);
 });
@@ -1919,7 +1932,7 @@ test("with nothing running, Send is the primary, sends now, and there is no Stee
   expect(submitButton().className.split(" ")).toContain(buttonStyles.primary);
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   // The idle half of Send's timing reaching its bubble (canQueue false).
-  expect(hoverForTooltip(submitButton()).textContent).toMatch(/^Send now · /);
+  expect(hoverForTooltip(submitButton()).textContent).toBe(submitTooltipLabel({ canQueue: false, enterToSend: false }));
 });
 
 // The label is stable across states even though the ROUTE isn't: a mid-turn
@@ -1927,11 +1940,15 @@ test("with nothing running, Send is the primary, sends now, and there is no Stee
 // "Send", because the change is one of timing, not of verb. The tooltip is
 // where the timing is spelled out (controlTooltips.test.ts).
 test("Send keeps its label while a turn runs", async () => {
+  const idle = await mountComposerWithHandle("ref_idle", { status: { type: "idle" } });
+  const idleLabel = submitButton().textContent;
+  idle.unmount();
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
-  expect(submitButton().textContent).toBe("Send");
+  expect(idleLabel).not.toBe("");
+  expect(submitButton().textContent).toBe(idleLabel);
 });
 
 // cezn: Send and Steer sit side by side while a turn runs, and Send's own
@@ -2009,7 +2026,7 @@ test("the timing caption is absent while an ask_user question is pending, even t
 
 // --- send / queue routing ---------------------------------------------------
 
-test("idle session: submit button reads Send and posts turn/start with the composer text", async () => {
+test("idle session: submit posts turn/start with the composer text", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
   fake.on("turn/start", (params) => ({
@@ -2023,7 +2040,7 @@ test("idle session: submit button reads Send and posts turn/start with the compo
   }));
 
   await user.type(textarea(), "ha");
-  expect(submitButton().textContent).toMatch(/send/i);
+  expect(submitButton().disabled).toBe(false);
   await user.click(submitButton());
 
   await flushPendingTurnsProjectionForTests();
@@ -2153,7 +2170,7 @@ test("a local outbox failure leaves the composer untouched and sends no RPC", as
     await user.click(submitButton());
     await flushPendingTurnsProjectionForTests();
 
-    await waitFor(() => expect(screen.getByText(/send failed/i)).toBeTruthy());
+    await waitFor(() => expect(toastKinds()).toEqual(["error"]));
     expect(editor.textContent).toBe("hello");
     expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
     expect(failedEnqueues).toBe(1);
@@ -2746,13 +2763,12 @@ test("with enterToSend on, Steer's tooltip drops its chord and Send's names bare
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   const tip = hoverForTooltip(steerButton());
-  expect(tip.textContent).toMatch(/interrupt and redirect now/i);
-  expect(tip.textContent).not.toMatch(/Shift/);
+  expect(tip.textContent).toBe(steerTooltipLabel({ recoveryFenced: false, enterToSend: true }));
 
   // Leaving hides Steer's bubble at once. hoverForTooltip reads the tooltip
   // with getByRole, which throws if two bubbles show.
   fireEvent.mouseLeave(steerButton());
-  expect(hoverForTooltip(submitButton()).textContent).toBe("Queue until the agent stops · Enter");
+  expect(hoverForTooltip(submitButton()).textContent).toBe(submitTooltipLabel({ canQueue: true, enterToSend: true }));
 });
 
 // --- steer / drain-as-steer routing -----------------------------------------
@@ -2872,7 +2888,7 @@ test("stop and steer both render and both work during the window after status fl
   await user.click(screen.getByTestId("composer-steer"));
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
-  expect(screen.queryByText(/no active turn/i)).toBeNull();
+  expect(getToasts()).toEqual([]);
 
   // And it is a working button, not a decoration: the request it sends names
   // the ref and nothing else, which is why it needs no id to exist.
@@ -3004,7 +3020,7 @@ test("Steer pressed after an idle frame folded in the same task is refused on th
     foldStatusFrame(fake, "idle");
     fireEvent.click(steer);
   });
-  await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Steer failed: no active turn"));
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
@@ -3026,7 +3042,7 @@ test("Stop pressed after an idle frame folded in the same task is refused on the
     foldStatusFrame(fake, "idle");
     fireEvent.click(stop);
   });
-  await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Interrupt failed: no active turn"));
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/interrupt")).toHaveLength(0);
 });
 
@@ -3264,7 +3280,7 @@ test("Shift+Enter while active with no active turn id sends the steer", async ()
 
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
-  expect(screen.queryByText(/no active turn/i)).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 // The drain route follows the same rule. It used to be guarded on the turn id
@@ -3301,7 +3317,7 @@ test("Shift+Enter routing to drain while active with no active turn id sends the
 
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(1);
-  expect(screen.queryByText(/no active turn/i)).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 // The keybinding shares the button's whole rule, capability included: a busy
@@ -3333,7 +3349,7 @@ test("Shift+Enter on a busy session whose harness advertises no steer sends noth
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(screen.getByText(/steer is not available for this session/i)).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
@@ -3353,7 +3369,7 @@ test("Shift+Enter on an idle session, where no Steer button renders at all, stil
   expect(screen.queryByTestId("composer-steer")).toBeNull(); // nothing to click; the keybinding is the only route
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
@@ -3632,7 +3648,7 @@ test("a losing cross-tab recovered send does not issue a second request", async 
 
   await waitFor(() => expect(editor.textContent).toBe(""));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
-  expect(getToasts().map((toast) => toast.kind)).toEqual(["info"]);
+  expect(toastKinds()).toEqual(["info"]);
   otherTab.close();
 });
 
@@ -4218,7 +4234,7 @@ test.each(ENDED_STATUSES)("a %s session's compact card keeps controls and sends 
   const editor = textarea();
 
   // Controls are available before the editor is engaged.
-  expect(textarea().getAttribute("data-placeholder")).toBe("Send a follow-up…");
+  expect(composerMode()).toBe("follow-up");
   expect(editor.style.minHeight).toBe("1lh");
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
@@ -4227,7 +4243,7 @@ test.each(ENDED_STATUSES)("a %s session's compact card keeps controls and sends 
   // Focus expands the editor. There is no turn for Steer or Stop.
   await user.click(editor);
   expect(editor.style.minHeight).toBe("3lh");
-  expect(submitButton().textContent).toContain("Send");
+  expect(submitButton().textContent).not.toBe("");
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   expect(screen.queryByTestId("composer-stop")).toBeNull();
@@ -4240,7 +4256,7 @@ test.each(ENDED_STATUSES)("a %s session's compact card keeps controls and sends 
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
-  expect(screen.queryByText(/Send is not available/)).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 // Saved local sessions share the compact editor and persistent control row.
@@ -4249,6 +4265,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
   const user = userEvent.setup();
   const ref = "local:saved-unfenced";
   const activityRefs: unknown[] = [];
+  const subtreeRefs: unknown[] = [];
   const { fake } = await mountComposerWithHandle(
     ref,
     {
@@ -4258,19 +4275,22 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
     {
       prepare: (fake) => {
         fake.on("evener/thread/activity/read", (params) => {
-          activityRefs.push(params.ref);
-          return activitySummary(params.ref);
+          // Discovery is the session read; the subtree read is the subagent count's own.
+          (params.scope === "subtree" ? subtreeRefs : activityRefs).push(params.ref);
+          return answerActivityRead(params);
         });
       },
     },
   );
 
-  expect(textarea().getAttribute("data-placeholder")).toBe("Send a follow-up…");
+  expect(composerMode()).toBe("follow-up");
   expect(textarea().style.minHeight).toBe("1lh");
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   const chrome = screen.getByTestId("session-chrome-inline");
   expect(submitButton().disabled).toBe(true);
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+  // One shared subagent count read, however many surfaces show it.
+  await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
 
   // Focus changes the editor height without replacing the discovery owner.
@@ -4280,6 +4300,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
   expect(screen.getByTestId("session-chrome-inline")).toBe(chrome);
   expect(textarea().style.minHeight).toBe("3lh");
   expect(activityRefs).toEqual([ref]);
+  expect(subtreeRefs).toEqual([ref]);
 });
 
 // Blur preserves a draft and its expanded writing space.
@@ -4458,12 +4479,12 @@ test("a stale resumeOnlyFoldable bit is cleared off its shut-down snapshot, rout
   expect(routedCalls(fake)).toEqual(["turn/queue"]);
 });
 
-// A merely-resumable session that also holds delivery-uncertain messages is NOT
-// the clean resume case: the hub's explicit Resume still reconciles those rows
-// (the connection/uncertain-message shape), and the resume-only carve-out must
-// not offer a Send whose folded resume would skip that reconciliation. The
-// composer keeps Send disabled and the chord sends no turn/start.
-test("a merely-resumable local session with uncertain messages keeps Send disabled", async () => {
+// A merely-resumable session that also holds delivery-uncertain messages is not
+// the clean resume case: the hub's explicit Resume reconciled those rows and the
+// fold could not. Under R09 this shape is the Send-resumes face - Send is
+// offered, the store drives the resume (which reconciles the uncertain rows)
+// before the parked send dispatches.
+test("a merely-resumable local session with uncertain messages offers Send and drives the resume", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
@@ -4493,23 +4514,349 @@ test("a merely-resumable local session with uncertain messages keeps Send disabl
     await refreshPendingTurnsProjection(ref);
   });
   await flushPendingTurnsProjectionForTests();
+  // The resume is held open, so the parked send cannot drain while asserting.
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  await waitFor(() => expect(submitButton().disabled).toBe(true));
-  // The chord reaches the form by the same route the button does; it refuses too.
-  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+  await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
+  // The Send is admitted and parks; the store drives the resume rather than the
+  // press minting nothing.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// R09 journey on the canonical wire shape: a local snapshot carrying the hub's
+// resumeRequired overlay, send:false, and a delivery-uncertain row. Send is
+// offered on the follow-up card; one press durably enqueues the intent (it
+// parks), the store runs ONE thread/resume, its hydration reconciles the
+// uncertain row, and the dispatch tails drain exactly one turn/start carrying
+// the pressed text. No standalone Resume control anywhere, and Queue is never
+// offered in the fence window (the one send routes to turn/start).
+test("Send on a recovery-fenced session resumes, reconciles, and drains exactly one send", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:send-resumes-journey";
+  let uncertain = "";
+  let resumed = false;
+  const fencedShape = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  // The resumed, authoritative snapshot names the uncertain row as accepted,
+  // which is what reconciles it.
+  const idleShape = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: {
+        ref,
+        capabilities: FULL_CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, clientMutationIds: [uncertain] },
+      },
+    });
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  fake.on("thread/read", () => (resumed ? idleShape() : fencedShape()));
+  fake.on("thread/resume", () => {
+    resumed = true;
+    return idleShape();
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${ref}`,
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await act(async () => {
+    const input = [{ type: "text", text: "uncertain" }];
+    const row = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/queue",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input },
+    });
+    uncertain = row.clientMutationId;
+    await storage.markUnknown(uncertain, "blockedUnknown");
+    await refreshPendingTurnsProjection(ref);
+  });
+  await flushPendingTurnsProjectionForTests();
+  // The canonical shape offers a Send control and no standalone Resume one.
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "the pressed text");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(resumed).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  const starts = fake.calls.filter((call) => call.method === "turn/start");
+  expect(starts).toHaveLength(1);
+  expect(starts[0]?.params).toEqual(
+    expect.objectContaining({ ref, input: [{ type: "text", text: "the pressed text" }] }),
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+});
+
+// R09: a resume failure surfaces through the send path. The toast names the
+// reason; the pressed text survives as the parked outbox row and the draft
+// clears (the row is the preserved input); no turn/start dispatches; Send stays
+// offered. A later press re-drives the resume and the parked rows drain.
+test("a failed resume toasts, keeps the pressed row parked, and a later press re-drives it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:send-resumes-failure";
+  let resumed = false;
+  let failResume = true;
+  const fencedShape = () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const idleShape = () =>
+    readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: FULL_CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  fake.on("thread/read", () => (resumed ? idleShape() : fencedShape()));
+  fake.on("thread/resume", () => {
+    if (failResume) throw new Error("resume rejected");
+    resumed = true;
+    return idleShape();
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${ref}`,
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "keep me");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // The toast names the reason.
+  await waitFor(() => expect(errorToastsNaming("resume rejected")).toHaveLength(1));
+  // The pressed text is a parked durable row and nothing reached the wire.
+  const parked = await storage.listOutbox(ref);
+  expect(parked.map((record) => record.composerText)).toEqual(["keep me"]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  // Send stays offered: no fence control, and the empty draft is the only
+  // reason the button is disabled.
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  expect(submitButton().disabled).toBe(true);
+  // A later press re-drives the resume; the parked rows then drain.
+  failResume = false;
+  await user.click(textarea());
+  await user.type(textarea(), "press again");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(resumed).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(2);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+});
+
+const REMOUNT_FAILURE_SHAPE = (ref: string) => ({
+  status: { type: "notLoaded" } as const,
+  evener: {
+    ref,
+    capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+    mutationStateAuthoritative: false,
+    resumeRequired: true,
+    queue: { revision: 0 },
+  },
+});
+
+// R09 defect: a stale resume failure re-toasted on every composer remount
+// (dockview unmounts inactive panes routinely). A remount seeds its dedup from
+// the store, so a failure that predates the mount is never reported twice.
+test("a resume failure does not re-toast when the composer remounts", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:resume-failure-remount";
+  const fake = await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  fake.on("thread/resume", () => {
+    throw new Error("resume rejected");
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "keep me");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(errorToastsNaming("resume rejected")).toHaveLength(1));
+  cleanup();
+  await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  await flushPendingTurnsProjectionForTests();
+  expect(errorToastsNaming("resume rejected")).toHaveLength(1);
+});
+
+// R09 defect: the success path must also clear the stored failure, or a later
+// remount still reports a failure the resume has since recovered from.
+test("a successful re-drive clears the failure so a later remount cannot toast it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:resume-recovered-remount";
+  let failResume = true;
+  const fake = await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  fake.on("thread/resume", () => {
+    if (failResume) throw new Error("resume rejected");
+    return readResponse(ref, {
+      status: { type: "idle" },
+      evener: { ref, capabilities: FULL_CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "keep me");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(errorToastsNaming("resume rejected")).toHaveLength(1));
+  expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
+  // The later press re-drives and succeeds: the stored failure is cleared.
+  failResume = false;
+  await user.click(textarea());
+  await user.type(textarea(), "press again");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(threadsStore.getState().resumeFailures.has(ref)).toBe(false));
+  cleanup();
+  await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
+  await flushPendingTurnsProjectionForTests();
+  expect(errorToastsNaming("resume rejected")).toHaveLength(1);
+});
+
+// R09 defect: the render passed mutationStateAuthoritative but the press-time
+// re-derivation did not, so an authoritative local child (parentRef local:, the
+// obligation armed, a live status) offered Send at render and refused it at the
+// press as if it were owner-retained - a stranded pane with the notice
+// suppressed. The press must read the same face the render did and park.
+test("an authoritative local child's Send press takes the Send-resumes face instead of refusing", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:authoritative-child";
+  const fake = await mountComposer(ref, {
+    status: { type: "idle" },
+    evener: {
+      ref,
+      capabilities: FULL_CAPABILITIES,
+      parentRef: "local:owner",
+      mutationStateAuthoritative: true,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "child message");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // No owner-retained refusal: the press parked the row and drove the resume.
+  expect(toastKinds()).not.toContain("error");
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// The reconciliationFailed fence is separate from the recovery-fence notice: it
+// holds dispatch closed (currentDispatchClient) but does NOT take Send away. On
+// the Send-resumes face Send is offered and the pressed row parks until
+// recovery succeeds, while the notice that says so lives in the session pane.
+test("a reconciliation-failed Send-resumes face offers Send and parks the row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:reconciliation-failed-send";
+  const fake = await mountComposer(ref, {
+    status: { type: "idle" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  act(() => threadsStore.setState({ mutationReconciliationFailures: new Set([ref]) }));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "wait for recovery");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // The resume is driven; the row stays parked because dispatch is closed by the
+  // reconciliation failure, so nothing reaches the wire yet.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  const parked = await storage.listOutbox(ref);
+  expect(parked.map((record) => record.method)).toContain("turn/start");
 });
 
 // The submit re-derivation reads delivery uncertainty LIVE, like stopInFlight
 // and queuedNonSend beside it (and like resumeOnlyLocalModel, which enqueue and
 // dispatch use): a blockedUnknown row published between the render and the
-// press must route the press to the refusal, not fold the resume into a send
-// that the store's own fence would then refuse. The store update and the press
-// run in one synchronous task, so the render-time read cannot have caught up.
-test("a blockedUnknown row published after the render routes the press to the refusal", async () => {
+// press must route the press to the Send-resumes face - the store drives the
+// resume rather than folding it into the send ahead of the uncertain row. The
+// store update and the press run in one synchronous task, so the render-time
+// read cannot have caught up.
+test("a blockedUnknown row published after the render routes the press to the Send-resumes face", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
@@ -4550,16 +4897,16 @@ test("a blockedUnknown row published after the render routes the press to the re
   if (!blocked) throw new Error("expected the blocked row to be durable");
   const submit = submitButton();
   expect(submit.disabled).toBe(false);
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   act(() => {
     publishOutboxRecordForTests(blocked);
     fireEvent.click(submit);
   });
   await flushPendingTurnsProjectionForTests();
-  // The submit itself refused (route none): the alternative is routing to send
-  // and being refused a step later at enqueue with a different toast.
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain("Send is not available for this session"),
-  );
+  // The submit routed to the Send-resumes face: the store drives the resume and
+  // no refusal is toasted.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(toastKinds()).not.toContain("error");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -4617,11 +4964,11 @@ test("a merely-resumable local session with a pending send refuses a second send
 
 // A snapshot that advertises send is not the hub's resume-fenced shape: the
 // resume requirement clears send:false together with resumeRequired
-// (applyThreadResumeRequirement). The client-side obligation still fences it -
-// with no wire send fence the resume-only carve-out does not apply - so the
-// rendered Send stays disabled rather than offering a press against an
-// obligation the wire never confirmed.
-test("a fenced stopped local session that advertises send renders a disabled Send", async () => {
+// (applyThreadResumeRequirement). Under R09 the client-side obligation is the
+// Send-resumes face: Send is offered, and the store drives the resume before
+// the parked send dispatches, rather than refusing a press the wire never
+// confirmed.
+test("a fenced stopped local session that advertises send offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:stopped-send-advertised";
   const fake = await mountComposer(ref, {
@@ -4636,13 +4983,14 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -4650,12 +4998,9 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
 // daemon's still-active status while the hub overlays resumeRequired beside it
 // (applyThreadResumeRequirement), and the store arms the obligation on that
 // hydration. This fixture leaves resumeOnlyFoldable unset, so the hub bit is
-// absent, and its status is live (idle), which is not in SHUT_DOWN_STATUSES;
-// isResumeOnlyLocal now keys on the hub bit, the shut-down status, and the
-// uncertain/stop/queued signals, so the merely-resumable carve-out does not
-// apply on either count. The hub still refuses turn/start while the Stop
-// drains, so Send stays disabled.
-test("a live fenced idle local session renders a disabled Send and sends no turn/start", async () => {
+// absent and this is the Send-resumes face: Send is offered and the store's
+// driver resumes before the parked send dispatches.
+test("a live fenced idle local session offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:live-fenced-idle";
   const fake = await mountComposer(ref, {
@@ -4669,21 +5014,22 @@ test("a live fenced idle local session renders a disabled Send and sends no turn
     },
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
 // A closed local frame carries send:true (stampClosedThreadCapabilities); it is
 // not the hub's resume-fenced shape, which clears send:false alongside
-// resumeRequired (applyThreadResumeRequirement). With no wire send fence the
-// resume-only carve-out does not apply, so Send stays disabled.
-test("a fenced closed local session that advertises send renders a disabled Send", async () => {
+// resumeRequired (applyThreadResumeRequirement). Under R09 the obligation is
+// the Send-resumes face: Send is offered and the store drives the resume.
+test("a fenced closed local session that advertises send offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:closed-send-advertised";
   const fake = await mountComposer(ref, {
@@ -4698,13 +5044,14 @@ test("a fenced closed local session that advertises send renders a disabled Send
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -4713,13 +5060,9 @@ test("a fenced closed local session that advertises send renders a disabled Send
 // during a Stop relays the daemon's still-active status while the hub overlays
 // resumeRequired beside it (cmd/evener-hub's applyThreadResumeRequirement on
 // the relayed thread/read), and the store arms its restart-blocking obligation
-// on exactly that hydration - while the hub's recovery admission
-// (sessionActionRecoveryError, keyed on the resume locks and never on the
-// projected status) refuses turn/start and turn/queue for as long as the model
-// still reads active. The availability table answers queue-mode for that
-// snapshot, so the offered press could only mint durable intent that parks
-// until the explicit Resume action clears the fence.
-test("an active fenced local session renders a disabled Send and enqueues nothing", async () => {
+// on exactly that hydration. Under R09 the obligation is the Send-resumes face:
+// Send is offered, the parked send waits, and the store drives the resume.
+test("an active fenced local session offers Send and drives the resume", async () => {
   const user = userEvent.setup();
   const ref = "local:active-fenced";
   const fake = await mountComposer(ref, {
@@ -4736,20 +5079,16 @@ test("an active fenced local session renders a disabled Send and enqueues nothin
     },
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  fake.on("thread/resume", () => new Promise<never>(() => {}));
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
-  expect(submitButton().disabled).toBe(true);
-  // The chord reaches the form by the same route the button does; it refuses too.
+  expect(submitButton().disabled).toBe(false);
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
-  // Nothing parks in the durable outbox either: a fenced press mints no intent.
-  const storage = new MutationOutboxIndexedDB();
-  const parked = await storage.listOutbox(ref);
-  storage.close();
-  expect(parked).toEqual([]);
 });
 
 // The Steer surface of the same fence: turn/steer sits in the same hub
@@ -4778,7 +5117,7 @@ test("an active fenced local session renders a disabled Steer and parks nothing"
   await user.click(textarea());
   await user.keyboard("{Shift>}{Enter}{/Shift}");
   await flushPendingTurnsProjectionForTests();
-  expect(getToasts().map((t) => t.text)).toContain("Steer isn't available until this session is resumed");
+  expect(toastKinds()).toEqual(["error"]);
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
   const storage = new MutationOutboxIndexedDB();
   const parked = await storage.listOutbox(ref);
@@ -4835,9 +5174,7 @@ test("a typed /queue on an active fenced session is refused and parks no intent"
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain("/queue isn't available until this session is resumed"),
-  );
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
@@ -4856,9 +5193,7 @@ test("a typed /steer on an active fenced session is refused and parks no intent"
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain("/steer isn't available until this session is resumed"),
-  );
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
@@ -4888,11 +5223,7 @@ test("a typed /drain-as-steer on an active fenced session is refused and parks n
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain(
-      "/drain-as-steer isn't available until this session is resumed",
-    ),
-  );
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "turn/drainAsSteer")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
@@ -4917,9 +5248,7 @@ test("a typed /clear on an active fenced session is refused and parks no intent"
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain("/clear isn't available until this session is resumed"),
-  );
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "thread/clear")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
   expect(editor.textContent).toBe("/clear");
@@ -4947,9 +5276,7 @@ test("a typed /interrupt on an active fenced session still mints its intent: Sto
   // mount - so the agreement under test is that the intent is minted at all.
   const parked = await parkedOutboxFor(ref);
   expect(parked.map((record) => record.method)).toEqual(["turn/interrupt"]);
-  expect(getToasts().map((toast) => toast.text)).not.toContain(
-    "/interrupt isn't available until this session is resumed",
-  );
+  expect(toastKinds()).not.toContain("error");
 });
 
 // The test above settles its press with the projection flush, which awaits
@@ -5934,7 +6261,7 @@ test("submitting while an attachment is still mid-encode is blocked with a toast
   await waitFor(() => expect(editor.textContent).toBe("[image 1]"));
   await user.click(submitButton());
 
-  await waitFor(() => expect(screen.getByText(/still processing/i)).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
 });
 
@@ -7376,7 +7703,9 @@ test("a failed built-in invocation preserves the draft and toasts a friendly mes
   await user.type(editor, "/goal fix the login bug");
   await user.click(submitButton());
 
-  await waitFor(() => expect(screen.getByText("Something went wrong.")).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
+  // The friendly message replaces the raw handler error.
+  expect(getToasts()[0]?.text).not.toContain("boom");
   expect(editor.textContent).toBe("/goal fix the login bug");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
@@ -7412,7 +7741,7 @@ test("an unavailable built-in (/steer while idle) is refused with the unavailabl
   await user.type(editor, "/steer go left");
   await user.click(submitButton());
 
-  await waitFor(() => expect(screen.getByText(/\/steer is not available right now/i)).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(editor.textContent).toBe("/steer go left");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
@@ -7529,9 +7858,7 @@ test.each([
 
   await user.click(control === "submit" ? submitButton() : steerButton());
 
-  expect(getToasts().map((toast) => toast.text)).toContain(
-    "Skill selections aren't supported on this session yet; your draft is kept",
-  );
+  expect(toastKinds()).toEqual(["error"]);
   expect(fake.calls.filter((call) => call.method === method)).toHaveLength(0);
   expect(within(editor).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
 });
@@ -7558,9 +7885,7 @@ test("a staged skill on Send to a target without skillInput keeps the draft and 
 
   await user.click(submitButton());
 
-  expect(getToasts().map((toast) => toast.text)).toContain(
-    "Skill selections aren't supported on this session yet; your draft is kept",
-  );
+  expect(toastKinds()).toEqual(["error"]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(editor.textContent).toContain("aimed at a target without skills");
   expect(within(editor).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");

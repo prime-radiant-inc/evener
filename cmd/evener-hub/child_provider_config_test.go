@@ -33,7 +33,7 @@ wire_id = "wire-house"
 
 const retainedProviderDaemonScript = `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
- printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
+ printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
  exit 0
 fi
 mkdir -p "$EVENER_RUN_DIR"
@@ -425,7 +425,7 @@ func TestRetainedProviderFailedDaemonLaunchCleansAfterChildExit(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "evener")
 	writeFakeEvener(t, binary, `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
- printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
+ printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
  exit 0
 fi
 exit 1
@@ -459,7 +459,7 @@ func TestRetainedProviderResumeKeepsSnapshotWhenChildCleanupIsUnconfirmed(t *tes
 	f := retainedProviderFixture(t, retainedProviderConfig)
 	binary := filepath.Join(t.TempDir(), "evener")
 	writeFakeEvener(t, binary, `#!/bin/sh
-printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
+printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
 `)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

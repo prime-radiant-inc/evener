@@ -18,11 +18,8 @@ import { memo, type ReactNode, useState } from "react";
 import { workspaceStore } from "../../../../shell/workspace";
 import { browserDraftKey, getBrowserDraftRepository } from "../../../../stores/browserDraftRepository";
 import { threadsStore } from "../../../../stores/threads";
-import { IconButton, useToasts } from "../../../../widgets";
+import { IconButton, SpeakerAvatar, type SpeakerAvatarSpeaker, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-// Direct widget path, NOT the widgets barrel: the barrel is controller-owned
-// and does not re-export SpeakerAvatar yet.
-import { SpeakerAvatar, type SpeakerAvatarSpeaker } from "../../../../widgets/speakeravatar";
 import { EntityText } from "../EntityText";
 import { ImageGallery } from "../flow/ImageGallery";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
@@ -93,15 +90,16 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
   }
 
   return (
-    <IconButton
-      label="Fork from here"
-      title="Fork from here"
-      icon={<ForkGlyph />}
-      variant="quiet"
-      size="sm"
-      disabled={busy}
-      onClick={() => void handleFork()}
-    />
+    <Tooltip label="Fork from here">
+      <IconButton
+        label="Fork from here"
+        icon={<ForkGlyph />}
+        variant="quiet"
+        size="sm"
+        disabled={busy}
+        onClick={() => void handleFork()}
+      />
+    </Tooltip>
   );
 }
 
@@ -136,6 +134,7 @@ export function UserMessageView({
     <div
       className={provisional === undefined ? CLASS.message : `${CLASS.message} ${CLASS.provisional}`}
       data-testid="user-message-item"
+      data-speaker={speaker}
       data-opens-exchange={opensExchange ? "true" : undefined}
       data-provisional={provisional !== undefined ? "true" : undefined}
     >

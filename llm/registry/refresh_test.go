@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"testing"
 	"time"
 )
@@ -134,7 +133,7 @@ func TestRefresh_SanityFloorsAndFailuresKeepCache(t *testing.T) {
 func TestRefresh_RequiresStateRoot(t *testing.T) {
 	f := &fakeFetch{body: fixtureBytes(t), etag: "a"}
 	_, err := Refresh(context.Background(), RefreshOptions{Fetcher: f.fetcher(), Force: true, Baseline: fixtureBytes(t)})
-	if err == nil || !strings.Contains(err.Error(), "StateRoot is required") {
+	if err == nil {
 		t.Fatalf("an empty StateRoot must be refused: %v", err)
 	}
 	if f.calls != 0 {

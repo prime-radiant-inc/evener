@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { pressable, render, renderedText } from "../renderNative.testkit";
+import { markers } from "../markerTestUtils";
+import { pressable, render } from "../renderNative.testkit";
 import { paletteFor } from "../design/tokens";
 import { SessionNotice } from "./SessionNotice";
 
@@ -13,7 +14,7 @@ describe("the notice in the composer's place (ruling 20)", () => {
 	it("asks for a restart when the session runs an older Evener", () => {
 		const onPress = vi.fn();
 		const tree = render(<SessionNotice kind="restartNeeded" busy={false} onPress={onPress} />);
-		expect(renderedText(tree)).toContain("This session runs an older Evener. Restart it to pick up the hub's update.");
+		expect(markers(tree, "session-notice")).toEqual(["restartNeeded"]);
 		const button = pressable(tree, "Restart session");
 		expect(button?.props.accessibilityState).toMatchObject({ disabled: false });
 		button?.props.onPress();
@@ -23,15 +24,16 @@ describe("the notice in the composer's place (ruling 20)", () => {
 	it("offers Resume when the session is paused", () => {
 		const onPress = vi.fn();
 		const tree = render(<SessionNotice kind="paused" busy={false} onPress={onPress} />);
-		expect(renderedText(tree)).toContain("This session is paused.");
+		expect(markers(tree, "session-notice")).toEqual(["paused"]);
 		pressable(tree, "Resume")?.props.onPress();
 		expect(onPress).toHaveBeenCalledOnce();
 	});
 
 	it("says Restarting… and takes no second press while it restarts", () => {
 		const tree = render(<SessionNotice kind="restartNeeded" busy onPress={() => {}} />);
-		expect(renderedText(tree)).toContain("Restarting…");
-		expect(pressable(tree, "Restarting…")?.props.disabled).toBe(true);
+		const [button] = tree.root.findAll((node) => String(node.type) === "Pressable");
+		expect(button?.props.accessibilityState).toEqual({ disabled: true, busy: true });
+		expect(button?.props.disabled).toBe(true);
 	});
 
 	it("takes no press while it resumes, or while nothing could act on it", () => {

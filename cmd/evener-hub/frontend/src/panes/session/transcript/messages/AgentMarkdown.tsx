@@ -1,90 +1,86 @@
-import { docFileRawURL, docImageURL, isValidTranscriptRef } from "@evener/appwire-client";
-import { type ReactPortal, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { isValidTranscriptRef } from "@evener/appwire-client";
+import { parseFileReference } from "@evener/appwire-client/docContent";
+import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import * as paneActions from "../../../../shell/paneActions";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Markdown } from "../../../../widgets/markdown";
+import { Markdown, OpenButton } from "../../../../widgets";
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
-import { OpenButton } from "../../../../widgets/openbutton";
-import { browserDocPort } from "../../../doc/browserDocPort";
 import { useDocOpeningOrigin } from "../../../doc/docOpeningContext";
-import { useEntityTextEnhancement } from "../EntityText";
-import { fileDocParams } from "../fileOpenBeside";
+import { openDocBeside } from "../../../doc/openDoc";
+import { enhanceEntityText } from "../EntityText";
+import { enhanceFileReferences } from "./fileReferenceDOM";
 
-function fileLinkPath(href: string): string | undefined {
-  // URL references are not filesystem paths. Decode only the pathname, once,
-  // before applying the same cwd boundary used by file tool cards.
-  if (/^(?:[a-z][a-z\d+.-]*:|\/\/|[?#])/i.test(href)) return undefined;
-  try {
-    const path = decodeURIComponent(href.split(/[?#]/, 1)[0] ?? "");
-    if (path.startsWith("//") || /[\\\p{Cc}]/u.test(path) || path.split("/").includes("..")) return undefined;
-    return path;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Adds session file actions to sanitized agent prose without changing the
- * shared Markdown renderer's URL policy or admitting authored HTML. */
+/** Adds source-bound file actions to sanitized assistant prose without changing
+ * the shared Markdown renderer's URL policy or admitting authored HTML. */
 export function AgentMarkdown({ source, live = false }: { source: string; live?: boolean }) {
-  const { thread } = useTranscriptRenderContext();
-  const ref = thread?.ref;
-  // Document endpoints serve local sessions only, addressed by bare ID or local:ID.
-  const sessionRef =
-    ref && (!ref.includes(":") || (ref.startsWith("local:") && isValidTranscriptRef(ref))) ? ref : undefined;
-  const cwd = thread?.cwd;
+  const renderContext = useTranscriptRenderContext();
+  const sessionRef = renderContext.thread?.ref;
+  const cwd = renderContext.thread?.cwd;
   const origin = useDocOpeningOrigin();
+  // A live pane reading surface names the opening pane through the render
+  // context; a scope that renders transcripts WITHOUT one (each Zoom column)
+  // still declares it through the doc-opening origin, whose pane identity is
+  // the same record the real open path keys on.
+  const providerOriginPaneId =
+    origin === undefined ? undefined : origin.kind === "browser-origin" ? origin.paneId : origin.sourcePaneId;
+  const sourcePaneId = renderContext.sourcePaneId ?? providerOriginPaneId;
   const root = useRef<HTMLDivElement>(null);
-  const [affordances, setAffordances] = useState<ReactPortal[]>([]);
+  const [portals, setPortals] = useState<ReactNode[]>([]);
   // Portal updates must not replace the innerHTML that owns their mount points.
   const markdown = useMemo(() => <Markdown ref={root} source={source} live={live} />, [source, live]);
-  const entityPortals = useEntityTextEnhancement(root, [source, live]);
 
-  // source/live determine when Markdown replaces its sanitized DOM. Rebind even
-  // when the session is unchanged, including streamed and settled transitions.
+  // One lifetime restores entities before files, including hydration with
+  // unchanged text. source/live invalidate the sanitized Markdown DOM itself.
   // biome-ignore lint/correctness/useExhaustiveDependencies: source/live invalidate the child Markdown DOM
   useLayoutEffect(() => {
-    const portals: ReactPortal[] = [];
-    const cleanups: Array<() => void> = [];
-    for (const link of root.current?.querySelectorAll<HTMLAnchorElement>("a[href]") ?? []) {
-      if (link.closest(`[${MERMAID_DIAGRAM_ATTR}]`) !== null) continue;
-      const href = link.getAttribute("href") ?? "";
-      const params = fileDocParams(fileLinkPath(href), sessionRef, cwd);
-      if (params === undefined) continue;
-      // Merge the captured scope origin into the SAME params fileDocParams built.
-      const docParams = origin === undefined ? params : { ...params, origin };
-      const open = () => paneActions.openBeside({ type: "doc", params: docParams });
-      const onClick = (event: MouseEvent) => {
-        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-        event.preventDefault();
-        event.stopPropagation();
-        open();
-      };
-      link.href =
-        docParams.kind === "image"
-          ? docImageURL(browserDocPort.origin, docParams.session, docParams.path)
-          : docFileRawURL(browserDocPort.origin, docParams.session, docParams.path);
-      link.addEventListener("click", onClick);
-      const slot = document.createElement("span");
-      link.after(slot);
-      portals.push(createPortal(<OpenButton label={`Open beside: ${docParams.path}`} onClick={open} />, slot));
-      cleanups.push(() => {
-        link.setAttribute("href", href);
-        link.removeEventListener("click", onClick);
-        slot.remove();
-      });
+    const element = root.current;
+    if (!element) return;
+    const affordances: ReactNode[] = [];
+    const slots: HTMLElement[] = [];
+    const qualifiedRef = sessionRef?.includes(":") ? sessionRef : `local:${sessionRef ?? ""}`;
+    const context =
+      sessionRef && isValidTranscriptRef(qualifiedRef) && cwd && sourcePaneId
+        ? { sessionRef, cwd, sourcePaneId }
+        : undefined;
+    if (context) {
+      // Only authored eligible anchors get the existing OpenButton. Capture
+      // destinations before the DOM adapter rewrites hrefs or generates links.
+      for (const link of element.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+        if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
+        const reference = parseFileReference(link.getAttribute("href") ?? "", "link", context.cwd);
+        if (!reference) continue;
+        const request = {
+          session: context.sessionRef,
+          reference,
+          sourcePaneId: context.sourcePaneId,
+          ...(origin === undefined ? {} : { origin }),
+        };
+        const slot = document.createElement("span");
+        slot.setAttribute("data-file-action", "");
+        link.after(slot);
+        slots.push(slot);
+        affordances.push(
+          createPortal(
+            <OpenButton label={`Open beside: ${reference.path}`} onClick={() => openDocBeside(request)} />,
+            slot,
+          ),
+        );
+      }
     }
-    setAffordances(portals);
+    const restoreFiles = context ? enhanceFileReferences(element, context) : () => {};
+    const entityResult = enhanceEntityText(element);
+    setPortals([...affordances, ...entityResult.portals]);
     return () => {
-      for (const cleanup of cleanups) cleanup();
+      entityResult.cleanup();
+      restoreFiles();
+      for (const slot of slots) slot.remove();
     };
-  }, [source, live, sessionRef, cwd, origin]);
+  }, [source, live, sessionRef, cwd, sourcePaneId, origin]);
 
   return (
     <>
       {markdown}
-      {affordances}
-      {entityPortals}
+      {portals}
     </>
   );
 }

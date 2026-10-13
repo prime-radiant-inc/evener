@@ -26,6 +26,11 @@ to copy, retry, resume, or recover an artifact. Scratch cleanup is manual for
 now; an explicitly unadopted allocation may still be rolled back when setup
 fails before a delegate can receive it.
 
+Superseded 2026-10-03 by
+[2026-10-03-remove-scratch-retention-design.md](2026-10-03-remove-scratch-retention-design.md):
+scratch is deleted when the environment that owns it ends, so a delegate
+returns what its parent needs in its result instead of a scratch path.
+
 ## Job outcomes and worktree provenance
 
 The durable job outcomes remain distinct: `completed`, `failed`, `cancelled`,

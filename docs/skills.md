@@ -56,6 +56,17 @@ preserves but does not enforce are advisory and appear only at Full transcript
 detail. Invalid metadata and unreadable or unavailable skills remain visible at
 less verbose levels because they require action.
 
+A `SKILL.md` whose frontmatter block is missing only its opening `---` — it
+begins directly with a mapping entry such as `name:` and still closes on a whole
+`---` line — is read tolerantly: Evener treats the leading block as frontmatter
+and reports a `missing_frontmatter_delimiter` compatibility diagnostic, advisory
+in the same way as the other preserved-metadata notes. A block that starts with
+a heading or prose, or that does not carry both a non-blank `name` and a
+non-blank `description`, is not recovered. A file saved with CRLF (or lone CR)
+line endings reads like an LF one either way, and its delivered body ends its
+lines in `\n`. Every other malformed shape stays an
+`invalid_frontmatter` diagnostic and the skill stays unavailable.
+
 `allowed-tools` may be one string or an ordered array of strings. Evener
 preserves it and diagnoses that it is not enforced: it neither grants nor
 restricts tool access.
@@ -73,6 +84,23 @@ lowest to highest precedence:
 Deeper project directories win over shallower ones; `skills/` wins over
 `.agents/skills/` at the same level. Without a repository, only cwd is scanned.
 Configured roots remain discoverable when a cold session has no recorded cwd.
+Each public root scans its immediate children, including readable directory
+symlinks. Absolute and relative links may point outside the root; discovery does
+not recurse into nested collections. Symlinked roots and linked `SKILL.md` files
+are also supported. Catalog sources and activation `base_directory` retain the
+configured, lexical paths, not the target's canonical paths. Links grant no new
+permissions or trust, and the private bundled-skill cache keeps its separate
+validation and publication policy.
+
+A broken, looping or unreadable child link produces an `unreadable_source`
+diagnostic at that link without hiding healthy siblings. A directory without
+`SKILL.md`, or a link to a regular file instead of a directory, is not a
+candidate. Discovery is a snapshot: restoring a target makes it discoverable on
+the next catalog read or session startup, not through a new live refresh. A
+retained descriptor can load again after its target returns, provided the
+declared identity still matches; loading uses the current bytes. Discovery and
+loading do not alter the installed links or targets.
+
 Plugins use first-valid-manifest reservation: later manifests with the same
 plugin name are skipped even if the selected plugin has malformed unrelated
 components. Skill discovery does not load those commands, agents, hooks, or MCP
@@ -137,7 +165,9 @@ a structured, data-safe context. The context includes `base_directory`, the
 skill directory against which relative references to scripts, references, or
 other collateral are resolved. Referenced resources are loaded lazily with the
 ordinary permission-checked tools only when the task needs them; they are not
-eagerly included with the skill body.
+eagerly included with the skill body. A sandboxed session can read that directory
+in every mode, including for plugin skills and your own skills inside the masked
+`~/.config/evener` ([sandboxing](sandboxing.md#the-denylist-secrets-and-pseudo-filesystems)).
 
 Skill bodies are inert instructions, not executable templates. Evener performs
 no expansion on them: no shell execution, no file inclusion, no argument

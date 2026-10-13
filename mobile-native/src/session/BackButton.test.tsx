@@ -17,7 +17,7 @@ function button(tree: ReturnType<typeof render>) {
 describe("Back with who else needs you (spec 13.2)", () => {
 	it("carries the count of the others that need you, in amber", () => {
 		const tree = render(<BackButton count={4} onPress={() => {}} />);
-		expect(button(tree).props.accessibilityLabel).toBe("Back, 4 others need you");
+		expect(button(tree).props.accessibilityLabel).toContain("4");
 		const count = tree.root.findAll((node) => String(node.type) === "Text")[0];
 		expect(textOf(count)).toBe("4");
 		expect(count.props.style).toMatchObject({
@@ -30,8 +30,12 @@ describe("Back with who else needs you (spec 13.2)", () => {
 	});
 
 	it("says one other in the singular", () => {
-		const tree = render(<BackButton count={1} onPress={() => {}} />);
-		expect(button(tree).props.accessibilityLabel).toBe("Back, 1 other needs you");
+		const label = (count: number) =>
+			button(render(<BackButton count={count} onPress={() => {}} />)).props.accessibilityLabel as string;
+		expect(label(1)).toContain("1");
+		// The words around the count agree with it.
+		expect(label(1).replace("1", "#")).not.toBe(label(4).replace("4", "#"));
+		expect(label(4).replace("4", "#")).toBe(label(7).replace("7", "#"));
 	});
 
 	it("says what a screen names instead, when it gives a label (the Reader's held count)", () => {
@@ -42,7 +46,12 @@ describe("Back with who else needs you (spec 13.2)", () => {
 
 	it("is a plain Back when nobody else needs you", () => {
 		const tree = render(<BackButton count={0} onPress={() => {}} />);
-		expect(button(tree).props.accessibilityLabel).toBe("Back");
+		const plain: string = button(tree).props.accessibilityLabel;
+		expect(plain).not.toMatch(/\d/);
+		// The counted labels are this one with the count after it.
+		expect(button(render(<BackButton count={4} onPress={() => {}} />)).props.accessibilityLabel).toMatch(
+			new RegExp(`^${plain}, `),
+		);
 		expect(renderedText(tree)).toBe("");
 	});
 

@@ -1044,3 +1044,31 @@ share, takes $VARIABLE references with at most one auth scheme word ahead
 of them, and the hub omits from the entry any header that rule refuses —
 the loader itself would accept a hand-written literal) so the form can
 prefill them.
+
+## 2026-10-05 plugin Upgrade only when an update exists
+
+This supersedes the plain "Upgrade" departure in the 2026-08-29 plugins
+entry: the update-detection field that entry found missing now exists.
+`PluginEntry.updateAvailable` is set by `evener/plugin/checkUpdates`, which
+asks each git-backed plugin's remote whether it has moved past the installed
+commit. The Marketplaces & Plugins view runs the check once its lists have
+loaded (on open, never on a timer), marks flagged plugins "update available"
+in the list and the detail sheet, and offers Upgrade only for them. Its
+success toast says "Upgraded {plugin}", since an offered Upgrade now always
+has something to install. A hub too old to answer the check offers no
+Upgrade at all. ls-remote yields a commit, not a version, so the badge
+carries no version number.
+
+## 2026-10-09 Loud for covers reply requests
+
+Jesse ruled on needs-you semantics in #4093. A turn that ends with a plain
+reply now rests idle, so it never enters the needs-you tier and never sounds.
+A turn that ends with `end_reason: needs_response` asks for a reply. The
+default "Loud for" scope treats it like a question or an approval: the hub's
+attention entry carries `needsResponse`, and the OS notification and sound
+fire for it. The scope's label is now "Questions, reply requests, approvals &
+errors"; there is no new toggle. "Everything needing me" still adds warnings
+and restart-required. A session fires when it becomes loud for the scope,
+either on entering the tier or when a row already there turns loud, such as
+a warning that settles into a reply request. A row that stays loud never
+fires again.

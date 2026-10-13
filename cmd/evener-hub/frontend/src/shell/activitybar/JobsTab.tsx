@@ -1,10 +1,10 @@
 import { ActivityPageBoundary } from "./ActivityPageBoundary";
-// Current jobs and unsuccessful outcomes stay visible; successful history
+// Current jobs stay visible; terminal history
 // unfolds without changing the shared collection's visible-page demand.
 
 import { activityNodeID, type JobActivityJob } from "@evener/appwire-client";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { Disclosure } from "../../widgets/disclosure";
+import { Disclosure, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ActivityScope } from "../statusbar/statusScope";
 import { workspaceStore } from "../workspace";
@@ -27,11 +27,9 @@ export function JobsTab({ scope }: { scope: ActivityScope }) {
   );
   if (collection?.permanent && collection.rows.length === 0)
     return <span className={CLASS.emptyNote}>Jobs unavailable for this session.</span>;
-  if (!collection || (collection.rows.length === 0 && !collection.complete))
-    return <span className={CLASS.emptyNote}>Loading jobs…</span>;
+  if (!collection || (collection.rows.length === 0 && !collection.complete)) return <Skeleton lines={2} />;
   const running = collection.rows.filter((job) => !job.terminal);
-  const unsuccessful = collection.rows.filter((job) => job.terminal && job.outcome !== "success");
-  const completed = collection.rows.filter((job) => job.terminal && job.outcome === "success");
+  const completed = collection.rows.filter((job) => job.terminal);
   if (collection.rows.length === 0 && collection.complete)
     return <span className={CLASS.emptyNote}>No jobs at this level.</span>;
   const renderJob = (job: JobActivityJob) => (
@@ -50,7 +48,7 @@ export function JobsTab({ scope }: { scope: ActivityScope }) {
   );
   return (
     <div className={CLASS.stack}>
-      {[...running, ...unsuccessful].map(renderJob)}
+      {running.map(renderJob)}
       {completed.length > 0 ? (
         <Disclosure
           id={`${scope.leaf.ref}\0completed-jobs`}

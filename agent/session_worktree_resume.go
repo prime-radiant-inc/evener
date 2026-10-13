@@ -58,10 +58,6 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	}
 	restoreRoot := strings.TrimSpace(meta.WorktreeRestoreRoot)
 	target := filepath.Clean(path)
-	// The persisted parked environment's identity, so the restore target the
-	// session re-creates below carries the same binding it had before the crash
-	// (plan 648/654). Empty when the root had no parked role recorded.
-	parkedBindingID := s.parkedWorktreeBindingID()
 
 	// Every environment the session leaves this function on is a clone of local,
 	// and a clone owns nothing of its original: the scratch local already
@@ -85,14 +81,6 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 			return nil, fmt.Errorf("sandbox re-root refused for %s: %w", dir, err)
 		}
 		next.AdoptSessionScratch(local)
-		// The scratch (and so the logical environment) follows the session onto
-		// the clone, so its opaque binding identity must follow too: without it
-		// the resumed environment owns a lease the manifest cannot attribute and
-		// the next swap stages nothing, releasing that lease with no transition
-		// persisted (plan 648/654).
-		if err := s.inheritScratchRetentionBinding(next, local); err != nil {
-			return next, fmt.Errorf("could not carry scratch binding identity into %s: %w", dir, err)
-		}
 		return next, nil
 	}
 
@@ -136,7 +124,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// running a command is what mints a scratch dir and takes its lease. Nothing
 	// keeps a reference to either past this function, so nothing else would ever
 	// release what they minted — on a successful re-entry as much as a refused one.
-	defer rootedAtTarget.DisposeUnadoptedScratch()
+	defer func() { _ = rootedAtTarget.DisposeSessionScratch() }()
 	project, err := identifier.ResolveProjectWith(target, execenv.NewProjectResolver(rootedAtTarget))
 	if err != nil {
 		notice(fmt.Sprintf("previous working directory %s is no longer part of a git repository (%v)", target, err))
@@ -160,7 +148,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	}
 	mainRoot := project.CanonicalPath
 	controlEnv := local.WithWorkingDirectory(mainRoot)
-	defer controlEnv.DisposeUnadoptedScratch()
+	defer func() { _ = controlEnv.DisposeSessionScratch() }()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 
 	// The path must still be a worktree git's own registry knows about (spec
@@ -240,34 +228,10 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 				"could not prepare a confined restore environment at %s (%v); leaving the worktree stays unavailable rather than running unconfined",
 				restoreRoot, err)})
 		} else {
-			if err := s.assignRetainedScratchBinding(parked, parkedBindingID); err != nil {
-				return fmt.Errorf("restore scratch binding identity for %s: %w", restoreRoot, err)
-			}
 			s.worktreeRestoreEnv = parked
 		}
 	}
 	return nil
-}
-
-// parkedWorktreeBindingID reads this session's consumer row from the retained
-// pool to find the parked worktree binding identity the restore target must
-// carry (plan 648/654). Empty when no pool exists or the row has no parked
-// role.
-func (s *Session) parkedWorktreeBindingID() string {
-	pool := s.retainedScratch.Load()
-	if pool == nil {
-		return ""
-	}
-	// installConsumerRefresh mutates consumer rows after the pool is
-	// published, so the row is copied out under the pool lock — an unlocked
-	// read races the runtime's unrecoverable concurrent-map throw.
-	pool.mu.Lock()
-	consumer, ok := pool.consumers[s.id]
-	pool.mu.Unlock()
-	if !ok {
-		return ""
-	}
-	return consumer.WorktreeRestoreBindingID
 }
 
 func worktreeGitEntryExists(path string) bool {
@@ -352,7 +316,7 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	}
 
 	controlEnv := local.WithWorkingDirectory(project.CanonicalPath)
-	defer controlEnv.DisposeUnadoptedScratch()
+	defer func() { _ = controlEnv.DisposeSessionScratch() }()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	locked, reason, err := lockStateOf(run, activeRoot)
 	if err != nil {

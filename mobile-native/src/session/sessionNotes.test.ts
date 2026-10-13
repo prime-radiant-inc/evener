@@ -45,14 +45,24 @@ describe("the notes bar (spec 8.8)", () => {
 
 describe("the editor's status line", () => {
 	it.each([
-		["clean", false, "Your note stays on this session. Saving it will wake the agent."],
-		["editing", true, "Your note stays on this session. The agent is told when it changes."],
-		["scheduled", false, "Saves in 10 seconds, or when you close this."],
-		["saving", false, "Saving…"],
-		["saved", true, "Saved"],
-		["failed", false, "Couldn't save your note yet. It's kept on this phone."],
-	] as const)("%s, working %s", (phase, working, text) => {
-		expect(noteStatusLine(phase, working)).toBe(text);
+		["clean", false, "wakesAgent"],
+		["editing", false, "wakesAgent"],
+		["clean", true, "tellsAgent"],
+		["editing", true, "tellsAgent"],
+		["scheduled", false, "scheduled"],
+		["saving", false, "saving"],
+		["saved", true, "saved"],
+		["failed", false, "failed"],
+	] as const)("%s, working %s", (phase, working, kind) => {
+		expect(noteStatusLine(phase, working).kind).toBe(kind);
+	});
+
+	it("says each kind of status its own way", () => {
+		const lines = (["clean", "scheduled", "saving", "saved", "failed"] as const).map(
+			(phase) => noteStatusLine(phase, false).text,
+		);
+		lines.push(noteStatusLine("clean", true).text);
+		expect(new Set(lines).size).toBe(lines.length);
 	});
 });
 

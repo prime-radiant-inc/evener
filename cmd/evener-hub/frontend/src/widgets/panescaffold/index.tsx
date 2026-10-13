@@ -5,15 +5,23 @@ import { requireClass } from "../internal/requireClass";
 import styles from "./panescaffold.module.css";
 
 export interface PaneScaffoldProps {
-  title: string;
+  /** The pane's heading. Omitted by panes whose host already labels them
+   * (the cascade: its tab label carries the selected conversation). */
+  title?: string;
   paneId?: string;
+  publishTabTitle?: boolean;
   focused?: boolean;
+  focusSelector?: string;
   scaffoldMarker?: string;
   mobileTitle?: string;
   cadence?: ReactNode;
   actions?: ReactNode;
   footer?: ReactNode;
   edgeFooter?: ReactNode;
+  /** Body scrolling: a pane whose content owns its own scrolling (the
+   * cascade's internally scrolling columns) opts out, which also removes the
+   * scrollable body's padding — the body becomes a plain layout box. */
+  bodyScroll?: boolean;
   children: ReactNode;
 }
 
@@ -26,8 +34,15 @@ const CLASS = {
   cadenceSlot: requireClass(styles.cadenceSlot, "panescaffold.module.css", "cadenceSlot"),
   actions: requireClass(styles.actions, "panescaffold.module.css", "actions"),
   body: requireClass(styles.body, "panescaffold.module.css", "body"),
+  bodyNoScroll: requireClass(styles.bodyNoScroll, "panescaffold.module.css", "bodyNoScroll"),
   footer: requireClass(styles.footer, "panescaffold.module.css", "footer"),
   edgeFooter: requireClass(styles.edgeFooter, "panescaffold.module.css", "edgeFooter"),
+};
+
+// Both className forms of the body, composed once: selected by bodyScroll.
+const BODY_CLASS_NAME = {
+  scrollable: CLASS.body,
+  flush: `${CLASS.body} ${CLASS.bodyNoScroll}`,
 };
 
 /**
@@ -40,13 +55,16 @@ const CLASS = {
 export function PaneScaffold({
   title,
   paneId,
+  publishTabTitle = true,
   focused = true,
+  focusSelector,
   scaffoldMarker,
   mobileTitle,
   cadence,
   actions,
   footer,
   edgeFooter,
+  bodyScroll = true,
   children,
 }: PaneScaffoldProps) {
   // The focused-title channel supplies StackHost's mobile top bar without
@@ -57,18 +75,20 @@ export function PaneScaffold({
   // own comment - and the bar must not keep naming one).
   const publishedTitle = mobileTitle ?? title;
   useEffect(() => {
-    chromeStore.getState().setPaneTitle(publishedTitle);
+    chromeStore.getState().setPaneTitle(publishedTitle ?? null);
     return () => chromeStore.getState().setPaneTitle(null);
   }, [publishedTitle]);
 
   // A hydrated pane owns its display title. Desktop tabs consume that same
   // title without fetching another copy of the pane's underlying resource.
+  // A different registered tab label keeps its own title owner.
   useEffect(() => {
-    if (paneId === undefined) return;
-    chromeStore.getState().setPaneTitleFor(paneId, title);
+    if (paneId === undefined || !publishTabTitle) return;
+    chromeStore.getState().setPaneTitleFor(paneId, title ?? null);
     return () => chromeStore.getState().setPaneTitleFor(paneId, null);
-  }, [paneId, title]);
+  }, [paneId, title, publishTabTitle]);
 
+  const paneRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (paneId === undefined) return;
@@ -76,26 +96,31 @@ export function PaneScaffold({
       cancelPaneFocus(paneId);
       return;
     }
-    if (consumePaneFocus(paneId)) bodyRef.current?.focus();
-  }, [focused, paneId]);
+    if (!consumePaneFocus(paneId)) return;
+    const target = focusSelector ? paneRef.current?.querySelector<HTMLElement>(focusSelector) : null;
+    if (target) target.focus({ preventScroll: true });
+    else bodyRef.current?.focus();
+  }, [focused, paneId, focusSelector]);
 
   return (
-    <div className={CLASS.pane}>
+    <div ref={paneRef} className={CLASS.pane}>
       <div className={CLASS.header}>
-        <h2 className={CLASS.title}>
-          {mobileTitle === undefined ? (
-            title
-          ) : (
-            <>
-              <span className={CLASS.desktopTitle} data-testid="pane-title-desktop">
-                {title}
-              </span>
-              <span className={CLASS.mobileTitle} data-testid="pane-title-mobile">
-                {mobileTitle}
-              </span>
-            </>
-          )}
-        </h2>
+        {title !== undefined && (
+          <h2 className={CLASS.title}>
+            {mobileTitle === undefined ? (
+              title
+            ) : (
+              <>
+                <span className={CLASS.desktopTitle} data-testid="pane-title-desktop">
+                  {title}
+                </span>
+                <span className={CLASS.mobileTitle} data-testid="pane-title-mobile">
+                  {mobileTitle}
+                </span>
+              </>
+            )}
+          </h2>
+        )}
         {cadence !== undefined && (
           <div className={CLASS.cadenceSlot} data-testid="pane-cadence-slot">
             {cadence}
@@ -107,7 +132,12 @@ export function PaneScaffold({
           </div>
         )}
       </div>
-      <div ref={bodyRef} className={CLASS.body} tabIndex={-1} data-pane-scaffold={scaffoldMarker}>
+      <div
+        ref={bodyRef}
+        className={bodyScroll ? BODY_CLASS_NAME.scrollable : BODY_CLASS_NAME.flush}
+        tabIndex={-1}
+        data-pane-scaffold={scaffoldMarker}
+      >
         {children}
       </div>
       {footer !== undefined && (

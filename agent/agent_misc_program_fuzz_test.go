@@ -82,17 +82,17 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 	}
 	// Both tool-availability variants of the gated reminders keep the envelope.
 	for _, hasTaskList := range []bool{true, false} {
-		for _, reminder := range []string{taskReminderFull(store), taskReminderForInactivity(store, hasTaskList), formatCurrentTaskSteering(created[0], hasTaskList), taskReminderAllDone("communicate"), taskReminderNudge()} {
+		for _, reminder := range []string{taskReminderFull(store), taskReminderForInactivity(store, hasTaskList), formatCurrentTaskSteering(created[0], hasTaskList), taskReminderAllDone("communicate")} {
 			if !strings.Contains(reminder, "<SYSTEM-REMINDER>") {
 				t.Fatalf("invalid task reminder %q", reminder)
 			}
 		}
 	}
-	// Only the closing call instruction varies: a session without task_list is
-	// never told to call it.
+	// Steering never tells a session to call task_list. Only a session without it gets a closing
+	// instruction, its own "say so when this step is complete".
 	for _, steering := range []string{formatCurrentTaskSteering(created[0], true), taskReminderForInactivity(store, true)} {
-		if !strings.Contains(steering, "use task_list to mark task") {
-			t.Fatalf("task_list session steering omits the task_list instruction: %q", steering)
+		if strings.Contains(steering, "task_list") || strings.Contains(steering, "say so when this step is complete") {
+			t.Fatalf("task_list session steering carries a closing instruction: %q", steering)
 		}
 	}
 	for _, steering := range []string{formatCurrentTaskSteering(created[0], false), taskReminderForInactivity(store, false)} {

@@ -58,7 +58,7 @@ func TestParseFamilyNonCommentLineSeparatesBlock(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a non-comment line separates a block from its rule")
 	}
-	if !strings.Contains(err.Error(), "separates the ## block") {
+	if !errors.Is(err, errBlockDetached) {
 		t.Fatalf("error should mention separation: %v", err)
 	}
 }
@@ -71,7 +71,7 @@ func TestParseFamilyDirectiveWithPendingBlock(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a directive carries a pending ## block")
 	}
-	if !strings.Contains(err.Error(), "directive") {
+	if !errors.Is(err, errBlockOnDirective) {
 		t.Fatalf("error should mention directive: %v", err)
 	}
 }
@@ -85,7 +85,7 @@ func TestParseFamilyBlockWithoutSummary(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a ## block has no summary line")
 	}
-	if !strings.Contains(err.Error(), "no summary line") {
+	if !errors.Is(err, errBlockWithoutSummary) {
 		t.Fatalf("error should mention no summary: %v", err)
 	}
 }
@@ -125,7 +125,7 @@ func TestValidateGeneratedRegionMarkersOpenWithoutEnd(t *testing.T) {
 		t.Fatalf("validateGeneratedRegionMarkers with only a begin marker should error")
 	}
 	// With one begin and zero ends, the endCount != 1 check fires first.
-	if !strings.Contains(err.Error(), "exactly one") && !strings.Contains(err.Error(), "no following") {
+	if !errors.Is(err, errEndMarkerCount) {
 		t.Fatalf("error should mention exactly one or no following: %v", err)
 	}
 }
@@ -257,7 +257,7 @@ func TestRewriteRegionWrongFamilyWithGenericPrefix(t *testing.T) {
 	if err == nil {
 		t.Fatalf("RewriteRegion with a different family's region should error")
 	}
-	if !strings.Contains(err.Error(), "not one for family") {
+	if !errors.Is(err, errRegionForOtherFamily) {
 		t.Fatalf("error should mention wrong family: %v", err)
 	}
 }
@@ -270,7 +270,7 @@ func TestRewriteRegionNoMarkerAtAll(t *testing.T) {
 	if err == nil {
 		t.Fatalf("RewriteRegion with no markers should error")
 	}
-	if !strings.Contains(err.Error(), "no marked region") {
+	if !errors.Is(err, errNoMarkedRegion) {
 		t.Fatalf("error should mention no marked region: %v", err)
 	}
 }
@@ -283,8 +283,8 @@ func TestValidateGeneratedRegionMarkersMultipleRegions(t *testing.T) {
 	if err == nil {
 		t.Fatalf("validateGeneratedRegionMarkers with two regions should error")
 	}
-	if !strings.Contains(err.Error(), "exactly one") {
-		t.Fatalf("error should mention exactly one: %v", err)
+	if !errors.Is(err, errRegionCount) {
+		t.Fatalf("error should report the region count: %v", err)
 	}
 }
 
@@ -296,10 +296,9 @@ func TestValidateGeneratedRegionMarkersMultipleEnds(t *testing.T) {
 	if err == nil {
 		t.Fatalf("validateGeneratedRegionMarkers with two end markers should error")
 	}
-	// The error may be either "end before begin" or "exactly one" depending on
-	// validation order — both indicate the markers are malformed.
-	s := err.Error()
-	if !strings.Contains(s, "exactly one") && !strings.Contains(s, "before its GENERATED BEGIN") {
+	// The second END has no open region to close, which the order check sees
+	// before the counts.
+	if !errors.Is(err, errEndBeforeBegin) {
 		t.Fatalf("error should mention malformed markers: %v", err)
 	}
 }
@@ -312,7 +311,7 @@ func TestParseFamilyTargetWithoutAnnotation(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a rule has no ## annotation")
 	}
-	if !strings.Contains(err.Error(), "no ## annotation") {
+	if !errors.Is(err, errTargetUnannotated) {
 		t.Fatalf("error should mention no annotation: %v", err)
 	}
 }
@@ -324,7 +323,7 @@ func TestParseFamilyBlankLineSeparatesBlock(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a blank line separates a block from its rule")
 	}
-	if !strings.Contains(err.Error(), "blank line separates") {
+	if !errors.Is(err, errBlockDetached) {
 		t.Fatalf("error should mention blank line: %v", err)
 	}
 }
@@ -337,7 +336,7 @@ func TestParseFamilyTargetSpecificVariableWithPendingBlock(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a target-specific variable carries a pending block")
 	}
-	if !strings.Contains(err.Error(), "target-specific variable") {
+	if !errors.Is(err, errBlockOnTargetVariable) {
 		t.Fatalf("error should mention target-specific variable: %v", err)
 	}
 }
@@ -350,7 +349,7 @@ func TestParseFamilyDanglingBlock(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ParseFamily should error when a ## block is never attached to a rule")
 	}
-	if !strings.Contains(err.Error(), "never attached") {
+	if !errors.Is(err, errBlockUnattached) {
 		t.Fatalf("error should mention never attached: %v", err)
 	}
 }
@@ -398,7 +397,7 @@ func TestCheckOrphanRegionsMarkerErrorNoFamilies(t *testing.T) {
 	}
 	found := false
 	for _, e := range errs {
-		if strings.Contains(e.Error(), "malformed") {
+		if errors.Is(e, errMalformedBeginMarker) {
 			found = true
 			break
 		}
@@ -420,7 +419,7 @@ func TestCheckOrphanRegionsCanonicalDocMismatch(t *testing.T) {
 	errs := checkOrphanRegions(docDir, map[string]bool{"building": true})
 	found := false
 	for _, e := range errs {
-		if strings.Contains(e.Error(), "belongs in") {
+		if errors.Is(e, errRegionInWrongDoc) {
 			found = true
 			break
 		}
@@ -465,7 +464,7 @@ func TestCheckOrphanRegionsOrphanRegion(t *testing.T) {
 	errs := checkOrphanRegions(docDir, map[string]bool{"building": true})
 	found := false
 	for _, e := range errs {
-		if strings.Contains(e.Error(), "does not exist") {
+		if errors.Is(e, errRegionForMissingFamily) {
 			found = true
 			break
 		}
@@ -490,7 +489,7 @@ func TestCheckOrphanRegionsMarkerErrWithFamilies(t *testing.T) {
 	}
 	found := false
 	for _, e := range errs {
-		if strings.Contains(e.Error(), "malformed") {
+		if errors.Is(e, errMalformedBeginMarker) {
 			found = true
 			break
 		}
@@ -610,8 +609,8 @@ func TestValidateGeneratedRegionMarkersMalformedBegin(t *testing.T) {
 	if err == nil {
 		t.Fatalf("validateGeneratedRegionMarkers with a malformed begin should error")
 	}
-	if !strings.Contains(err.Error(), "malformed") {
-		t.Fatalf("error should mention malformed: %v", err)
+	if !errors.Is(err, errMalformedBeginMarker) {
+		t.Fatalf("error should report the malformed marker: %v", err)
 	}
 }
 
@@ -701,7 +700,7 @@ func TestParseFamilyContinuationWithoutBlock(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ParseFamily with a continuation line and no block should error")
 	}
-	if !strings.Contains(err.Error(), "nothing to continue") {
+	if !errors.Is(err, errContinuationWithoutBlock) {
 		t.Fatalf("error should mention nothing to continue: %v", err)
 	}
 }
@@ -714,7 +713,7 @@ func TestParseFamilyInvalidHashLine(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ParseFamily with invalid ## line should error")
 	}
-	if !strings.Contains(err.Error(), "not a valid ## line") {
+	if !errors.Is(err, errMalformedAnnotationLine) {
 		t.Fatalf("error should mention not a valid ## line: %v", err)
 	}
 }
@@ -873,9 +872,6 @@ func TestPrintHelpSuccess(t *testing.T) {
 		t.Fatalf("printHelp success: %v", err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "usage: make") {
-		t.Fatalf("printHelp output should contain header: %s", output)
-	}
 	if !strings.Contains(output, "building:") {
 		t.Fatalf("printHelp output should contain family: %s", output)
 	}

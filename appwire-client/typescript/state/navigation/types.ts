@@ -22,14 +22,26 @@ export function isNavigationUnavailable(error: unknown): boolean {
   );
 }
 
+export type NavigationCatalog = "projects" | "archived_projects" | "test_runs";
+
 export type ResourceKey =
   | { kind: "manifest" }
   | { kind: "section"; section: "live" | "needs_you"; offset: number; limit: number }
   | { kind: "pin_catalog"; offset: number; limit: number }
   | { kind: "pin_section"; sectionId: string; offset: number; limit: number }
-  | { kind: "catalog"; catalog: "projects" | "archived_projects" | "test_runs"; offset: number; limit: number }
-  | { kind: "project"; projectKey: string }
-  | { kind: "project_page"; projectKey: string; tier: "current" | "recent" | "archived"; offset: number; limit: number }
+  | { kind: "catalog"; catalog: NavigationCatalog; offset: number; limit: number }
+  // A project or project page read may name the catalog whose project it
+  // reads (a location's catalog); without one the hub reads the first catalog
+  // holding the key.
+  | { kind: "project"; projectKey: string; catalog?: NavigationCatalog }
+  | {
+      kind: "project_page";
+      projectKey: string;
+      catalog?: NavigationCatalog;
+      tier: "current" | "recent" | "archived";
+      offset: number;
+      limit: number;
+    }
   | { kind: "location"; ref: string };
 
 function rawBase64URL(value: string): string {
@@ -82,15 +94,20 @@ export function navigationParamsToResourceKey(params: NavigationReadParams): Res
     case "catalog":
       return {
         kind: "catalog",
-        catalog: params.catalog as "projects" | "archived_projects" | "test_runs",
+        catalog: params.catalog as NavigationCatalog,
         ...paged(NAVIGATION_CATALOG_LIMIT),
       };
     case "project":
-      return { kind: "project", projectKey: params.projectKey as string };
+      return {
+        kind: "project",
+        projectKey: params.projectKey as string,
+        ...(params.catalog ? { catalog: params.catalog as NavigationCatalog } : {}),
+      };
     case "project_page":
       return {
         kind: "project_page",
         projectKey: params.projectKey as string,
+        ...(params.catalog ? { catalog: params.catalog as NavigationCatalog } : {}),
         tier: params.tier as "current" | "recent" | "archived",
         ...paged(NAVIGATION_SECTION_LIMIT),
       };
@@ -111,6 +128,7 @@ export function navigationViewScope(key: ResourceKey): string {
   let tier = "";
   let offset = 0;
   let limit = 0;
+  let catalog = "";
   switch (key.kind) {
     case "section":
       kind = key.section;
@@ -133,9 +151,11 @@ export function navigationViewScope(key: ResourceKey): string {
       break;
     case "project":
       projectKey = key.projectKey;
+      catalog = key.catalog ?? "";
       break;
     case "project_page":
       projectKey = key.projectKey;
+      catalog = key.catalog ?? "";
       tier = key.tier;
       offset = key.offset;
       limit = canonicalNavigationLimit(key.limit, NAVIGATION_SECTION_LIMIT);
@@ -144,7 +164,10 @@ export function navigationViewScope(key: ResourceKey): string {
       id = key.ref;
       break;
   }
-  return `nav3/${kind}/${rawBase64URL(id)}/${rawBase64URL(sectionID)}/${rawBase64URL(projectKey)}/${rawBase64URL(tier)}/${offset}/${limit}`;
+  const scope = `nav3/${kind}/${rawBase64URL(id)}/${rawBase64URL(sectionID)}/${rawBase64URL(projectKey)}/${rawBase64URL(tier)}/${offset}/${limit}`;
+  // Only a catalog-narrowed read carries its catalog, as the hub's
+  // navigationViewScope appends it.
+  return catalog ? `${scope}/catalog/${catalog}` : scope;
 }
 
 export function navigationRootContainerKey(key: ResourceKey, slot: string): string {

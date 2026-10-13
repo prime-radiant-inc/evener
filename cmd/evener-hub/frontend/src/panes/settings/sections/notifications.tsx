@@ -11,7 +11,7 @@ const CLASS = {
 };
 
 const LOUD_SCOPE_OPTIONS: RadioGroupOption[] = [
-  { value: "asks", label: "Questions, approvals & errors" },
+  { value: "asks", label: "Questions, reply requests, approvals & errors" },
   { value: "all", label: "Everything needing me" },
 ];
 

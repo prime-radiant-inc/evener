@@ -16,19 +16,47 @@ export interface EmptyStateProps {
    */
   action?: ReactNode;
   /** "display" sets the title at --font-size-display: for the one pane
-   * whose empty state IS the page (Welcome). Default keeps pane-title. */
-  size?: "default" | "display";
+   * whose empty state IS the page (Welcome). Default keeps pane-title.
+   * "compact" is the empty message inside a list or section: left-aligned,
+   * UI type, the list row's padding. */
+  size?: "default" | "display" | "compact";
+  /** Why the surface is empty, rendered as `data-reason` so callers and
+   * tests can tell one empty state from another without reading its copy. */
+  reason?: EmptyStateReason;
 }
+
+export type EmptyStateReason =
+  | "deleted"
+  | "unavailable"
+  | "no-turns"
+  | "not-built"
+  | "needs-configuration"
+  | "unverifiable"
+  | "no-instances"
+  /** A list that loaded and has nothing in it. */
+  | "empty"
+  /** The source cannot answer this read at all. */
+  | "unsupported"
+  /** The session's daemon has exited and nothing will load again. */
+  | "ended"
+  /** The read failed; the surface offers a way to try again. */
+  | "failed"
+  /** The first turn is running and nothing has come back yet. */
+  | "awaiting-reply"
+  /** The session runs a different Evener version than this app. */
+  | "version-mismatch";
 
 const BASE_CLASS = {
   emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),
+  compact: requireClass(styles.compact, "emptystate.module.css", "compact"),
   title: requireClass(styles.title, "emptystate.module.css", "title"),
   titleDisplay: requireClass(styles.titleDisplay, "emptystate.module.css", "titleDisplay"),
   hint: requireClass(styles.hint, "emptystate.module.css", "hint"),
   action: requireClass(styles.action, "emptystate.module.css", "action"),
 };
 
-/** Centered title/hint/action for a pane or list with nothing in it.
+/** Title/hint/action for a pane or list with nothing in it - centered for a
+ * pane, a left-aligned line for `size="compact"`.
  * Passive - no interaction, no focus ring of its own (an `action` button
  * carries its own).
  *
@@ -38,13 +66,21 @@ const BASE_CLASS = {
  * remounted). Those assertions previously matched the session pane's own
  * empty-state copy, which coupled a shared shell test to wording that panes
  * are free to change; the testid says what they actually mean. */
-export function EmptyState({ title, hint, action, size = "default" }: EmptyStateProps) {
+export function EmptyState({ title, hint, action, size = "default", reason }: EmptyStateProps) {
   return (
-    <div className={BASE_CLASS.emptyState} data-testid="empty-state">
+    <div
+      className={size === "compact" ? `${BASE_CLASS.emptyState} ${BASE_CLASS.compact}` : BASE_CLASS.emptyState}
+      data-testid="empty-state"
+      data-reason={reason}
+    >
       <p className={size === "display" ? `${BASE_CLASS.title} ${BASE_CLASS.titleDisplay}` : BASE_CLASS.title}>
         {title}
       </p>
-      {hint !== undefined && <p className={BASE_CLASS.hint}>{hint}</p>}
+      {hint !== undefined && (
+        <p className={BASE_CLASS.hint} data-slot="hint">
+          {hint}
+        </p>
+      )}
       {action !== undefined && <div className={BASE_CLASS.action}>{action}</div>}
     </div>
   );

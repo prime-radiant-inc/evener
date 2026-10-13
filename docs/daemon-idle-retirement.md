@@ -8,8 +8,10 @@ identity.
 
 The mechanism is daemon-owned. The daemon runs its own idle timer; the Hub
 observes and recovers, and never signals a process to retire it. Detached
-external processes (shell jobs, delegates' worktrees, retained scratch) keep
-their existing independent lifetime — retirement does not sweep them away.
+external processes (shell jobs, delegates' worktrees) keep their existing
+independent lifetime — retirement does not sweep them away. Session scratch is
+kept across retirement, with its regenerable caches pruned, and the resumed
+session reopens it. It is deleted when the hub archives or deletes the session.
 
 ## Configuration
 
@@ -68,15 +70,23 @@ calls, subscriptions and polling a mounted Settings → Hub section never extend
 residency. A long-lived subscription receives closure when retirement commits;
 it does not pin the daemon.
 
+Delegate attention a Stop parked does not count. A Stop parks the root's
+delegate attention until you send your next message; nothing in the process
+can deliver it before then, and both the attention and the park are saved, so
+the daemon retires and the resumed session comes back with the same attention
+waiting. Your next message releases the park and the attention is delivered
+after your own turn. Messages a Stop left queued and steering it parked are
+still accepted input and keep the daemon resident.
+
 Questions and watches **can** pin the daemon indefinitely. An unanswered
 `ask_user` question is a human-decision blocker, and an active watch is a watch
 blocker; neither is a timeout that expires on its own. That is deliberate: the
 session has work a person asked for, so it is not idle.
 
-Idle delegates, worktrees and scratch are preserved. An idle, resumable delegate
-does not block retirement once its whole subtree is settled and its descriptor,
+Idle delegates and worktrees are preserved. An idle, resumable delegate does not
+block retirement once its whole subtree is settled and its descriptor,
 transcript, environment and lane ownership can be preserved; the delegate's
-worktree and scratch are pinned so a later resume finds them. A missing runtime
+worktree is kept so a later resume finds it, and so is its scratch. A missing runtime
 pointer is never treated as proof of eligibility — uncertain state blocks.
 
 ## Recovery
@@ -122,7 +132,16 @@ Controls:
 - **Retire now** skips the elapsed-time requirement but keeps every safety
   check, and works even when automatic retirement is disabled (`0s`). It is safe
   at zero. If the daemon refuses, the UI shows the *fresh* blockers from that
-  attempt and the daemon keeps running.
+  attempt and the daemon keeps running. One exception: when the session namer
+  (which names a new session in the background) is the only work in flight,
+  the daemon waits for it to finish, up to its 15-second timeout, and then
+  retires; a namer still running after that refuses the retire as above. The
+  wait looks only at work in flight: an open question or an active goal beside
+  the namer is reported once the namer settles, not at once. While the daemon
+  waits, the session stays usable from the Hub, and a resume, force stop,
+  deletion or archive can overlap the retire: a force stop cancels it and stops
+  the daemon, a deletion skips the still-running session, and a resume or an
+  archive leaves the retire to finish.
 - **Force stop** is the explicit destructive operation. It uses the existing
   verified-identity path, requires a confirmation naming the session and
   process and warning that work and watches may be interrupted, and preserves
@@ -149,6 +168,16 @@ one of these on its lifecycle diagnostics:
   drain. As above, admission stays closed and the process stays retiring.
 
 An empty failure field with a resident phase is the healthy case.
+
+Every automatic attempt that does not retire the process also leaves its
+reason in the lifecycle's `lastAttempt`: when it ran, the blockers that refused
+it and the error that failed it. The blockers there come from the full
+evidence read, so they include obligations that hold no admission lease (a
+running shell job, an active watch, pending job notifications or delegate
+attention) and never appear in the live `blockers` list. A refused attempt
+re-arms a fresh full interval, and the daemon log gets one line per distinct
+reason (`automatic retirement refused: …` or `automatic retirement failed:
+…`), so a daemon that keeps retrying for the same reason logs it once.
 
 ## Rollout and compatibility
 

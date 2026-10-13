@@ -468,7 +468,7 @@ func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 		if closeRuntime := s.cfg.testOnly.delegateRuntimeReclaimClose; closeRuntime != nil {
 			closeRuntime(entry.runtime)
 		} else {
-			teardownChildSession(context.Background(), entry.runtime, retainChildScratch)
+			teardownChildSession(context.Background(), entry.runtime)
 		}
 		closed[entry.delegateID] = entry.runtime
 	}
@@ -769,7 +769,7 @@ func (s *Session) teardownReclaimedRuntimeEntry(entry delegateRuntimeReclamation
 	// terminal teardown with the scratch retained for the handoff.
 	if entry.runtime.subagents != nil {
 		for _, sub := range entry.runtime.subagents.drainForClose() {
-			teardownChildSession(context.Background(), sub.sess, retainChildScratch)
+			teardownChildSession(context.Background(), sub.sess)
 		}
 	}
 	// A teardown error after the pre-gates leaves the pass spent — this

@@ -3,8 +3,8 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 )
@@ -72,7 +72,7 @@ func TestRequestDeviceCodeRejectsInvalidJSON(t *testing.T) {
 	}
 
 	_, err := RequestDeviceCode(context.Background(), m.server.Client(), m.cfg())
-	if err == nil || !strings.Contains(err.Error(), "decode device usercode response") {
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
 		t.Fatalf("RequestDeviceCode() error = %v, want decode failure", err)
 	}
 }
@@ -85,7 +85,7 @@ func TestRequestDeviceCodeRejectsMissingFields(t *testing.T) {
 	}
 
 	_, err := RequestDeviceCode(context.Background(), m.server.Client(), m.cfg())
-	if err == nil || !strings.Contains(err.Error(), "missing device_auth_id or user_code") {
+	if !errors.Is(err, errDeviceCodeIncomplete) {
 		t.Fatalf("RequestDeviceCode() error = %v, want missing-fields error", err)
 	}
 }
@@ -115,7 +115,7 @@ func TestPollDeviceAuthOnceRejectsMissingFields(t *testing.T) {
 	}
 
 	_, _, err := PollDeviceAuthOnce(context.Background(), m.server.Client(), m.cfg(), DeviceCode{DeviceAuthID: "d", UserCode: "C"})
-	if err == nil || !strings.Contains(err.Error(), "missing authorization_code or code_verifier") {
+	if !errors.Is(err, errDevicePollIncomplete) {
 		t.Fatalf("PollDeviceAuthOnce() error = %v, want missing-fields error", err)
 	}
 }
@@ -129,7 +129,7 @@ func TestPollDeviceAuthOnceRejectsInvalidJSON(t *testing.T) {
 	}
 
 	_, _, err := PollDeviceAuthOnce(context.Background(), m.server.Client(), m.cfg(), DeviceCode{DeviceAuthID: "d", UserCode: "C"})
-	if err == nil || !strings.Contains(err.Error(), "decode device poll response") {
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
 		t.Fatalf("PollDeviceAuthOnce() error = %v, want decode failure", err)
 	}
 }

@@ -87,6 +87,22 @@ func TestSandboxGrepSkipsNonRegularWithoutBlocking(t *testing.T) {
 	}
 }
 
+// TestSandboxGrepSkipsANamedFIFOWithoutBlocking: a grep whose path names a
+// FIFO opens it nonblocking and skips it, the way the walk skips a FIFO entry.
+func TestSandboxGrepSkipsANamedFIFOWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	s, _, worktree := newSB(t, sandbox.ModeRestricted)
+	pipe := filepath.Join(worktree, "pipe")
+	if err := unix.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	out, err := grepOrFailFast(t, s, pipe)
+	if err != nil || out != "" {
+		t.Fatalf("grepNative of a named FIFO = %q, %v; want no result", out, err)
+	}
+}
+
 // grepOrFailFast runs the confined grep native walk and returns its result,
 // failing the test if it does not return within a few seconds so a FIFO entry
 // that blocks the walk surfaces as a visible timeout rather than a stuck suite.
@@ -98,7 +114,7 @@ func grepOrFailFast(t *testing.T, s *sandboxFS, base string) (string, error) {
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		out, err := s.grepNative(context.Background(), "needle", base, "", false, 100, "")
+		out, err := s.grepNative(context.Background(), "needle", base, "", false, 100, "", 0, nil)
 		resCh <- result{out, err}
 	}()
 	select {

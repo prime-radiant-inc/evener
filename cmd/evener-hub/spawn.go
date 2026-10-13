@@ -771,6 +771,10 @@ var errRendezvousTimeout = errors.New("timeout waiting for rendezvous")
 // to go read.
 var errRendezvousCanceled = errors.New("request canceled before rendezvous")
 
+// errExitedBeforeRendezvous is the launched daemon exiting before it
+// registered, which ends the wait at once.
+var errExitedBeforeRendezvous = errors.New("process exited before rendezvous")
+
 // rendezvousWaitError says which way a done rendezvous-wait context ended.
 // ctx.Err() separates the two outright, so nothing has to be inferred from
 // timing: Canceled is the caller walking away, DeadlineExceeded is time
@@ -914,7 +918,7 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// credential message for a launch that never happens.
 		res, err := r.ResolveGateCredential(name, model)
 		if err != nil {
-			return appwire.HubLaunchError(err.Error())
+			return wireRefusal(appwire.HubLaunchError, err)
 		}
 		switch res.Transport.Auth {
 		case registry.AuthNone, registry.AuthOptionalBearer:
@@ -927,7 +931,7 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		if model != "" {
 			target = name + "/" + model
 		}
-		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", target, strings.Join(res.Warnings, "; ")))
+		return launchRefusal(&launchCredentialError{target: target, scheme: res.Transport.Auth, remedy: remedyInstanceCredential, warnings: res.Warnings})
 	}
 	// Not an instance: a curated implicit provider whose credential does not
 	// resolve in this environment (spec §5.1), or a name nothing declares.
@@ -943,7 +947,7 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// against.
 		res, err := r.ResolveGateCredential(name, model)
 		if err != nil {
-			return appwire.HubLaunchError(err.Error())
+			return wireRefusal(appwire.HubLaunchError, err)
 		}
 		// The named launch's own judgment: its row's scheme and
 		// credential. A row pinned to none or optional-bearer
@@ -962,7 +966,7 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// api_key_env list is empty and the key advice below would name
 		// nothing. Point at the flow that does configure it.
 		if scheme == registry.AuthOAuthOpenAICodex {
-			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", name, name))
+			return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyCodexLogin})
 		}
 		// gcp-adc reads no key either, and it can be unconfigured two ways
 		// (spec §5.1). Hidden means the base URL did not resolve — the
@@ -972,17 +976,81 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		if scheme == registry.AuthGCPADC {
 			if p.Hidden {
 				unset, problems := r.UnresolvedBaseURL(name)
-				reasons := append([]string(nil), problems...)
-				if len(unset) > 0 {
-					reasons = append(reasons, "set "+strings.Join(unset, ", "))
-				}
-				return appwire.HubLaunchError(fmt.Sprintf("provider %s is not configured: %s", name, strings.Join(reasons, "; ")))
+				return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyConfigureProvider, unset: unset, problems: problems})
 			}
-			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: it needs application-default credentials (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS) or a stored credential JSON (evener/auth/credentialJson/set)", name))
+			return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyApplicationDefaultCredentials})
 		}
-		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set a key via evener/auth/apiKey/set or export one of %s", name, strings.Join(p.APIKeyEnv, ", ")))
+		return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyAPIKey, keyEnv: p.APIKeyEnv})
 	}
-	return appwire.HubLaunchError(fmt.Sprintf("unknown instance %q: add a [providers.%s] entry to providers.toml", name, name))
+	return launchRefusal(&launchCredentialError{target: name, remedy: remedyDeclareInstance})
+}
+
+// launchRemedy is what the spawn gate tells the user to do so a refused launch
+// can run.
+type launchRemedy uint8
+
+const (
+	// remedyInstanceCredential: the instance's credential does not resolve;
+	// the registry's warnings say why.
+	remedyInstanceCredential launchRemedy = iota + 1
+	// remedyCodexLogin: sign the Codex instance in.
+	remedyCodexLogin
+	// remedyConfigureProvider: the provider's base URL does not resolve, so
+	// set the variables it still needs or fix the ones it has.
+	remedyConfigureProvider
+	// remedyApplicationDefaultCredentials: supply ADC or a stored credential
+	// JSON.
+	remedyApplicationDefaultCredentials
+	// remedyAPIKey: store a key or export one of the provider's variables.
+	remedyAPIKey
+	// remedyDeclareInstance: nothing declares the name; author an entry.
+	remedyDeclareInstance
+)
+
+// launchCredentialError is the spawn gate's refusal of a launch with no
+// credential, or no configuration, it could run on.
+type launchCredentialError struct {
+	// target is the instance the launch names, or instance/model when it
+	// names a model.
+	target string
+	// scheme is how the launch authenticates, when the gate resolved it.
+	scheme string
+	remedy launchRemedy
+	// warnings is the registry's account of the missing credential, for
+	// remedyInstanceCredential.
+	warnings []string
+	// unset and problems are the base-URL variables still unset and what is
+	// wrong with the ones that are set, for remedyConfigureProvider.
+	unset    []string
+	problems []string
+	// keyEnv is the variables a key can be exported in, for remedyAPIKey.
+	keyEnv []string
+}
+
+func (e *launchCredentialError) Error() string {
+	switch e.remedy {
+	case remedyCodexLogin:
+		return fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", e.target, e.target)
+	case remedyConfigureProvider:
+		reasons := append([]string(nil), e.problems...)
+		if len(e.unset) > 0 {
+			reasons = append(reasons, "set "+strings.Join(e.unset, ", "))
+		}
+		return fmt.Sprintf("provider %s is not configured: %s", e.target, strings.Join(reasons, "; "))
+	case remedyApplicationDefaultCredentials:
+		return fmt.Sprintf("provider credentials missing for %s: it needs application-default credentials (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS) or a stored credential JSON (evener/auth/credentialJson/set)", e.target)
+	case remedyAPIKey:
+		return fmt.Sprintf("provider credentials missing for %s: set a key via evener/auth/apiKey/set or export one of %s", e.target, strings.Join(e.keyEnv, ", "))
+	case remedyDeclareInstance:
+		return fmt.Sprintf("unknown instance %q: add a [providers.%s] entry to providers.toml", e.target, e.target)
+	default:
+		return fmt.Sprintf("provider credentials missing for %s: %s", e.target, strings.Join(e.warnings, "; "))
+	}
+}
+
+// launchRefusal is the hub-launch refusal for err, keeping err in the chain.
+func launchRefusal(err error) error {
+	return wireRefusal(appwire.HubLaunchError, err)
 }
 
 func envLookup(env []string, key string) (string, bool) {
@@ -1030,10 +1098,17 @@ func envToMap(env []string) map[string]string {
 // start. The label changes; the family of failure does not.
 func launchCheckWaitError(ctx context.Context) error {
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return appwire.HubLaunchError("evener launch-check canceled")
+		return launchRefusal(errLaunchCheckCanceled)
 	}
-	return appwire.HubLaunchError("evener launch-check timed out")
+	return launchRefusal(errLaunchCheckTimedOut)
 }
+
+// The ways a launch-check can end without letting the launch go ahead.
+var (
+	errLaunchCheckCanceled = errors.New("evener launch-check canceled")
+	errLaunchCheckTimedOut = errors.New("evener launch-check timed out")
+	errLaunchCheckFailed   = errors.New("evener launch-check failed")
+)
 
 // runLaunchCheck runs a launch-check and returns its combined output, bounding
 // the wait for its output pipe with evenerLaunchCheckWaitDelay. When that bound
@@ -1053,6 +1128,10 @@ func runLaunchCheck(cmd *exec.Cmd) ([]byte, error) {
 // die on the unknown flag before writing its rendezvous record, surfacing
 // as a misleading spawn timeout.
 const requiredLaunchFlag = "api-log"
+
+// errLaunchFlagUnadvertised refuses a child binary whose launch-check does not
+// advertise requiredLaunchFlag.
+var errLaunchFlagUnadvertised = errors.New("evener launch-check did not advertise the --" + requiredLaunchFlag + " flag")
 
 func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
 	if evenerBinary == "" {
@@ -1075,7 +1154,7 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 		if msg == "" {
 			msg = err.Error()
 		}
-		return appwire.HubLaunchError("evener launch-check failed: " + msg)
+		return launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
 	}
 	var resp struct {
 		Protocol    string   `json:"protocol"`
@@ -1088,7 +1167,7 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
 	}
 	if !slices.Contains(resp.LaunchFlags, requiredLaunchFlag) {
-		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check did not advertise the --%s flag: upgrade the evener binary the hub spawns", requiredLaunchFlag))
+		return launchRefusal(fmt.Errorf("%w: upgrade the evener binary the hub spawns", errLaunchFlagUnadvertised))
 	}
 	return nil
 }
@@ -1110,7 +1189,7 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 		if msg == "" {
 			msg = err.Error()
 		}
-		return appwire.ModelListResponse{}, appwire.HubLaunchError("evener launch-check failed: " + msg)
+		return appwire.ModelListResponse{}, launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
 	}
 	var resp struct {
 		Protocol    string                        `json:"protocol"`
@@ -1197,9 +1276,9 @@ func waitForRendezvousOrExit(ctx context.Context, runDir string, pid int, exited
 			return rendezvous.Entry{}, rendezvousWaitError(ctx)
 		case err := <-exited:
 			if err != nil {
-				return rendezvous.Entry{}, fmt.Errorf("process exited before rendezvous: %w", err)
+				return rendezvous.Entry{}, fmt.Errorf("%w: %w", errExitedBeforeRendezvous, err)
 			}
-			return rendezvous.Entry{}, errors.New("process exited before rendezvous")
+			return rendezvous.Entry{}, errExitedBeforeRendezvous
 		case <-ticker.C:
 		}
 	}

@@ -307,45 +307,6 @@ func (s *Session) trySteerWithProvenanceAndNotify(msg string, p *provenance.Caus
 	return true
 }
 
-// enqueueDelegateCallerSteeringDurably admits a delegate's root-caller update
-// only after the existing root steering-queue snapshot contains it. Holding
-// the queue persistence lock and Session lock across that one write keeps the
-// entry invisible to the running root until a crash can recover it.
-func (s *Session) enqueueDelegateCallerSteeringDurably(msg string, p *provenance.Causal) error {
-	release, err := s.beginRetirementMutation("input")
-	if err != nil {
-		return err
-	}
-	defer release()
-	if strings.TrimSpace(msg) == "" {
-		return errors.New("invalid_request: message is required")
-	}
-	entry := steeringMessage{
-		Text:       msg,
-		Provenance: provenance.Clone(p),
-		Kind:       events.SteeringKindAgentMessage,
-	}
-	s.queuePersistMu.Lock()
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		s.queuePersistMu.Unlock()
-		return errors.New("caller unavailable")
-	}
-	prospective := append(append([]steeringMessage(nil), s.steeringQueue...), entry)
-	if err := saveQueues(s.stateDir, s.id, daemonSourcedSteering(prospective), nil); err != nil {
-		s.mu.Unlock()
-		s.queuePersistMu.Unlock()
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("queue persist failed: %v", err)})
-		return fmt.Errorf("persist caller steering: %w", err)
-	}
-	s.steeringQueue = append(s.steeringQueue, entry)
-	s.mu.Unlock()
-	s.queuePersistMu.Unlock()
-	s.notify()
-	return nil
-}
-
 func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal, kind string) (bool, error) {
 	return s.trySteerEnqueue(msg, images, p, "", kind)
 }
@@ -1513,7 +1474,7 @@ func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 }
 
 // kindedSteeringTurn is a daemon steering turn of one kind (a job
-// notification reminder, a task nudge), owned by the turn it lands in.
+// notification reminder, a task-inactive reminder), owned by the turn it lands in.
 func kindedSteeringTurn(text, kind, owningTurnID string) schema.Turn {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
@@ -1550,10 +1511,22 @@ func (s *Session) hasPendingSteering() bool {
 // (issue #174) -- so it counts neither as work to wake for nor as autonomy
 // that keeps the session from resting awaiting.
 func (s *Session) hasRunnableUserSteering() bool {
-	if s.clientMutations != nil && s.clientMutations.steeringHeld() {
-		return false
-	}
-	return s.hasPendingUserSteering()
+	held := s.userSteeringHeld()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runnableUserSteeringLocked(held)
+}
+
+// userSteeringHeld reads the Stop-parked steering flag. It lives in the client
+// mutation store, so a caller reads it before taking s.mu.
+func (s *Session) userSteeringHeld() bool {
+	return s.clientMutations != nil && s.clientMutations.steeringHeld()
+}
+
+// runnableUserSteeringLocked is hasRunnableUserSteering for a caller holding
+// s.mu, given the held flag it read before taking the lock.
+func (s *Session) runnableUserSteeringLocked(steeringHeld bool) bool {
+	return !steeringHeld && s.hasPendingUserSteeringLocked()
 }
 
 // hasPendingUserSteering reports whether any queued steering came from the

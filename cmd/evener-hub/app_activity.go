@@ -62,6 +62,11 @@ func hubActivityRead(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		// A host's answer is relayed, not trusted: its rows carry the row text
 		// this controller allows, whatever version of the code that host runs.
 		activity.LatestIntent = appwire.Excerpt(activity.LatestIntent, appwire.MaxIntentRunes)
+		// A moved time no seen mark could echo (negative, or further ahead of
+		// this hub's clock than seen/set accepts) is dropped, not the row.
+		if activity.LastMovedAt < 0 || activity.LastMovedAt > now.Add(maxSeenThroughLead).UnixMilli() {
+			activity.LastMovedAt = 0
+		}
 		sessions = append(sessions, activity)
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].Ref < sessions[j].Ref })
@@ -76,11 +81,15 @@ func localSessionActivity(entry hubcore.LiveEntry, now time.Time) (appwire.Sessi
 	if entry.Crashed || entry.SessionID == "" || entry.Activity == nil {
 		return appwire.SessionActivity{}, false
 	}
+	// RunningSubagents is the root's subagent tally, the count its Live row
+	// shows: a subagent is running while its run is open, whatever its own
+	// status says (a running subagent asking the user reports awaiting).
 	activity := appwire.SessionActivity{
 		Ref:              hubcore.LiveRowRef(entry),
 		Minutes:          entry.Activity.Minutes,
-		RunningSubagents: runningSubagents(entry),
+		RunningSubagents: entry.Subagents.Running,
 		LatestIntent:     appwire.Excerpt(entry.Activity.LatestIntent, appwire.MaxIntentRunes),
+		LastMovedAt:      entry.Activity.LastMovedAt,
 	}
 	// Jesse's ruling: an agent waiting on subagents is never stuck. A subagent
 	// inside one long model call emits nothing for minutes, so the tree's quiet
@@ -91,19 +100,6 @@ func localSessionActivity(entry hubcore.LiveEntry, now time.Time) (appwire.Sessi
 		activity.QuietForMS = &quiet
 	}
 	return activity, true
-}
-
-// runningSubagents counts a root's listed descendants whose own status is
-// active, by the rule its tree rows use (runningSubagentState in
-// hubcore/tree.go): a descendant with no reported state does not count.
-func runningSubagents(entry hubcore.LiveEntry) int {
-	count := 0
-	for _, id := range entry.RunningSubagentIDs {
-		if hubcore.NormalizeState(entry.RunningSubagentStates[id]) == "active" {
-			count++
-		}
-	}
-	return count
 }
 
 // remoteActivityReadBudget bounds one host's answer. A host answers from its

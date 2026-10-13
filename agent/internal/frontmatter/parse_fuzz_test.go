@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
@@ -12,13 +13,14 @@ import (
 // seam (yaml.Unmarshal of the fenced block). Input is an arbitrary Markdown
 // document. Beyond no-panic it asserts the documented contract: a document with
 // no frontmatter framing (no leading delimiter, or a leading delimiter with no
-// closing one) is returned verbatim as Body with nil Meta; a framed document
-// splits Body exactly at the inner boundary the framing defines. Parsing is
+// closing one) is returned as Body, line endings normalized, with nil Meta; a
+// framed document splits Body exactly at the inner boundary the framing
+// defines, in the normalized text. Parsing is
 // deterministic (a second parse matches the first).
 //
 // Note: when framing IS present, Meta may still come back nil if the YAML body
-// parses to a null/empty mapping (e.g. "---\n!---\n"), so the contract keys on
-// framing, not on Meta-nilness.
+// parses to a null/empty mapping (e.g. "---\nnull\n---\nbody"), so the
+// contract keys on framing, not on Meta-nilness.
 func FuzzFrontmatterParse(f *testing.F) {
 	seeds := []string{
 		"---\ntitle: hi\ntags: [a, b]\n---\nbody text\n",
@@ -48,12 +50,14 @@ func FuzzFrontmatterParse(f *testing.F) {
 			return
 		}
 
-		// Framing contract: an unframed document is returned verbatim with nil
-		// Meta; a framed one splits Body exactly at the inner boundary.
+		// Framing contract: an unframed document is returned with its line
+		// endings normalized and nil Meta; a framed one splits Body exactly at
+		// the inner boundary.
 		const delim = "---\n"
+		raw = lineend.Normalize(raw)
 		if idx := indexAfter(raw); idx < 0 {
 			if doc.Meta != nil || doc.Body != raw {
-				t.Fatalf("unframed document not returned verbatim:\n in  =%q\n meta=%#v\n body=%q", raw, doc.Meta, doc.Body)
+				t.Fatalf("unframed document not returned normalized:\n in  =%q\n meta=%#v\n body=%q", raw, doc.Meta, doc.Body)
 			}
 		} else {
 			wantBody := raw[len(delim)+idx+len(delim):]
@@ -114,8 +118,9 @@ func yamlValueEqual(a, b any) bool {
 	}
 }
 
-// indexAfter reports whether a closing "---\n" delimiter exists after the
-// opening one, mirroring Parse's own framing check.
+// indexAfter reports where the closing delimiter, a line that is exactly
+// "---", starts after the opening one, or -1, mirroring Parse's own framing
+// check.
 func indexAfter(raw string) int {
 	const delim = "---\n"
 	if len(raw) < len(delim) || raw[:len(delim)] != delim {
@@ -123,7 +128,7 @@ func indexAfter(raw string) int {
 	}
 	rest := raw[len(delim):]
 	for i := 0; i+len(delim) <= len(rest); i++ {
-		if rest[i:i+len(delim)] == delim {
+		if rest[i:i+len(delim)] == delim && (i == 0 || rest[i-1] == '\n') {
 			return i
 		}
 	}

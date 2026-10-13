@@ -213,7 +213,7 @@ test("a daemon steering item with neither steeringKind interrupted nor source us
   const m = model([
     turn("t1", [
       askItem("i1", "t1", "call_1"),
-      item("i2", "t1", { type: "steering", text: "a reminder", steeringKind: "task-nudge" }),
+      item("i2", "t1", { type: "steering", text: "a reminder", steeringKind: "task-inactive" }),
     ]),
   ]);
   expect(liveAskQuestions(m).map((q) => q.key)).toEqual(["call_1:0"]);

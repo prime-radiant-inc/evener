@@ -1,5 +1,6 @@
 import { ScrollView, View } from "react-native";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export interface ForkEditorProps {
 	title: string;
@@ -57,31 +58,33 @@ export function ForkEditor(props: ForkEditorProps) {
 						</Copy>
 					) : null}
 					{props.hasChild ? (
-						<Action disabled={!props.connected || busy} onPress={props.openChild} tone="primary">
-							Open fork
-						</Action>
+						<Button primary compact label="Open fork" disabled={!props.connected || busy} onPress={props.openChild} />
 					) : (
 						<View style={[styles.row, { flexWrap: "wrap" }]}>
-							<Action onPress={props.browseSessions}>Check Sessions</Action>
-							<Action disabled={!props.connected || busy} onPress={props.allowAnother} tone="quiet">
-								Allow another fork
-							</Action>
+							<Button text label="Check Sessions" onPress={props.browseSessions} />
+							<Button
+								text
+								quiet
+								label="Allow another fork"
+								disabled={!props.connected || busy}
+								onPress={props.allowAnother}
+							/>
 						</View>
 					)}
 				</View>
 			) : (
-				<Action disabled={!props.connected || !props.canCreate || busy} onPress={props.create} tone="primary">
-					Create fork
-				</Action>
+				<Button
+					primary
+					compact
+					label="Create fork"
+					disabled={!props.connected || !props.canCreate || busy}
+					onPress={props.create}
+				/>
 			)}
 			{props.storageUnavailable || (props.sourceError && props.connected) ? (
-				<Action disabled={props.pending} onPress={props.retry}>
-					Retry
-				</Action>
+				<Button text label="Retry" disabled={props.pending} onPress={props.retry} />
 			) : null}
-			<Action onPress={props.close} tone="quiet">
-				Close
-			</Action>
+			<Button text quiet label="Close" onPress={props.close} />
 		</ScrollView>
 	);
 }

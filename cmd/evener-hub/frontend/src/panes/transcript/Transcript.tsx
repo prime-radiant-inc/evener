@@ -27,9 +27,10 @@ import { workspaceStore } from "../../shell/workspace";
 import { navigationStore } from "../../stores/navigation/store";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
-import { EmptyState, PaneScaffold } from "../../widgets";
+import { Loader, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { DocOpeningProvider, docOpeningOriginFor } from "../doc/docOpeningContext";
+import { TranscriptSourcePaneContext } from "../session/transcript/TranscriptBody";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { JobLog } from "./JobLog";
 import { ReadOnlyThreadContent } from "./ReadOnlyThreadContent";
@@ -77,7 +78,8 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
   const docOpeningOrigin = lifetime ? docOpeningOriginFor(lifetime, ref) : undefined;
   const model = useThreadsStore((state) => state.threads.get(ref));
   const { snapshot: activity } = useSessionActivity(ref);
-  const scope = deriveScope(navigationStore.getState(), ref, activity);
+  // Only the crumbs are shown here, so no subagent count is read.
+  const scope = deriveScope(navigationStore.getState(), ref, activity, null);
   return (
     <PaneScaffold title={model?.name || ref}>
       <div className={CLASS.body}>
@@ -87,9 +89,11 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
           </div>
         )}
         <div className={CLASS.list}>
-          <DocOpeningProvider origin={docOpeningOrigin}>
-            {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
-          </DocOpeningProvider>
+          <TranscriptSourcePaneContext.Provider value={paneId}>
+            <DocOpeningProvider origin={docOpeningOrigin}>
+              {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <Loader label="Loading transcript" />}
+            </DocOpeningProvider>
+          </TranscriptSourcePaneContext.Provider>
         </div>
       </div>
     </PaneScaffold>

@@ -159,6 +159,74 @@ func TestSkillControlsRejectInvalidFrontmatter(t *testing.T) {
 	}
 }
 
+// A skill authored from scratch sometimes begins directly with its YAML fields
+// and closes with "---", forgetting only the opening delimiter. Evener should
+// read that block as frontmatter and say so with an advisory diagnostic.
+func TestSkillControlsRecoverMissingOpeningDelimiter(t *testing.T) {
+	raw := []byte("name: probe\ndescription: fixture\n---\nBODY_941\n")
+	descriptor, diagnostics, err := Parse(raw, filepath.Join(t.TempDir(), "SKILL.md"))
+	if err != nil || descriptor.Unavailable {
+		t.Fatalf("descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
+	}
+	if descriptor.CatalogName != "probe" || descriptor.Meta.Name != "probe" || descriptor.Meta.Description != "fixture" {
+		t.Fatalf("descriptor=%+v", descriptor)
+	}
+	assertDiagnostic(t, diagnostics, "missing_frontmatter_delimiter", "")
+}
+
+// The recovery must not swallow ordinary body text that merely contains a
+// "---" rule. Without both a name and a description in the leading block, the
+// file is still malformed and still rejected.
+func TestSkillControlsRejectDelimiterlessBodyWithoutName(t *testing.T) {
+	raw := []byte("# Notes\nsteps: three\n---\nBODY_941\n")
+	descriptor, diagnostics, err := Parse(raw, filepath.Join(t.TempDir(), "SKILL.md"))
+	if err == nil || !descriptor.Unavailable {
+		t.Fatalf("descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
+	}
+	assertDiagnostic(t, diagnostics, "invalid_frontmatter", "")
+}
+
+// A block led by a Markdown heading is a body, not a delimiterless frontmatter
+// block, even when it later holds name and description lines.
+func TestSkillControlsRejectHeadingLedBlock(t *testing.T) {
+	raw := []byte("# My Skill\n\nname: shadow\ndescription: shadow desc\n\n---\n\nreal body\n")
+	descriptor, diagnostics, err := Parse(raw, filepath.Join(t.TempDir(), "SKILL.md"))
+	if err == nil || !descriptor.Unavailable {
+		t.Fatalf("descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
+	}
+	assertDiagnostic(t, diagnostics, "invalid_frontmatter", "")
+}
+
+// A leading UTF-8 BOM must not change whether a file is read.
+func TestSkillControlsRecoverThroughBOM(t *testing.T) {
+	recoverable := []byte("\ufeffname: probe\ndescription: fixture\n---\nBODY_a1\n")
+	descriptor, diagnostics, err := Parse(recoverable, filepath.Join(t.TempDir(), "SKILL.md"))
+	if err != nil || descriptor.Unavailable || descriptor.CatalogName != "probe" {
+		t.Fatalf("descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
+	}
+	assertDiagnostic(t, diagnostics, "missing_frontmatter_delimiter", "")
+
+	wellFormed := []byte("\ufeff---\nname: probe\ndescription: fixture\n---\nBODY_a2\n")
+	descriptor, diagnostics, err = Parse(wellFormed, filepath.Join(t.TempDir(), "SKILL.md"))
+	if err != nil || descriptor.Unavailable || descriptor.CatalogName != "probe" || len(diagnostics) != 0 {
+		t.Fatalf("descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
+	}
+}
+
+// A frontmatter value that ends in dashes must not be mistaken for the closing
+// delimiter: the block closes on the next whole "---" line.
+func TestSkillControlsRecoverKeepsValueEndingInDashes(t *testing.T) {
+	raw := []byte("name: probe\ndescription: fine\nnote: see---\n---\nBODY_a3\n")
+	descriptor, diagnostics, err := Parse(raw, filepath.Join(t.TempDir(), "SKILL.md"))
+	if err != nil || descriptor.Unavailable || descriptor.CatalogName != "probe" {
+		t.Fatalf("descriptor=%+v diagnostics=%+v error=%v", descriptor, diagnostics, err)
+	}
+	if descriptor.Meta.Metadata["note"] != "see---" {
+		t.Fatalf("metadata=%+v", descriptor.Meta.Metadata)
+	}
+	assertDiagnostic(t, diagnostics, "missing_frontmatter_delimiter", "")
+}
+
 func TestSkillControlsAllowedToolsFormsAndDiagnostic(t *testing.T) {
 	tests := []struct {
 		name  string

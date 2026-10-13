@@ -5,10 +5,17 @@
 // sidebar can never drift from the rail or the activity panel.
 
 import type { ActivityWatchRow, JobActivityJob, SessionDelegate } from "@evener/appwire-client";
-import { activityDelegateState, activityNodeID, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
+import {
+  activityDelegateState,
+  activityNodeID,
+  delegateWorkText,
+  jobStatusDisplay,
+  watchMeta,
+  watchName,
+} from "@evener/appwire-client";
 import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
-import { Disclosure } from "../../widgets/disclosure";
+import { Disclosure } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 
@@ -16,6 +23,7 @@ import styles from "./activitybar.module.css";
 
 const CLASS = {
   row: requireClass(styles.row, "activitybar.module.css", "row"),
+  rowContent: requireClass(styles.rowContent, "activitybar.module.css", "rowContent"),
   rowGlyph: requireClass(styles.rowGlyph, "activitybar.module.css", "rowGlyph"),
   glyphAlive: requireClass(styles.glyphAlive, "activitybar.module.css", "glyphAlive"),
   glyphAttention: requireClass(styles.glyphAttention, "activitybar.module.css", "glyphAttention"),
@@ -38,8 +46,9 @@ const TONE_CLASS: Record<Tone, string> = {
   quiet: CLASS.glyphQuiet,
 };
 
-function jobTone(status: string): Tone {
-  switch (jobStatusDotState(status, status !== "running")) {
+function jobTone(job: JobActivityJob): Tone {
+  if (job.terminal) return "quiet";
+  switch (jobStatusDotState(job.status, job.terminal)) {
     case "working":
       return "alive";
     case "needs-you":
@@ -52,7 +61,7 @@ function jobTone(status: string): Tone {
 }
 
 function agentTone(sub: SessionDelegate): Tone {
-  if (sub.terminal) return sub.outcome === "failed" || sub.error ? "danger" : "quiet";
+  if (sub.terminal) return "quiet";
   if (["awaiting_approval", "awaiting_input", "needs-you"].includes(sub.phase)) return "attention";
   return "alive";
 }
@@ -68,8 +77,12 @@ function AgentRowBody({ sub }: { sub: SessionDelegate }) {
         ⌘
       </span>
       <span className={CLASS.rowBody}>
-        <span className={CLASS.rowName}>{sub.name?.trim() || sub.description || sub.task || sub.delegateId}</span>
-        <span className={CLASS.rowMeta}>{agentStateText(sub)}</span>
+        <span className={CLASS.rowName} title={agentStateText(sub)}>
+          {sub.name?.trim() || sub.description || sub.task || sub.delegateId}
+        </span>
+        {/* The intent replaces the status word here; the title above keeps the
+         * word reachable, JobRow's pattern for a value the meta line hides. */}
+        <span className={CLASS.rowMeta}>{delegateWorkText(sub, agentStateText(sub))}</span>
       </span>
     </>
   );
@@ -97,7 +110,7 @@ export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => vo
   const label = description || job.command?.trim() || job.jobId;
   const body = (
     <>
-      <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job.status)]}`} aria-hidden="true">
+      <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job)]}`} aria-hidden="true">
         $
       </span>
       <span className={CLASS.rowBody}>
@@ -128,7 +141,7 @@ export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
       <Disclosure
         id={`sidebar-${row.id}`}
         summary={
-          <span className={CLASS.row}>
+          <span className={CLASS.rowContent}>
             <span className={`${CLASS.rowGlyph} ${CLASS.glyphQuiet}`}>
               <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
             </span>

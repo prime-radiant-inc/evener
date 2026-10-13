@@ -1,0 +1,11 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "Implement normalize to trim surrounding whitespace. Run the fixture checker and finish the task.",
+      "checks": [{"name": "checker passes", "run": "sh scripts/check.sh"}],
+      "memory": [{"name": "wrote memory", "regex": "."}]
+    }
+  ]
+}

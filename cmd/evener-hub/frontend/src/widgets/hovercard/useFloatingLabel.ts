@@ -31,6 +31,7 @@ interface UseFloatingLabelArgs {
   measure: () => void;
   observe: RefObject<HTMLElement | null>;
   focusTarget?: () => HTMLElement | null;
+  observeAnchor?: () => HTMLElement | null;
 }
 
 interface FloatingLabelTriggerProps {
@@ -48,7 +49,12 @@ interface UseFloatingLabelResult {
   dismiss: () => void;
 }
 
-export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingLabelArgs): UseFloatingLabelResult {
+export function useFloatingLabel({
+  measure,
+  observe,
+  focusTarget,
+  observeAnchor,
+}: UseFloatingLabelArgs): UseFloatingLabelResult {
   const [visible, setVisible] = useState(false);
   const [pending, setPending] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -101,8 +107,10 @@ export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingL
     if (!observedEl || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     observer.observe(observedEl);
+    const anchor = observeAnchor?.();
+    if (anchor) observer.observe(anchor);
     return () => observer.disconnect();
-  }, [measure, observe, visible]);
+  }, [measure, observe, observeAnchor, visible]);
 
   // A scroll anywhere (capture-phase, so a scrollable ancestor's own scroll
   // counts) or a viewport resize hides the floating element rather than

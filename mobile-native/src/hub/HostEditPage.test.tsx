@@ -1,12 +1,19 @@
 import { createHubUpdateController, WireError } from "@evener/appwire-client";
 import type { NativeStackNavigationOptions, NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { ReactElement } from "react";
-import { act } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { act, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, expect, it, vi } from "vitest";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { alertRequests, render, renderedText } from "../renderNative.testkit";
+import {
+	alertRequests,
+	render,
+	renderedText,
+	settle,
+	testIDSuffixes,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { HostEditPage } from "./HostEditPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -34,14 +41,21 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
+// Each mount's controllers, disposed after the test's trees unmount, so a
+// failing assertion can't leak them into the next test.
+const disposers: (() => void)[] = [];
+afterEach(() => {
+	unmountMountedTrees();
+	for (const dispose of disposers.splice(0)) dispose();
+});
 
 async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boolean } = {}) {
 	const hosts = new HostsController(fleet.client, fleet.newMutationId);
 	const live = new LiveSessionsReader(fleet.client);
+	disposers.push(() => {
+		hosts.dispose();
+		live.dispose();
+	});
 	const context: HubSheetContextValue = {
 		hubId: "hub-1",
 		hubName: "magic-kingdom",
@@ -105,7 +119,6 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 		save,
 		options: () => options,
 		scrolls,
-		dispose: () => hosts.dispose(),
 	};
 }
 
@@ -125,24 +138,33 @@ it("titles the page for its host and fills every field from the host's row", asy
 	expect(page.field("Evener path").props.value).toBe("");
 	expect(page.field("Roots").props.value).toBe("/srv/b\n/srv/a");
 	expect(page.field("Roots").props.multiline).toBe(true);
-	const text = renderedText(page.tree);
-	expect(text).toContain("Hub config path");
-	page.dispose();
+	expect(testIDSuffixes(page.tree, "host-field-")).toContain("configPath");
 });
+
+/** The page's own reports in render order: field containers, help and errors. */
+const hostTestIDs = (page: { tree: ReactTestRenderer }) => testIDSuffixes(page.tree, "host-");
+
+/** The errors and help one field's container holds. */
+const inField = (page: { tree: ReactTestRenderer }, field: string) => {
+	const [container] = page.tree.root.findAll(
+		(node) => typeof node.type === "string" && node.props.testID === `host-field-${field}`,
+	);
+	if (!container) throw new Error(`no ${field} field`);
+	return testIDSuffixes(container, "host-").filter((id) => id !== `field-${field}`);
+};
 
 it("says once that only the SSH address is required, and what each empty field means (audit M4)", async () => {
 	const page = await mount(scriptedFleet([attic]), "attic");
-	const text = renderedText(page.tree);
-	expect(text).toContain("SSH destination, e.g. host.example or user@host.example.");
-	expect(text).toContain("Only the SSH address is required.");
-	expect(text).not.toMatch(/\bOptional\b/);
-	expect(page.field("User").props.placeholder).toBe("From the address or SSH config");
-	expect(page.field("Key path").props.placeholder).toBe("From your SSH config");
-	expect(page.field("Evener path").props.placeholder).toBe("evener on PATH");
-	expect(page.field("Hub config path").props.placeholder).toBe("The default hub.toml");
-	expect(page.field("Hub address").props.placeholder).toBe("The default address");
-	expect(page.field("Roots").props.placeholder).toBe("No project roots. One per line.");
-	page.dispose();
+	// Only the required field explains itself beneath it, and has no placeholder.
+	expect(hostTestIDs(page).filter((id) => id === "help")).toHaveLength(1);
+	expect(inField(page, "address")).toEqual(["help"]);
+	expect(page.field("SSH address").props.placeholder).toBeUndefined();
+	// Each optional field says in its own placeholder what empty means.
+	const placeholders = ["User", "Key path", "Evener path", "Hub config path", "Hub address", "Roots"].map(
+		(label) => page.field(label).props.placeholder,
+	);
+	for (const placeholder of placeholders) expect(placeholder).toBeTruthy();
+	expect(new Set(placeholders).size).toBe(placeholders.length);
 });
 
 it("saves every field trimmed and the roots one per line, then goes back", async () => {
@@ -166,7 +188,6 @@ it("saves every field trimmed and the roots one per line, then goes back", async
 		expectedGeneration: 1,
 	});
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
-	page.dispose();
 });
 
 it("puts a refusal that names a field under that field, and stays", async () => {
@@ -178,14 +199,11 @@ it("puts a refusal that names a field under that field, and stays", async () => 
 	const page = await mount(fleet, "attic");
 	page.type("SSH address", "");
 	await page.save();
-	const text = renderedText(page.tree);
-	const message = 'host "attic": missing ssh destination';
-	expect(text).toContain(message);
-	// Under the SSH address field, before the next field's label.
-	expect(text.indexOf(message)).toBeGreaterThan(text.indexOf("SSH destination, e.g."));
-	expect(text.indexOf(message)).toBeLessThan(text.indexOf("User"));
+	expect(renderedText(page.tree)).toContain('host "attic": missing ssh destination');
+	// Under the SSH address field, after its help, and nowhere else.
+	expect(inField(page, "address")).toEqual(["help", "error-field"]);
+	expect(hostTestIDs(page).filter((id) => id.startsWith("error-"))).toEqual(["error-field"]);
 	expect(page.navigation.goBack).not.toHaveBeenCalled();
-	page.dispose();
 });
 
 it("puts any other refusal above the fields", async () => {
@@ -193,9 +211,10 @@ it("puts any other refusal above the fields", async () => {
 	fleet.refuse.update = new WireError("the registry is read-only right now", -32000);
 	const page = await mount(fleet, "attic");
 	await page.save();
-	const text = renderedText(page.tree);
-	expect(text.indexOf("the registry is read-only right now")).toBeLessThan(text.indexOf("SSH address"));
-	page.dispose();
+	expect(renderedText(page.tree)).toContain("the registry is read-only right now");
+	const ids = hostTestIDs(page);
+	expect(ids.indexOf("error-refused")).toBeGreaterThan(-1);
+	expect(ids.indexOf("error-refused")).toBeLessThan(ids.indexOf("field-address"));
 });
 
 it("scrolls a refusal that names a field into view, however far down the page was", async () => {
@@ -214,7 +233,6 @@ it("scrolls a refusal that names a field into view, however far down the page wa
 	);
 	await page.save();
 	expect(page.scrolls).toEqual([{ y: 60, animated: true }]);
-	page.dispose();
 });
 
 it("scrolls to the top for a refusal above the fields", async () => {
@@ -223,14 +241,12 @@ it("scrolls to the top for a refusal above the fields", async () => {
 	const page = await mount(fleet, "attic");
 	await page.save();
 	expect(page.scrolls).toEqual([{ y: 0, animated: true }]);
-	page.dispose();
 });
 
 it("stays where it is when a save lands", async () => {
 	const page = await mount(scriptedFleet([attic]), "attic");
 	await page.save();
 	expect(page.scrolls).toEqual([]);
-	page.dispose();
 });
 
 it("holds Save only while it saves: the hub is the one validator", async () => {
@@ -250,7 +266,6 @@ it("holds Save only while it saves: the hub is the one validator", async () => {
 	expect(page.header("headerLeft").props.disabled).toBe(true);
 	await act(async () => release());
 	await settle();
-	page.dispose();
 });
 
 it("goes back without saving on Cancel", async () => {
@@ -259,13 +274,11 @@ it("goes back without saving on Cancel", async () => {
 	await act(async () => page.header("headerLeft").props.onPress());
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
 	expect(fleet.calls.some((call) => call.method === "evener/host/update")).toBe(false);
-	page.dispose();
 });
 
 it("holds Save while the phone's connection is down", async () => {
 	const page = await mount(scriptedFleet([attic]), "attic", { ready: false });
 	expect(page.header("headerRight").props.disabled).toBe(true);
-	page.dispose();
 });
 
 it("sends one update however fast Save is pressed twice", async () => {
@@ -278,7 +291,6 @@ it("sends one update however fast Save is pressed twice", async () => {
 	});
 	await settle();
 	expect(fleet.calls.filter((call) => call.method === "evener/host/update")).toHaveLength(1);
-	page.dispose();
 });
 
 it("goes back when its host leaves the hub's list while it is open", async () => {
@@ -287,7 +299,6 @@ it("goes back when its host leaves the hub's list while it is open", async () =>
 	fleet.hosts = [];
 	await act(async () => page.hosts.read());
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
-	page.dispose();
 });
 
 it("goes back once when the host is removed elsewhere while its edit saves", async () => {
@@ -302,7 +313,6 @@ it("goes back once when the host is removed elsewhere while its edit saves", asy
 	const page = await mount(fleet, "attic");
 	await page.save();
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
-	page.dispose();
 });
 
 it("leaves the stack alone when a save lands after the page was swiped away", async () => {
@@ -320,7 +330,6 @@ it("leaves the stack alone when a save lands after the page was swiped away", as
 	await act(async () => release());
 	await settle();
 	expect(page.navigation.goBack).not.toHaveBeenCalled();
-	page.dispose();
 });
 
 it("refuses an edit made while someone else changed the host, and never saves over theirs", async () => {
@@ -335,11 +344,10 @@ it("refuses an edit made while someone else changed the host, and never saves ov
 	const updates = fleet.calls.filter((call) => call.method === "evener/host/update");
 	expect(updates.map((call) => (call.params as { expectedGeneration: number }).expectedGeneration)).toEqual([1]);
 	expect(fleet.hosts[0]?.address).toBe("attic.other");
-	const text = renderedText(page.tree);
-	expect(text).toContain("This host changed since you opened it. Cancel, then open it again to see the change.");
-	expect(text.indexOf("This host changed")).toBeLessThan(text.indexOf("SSH address"));
+	const ids = hostTestIDs(page);
+	expect(ids.filter((id) => id.startsWith("error-"))).toEqual(["error-changed"]);
+	expect(ids.indexOf("error-changed")).toBeLessThan(ids.indexOf("field-address"));
 	expect(page.navigation.goBack).not.toHaveBeenCalled();
-	page.dispose();
 });
 
 const leave = { type: "GO_BACK" };
@@ -349,7 +357,6 @@ it("leaves at once when nothing was changed", async () => {
 	expect(guard.prevented).toBe(false);
 	await act(async () => page.header("headerLeft").props.onPress());
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
-	page.dispose();
 });
 
 it("asks before a Cancel, a swipe or Back throws away an edit (spec 6)", async () => {
@@ -359,8 +366,9 @@ it("asks before a Cancel, a swipe or Back throws away an edit (spec 6)", async (
 	expect(guard.prevented).toBe(true);
 	// The stack routes Cancel's goBack, a swipe and Back through the guard.
 	act(() => guard.onPrevent?.({ data: { action: leave } }));
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
-	expect(alertRequests.at(-1)?.buttons?.map((button) => button.text)).toEqual(["Keep editing", "Discard"]);
+	expect(alertRequests).toHaveLength(1);
+	// Keeping the edit is the safe answer, so it comes first.
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 	expect(page.navigation.dispatch).not.toHaveBeenCalled();
 	act(() =>
 		alertRequests
@@ -369,7 +377,6 @@ it("asks before a Cancel, a swipe or Back throws away an edit (spec 6)", async (
 			?.onPress?.(),
 	);
 	expect(page.navigation.dispatch).toHaveBeenCalledWith(leave);
-	page.dispose();
 });
 
 it("stops asking once an edit is typed back to what the host had", async () => {
@@ -377,7 +384,6 @@ it("stops asking once an edit is typed back to what the host had", async () => {
 	page.type("User", "root");
 	page.type("User", "jesse");
 	expect(guard.prevented).toBe(false);
-	page.dispose();
 });
 
 it("leaves without asking once its save lands", async () => {
@@ -389,7 +395,6 @@ it("leaves without asking once its save lands", async () => {
 	// The save's own leaving passes the guard untouched.
 	if (guard.prevented) act(() => guard.onPrevent?.({ data: { action: leave } }));
 	expect(alertRequests).toHaveLength(0);
-	page.dispose();
 });
 
 it("holds Back and a swipe while its save is in flight, without asking", async () => {
@@ -403,7 +408,6 @@ it("holds Back and a swipe while its save is in flight, without asking", async (
 	act(() => guard.onPrevent?.({ data: { action: leave } }));
 	expect(alertRequests).toHaveLength(0);
 	expect(page.navigation.dispatch).not.toHaveBeenCalled();
-	page.dispose();
 });
 
 it("counts roots that save the same as no change", async () => {
@@ -411,5 +415,4 @@ it("counts roots that save the same as no change", async () => {
 	// A blank line and spaces drop out of the saved roots.
 	page.type("Roots", "/srv/b\n\n  /srv/a  \n");
 	expect(guard.prevented).toBe(false);
-	page.dispose();
 });

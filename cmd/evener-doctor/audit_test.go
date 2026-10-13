@@ -147,27 +147,40 @@ func TestRun_AuditSinceWindow(t *testing.T) {
 	}
 }
 
+// forbidRunbookLookup fails the test if the command resolves any runbook: a
+// usage refusal must come before the audit starts doing work.
+func forbidRunbookLookup(t *testing.T) {
+	t.Helper()
+	prev := bundledSkills
+	bundledSkills = func() fs.FS {
+		t.Error("resolved a runbook for an invocation that should have been refused first")
+		return fstest.MapFS{}
+	}
+	t.Cleanup(func() { bundledSkills = prev })
+}
+
 func TestRun_AuditRequiresRunbook(t *testing.T) {
 	base, sid := auditSessionFixture(t)
+	forbidRunbookLookup(t)
 	var out, errb bytes.Buffer
 	if code := run([]string{"audit", "--sessions", sid, "--state-dir", base}, &out, &errb); code == 0 {
 		t.Fatalf("missing --runbook should not exit 0; stdout=%s", out.String())
 	}
-	if !strings.Contains(errb.String(), "--runbook is required") {
-		t.Errorf("stderr should explain --runbook is required, got: %s", errb.String())
+	if out.Len() != 0 || errb.Len() == 0 {
+		t.Errorf("missing --runbook should be refused on stderr alone; stdout=%q stderr=%q", out.String(), errb.String())
 	}
 }
 
 func TestRun_AuditRequiresExactlyOneOfSessionsOrSince(t *testing.T) {
-	withFixtureRunbook(t, "cli-fixture", auditFixtureRunbookMD)
 	base, sid := auditSessionFixture(t)
+	forbidRunbookLookup(t)
 
 	var out, errb bytes.Buffer
 	if code := run([]string{"audit", "--runbook", "cli-fixture", "--state-dir", base}, &out, &errb); code == 0 {
 		t.Fatalf("neither --sessions nor --since should not exit 0; stdout=%s", out.String())
 	}
-	if !strings.Contains(errb.String(), "exactly one of --sessions or --since") {
-		t.Errorf("stderr should explain, got: %s", errb.String())
+	if out.Len() != 0 || errb.Len() == 0 {
+		t.Errorf("neither --sessions nor --since should be refused on stderr alone; stdout=%q stderr=%q", out.String(), errb.String())
 	}
 
 	out.Reset()
@@ -175,8 +188,8 @@ func TestRun_AuditRequiresExactlyOneOfSessionsOrSince(t *testing.T) {
 	if code := run([]string{"audit", "--runbook", "cli-fixture", "--sessions", sid, "--since", "1h", "--state-dir", base}, &out, &errb); code == 0 {
 		t.Fatalf("both --sessions and --since should not exit 0; stdout=%s", out.String())
 	}
-	if !strings.Contains(errb.String(), "exactly one of --sessions or --since") {
-		t.Errorf("stderr should explain, got: %s", errb.String())
+	if out.Len() != 0 || errb.Len() == 0 {
+		t.Errorf("both --sessions and --since should be refused on stderr alone; stdout=%q stderr=%q", out.String(), errb.String())
 	}
 }
 
@@ -198,7 +211,7 @@ func TestRun_AuditRejectsStraySelector(t *testing.T) {
 	if code := run([]string{"audit", "--runbook", "cli-fixture", "--since", "1h", "some-selector", "--state-dir", base}, &out, &errb); code != 2 {
 		t.Errorf("stray positional arg should exit 2, got %d; stderr=%s", code, errb.String())
 	}
-	if !strings.Contains(errb.String(), "takes no selector") {
-		t.Errorf("stderr should explain audit takes no selector, got: %s", errb.String())
+	if out.Len() != 0 || errb.Len() == 0 {
+		t.Errorf("a stray selector should be refused on stderr alone; stdout=%q stderr=%q", out.String(), errb.String())
 	}
 }

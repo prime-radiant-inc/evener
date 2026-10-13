@@ -33,11 +33,13 @@
   white-space: pre-wrap;
 }
 
-/* Notes longer than ~20 lines clamp with an honest disclosure; everything
-   at or under shows in full with no disclosure at all. */
+/* Notes longer than 100 lines clamp with an honest disclosure; everything
+   at or under shows in full with no disclosure at all. The clamp count
+   matches NOTE_CLAMP_LINES in jobWatch.tsx (Jesse's 2026-10-11 100-line
+   call) — the two halves of one policy and must move together. */
 .noteClamped {
   display: -webkit-box;
-  -webkit-line-clamp: 20;
+  -webkit-line-clamp: 100;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -101,7 +103,7 @@
    tokens.css, so it is only consumed under the same query here (the
    RailRow treatment) — on desktop the token is undefined and the rows keep
    their content height. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .row {
     min-height: var(--tap-min);
   }
@@ -144,7 +146,7 @@
   list-style: none;
 }
 
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .disclosureSummary {
     min-height: var(--tap-min);
   }

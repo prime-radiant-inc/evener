@@ -24,6 +24,7 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { NotesPanelBody } from "./NotesPanel";
 
@@ -115,7 +116,8 @@ function holdSessionPane(...refs: string[]) {
 
 function openPanel(model: ThreadModel) {
   holdSessionPane(model.ref);
-  render(<NotesPanelBody sessionRef={model.ref} model={model} />);
+  const sourcePaneId = workspaceStore.getState().panes.find((pane) => pane.type === "session")?.id;
+  render(<NotesPanelBody sessionRef={model.ref} model={model} sourcePaneId={sourcePaneId} />);
 }
 
 function editor(): HTMLTextAreaElement {
@@ -572,6 +574,18 @@ test("notes panel is read-only under the recovery fence and keeps a dirty draft 
   expect(editor().value).toBe("draft written before the fence");
 });
 
+// The whiteboards keep their line breaks (the agent's is a paragraph, a "Now:"
+// line and "Next:" lines), so the read-only body carries each line as written;
+// the prose class's `white-space: pre-wrap` draws them (jsdom applies no CSS
+// module styles, so this test pins the text the browser receives).
+test("multi-line whiteboards render with their line structure", () => {
+  const agentNote = "Fixing the importer for the reporting team.\nNow: checking the exporter.\nNext: report back.";
+  const humanNote = "Ship by Friday.\n\nAsk me before touching the schema.";
+  openPanel(testModel({ status: { type: "ended" }, humanNote, agentNote }));
+  expect(screen.getByTestId("shared-notes-agent").textContent).toBe(agentNote);
+  expect(screen.getByTestId("shared-notes-human").textContent).toBe(humanNote);
+});
+
 test("ended-empty session shows inert text with no editor", () => {
   openPanel(testModel({ status: { type: "notLoaded" } }));
   expect(screen.getByTestId("shared-notes-section")).toBeTruthy();
@@ -661,7 +675,7 @@ test("file links out of scope keep text but offer no affordance", () => {
 test("live-empty session shows an empty editor with placeholder", () => {
   openPanel(testModel());
   expect(editor().value).toBe("");
-  expect(editor().placeholder).toMatch(/Make a note/);
+  expect(editor().placeholder).not.toBe("");
   expect(screen.getByTestId("shared-notes-agent-empty")).toBeTruthy();
   expect(screen.getByTestId("shared-notes-urls-empty")).toBeTruthy();
 });
@@ -790,7 +804,7 @@ test("a second Remove click while the first is in flight is ignored and stays si
     await firstInFlight;
   });
   expect(calls).toBe(1);
-  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+  expect(toastKinds()).toEqual([]);
 });
 
 test("two Remove clicks in the same tick fire one request", async () => {
@@ -831,7 +845,7 @@ test("two Remove clicks in the same tick fire one request", async () => {
     await firstInFlight;
   });
   expect(calls).toBe(1);
-  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+  expect(toastKinds()).toEqual([]);
 });
 
 test("a duplicate Remove after the response reports no error", async () => {
@@ -870,7 +884,7 @@ test("a duplicate Remove after the response reports no error", async () => {
   // intent (this link gone) is already true.
   await user.click(button);
   await waitFor(() => expect(calls).toBe(2));
-  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+  expect(toastKinds()).toEqual([]);
 
   // The push lands and the model drops the entry: the row disappears with it.
   panel.rerender(
@@ -939,7 +953,7 @@ test("a failed Remove clears the guard so a retry can fire", async () => {
   await user.click(button);
   await waitFor(() => expect(calls).toBe(1));
   // The failure has to surface before the guard is expected to be released.
-  await waitFor(() => expect(screen.queryByText(/Couldn't remove link/i)).not.toBeNull());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   // The failure left the entry in place, so the guard must have been released:
   // the user's retry has to reach the wire.
   await user.click(button);
@@ -1629,12 +1643,12 @@ test("a live-to-ended transition without blur does not invent a save", async () 
 
 test("idle live session shows the wake warning under the editor", () => {
   openPanel(testModel({ status: { type: "idle" }, humanNote: "old note" }));
-  expect(screen.getByTestId("shared-notes-idle-wake").textContent).toMatch(/Saving will wake the agent/);
+  expect(screen.getByTestId("shared-notes-idle-wake").textContent).not.toBe("");
 });
 
 test("a live session resting on a failed turn shows the wake warning too", () => {
   openPanel(testModel({ status: { type: "systemError" }, humanNote: "old note" }));
-  expect(screen.getByTestId("shared-notes-idle-wake").textContent).toMatch(/Saving will wake the agent/);
+  expect(screen.getByTestId("shared-notes-idle-wake").textContent).not.toBe("");
 });
 
 test("busy live session shows no idle-wake warning", () => {

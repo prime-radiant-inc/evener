@@ -54,8 +54,8 @@ describe("the documents a message names (spec 8.2)", () => {
 		]);
 	});
 
-	it("reads a file link, and a file a link names by its target or its text", () => {
-		expect(messageDocuments("[plan](file:///home/jesse/git/evener/docs/plan.md)", cwd, none)).toEqual(["docs/plan.md"]);
+	it("reads local targets, but excludes schemes and existing external anchor labels", () => {
+		expect(messageDocuments("[plan](file:///home/jesse/git/evener/docs/plan.md)", cwd, none)).toEqual([]);
 		expect(messageDocuments("[`plan.md`](docs/plan.md)", cwd, none)).toEqual(["docs/plan.md"]);
 		expect(
 			messageDocuments(
@@ -63,7 +63,22 @@ describe("the documents a message names (spec 8.2)", () => {
 				cwd,
 				none,
 			),
-		).toEqual(["docs/plan.md"]);
+		).toEqual([]);
+	});
+
+	it("discovers prose with the same normalized URI identity as inline actions", () => {
+		expect(messageDocuments("Spec: docs/./plan.md:12. [R](./docs/a%26b.md) `src/Makefile`", cwd, none)).toEqual([
+			"docs/plan.md",
+			"docs/a&b.md",
+			"src/Makefile",
+		]);
+	});
+
+	it("rejects adjacent traversal formatting and literal percent decoding", () => {
+		expect(messageDocuments("../**docs/plan.md** `docs/100%25.md` [R](./docs/100%25.md)", cwd, none)).toEqual([
+			"docs/100%25.md",
+			"docs/100%.md",
+		]);
 	});
 
 	it("names nothing for commands, directories, web links, files outside the folder, or fenced code", () => {

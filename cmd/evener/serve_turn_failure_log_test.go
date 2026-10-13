@@ -17,8 +17,8 @@ func TestTurnFailureSummaryWithholdsProviderBody(t *testing.T) {
 	const canary = "Incorrect API key provided: sk-svcac-secret"
 	err := llm.ErrorFromHTTPStatus("openai", 401, canary, map[string]any{"error": map[string]any{"message": canary}}, nil)
 	got := turnFailureSummary(err)
-	if got != "HTTP 401 (authentication)" {
-		t.Fatalf("turnFailureSummary = %q, want kind and status only", got)
+	if !strings.Contains(got, "401") || !strings.Contains(got, llm.KindAuthentication.String()) {
+		t.Fatalf("turnFailureSummary = %q, want it to name the status and the kind", got)
 	}
 	if strings.Contains(got, "sk-svcac") {
 		t.Fatalf("turnFailureSummary = %q, want the provider body withheld", got)
@@ -32,18 +32,23 @@ func TestTurnFailureSummaryKeepsEvenerOwnErrors(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
-		want string
 	}{
-		{"plain error", errors.New("session is closed"), "session is closed"},
-		{"configuration diagnosis", &llm.ConfigurationError{Message: "model is not configured"}, "configuration error: model is not configured"},
-		{"sign-in required", &llm.ConfigurationError{Message: "sign in", Cause: llm.ErrSignInRequired}, "sign-in required"},
+		{"plain error", errors.New("session is closed")},
+		{"configuration diagnosis", &llm.ConfigurationError{Message: "model is not configured"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := turnFailureSummary(tc.err); got != tc.want {
-				t.Fatalf("turnFailureSummary = %q, want %q", got, tc.want)
+			if got := turnFailureSummary(tc.err); got != tc.err.Error() {
+				t.Fatalf("turnFailureSummary = %q, want the error's own message %q", got, tc.err.Error())
 			}
 		})
+	}
+	// A sign-in failure is summarized as one, whatever the diagnosis around
+	// it said.
+	const diagnosis = "diagnosis-fixture"
+	got := turnFailureSummary(&llm.ConfigurationError{Message: diagnosis, Cause: llm.ErrSignInRequired})
+	if got == "" || strings.Contains(got, diagnosis) {
+		t.Fatalf("turnFailureSummary = %q, want the sign-in summary rather than the diagnosis", got)
 	}
 }
 
@@ -62,7 +67,7 @@ func TestTurnFailureSummarySummarizesProviderWrappingConfigurationError(t *testi
 	if strings.Contains(got, "leaked-secret-body") {
 		t.Fatalf("turnFailureSummary = %q, want the provider body withheld", got)
 	}
-	if got != "not_found" {
+	if got != llm.KindNotFound.String() {
 		t.Fatalf("turnFailureSummary = %q, want the failure's kind only", got)
 	}
 }

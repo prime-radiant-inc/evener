@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"path/filepath"
 	"sort"
 	"testing"
 )
@@ -27,5 +28,22 @@ func TestCoreToolNamesAreSortedNonEmptyAndKnown(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected read_file among core tools, got %v", names)
+	}
+}
+
+// CoreToolNames stands up a throwaway session no hub will ever archive, so it
+// removes the session's scratch tree itself rather than leaving one per call.
+func TestCoreToolNamesLeavesNoScratchTree(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	if _, err := CoreToolNames(); err != nil {
+		t.Fatalf("CoreToolNames: %v", err)
+	}
+	left, err := filepath.Glob(filepath.Join(tmp, "evener-scratch-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Errorf("CoreToolNames left scratch trees %v", left)
 	}
 }

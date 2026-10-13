@@ -3,8 +3,9 @@ import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { AnyNotification, AppwireClient, InitializeResponse } from "@evener/appwire-client";
 import { KeybindingPreferencesScreen } from "./KeybindingPreferencesScreen";
+import { markers } from "./markerTestUtils";
 import { NativePreferencesProvider } from "./NativePreferencesProvider";
-import { dropped, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { dropped, render, screenConnection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => {
 	const values = new Map<string, string>();
@@ -121,6 +122,13 @@ beforeEach(() => {
 	};
 });
 
+it("lets a drag of the page put the keyboard away", () => {
+	harness.connection = { activeProfile: hub, client: null, state: "ready", retry: vi.fn() };
+	const tree = render(app());
+	expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+	act(() => tree.unmount());
+});
+
 it("shows and invokes cold-offline discard for an unreadable stored record", () => {
 	writeDraft(hub.id, "{not json");
 	const tree = render(app());
@@ -156,9 +164,7 @@ it("keeps the storage-unavailable diagnostic after a discard-time storage throw"
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" })).toHaveLength(1);
 	const alerts = alertNodes(tree);
 	expect(alerts).toHaveLength(1);
-	const text = renderedText(tree);
-	expect(text).toContain("Could not read the saved shortcut draft on this phone. Check current shortcuts to retry.");
-	expect(text).not.toContain("The change could not be completed.");
+	expect(markers(tree, "keybinding-error")).toEqual(["storage"]);
 	act(() => tree.unmount());
 });
 

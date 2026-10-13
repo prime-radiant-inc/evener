@@ -26,6 +26,11 @@ type Profile struct {
 	// web_fetch Q&A) to a different instance than the main model. Empty means
 	// the main model's instance. Set via WithCheapModel("instance/model").
 	cheapProvider string
+	// rowFactsInherited marks a profile whose model id was applied without a
+	// catalog row of its own (withModelID): the row facts describe the row the
+	// profile was cloned from, not the named model, so they cannot vouch for
+	// what that model sees.
+	rowFactsInherited bool
 }
 
 // FromResolved wraps a resolved record. r re-resolves for WithModel and
@@ -327,6 +332,82 @@ func (p *Profile) Cost() *registry.Cost { return p.res.Caps.Cost }
 // InputModalities lists what the model accepts ("text", "image", "pdf", …).
 func (p *Profile) InputModalities() []string { return cloneStringSlice(p.res.Caps.InputModalities) }
 
+// AcceptsImageInput reports whether the model's own row declares image
+// input. It says the model can be handed an image in a user message (the
+// shape the vision side-channel uses); it says nothing about tool results. A
+// profile renamed over another row (withModelID) inherits its source row's
+// modalities, and inherited image input is not evidence the named model sees
+// media, so it does not count.
+func (p *Profile) AcceptsImageInput() bool {
+	return !p.rowFactsInherited && p.res.Caps.AcceptsModality("image")
+}
+
+// AcceptsDocumentInput reports whether the model's own row declares document
+// ("pdf") input and its adapter represents a user-message document on the
+// wire. Unlike an image — the one user-message shape every protocol vouches
+// for — a document needs the protocol check too: the Responses builder writes
+// input_file, while the Anthropic and Google builders reject the kind and
+// chat strips it (llm.DeliversUserMessageDocuments). Renamed profiles do not
+// count, for the same reason as AcceptsImageInput.
+func (p *Profile) AcceptsDocumentInput() bool {
+	return !p.rowFactsInherited && p.res.Caps.AcceptsModality("pdf") && llm.DeliversUserMessageDocuments(p.res)
+}
+
+// SeesToolResultMedia reports whether the session model receives tool-result
+// bytes of this media type inline on the wire: the row declares image input
+// and its adapter delivers tool-result media of this type. This is the fact
+// that makes inline bytes the vision support — when it holds, a describing
+// side-channel would only duplicate what the model already sees. Only raster
+// image media qualifies (llm.DeliversToolResultMedia), so a document always
+// takes the side-channel; a chat-protocol row that strips tool-result images,
+// or a Google row without the multimodal-tool-results cap, never sees images
+// natively even though it accepts image input. A profile whose model id was
+// applied without a catalog row of its own inherits its source row's facts;
+// inherited image input is not evidence the named model sees media, so the
+// skip requires the model's own row.
+func (p *Profile) SeesToolResultMedia(mediaType string) bool {
+	return !p.rowFactsInherited && llm.RowSeesToolResultMedia(p.res, mediaType)
+}
+
+// Registry is the registry this profile resolved on — the catalog the round
+// runner's fallback resolution reads and the same one a session's client
+// dispatches on in every production wiring. Sessions compare it against the
+// client's to know whether the profile's facts can speak for what the client
+// would serve.
+func (p *Profile) Registry() *registry.Registry { return p.registry }
+
+// ResolveModelFactsForRef resolves a model ref's advertised facts at facts
+// depth — every fact, no credential materialized, no credential command
+// executed — the depth a capability question about configuration needs when
+// no decision to serve has been made. The ref classification matches WithModel,
+// the runner's own rule, against this profile's registry:
+// a bare model, or a ref prefixed with this profile's own instance, names
+// this instance's row; a slashed ref may name another instance, or a
+// namespaced model id this instance serves under (gateways namespace rows
+// like "anthropic/claude-opus-4-5") — a genuine row on this instance wins,
+// exactly CrossProviderRef's rule. Disabled rows do not win the match:
+// CrossProviderRef resolves through Resolve, which refuses a row the config
+// disabled, so serving treats such a ref as naming the prefix's instance —
+// and the current-instance lookup runs at facts depth (which does not judge
+// the flag, by design for alias seeding), so the chain check applies the
+// gate itself.
+func (p *Profile) ResolveModelFactsForRef(ref string) (registry.Resolved, error) {
+	r := p.registry
+	ref = strings.TrimSpace(ref)
+	prefix, rest, ok := strings.Cut(ref, "/")
+	if !ok || prefix == "" || strings.EqualFold(prefix, p.ID()) {
+		model := ref
+		if ok {
+			model = rest
+		}
+		return r.ResolveInstanceModelFacts(p.ID(), model)
+	}
+	if res, err := r.ResolveInstanceModelFacts(p.ID(), ref); err == nil && !res.Synthesized && !registry.BoolValue(res.Model.Disabled) {
+		return res, nil
+	}
+	return r.ResolveInstanceModelFacts(prefix, rest)
+}
+
 // Warnings are the registry's notices for this reference (an uncatalogued
 // model, an unresolved variable, a hidden provider).
 func (p *Profile) Warnings() []string { return cloneStringSlice(p.res.Warnings) }
@@ -475,6 +556,7 @@ func (p *Profile) WithModel(model string) *Profile {
 func (p *Profile) withModelID(model string) *Profile {
 	clone := *p
 	clone.res.ModelID, clone.res.WireID = model, model
+	clone.rowFactsInherited = true
 	return &clone
 }
 

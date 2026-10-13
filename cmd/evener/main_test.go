@@ -53,9 +53,7 @@ func TestMainRejectsEnabledPluginsWithResumeBeforeRun(t *testing.T) {
 	if runCalled {
 		t.Fatal("run called after an enabled-plugin/resume conflict")
 	}
-	if !strings.Contains(stderr.String(), "--enabled-plugins cannot be used with --resume") {
-		t.Fatalf("stderr = %q", stderr.String())
-	}
+	requireOnlyStderr(t, &stdout, &stderr)
 }
 
 // liveRegistryClient builds the client the live CLI tests dispatch through:
@@ -392,8 +390,8 @@ func TestOpenAILoginPrintsURLAndSupportsManualFallback(t *testing.T) {
 	if got := strings.TrimSpace(stdout.String()); !strings.Contains(got, "state=signed-in source=oauth email=user@example.com") {
 		t.Fatalf("stdout = %q, want signed-in status line", got)
 	}
-	if got := stderr.String(); !strings.Contains(got, "Paste the full redirect URL") {
-		t.Fatalf("stderr = %q, want manual redirect prompt", got)
+	if stderr.Len() == 0 {
+		t.Fatal("stderr is empty, want the manual redirect prompt there, off the script-friendly stdout")
 	}
 }
 
@@ -556,8 +554,8 @@ func TestChooseLoginModeRespectsExplicitFlags(t *testing.T) {
 	if mode != "device" {
 		t.Fatalf("auto + headless env: mode = %q, want device", mode)
 	}
-	if !strings.Contains(reason, "auto") {
-		t.Fatalf("auto reason = %q, want it to mention auto", reason)
+	if reason != "auto_no_display" {
+		t.Fatalf("auto reason = %q, want auto_no_display", reason)
 	}
 
 	t.Setenv("EVENER_LOGIN_HEADLESS", "0")
@@ -565,8 +563,8 @@ func TestChooseLoginModeRespectsExplicitFlags(t *testing.T) {
 	if mode != "browser" {
 		t.Fatalf("auto + not-headless env: mode = %q, want browser", mode)
 	}
-	if !strings.Contains(reason, "auto") {
-		t.Fatalf("auto reason = %q, want it to mention auto", reason)
+	if reason != "auto" {
+		t.Fatalf("auto reason = %q, want auto", reason)
 	}
 }
 
@@ -577,8 +575,8 @@ func TestOpenAILoginRejectsConflictingFlags(t *testing.T) {
 	if err == nil {
 		t.Fatal("runOpenAI(--device --no-device) error = nil, want conflicting flags error")
 	}
-	if !strings.Contains(err.Error(), "conflicting flags") {
-		t.Fatalf("error = %v, want 'conflicting flags' message", err)
+	if !errors.Is(err, errConflictingLoginFlows) {
+		t.Fatalf("error = %v, want errConflictingLoginFlows", err)
 	}
 }
 
@@ -726,9 +724,7 @@ func TestRunOpenAI_HelpAndUnknown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runOpenAI(help) error = %v", err)
 		}
-		if !strings.Contains(stderr.String(), "Usage: evener openai") {
-			t.Fatalf("stderr = %q, want usage header", stderr.String())
-		}
+		requireOnlyStderr(t, &stdout, &stderr)
 	})
 
 	t.Run("unknown command", func(t *testing.T) {
@@ -737,12 +733,10 @@ func TestRunOpenAI_HelpAndUnknown(t *testing.T) {
 		if err == nil {
 			t.Fatal("runOpenAI(frobnicate) error = nil, want error")
 		}
-		if !strings.Contains(err.Error(), "unknown openai command") {
-			t.Fatalf("error = %v, want 'unknown openai command'", err)
+		if unknown, ok := errors.AsType[*unknownSubcommandError](err); !ok || unknown.name != "frobnicate" {
+			t.Fatalf("error = %v, want an unknownSubcommandError naming frobnicate", err)
 		}
-		if !strings.Contains(stderr.String(), "Usage: evener openai") {
-			t.Fatalf("stderr = %q, want usage header", stderr.String())
-		}
+		requireOnlyStderr(t, &stdout, &stderr)
 	})
 }
 
@@ -753,8 +747,8 @@ func TestRunOpenAILogout_Errors(t *testing.T) {
 		if err == nil {
 			t.Fatal("runOpenAILogout(unexpected-arg) error = nil, want error")
 		}
-		if !strings.Contains(err.Error(), "unexpected arguments") {
-			t.Fatalf("error = %v, want 'unexpected arguments'", err)
+		if !errors.Is(err, errUnexpectedArguments) {
+			t.Fatalf("error = %v, want errUnexpectedArguments", err)
 		}
 	})
 
@@ -764,11 +758,10 @@ func TestRunOpenAILogout_Errors(t *testing.T) {
 		if err == nil {
 			t.Fatal("runOpenAILogout(--invalid-flag) error = nil, want error")
 		}
-		if !strings.Contains(err.Error(), "flag provided but not defined") {
-			t.Fatalf("error = %v, want flag-parse error", err)
-		}
-		if !strings.Contains(stderr.String(), "Usage: evener openai logout") {
-			t.Fatalf("stderr = %q, want usage header", stderr.String())
+		// The usage lists the subcommand's own flags; the flag package's error
+		// line names only the flag it rejected.
+		if !strings.Contains(stderr.String(), "--state-dir") || stdout.Len() != 0 {
+			t.Fatalf("stdout = %q, stderr = %q; want the flag error and usage on stderr only", stdout.String(), stderr.String())
 		}
 	})
 }
@@ -792,8 +785,8 @@ func TestMakeRedirectURLReader_EmptyLine(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty line")
 	}
-	if !strings.Contains(err.Error(), "redirect URL is required") {
-		t.Fatalf("error = %v, want 'redirect URL is required'", err)
+	if !errors.Is(err, errRedirectURLRequired) {
+		t.Fatalf("error = %v, want errRedirectURLRequired", err)
 	}
 }
 
@@ -884,8 +877,8 @@ func TestRunOpenAILogin_Errors(t *testing.T) {
 		if err == nil {
 			t.Fatal("runOpenAILogin(unexpected) error = nil, want error")
 		}
-		if !strings.Contains(err.Error(), "unexpected arguments") {
-			t.Fatalf("error = %v, want 'unexpected arguments'", err)
+		if !errors.Is(err, errUnexpectedArguments) {
+			t.Fatalf("error = %v, want errUnexpectedArguments", err)
 		}
 	})
 
@@ -895,11 +888,19 @@ func TestRunOpenAILogin_Errors(t *testing.T) {
 		if err == nil {
 			t.Fatal("runOpenAILogin(--invalid) error = nil, want error")
 		}
-		if !strings.Contains(err.Error(), "flag provided but not defined") {
-			t.Fatalf("error = %v, want flag-parse error", err)
-		}
-		if !strings.Contains(stderr.String(), "Usage: evener openai login") {
-			t.Fatalf("stderr = %q, want usage header", stderr.String())
+		// The usage lists the subcommand's own flags; the flag package's error
+		// line names only the flag it rejected.
+		if !strings.Contains(stderr.String(), "--state-dir") || stdout.Len() != 0 {
+			t.Fatalf("stdout = %q, stderr = %q; want the flag error and usage on stderr only", stdout.String(), stderr.String())
 		}
 	})
+}
+
+// requireOnlyStderr fails the test unless a command wrote its usage or
+// refusal to stderr and left stdout, the script-facing stream, empty.
+func requireOnlyStderr(t *testing.T, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	if stderr.Len() == 0 || stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, stderr = %q; want output on stderr only", stdout.String(), stderr.String())
+	}
 }

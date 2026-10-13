@@ -2,6 +2,8 @@ package hub
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -104,6 +106,11 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		}
 	} else if err := persistNudge(); err != nil {
 		return appwire.ArchiveResponse{}, err
+	}
+	// The reconcile removes the newly archived sessions' scratch off the request
+	// path, and leaves a session whose daemon still runs until that daemon exits.
+	if params.Archived && cfg.ScratchReconcile != nil {
+		cfg.ScratchReconcile()
 	}
 
 	// An archive decision can move a session in or out of tier eligibility;
@@ -218,12 +225,16 @@ func validateHostProjectArchive(cfg hubcore.WebConfig, source, id, workingDir st
 // client — newHubSourceRegistry skips cfg.RemoteHosts entirely when
 // RemoteHostClient is nil — so accepting its name here would persist a decision
 // that no source, and no navigation row, can ever address.
+// errUnknownDecisionSource refuses a decision naming a source this hub does
+// not register.
+var errUnknownDecisionSource = errors.New("unknown source")
+
 func validateDecisionSource(cfg hubcore.WebConfig, source string) error {
 	if source == "" {
 		return nil
 	}
 	if cfg.RemoteHostClient == nil {
-		return appwire.InvalidParams("unknown source: " + source)
+		return invalidParamsFor(fmt.Errorf("%w: %s", errUnknownDecisionSource, source))
 	}
 	// The live registry is the authority for hosts that exist past boot: it
 	// carries every host the management surface added at runtime, so an
@@ -233,7 +244,7 @@ func validateDecisionSource(cfg hubcore.WebConfig, source string) error {
 	// decides — remoteHostKnown (app_threadlist.go) is the one membership
 	// rule this and the fan-out's remote gates share.
 	if !remoteHostKnown(cfg, source) {
-		return appwire.InvalidParams("unknown source: " + source)
+		return invalidParamsFor(fmt.Errorf("%w: %s", errUnknownDecisionSource, source))
 	}
 	return nil
 }

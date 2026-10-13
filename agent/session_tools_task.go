@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -153,11 +156,19 @@ func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func(epoch, re
 // PreValidate. The preparation and decode paths both call the single
 // validateTaskListItemFields validator, so their allowlists and targeted
 // diagnostics remain one shared contract rather than duplicated behavior.
+//
+// Placeholder update fields follow the one rule in normalizeTaskListArgs.
+// Dispatch already ran it as the tool's NormalizeArgs; it is idempotent, so
+// decoding runs it again and a direct caller gets the same reading.
 func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []taskpkg.TaskUpdate, err error) {
 	for _, retired := range []string{"action", "tasks", "updates"} {
 		if _, supplied := args[retired]; supplied {
 			return nil, nil, fmt.Errorf("task_list no longer takes %s; use add and/or update, or a bare call to view", retired)
 		}
+	}
+	args, err = normalizeTaskListArgs(args)
+	if err != nil {
+		return nil, nil, err
 	}
 	rawAdds, _ := args["add"].([]any)
 	adds = make([]taskpkg.TaskInput, 0, len(rawAdds))
@@ -189,6 +200,9 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 				return nil, nil, fmt.Errorf("add entry %d depends_on must be an array of task IDs", i)
 			}
 			depIDs, err := decodeIDList(arr)
+			if errors.Is(err, errZeroTaskID) {
+				return nil, nil, fmt.Errorf("add entry %d depends_on: %w, and a new task has no dependencies to clear", i, err)
+			}
 			if err != nil {
 				return nil, nil, fmt.Errorf("add entry %d depends_on: %w", i, err)
 			}
@@ -212,11 +226,11 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		if err := validateTaskListItemFields("update", i, m); err != nil {
 			return nil, nil, err
 		}
-		idFloat, ok := m["id"].(float64)
+		id, ok := taskIDValue(m["id"])
 		if !ok {
-			return nil, nil, fmt.Errorf("update entry %d requires an integer id", i)
+			return nil, nil, fmt.Errorf("update entry %d requires a positive integer id", i)
 		}
-		u := taskpkg.TaskUpdate{ID: int(idFloat)}
+		u := taskpkg.TaskUpdate{ID: id}
 		if s, ok := m["status"].(string); ok {
 			u.Status = taskpkg.TaskStatus(s)
 		}
@@ -228,11 +242,18 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 			if !ok {
 				return nil, nil, fmt.Errorf("update entry %d depends_on must be an array of task IDs", i)
 			}
-			depIDs, err := decodeIDList(arr)
-			if err != nil {
-				return nil, nil, fmt.Errorf("update entry %d depends_on: %w", i, err)
+			if len(arr) == 1 && arr[0] == float64(clearDependsOnID) {
+				u.DependsOn = &[]int{}
+			} else {
+				depIDs, err := decodeIDList(arr)
+				if errors.Is(err, errZeroTaskID) {
+					return nil, nil, fmt.Errorf("update entry %d depends_on: %w; [0] on its own clears the dependencies", i, err)
+				}
+				if err != nil {
+					return nil, nil, fmt.Errorf("update entry %d depends_on: %w", i, err)
+				}
+				u.DependsOn = &depIDs
 			}
-			u.DependsOn = &depIDs
 		}
 		if re, ok := m["reasoning_effort"].(string); ok {
 			u.ReasoningEffort, err = validateTaskEffort(re)
@@ -241,12 +262,16 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 			}
 		}
 		if u.Status == "" && u.Notes == "" && u.DependsOn == nil && u.ReasoningEffort == "" {
-			return nil, nil, fmt.Errorf("update entry for task %d changes nothing; include status, notes, depends_on, or reasoning_effort", u.ID)
+			return nil, nil, fmt.Errorf("update entry for task %d changes nothing (placeholder values are ignored). Include a status, real notes, new depends_on IDs, depends_on: [0] to clear dependencies, or reasoning_effort", u.ID)
 		}
 		updates = append(updates, u)
 	}
 	return adds, updates, nil
 }
+
+// taskListUpdateFields is every field an update entry may carry; each one but
+// id has a row in updatePlaceholders.
+var taskListUpdateFields = []string{"id", "status", "notes", "depends_on", "reasoning_effort"}
 
 func validateTaskListItemFields(kind string, index int, item map[string]any) error {
 	allowed := map[string]bool{}
@@ -256,7 +281,7 @@ func validateTaskListItemFields(kind string, index int, item map[string]any) err
 			allowed[field] = true
 		}
 	case "update":
-		for _, field := range []string{"id", "status", "notes", "depends_on", "reasoning_effort"} {
+		for _, field := range taskListUpdateFields {
 			allowed[field] = true
 		}
 	}
@@ -311,24 +336,156 @@ func validateTaskListArgs(args map[string]any) error {
 	return nil
 }
 
+// clearDependsOnID, alone in an update's depends_on, clears the task's
+// dependencies. Task IDs start at 1, so it never names a real task.
+const clearDependsOnID = 0
+
+// errZeroTaskID rejects 0 inside an ID list; each caller says what [0] means
+// for its operation.
+var errZeroTaskID = errors.New("0 is not a task ID")
+
 // decodeIDList converts a JSON array of numbers into []int.
 func decodeIDList(raw []any) ([]int, error) {
 	ids := make([]int, 0, len(raw))
 	for _, d := range raw {
-		v, ok := d.(float64)
-		if !ok {
-			return nil, errors.New("each element must be an integer task ID")
+		if d == float64(clearDependsOnID) {
+			return nil, errZeroTaskID
 		}
-		ids = append(ids, int(v))
+		id, ok := taskIDValue(d)
+		if !ok {
+			return nil, errors.New("each element must be a task ID: a positive integer below 2^53")
+		}
+		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+// updatePlaceholders is the one table of placeholder values for an update
+// entry's optional fields: values whose effect is identical to omitting the
+// field. A null value is a placeholder for every field (normalizeTaskListArgs
+// checks it once); each predicate judges the rest. For notes and depends_on
+// the table defines "no change" (#3879); for status and reasoning_effort it
+// mirrors how the store already applies them. Some models fill every
+// optional field on every call, so these are dropped before validation.
+// depends_on [0] clears the dependencies and reasoning_effort "none" or
+// "null" turn thinking off, so neither is here.
+var updatePlaceholders = map[string]func(any) bool{
+	// The store applies only a non-empty status.
+	"status": func(v any) bool { return v == "" },
+	// The store skips an empty note; "null" text is filler (#3879).
+	"notes": func(v any) bool {
+		text, isString := v.(string)
+		trimmed := strings.TrimSpace(text)
+		return isString && (trimmed == "" || strings.EqualFold(trimmed, "null"))
+	},
+	// Only [0] clears.
+	"depends_on": func(v any) bool {
+		list, isList := v.([]any)
+		return isList && len(list) == 0
+	},
+	// normalizeTaskEffort turns "", whitespace and "inherit" into "", which
+	// the store reads as no change.
+	"reasoning_effort": func(v any) bool {
+		effort, isString := v.(string)
+		return isString && normalizeTaskEffort(effort) == ""
+	},
+}
+
+// normalizeTaskListArgs is task_list's NormalizeArgs. It drops each update
+// field whose value is a placeholder (updatePlaceholders). An entry left with
+// only a valid id changed nothing: beside other work it is dropped, so the
+// rest of the call still applies. When nothing else is left, the bare entries stay,
+// so decoding rejects the call in the tool, where the failure breaker records
+// it under this normalized form. Dispatch, the fingerprint and decoding all
+// run it, which keeps the placeholder rule in one place. It never fails.
+func normalizeTaskListArgs(args map[string]any) (map[string]any, error) {
+	rawUpdates, isList := args["update"].([]any)
+	if !isList || len(rawUpdates) == 0 {
+		return args, nil
+	}
+	cleanedUpdates := make([]any, 0, len(rawUpdates))
+	kept := make([]any, 0, len(rawUpdates))
+	for _, raw := range rawUpdates {
+		entry, isObject := raw.(map[string]any)
+		if !isObject {
+			cleanedUpdates = append(cleanedUpdates, raw)
+			kept = append(kept, raw)
+			continue
+		}
+		cleaned := maps.Clone(entry)
+		for field, isPlaceholder := range updatePlaceholders {
+			if value, has := cleaned[field]; has && (value == nil || isPlaceholder(value)) {
+				delete(cleaned, field)
+			}
+		}
+		cleanedUpdates = append(cleanedUpdates, cleaned)
+		// Only an entry left with a well-formed id may be dropped; a
+		// malformed one stays so validation rejects the whole call.
+		if _, validID := taskIDValue(cleaned["id"]); validID && len(cleaned) == 1 && len(entry) > 1 {
+			continue
+		}
+		kept = append(kept, cleaned)
+	}
+	// A present add counts as other work unless it is an empty list, so an
+	// add of the wrong type still reaches validation.
+	rawAdd, hasAdd := args["add"]
+	addList, addIsList := rawAdd.([]any)
+	otherWork := len(kept) > 0 || (hasAdd && (!addIsList || len(addList) > 0))
+	normalized := maps.Clone(args)
+	switch {
+	case !otherWork:
+		normalized["update"] = cleanedUpdates
+	case len(kept) == 0:
+		delete(normalized, "update")
+	default:
+		normalized["update"] = kept
+	}
+	return normalized, nil
+}
+
+// maxTaskID bounds task ids below 2^53, so every accepted id is exact in
+// float64 and dispatch (float64) and the fingerprint (int64) accept the same
+// set: JSON 2^53+1 decodes to float64 2^53, which must not be accepted. A
+// fractional id close enough to the bound rounds to an integer in float64
+// before it gets here; parsing JSON numbers exactly to catch that is not
+// worth it for ids this large.
+const maxTaskID = 1<<53 - 1
+
+// taskIDValue reads a task id: an integer from 1 to maxTaskID. It takes the
+// number types NormalizeArgs may see: float64 from dispatch's decoder, and
+// int64 or (past int64) json.Number from the failure fingerprint's canonical
+// view.
+func taskIDValue(v any) (int, bool) {
+	var id int64
+	switch n := v.(type) {
+	case float64:
+		if n != math.Trunc(n) || n < 1 || n > maxTaskID {
+			return 0, false
+		}
+		id = int64(n)
+	case int64:
+		id = n
+	case json.Number:
+		parsed, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		id = parsed
+	default:
+		return 0, false
+	}
+	if id < 1 || id > maxTaskID {
+		return 0, false
+	}
+	return int(id), true
 }
 
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
-		Definition:  tool.DefTaskList(deps.reasoningEffortLevels),
-		PreValidate: validateTaskListArgs,
+		Definition:    tool.DefTaskList(deps.reasoningEffortLevels),
+		NormalizeArgs: normalizeTaskListArgs,
+		PreValidate:   validateTaskListArgs,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			deps.taskGuard.MarkUsed()

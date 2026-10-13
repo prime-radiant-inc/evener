@@ -230,6 +230,7 @@ const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
     updated_at: "optional",
     turn_ended_at: "optional",
     unseen: "optional",
+    seen_through: "optional",
     more_subagents: "optional",
     subagents: "optional",
     omitted_descendants: "optional",
@@ -312,6 +313,7 @@ const LOCATION_KEYS = valueRecordKeys<Omit<NavigationSessionLocation, "session">
   ref: "required",
   top_level_ref: "required",
   top_level: "required",
+  catalog: "optional",
   project_key: "optional",
   tier: "optional",
   pin_section_id: "optional",
@@ -388,6 +390,7 @@ function sessionFieldsValue(value: unknown): value is Record<string, unknown> & 
     optional(value.updated_at, rfc3339Timestamp) &&
     optional(value.turn_ended_at, rfc3339Timestamp) &&
     optional(value.unseen, bool) &&
+    optional(value.seen_through, rfc3339Timestamp) &&
     optional(value.more_subagents, count) &&
     optional(value.subagents, subagentTallyValue) &&
     optional(value.omitted_descendants, count) &&
@@ -662,6 +665,7 @@ function validateResourceMetadata(metadata: unknown, key: ResourceKey, versionVa
       metadata.ref === key.ref &&
       identity(metadata.top_level_ref) &&
       bool(metadata.top_level) &&
+      optional(metadata.catalog, (item) => identity(item)) &&
       optional(metadata.project_key, (item) => identity(item)) &&
       optional(metadata.tier, (item) => identity(item)) &&
       optional(metadata.pin_section_id, (item) => identity(item));

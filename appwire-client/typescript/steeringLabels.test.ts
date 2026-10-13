@@ -20,7 +20,7 @@ test("leaves out the current task and the task list, which the tasks surfaces ow
 
 test("says the task reminders the way the phone always has, in both clients", () => {
   expect(STEERING_KIND_LABELS["tasks-done"]).toBe("Tasks complete");
-  expect(STEERING_KIND_LABELS["task-nudge"]).toBe("Task reminder");
+  expect(STEERING_KIND_LABELS["task-inactive"]).toBe("Task list idle");
 });
 
 test("says a detector's and a provider's steers as events", () => {
@@ -49,4 +49,10 @@ test("says a steer as the system's, naming its kind, or bare when the kind has n
   // A colon promises a value, so a kind with no label gets none.
   expect(steeringLabel("some-future-kind")).toBe("System steered");
   expect(steeringLabel(undefined)).toBe("System steered");
+});
+
+test("a steer from the session's parent agent says so, whatever its kind", () => {
+  expect(steeringLabel(undefined, "parent")).toBe("From parent");
+  expect(steeringLabel("agent-message", "parent")).toBe("From parent");
+  expect(steeringLabel(undefined, undefined)).toBe("System steered");
 });

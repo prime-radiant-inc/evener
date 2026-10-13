@@ -12,7 +12,7 @@ import (
 // Anywhere the text carries the control characters a terminal executes, an OSC
 // or CSI sequence in a note, label, or URL could retitle, recolor, or reposition
 // the terminal that displays it.
-func TestNormalizeNoteStripsTerminalControlSequences(t *testing.T) {
+func TestNormalizeLabelStripsTerminalControlSequences(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct{ in, want string }{
 		"CSI color":            {"safe \x1b[31mred\x1b[0m text", "safe [31mred[0m text"},
@@ -27,17 +27,17 @@ func TestNormalizeNoteStripsTerminalControlSequences(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := normalizeNote(tc.in); got != tc.want {
-				t.Fatalf("normalizeNote(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := normalizeLabel(tc.in); got != tc.want {
+				t.Fatalf("normalizeLabel(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
 }
 
 // The strip has to hold at every surface that stores note text, not only inside
-// normalizeNote: the human whiteboard (whose stored value is echoed into the
+// the normalizers: the human whiteboard (whose stored value is echoed into the
 // steering message the transcript renders), the agent whiteboard, and the URL
-// list's label and URL. A test that only checked normalizeNote would still pass
+// list's label and URL. A test that only checked the normalizers would still pass
 // if a surface bypassed it.
 func TestStoredNoteSurfacesCarryNoTerminalControls(t *testing.T) {
 	t.Parallel()
@@ -189,7 +189,7 @@ func TestCanonicalSessionURLRejectsControlCharacters(t *testing.T) {
 // control sitting between two spaces disappears, and the caller sees one space.
 // Stripping after the collapse (as this fix first did) turns "a \x1b b" into
 // "a  b", which is text the user never wrote.
-func TestNormalizeNoteKeepsSingleSpacesWhenStrippingControls(t *testing.T) {
+func TestNormalizeLabelKeepsSingleSpacesWhenStrippingControls(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
 		"control between spaces":   "a \x1b b",
@@ -201,22 +201,37 @@ func TestNormalizeNoteKeepsSingleSpacesWhenStrippingControls(t *testing.T) {
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := normalizeNote(in)
+			got := normalizeLabel(in)
 			for _, r := range got {
 				if unicode.IsControl(r) {
-					t.Fatalf("normalizeNote(%q) = %q carries control rune %U", in, got, r)
+					t.Fatalf("normalizeLabel(%q) = %q carries control rune %U", in, got, r)
 				}
 			}
 			if strings.Contains(got, "  ") {
-				t.Fatalf("normalizeNote(%q) = %q left a double space", in, got)
+				t.Fatalf("normalizeLabel(%q) = %q left a double space", in, got)
+			}
+			// The whiteboard rule holds the same invariant inside each line; the
+			// newline is the one control it keeps.
+			board := normalizeWhiteboard(in)
+			for _, r := range board {
+				if unicode.IsControl(r) && r != '\n' {
+					t.Fatalf("normalizeWhiteboard(%q) = %q carries control rune %U", in, board, r)
+				}
+			}
+			if strings.Contains(board, "  ") {
+				t.Fatalf("normalizeWhiteboard(%q) = %q left a double space", in, board)
 			}
 		})
 	}
-	if got := normalizeNote("a \x1b b"); got != "a b" {
-		t.Fatalf("normalizeNote(%q) = %q, want %q", "a \x1b b", got, "a b")
+	if got := normalizeLabel("a \x1b b"); got != "a b" {
+		t.Fatalf("normalizeLabel(%q) = %q, want %q", "a \x1b b", got, "a b")
 	}
-	// The collapse still owns the whitespace controls: newlines become spaces.
-	if got := normalizeNote("a\nb"); got != "a b" {
-		t.Fatalf("normalizeNote(%q) = %q, want %q", "a\nb", got, "a b")
+	// A label is single-line: its collapse owns the whitespace controls, so
+	// newlines become spaces. A whiteboard keeps them.
+	if got := normalizeLabel("a\nb"); got != "a b" {
+		t.Fatalf("normalizeLabel(%q) = %q, want %q", "a\nb", got, "a b")
+	}
+	if got := normalizeWhiteboard("a\nb"); got != "a\nb" {
+		t.Fatalf("normalizeWhiteboard(%q) = %q, want %q", "a\nb", got, "a\nb")
 	}
 }

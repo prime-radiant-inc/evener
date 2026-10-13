@@ -23,9 +23,32 @@ async function qualify() {
   const packageManifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
   const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", consumerDir], packageDir))[0];
   const tarball = join(consumerDir, packed.filename);
+  // Use the installed runtime dependencies so qualification needs neither
+  // registry access nor metadata left in a developer's npm cache.
+  const runtimeTarballs = Object.keys(packageManifest.dependencies ?? {}).map((name) => {
+    const dependency = JSON.parse(
+      run(
+        "npm",
+        ["pack", "--ignore-scripts", "--json", "--pack-destination", consumerDir],
+        join(packageDir, "node_modules", name),
+      ),
+    )[0];
+    return join(consumerDir, dependency.filename);
+  });
   run(
     "npm",
-    ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
+    [
+      "install",
+      "--offline",
+      "--cache",
+      join(consumerDir, ".npm-cache"),
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      tarball,
+      ...runtimeTarballs,
+    ],
     consumerDir,
   );
   // Every module the package ships, read off the build's own file list rather
@@ -61,6 +84,12 @@ const askItem = {
 const askModel = { turns: [{ items: [askItem] }], askPending: true };
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
+assert.deepEqual(
+  client.parseMemoryContext({ memoryContext: { scope: "personal", state: "current", truncated: false, content: "x" } }),
+  { scope: "personal", state: "current", truncated: false, content: "x" },
+);
+assert.equal(client.parseMemoryContext({ memoryContext: { scope: "team" } }), undefined);
+assert.equal(client.MEMORY_CONTEXT_LABEL, "Refreshed my memory");
 assert.equal(client.liveAskQuestions(askModel)[0].key, "ask1:0");
 const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
@@ -102,8 +131,6 @@ assert.equal(client.projectSessionActivity(new client.SessionActivityStore({ sta
 assert.equal(client.findEntityView(new Map(), "job", "job", "ref"), undefined);
 assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
-assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
-assert.equal(client.graftContinuationTree(tree, "session:ref", tree).revision, 1);
 assert.equal(client.foldRowID("session:ref"), "session:ref:inactive-fold");
 assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
 assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
@@ -113,7 +140,7 @@ assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
 assert.equal(client.hasErrorText({ error: "  " }), false);
 assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
 assert.equal(client.isInProgressStatus("inProgress"), true);
-assert.equal(client.parseJobLogTail(null), null);
+assert.equal(client.parseJobOutputPage(null), null);
 assert.equal(client.SYSTEM_PRELUDE_TURN_ID, "turn_system");
 assert.equal(client.pendingTextJoined(["a", "b"]), "ab");
 assert.equal(client.notificationRoutingKey({ method: "evener/x", params: {} }), null);
@@ -195,7 +222,7 @@ assert.equal(client.canReadSharedNotes(undefined), false);
 assert.equal(client.marketplaceSourceLabel({ kind: "github", repo: "acme/plugins" }), "github: acme/plugins");
 assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git", path: "sub" }), "https://example.com/x.git (sub)");
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
-assert.equal(client.humanizeState("awaiting", false), "your move");
+assert.equal(client.humanizeState("awaiting", false), "needs you");
 assert.equal(client.humanizeState("notLoaded", false), "idle");
 assert.deepEqual(client.decodeActivityRead({ sessions: [{ ref: "local:a", minutes: [0, 1], runningSubagents: 0, quietForMs: 200000 }] }).map((session) => session.ref), ["local:a"]);
 assert.equal(client.quietState({ ref: "local:a", minutes: [0], runningSubagents: 0, quietForMs: 200000 }, 0).state, "quiet");
@@ -438,6 +465,13 @@ const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
     // readDocFile is not a root export: it needs a fetch, and a consumer that
     // wants to substitute one (or spy on the module) needs a real subpath to
     // import, which a root re-export cannot give it.
+    "./pairing": {
+      esmTypeUses: `const invite: DevicePairingInvitation = { invitation: "01".repeat(24), origin: "http://hub.local:9180", tailnet: true, expiresAt: 0 };
+const wire: Uint8Array = encodeInvitation(invite);
+const restored: DevicePairingInvitation = decodeInvitation(wire); void restored;`,
+      cjsTypeUses: `const bytes: Uint8Array = client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0}); void bytes;`,
+      smoke: `assert.equal(client.decodeInvitation(client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0})).origin, "http://hub.local:9180");`,
+    },
     "./docContent": {
       esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
 const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
@@ -479,6 +513,7 @@ const fakeClient: AppwireClientLike = {
   onReady: () => () => undefined,
   onStateChange: () => () => undefined,
   retryNow: () => undefined,
+  initializeResult: null,
   state: "idle",
   terminalReason: null,
 };
@@ -762,6 +797,7 @@ const readyClient: NonNullable<ReturnType<MutationClientLookup>> = {
   onReady: () => () => undefined,
   onStateChange: () => () => undefined,
   retryNow: () => undefined,
+  initializeResult: null,
   state: "ready",
   terminalReason: null,
 };
@@ -874,6 +910,7 @@ const readyClient = {
   onReady: () => () => undefined,
   onStateChange: () => () => undefined,
   retryNow: () => undefined,
+  initializeResult: null,
   state: "ready",
   terminalReason: null,
 };
@@ -1074,7 +1111,12 @@ ${presenceLoop}${surface.smoke ?? ""}`,
   }
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
-  const serverProtocolVersion = "evener-appwire-v6";
+  const serverProtocolVersion = run(
+    process.execPath,
+    ["-p", "require('@evener/appwire-client').APPWIRE_PROTOCOL_VERSION"],
+    consumerDir,
+  ).trim();
+  assert.equal(serverProtocolVersion, "evener-appwire-v7");
   const fixtureCwd = "/fixture/project";
   const responses = new Map([
     ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],

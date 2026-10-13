@@ -7,11 +7,11 @@
 
 import type { PluginEntry } from "@evener/appwire-client";
 import { useId, useState } from "react";
-import { type CadenceState, Chevron, Chip, Input, StatusDot } from "../../../../widgets";
+import { type CadenceState, Chevron, Input, StatusDot, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
 import { useExtensionsHostState } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
+import { pluginStatusChips } from "./pluginStatusChips";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
@@ -66,7 +66,9 @@ export function InstalledSection({ onSelect }: InstalledSectionProps) {
       </div>
       <ul aria-label="Installed plugins" className={CLASS.list}>
         {plugins.length === 0 ? (
-          <li className={CLASS.empty}>No plugins installed yet. Install one from Browse.</li>
+          <li className={CLASS.empty} data-reason="empty">
+            No plugins installed yet. Install one from Browse.
+          </li>
         ) : visible.length === 0 ? (
           <li className={CLASS.empty}>{`No plugins match "${filterQuery.trim()}".`}</li>
         ) : (
@@ -81,9 +83,7 @@ export function InstalledSection({ onSelect }: InstalledSectionProps) {
                   <div className={CLASS.rowText}>
                     <StatusDot state={pluginStatus(p)} />
                     {p.plugin}
-                    {p.broken && <Chip tone="danger">broken</Chip>}
-                    {!p.enabled && <Chip tone="neutral">off by default</Chip>}
-                    {p.autoUpgrade && <Chip tone="neutral">auto-upgrade</Chip>}
+                    {pluginStatusChips(p)}
                   </div>
                   <div className={CLASS.rowMeta}>{`@ ${p.marketplace} · v${p.version || "unknown"}`}</div>
                 </div>

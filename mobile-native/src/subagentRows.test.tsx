@@ -5,6 +5,7 @@ import { installActivityFixture } from "./subagents/sessionActivityTestUtils";
 // detail level. A real `delegate` call settles as soon as its launch receipt
 // returns, so the row's state has to come from the subagent, never the call.
 import {
+	type AnyNotification,
 	type EvenerDelegateInfo,
 	parseActivityTree,
 	hydrateThread,
@@ -14,7 +15,7 @@ import {
 } from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import {
 	subagentCallItems,
 	subagentOutcomesResponse,
@@ -23,8 +24,9 @@ import {
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { markers, withTestID } from "./markerTestUtils";
 import { projectConversation } from "./projectedRows";
-import { render, renderedText, textOf } from "./renderNative.testkit";
+import { render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { findMatches } from "./session/findInSession";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
@@ -160,18 +162,40 @@ function subagentRow(level: Level, delegate = subagent(), extra: Extra = {}) {
 	return { tree, openSubagent, row };
 }
 
+type Tree = ReturnType<typeof render>;
+
+/** Each subagent row's state, in order. */
+function subagentStates(tree: Tree): string[] {
+	return markers(tree, "subagent-row");
+}
+
+/** The one subagent row's state and its time, as the row writes it. */
+function stateText(tree: Tree): string {
+	const [node] = withTestID(tree, "subagent-row-state");
+	if (!node) throw new Error("no subagent state");
+	return textOf(node);
+}
+
+/** Whether the one row's activity is what the roster knows, the line a
+ * finished row shows until the coordinator's tree gives its outcome. */
+function saysRosterWord(tree: Tree): boolean {
+	return markers(tree, "subagent-row-activity").join() === "roster";
+}
+
 describe("a subagent row", () => {
 	it.each(LEVELS)("reads a running subagent as running, and opens it, at %s", (level) => {
 		const { tree, openSubagent } = subagentRow(level);
 		expect(renderedText(tree)).toContain("Fix race in tree settle");
-		expect(renderedText(tree)).toMatch(/running · \d+/);
+		expect(subagentStates(tree)).toEqual(["running"]);
+		expect(stateText(tree)).toMatch(/\d/);
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0]?.props.onPress());
 		expect(openSubagent).toHaveBeenCalledWith(RECEIPT.transcript_ref, "Fix race in tree settle");
 	});
 
 	it.each(LEVELS)("reads a failed subagent as failed at %s, though its call succeeded", (level) => {
 		const { tree } = subagentRow(level, FAILED);
-		expect(renderedText(tree)).toMatch(/failed · \d+/);
+		expect(subagentStates(tree)).toEqual(["failed"]);
+		expect(stateText(tree)).toMatch(/\d/);
 		expect(renderedText(tree)).toContain("go test exited 1 three times");
 	});
 });
@@ -197,8 +221,8 @@ describe("a stopped subagent", () => {
 	] as const)("reads as stopped after %s, at every level", (_why, status) => {
 		for (const level of LEVELS) {
 			const { tree } = subagentRow(level, stoppedBy(status));
-			expect(renderedText(tree)).toMatch(/stopped · \d+/);
-			expect(renderedText(tree)).not.toMatch(/failed/);
+			expect(subagentStates(tree)).toEqual(["stopped"]);
+			expect(stateText(tree)).toMatch(/\d/);
 			expect(rail(tree)).not.toBe(DANGER);
 		}
 	});
@@ -213,7 +237,8 @@ describe("an idle subagent", () => {
 	it.each(LEVELS)("reads as running, as the list and chip count it, at %s", (level) => {
 		const idle = subagent({ phase: "idle", status: "idle", terminal: false, resumable: true });
 		const { tree } = subagentRow(level, idle);
-		expect(renderedText(tree)).toMatch(/running · \d+/);
+		expect(subagentStates(tree)).toEqual(["running"]);
+		expect(stateText(tree)).toMatch(/\d/);
 	});
 });
 
@@ -234,7 +259,8 @@ describe("an inline subagent", () => {
 		expect(row.state).toBe("running");
 		// Only the subagent can say how long it has run: a row that read the
 		// call would say a bare "running".
-		expect(renderedText(tree)).toMatch(/running · \d+/);
+		expect(subagentStates(tree)).toEqual(["running"]);
+		expect(stateText(tree)).toMatch(/\d/);
 	});
 
 	it.each(LEVELS)("reads as stopped when its call settled as a tool error, at %s", (level) => {
@@ -243,7 +269,8 @@ describe("an inline subagent", () => {
 		const { tree, row } = subagentRow(level, stoppedBy("stopped"), { calls });
 		// The scenario: the call itself failed.
 		expect(row.state).toBe("failed");
-		expect(renderedText(tree)).toMatch(/stopped · \d+/);
+		expect(subagentStates(tree)).toEqual(["stopped"]);
+		expect(stateText(tree)).toMatch(/\d/);
 	});
 });
 
@@ -418,6 +445,13 @@ describe("a finished subagent's outcome (audit G13)", () => {
 			const actual = subagentOutcomesDelegatesResponse();
 			return {
 				...actual,
+				// The recorded response advertises the push capability, but the
+				// summary side of this harness (installActivityFixture) stays
+				// retained, and a live answer followed by a retained one flips the
+				// store's eligibility and reads an extra time. Hold this fixture on
+				// the read path the tests below pin; the pushed-frame path has its
+				// own describe.
+				context: { ...actual.context, availability: "retained", reportPreview: undefined },
 				delegates: actual.delegates.map((row) => {
 					const entry = parsed.root.entries.find(
 						(entry) => entry.kind === "delegate" && entry.delegate.delegateId === row.delegateId,
@@ -482,24 +516,21 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		);
 	}
 
-	const screens: ReturnType<typeof render>[] = [];
 	function transcript(props: Parameters<typeof Transcript>[0]) {
-		const screen = render(<Transcript {...props} />);
-		screens.push(screen);
-		return screen;
+		return render(<Transcript {...props} />);
 	}
 	const rowText = (screen: ReturnType<typeof render>, delegateId: string) =>
 		textOf(screen.root.find((node) => node.type === TimelineItem && node.props.item.id === delegateId));
 
 	afterEach(() => {
-		for (const screen of screens.splice(0)) act(() => screen.unmount());
+		unmountMountedTrees();
 		forgetSubagentTrees("hub-1");
 	});
 
 	it("says Finished until the tree comes, then the report's opening line", async () => {
 		const client = hub();
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
-		expect(renderedText(screen)).toContain("Finished");
+		expect(saysRosterWord(screen)).toBe(true);
 		await act(async () => {});
 		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
 		expect(renderedText(screen)).not.toContain("The new test covers both orders.");
@@ -525,14 +556,10 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		act(() => screen.update(<Transcript delegates={[running]} />));
 		const done = finished("dlg_reported", { runGeneration: resumed.runGeneration });
 		act(() => screen.update(<Transcript delegates={[done]} />));
-		expect(renderedText(screen)).toContain("Finished");
-		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+		expect(saysRosterWord(screen)).toBe(true);
 		reply = next;
 		await act(async () => {
-			client.emitNotification({
-				method: "evener/thread/activity/changed",
-				params: { ref: COORDINATOR.ref, threadId: "root", sessionId: "root", resources: ["delegates"] },
-			});
+			client.emitNotification(activityChangedNotification(COORDINATOR, ["delegates"]));
 			await vi.runOnlyPendingTimersAsync();
 		});
 		expect(renderedText(screen)).toContain("Second run report.");
@@ -547,15 +574,15 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		}));
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Finished");
-		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+		expect(saysRosterWord(screen)).toBe(true);
 	});
 
 	it("says Stopped for a subagent the user stopped, with no tree to read", async () => {
 		const client = hub();
 		const screen = transcript({ delegates: [finished("dlg_stopped", { outcome: "cancelled" })] });
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Stopped");
+		expect(subagentStates(screen)).toEqual(["stopped"]);
+		expect(saysRosterWord(screen)).toBe(true);
 		expect(renderedText(screen)).not.toContain("Stopped by the user.");
 		expect(jobsLists(client)).toHaveLength(0);
 	});
@@ -567,7 +594,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
 		await act(async () => {});
 		expect(jobsLists(client)).toHaveLength(1);
-		expect(renderedText(screen)).toContain("Finished");
+		expect(saysRosterWord(screen)).toBe(true);
 		expect(screen.root.findAll((node) => String(node.type) === "ActivityIndicator")).toHaveLength(0);
 	});
 
@@ -633,18 +660,10 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const client = hub(() => answer);
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Finished");
+		expect(saysRosterWord(screen)).toBe(true);
 		answer = recorded;
 		await act(async () => {
-			client.emitNotification({
-				method: "evener/thread/activity/changed",
-				params: {
-					ref: COORDINATOR.ref,
-					threadId: COORDINATOR.threadId,
-					sessionId: COORDINATOR.threadId,
-					resources: ["delegates"],
-				},
-			});
+			client.emitNotification(activityChangedNotification(COORDINATOR, ["delegates"]));
 		});
 		expect(jobsLists(client)).toHaveLength(2);
 		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
@@ -665,5 +684,78 @@ describe("a finished subagent's outcome (audit G13)", () => {
 			screen.update(<Transcript delegates={delegates} receivesUpdates={receivesUpdates} />);
 		});
 		expect(jobsLists(client)).toHaveLength(reads);
+	});
+
+	// The pushed-frame path. The harness above holds the read path on purpose;
+	// this client's context advertises the bounded preview and is live, so the
+	// store merges an `evener/delegate/updated` frame into the loaded row and
+	// skips the delegates read (spec: session-activity push updates).
+	const pushedFrame = (delegate: EvenerDelegateInfo): AnyNotification => ({
+		method: "evener/delegate/updated",
+		params: { threadId: COORDINATOR.threadId, ref: COORDINATOR.ref, delegate },
+	});
+	const frame = (over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo => ({
+		delegateId: "dlg_reported",
+		runGeneration: 1,
+		ownerSessionId: "root",
+		logicalOwnerSessionId: "root",
+		rootSessionId: "root",
+		childSessionId: "local:child-dlg_reported",
+		transcriptRef: "local:child-dlg_reported",
+		type: "delegate",
+		lifecycle: "idle",
+		phase: "idle",
+		status: "idle",
+		terminal: true,
+		resumable: true,
+		needsAttention: false,
+		projectionRevision: 4,
+		...over,
+	});
+	function pushHub() {
+		const client = new FakeClient("ready");
+		installActivityFixture(client, () => subagentOutcomesResponse().data, {
+			availability: "live",
+			reportPreview: true,
+		});
+		client.on("thread/read", ({ ref }) => ({
+			thread: wireThread(ref, { id: "root", sessionId: "root", modelProvider: "scripted" }),
+		}));
+		harness.client = client;
+		return client;
+	}
+
+	it("patches a loaded row from a pushed frame without a delegates read", async () => {
+		const client = pushHub();
+		const screen = transcript({ delegates: [finished("dlg_reported")] });
+		await act(async () => {});
+		expect(saysRosterWord(screen)).toBe(true);
+		const reads = jobsLists(client).length;
+		expect(reads).toBeGreaterThan(0);
+		await act(async () => {
+			client.emitNotification(pushedFrame(frame({ reportPreview: "The frame carried this report." })));
+		});
+		expect(jobsLists(client)).toHaveLength(reads);
+		expect(renderedText(screen)).toContain("The frame carried this report.");
+	});
+
+	it("reads once for an unknown delegate's frame, and not again for the same id", async () => {
+		const client = pushHub();
+		transcript({ delegates: [finished("dlg_reported")] });
+		await act(async () => {});
+		const reads = jobsLists(client).length;
+		const unknown = {
+			delegateId: "dlg_new",
+			childSessionId: "local:child-dlg_new",
+			transcriptRef: "local:child-dlg_new",
+		};
+		await act(async () => {
+			client.emitNotification(pushedFrame(frame(unknown)));
+		});
+		expect(jobsLists(client)).toHaveLength(reads + 1);
+		await act(async () => {
+			client.emitNotification(pushedFrame(frame({ ...unknown, projectionRevision: 5 })));
+		});
+		expect(jobsLists(client)).toHaveLength(reads + 1);
 	});
 });

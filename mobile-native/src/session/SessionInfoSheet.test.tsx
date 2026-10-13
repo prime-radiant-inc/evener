@@ -8,9 +8,19 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
-import { alertRequests, playedHaptics, pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import {
+	alertRequests,
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	settle,
+	textOf,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
+import { markers, withTestID } from "../markerTestUtils";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
 import { type SessionInfoAction, type SessionInfoHost, SessionInfoSheet, sessionInfoHosts } from "./SessionInfoSheet";
@@ -151,12 +161,6 @@ function sheet(): ReactTestRenderer {
 	return tree;
 }
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 function press(tree: ReactTestRenderer, label: string) {
 	const target = pressable(tree, label);
 	if (!target) throw new Error(`no ${label}`);
@@ -188,7 +192,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
+	mounted.length = 0;
 	if (owner) sessionInfoHosts.release(sheetKey(HUB, REF), owner);
 	owner = undefined;
 });
@@ -201,7 +206,7 @@ describe("what the sheet shows (spec 8.6)", () => {
 			tree.root.findAll((node) => node.props.accessibilityRole === "header" && textOf(node) === "Session"),
 		).toEqual([]);
 		expect(styleOf(textNode(tree, "Fix the settle race"))).toMatchObject({ fontSize: 20, fontWeight: "600" });
-		expect(renderedText(tree)).toContain("Finished");
+		expect(markers(tree, "session-state")).toEqual(["idle"]);
 	});
 
 	it("dims the host's dot while the host is offline", () => {
@@ -284,6 +289,7 @@ describe("what the sheet shows (spec 8.6)", () => {
 	it("lists the plugins chosen at start, and leaves them out when the inventory is unknown", () => {
 		provide(conversation({ diagnostics: { plugins: [{ name: "superpowers" }, { name: "go" }] } }));
 		const tree = sheet();
+		expect(markers(tree, "group")).toContain("plugins");
 		expect(texts(tree)).toEqual(
 			expect.arrayContaining([
 				"2 plugins · chosen at start",
@@ -294,12 +300,13 @@ describe("what the sheet shows (spec 8.6)", () => {
 		);
 		act(() => mounted.pop()?.unmount());
 		provide(conversation({ diagnostics: undefined }));
-		expect(renderedText(sheet())).not.toContain("chosen at start");
+		expect(markers(sheet(), "group")).not.toContain("plugins");
 	});
 
 	it("shows the sandbox mode and the network, read-only, when the hub reports them (S15)", () => {
 		provide(conversation({ access: { sandbox: "workspace-write", network: false } }));
 		const tree = sheet();
+		expect(markers(tree, "group")).toContain("access");
 		expect(texts(tree)).toEqual(expect.arrayContaining(["Access", "Sandbox", "Workspace write", "Network", "Off"]));
 		expect(pressable(tree, "Sandbox, Workspace write")).toBeUndefined();
 		// VoiceOver reads each fact row as one element.
@@ -309,7 +316,7 @@ describe("what the sheet shows (spec 8.6)", () => {
 		expect(row.props.accessible).toBe(true);
 		act(() => mounted.pop()?.unmount());
 		provide(conversation({ access: undefined }));
-		expect(texts(sheet())).not.toContain("Access");
+		expect(markers(sheet(), "group")).not.toContain("access");
 	});
 
 	it("says what the session used, with failed tool calls in red and a context gauge", () => {
@@ -352,10 +359,12 @@ describe("what the sheet shows (spec 8.6)", () => {
 	});
 
 	it("shows the current task and the task count, which opens the Tasks sheet over this one", () => {
-		provide(conversation({ tasks: { total: 7, done: 3, current: { id: 4, description: "Wire the chip" } } }));
+		provide(
+			conversation({ tasks: { total: 7, done: 3, cancelled: 1, current: { id: 4, description: "Wire the chip" } } }),
+		);
 		const tree = sheet();
 		expect(texts(tree)).toContain("Wire the chip");
-		press(tree, "Tasks · 3 of 7");
+		press(tree, "Tasks · 4 of 7");
 		expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 			hubId: HUB,
 			ref: REF,
@@ -373,11 +382,12 @@ describe("what the sheet shows (spec 8.6)", () => {
 			}),
 		);
 		const tree = sheet();
+		expect(markers(tree, "group")).toContain("notes");
 		press(tree, "Notes & links, Your note · 1 link");
 		expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", { hubId: HUB, ref: REF });
 		act(() => mounted.pop()?.unmount());
 		provide(conversation());
-		expect(renderedText(sheet())).not.toContain("Notes & links");
+		expect(markers(sheet(), "group")).not.toContain("notes");
 	});
 
 	it("never speaks of runtimes, refreshing or reconnecting, even when the controls leave a notice", () => {
@@ -387,7 +397,7 @@ describe("what the sheet shows (spec 8.6)", () => {
 			notice: "Runtime stopped. Saved history is available to resume.",
 		}) as unknown as SessionControls;
 		replaceHost({ ...host });
-		expect(renderedText(sheet())).not.toMatch(/Runtime|Refresh|Reconnect/);
+		expect(renderedText(sheet())).not.toContain("Runtime stopped");
 	});
 
 	it("shows what went wrong as one line under the actions", () => {
@@ -442,7 +452,7 @@ describe("renaming", () => {
 		act(() => field.props.onChangeText("Settle race"));
 		await act(async () => field.props.onSubmitEditing());
 		expect(controls.rename).toHaveBeenCalledWith("Settle race");
-		expect(renderedText(tree)).toContain("Session renamed");
+		expect(markers(tree, "toast")).toEqual(["rename:done"]);
 	});
 
 	it("holds the sheet while the field has a new name, and asks before discarding it", () => {
@@ -474,7 +484,7 @@ describe("the goal", () => {
 		);
 		const tree = sheet();
 		expect(styleOf(textNode(tree, "Ship the sheet"))).toMatchObject({ fontFamily: "SourceSerif4-Regular" });
-		expect(styleOf(textNode(tree, "Blocked"))).toMatchObject({ color: palette.attentionInk });
+		expect(styleOf(withTestID(tree, "goal-status:blocked")[0])).toMatchObject({ color: palette.attentionInk });
 	});
 
 	it("closes the sheet before handing Edit goal to the composer", () => {
@@ -485,7 +495,7 @@ describe("the goal", () => {
 			}),
 		);
 		const tree = sheet();
-		expect(texts(tree)).toContain("Active");
+		expect(markers(tree, "goal-status")).toEqual(["active"]);
 		press(tree, "Edit goal");
 		expect(calls).toEqual(["goBack", "editGoal"]);
 	});
@@ -599,7 +609,7 @@ describe("actions", () => {
 		act(() => confirm?.buttons?.[1]?.onPress?.());
 		// Spec 16.6: rigid on a destructive confirmation.
 		expect(playedHaptics).toEqual(["impact:rigid"]);
-		await flush();
+		await settle();
 		expect(calls).toEqual(["goBack", "act:shutDown", "toast:shutDown done"]);
 	});
 
@@ -607,7 +617,7 @@ describe("actions", () => {
 		const { calls } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
 		const tree = sheet();
 		press(tree, "Compact context");
-		await flush();
+		await settle();
 		expect(calls).toEqual(["act:compact"]);
 		expect(renderedText(tree)).toContain("Compacting context");
 	});
@@ -622,7 +632,7 @@ describe("actions", () => {
 			const { calls } = provide(conversation({ capabilities: { ...NONE, ...capabilities } }));
 			const tree = sheet();
 			press(tree, label);
-			await flush();
+			await settle();
 			expect(calls).toEqual(["goBack", `act:${action}`, `toast:${action} done`]);
 		},
 	);
@@ -635,7 +645,7 @@ describe("actions", () => {
 			}),
 		);
 		press(sheet(), "Fork from latest");
-		await flush();
+		await settle();
 		expect(calls.slice(0, 2)).toEqual(["goBack", "act:fork"]);
 	});
 

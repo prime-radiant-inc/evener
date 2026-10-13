@@ -36,6 +36,7 @@
 
 import { create } from "zustand";
 import type { AnyNotification } from "@evener/appwire-client";
+import { taskSettledCount } from "@evener/appwire-client";
 import {
 	deriveOpenTaskCount,
 	projectDelegateEntry,
@@ -292,7 +293,7 @@ function patchLive(n: AnyNotification, view: ActivityView, set: Setter): Notific
 					tasks: [
 						{ status: "active" as const, count: 0 },
 						{ status: "open" as const, count: open },
-						{ status: "done" as const, count: params.done },
+						{ status: "done" as const, count: taskSettledCount(params) },
 					],
 				},
 			});

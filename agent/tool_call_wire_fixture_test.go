@@ -143,6 +143,8 @@ func toolWireWorkspace(t *testing.T) (string, *Session) {
 		"agent/tree.go":       "package agent\n\nfunc settle() {}\n",
 		"agent/tree_test.go":  "package agent\n\nfunc settleForTest() {}\n",
 		"agent/drain_test.go": "package agent\n",
+		// A dotfile glob leaves out by default (call_glob_excluded).
+		".notes/plan.md": "# Plan\n",
 	}
 	for name, content := range files {
 		path := filepath.Join(dir, name)
@@ -466,10 +468,20 @@ func TestToolCallWireFixtures(t *testing.T) {
 			normalize: nativeGrepForm(dir, "agent"),
 		},
 		{
+			id: "call_grep_capped", tool: "grep",
+			note: "A search of one file cut at max_results: its first hit, then after a blank line a note saying the result was truncated.",
+			args: map[string]any{"pattern": "package|func", "path": "agent/tree.go", "max_results": 1},
+		},
+		{
 			id: "call_glob", tool: "glob",
 			note:      "A glob match: one path per match (sorted here).",
 			args:      map[string]any{"pattern": "agent/**/*_test.go"},
 			normalize: sortedOutput,
+		},
+		{
+			id: "call_glob_excluded", tool: "glob",
+			note: "A glob whose only match is a dotfile: no paths, then after a blank line a note saying how many it left out.",
+			args: map[string]any{"pattern": "**/plan.md"},
 		},
 		{
 			id: "call_list_dir", tool: "list_dir",

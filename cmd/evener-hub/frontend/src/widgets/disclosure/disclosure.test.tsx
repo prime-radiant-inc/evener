@@ -223,7 +223,7 @@ test("disabled styling attenuates only the summary and suppresses its hover wash
 
 test("keeps the summary at the narrow-viewport tap floor", () => {
   expect(motionCss()).toMatch(
-    /@media\s*\(max-width:\s*899px\)\s*\{[\s\S]*?\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+    /@media \(max-width: 899px\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
   );
 });
 

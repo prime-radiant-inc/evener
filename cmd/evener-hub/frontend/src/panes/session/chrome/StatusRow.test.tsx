@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
-import { hydrateThread } from "@evener/appwire-client";
+import { effortLabel, hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -13,8 +13,8 @@ import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { StatusRow } from "./StatusRow";
-import rawStatusStyles from "./statusrow.module.css";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -352,12 +352,14 @@ test("an unset reasoning effort shows as (default), never the first ladder level
   );
   const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
   expect(select.value).toBe("");
-  expect(select.options[select.selectedIndex]?.textContent).toBe("(default)");
-  expect(Array.from(select.options).map((o) => o.textContent)).not.toContain("none");
+  const ladder = ["low", "medium", "high"];
+  expect(select.options[select.selectedIndex]?.textContent).toBe(effortLabel("", ladder));
+  expect(select.options[select.selectedIndex]?.textContent).not.toBe(effortLabel("low", ladder));
+  expect(Array.from(select.options).map((o) => o.value)).not.toContain("none");
   // The VISIBLE readout must say the same thing - a quiet trigger whose face
   // showed "low" while its select sat at "" would be the exact lie this rule
   // exists to prevent.
-  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("(default)");
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe(effortLabel("", ladder));
 });
 
 // "none" is an explicit off the user chose (llm.ReasoningEffortNone), distinct
@@ -378,9 +380,11 @@ test("shows a current 'none' effort as its own selected 'none (off)' option, dis
   );
   const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
   expect(select.value).toBe("none");
-  expect(select.options[select.selectedIndex]?.textContent).toBe("none (off)");
+  const ladder = ["none", "low", "medium", "high"];
+  expect(select.options[select.selectedIndex]?.textContent).toBe(effortLabel("none", ladder));
+  expect(select.options[select.selectedIndex]?.textContent).not.toBe(effortLabel("", ladder));
   expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "none", "low", "medium", "high"]);
-  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("none (off)");
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe(effortLabel("none", ladder));
 });
 
 // A model whose ladder has no "none" level cannot actually turn thinking off:
@@ -400,9 +404,12 @@ test("a current 'none' on a model without an off level reads 'none (provider def
   );
   const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
   expect(select.value).toBe("none");
-  expect(select.options[select.selectedIndex]?.textContent).toBe("none (provider default)");
+  const ladder = ["low", "medium", "high"];
+  // Not the "off" label a ladder listing "none" would earn.
+  expect(select.options[select.selectedIndex]?.textContent).toBe(effortLabel("none", ladder));
+  expect(select.options[select.selectedIndex]?.textContent).not.toBe(effortLabel("none", ["none", ...ladder]));
   expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "low", "medium", "high", "none"]);
-  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("none (provider default)");
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe(effortLabel("none", ladder));
 });
 
 test("changing the reasoning-effort select calls setReasoningEffort with the new level", async () => {
@@ -635,14 +642,19 @@ test("context has one meter semantic with wide and compact visual variants", () 
   );
   const meter = screen.getByRole("meter", { name: /64000 of 128000 tokens used, 50 percent/i });
   expect(meter.tagName).toBe("METER");
-  expect(meter.classList.contains(requireClass(rawStatusStyles.srOnly, "statusrow.module.css", "srOnly"))).toBe(true);
+  const hiddenMeter = meter.parentElement;
+  expect(
+    hiddenMeter?.classList.contains(
+      requireClass(visuallyHiddenStyles.visuallyHidden, "visuallyhidden.module.css", "visuallyHidden"),
+    ),
+  ).toBe(true);
   expect(meter.getAttribute("value")).toBe("64000");
   expect(meter.getAttribute("max")).toBe("128000");
   const context = screen.getByTestId("status-row-context");
   expect(context.tagName).toBe("SPAN");
   expect(context.getAttribute("aria-hidden")).toBe("true");
   expect(context.contains(meter)).toBe(false);
-  expect(meter.nextElementSibling).toBe(context);
+  expect(hiddenMeter?.nextElementSibling).toBe(context);
   expect(screen.getByTestId("status-row-context-meter").getAttribute("aria-hidden")).toBeNull();
   expect(screen.getByTestId("status-row-context-percent").textContent).toBe("50%");
   expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBeNull();

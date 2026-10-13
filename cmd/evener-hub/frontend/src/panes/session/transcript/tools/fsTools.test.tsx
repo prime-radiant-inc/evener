@@ -35,7 +35,7 @@ test("read_file: an explicit offset/limit wins over the output's own newline cou
 test("read_file: a non-positive offset defaults to 1", () => {
   const d = toolRendererFor("read_file");
   const args = JSON.stringify({ file_path: "a.ts", offset: 0 });
-  expect(d.summary(item({ toolName: "read_file", argumentsJSON: args, output: "x" }))).toBe("Read a.ts · lines 1");
+  expect(d.summary(item({ toolName: "read_file", argumentsJSON: args, output: "x" }))).toBe("Read a.ts · lines 1-1");
 });
 
 test("read_file: no derivable count (no limit, no output yet) says no lines at all", () => {
@@ -53,9 +53,10 @@ test("read_file: body renders the output text", () => {
 
 // --- read_file summary: binary reads have no line range (issue #1174) ------
 // A binary read's output is only the newline-free "[image: ...]" / "[document:
-// ...]" header. readLineRange counts "\n" characters and would report "lines
-// 1" for that empty count, so the summary must omit the range entirely rather
-// than render "Read docs/shot.png · lines 1".
+// ...]" header - one logical line of metadata, not file content. readLineRange
+// counts logical lines and would report "lines 1-1" for it, so the summary
+// must omit the range entirely rather than render "Read docs/shot.png ·
+// lines 1-1".
 
 test("read_file: an image read's summary omits the line range - the binary header has no lines", () => {
   const d = toolRendererFor("read_file");

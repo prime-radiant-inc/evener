@@ -4,7 +4,7 @@
 // controller and provides it here through notesHosts, so a save the sheet
 // starts as it closes finishes after the sheet has gone.
 import type { ThreadModel } from "@evener/appwire-client";
-import { cwdRelative, fileURLToPath } from "@evener/appwire-client/docContent";
+import { bindFilePath, cwdRelative, fileURLToPath } from "@evener/appwire-client/docContent";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import { SymbolView } from "expo-symbols";
@@ -88,6 +88,7 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 			<ScrollView
 				automaticallyAdjustKeyboardInsets
 				keyboardShouldPersistTaps="handled"
+				keyboardDismissMode="on-drag"
 				contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 24, gap: 24 }}
 			>
 				<NotesBody
@@ -96,12 +97,20 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 					toast={toast}
 					// A document opens in the Reader over the session, once the
 					// sheet has gone (ruling 26); closing saves the note as usual.
-					openDocument={(path) =>
+					openDocument={(path) => {
+						const reference = bindFilePath(path, host.cwd);
+						if (!reference) return;
 						sheet.finish(() => {
 							navigation.goBack();
-							navigation.navigate("Reader", { hubId, sessionRef: ref, path, sessionTitle: host.title });
-						})
-					}
+							navigation.navigate("Reader", {
+								hubId,
+								sessionRef: ref,
+								path: reference.path,
+								reference,
+								sessionTitle: host.title,
+							});
+						});
+					}}
 				/>
 			</ScrollView>
 		</Sheet>
@@ -138,27 +147,32 @@ function NotesBody({
 			return next.size === previous.size ? previous : next;
 		});
 	}, [session.sessionUrls]);
-	if (!writable && !human && !session.agentNote.trim() && links.length === 0) return <Copy muted>No shared notes</Copy>;
+	if (!writable && !human && !session.agentNote.trim() && links.length === 0)
+		return (
+			<View testID="empty-state:nothingShared">
+				<Copy muted>No shared notes</Copy>
+			</View>
+		);
 	return (
 		<>
 			{writable ? (
-				<Group title="Your note">
+				<Group section="yours" title="Your note">
 					<NoteEditor notes={host.notes} working={session.status.type === "active"} focus={focusEditor} />
 				</Group>
 			) : human ? (
-				<Group title="Your note">
+				<Group section="yours" title="Your note">
 					<Copy variant="yourMessage">{session.humanNote}</Copy>
 				</Group>
 			) : null}
-			<Group title="Agent">
+			<Group section="agent" title="Agent">
 				{session.agentNote.trim() ? (
 					<Copy variant="yourMessage">{session.agentNote}</Copy>
 				) : (
-					<Quiet>No agent note yet</Quiet>
+					<Quiet testID="empty-state:noAgentNote">No agent note yet</Quiet>
 				)}
 			</Group>
-			<Group title="Links">
-				{links.length === 0 ? <Quiet>No links yet</Quiet> : null}
+			<Group section="links" title="Links">
+				{links.length === 0 ? <Quiet testID="empty-state:noLinks">No links yet</Quiet> : null}
 				{links.map((link) => (
 					<LinkRow
 						key={link.id}
@@ -172,18 +186,29 @@ function NotesBody({
 					/>
 				))}
 				{writable && links.length > 0 ? (
-					<Quiet small>The agent adds links as it works. Swipe left on one to remove it.</Quiet>
+					<Quiet small testID="links-hint">
+						The agent adds links as it works. Swipe left on one to remove it.
+					</Quiet>
 				) : null}
 			</Group>
 		</>
 	);
 }
 
-function Group({ title, children }: { title: string; children: ReactNode }) {
+/** One of the sheet's groups, marked `notes-section:<section>`. */
+function Group({
+	section,
+	title,
+	children,
+}: {
+	section: "yours" | "agent" | "links";
+	title: string;
+	children: ReactNode;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ gap: 8 }}>
+		<View testID={`notes-section:${section}`} style={{ gap: 8 }}>
 			<Text
 				accessibilityRole="header"
 				allowFontScaling={allowFontScaling}
@@ -203,11 +228,12 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 }
 
 /** Secondary text: 15/20 inkMid, or 13/18 inkLow when `small`. */
-function Quiet({ children, small = false }: { children: string; small?: boolean }) {
+function Quiet({ children, small = false, testID }: { children: string; small?: boolean; testID?: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
 		<Text
+			testID={testID}
 			allowFontScaling={allowFontScaling}
 			style={{
 				fontSize: (small ? 13 : 15) * scale,
@@ -230,7 +256,7 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 	// announce each change there; Android reads the polite region on its own, and
 	// announcing too would say it twice. The first render is skipped: the line
 	// starts as the note's standing explanation, not a change to speak (#2903).
-	const status = noteStatusLine(note.phase, working);
+	const { kind: statusKind, text: status } = noteStatusLine(note.phase, working);
 	const announced = useRef(status);
 	useEffect(() => {
 		if (status === announced.current) return;
@@ -281,6 +307,7 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 				}}
 			/>
 			<Text
+				testID={`note-status:${statusKind}`}
 				allowFontScaling={allowFontScaling}
 				accessibilityLiveRegion="polite"
 				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
@@ -324,20 +351,26 @@ function LinkRow({
 	// session's folder, the only place the hub serves documents from. Another
 	// machine, a malformed escape or a file elsewhere keeps its text, as on
 	// the web. Other schemes don't open.
-	const document = kind === "file" ? cwdRelative(fileURLToPath(link.url), cwd) : undefined;
+	const absolutePath = kind === "file" ? fileURLToPath(link.url) : undefined;
+	const document = absolutePath === undefined ? undefined : cwdRelative(absolutePath, cwd);
 	const open = () =>
 		void WebBrowser.openBrowserAsync(link.url, {
 			dismissButtonStyle: "done",
 			controlsColor: palette.accentInk,
 		}).catch(() => toast.show({ text: "Couldn't open that link." }));
-	const press = kind === "web" ? open : document !== undefined ? () => openDocument(document) : undefined;
+	const press =
+		kind === "web"
+			? open
+			: document !== undefined && absolutePath !== undefined
+				? () => openDocument(absolutePath)
+				: undefined;
 	const remove = () =>
 		void notes.removeLink(link.id).then((removed) => {
 			if (removed) {
 				onRemoved();
-				toast.show({ text: "Link removed. Only the agent can add links." });
+				toast.show({ kind: "link:removed", text: "Link removed. Only the agent can add links." });
 			} else {
-				toast.show({ text: "Couldn't remove that link." });
+				toast.show({ kind: "link:removeFailed", text: "Couldn't remove that link." });
 			}
 		});
 	// VoiceOver names the swipe's remove in full; the panel has room for one word.

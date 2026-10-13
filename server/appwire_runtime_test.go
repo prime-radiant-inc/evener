@@ -40,14 +40,14 @@ func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 		setSteer   bool
 		wantSteer  bool
 	}{
-		{"processing with steerFunc", "active", true, false, false, true, true},
-		{"reserved idle with steerFunc", "idle", false, true, false, true, true},
-		{"stale projected active turn with steerFunc", "idle", false, false, true, true, true},
-		{"idle with steerFunc", "idle", false, false, false, true, true},
-		{"awaiting with steerFunc", "awaiting", false, false, false, true, true},
-		{"closed with steerFunc", "closed", false, false, false, true, false},
-		{"processing without steerFunc", "active", true, false, false, false, false},
-		{"idle without steerFunc", "idle", false, false, false, false, false},
+		{"processing with steer handler", "active", true, false, false, true, true},
+		{"reserved idle with steer handler", "idle", false, true, false, true, true},
+		{"stale projected active turn with steer handler", "idle", false, false, true, true, true},
+		{"idle with steer handler", "idle", false, false, false, true, true},
+		{"awaiting with steer handler", "awaiting", false, false, false, true, true},
+		{"closed with steer handler", "closed", false, false, false, true, false},
+		{"processing without steer handler", "active", true, false, false, false, false},
+		{"idle without steer handler", "idle", false, false, false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,10 +72,8 @@ func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 
 // The capability has to describe what the handlers can actually do, and both
 // turn/queue and turn/steer dispatch through the retry-safe callbacks. A server
-// wired only through those - no legacy SetQueueFunc/SetSteerFunc - must
-// therefore advertise the actions; reading the legacy pair alone advertised
-// queue:false and steer:false for a harness that would have taken the request,
-// so clients suppressed the action (#1375 review).
+// wired only through those must therefore advertise the actions, or clients
+// suppress an action a harness would have taken (#1375 review).
 func TestAppCapabilities_AdvertisesTheRetrySafeRegistrations(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
@@ -87,9 +85,6 @@ func TestAppCapabilities_AdvertisesTheRetrySafeRegistrations(t *testing.T) {
 			return appwire.TurnSteerResponse{}, nil
 		},
 	})
-	if s.queueFunc != nil || s.steerFunc != nil || s.steerWithImagesFunc != nil {
-		t.Fatal("precondition: no legacy callback is registered")
-	}
 	caps := s.appCapabilities(appwire.ThreadStatusIdle, false)
 	if !caps.Queue {
 		t.Fatalf("Queue = false while handleAppTurnQueue can dispatch: %+v", caps)
@@ -104,22 +99,16 @@ func TestAppCapabilities_AdvertisesTheRetrySafeRegistrations(t *testing.T) {
 	}
 }
 
-// The mirror of the case above, and the one the review flagged: a server wired
-// only through the legacy SetSteerFunc/SetQueueFunc pair - which no handler
-// reads - must NOT advertise the action. turn/steer and turn/queue dispatch
-// through the retry-safe callbacks alone and would answer Unavailable, so
-// advertising it offered a control that could only fail.
-func TestAppCapabilities_IgnoresTheLegacySettersNoHandlerReads(t *testing.T) {
+// The mirror of the case above: turn/steer, turn/queue and turn/interrupt
+// dispatch through the retry-safe callbacks alone, so a server that has only
+// armed a per-turn cancel would answer Unavailable and must not advertise them.
+func TestAppCapabilities_NothingAdvertisedWithoutRetrySafeRegistrations(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
-	s.SetSteerFunc(func(string) error { return nil })
-	s.SetSteerWithImagesFunc(func(string, []ImageAttachment) error { return nil })
-	s.SetQueueFunc(func(string) error { return nil })
-	s.SetQueueWithImagesFunc(func(string, []ImageAttachment) error { return nil })
 	s.SetCancelFunc(func() {})
 	caps := s.appCapabilities(appwire.ThreadStatusIdle, false)
 	if caps.Steer || caps.Queue || caps.Interrupt {
-		t.Fatalf("legacy-only wiring advertised actions the RPC cannot serve: %+v", caps)
+		t.Fatalf("unregistered turn actions advertised: %+v", caps)
 	}
 }
 
@@ -355,8 +344,8 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 // used to take Stop away for the whole turn that follows.
 //
 // The fixtures wire the retry-safe seams, which is what the capabilities read;
-// wiring only the legacy setters would leave steer and interrupt both false and
-// make the guard below vacuous.
+// leaving them unwired would leave steer and interrupt both false and make the
+// guard below vacuous.
 //
 // The state below is the drain path's, in its own order.
 func TestAppCapabilities_StopIsOfferedWheneverSteerIs(t *testing.T) {
@@ -889,4 +878,32 @@ func TestDescendantReadDoesNotClaimDurableMutationAuthority(t *testing.T) {
 	if !root.Thread.Evener.MutationStateAuthoritative {
 		t.Fatal("root durable projection lost authority")
 	}
+}
+
+// A subagent's thread lists its subtree, so a delegate update emitted on its
+// stream for a delegate below it is published to that thread, still naming
+// the tree's root as the delegate's owner.
+func TestDescendantThreadPublishesSubtreeDelegateUpdates(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
+	serveRootWithoutHistory(t, srv, "root")
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "middle", Data: events.SessionStartData{}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventDelegateUpdated, SessionID: "middle", Data: events.DelegateUpdatedData{
+		DelegateID: "dlg_grandchild", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "grandchild", ParentDelegateID: "dlg_middle",
+		AncestorSessionIDs: []string{"middle"}, Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", ProjectionRevision: 3,
+	}})
+	for _, notification := range srv.AppNotificationsAfter(0, "middle") {
+		if notification.Notification.Method != appwire.NotifyEvenerDelegateUpdated {
+			continue
+		}
+		var params appwire.EvenerDelegateParams
+		if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.ThreadID != "middle" || params.Delegate.DelegateID != "dlg_grandchild" || params.Delegate.OwnerSessionID != "root" {
+			t.Fatalf("middle thread delegate update = %+v", params)
+		}
+		return
+	}
+	t.Fatal("the grandchild's update was not published to the middle subagent's thread")
 }

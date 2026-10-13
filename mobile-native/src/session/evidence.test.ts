@@ -292,25 +292,78 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
-	// A wait the send couldn't honour says why, from its footer, and a
-	// message's images read as their alt text, as a skill's do.
-	it("says why a send's wait was ignored, and shows its images as words", () => {
+	// A send whose wait carried results the caller had not yet received
+	// (#3906) shows each, numbered and oldest first, ahead of its reply.
+	it("shows the earlier replies a send's wait carried ahead of its reply", () => {
+		const waited = subagentWireStep("call_send_2");
+		const entry = (status: string, output: string, reason?: string) => ({
+			delegate_id: "dlg_x",
+			type: "delegate",
+			status,
+			...(reason ? { reason } : {}),
+			running_in_background: false,
+			action: "completed",
+			output,
+			truncated: false,
+		});
+		const raw = {
+			...(waited.raw as Record<string, unknown>),
+			earlier_results: [entry("completed", "First."), entry("failed", "", "The run crashed.")],
+		};
+		expect(stepEvidence({ label: "delegate_send", detail: activityDetail({ ...waited, raw }) })).toEqual([
+			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
+			{ kind: "markdown", title: "Earlier reply 1 of 2", markdown: "First." },
+			{ kind: "markdown", title: "Earlier reply 2 of 2 · failed", markdown: "The run crashed." },
+			{
+				kind: "markdown",
+				title: "Reply",
+				markdown: "Yes: tree settle now waits for the drain, and a test pins the order.",
+			},
+		]);
+	});
+
+	// An update the wait carried (action "update", no status) is titled as an
+	// update, never as an earlier reply.
+	it("titles an update a send's wait carried as an earlier update", () => {
+		const waited = subagentWireStep("call_send_2");
+		const raw = {
+			...(waited.raw as Record<string, unknown>),
+			earlier_results: [
+				{
+					delegate_id: "dlg_x",
+					type: "delegate",
+					running_in_background: false,
+					action: "update",
+					output: "Which table?",
+					truncated: false,
+				},
+			],
+		};
+		expect(stepEvidence({ label: "delegate_send", detail: activityDetail({ ...waited, raw }) })).toContainEqual({
+			kind: "markdown",
+			title: "Earlier update 1 of 1",
+			markdown: "Which table?",
+		});
+	});
+
+	// A wait the send couldn't honour says why, from its footer.
+	it("says why a send's wait was ignored", () => {
 		const ignored = {
 			...subagentWireStep("call_send_1"),
 			raw: undefined,
-			argumentsJSON: '{"to":"dlg_x","message":"See ![the plot](https://example.com/p.png)","max_wait_ms":60000}',
+			argumentsJSON: '{"to":"dlg_x","message":"Check the drain","max_wait_ms":60000}',
 			output:
 				"[delegate_id dlg_x · steered · running · running in background · wait ignored: delegate is already running]",
 		};
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(ignored) })).toEqual([
-			{ kind: "markdown", title: "Message", markdown: "See the plot" },
+			{ kind: "markdown", title: "Message", markdown: "Check the drain" },
 			{ kind: "note", text: "Wait ignored: delegate is already running" },
 		]);
 	});
 
-	// The delegate's reply is its author's markdown too, so its images read
-	// as their alt text.
-	it("shows the images in a delegate's reply as words", () => {
+	// The delegate's reply is markdown like any other, so its images stay
+	// (Jesse's ruling, #3696): the phone shows them as it does an agent's.
+	it("keeps the images in a delegate's reply", () => {
 		const replied = {
 			...subagentWireStep("call_send_2"),
 			raw: undefined,
@@ -318,7 +371,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		};
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(replied) })).toEqual([
 			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
-			{ kind: "markdown", title: "Reply", markdown: "Here: the trace" },
+			{ kind: "markdown", title: "Reply", markdown: "Here: ![the trace](https://example.com/t.png)" },
 		]);
 	});
 
@@ -428,21 +481,28 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
-	// A skill's markdown is the skill author's, so its images never load a
-	// remote URL on the phone: each reads as its alt text.
-	it("shows a skill's images as their alt text, never loading them", () => {
-		const loaded = `<skill-context>\n${JSON.stringify({
-			name: "diagrams",
-			instructions:
-				"# Diagrams\n\n![the flow](https://example.com/flow.png)\n\nThen ![](https://t.test/x.gif) done.\n\n![by ref][logo] and ![short]\n\n[logo]: https://t.test/logo.png",
-		})}\n</skill-context>`;
-		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
-			{
-				kind: "markdown",
-				title: "diagrams",
-				markdown: "# Diagrams\n\nthe flow\n\nThen  done.\n\nby ref and short\n\n[logo]: https://t.test/logo.png",
-			},
-		]);
+	// A skill's instructions as the phone shows them.
+	const skillMarkdown = (instructions: string) => {
+		const loaded = `<skill-context>\n${JSON.stringify({ name: "diagrams", instructions })}\n</skill-context>`;
+		const [shown] = stepEvidence({ label: "use_skill", detail: { output: loaded } });
+		if (shown?.kind !== "markdown") throw new Error(`a skill shows markdown, got ${shown?.kind}`);
+		return shown.markdown;
+	};
+
+	// A skill's markdown renders like any other markdown, images included
+	// (Jesse's ruling, #3696), so it reaches the markdown view as written:
+	// images by URL and by reference, and code that looks like one.
+	it.each([
+		[
+			"images",
+			"# Diagrams\n\n![the flow](https://example.com/flow.png)\n\n![by ref][logo]\n\n[logo]: https://t.test/logo.png",
+		],
+		["a Rust macro", "let v = vec![1, 2, 3];"],
+		["a shell test", "if ![ -f x ]; then"],
+		["an image in a code span", "Write `![a](https://x.test/a.png)` for an image."],
+		["an image in a fence", "```md\n![a](https://x.test/a.png)\n```"],
+	])("shows %s in a skill as written", (_name, markdown) => {
+		expect(skillMarkdown(markdown)).toBe(markdown);
 	});
 
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
@@ -486,5 +546,69 @@ describe("each tool's evidence, as the tools print it", () => {
 			const output = toolWireStep(call).output ?? "";
 			expect(real(call)).toEqual([{ kind: "output", text: output, lines: expect.any(Number) }]);
 		}
+	});
+});
+
+describe("memory step evidence", () => {
+	const memory = (label: string, argumentsJSON: string, output = "saved") =>
+		step(label, {}, { detail: { arguments: argumentsJSON, output } });
+
+	it("shows a written memory page as markdown and keeps its images", () => {
+		const content = "# Memory\n\n![trace](https://example.com/trace.png)";
+		expect(
+			stepEvidence(memory("memory_write", JSON.stringify({ scope: "personal", file_path: "notes.md", content }))),
+		).toEqual([{ kind: "markdown", title: "personal/notes.md", markdown: content }]);
+	});
+
+	it("shows a rejected session-memory write's error", () => {
+		const error = "session memory belongs to the root session; report this to your parent instead";
+		const rejectedWrite = memory(
+			"memory_write",
+			JSON.stringify({ scope: "session", file_path: "notes.md", content: "# Note" }),
+			"",
+		);
+		rejectedWrite.state = "failed";
+		rejectedWrite.detail = { ...rejectedWrite.detail, error };
+
+		expect(stepEvidence(rejectedWrite)).toContainEqual({ kind: "error", text: error });
+	});
+
+	it("falls back from scope/path to the bare path, then Memory page", () => {
+		expect(stepEvidence(memory("memory_write", JSON.stringify({ file_path: "bare.md", content: "page" })))).toEqual([
+			{ kind: "markdown", title: "bare.md", markdown: "page" },
+		]);
+		expect(stepEvidence(memory("memory_write", JSON.stringify({ content: "page" })))).toEqual([
+			{ kind: "markdown", title: "Memory page", markdown: "page" },
+		]);
+	});
+
+	it("shows memory edits as file diffs", () => {
+		expect(
+			stepEvidence(
+				memory(
+					"memory_edit",
+					JSON.stringify({ scope: "project", file_path: "MEMORY.md", old_string: "old", new_string: "new" }),
+				),
+			),
+		).toEqual([{ kind: "diff", text: "--- MEMORY.md\n+++ MEMORY.md\n-old\n+new", added: 1, removed: 1 }]);
+	});
+
+	it.each([
+		["memory_read", "# Memory page\n"],
+		["memory_search", "personal/notes.md: found"],
+		["memory_delete", "Removed personal/notes.md"],
+	])("keeps %s output as printed", (label, output) => {
+		expect(stepEvidence(memory(label, "{}", output))).toEqual([{ kind: "output", text: output, lines: 1 }]);
+	});
+
+	it.each([
+		["unparseable JSON", "{", ["output", "output"]],
+		["non-object JSON", "[]", ["json", "output"]],
+		["content with the wrong type", JSON.stringify({ content: 7 }), ["json", "output"]],
+		["empty content", JSON.stringify({ content: "" }), ["json", "output"]],
+	])("falls back safely for %s write arguments", (_case, argumentsJSON, kinds) => {
+		const evidence = stepEvidence(memory("memory_write", argumentsJSON));
+		expect(evidence.map((entry) => entry.kind)).toEqual(kinds);
+		expect(evidence.at(-1)).toMatchObject({ kind: "output", text: "saved" });
 	});
 });

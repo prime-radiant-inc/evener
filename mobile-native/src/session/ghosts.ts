@@ -1,4 +1,5 @@
-// The dashed ghost bubbles above the composer (spec 8.5 and 14):
+// The dashed ghost bubbles at the transcript's end, just above the composer
+// (spec 8.5 and 14):
 // - steers on their way to the agent's next step;
 // - your queued messages, in the order they will send, or held after a Stop
 //   parked them;
@@ -21,7 +22,7 @@ export type RecoveryGhostRow = Pick<
 	NativeMutationRecoveryRow,
 	"clientMutationId" | "status" | "reason" | "text" | "actions"
 > &
-	Partial<Pick<NativeMutationRecoveryRow, "carriesAttachments">>;
+	Partial<Pick<NativeMutationRecoveryRow, "carriesAttachments" | "queuedText">>;
 
 export type GhostOrigin =
 	| { kind: "queue"; entry: QueueEntryRef }
@@ -63,6 +64,9 @@ const CAPTIONS: Record<GhostState, string> = {
 	refused: "Couldn't send this",
 };
 
+const STEER_REFUSED = "Couldn't steer with this";
+const QUEUE_CHANGED = "The queue has changed since, so this can't be sent as it was.";
+
 /** A message the phone holds until it can send it (ruling 14): nothing is
  * sending while the connection is down. */
 const WAITING_TO_SEND = "Will send when you're back online";
@@ -87,7 +91,17 @@ export function ghosts(
 	const steering = (entry: PendingTurnEntry) =>
 		STEERS.has(entry.method) && (entry.state === "accepted" || entry.state === "claimed");
 	const out: Ghost[] = own.filter(steering).map((entry) => pendingGhost(entry, "steering", []));
-	if (session) out.push(...queueGhosts(session));
+	// A queued message this phone is steering with shows once, as its steer:
+	// a promote names its message, and a drain takes the queue at the revision
+	// it names (anything queued after that is still queued).
+	const promoted = new Set(own.flatMap((entry) => entry.queueEntryId ?? []));
+	const draining = own.some((entry) => drainsShownQueue(session, entry));
+	if (session && !draining)
+		out.push(
+			...queueGhosts(session).filter(
+				(ghost) => !(ghost.origin.kind === "queue" && promoted.has(ghost.origin.entry.id)),
+			),
+		);
 	// The draft keeps a send uncertain until the store confirms it, and the
 	// outbox admits the same send first, so a binding change in between or a
 	// crash leaves both holding it. One ghost shows: the outbox knows how far
@@ -110,8 +124,16 @@ export function ghosts(
 		if (steering(entry) || entry === sameSend) continue;
 		// A message a Stop held before it left the phone comes back as held,
 		// with Send now and Cancel, like a queue a Stop parks (spec 8.5).
-		if (entry.state === "canceled") out.push(pendingGhost(entry, "held", ["sendNow", "cancel"]));
-		else if (entry.state === "blockedUnknown") out.push(pendingGhost(entry, "unconfirmed", confirmButtons));
+		if (entry.state === "canceled") {
+			// A held drain sends only the queue it saw; once that has changed the
+			// hub would refuse it, and the queue shows its messages again.
+			const stale = session !== null && entry.queueRevision !== undefined && !drainsShownQueue(session, entry);
+			out.push(
+				stale
+					? { ...pendingGhost(entry, "held", ["cancel"]), note: QUEUE_CHANGED }
+					: pendingGhost(entry, "held", ["sendNow", "cancel"]),
+			);
+		} else if (entry.state === "blockedUnknown") out.push(pendingGhost(entry, "unconfirmed", confirmButtons));
 		else {
 			const ghost = pendingGhost(entry, "sending", []);
 			out.push(connected ? ghost : { ...ghost, caption: WAITING_TO_SEND });
@@ -138,6 +160,30 @@ export function ghosts(
 	return out;
 }
 
+/** What a queued message says: its full text, else its preview, else "". */
+export function queuedMessageText(queue: GhostSource["queue"], index: number): string {
+	return queue?.texts?.[index] || queue?.preview?.[index] || "";
+}
+
+function drainsShownQueue(session: GhostSource | null, entry: PendingTurnEntry): boolean {
+	return entry.queueRevision !== undefined && entry.queueRevision === session?.queue?.revision;
+}
+
+/** Whether this phone has a steer of its own, on its way or held, with the
+ * queue as shown: a promote of a message still in it, or a drain of it. Steer
+ * all now would take those messages too, so it waits. */
+export function steeringWithQueue(
+	session: GhostSource | null,
+	pending: readonly PendingTurnEntry[] | null | undefined,
+): boolean {
+	const ids = session?.queue?.ids ?? [];
+	return (pending ?? []).some(
+		(entry) =>
+			entry.fromThisClient &&
+			((entry.queueEntryId !== undefined && ids.includes(entry.queueEntryId)) || drainsShownQueue(session, entry)),
+	);
+}
+
 function queueGhosts(session: GhostSource): Ghost[] {
 	const queue = session.queue;
 	const depth = queue?.depth ?? 0;
@@ -147,7 +193,7 @@ function queueGhosts(session: GhostSource): Ghost[] {
 	return Array.from({ length: depth }, (_, index): Ghost => {
 		const id = queue?.ids?.[index];
 		const fullText = queue?.texts?.[index] ?? "";
-		const text = fullText || queue?.preview?.[index] || "Queued message";
+		const text = queuedMessageText(queue, index) || "Queued message";
 		const buttons: GhostAction[] = held
 			? canDrain
 				? ["sendNow", "cancel"]
@@ -185,11 +231,12 @@ function recoveryGhost(row: RecoveryGhostRow, confirmButtons: GhostAction[]): Gh
 	const refused = row.status === "rejected";
 	const canEdit = row.actions.includes("restore");
 	const buttons: GhostAction[] = refused ? (canEdit ? ["edit", "discard"] : ["discard"]) : confirmButtons;
+	const refusal = row.queuedText === undefined ? CAPTIONS.refused : STEER_REFUSED;
 	return {
 		key: `recovery:${row.clientMutationId}`,
 		state: refused ? "refused" : "unconfirmed",
-		text: row.text || "Message",
-		caption: refused ? (row.reason ? `${CAPTIONS.refused} · ${row.reason}` : CAPTIONS.refused) : CAPTIONS.unconfirmed,
+		text: row.queuedText || row.text || "Message",
+		caption: refused ? (row.reason ? `${refusal} · ${row.reason}` : refusal) : CAPTIONS.unconfirmed,
 		buttons,
 		menu: !refused && canEdit ? ["edit"] : [],
 		// Edit brings back text only, so a refused message with an image offers
@@ -230,7 +277,7 @@ export function ghostActionTarget(queue: ThreadModel["queue"], entry: QueueEntry
 	return index === -1 ? null : { index, id: entry.id };
 }
 
-/** At most three queued messages show above the composer (ruling 18); the
+/** At most three queued messages show at the transcript's end (ruling 18); the
  * rest are counted, and open the Queue sheet. Every other ghost shows. */
 export const SHOWN_QUEUED = 3;
 
@@ -245,26 +292,4 @@ export function shownGhosts(all: readonly Ghost[]): { shown: Ghost[]; moreQueued
 		shown.push(ghost);
 	}
 	return { shown, moreQueued: Math.max(0, queued - SHOWN_QUEUED) };
-}
-
-/** The queue as one line while you type (spec 8.5): its count, "2 queued" or
- * "1 held", and with one message, what you can do to it now. */
-export interface QueueFold {
-	label: string;
-	act: { ghost: Ghost; action: "steerNow" | "sendNow" } | null;
-}
-
-/** Folds the queued ghosts into one line and keeps every other ghost, which
- * is about something you may need to act on now. Nothing folds when nothing
- * is queued. */
-export function foldQueue(all: readonly Ghost[]): { fold: QueueFold | null; rest: Ghost[] } {
-	const queued = all.filter((ghost) => ghost.origin.kind === "queue");
-	const rest = all.filter((ghost) => ghost.origin.kind !== "queue");
-	const [first] = queued;
-	if (first === undefined) return { fold: null, rest };
-	// A queue is held or queued as a whole (queueGhosts).
-	const label = `${queued.length} ${first.state === "held" ? "held" : "queued"}`;
-	const action = first.buttons.find((button) => button === "steerNow" || button === "sendNow");
-	const act = queued.length === 1 && action !== undefined ? { ghost: first, action } : null;
-	return { fold: { label, act }, rest };
 }

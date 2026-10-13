@@ -36,7 +36,7 @@ export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Rout
 				keyExtractor={(comment: DocumentComment) => comment.id}
 				contentContainerStyle={{ padding: 16, gap: 20 }}
 				ListEmptyComponent={
-					<View style={{ gap: 4, paddingTop: 24, alignItems: "center" }}>
+					<View testID="comments-empty" style={{ gap: 4, paddingTop: 24, alignItems: "center" }}>
 						<Text
 							allowFontScaling={allowFontScaling}
 							style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}

@@ -10,52 +10,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// WS2a: terminal communicate with output settles to AWAITING (the ball is in
-// the user's court — no autonomy in flight, per attention-status-model v5).
-func TestSession_EndTurnResponseGoesAwaiting(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name    string
-		callID  string
-		message string
-		input   string
-		desc    string
-	}{
-		{"question", "ask1", "What file would you like me to edit?", "hello", "question"},
-		{"declarative", "msg1", "I have completed the task.", "do something", "declarative response"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			sess := newSession(t,
-				withSteps(func(req llm.Request) llm.Response {
-					return toolCallResponse(communicateCallArgs(tc.callID, map[string]any{
-						"end_turn": true,
-						"message":  tc.message,
-					}))
-				}),
-				withConfig(SessionConfig{}),
-			)
-			go func() {
-				for range sess.Events() {
-				}
-			}()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-			defer cancel()
-			_, err := sess.ProcessInput(ctx, tc.input, nil)
-			if err != nil {
-				t.Fatalf("ProcessInput: %v", err)
-			}
-
-			if got := sess.State(); got != SessionAwaiting {
-				t.Fatalf("state after %s: got %q want %q", tc.desc, got, SessionAwaiting)
-			}
-			sess.Close()
-		})
-	}
-}
-
 func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -66,8 +20,9 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(communicateCallArgs("ask2", map[string]any{
-					"end_turn": true,
-					"message":  "What language?",
+					"end_turn":   true,
+					"end_reason": "needs_response",
+					"message":    "What language?",
 				}))
 			},
 			func(req llm.Request) llm.Response {
@@ -80,7 +35,7 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -92,7 +47,8 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
-	// First input: terminal question -> AWAITING (output, no autonomy in flight)
+	// First input: a question that needs a response -> AWAITING (output, no
+	// autonomy in flight)
 	_, err = sess.ProcessInput(ctx, "write code", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput #1: %v", err)
@@ -101,14 +57,14 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 		t.Fatalf("state after question: got %q want %q", got, SessionAwaiting)
 	}
 
-	// Second input: AWAITING -> PROCESSING -> AWAITING (awaiting must accept
-	// the next ProcessInput just like idle does).
+	// Second input: AWAITING -> PROCESSING -> IDLE (awaiting must accept the
+	// next ProcessInput just like idle does; the plain reply rests idle).
 	_, err = sess.ProcessInput(ctx, "Go", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput #2: %v", err)
 	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after answer: got %q want %q", got, SessionAwaiting)
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after answer: got %q want %q", got, SessionIdle)
 	}
 	sess.Close()
 }

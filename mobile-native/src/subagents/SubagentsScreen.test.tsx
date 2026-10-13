@@ -1,19 +1,33 @@
 import { installActivityFixture } from "./sessionActivityTestUtils";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // The Activity list (spec 9): a coordinator's subagents and shell jobs, read
-// through the typed activity reads, in failed, running and done sections, with
+// through typed activity reads, with live work and independent quiet histories,
 // the strip, the chips, search, and each row's why and last line.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
+import { FlatList } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { playedHaptics, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { beforeEach, expect, it, vi } from "vitest";
+import { markers, withTestID } from "../markerTestUtils";
+import {
+	offersButton,
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	settle,
+	textOf,
+} from "../renderNative.testkit";
 import { Toast } from "../Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
 import { forgetSubagentTrees } from "./subagentTree";
 import { SubagentsScreen } from "./SubagentsScreen";
+import { paletteFor } from "../design/tokens";
+import { stopOffer } from "./stopOffer";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
 
@@ -118,7 +132,6 @@ let navigation: {
 	setOptions: ReturnType<typeof vi.fn>;
 	options: NativeStackNavigationOptions[];
 };
-const trees: ReactTestRenderer[] = [];
 
 function hub(pages: (continuation: string | undefined) => unknown) {
 	const next = new FakeClient("ready");
@@ -139,30 +152,10 @@ beforeEach(() => {
 	const options: NativeStackNavigationOptions[] = [];
 	navigation = { navigate: vi.fn(), push: vi.fn(), setOptions: vi.fn((next) => options.push(next)), options };
 });
-afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
-});
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 // The activity store re-reads what a notification names at once.
 async function treeUpdatedAndRead(hubClient: FakeClient) {
-	act(() =>
-		hubClient.emitNotification({
-			method: "evener/thread/activity/changed",
-			params: {
-				threadId: "coord",
-				sessionId: "coord",
-				ref: "local:coord",
-				resources: ["summary", "delegates", "jobs"],
-			},
-		} as never),
-	);
+	act(() => hubClient.emitNotification(activityChangedNotification(COORDINATOR)));
 	await settle();
 }
 
@@ -174,7 +167,6 @@ async function mount(flush = true) {
 			navigation={navigation as never}
 		/>,
 	);
-	trees.push(tree);
 	if (flush) await settle();
 	return tree;
 }
@@ -187,24 +179,71 @@ function headerTitle(): string {
 
 /** The list's text, in order: section headers, rows' titles, folds. */
 const text = (tree: ReactTestRenderer) => renderedText(tree);
+/** What each subagent row's why line reports, in list order. */
+const whys = (tree: ReactTestRenderer) => markers(tree, "subagent-why");
+/** Why the list shows a notice instead of rows, if it does. */
+const notices = (tree: ReactTestRenderer) => markers(tree, "activity-notice");
 
 it("titles itself with the count over the coordinator's title", async () => {
 	await mount();
 	expect(headerTitle()).toBe("Activity · 55 Get PR 2138 Test Clean");
 });
 
-it("lists failed, then running, then a folded done, with chips that count the same", async () => {
+it("folds every terminal delegate below live work with terminal-inclusive counts", async () => {
 	const tree = await mount();
 	const shown = text(tree);
-	const failed = shown.indexOf("FAILED · 2");
 	const running = shown.indexOf("RUNNING · 32");
-	const done = shown.indexOf("Done · 21");
-	expect(failed).toBeGreaterThanOrEqual(0);
-	expect(running).toBeGreaterThan(failed);
+	const done = shown.indexOf("Done · 23");
+	expect(running).toBeGreaterThanOrEqual(0);
+	expect(shown).not.toContain("FAILED");
+	expect(shown).not.toContain("Fix race in tree settle, Failed");
 	expect(done).toBeGreaterThan(running);
 	expect(shown).not.toContain("Finished task 0");
-	for (const label of ["All, 55", "Failed, 2", "Running, 32", "Done, 21"]) expect(pressable(tree, label)).toBeDefined();
-	expect(tree.root.find((node) => node.props.accessibilityLabel === "2 failed, 32 running, 21 done")).toBeDefined();
+	for (const label of ["All, 55", "Running, 32", "Done, 23"]) expect(pressable(tree, label)).toBeDefined();
+	expect(tree.root.find((node) => node.props.accessibilityLabel === "32 running, 23 done")).toBeDefined();
+	expect(pressable(tree, "Failed, 2")).toBeUndefined();
+});
+
+it("keeps a terminal parent's running child and stop identity reachable with history closed", async () => {
+	const tree = await mount();
+	const child = tree.root.find((node) => node.props.row?.id === "repro").props.row;
+	expect(child).toMatchObject({
+		id: "repro",
+		ref: "local:repro",
+		state: "running",
+		active: true,
+		parentTitle: "Fix race in tree settle",
+	});
+	expect(stopOffer({ row: child, requested: false, direct: "yes" })).toBe("stop");
+	act(() => pressable(tree, "Reproduce the race, Running, Working, 4 minutes")?.props.onPress());
+	expect(navigation.push).toHaveBeenCalledWith("Subagent", {
+		hubId: "hub-1",
+		ref: "local:repro",
+		title: "Reproduce the race",
+		coordinator: COORDINATOR,
+	});
+	act(() => pressable(tree, "Done · 23")?.props.onPress());
+	const parent = tree.root.find((node) => node.props.row?.id === "race").props.row;
+	expect(parent).toMatchObject({
+		state: "failed",
+		active: true,
+		delegate: { outcome: "failed", reason: "go test exited 1 (3 times)", runGeneration: 1 },
+	});
+	expect(stopOffer({ row: parent, requested: false, direct: "no" })).toBe("ask");
+	const marks = tree.root.findAll(
+		(node) => String(node.type) === "SymbolView" && node.props.name === "xmark.octagon.fill",
+	);
+	expect(marks).toHaveLength(2);
+	expect(marks.every((node) => node.props.tintColor === paletteFor("light").inkLow)).toBe(true);
+	const failedWords = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "Failed");
+	expect(failedWords).toHaveLength(2);
+	expect(failedWords.every((node) => node.props.style.color === paletteFor("light").inkMid)).toBe(true);
+});
+
+it("lets a drag of the list put the filter's keyboard away", async () => {
+	const tree = await mount();
+	expect(tree.root.findByProps({ accessibilityLabel: "Filter activity" })).toBeDefined();
+	expect(tree.root.findByType(FlatList).props.keyboardDismissMode).toBe("on-drag");
 });
 
 // Spec 9 draws the filter chips as one row, as the Board's and the Session's
@@ -216,15 +255,15 @@ it("keeps its filter chips on one row that scrolls sideways", async () => {
 	const strip = tree.root.findByProps({ testID: "subagent-filters" });
 	const row = strip.findByType("ScrollView" as never);
 	expect(row.props.horizontal).toBe(true);
-	for (const label of ["All, 55", "Failed, 2", "Running, 32", "Done, 21"])
+	for (const label of ["All, 55", "Running, 32", "Done, 23"])
 		expect(row.find((node) => node.props.accessibilityLabel === label)).toBeDefined();
 });
 
 it("filters to a chip's state, and offers no chip for a state with no subagents", async () => {
 	const tree = await mount();
 	playedHaptics.length = 0;
-	act(() => pressable(tree, "Failed, 2")?.props.onPress());
-	expect(pressable(tree, "Failed, 2")?.props.accessibilityState).toMatchObject({ selected: true });
+	act(() => pressable(tree, "Done, 23")?.props.onPress());
+	expect(pressable(tree, "Done, 23")?.props.accessibilityState).toMatchObject({ selected: true });
 	// Spec 16.6: a selection tick on a chip.
 	expect(playedHaptics).toEqual(["selection"]);
 	const shown = text(tree);
@@ -237,7 +276,7 @@ it("filters to a chip's state, and offers no chip for a state with no subagents"
 		root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]),
 	}));
 	harness.connection = screenConnection(client, "ready");
-	forgetSubagentTrees("hub-1");
+	act(() => forgetSubagentTrees("hub-1"));
 	const other = await mount();
 	expect(pressable(other, "Failed, 0")).toBeUndefined();
 	expect(pressable(other, "Running, 1")).toBeDefined();
@@ -284,15 +323,18 @@ function treeWithJobs() {
 	};
 }
 
-it("lists shell jobs in their states' sections, counting them in the title and chips but not the strip", async () => {
+it("keeps terminal shell jobs in their own fold with truthful output access and inclusive chip counts", async () => {
 	client = hub(() => treeWithJobs());
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	expect(headerTitle()).toBe("Activity · 3 Get PR 2138 Test Clean");
-	for (const label of ["All, 3", "Failed, 1", "Running, 2"]) expect(pressable(tree, label)).toBeDefined();
-	expect(tree.root.find((node) => node.props.accessibilityLabel === "0 failed, 1 running, 0 done")).toBeDefined();
+	for (const label of ["All, 3", "Running, 2", "Done, 1"]) expect(pressable(tree, label)).toBeDefined();
+	expect(tree.root.find((node) => node.props.accessibilityLabel === "1 running, 0 done")).toBeDefined();
+	expect(text(tree)).not.toContain("npm run lint");
+	expect(pressable(tree, "Completed · 1")?.props.accessibilityState).toEqual({ expanded: false });
+	act(() => pressable(tree, "Completed · 1")?.props.onPress());
 	const shown = text(tree);
-	expect(shown.indexOf("FAILED · 1")).toBeLessThan(shown.indexOf("npm run lint"));
+	expect(shown.indexOf("Completed · 1")).toBeLessThan(shown.indexOf("npm run lint"));
 	expect(shown.indexOf("RUNNING · 2")).toBeLessThan(shown.indexOf("Serving the docs"));
 	const labels = tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Shell job,"));
 	expect(new Set(labels.map((node) => node.props.accessibilityLabel))).toEqual(
@@ -302,7 +344,7 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 		]),
 	);
 
-	act(() => pressable(tree, "Failed, 1")?.props.onPress());
+	act(() => pressable(tree, "Done, 1")?.props.onPress());
 	expect(text(tree)).toContain("npm run lint");
 	expect(text(tree)).not.toContain("Serving the docs");
 });
@@ -348,7 +390,7 @@ it("says there is nothing yet when the session has no subagents or shell jobs", 
 	client = hub(() => ({ revision: 1, root: session("local:coord", COORDINATOR.title, []) }));
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(text(tree)).toContain("No subagents or shell jobs yet.");
+	expect(notices(tree)).toEqual(["empty"]);
 	expect(headerTitle()).toBe("Activity · 0 Get PR 2138 Test Clean");
 });
 
@@ -358,6 +400,7 @@ it("opens a shell job's detail over the list", async () => {
 	client = hub(() => treeWithJobs());
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
+	act(() => pressable(tree, "Completed · 1")?.props.onPress());
 	act(() =>
 		pressable(tree, `Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`)?.props.onPress(),
 	);
@@ -372,18 +415,45 @@ it("opens a shell job's detail over the list", async () => {
 
 it("opens the done fold in place", async () => {
 	const tree = await mount();
-	act(() => pressable(tree, "Done · 21")?.props.onPress());
+	act(() => pressable(tree, "Done · 23")?.props.onPress());
 	expect(text(tree)).toContain("Finished task 0");
+});
+
+it("opens delegate and job histories independently, then Done reveals both", async () => {
+	client = hub(() => {
+		const whole = specTree();
+		return { ...whole, root: { ...whole.root, entries: [...whole.root.entries, ...treeWithJobs().root.entries] } };
+	});
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	for (const label of ["Done · 23", "Completed · 1"])
+		expect(pressable(tree, label)?.props.accessibilityState).toEqual({ expanded: false });
+	act(() => pressable(tree, "Completed · 1")?.props.onPress());
+	expect(text(tree)).toContain("npm run lint");
+	expect(text(tree)).not.toContain("Finished task 0");
+	act(() => pressable(tree, "Done · 23")?.props.onPress());
+	expect(text(tree)).toContain("Finished task 0");
+	act(() => pressable(tree, "Completed · 1")?.props.onPress());
+	expect(text(tree)).not.toContain("npm run lint");
+	expect(text(tree)).toContain("Finished task 0");
+	act(() => pressable(tree, "Done, 24")?.props.onPress());
+	expect(text(tree)).toContain("npm run lint");
+	expect(text(tree)).toContain("Finished task 0");
+	expect(text(tree)).not.toContain("Reproduce the race");
+	expect(pressable(tree, "Done · 23")).toBeUndefined();
+	expect(pressable(tree, "Completed · 1")).toBeUndefined();
 });
 
 it("searches past eight subagents, filtering rows and section counts while the chips keep the whole", async () => {
 	const tree = await mount();
 	const field = tree.root.find((node) => String(node.type) === "TextInput");
-	expect(field.props.placeholder).toBe("Filter activity");
+	expect(field.props.placeholder).toMatch(/\S/);
 	act(() => field.props.onChangeText("race"));
 	const shown = text(tree);
-	expect(shown).toContain("FAILED · 1");
-	expect(shown).toContain("Fix race in tree settle");
+	expect(shown).toContain("Done · 1");
+	expect(shown).not.toContain("go test exited 1");
+	act(() => pressable(tree, "Done · 1")?.props.onPress());
+	expect(text(tree)).toContain("Fix race in tree settle");
 	expect(shown).toContain("RUNNING · 1");
 	expect(shown).toContain("Reproduce the race");
 	expect(shown).not.toContain("Lint the tree");
@@ -391,8 +461,9 @@ it("searches past eight subagents, filtering rows and section counts while the c
 	expect(pressable(tree, "Clear filter")).toBeDefined();
 });
 
-it("reads a failure, a nested subagent, another model, a branch and a finished run's tokens on their rows", async () => {
+it("reads a quiet failure, a nested subagent, another model, a branch and a finished run's tokens on their rows", async () => {
 	const tree = await mount();
+	act(() => pressable(tree, "Done · 23")?.props.onPress());
 	const shown = text(tree);
 	expect(shown).toContain("go test exited 1 (3 times)");
 	expect(shown).toContain("from Fix race in tree settle");
@@ -405,9 +476,63 @@ it("reads a failure, a nested subagent, another model, a branch and a finished r
 	expect(shown).toContain("6m");
 });
 
+// The list runs no clock, but a running subagent's row still turns Quiet
+// when its silence crosses the threshold, with no new tree to re-render it.
+it("turns a silent subagent's row Quiet on its own", async () => {
+	// On fake timers, so the first read can take as long as it takes without
+	// crossing the threshold before the list shows the row. It flushes the
+	// read itself: settle() waits on a setTimeout that never fires
+	// while setTimeout is faked.
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	try {
+		const at = (ms: number) => new Date(Date.now() - ms).toISOString();
+		client = hub(() => ({
+			revision: 1,
+			root: session("local:coord", COORDINATOR.title, [
+				runningOne("hush", "Wait for the build", { latestActivityAt: at(19_900) }),
+			]),
+		}));
+		harness.connection = screenConnection(client, "ready");
+		const tree = await mount(false);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(whys(tree)).toEqual(["working"]);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(99);
+		});
+		expect(whys(tree)).toEqual(["working"]);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1);
+		});
+		expect(whys(tree)).toEqual(["quiet"]);
+		expect(text(tree)).toContain("20s");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+// The why line shows the subagent's stated intent, while the accessible label
+// keeps the state word and the intent together.
+it("shows a running subagent's stated intent as its row's why line", async () => {
+	client = hub(() => ({
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			runningOne("intent", "Inspect the cache", { latestIntent: "Reading the board's row tests." }),
+		]),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	const shown = text(tree);
+	expect(shown).toContain("Reading the board's row tests.");
+	expect(shown).not.toContain("Working");
+	expect(pressable(tree, "Inspect the cache, Running, Reading the board's row tests., 4 minutes")).toBeDefined();
+});
+
 // A subagent's screen is its session (ruling 30), over this list.
 it("opens a subagent's own session over its coordinator", async () => {
 	const tree = await mount();
+	act(() => pressable(tree, "Done · 23")?.props.onPress());
 	act(() => pressable(tree, "Fix race in tree settle, Failed, go test exited 1 (3 times), 6 minutes")?.props.onPress());
 	expect(navigation.push).toHaveBeenCalledWith("Subagent", {
 		hubId: "hub-1",
@@ -507,7 +632,7 @@ it("says the count is partial and whose subagents are missing when a later page 
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	expect(headerTitle()).toBe("Activity · … Get PR 2138 Test Clean");
-	expect(text(tree)).not.toContain("No subagents or shell jobs yet.");
+	expect(notices(tree)).toEqual([]);
 	expect(tree.root.findByType("FlatList" as never).props.onEndReached).toBeTypeOf("function");
 });
 
@@ -533,33 +658,37 @@ it("names whose activity isn't listed by title", async () => {
 		),
 	}));
 	harness.connection = screenConnection(client, "ready");
-	const shown = text(await mount());
-	expect(shown).toContain(`Some activity under “${COORDINATOR.title}” isn't listed.`);
-	expect(shown).toContain("Some activity under “Only one” isn't listed.");
-	expect(shown).toContain("Some activity isn't listed.");
-	expect(shown).not.toContain("local:");
+	const tree = await mount();
+	const missing = withTestID(tree, "activity-missing").map(textOf);
+	expect(missing).toHaveLength(3);
+	expect(missing.filter((line) => line.includes(COORDINATOR.title))).toHaveLength(1);
+	expect(missing.filter((line) => line.includes("Only one"))).toHaveLength(1);
+	// The branch no loaded row names goes unnamed.
+	expect(missing.filter((line) => !line.includes(COORDINATOR.title) && !line.includes("Only one"))).toHaveLength(1);
+	expect(missing.join(" ")).not.toContain("Unlisted");
+	expect(text(tree)).not.toContain("local:");
 });
 
 it.each([
 	[
 		"can't list its activity",
 		new WireError("unavailable", -32603, { evenerErrorInfo: "actionUnavailable" }),
-		"This session can't list its activity.",
+		"unsupported",
 	],
 	[
 		"is shut down",
 		new WireError("thread not found: coord", -32603, { evenerErrorInfo: "sessionUnavailable" }),
-		"This session can't list its activity.",
+		"unsupported",
 	],
-])("says so when the session %s, and offers nothing to press", async (_name, error, words) => {
+])("says so when the session %s, and offers nothing to press", async (_name, error, reason) => {
 	client = new FakeClient("ready");
 	installActivityFixture(client, () => Promise.reject(error));
 	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(text(tree)).toContain(words);
-	for (const word of ["Retry", "Refresh", "Reconnect"]) expect(text(tree)).not.toContain(word);
+	expect(notices(tree)).toEqual([reason]);
+	expect(offersButton(tree, /\b(Retry|Refresh|Reconnect)\b/)).toBe(false);
 });
 
 it("keeps the search field while it has words, even once the list shrinks", async () => {
@@ -586,7 +715,7 @@ it("says why it can't list them when the read fails", async () => {
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(text(tree)).toContain("The activity couldn't be listed right now.");
+	expect(notices(tree)).toEqual(["failed"]);
 });
 
 it("says a stop you asked for is pending, then that it stopped, with the toast once", async () => {
@@ -602,17 +731,18 @@ it("says a stop you asked for is pending, then that it stopped, with the toast o
 	});
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
+	act(() => pressable(tree, "Done · 23")?.props.onPress());
 	const rows = flattenSubagents(specTree() as never);
 	const race = rows.find((row) => row.ref === "local:race");
 	if (!race) throw new Error("no race row");
 	act(() => stopRequests("hub-1").request(COORDINATOR.ref, race, Date.now()));
 	await settle();
-	expect(text(tree)).toContain("Stop requested from the coordinator");
+	expect(whys(tree)).toContain("stop-requested");
 	stopped = true;
 	await treeUpdatedAndRead(client);
-	// A stopped subagent is done, under the fold.
-	act(() => pressable(tree, "Done · 22")?.props.onPress());
-	expect(text(tree)).toContain("Stopped at your request");
+	// Failure and cancellation both belong to the same still-open history.
+	expect(pressable(tree, "Done · 23")?.props.accessibilityState).toEqual({ expanded: true });
+	expect(whys(tree)).toContain("stop-settled");
 	const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
 	expect(toasts()).toEqual(["“Fix race in tree settle” stopped"]);
 });
@@ -623,8 +753,8 @@ it("says a stop you sent directly is pending without naming the coordinator (S6)
 	if (!drain) throw new Error("no running row");
 	act(() => stopRequests("hub-1").request(COORDINATOR.ref, drain, Date.now(), { direct: true }));
 	await settle();
-	expect(text(tree)).toContain("Stop requested");
-	expect(text(tree)).not.toContain("Stop requested from the coordinator");
+	expect(whys(tree)).toContain("stop-requested-direct");
+	expect(whys(tree)).not.toContain("stop-requested");
 });
 
 it("toasts a stop recorded after the tree already shows it", async () => {
@@ -678,6 +808,7 @@ it("keeps authoritative counts while visible end-of-list demand loads the next s
 			delegates: [
 				{
 					runGeneration: 1,
+					projectionRevision: 1,
 					delegateId: id,
 					ownerRef: "local:coord",
 					rootRef: "local:coord",
@@ -699,8 +830,10 @@ it("keeps authoritative counts while visible end-of-list demand loads the next s
 	const screen = await mount();
 	expect(headerTitle()).toBe("Activity · 501 Get PR 2138 Test Clean");
 	expect(client.calls.filter((call) => call.method === "evener/thread/delegates/list")).toHaveLength(1);
-	await act(async () => {
+	act(() => {
 		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
+	});
+	await act(async () => {
 		await admitted;
 	});
 	expect(

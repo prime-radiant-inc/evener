@@ -36,6 +36,16 @@ import (
 // s1cov_writeJobLog, the existing, Store-verified helper.
 func writeJobLogFast(t *testing.T, stateDir, sessID string, n int) string {
 	t.Helper()
+	return writeShellJobLogFast(t, stateDir, sessID, n, false)
+}
+
+func writeActivityJobLogFast(t *testing.T, stateDir, sessID string, n int) string {
+	t.Helper()
+	return writeShellJobLogFast(t, stateDir, sessID, n, true)
+}
+
+func writeShellJobLogFast(t *testing.T, stateDir, sessID string, n int, background bool) string {
+	t.Helper()
 	dir := jobsDir(stateDir, sessID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -53,7 +63,7 @@ func writeJobLogFast(t *testing.T, stateDir, sessID string, n int) string {
 		event := jobstore.Event{
 			Kind: jobstore.EventJobStarted, Seq: int64(i + 1), TS: started,
 			JobID: jobID, Type: jobstore.JobShell,
-			OwnerSessionID: sessID, VisibleToSession: sessID, StartedAt: &started,
+			OwnerSessionID: sessID, VisibleToSession: sessID, StartedAt: &started, Background: background,
 		}
 		if err := enc.Encode(event); err != nil {
 			t.Fatal(err)

@@ -31,6 +31,7 @@ type runConfig struct {
 	visionModel               string // --vision-model override for the image-description side-channel
 	workDir                   string
 	stateDir                  string   // --state-dir override
+	disableMemory             bool     // sticky session-wide native memory opt-out
 	systemPrompt              string   // --system-prompt file path
 	systemPromptAppend        []string // --system-prompt-append file paths
 	maxRounds                 int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
@@ -99,6 +100,17 @@ var (
 	}
 )
 
+// Memory resolution is independent of history storage and never guesses an ID
+// after failure. Personal memory and ordinary work remain available.
+func resolveMemoryProjectID(env execenv.ExecutionEnvironment, warnings io.Writer) string {
+	project, err := identifier.ResolveProjectWith(env.WorkingDirectory(), execenv.NewProjectResolver(env))
+	if err != nil {
+		fmt.Fprintf(warnings, "warning: project memory unavailable: %v\n", err) //nolint:errcheck
+		return ""
+	}
+	return project.ID
+}
+
 func run(ctx context.Context, cfg runConfig) error {
 	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
 		return err
@@ -162,7 +174,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// as a warning — right for a marketplace it failed to fetch, wrong for a
 	// caller that has left. Everything after this builds a client and a
 	// session, so the interrupt is read here rather than carried into them.
-	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
 	}
 	if _, err := agent.ParseProviderIdleTimeout(cfg.providerIdleTimeout); err != nil {
@@ -309,12 +321,19 @@ func run(ctx context.Context, cfg runConfig) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
-	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+	if err := startupInterrupted(ctx, stepProbingLoginShellPath); err != nil {
 		return err
+	}
+	memoryProjectID := ""
+	if meta == nil {
+		memoryProjectID = resolveMemoryProjectID(env, cfg.stderr)
 	}
 
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
+		MemoryStateRoot:             cmdutil.DefaultStateRoot(),
+		MemoryProjectID:             memoryProjectID,
+		DisableMemory:               cfg.disableMemory,
 		LifetimeContext:             ctx,
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 		ShareTasksWithChildren:      cfg.shareTaskStore,
@@ -373,13 +392,15 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		// Provisioning allocates the session scratch and the lease under it,
 		// which nothing releases until a session owns this environment.
-		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
-			env.DisposeUnadoptedScratch()
+		if err := startupInterrupted(ctx, stepProvisioningSandbox); err != nil {
+			_ = env.DisposeSessionScratch()
 			return err
 		}
 	}
 	if meta != nil {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
+			MemoryStateRoot:             baseSessionCfg.MemoryStateRoot,
+			DisableMemory:               cfg.disableMemory,
 			LifetimeContext:             ctx,
 			StateDir:                    stateDir,
 			Project:                     project,
@@ -391,13 +412,10 @@ func run(ctx context.Context, cfg runConfig) error {
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {
-			// A resume provisions this environment's sandbox from the
-			// session's persisted mode inside the restore, and the restore can
-			// fail after that with no session built to own the scratch and the
-			// flock lease it took. An allocation the resume adopted from the
-			// root's durable retention manifest is retained rather than
-			// removed; only a fresh mint is disposed.
-			agent.DisposeResumeScratchAfterFailure(stateDir, meta.ID, env)
+			// The restore reopens the session's kept scratch and can fail
+			// after that with no session built to own it. The scratch still
+			// belongs to the session, so only its lease is released.
+			_ = env.EndSessionScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if resumeWithChildID != "" {
@@ -418,11 +436,8 @@ func run(ctx context.Context, cfg runConfig) error {
 		sess, err = runNewSession(client, profile, env, baseSessionCfg)
 		if err != nil {
 			// The session that would have owned whatever this environment
-			// provisioned was never built. NewSession may already have
-			// published the root's durable scratch retention before it failed,
-			// so the cleanup must retain an allocation the manifest references
-			// rather than remove it out from under a later resume.
-			agent.DisposeRootScratchAfterFailure(stateDir, env)
+			// provisioned was never built, so its scratch goes here.
+			_ = env.DisposeSessionScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
@@ -430,7 +445,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// The session is live, and everything past here is the turn itself. An
 	// interrupt that arrived while it was being built ends the run instead,
 	// and the deferred Close takes the session down on the way out.
-	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+	if err := startupInterrupted(ctx, stepCreatingSession); err != nil {
 		return err
 	}
 

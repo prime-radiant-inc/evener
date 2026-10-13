@@ -12,7 +12,7 @@
     background: var(--surface-1);
     font-family: var(--font-sans);
   }
-  /* .removeImageButton ramps its opacity over --motion-duration-overlay
+  /* .removeSlot ramps its opacity over --motion-duration-overlay
      (120ms). getComputedStyle reads the value at THIS instant, so a measure
      taken right after the pseudo-state is pinned reads the start of the ramp
      (0), not where the cascade settles. What this case asserts is which value
@@ -25,8 +25,9 @@
 </style>
 </head>
 <body>
-<!-- Three copies of Composer.tsx's staged-attachment tile against the REAL
-     composer.module.css class names. One is left alone; CSS.forcePseudoState
+<!-- Three copies of AttachmentTile.tsx's staged-attachment tile against the
+     REAL composer.module.css and IconButton (button/iconbutton.module.css)
+     class names. One is left alone; CSS.forcePseudoState
      pins :hover on the second and :focus-visible on the third's remove button
      (case.json), so one page and one measurement cover all three states with
      the resting copy as the control. The image is a 4x4 two-colour PNG so the
@@ -35,36 +36,39 @@
   <div class="imageTile" id="resting-tile">
     <img class="imageThumbnail" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFElEQVR4nGP4z/AfjhhQOEhsVA4ANSkf4Z/pjskAAAAASUVORK5CYII=" alt="shot.png">
     <div class="dimensionsOverlay">4×4</div>
-    <button type="button" class="removeImageButton" id="resting-remove" aria-label="Remove shot.png">
-      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-    </button>
+    <span class="removeSlot" id="resting-slot">
+      <button type="button" class="button secondary sm" id="resting-remove" aria-label="Remove shot.png"><span class="icon"><svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span></button>
+    </span>
   </div>
 
   <div class="imageTile" id="hovered-tile">
     <img class="imageThumbnail" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFElEQVR4nGP4z/AfjhhQOEhsVA4ANSkf4Z/pjskAAAAASUVORK5CYII=" alt="shot.png">
     <div class="dimensionsOverlay">4×4</div>
-    <button type="button" class="removeImageButton" id="hovered-remove" aria-label="Remove shot.png">
-      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-    </button>
+    <span class="removeSlot" id="hovered-slot">
+      <button type="button" class="button secondary sm" id="hovered-remove" aria-label="Remove shot.png"><span class="icon"><svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span></button>
+    </span>
   </div>
 
   <div class="imageTile" id="focused-tile">
     <img class="imageThumbnail" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFElEQVR4nGP4z/AfjhhQOEhsVA4ANSkf4Z/pjskAAAAASUVORK5CYII=" alt="shot.png">
     <div class="dimensionsOverlay">4×4</div>
-    <button type="button" class="removeImageButton" id="focused-remove" aria-label="Remove shot.png">
-      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-    </button>
+    <span class="removeSlot" id="focused-slot">
+      <button type="button" class="button secondary sm" id="focused-remove" aria-label="Remove shot.png"><span class="icon"><svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span></button>
+    </span>
   </div>
 </div>
 <script>
 window.measure = () => {
-  const read = (id) => {
-    const style = getComputedStyle(document.getElementById(id));
+  // The slot carries the reveal (opacity); the IconButton inside it carries
+  // the focus ring.
+  const read = (prefix) => {
+    const slot = getComputedStyle(document.getElementById(`${prefix}-slot`));
+    const button = getComputedStyle(document.getElementById(`${prefix}-remove`));
     return {
-      opacity: Number(style.opacity),
-      outlineStyle: style.outlineStyle,
-      outlineWidth: style.outlineWidth,
-      outlineColor: style.outlineColor,
+      opacity: Number(slot.opacity),
+      outlineStyle: button.outlineStyle,
+      outlineWidth: button.outlineWidth,
+      outlineColor: button.outlineColor,
     };
   };
   // The accent the focus ring is supposed to be drawn in, resolved from the
@@ -76,9 +80,9 @@ window.measure = () => {
   const accent = getComputedStyle(probe).color;
   probe.remove();
   return {
-    resting: read("resting-remove"),
-    hovered: read("hovered-remove"),
-    focused: read("focused-remove"),
+    resting: read("resting"),
+    hovered: read("hovered"),
+    focused: read("focused"),
     accent,
   };
 };

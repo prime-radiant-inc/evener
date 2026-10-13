@@ -32,7 +32,7 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 					startedOnce.Do(func() { close(compactStarted) })
 					<-releaseCompact
 				}
-				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSaved work summary\n[END SUMMARY]")}
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSaved work summary\n[END SUMMARY]")}
 			}, withDir(dir), withConfig(SessionConfig{
 				StateDir: dir,
 				testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes},

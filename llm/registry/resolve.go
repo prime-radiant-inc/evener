@@ -293,6 +293,9 @@ func (r *Registry) resolveMode(ref string, includeLive, allowCodexCandidate bool
 	return r.resolveOnMode(rec, pr, warnings, includeLive, allowCodexCandidate)
 }
 
+// ErrUnknownInstance reports a name the registry has no instance for.
+var ErrUnknownInstance = errors.New("unknown instance")
+
 // unknownInstance reports a reference or ResolveInstance call naming an
 // instance the registry does not have, listing the available ones.
 func (r *Registry) unknownInstance(name string) error {
@@ -300,7 +303,7 @@ func (r *Registry) unknownInstance(name string) error {
 	for _, inst := range r.rankedInstances() {
 		names = append(names, inst.name)
 	}
-	return fmt.Errorf("unknown instance %q (available: %s)", name, strings.Join(names, ", "))
+	return fmt.Errorf("%w %q (available: %s)", ErrUnknownInstance, name, strings.Join(names, ", "))
 }
 
 // resetLayerFields clears caps.Fields and purges any "Fields.*" provenance
@@ -1580,7 +1583,7 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error) {
 	rec, ok := r.recordFor(instance)
 	if !ok {
-		return nil, nil, fmt.Errorf("unknown instance %q", instance)
+		return nil, nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
 	}
 	return rec, modelIDs(rec, r.LiveModels(instance)), nil
 }

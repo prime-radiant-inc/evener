@@ -114,22 +114,13 @@
   display: flex;
 }
 
-.visuallyHidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-}
-
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
  * 4; UX fix, real-phone measurement: an option row with no detail measured
  * ~21px tall) - min-height, not height, so the desktop sizing above stays
- * the desktop rule and this only ever grows it. Same (pointer: coarse)
+ * the desktop rule and this only ever grows it. Same (any-pointer: coarse)
  * pattern as askdock.module.css's own .tab rule, since .option is not a
  * widgets/button consumer. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .option {
     min-height: var(--tap-min);
   }

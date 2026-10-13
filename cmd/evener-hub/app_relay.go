@@ -128,9 +128,7 @@ const hubRelayPendingDeliveryLimit = 64
 // hubTransientOwnershipBudget bounds how long a path without a request
 // context of its own waits for a session alias that a deletion or a
 // long-running Resume may hold: long enough for transient ownership to
-// resolve, bounded so the caller cannot be parked indefinitely. The
-// workspaceData reads in web_workspace.go keep their own inline 3s budgets;
-// those sites predate this constant.
+// resolve, bounded so the caller cannot be parked indefinitely.
 const hubTransientOwnershipBudget = 3 * time.Second
 
 // relayPublicationGuardTimeout bounds how long the per-frame publication guard

@@ -11,6 +11,7 @@ import {
   composerDraftStorageKey,
   decodeSupportedComposerDraft,
   draftStorageKey,
+  isBlankDraft,
 } from "../panes/session/composer/draft";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import { appendLiteralReference, type SkillEditorValue } from "../panes/session/composer/skillDocument";
@@ -65,6 +66,10 @@ export interface BrowserDraftKey {
 export interface StoredComposerDraft extends SkillEditorValue {
   key: BrowserDraftKey;
   token: DraftSessionToken;
+  // Wall-clock stamp of the last genuine draft write (seed, edit or carry), so
+  // drafts under two different refs can be ordered when one is carried to the
+  // other. Absent on rows an older build wrote.
+  editedAt?: number;
 }
 
 export type DraftCommit =
@@ -84,11 +89,12 @@ export interface BrowserDraftRepository {
   clearSubmitted(key: BrowserDraftKey, submitted: SubmittedDraft): Promise<DraftSettlement>;
   appendAnnotation(input: AppendAnnotationInput): Promise<AppendAnnotationResult>;
   transferSupportedDrafts(namespace: BrowserDraftKey["namespace"]): Promise<{ state: "committed" | "pending" }>;
+  carryDraft(from: BrowserDraftKey, to: BrowserDraftKey): Promise<void>;
   subscribe(listener: (key: BrowserDraftKey) => void): () => void;
   close(): void;
 }
 
-type BrowserDraftOperation = "seedDraft" | "commitEdit" | "clearSubmitted" | "transferSupportedDrafts";
+type BrowserDraftOperation = "seedDraft" | "commitEdit" | "clearSubmitted" | "transferSupportedDrafts" | "carryDraft";
 
 export type BrowserDraftOpenDiagnosticPath =
   | "open-timeout"
@@ -204,7 +210,12 @@ function cloneValue(value: SkillEditorValue): SkillEditorValue {
 }
 
 function publicSessionRow(row: SessionRow): StoredComposerDraft {
-  return { ...cloneValue(row), key: cloneKey(row.key), token: { ...row.token } };
+  return {
+    ...cloneValue(row),
+    key: cloneKey(row.key),
+    token: { ...row.token },
+    ...(row.editedAt === undefined ? {} : { editedAt: row.editedAt }),
+  };
 }
 
 function newSessionRow(key: BrowserDraftKey, value: SkillEditorValue, incarnation: string): SessionRow {
@@ -213,6 +224,7 @@ function newSessionRow(key: BrowserDraftKey, value: SkillEditorValue, incarnatio
     key: cloneKey(key),
     ...cloneValue(value),
     token: { namespaceIncarnation: incarnation, sessionRevision: 1 },
+    editedAt: Date.now(),
   };
 }
 
@@ -300,10 +312,10 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       waitMs: STORAGE_WAIT_MS,
       upgrade: registerLocalCompositionSchema,
       errors: {
-        open: "Unable to open browser draft repository",
-        superseded: "Browser draft repository connection was closed",
+        open: () => new Error("Unable to open browser draft repository"),
+        superseded: () => new Error("Browser draft repository connection was closed"),
         timeout: () => new Error("Browser draft repository open timed out"),
-        blocked: "Browser draft repository upgrade is blocked",
+        blocked: () => new Error("Browser draft repository upgrade is blocked"),
       },
       reportDiagnostic: (path, versionchangeTransaction) => {
         try {
@@ -389,7 +401,9 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
           return { state: "conflict", current: publicSessionRow(row) } as const;
         }
         if (!stillAuthorized()) return { state: "unavailable" } as const;
-        const next = nextSessionRow(row, value);
+        // The one choke point every explicit edit goes through, so the stamp
+        // is the draft's actual last-write time.
+        const next = { ...nextSessionRow(row, value), editedAt: Date.now() };
         await requestResult(putSessionRow(transaction, next));
         changed.push(key);
         return { state: "committed", draft: publicSessionRow(next) } as const;
@@ -424,7 +438,10 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         if (!sameComposerValue(row, submitted)) {
           return { cleared: false, draftUnchanged, persistence: "committed" } as const;
         }
+        // A cleared row is blank, and a blank draft carries no edit time: the
+        // resume-carry ordering stamp belongs to text that exists.
         const cleared = nextSessionRow(row, { text: "", skillNames: [] });
+        delete cleared.editedAt;
         await requestResult(putSessionRow(transaction, cleared));
         changed.push(key);
         return { cleared: true, draftUnchanged: true, persistence: "committed" } as const;
@@ -433,6 +450,40 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       return result;
     } catch {
       return { cleared: false, draftUnchanged, persistence: "pending" };
+    }
+  }
+
+  // A store-driven resume can return a different identity, and the pane
+  // follows it. The draft the old ref's composer committed lives under the
+  // OLD key, while the incoming pane's composer starts on the NEW key's own
+  // draft - so without a carry the old ref's draft would be dropped at the
+  // identity change. The carry preserves whichever draft is genuinely NEWER
+  // by its wall-clock write stamp: a blank or absent destination always takes
+  // the source; otherwise the source wins only when strictly newer, so ties
+  // and two unstamped rows (written before stamps existed) keep the
+  // destination, conservatively. The source copy stays under the old key
+  // either way; a storage fault leaves both rows exactly where they were.
+  async carryDraft(from: BrowserDraftKey, to: BrowserDraftKey): Promise<void> {
+    if (serializeSessionKey(from) === serializeSessionKey(to)) return;
+    try {
+      const changed: BrowserDraftKey[] = [];
+      await this.#write(DRAFT_STORES, "carryDraft", async (transaction) => {
+        const source = await readSessionRow(transaction, from);
+        // A blank or absent source never moves.
+        if (!source || isBlankDraft(source)) return;
+        const destination = await readSessionRow(transaction, to);
+        if (destination && !isBlankDraft(destination) && (source.editedAt ?? 0) <= (destination.editedAt ?? 0)) {
+          return;
+        }
+        const carried: SessionRow = destination
+          ? { ...nextSessionRow(destination, source), editedAt: Date.now() }
+          : newSessionRow(to, source, await this.#currentIncarnation(transaction, to.namespace));
+        await requestResult(putSessionRow(transaction, carried));
+        changed.push(to);
+      });
+      this.#publish(changed);
+    } catch {
+      // Best-effort like every draft write: the source copy stays put.
     }
   }
 

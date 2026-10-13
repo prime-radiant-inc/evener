@@ -1,7 +1,7 @@
 # @evener/appwire-client
 
 The framework independent TypeScript client for Evener's AppWire protocol.
-It has no runtime dependencies and exports the client, the connection seam
+It uses TweetNaCl for its optional pairing subpath and exports the client, the connection seam
 applications program against, the transport contract, generated protocol
 types, wire errors with their session classifiers, the rejection classifier
 and the user-facing message helpers every failure display goes through, the
@@ -17,7 +17,7 @@ it again, the translation that turns those markers into prose at send and
 the composer input assembly that applies that translation and stages the
 attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
-rules, the job log tail parser, the send/queue availability table, the
+rules, the lossless job-output page codec, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
 delegate status rule, the delegate timing and model derivations both apps'
 delegate details render from,
@@ -91,15 +91,28 @@ for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
 with a fetch: the package issues no request of its own and names neither an
-origin nor a credentials policy. The hub overview store,
+origin nor a credentials policy. `createDocumentReadDemand(read)` is the shared,
+framework-free lifetime for later web and native readers: hosts drive active,
+refresh, replacement and disposal demand while it keeps at most one physical
+read in flight, rejects stale publication through `attempt.isCurrent()`, and
+retries transient outcomes after 1, 2, 4, 8 and then 15 seconds, capped at 15
+seconds. Each attempt's viewer-unique generation is a cache discriminator, not
+a credential; `docImageReadURL` appends it only to an active reader's image
+request. Ordinary `docImageURL` transcript previews keep their existing URL and
+cache behavior. The module stores demand, timers and publication identity, not
+file bytes. Platform visibility/foreground/source events and HTTP outcome
+classification remain host-adapter responsibilities. This feature adds no
+version fallback or alternate protocol. That subpath also exports the pure
+file-reference contract described below. The hub overview store,
 `createHubOverviewStore(client)`, is the same framework-free triple over a
 `request`-only client port; it holds the fetch-once settings-overview read
 both apps' hub settings render from. The archived list store,
 `createArchivedListStore(client)`, is the same triple plus store-bound
 actions (`refresh`, `loadMore`, `refreshLoaded`, `reset`) over a
 `request`-only port: each opened project's archived sessions from
-`evener/archived/list`, paged by cursor and refreshed in place; the host
-resets it when its connection is replaced or recovers. The hub's own update
+`evener/archived/list`, paged by cursor and refreshed in place (a refresh
+sends the list's revision and keeps its rows when the hub answers
+unchanged); the host resets it when its connection is replaced or recovers. The hub's own update
 check and apply,
 `createHubUpdateController({ client, awaitRestart })`, is the same triple
 with the restart wait as a port: each app says how it notices the new hub.
@@ -107,6 +120,50 @@ with the restart wait as a port: each app says how it notices the new hub.
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
+
+## Automatic memory refreshes
+
+The root export provides `MEMORY_CONTEXT_EVENT_KIND`, `parseMemoryContext` and
+the shared display labels used by web and native refresh disclosures.
+`parseMemoryContext` validates `raw.memoryContext` without reading files or
+changing the recorded text. An invalid payload returns `undefined`; clients
+then show the complete original text. Keep that source independently available
+even when validation succeeds, because formatted Markdown can omit source content.
+
+## Document file references
+
+`bindFilePath`, `parseFileReference`, and `findFileReferences` keep a
+reference's three identities separate: `path` is its normalized cwd-relative
+display and deduplication identity, `cwd` is the source session directory
+captured for that render, and `readTarget` is the absolute target the opening
+action reads. `provenance` records whether the source spelling was relative or
+absolute. Recognition is lexical and pure; it neither checks existence nor
+decides which session or document port has authority.
+
+Structured callers use `bindFilePath` for raw filesystem text, including
+spaces. Prose and inline-code parsing is literal too: supported numeric
+line/column suffixes are removed, but percent sequences, hashes, and question
+marks remain filename data. Markdown link destinations are URI references:
+schemes, protocol-relative values, and query- or fragment-only values are
+rejected; raw query/fragment metadata and a raw numeric location suffix are
+removed before the pathname is decoded exactly once. Every surface rejects
+parent traversal before collapsing dot segments and repeated interior
+separators.
+
+`rebindFileReference(reference, cwd)` is an explicit viewer transition, not an
+implicit read rewrite. A relative reference follows the new cwd and receives a
+new `readTarget`; an absolute reference records the new cwd but retains its
+original absolute target, including when that target is outside the new root
+and the server will forbid the read. Callers supply a nonempty trusted cwd and
+retain ownership of session/ref validation.
+## Generated results
+
+`MethodTypes` correlates each method's parameters and result. Fixed result
+discriminators come from Go's `StringDiscriminators` catalog: host plans narrow
+on `outcome`, and teardown retry results narrow on `outcome` and `hostKind`.
+Use those generated unions directly when consuming results; the failure arms
+carry `seam`, and planned results carry `plan` and `token`. The public Go arm
+structs and their wire fields remain the protocol authority.
 
 ## Host-scoped requests
 
@@ -156,6 +213,27 @@ evidence of an edit. `formatAnnotationReference` emits literal captured data for
 an ordinary composer draft, including a Markdown-safe locator and escaped user
 text. Comment-work helpers freeze the first captured passage when note editing
 begins and retain note bytes when source expiry invalidates that capture.
+## Job output pages
+
+`evener/jobs/output` returns six raw-page fields: `offsetBytes`,
+`bytesReturned`, `totalBytes`, `retainedStartBytes`, `encoding` and `data`.
+Omit `beforeBytes` for latest output; supply it for a backward page ending at
+that lifetime byte offset. Explicit zero remains zero. The default limit is
+4 KiB and positive `maxBytes` limits are capped at 64 KiB.
+
+The root exports `parseJobOutputPage(data)`, which returns a validated page
+with `bytes: Uint8Array`, or `null` for invalid input. It accepts lossless `utf8`
+and standard base64 without Node globals. `decodeJobOutputText(bytes)` renders
+raw bytes; join contiguous pages before decoding split UTF-8 scalars.
+`forEachJobOutputScalar` supplies source-byte spans for bounded rendering;
+its callback returns `false` to stop the walk early.
+`jobOutputPrunedBounds(error)` extracts the structured `jobOutputPruned`
+floor and total from error code `-32014`.
+
+Fixtures use the same six-field contract. The codec owns validation and
+decoding; each application owns its read cadence, retained windows and recovery.
+The [output guide](../../docs/product/session-activity.md#job-output-pages)
+defines snapshot selection, floor/EOF semantics and the current protocol.
 
 ## Older-history demand
 
@@ -288,16 +366,27 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`, and the path helpers both apps'
   document surfaces share (`filenameOf`, `isMarkdownPath`, `isImagePath`,
-  `fileURLToPath`, `cwdRelative`).
+  `fileURLToPath`, `cwdRelative`). It also exports the pure source-bound file
+  reference helpers (`bindFilePath`, `parseFileReference`,
+  `findFileReferences`, `rebindFileReference`) and their types.
 - `@evener/appwire-client/state/connection` - the connection state layer:
   `createConnectionStore()` is a framework-free store holding one host's wired
-  `AppwireClientLike`, the `ConnectionState` mirror that follows it, and plain
-  settable `serverInfo`/`features` fields the host writes from its own
-  handshake read. `connect(client)` swaps the wired client with a reentrancy
+  `AppwireClientLike`, the `ConnectionState` mirror that follows it, and the
+  negotiated `serverInfo`/`features`. Each ready generation publishes its
+  matching metadata in the same store write, including automatic reconnect.
+  `AppwireClient.initializeResult` exposes the most recent successfully
+  negotiated response, cached before ready dispatch and null before the first
+  handshake. Attaching an already-ready client adopts its cached metadata;
+  attaching an idle client never dials. Every `AppwireClientLike` adapter provides
+  `initializeResult`, null before its first handshake.
+  Unknown additive feature flags are retained. `connect(client)` swaps the
+  wired client with a reentrancy
   guard and a detach of the outgoing client's connection-state listener, so a
   replaced client never keeps a live subscription; `onConnectionNotification(store, handler)`
-  follows whichever client the store holds across a swap. No handshake, no
-  view binding. Resolves to `state/connection/index.ts`, a barrel.
+  follows whichever client the store holds across a swap. Replacement drops
+  the outgoing metadata and terminal close clears it. The transport owns
+  handshake/reconnect; this binding adopts results and has no view binding.
+  Resolves to `state/connection/index.ts`, a barrel.
 - `@evener/appwire-client/state/navigation` - the navigation state layer the
   web app's navigation store is built on, adoptable by native if it ever
   gains one: the resource-key vocabulary and
@@ -426,7 +515,8 @@ entry, and `mobile-native/src/metroResolver.test.ts` reads the same `exports`
 map, so a published subpath Metro cannot resolve fails there.
 
 Build and qualify from this directory with `npm run qualification`. The runner
-packs the package, installs that tarball into a temporary consumer, and then,
+packs the package and its installed runtime dependencies, installs those tarballs
+offline into a temporary consumer with an empty npm cache, and then,
 for every specifier the `exports` map publishes, checks ESM and CommonJS
 TypeScript resolution and runs both runtime import forms against the names that
 specifier promises. A subpath with no entry in the runner's qualification
@@ -500,3 +590,8 @@ readback.
 The shared connection example uses the platform WebSocket. If your hub requires
 an Authorization header, adapt `clientFromEnvironment` to the authenticated
 `socketFactory` described above before using these examples.
+
+`@evener/appwire-client/pairing` owns temporary device invitation encoding,
+comparison fingerprints, claim requests and encrypted credential decoding.
+It is a separate subpath so ordinary AppWire consumers do not load NaCl. See
+[the device pairing protocol](../../docs/device-pairing.md) for the wire contract.

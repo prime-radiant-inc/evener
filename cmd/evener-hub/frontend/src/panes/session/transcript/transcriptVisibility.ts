@@ -13,7 +13,7 @@
 // prompt" title because it had no structured item type to dispatch on; this
 // codebase does, so a change to the announcement wording cannot silently
 // break these toggles.
-import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "@evener/appwire-client";
+import { type ItemModel, PROMPT_EVENT_KINDS, SYSTEM_PRELUDE_TURN_ID } from "@evener/appwire-client";
 
 // The session's system prompt (apptranscript.go's PreludeTurn) arrives as a
 // systemMessage item with this exact, static id - the narrow fallback signal
@@ -58,14 +58,6 @@ export function isDormantTranscript(turns: readonly { id: string }[]): boolean {
 // events.HookEndData.ExitCode). Absent - not zero - when the projecting
 // daemon predates that field.
 const HOOK_EXIT_EVENT_KIND = "hook_completed";
-
-// Both prompt kinds answer to the single "Prompt loaded" toggle, matching
-// the legacy renderer (which keyed "system prompt" and "prompt loaded" to
-// one preference) and the setting's own copy: system_prompt is the full
-// prompt scaffold the toggle offers as an expandable disclosure,
-// prompt_loaded the quiet "Loaded prompt X (N B)" line naming the same
-// event.
-const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 
 // "Round timings" reports one measurement on two surfaces: TurnSeparator's
 // friendly per-turn annotation, and this raw projector line ("Round 2

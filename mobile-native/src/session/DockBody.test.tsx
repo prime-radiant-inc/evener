@@ -1,8 +1,9 @@
 // A dock's scrolling body (spec 8.4): it gives up all the height it must, so
 // the dock's answer controls always stay on screen, and flashes its scroll
 // indicator once when what it holds is taller than the room it got.
-import { act, create, type ReactTestInstance } from "react-test-renderer";
+import { act, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
+import { render } from "../renderNative.testkit";
 import { DockBody } from "./DockBody";
 import { shrinkingScroller } from "./dockCard";
 
@@ -10,11 +11,8 @@ vi.mock("react-native", async () => (await import("../renderNative.testkit")).na
 
 function mount() {
 	const flashScrollIndicators = vi.fn();
-	let tree!: ReturnType<typeof create>;
-	act(() => {
-		tree = create(<DockBody>{"A long question"}</DockBody>, {
-			createNodeMock: () => ({ flashScrollIndicators }),
-		});
+	const tree = render(<DockBody>{"A long question"}</DockBody>, {
+		createNodeMock: () => ({ flashScrollIndicators }),
 	});
 	const scroller = tree.root.findAll((node) => String(node.type) === "ScrollView")[0] as ReactTestInstance;
 	const layout = (height: number) =>

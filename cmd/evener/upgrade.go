@@ -14,6 +14,9 @@ import (
 
 var selfUpdateUpgrade = selfupdate.Upgrade
 
+// errTooManyUpgradeTargets identifies an upgrade given more than one target.
+var errTooManyUpgradeTargets = errors.New("expected at most one upgrade target")
+
 func runUpgrade(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -33,7 +36,7 @@ func runUpgrade(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() > 1 {
-		return errors.New("expected at most one upgrade target")
+		return errTooManyUpgradeTargets
 	}
 	requested := ""
 	if fs.NArg() == 1 {

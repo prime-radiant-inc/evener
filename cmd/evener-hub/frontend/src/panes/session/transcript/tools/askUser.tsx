@@ -64,20 +64,32 @@ function isMalformedArgumentsJSON(argumentsJSON: string | undefined): boolean {
 
 function QuestionCard({ q }: { q: AskUserQuestion }) {
   return (
-    <div className={CLASS.card}>
+    <div className={CLASS.card} data-testid="ask-user-question">
       <div className={CLASS.question}>{q.question}</div>
       <ul className={CLASS.options}>
         {q.options.map((opt) => (
-          <li key={opt.label} className={CLASS.option}>
+          <li key={opt.label} className={CLASS.option} data-recommended={opt.recommended ? "true" : undefined}>
             <span className={CLASS.label}>{opt.label}</span>
             <span className={CLASS.detail}>{opt.detail}</span>
             {opt.recommended && <span className={CLASS.recommended}>recommended</span>}
           </li>
         ))}
       </ul>
-      {q.multiSelect && <div className={CLASS.note}>Select multiple.</div>}
-      {q.why && <div className={CLASS.note}>{q.why}</div>}
-      {q.ifUnanswered && <div className={CLASS.note}>If unanswered: {q.ifUnanswered}</div>}
+      {q.multiSelect && (
+        <div className={CLASS.note} data-note="multi-select">
+          Select multiple.
+        </div>
+      )}
+      {q.why && (
+        <div className={CLASS.note} data-note="why">
+          {q.why}
+        </div>
+      )}
+      {q.ifUnanswered && (
+        <div className={CLASS.note} data-note="if-unanswered">
+          If unanswered: {q.ifUnanswered}
+        </div>
+      )}
     </div>
   );
 }
@@ -89,11 +101,14 @@ function AskUserBody({ item }: ToolRenderProps) {
     // in it) is the common case - e.g. a genuinely argless item - and must
     // not be described as malformed; a genuine JSON syntax error keeps its
     // own, distinct wording.
+    const malformed = isMalformedArgumentsJSON(item.argumentsJSON);
     return (
-      <div className={CLASS.fallback}>
-        {isMalformedArgumentsJSON(item.argumentsJSON)
-          ? "Couldn't read this question - the data looks malformed."
-          : "Question data unavailable."}
+      <div
+        className={CLASS.fallback}
+        data-testid="ask-user-fallback"
+        data-reason={malformed ? "malformed" : "unavailable"}
+      >
+        {malformed ? "Couldn't read this question - the data looks malformed." : "Question data unavailable."}
       </div>
     );
   }
@@ -106,7 +121,9 @@ function AskUserBody({ item }: ToolRenderProps) {
         // biome-ignore lint/suspicious/noArrayIndexKey: derived fresh from a fixed, immutable source each render, see above
         <QuestionCard key={i} q={q} />
       ))}
-      <div className={CLASS.footer}>Answer in the composer (wave 5).</div>
+      <div className={CLASS.footer} data-testid="ask-user-answer-hint">
+        Answer in the composer (wave 5).
+      </div>
     </div>
   );
 }

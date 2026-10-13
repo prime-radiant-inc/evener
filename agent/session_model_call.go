@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -282,11 +283,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// the wrong version. inFlightFrom is captured there too, so the
 			// boundary this request expands with
 			// matches the exact history this fold published.
-			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
+			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn, restoredAt []int) {
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
 					s.shrinkTurnHistoryBaseline(preManageLen, managedLen, injectedTurns)
+					s.growTurnHistoryBaseline(restoredAt)
 				}
 				inFlightFrom = s.turnHistoryBaseline
 				baselineSynced = true
@@ -338,6 +340,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// notification wake, delegate attention) funnels through, so the refresh
 	// covers entry paths whose accept step projects nothing.
 	s.maybeAppendNotesContext()
+	// Independent scope reads share one finite wait for this boundary. Workers
+	// only return observations, the owner loop appends currentness transitions.
+	s.maybeAppendMemoryContext(ctx, round == 0)
 	// Re-snapshot so the request expands the refreshed history. The
 	// in-flight boundary is re-captured alongside the final history copy
 	// under the same lock: a concurrent compaction landing between the two
@@ -351,7 +356,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	historyTurns = append([]schema.Turn{}, s.history...)
 	inFlightFrom = s.turnHistoryBaseline
+	afterSnapshot := s.cfg.testOnly.afterModelHistorySnapshot
 	s.mu.Unlock()
+	if afterSnapshot != nil {
+		afterSnapshot()
+	}
 
 	// historyTurns already holds this round's refreshed copy, re-snapshotted
 	// above under s.mu; replayScope and the request expand that copy directly
@@ -366,12 +375,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		protocolOf:     s.instanceProtocol,
 		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
 	}
+	// presentedTurns is the history this request projects: a leased delegate
+	// turn projects the controller's own later snapshot, which can hold turns
+	// appended after historyTurns was taken.
+	presentedTurns := historyTurns
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 		snapshot := s.delegateModelHistorySnapshot()
+		presentedTurns = snapshot
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
@@ -426,6 +440,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		for _, notification := range appended {
 			history = append(history, scope.projectTurnMessage(notification, true))
 		}
+		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
@@ -481,9 +496,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	}
 	// Stage the mid-turn attention this round's request presents. The guard
 	// inside is the single gate, whichever path built the history; staging
-	// follows anchor planning because credit belongs to what the request
+	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
-	s.stageRootDelegateAttentionCoverage(req, historyTurns)
+	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
@@ -517,6 +532,17 @@ func (s *Session) shrinkTurnHistoryBaseline(preLen, postLen, injected int) {
 	s.turnHistoryBaseline -= shrink
 	if s.turnHistoryBaseline < 0 {
 		s.turnHistoryBaseline = 0
+	}
+}
+
+// growTurnHistoryBaseline moves the boundary past each restored attention turn
+// inserted ahead of it, in insertion order (restoredAt), so the in-flight turn
+// still starts where the boundary says. Callers must hold s.mu.
+func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
+	for _, at := range restoredAt {
+		if at < s.turnHistoryBaseline {
+			s.turnHistoryBaseline++
+		}
 	}
 }
 
@@ -1712,7 +1738,7 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			} else {
 				history = append(history, t.Message)
 			}
-		case schema.TurnEnvironment, schema.TurnNotesContext:
+		case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
 			// Turn-boundary context only ever lands at a turn boundary, so no
 			// mid-tool-round deferral: pass the message straight through.
 			history = append(history, t.Message)

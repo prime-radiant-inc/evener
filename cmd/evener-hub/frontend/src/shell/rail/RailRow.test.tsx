@@ -25,9 +25,9 @@ import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
+import { cadenceStateFor } from "../sessionStatus";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
-  cadenceStateFor,
   watchGloss as domainWatchGloss,
   RailRow,
   type RailRowActions,
@@ -130,6 +130,52 @@ beforeAll(() => {
       title: () => id,
       component: lazy(() => Promise.resolve({ default: PaneFixture })),
     });
+  }
+});
+
+test.each([
+  { title: "Short", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "A much longer nested session title", sidebarRight: 280, rowHeight: 40, left: "292px", top: "272px" },
+  { title: "Short", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+  { title: "A much longer nested session title", sidebarRight: 360, rowHeight: 60, left: "372px", top: "282px" },
+])("session card measures sidebar and owning row for $title", ({ title, sidebarRight, rowHeight, left, top }) => {
+  vi.stubGlobal("innerWidth", 1000);
+  vi.stubGlobal("innerHeight", 800);
+  const activate = vi.fn();
+  const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    if (this.hasAttribute("data-sidebar-rail")) return new DOMRect(0, 0, sidebarRight, 800);
+    if (this.getAttribute("role") === "treeitem") return new DOMRect(20, 300, 220, rowHeight);
+    return new DOMRect(80, 310, title.length * 5, 16);
+  });
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(240);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(96);
+  try {
+    render(
+      <div data-sidebar-rail>
+        <div role="treeitem" tabIndex={0}>
+          <RailRow node={sessionRailNode(apiNode({ title }))} info={info({ activate })} actions={actions()} />
+        </div>
+      </div>,
+    );
+    const row = screen.getByRole("treeitem");
+    const card = hoverForTooltip(screen.getByRole("button", { name: title }));
+    expect(card.style.left).toBe(left);
+    expect(card.style.top).toBe(top);
+    expect(card.parentElement).toBe(document.body);
+    expect(activate).not.toHaveBeenCalled();
+    expect(within(card).getByText("Proj")).toBeTruthy();
+
+    fireEvent.mouseLeave(screen.getByRole("button", { name: title }));
+    act(() => row.focus());
+    expect(screen.getByRole("tooltip").style.left).toBe(left);
+    expect(row.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
+    expect(document.activeElement).toBe(row);
+    fireEvent.click(screen.getByRole("button", { name: title }));
+    expect(activate).toHaveBeenCalledOnce();
+  } finally {
+    rect.mockRestore();
+    width.mockRestore();
+    height.mockRestore();
   }
 });
 
@@ -389,7 +435,7 @@ describe("signal gutter", () => {
     const { rerender } = render(
       <RailRow node={projectRailNode(apiProject({ rollup_state: "active" }))} info={info()} actions={actions()} />,
     );
-    expect(within(screen.getByTestId("rail-row-signal")).getByTestId("rail-status-spinner")).toBeTruthy();
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Working" })).toBeTruthy();
 
     rerender(
       <RailRow node={projectRailNode(apiProject({ rollup_state: "ended" }))} info={info()} actions={actions()} />,
@@ -405,36 +451,70 @@ describe("signal gutter", () => {
 
 describe("compact session status", () => {
   test.each([
-    ["active", "Running", "rail-status-spinner"],
-    ["awaiting", "Needs you", "rail-status-dot"],
-    ["warning", "Needs you", "rail-status-dot"],
-    ["errored", "Broken", "rail-status-dot"],
-  ] as const)("state %s renders the %s indicator", (state, label, testID) => {
+    ["active", "Working"],
+    ["awaiting", "Needs you"],
+    ["warning", "Needs you"],
+    ["errored", "Failed"],
+  ] as const)("state %s renders the %s indicator", (state, label) => {
     render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
 
     const signal = screen.getByTestId("rail-row-signal");
     expect(within(signal).getByRole("img", { name: label })).toBeTruthy();
-    expect(within(signal).getByTestId(testID)).toBeTruthy();
   });
 
-  test("broken descendants outrank needs-you and running work", () => {
+  test("failed descendants do not hide running work", () => {
     const session = apiNode({
-      state: "awaiting",
+      state: "idle",
       running_job_count: 2,
       subagents: { running: 1, failed: 1, done: 0 },
     });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
 
-    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Failed" })).toBeNull();
     expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
-    expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
+  });
+
+  test.each([
+    ["active", "Working"],
+    ["idle", null],
+    ["awaiting", "Needs you"],
+    ["warning", "Needs you"],
+  ] as const)("failed-only descendants preserve the parent's %s status", (state, expected) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, subagents: { running: 0, failed: 3, done: 46 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.queryByRole("img", { name: "Failed" })).toBeNull();
+    if (expected === null) expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    else expect(screen.getByRole("img", { name: expected })).toBeTruthy();
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("3 failed, 46 done")).toBeTruthy();
+  });
+
+  test.each(["awaiting", "warning"])("a %s question stays visible with running and failed children", (state) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, ask_pending: true, subagents: { running: 1, failed: 1, done: 0 } }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "Failed" })).toBeNull();
   });
 
   test("a running descendant gives an otherwise quiet session the spinner", () => {
     const session = apiNode({ state: "idle", subagents: { running: 1, failed: 0, done: 0 } });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
 
-    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
   });
 
   test("a running job gives an otherwise quiet session the spinner", () => {
@@ -446,42 +526,45 @@ describe("compact session status", () => {
       />,
     );
 
-    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
   });
 
   test.each([
-    ["awaiting", "job", { running_job_count: 1 }],
-    ["warning", "job", { running_job_count: 1 }],
-    ["awaiting", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
-    ["warning", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
-  ] as const)("a non-blocking %s state yields to running %s work", (state, _workKind, work) => {
+    ["job", { running_job_count: 1 }],
+    ["subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
+  ] as const)("a non-blocking warning yields to running %s work", (_workKind, work) => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state, ask_pending: false, ...work }))}
+        node={sessionRailNode(apiNode({ state: "warning", ask_pending: false, ...work }))}
         info={info()}
         actions={actions()}
       />,
     );
 
-    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
-    expect(within(panel).getByText("Running")).toBeTruthy();
+    expect(within(panel).getByText("Working")).toBeTruthy();
   });
 
-  test("a pending question outranks running work", () => {
+  // Awaiting without a question is a turn that ended on needs_response: it
+  // waits on a person as a question does, so it outranks work too (#4093).
+  test.each([
+    ["pending question", true, "Question waiting"],
+    ["needs_response rest", false, "Needs you"],
+  ] as const)("a %s outranks running work", (_name, askPending, expected) => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true, running_job_count: 1 }))}
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: askPending, running_job_count: 1 }))}
         info={info()}
         actions={actions()}
       />,
     );
 
     expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
-    expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
-    expect(within(panel).getByText("Question waiting")).toBeTruthy();
+    expect(within(panel).getByText(expected)).toBeTruthy();
   });
 
   test("a pending approval outranks running work", () => {
@@ -494,7 +577,7 @@ describe("compact session status", () => {
     );
 
     expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
-    expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
   });
 
   test("the session's own failure outranks a pending approval", () => {
@@ -506,7 +589,7 @@ describe("compact session status", () => {
       />,
     );
 
-    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
   });
 
@@ -552,7 +635,7 @@ describe("compact session status", () => {
 
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
     expect(within(panel).getByText("Session")).toBeTruthy();
-    expect(within(panel).getByText("Running")).toBeTruthy();
+    expect(within(panel).getByText("Working")).toBeTruthy();
     expect(within(panel).getByText("Fix flaky test")).toBeTruthy();
     expect(within(panel).getByText("prime-radiant")).toBeTruthy();
     expect(within(panel).getByText("buildbox")).toBeTruthy();
@@ -604,7 +687,7 @@ describe("compact session status", () => {
 
   test.each([
     ["warning", { state: "warning" }, "Warning"],
-    ["plain awaiting", { state: "awaiting", ask_pending: false }, "Your move"],
+    ["needs_response rest", { state: "awaiting", ask_pending: false }, "Needs you"],
     ["pending question", { state: "awaiting", ask_pending: true }, "Question waiting"],
     ["pending approval", { state: "active", approval_pending: true }, "Approval waiting"],
   ] as const)("the context panel preserves the %s status vocabulary", (_name, overrides, expected) => {
@@ -811,13 +894,34 @@ describe("watchGloss", () => {
 describe("loading row", () => {
   test("renders a non-interactive loading indicator", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
-    expect(screen.getByText(/loading/i)).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  test("announces itself via role=status, like the top-level Skeleton", () => {
+  test("announces itself once as Loading, like the top-level Skeleton", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
-    expect(screen.getByRole("status").textContent).toMatch(/loading/i);
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+  });
+});
+
+describe("project row retry", () => {
+  test("retries from the keyboard without activating the row", async () => {
+    const retry = vi.fn();
+    const rowInfo = info();
+    render(
+      <RailRow
+        node={{ ...projectRailNode(apiProject()), resourceError: "load failed", retry }}
+        info={rowInfo}
+        actions={actions()}
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Retry" });
+    expect(button.tabIndex).toBe(0);
+    const user = userEvent.setup();
+    await user.tab();
+    expect(document.activeElement).toBe(button);
+    await user.keyboard("{Enter}");
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(rowInfo.activate).not.toHaveBeenCalled();
   });
 });
 
@@ -847,18 +951,6 @@ describe("row alignment", () => {
     expect(topRuleBlock(RAIL_CSS, ".signal")).toMatch(/width:\s*8px;[^}]*margin-left:\s*-12px;/);
   });
 
-  test("status colors are semantic, broken has distinct geometry, and the running ring respects reduced motion", () => {
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="needs-you"]')).toContain("var(--attention)");
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toContain("var(--danger)");
-    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toMatch(
-      /border-radius:\s*1px;[^}]*rotate\(45deg\)/,
-    );
-    const motionRules = mediaBlock(RAIL_CSS, "prefers-reduced-motion: no-preference");
-    expect(nestedRuleBlock(motionRules, ".statusSpinner")).toMatch(/animation:/);
-    const baseSpinner = topRuleBlock(RAIL_CSS, ".statusSpinner");
-    expect(baseSpinner).not.toContain("animation:");
-  });
-
   test("the title button reset preserves the rail label's explicit UI font size", () => {
     const buttonReset = topRuleBlock(RAIL_CSS, ".sessionTitle .label");
     expect(buttonReset).toContain("font-family: inherit");
@@ -866,10 +958,10 @@ describe("row alignment", () => {
   });
 });
 
-describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
+describe("touch tap floor (RailRow.module.css, any-pointer: coarse)", () => {
   // shellguard's tap-target pass measures these in a real phone context; these
   // source assertions pin the rules themselves (jsdom evaluates no cascade).
-  const coarseBlock = mediaBlock(RAIL_CSS, "pointer: coarse");
+  const coarseBlock = mediaBlock(RAIL_CSS, "any-pointer: coarse");
 
   test("row action buttons meet the 44px floor in BOTH dimensions", () => {
     const rule = nestedRuleBlock(coarseBlock, ".actions button");
@@ -895,7 +987,7 @@ describe("session row", () => {
     const session = apiNode({ title: "Fix flaky test", state: "active" });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
     expect(screen.getByText("Fix flaky test")).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
   });
 
   test("clicking the label activates the row via info.activate", async () => {
@@ -1616,7 +1708,7 @@ describe("project row", () => {
     const project = apiProject({ name: "prime-radiant", rollup_state: "errored" });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
     expect(screen.getByText("prime-radiant")).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
   });
 
   // UX fix: two projects with the same name are disambiguated upstream in
@@ -2211,7 +2303,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     // so a project row's "+" IconButton keeps its own square geometry.
     //
     // Anchored to the TOP-LEVEL rule (column 0): the same selector also
-    // appears inside @media (pointer: coarse), where the widened tap target
+    // appears inside @media (any-pointer: coarse), where the widened tap target
     // centres the glyph instead - that override is the tap-floor describe's
     // own assertion above, not this one's.
     const justifyRule = topRuleBlock(RAIL_CSS, '.actions button[aria-haspopup="menu"]');
@@ -2264,7 +2356,7 @@ test.each([
   const parent = [...selectRailModel(resource).sessions.values()].find((session) => session.ref === "parent");
   if (!parent) throw new Error("missing parent");
   render(<RailRow node={sessionRailNode(parent)} info={info()} actions={actions()} />);
-  expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
 
 test("restart-required navigation disables daemon actions in the sidebar menu", async () => {

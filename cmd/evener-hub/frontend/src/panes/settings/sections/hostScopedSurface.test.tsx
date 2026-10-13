@@ -113,8 +113,8 @@ test("a host re-registered under the same name remounts the body, so no draft su
   const user = userEvent.setup();
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(screen.getByLabelText("Host"), "beta");
-  await user.type(screen.getByLabelText("draft"), "typed for the old registration");
-  expect((screen.getByLabelText("draft") as HTMLInputElement).value).toBe("typed for the old registration");
+  await user.type(screen.getByLabelText("draft"), "draft-for-old-registration");
+  expect((screen.getByLabelText("draft") as HTMLInputElement).value).toBe("draft-for-old-registration");
 
   act(() =>
     hostsStore.setState({

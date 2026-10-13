@@ -81,9 +81,7 @@ import {
 } from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
-import { Button, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
-import { Disclosure } from "../../../widgets/disclosure";
-import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
+import { Button, Disclosure, EmptyState, Markdown, Sheet, useToasts, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { STATUS_TOUCH, TaskCheck, TOUCH_WORD } from "../transcript/tools/taskCheck";
 import styles from "./taskspanel.module.css";
@@ -132,17 +130,14 @@ const CLASS = {
   metaKey: requireClass(styles.metaKey, "taskspanel.module.css", "metaKey"),
   metaValue: requireClass(styles.metaValue, "taskspanel.module.css", "metaValue"),
   times: requireClass(styles.times, "taskspanel.module.css", "times"),
-  promptDetails: requireClass(styles.promptDetails, "taskspanel.module.css", "promptDetails"),
   promptSummary: requireClass(styles.promptSummary, "taskspanel.module.css", "promptSummary"),
   promptLabel: requireClass(styles.promptLabel, "taskspanel.module.css", "promptLabel"),
-  promptChevron: requireClass(styles.promptChevron, "taskspanel.module.css", "promptChevron"),
   promptPreview: requireClass(styles.promptPreview, "taskspanel.module.css", "promptPreview"),
   promptBody: requireClass(styles.promptBody, "taskspanel.module.css", "promptBody"),
   notesHead: requireClass(styles.notesHead, "taskspanel.module.css", "notesHead"),
   noNotes: requireClass(styles.noNotes, "taskspanel.module.css", "noNotes"),
   notesRail: requireClass(styles.notesRail, "taskspanel.module.css", "notesRail"),
   note: requireClass(styles.note, "taskspanel.module.css", "note"),
-  srOnly: requireClass(styles.srOnly, "taskspanel.module.css", "srOnly"),
 };
 
 function triggerLabel(tasks: ThreadModel["tasks"]): string {
@@ -224,34 +219,25 @@ function TaskTimestamps({ task }: { task: TaskRow }) {
 
 function TaskPromptDisclosure({ task, sessionRef }: { task: TaskRow; sessionRef: string }) {
   const id = `${taskDisclosureId(sessionRef, task.id)}\0prompt`;
-  const open = isDisclosureOpen(id, false);
   if (task.prompt.trim() === "") return null;
   const firstLine = task.prompt.split("\n").find((line) => line.trim() !== "") ?? "";
   return (
-    <details className={CLASS.promptDetails} data-testid="task-prompt" open={open}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; see SteeringItem.tsx */}
-      <summary
-        className={CLASS.promptSummary}
-        data-testid="task-prompt-summary"
-        onClick={(e) => {
-          e.preventDefault();
-          toggleDisclosure(id, false);
-        }}
-      >
-        <span className={CLASS.promptLabel}>Prompt</span>
-        <span className={CLASS.promptPreview}>
-          <Markdown source={firstLine} />
+    <Disclosure
+      id={id}
+      data-testid="task-prompt"
+      summary={
+        <span className={CLASS.promptSummary} data-testid="task-prompt-summary">
+          <span className={CLASS.promptLabel}>Prompt</span>
+          <span className={CLASS.promptPreview}>
+            <Markdown source={firstLine} />
+          </span>
         </span>
-        <span className={CLASS.promptChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
-          ▸
-        </span>
-      </summary>
-      {open && (
-        <div className={CLASS.promptBody} data-testid="task-prompt-body">
-          <Markdown source={task.prompt} />
-        </div>
-      )}
-    </details>
+      }
+    >
+      <div className={CLASS.promptBody} data-testid="task-prompt-body">
+        <Markdown source={task.prompt} />
+      </div>
+    </Disclosure>
   );
 }
 
@@ -294,7 +280,7 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
           {/* The glyph is aria-hidden by design; its status word rides
               visually-hidden beside the label, the same word the card's
               rows carry. */}
-          <span className={CLASS.srOnly}>{TOUCH_WORD[STATUS_TOUCH[task.status]]}</span>
+          <VisuallyHidden>{TOUCH_WORD[STATUS_TOUCH[task.status]]}</VisuallyHidden>
           <span className={descClass} data-struck={task.status === "cancelled" ? "true" : undefined}>
             {task.description}
           </span>
@@ -386,10 +372,11 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
 export interface TasksPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
+  showSummary?: boolean;
 }
 
-/** Shared task-list body used by both the mobile Sheet and desktop pane. */
-export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
+/** Shared task-list body for the activity viewer, mobile Sheet and desktop pane. */
+export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksPanelBodyProps) {
   const toasts = useToasts();
   const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
   // Bumped by Try again. The only fetch trigger a reader controls: the other
@@ -443,7 +430,11 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
       // No Try again here: the source cannot answer this call at all, so
       // asking again would only fail again.
       return (
-        <EmptyState title="Task list isn't available" hint="This session's source doesn't support the task list." />
+        <EmptyState
+          title="Task list isn't available"
+          hint="This session's source doesn't support the task list."
+          reason="unsupported"
+        />
       );
     }
     if (daemonGone && (rows === null || rows.length === 0)) {
@@ -457,11 +448,12 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
         <EmptyState
           title="This session has ended"
           hint="Its daemon has exited, and there's no record of its task list to fall back on."
+          reason="ended"
         />
       );
     }
     if (rows === null) {
-      if (error) return <EmptyState title={error.headline} hint={error.detail} action={retry} />;
+      if (error) return <EmptyState title={error.headline} hint={error.detail} action={retry} reason="failed" />;
       return <p className={CLASS.state}>Loading tasks…</p>;
     }
     return (
@@ -483,13 +475,13 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
             {retry}
           </div>
         )}
-        {model.tasks && (
+        {showSummary && model.tasks && (
           <div className={CLASS.bodyHead} data-testid="tasks-body-head">
             <span className={CLASS.count}>{taskAggregateLabel(model.tasks)}</span>
           </div>
         )}
         {rows.length === 0 ? (
-          <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." />
+          <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." reason="empty" />
         ) : (
           <TaskListGroups rows={rows} sessionRef={sessionRef} />
         )}

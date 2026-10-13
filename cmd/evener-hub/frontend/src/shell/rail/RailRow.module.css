@@ -41,7 +41,7 @@
  * .trigger rule gets. min-height, not height - button.module.css's own
  * mobile block follows the same rule - so this only ever GROWS the row,
  * never overrides its desktop sizing. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .railRow {
     min-height: var(--tap-min);
   }
@@ -214,42 +214,6 @@
   justify-content: center;
   width: 8px;
   margin-left: -12px;
-}
-
-.statusDot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.statusDot[data-status="needs-you"] {
-  background: var(--attention);
-}
-
-.statusDot[data-status="failed"] {
-  background: var(--danger);
-  border-radius: 1px;
-  transform: rotate(45deg);
-}
-
-.statusSpinner {
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid var(--ink-mid);
-  border-top-color: transparent;
-  border-radius: 50%;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .statusSpinner {
-    animation: railStatusSpin 800ms linear infinite;
-  }
-}
-
-@keyframes railStatusSpin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 /* The title line: signal dot (outdented, when present), the label, and the
@@ -471,8 +435,6 @@
 .loadingRow {
   display: block;
   width: 100%;
-  color: var(--ink-low);
-  font-size: var(--font-size-ui);
 }
 
 /* The "+N older" note for rows the server capped away. Quiet on purpose: it
@@ -486,17 +448,3 @@
   font-size: var(--font-size-caption);
 }
 
-/* Visually hidden but still reachable by assistive tech - gives the
- * actions Menu's trigger (an icon-only "⋯") a real accessible name without
- * widening the row for visible text (see RailRow.tsx's ActionsMenu). */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}

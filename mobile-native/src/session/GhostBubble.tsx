@@ -24,7 +24,7 @@ const BUTTON_LABELS: Record<GhostAction, string> = {
 // queue says so in full there.
 const MENU_LABELS: Record<GhostAction, string> = { ...BUTTON_LABELS, cancel: "Cancel message" };
 
-export type GhostBackdrop = "surface" | "page" | "canvas";
+type GhostBackdrop = "page" | "canvas";
 
 export interface GhostBubbleProps {
 	ghost: Ghost;
@@ -38,9 +38,8 @@ export interface GhostBubbleProps {
 	editHint: string | null;
 	/** What the message carried besides its text, such as images. */
 	attachments?: ReactNode;
-	/** What the bubble sits on: the composer's surface, the transcript's
-	 * page, or a sheet's canvas. A swipe paints it under the unfilled
-	 * bubble. */
+	/** What the bubble sits on: the transcript's page, or a sheet's canvas.
+	 * A swipe paints it under the unfilled bubble. */
 	backdrop: GhostBackdrop;
 	onAction(action: GhostAction): void;
 }
@@ -93,7 +92,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 		},
 	};
 	const bubble = (
-		<View style={{ alignItems: "flex-end", gap: 2 }}>
+		<View testID={`ghost:${ghost.state}`} style={{ alignItems: "flex-end", gap: 2 }}>
 			<Pressable
 				accessibilityLabel={`${ghost.text}. ${ghost.caption}`}
 				{...(opensMenu ? { accessibilityRole: "button" as const } : {})}
@@ -129,7 +128,11 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 			</Pressable>
 			<Text {...caption}>{ghost.caption}</Text>
 			{ghost.note ? <Text {...caption}>{ghost.note}</Text> : null}
-			{offersEdit && editBlocked && editHint ? <Text {...caption}>{editHint}</Text> : null}
+			{offersEdit && editBlocked && editHint ? (
+				<Text testID="ghost-edit-hint" {...caption}>
+					{editHint}
+				</Text>
+			) : null}
 			{ghost.buttons.length > 0 ? (
 				<View style={{ flexDirection: "row", gap: 4 }}>
 					{ghost.buttons.map((action) => (
@@ -163,26 +166,15 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 }
 
 /** One of a ghost's text buttons: accent, or quiet when it takes the message
- * away. Disabled, it dims and does nothing. Away from its bubble, it names
- * the message it acts on (`subject`) to VoiceOver. */
-export function GhostButton({
-	action,
-	subject,
-	disabled,
-	onPress,
-}: {
-	action: GhostAction;
-	subject?: string;
-	disabled: boolean;
-	onPress(): void;
-}) {
+ * away. Disabled, it dims and does nothing. */
+function GhostButton({ action, disabled, onPress }: { action: GhostAction; disabled: boolean; onPress(): void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const quiet = action === "discard" || action === "cancel";
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={subject === undefined ? BUTTON_LABELS[action] : `${BUTTON_LABELS[action]}, ${subject}`}
+			accessibilityLabel={BUTTON_LABELS[action]}
 			accessibilityState={{ disabled }}
 			disabled={disabled}
 			onPress={() => {

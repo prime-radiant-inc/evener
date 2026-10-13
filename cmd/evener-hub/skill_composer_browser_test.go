@@ -27,7 +27,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -313,11 +312,7 @@ func TestSkillComposerBrowser(t *testing.T) {
 	}
 	// The embedded production frontend must exist — the hub serves it. A
 	// missing dist is a build-prerequisite failure, not a pass.
-	index, err := fs.ReadFile(distFS(), "index.html")
-	if err != nil {
-		t.Fatalf("the production frontend is not built (the hub would serve nothing): run `make build-web` first: %v", err)
-	}
-	_ = index
+	requireFreshDist(t)
 
 	fixture := skillGuardSetup(t)
 

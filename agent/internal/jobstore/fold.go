@@ -194,6 +194,7 @@ func applyEvent(r *JobRecord, e Event) {
 	case EventJobStarted:
 		r.Type = e.Type
 		r.Command = e.Command
+		r.Background = r.Background || e.Background
 		r.Intent = e.Intent
 		r.WorkingDir = e.WorkingDir
 		r.Task = e.Task

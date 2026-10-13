@@ -15,12 +15,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -39,6 +42,29 @@ type CompactionMeta struct {
 	// or a session with no state directory at all, must not be pointed at one
 	// (ruled 2026-08-06). Empty means the artifact says nothing about recovery.
 	AvailableTranscriptTools []string
+
+	// TranscriptKept reports that the session is writing its durable
+	// transcript, which holds every message in full. A persistent session
+	// whose transcript could not be created has a session id but no kept
+	// transcript.
+	TranscriptKept bool
+}
+
+// compactionPointer is the line a compaction artifact opens with to say that
+// earlier history was folded into it and how to recover that history; artifact
+// names the artifact ("checkpoint", "summary"). Empty when the session is not
+// persistent.
+func (m *CompactionMeta) compactionPointer(artifact string) string {
+	if m == nil || m.SessionID == "" {
+		return ""
+	}
+	return fmt.Sprintf("Earlier history was compacted into this %s to free context-window headroom. This session's id is %s.%s\n", artifact, m.SessionID, m.TranscriptRecoverySentence())
+}
+
+// hasTranscript reports whether the session is writing a durable transcript,
+// which holds every message in full.
+func (m *CompactionMeta) hasTranscript() bool {
+	return m != nil && m.SessionID != "" && m.TranscriptKept
 }
 
 // TranscriptRecoverySentence is the trailing instruction a compaction artifact
@@ -622,10 +648,13 @@ func (cm *Manager) MaybeCompact(
 	}
 
 	// Layer 1: Deterministic checkpoint at ≥80%.
+	// checkpointed is what this pass's checkpoint folded, which a summary
+	// completing the same fold reads the partner's messages from.
+	var checkpointed []schema.Turn
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := cm.estimateTokensFor(prof, *history)
-		*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+		*history, checkpointed = checkpointFold(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
 		after := cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
@@ -645,7 +674,7 @@ func (cm *Manager) MaybeCompact(
 	if p >= cm.SummarizeThreshold && cm.client != nil {
 		turnsBefore := len(*history)
 		before := cm.estimateTokensFor(prof, *history)
-		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
+		result, err := cm.summarizeFold(ctx, *history, cm.PreserveRecentTurns, "", checkpointed)
 		if err != nil {
 			// On error, emit warning but continue with current history.
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
@@ -698,7 +727,8 @@ func (cm *Manager) ForceCompact(
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
 	before := cm.estimateTokensFor(prof, *history)
-	*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+	var checkpointed []schema.Turn
+	*history, checkpointed = checkpointFold(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
 	after := cm.estimateTokensFor(prof, *history)
 	emitFn(events.EventContextCompaction, events.ContextCompactionData{
 		Layer:           "checkpoint",
@@ -719,7 +749,7 @@ func (cm *Manager) ForceCompact(
 		// which must not count a pre-existing summary as a newly generated one.
 		canSummarize := attentionTransparentTurnCount(*history) > cm.PreserveRecentTurns &&
 			safeCutoff(*history, attentionTransparentRecentCutoff(*history, cm.PreserveRecentTurns)) >= 0
-		result, err := cm.summarizeWithLLMSteered(ctx, *history, cm.PreserveRecentTurns, instructions)
+		result, err := cm.summarizeFold(ctx, *history, cm.PreserveRecentTurns, instructions, checkpointed)
 		if err != nil {
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
@@ -905,15 +935,15 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 		exitCode := parseExitCode(contentStr)
 		return fmt.Sprintf("[shell: %q → exit %s]", cmd, exitCode)
 
-	case "grep":
+	case "grep", "memory_search":
 		pattern := getArg("pattern")
-		matches := countLines(contentStr)
-		return fmt.Sprintf("[grep: %q → %d matches]", pattern, matches)
+		matches := searchresult.EntryCount(contentStr)
+		return searchSummary(fmt.Sprintf("%s: %q → %d matches", toolName, pattern, matches), contentStr)
 
 	case "glob":
 		pattern := getArg("pattern")
-		files := countNonEmptyLines(contentStr)
-		return fmt.Sprintf("[glob: %q → %d files]", pattern, files)
+		files := searchresult.EntryCount(contentStr)
+		return searchSummary(fmt.Sprintf("glob: %q → %d files", pattern, files), contentStr)
 
 	case "edit_file":
 		path := getArg("file_path")
@@ -1030,6 +1060,16 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 
 // --- Deterministic checkpoint (Layer 3) ---
 
+// maxCheckpointChars caps a checkpoint to avoid ballooning the context. The
+// checkpoint either feeds into the LLM summarizer (which replaces it) or — if
+// the summarizer is unavailable — becomes the sole history the main model sees.
+// 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
+// alongside the instruction prefix, and leaves room for preserved recent turns
+// in the main model's context. The human partner's messages a model-written
+// compaction turn carries share the same cap. The cap yields to those
+// messages: none is ever dropped to meet it (fitCheckpointConversation).
+const maxCheckpointChars = 60_000
+
 // checkpoint replaces old history with a structured state snapshot.
 // Returns a new history slice: [checkpoint_message, ...preserved_recent_turns].
 //
@@ -1038,22 +1078,22 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 // User messages and agent responses are stored as an interleaved Markdown
 // conversation for readable round-tripping across repeated compactions.
 func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []schema.Turn {
+	result, _ := checkpointFold(history, preserveRecent, meta, resultToolName)
+	return result
+}
+
+// checkpointFold is checkpoint that also returns the turns the new checkpoint
+// turn stands for (history[:cutoff]), or nil when nothing was folded. A
+// summary completing the same fold reads the partner's messages from them.
+func checkpointFold(history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) ([]schema.Turn, []schema.Turn) {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
-		return history
+		return history, nil
 	}
 
-	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
+	cutoff := foldCutoff(history, preserveRecent)
 	if cutoff < 0 {
-		return history
+		return history, nil
 	}
-
-	// Budget: cap the checkpoint to avoid ballooning the context. The checkpoint
-	// either feeds into the LLM summarizer (which replaces it) or — if the
-	// summarizer is unavailable — becomes the sole history the main model sees.
-	// 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
-	// alongside the instruction prefix, and leaves room for preserved recent
-	// turns in the main model's context.
-	const maxCheckpointChars = 60_000
 
 	data := collectCheckpointData(history, cutoff, resultToolName)
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(formatCheckpoint(data, meta, maxCheckpointChars)))
@@ -1061,7 +1101,7 @@ func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta,
 	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)
-	return result
+	return result, history[:cutoff:cutoff]
 }
 
 // checkpointData is the raw material distilled from the to-be-compacted history
@@ -1075,6 +1115,36 @@ type checkpointData struct {
 	lastShellResults []string
 	conversation     []checkpointConversationEntry
 	workingNotes     []string
+	// earlierSummaries are LLM summaries the checkpoint folds, kept whole: a
+	// summary is the only record of the conversation it replaced, including
+	// the permissions and holds it quotes.
+	earlierSummaries []string
+}
+
+// collectCompaction carries a previous compaction turn's text into the new
+// checkpoint so it survives repeated compactions. From a checkpoint it carries
+// the conversation, working notes and earlier summaries it holds. From an LLM
+// summary (summary is true) it carries the human partner's messages the summary
+// turn holds verbatim, from its own conversation section only, and the rest of
+// the summary whole as an earlier summary; the model's own text is not mined
+// for conversation or working notes.
+//
+// This is the deterministic checkpoint's carry, which the default compaction
+// paths use. Opt-in strategies that write their own checkpoints (session-log,
+// OODA) do not carry earlier summaries yet; that gap is tracked in #4181.
+func (d *checkpointData) collectCompaction(text string, summary bool) {
+	if summary {
+		if !carriesPartnerMessages(text) {
+			d.earlierSummaries = append(d.earlierSummaries, text)
+			return
+		}
+		d.conversation = append(d.conversation, extractMarkdownConversation(text)...)
+		d.earlierSummaries = append(d.earlierSummaries, withoutMarkdownSection(text, checkpointConversationHeading))
+		return
+	}
+	d.conversation = append(d.conversation, extractCheckpointConversation(text)...)
+	d.workingNotes = append(d.workingNotes, extractCheckpointWorkingNotes(text)...)
+	d.earlierSummaries = append(d.earlierSummaries, extractCheckpointEarlierSummaries(text)...)
 }
 
 // checkpointWriteStatus classifies a write tool call by the outcome of its
@@ -1116,20 +1186,25 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 		t := history[i]
 		switch t.Kind {
 		case schema.TurnCheckpoint, schema.TurnSummary:
-			// Extract user messages and working notes from previous compaction turns
-			// so they survive across repeated compactions.
-			data.conversation = append(data.conversation, extractCheckpointConversation(t.Message.Text())...)
-			data.workingNotes = append(data.workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
+			data.collectCompaction(t.Message.Text(), t.Kind == schema.TurnSummary)
+
+		case schema.TurnSteering:
+			// Steering the human partner sent during a turn is their message
+			// too, and so is a parent agent's steer into its delegate, which
+			// carries its own attribution; daemon nudges are not.
+			if text := t.Message.Text(); (isPartnerSteering(t) || isParentSteering(t)) && text != "" {
+				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
+			}
 
 		case schema.TurnUserInput:
 			text := t.Message.Text()
 			if text == "" {
 				continue
 			}
-			// Old-format checkpoint/summary stored as TurnUserInput — extract
-			// user messages from them just like typed compaction turns.
+			// Old-format checkpoint/summary stored as TurnUserInput — carry it
+			// just like a typed compaction turn.
 			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-				data.conversation = append(data.conversation, extractCheckpointConversation(text)...)
+				data.collectCompaction(text, strings.HasPrefix(text, "[CONTEXT SUMMARY]"))
 				continue
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
@@ -1228,18 +1303,15 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 // … [END CHECKPOINT] block: the fixed metadata sections (transcript pointer,
 // modified files, tool counts, recent shell results, activated skills), then the
 // conversation and working notes fit into maxChars by shedding the oldest working
-// notes first and then the oldest conversation entries after the original task
-// (the earliest user entry), which is pinned so budget pressure never drops what
-// the user asked for.
+// notes first, then the agent's own replies, and never the human partner's
+// messages (fitCheckpointConversation).
 func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
 	var fixed strings.Builder
 
 	// Transcript pointer — tells the model how to access full history via transcript tools.
-	if meta != nil && meta.SessionID != "" {
-		fmt.Fprintf(&fixed, "Earlier history was compacted into this checkpoint to free context-window headroom. This session's id is %s.%s\n", meta.SessionID, meta.TranscriptRecoverySentence())
-	}
+	fixed.WriteString(meta.compactionPointer("checkpoint"))
 
 	// Files modified: only writes whose paired result confirmed success. Failed
 	// and result-missing attempts render distinctly, so the checkpoint never
@@ -1318,74 +1390,54 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 
 	// Budget for variable content (conversation + working notes as Markdown).
 	// Reserve space for [CONTEXT CHECKPOINT], [END CHECKPOINT], fixed sections,
-	// and the Markdown section headings.
-	overhead := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
-	variableBudget := max(maxChars-overhead, 1000)
+	// earlier summaries, and the Markdown section headings. The variable
+	// content always gets at least minVariableBudget.
+	const minVariableBudget = 1000
+	frame := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
+
+	// Earlier summaries get up to half the checkpoint, and never so much that
+	// the variable content's floor would push it past maxChars. The newest are
+	// kept, the last one trimmed from its tail: summaries put permissions and
+	// holds first.
+	summaryBudget := min(maxChars/2, maxChars-frame-minVariableBudget)
+	summaries := data.earlierSummaries
+	summariesMarkdown := renderCheckpointEarlierSummaries(summaries)
+	for len(summaries) > 1 && len(summariesMarkdown) > summaryBudget {
+		summaries = summaries[1:]
+		summariesMarkdown = renderCheckpointEarlierSummaries(summaries)
+	}
+	if len(summaries) == 1 && len(summariesMarkdown) > summaryBudget {
+		summary := truncateRendered(summaries[0], summaryBudget, func(text string) int {
+			return len(renderCheckpointEarlierSummaries([]string{text}))
+		})
+		summariesMarkdown = renderCheckpointEarlierSummaries([]string{summary})
+		if len(summariesMarkdown) > summaryBudget {
+			// The fixed metadata leaves no room for even a trimmed summary.
+			summariesMarkdown = ""
+		}
+	}
+
+	variableBudget := max(maxChars-frame-len(summariesMarkdown), minVariableBudget)
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
-	// first — they may be shed entirely — then the oldest messages after the
-	// pinned original task, which itself is never shed.
-	// Clean once so the pin index and the rendered slice refer to the same
-	// entries; renderCheckpointConversation would otherwise drop whitespace-only
-	// entries after the pin was chosen, letting the pin land on a vanishing one.
+	// first — they may be shed entirely — then fit the conversation into what
+	// remains (fitCheckpointConversation).
 	conversation := cleanCheckpointConversation(data.conversation)
 	workingNotes := data.workingNotes
 	conversationMarkdown := renderCheckpointConversation(conversation)
 	notesMarkdown := renderCheckpointWorkingNotes(workingNotes)
-
-	// Pin the original task — the earliest user entry — so the checkpoint keeps
-	// what the user asked for instead of shedding it under budget pressure. With
-	// no user entry (-1) the pin is inactive and shedding keeps its oldest-first
-	// order.
-	pinnedOriginal := -1
-	for i, entry := range conversation {
-		if entry.Role == "user" {
-			pinnedOriginal = i
-			break
-		}
+	for len(workingNotes) > 0 && len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
+		workingNotes = workingNotes[1:] // drop oldest note first
+		notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
 	}
-
-	for len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
-		if len(workingNotes) > 0 {
-			workingNotes = workingNotes[1:] // drop oldest note first
-			notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
-			continue
-		}
-		if len(conversation) > 1 {
-			// Drop the oldest entry that is not the pinned original task.
-			drop := 0
-			if drop == pinnedOriginal {
-				drop = 1
-			}
-			conversation = slices.Concat(conversation[:drop], conversation[drop+1:])
-			if drop < pinnedOriginal {
-				pinnedOriginal--
-			}
-			conversationMarkdown = renderCheckpointConversation(conversation)
-			continue
-		}
-		break
-	}
-
-	// Notes are exhaustible, so a lone over-budget conversation entry is all the
-	// loop can leave behind: it never sheds the pinned original task. Trim that
-	// entry — by its exact rendered length — so the checkpoint still honors its
-	// size cap instead of keeping an oversized task or dropping it.
-	if len(conversation) == 1 && len(conversationMarkdown) > variableBudget {
-		role := conversation[0].Role
-		render := func(text string) int {
-			return len(renderCheckpointConversation([]checkpointConversationEntry{{Role: role, Text: text}}))
-		}
-		conversation = []checkpointConversationEntry{{
-			Role: role,
-			Text: truncateRendered(conversation[0].Text, variableBudget, render),
-		}}
-		conversationMarkdown = renderCheckpointConversation(conversation)
-	}
+	conversationMarkdown = renderCheckpointConversation(fitCheckpointConversation(conversation, variableBudget-len(notesMarkdown), meta.hasTranscript()))
 
 	// Assemble final checkpoint.
 	var b strings.Builder
 	b.WriteString("[CONTEXT CHECKPOINT]\n")
+	// Earlier summaries come first so the summarizer, which reads a previous
+	// compaction from its head, sees them before anything else.
+	b.WriteString(summariesMarkdown)
 	b.WriteString(fixedStr)
 	if conversationMarkdown != "" {
 		b.WriteString("\n")
@@ -1397,6 +1449,278 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	}
 	b.WriteString("[END CHECKPOINT]\n")
 	return b.String()
+}
+
+// partnerMessageEdgeChars is how much of each end of a human partner's
+// message a middle trim keeps. A message no longer than both edges together is
+// a short instruction and is never trimmed.
+const partnerMessageEdgeChars = 1000
+
+// fitCheckpointConversation fits conversation entries into budget without
+// ever dropping the human partner's messages (#4281). It sheds the agent's own
+// replies first, oldest first. If the partner's messages alone still exceed
+// the budget, it trims the middle of the longest ones (pasted logs, say), each
+// at most once and never below partnerMessageEdgeChars at each end, with a
+// note saying where the full text is. Short instructions are never touched,
+// nor is a message trimming would not shorten, nor any message when the
+// session keeps no transcript to recover it from (recoverable false); when
+// what is left still exceeds the budget, the budget yields.
+//
+// conversation must already be cleaned (cleanCheckpointConversation), so the
+// rendered slice and the entries line up.
+func fitCheckpointConversation(conversation []checkpointConversationEntry, budget int, recoverable bool) []checkpointConversationEntry {
+	// The rendering is the section heading plus one block per entry, so its
+	// length is the sum of the entries' block lengths and the heading's.
+	blockLen := func(entry checkpointConversationEntry) int {
+		return len(renderCheckpointConversation([]checkpointConversationEntry{entry})) - len(checkpointConversationHeading+"\n\n")
+	}
+	rendered := len(renderCheckpointConversation(conversation))
+	// Shed the agent's own replies, oldest first, until the rest fits.
+	kept := make([]checkpointConversationEntry, 0, len(conversation))
+	for _, entry := range conversation {
+		if rendered > budget && entry.Role != "user" {
+			rendered -= blockLen(entry)
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if rendered <= budget || !recoverable {
+		return kept
+	}
+	// Only the partner's messages are left: trim the longest first, each once.
+	long := make([]int, 0, len(kept))
+	for i, entry := range kept {
+		if len(entry.Text) > 2*partnerMessageEdgeChars {
+			long = append(long, i)
+		}
+	}
+	slices.SortStableFunc(long, func(a, b int) int { return len(kept[b].Text) - len(kept[a].Text) })
+	for _, i := range long {
+		if rendered <= budget {
+			break
+		}
+		text := kept[i].Text
+		// Keep what the budget allows, leaving room for the note.
+		keep := max(2*partnerMessageEdgeChars, len(text)-(rendered-budget)-len(trimmedMessageNote(len(text))))
+		trimmed := middleTrim(text, keep/2)
+		if len(trimmed) >= len(text) {
+			continue // the note would cost what the trim saves
+		}
+		before := blockLen(kept[i])
+		kept[i].Text = trimmed
+		rendered += blockLen(kept[i]) - before
+	}
+	return kept
+}
+
+// middleTrim keeps edge characters at each end of text, cut on rune
+// boundaries, and puts the trimmed-message note between them.
+func middleTrim(text string, edge int) string {
+	if 2*edge >= len(text) {
+		return text
+	}
+	head := runetrim.Cut(text, edge)
+	tail := string(runetrim.TrimLeadingPartial([]byte(text[len(text)-edge:])))
+	return head + trimmedMessageNote(len(text)-len(head)-len(tail)) + tail
+}
+
+// partnerMessagesMarkdown renders the human partner's messages from the turns
+// a compaction folds (history[:cutoff]), verbatim, under the checkpoint's cap
+// and shedding rules. A model-written compaction turn carries them beside its
+// own text, so its permissions and holds stay in front of the model whatever
+// the model wrote (#4173). It reads them through the checkpoint's own
+// collector, so they come from raw user turns and from previous compaction
+// turns alike.
+//
+// "Verbatim" means each message's text unchanged apart from surrounding
+// whitespace, which cleanCheckpointConversation trims and the checkpoint's
+// own extraction (parseMarkdownBlocks) trims again on every round trip.
+// Fitting follows the checkpoint's rule (fitCheckpointConversation): no
+// partner message is ever dropped; past maxCheckpointChars the longest are
+// middle-trimmed with a pointer to the transcript, and short ones are never
+// touched.
+//
+// Only the partner's messages are carried. An earlier summary a folded
+// checkpoint holds is input to the new summary, which supersedes it; carrying
+// every earlier summary forward as well would grow each summary turn with
+// every compaction. Checkpoints written by the opt-in session-log strategy
+// keep no conversation section, so nothing is recovered from them here
+// (#4181).
+//
+// Past ceiling characters (partnerCarryCeiling; 0 means none) the oldest
+// messages are left out, newest kept, and returned as summarized: the
+// summarizer is given each of them to summarize, quoting any permission or
+// hold per the summary prompt, and the turn reminds the model where to read
+// them verbatim. The newest message is held to the ceiling too: when it alone
+// exceeds it, its middle is trimmed (transcript permitting).
+// The ceiling applies with or without a kept transcript: it keeps the session
+// inside the model's window, and the left-out messages are still summarized,
+// every one (condensePartnerMessages), as the #4309 ruling chose. Without a
+// transcript the reminder only says they were summarized.
+func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string, recoverable bool, ceiling int) (markdown string, summarized []checkpointConversationEntry) {
+	var partner []checkpointConversationEntry
+	for _, entry := range cleanCheckpointConversation(collectCheckpointData(history, cutoff, resultToolName).conversation) {
+		if entry.Role == "user" {
+			partner = append(partner, entry)
+		}
+	}
+	// The carry is chosen from the messages as written, newest first, and
+	// only then fitted; the messages left to the summary go to it as written.
+	kept := partner
+	if ceiling > 0 {
+		heading := len(checkpointConversationHeading + "\n\n")
+		size, n := heading, 0
+		for _, entry := range slices.Backward(partner) {
+			block := len(renderCheckpointConversation([]checkpointConversationEntry{entry})) - heading
+			if n > 0 && size+block > ceiling {
+				break
+			}
+			size += block
+			n++
+		}
+		if size > ceiling && !recoverable {
+			// The newest alone overflows and cannot be trimmed: summarize it
+			// with the rest.
+			n = 0
+		}
+		summarized = partner[:len(partner)-n]
+		kept = partner[len(partner)-n:]
+	}
+	partner = fitCheckpointConversation(kept, maxCheckpointChars, recoverable)
+	if len(partner) == 0 {
+		return "", summarized
+	}
+	if size := len(renderCheckpointConversation(partner)); ceiling > 0 && size > ceiling {
+		// Only the newest can overflow: trim its middle to fit, note included.
+		newest := &partner[len(partner)-1]
+		edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newest.Text)))) / 2
+		if trimmed := middleTrim(newest.Text, max(edge, 1)); len(trimmed) < len(newest.Text) {
+			newest.Text = trimmed
+		}
+	}
+	return renderCheckpointConversation(partner), summarized
+}
+
+// condensePartnerMessages fits the partner's messages a summary will not quote
+// (each a line of text) into budget characters for the summarizer's input.
+// When they overflow it, they are summarized in batches of at most budget
+// characters, each batch summary quoting their permissions and holds, and the
+// batch summaries are condensed the same way until they fit, so every message
+// reaches a summarizer however many there are. If they will not shrink to fit,
+// it fails rather than cut any short.
+func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, budget int) (string, error) {
+	const maxRounds = 4 // each round shrinks the text; four reach any realistic volume
+	for round := 0; ; round++ {
+		total := 0
+		for _, line := range lines {
+			total += len(line)
+		}
+		if total <= budget {
+			return strings.Join(lines, ""), nil
+		}
+		if round == maxRounds {
+			break
+		}
+		var summaries []string
+		for start := 0; start < len(lines); {
+			end, size := start, 0
+			for end < len(lines) && (end == start || size+len(lines[end]) <= budget) {
+				size += len(lines[end])
+				end++
+			}
+			resp, err := cm.completeSummarization(ctx, cm.currentProfile(), partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply llm.Response) error {
+				if strings.TrimSpace(reply.Text()) == "" {
+					return errors.New("summarizer returned an empty batch summary")
+				}
+				return checkNotCutOff(reply)
+			})
+			if err != nil {
+				return "", err
+			}
+			// A long summary is split like a long message, so the next round's
+			// batches stay within budget.
+			parts := splitMessage(strings.TrimSpace(resp.Text()), budget/3, 400)
+			for i, part := range parts {
+				label := "Summary of earlier messages: "
+				if len(parts) > 1 {
+					label = fmt.Sprintf("Summary of earlier messages (part %d of %d): ", i+1, len(parts))
+				}
+				summaries = append(summaries, label+part+"\n")
+			}
+			start = end
+		}
+		lines = summaries
+	}
+	// Summaries that will not shrink to fit are never cut short: failing here
+	// fails the summary, and the checkpoint, which keeps every partner
+	// message, stands.
+	return "", errors.New("partner messages did not condense to fit the summarizer")
+}
+
+// splitMessage splits text into parts of at most size bytes, each cut at the
+// last paragraph, line or sentence break before the limit when there is one,
+// else on a rune boundary, and each repeating the last overlap bytes of the
+// part before it, so an instruction that crosses a cut is whole in one part.
+func splitMessage(text string, size, overlap int) []string {
+	var parts []string
+	for len(text) > size {
+		part := runetrim.Cut(text, size)
+		if part == "" {
+			part = text[:size] // not valid UTF-8 at the cut; keep every byte
+		}
+		for _, br := range []string{"\n\n", "\n", ". "} {
+			if i := strings.LastIndex(part, br); i > size/2 {
+				part = part[:i+len(br)]
+				break
+			}
+		}
+		parts = append(parts, part)
+		next := max(len(part)-overlap, 1)
+		for next < len(part) && !utf8.RuneStart(text[next]) {
+			next++
+		}
+		text = text[next:]
+	}
+	return append(parts, text)
+}
+
+// partnerBatchPrompt asks the summarizer to condense a batch of the human
+// partner's messages that a compaction will not quote.
+const partnerBatchPrompt = `You are condensing messages from your human partner that a context compaction will not quote. Summarize what they asked for and told you, as briefly as keeps it usable. ` + partnerAuthorityRule + `
+
+`
+
+// partnerCarryCeiling bounds the partner's messages a model-written
+// compaction turn carries verbatim to a quarter of the model's context window,
+// in characters at the char/4 token estimate the context manager uses
+// elsewhere: a quarter of W tokens is W characters. Compaction starts at 80% of
+// the window; a carry of at most a quarter leaves the rest for the system
+// prompt and tools, the model's own summary, the preserved recent turns and the
+// work until the next compaction, so the carry alone can never push a compacted
+// context back over the threshold. It is 0, no ceiling, when the model's window
+// is unknown (and compaction never runs).
+func partnerCarryCeiling(prof *provider.Profile) int {
+	return contextWindowOf(prof)
+}
+
+// partnerCarry renders the partner's messages a model-written compaction turn
+// carries (from history[:cutoff]), held to ceiling (0 for none), the reminder
+// its opening adds when some are left to the summary instead, and those
+// messages, which the summarizer must be given.
+func (cm *Manager) partnerCarry(ctx context.Context, history []schema.Turn, cutoff, ceiling int) (reminder, carry string, summarized []checkpointConversationEntry) {
+	meta := cm.metaFor(ctx)
+	carry, summarized = partnerMessagesMarkdown(history, cutoff, cm.resultToolName(), meta.hasTranscript(), ceiling)
+	if len(summarized) > 0 {
+		reminder = partnerCarryReminder(len(summarized), meta)
+	}
+	return reminder, carry, summarized
+}
+
+// foldCutoff is where a compaction of history that keeps preserveRecent
+// recent turns cuts it: history[:cutoff] is folded. It is -1 when no safe cut
+// exists. The checkpoint and the summarizer both cut with it.
+func foldCutoff(history []schema.Turn, preserveRecent int) int {
+	return safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
 }
 
 // truncateRendered shortens text (via truncate, which appends an ellipsis) until
@@ -1528,31 +1852,70 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 // itself. This adds the second rung: summarization treats a wider class of
 // failures than a model refusal as worth another model, and retries on the
 // session model — but only when the cheap caller has not already run it.
-func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string) (llm.Response, error) {
+//
+// accept, when non-nil, judges a reply; a rejected reply also falls through to
+// the session model, and is returned as an error if that reply is rejected
+// too. A rejected reply was still a successful API call, so the attempt group
+// settles on the API error alone.
+func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (llm.Response, error) {
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
 		return llm.Response{}, errors.New("summarization model is empty")
 	}
+	judge := func(resp llm.Response) error {
+		if accept == nil {
+			return nil
+		}
+		return accept(resp)
+	}
 	req := llm.Request{Messages: []llm.Message{llm.User(prompt)}, AdapterTimeout: cm.AdapterTimeout}
 	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
-	resp, ranSessionModel, err := cm.cheap.CompleteConfigured(callCtx, profile, req)
-	if err != nil && !ranSessionModel && len(routes) > 1 && shouldFallbackSummarizationModel(ctx, err) {
+	resp, ranSessionModel, apiErr := cm.cheap.CompleteConfigured(callCtx, profile, req)
+	var rejected error
+	if apiErr == nil {
+		rejected = judge(resp)
+	}
+	if !ranSessionModel && len(routes) > 1 && (rejected != nil || apiErr != nil && shouldFallbackSummarizationModel(ctx, apiErr)) {
 		// More than one route means the second is the session model, distinct
 		// from the configured cheap one; the caller ran only the cheap one.
 		sessionRoute := routes[len(routes)-1]
 		req.Provider, req.Model = sessionRoute.provider, sessionRoute.model
-		resp, err = cm.client.Complete(callCtx, req)
+		resp, apiErr = cm.client.Complete(callCtx, req)
+		rejected = nil
+		if apiErr == nil {
+			rejected = judge(resp)
+		}
 	}
-	attemptGroupScope.SettleResult(err)
-	return resp, err
+	attemptGroupScope.SettleResult(apiErr)
+	if apiErr != nil {
+		return resp, apiErr
+	}
+	return resp, rejected
 }
 
+// partnerAuthorityRule keeps a summary from adding or dropping the human
+// partner's permissions, approvals, holds and stops. The continuing agent
+// treats the summary as the record of what it may do, so a paraphrase that
+// hardens into a new hold, or drops a standing permission, changes its
+// behavior (#4173). Both summary prompts carry it, and caller instructions
+// cannot override it. Both put these quotes first in the summary, so when a
+// re-compaction caps an oversized previous summary to its head, the quotes are
+// what survives.
+const partnerAuthorityRule = `Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes. If there are none, say "None."`
+
+// permissionsSection is the default summary's leading section, where the
+// summary quotes the human partner's permissions and holds.
+const permissionsSection = "Permissions and Holds"
+
 // defaultSummaryPrefix is the instruction block used when no caller instructions
-// are provided. It mandates seven specific sections and directs the LLM to
-// err on the side of verbosity.
+// are provided. It mandates eight specific sections, permissions and holds
+// first, and directs the LLM to err on the side of verbosity.
 var defaultSummaryPrefix = `You are performing a CONTEXT CHECKPOINT COMPACTION. This session is being continued from a previous conversation that ran out of context. Create a detailed handoff summary that another instance of yourself will use to seamlessly continue the work.
 
-Your summary MUST include ALL of the following sections:
+Your summary MUST include ALL of the following sections, in this order:
+
+## ` + permissionsSection + `
+` + partnerAuthorityRule + `
 
 ## Conversation Timeline
 Reproduce user messages and agent replies in chronological, interleaved order. Preserve user messages verbatim. Summarize agent replies only when needed for brevity, but keep commitments, decisions, and final answers clear.
@@ -1593,22 +1956,153 @@ Be thorough and structured. Err on the side of including too much rather than to
 
 `
 
+// summarySections are the section names the default summary prompt requires,
+// read from the prompt itself so the reply check and the prompt cannot drift.
+var summarySections = promptSectionNames(defaultSummaryPrefix)
+
+// promptSectionNames returns the names of a prompt's "## " headings, in order.
+func promptSectionNames(prompt string) []string {
+	var names []string
+	for line := range strings.Lines(prompt) {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "## "); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// checkNotCutOff rejects a summarization reply the model cut off at its output
+// limit: it may have dropped what only it records, a hold among the partner
+// messages a carry left out, now or in an earlier summary it replaces. Like
+// any rejected reply it falls back to the session model, and if that is cut
+// off too the summary fails and the checkpoint stands.
+func checkNotCutOff(reply llm.Response) error {
+	if reply.Finish.Reason == llm.FinishReasonLength {
+		return errors.New("the summary was cut off at the model's output limit")
+	}
+	return nil
+}
+
+// checkSummaryReply rejects a summarization reply that cannot stand in for the
+// history it folds: an empty one, or, under the default prompt, one with none
+// of the required sections with content under it. Weak models sometimes
+// answer the prompt in character ("I'll read the plan, then...") instead of
+// summarizing (#3978). One filled section is enough, so a summary that drops
+// some sections still keeps what it has. Caller instructions replace the
+// sections, so under them only emptiness is checked.
+//
+// The permissions-and-holds section is not required either. Its presence
+// would not show the quotes are faithful or complete (a reply can say "None."
+// and drop them), and rejecting a summary for lacking it would discard
+// everything else the summary holds (TestSummarizeWithLLM_StoresReplyWithRequiredSection
+// pins that one filled section is accepted). The guarantee that the human
+// partner's permissions and holds survive compaction does not rest on this
+// check or on the model: by ruling on #4173, the summary turn carries the
+// partner's messages verbatim beside the reply (partnerMessagesMarkdown).
+func checkSummaryReply(reply, instructions string) error {
+	text := strings.TrimSpace(reply)
+	if text == "" {
+		return errors.New("summarizer returned an empty reply")
+	}
+	if instructions != "" {
+		return nil
+	}
+	// Once a section heading appears, any later line is content — subheadings,
+	// bold labels and "#3978" lines included — except another section heading
+	// and the summary's own framing markers.
+	// The permissions section restates the human partner's own words, so
+	// content there alone carries none of the folded work: a reply that is
+	// only "## Permissions and Holds\nNone." is no summary.
+	// A heading inside a fenced block is quoted text, not a section.
+	inSection := false
+	var fence fenceTracker
+	for line := range strings.Lines(text) {
+		line = strings.TrimSpace(line)
+		if fence.step(line) {
+			continue
+		}
+		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() {
+			inSection = !strings.EqualFold(section, permissionsSection)
+			if inSection && isSummaryContent(rest) {
+				return nil
+			}
+			continue
+		}
+		if inSection && isSummaryContent(line) {
+			return nil
+		}
+	}
+	return errors.New("summarizer reply has no summary section with content")
+}
+
+// isSummaryContent reports whether trimmed text under or beside a section
+// heading carries content: it is not empty and not one of the summary's own
+// framing markers.
+func isSummaryContent(text string) bool {
+	return text != "" && text != "[CONTEXT SUMMARY]" && text != "[END SUMMARY]"
+}
+
+// summarySectionHeading reports whether line is a heading naming one of the
+// summary sections, and returns the section name as written and any text after
+// it on the same line:
+// "## Progress", "### progress", "**Progress**", "## Progress: fixed it",
+// "**Progress:** fixed it". It needs heading markup: a bare "Progress" is
+// prose, and "#3978" (no space after the #) is not a heading.
+func summarySectionHeading(line string) (section, rest string, ok bool) {
+	body := line
+	switch {
+	case strings.HasPrefix(line, "#"):
+		body = strings.TrimLeft(line, "#")
+		if !strings.HasPrefix(body, " ") {
+			return "", "", false
+		}
+	case !strings.HasPrefix(line, "**"):
+		return "", "", false
+	}
+	body = strings.ReplaceAll(body, "**", "")
+	name, rest, _ := strings.Cut(body, ":")
+	name = strings.TrimSpace(name)
+	if !slices.ContainsFunc(summarySections, func(section string) bool { return strings.EqualFold(name, section) }) {
+		return "", "", false
+	}
+	return name, strings.TrimSpace(rest), true
+}
+
 // buildSummaryPrompt constructs the full LLM prompt for context compaction.
 // When instructions are non-empty the prompt is instruction-led: the
-// mandatory-7-sections block is replaced by the caller's directive.
+// mandatory-sections block is replaced by the caller's directive.
 // When instructions are empty the default prompt is used unchanged.
 func buildSummaryPrompt(historyText, instructions string) string {
 	if instructions != "" {
 		return `You are performing a CONTEXT CHECKPOINT COMPACTION for an agent continuing its own work.
 
-## CALLER INSTRUCTIONS (these take precedence)
+## CALLER INSTRUCTIONS (these take precedence over the general guidance, never over your human partner's permissions and holds)
 ` + instructions + `
 
-Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win, except over the rule on your human partner's permissions and holds. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+
+` + partnerAuthorityRule + ` Put this first in your summary; the caller instructions do not override it.
 
 ` + historyText
 	}
 	return defaultSummaryPrefix + historyText
+}
+
+// isPartnerSteering reports whether a steering turn is the human partner's own
+// message, sent during a turn, rather than a daemon nudge. The checkpoint's
+// collector and the summarizer's "User:" label both use it, so they agree on
+// whose words a steer is.
+func isPartnerSteering(t schema.Turn) bool {
+	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceUser
+}
+
+// isParentSteering reports whether a steering turn is the delegate's parent
+// agent speaking into the running turn (delegate_send). Compaction keeps it
+// like the partner's own messages, since it is the instruction the delegate
+// works from, but it is not the human partner's: only isPartnerSteering
+// answers for them.
+func isParentSteering(t schema.Turn) bool {
+	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceParent
 }
 
 // noteElicitationPrompt asks the model, at compaction time, to enumerate the
@@ -1666,7 +2160,7 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn, loaded
 		return "", errors.New("no model available for note elicitation")
 	}
 	prompt := noteElicitationPrompt + loadedSkillsElicitSection(loaded) + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryForElicit(history, noteElicitChars)
-	resp, err := cm.completeSummarization(ctx, prof, prompt)
+	resp, err := cm.completeSummarization(ctx, prof, prompt, nil)
 	if err != nil {
 		return "", err
 	}
@@ -1754,10 +2248,21 @@ func (cm *Manager) summarizeWithLLM(ctx context.Context, history []schema.Turn, 
 // summarizeWithLLMSteered is like summarizeWithLLM but accepts optional caller
 // instructions that replace the default mandatory-sections prompt when non-empty.
 func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string) ([]schema.Turn, error) {
+	return cm.summarizeFold(ctx, history, preserveRecent, instructions, nil)
+}
+
+// summarizeFold is summarizeWithLLMSteered for a summary that completes a
+// fold a checkpoint began this pass. checkpointed is what that checkpoint, at
+// history[0], folded: the checkpoint sheds conversation under its own budget,
+// which earlier summaries and agent replies share, so the partner's messages
+// the summary carries are read from those turns, plus every later turn the
+// summary folds, under the carry's own cap. With checkpointed nil they are
+// read from the turns the summary folds.
+func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string, checkpointed []schema.Turn) ([]schema.Turn, error) {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history, nil
 	}
-	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
+	cutoff := foldCutoff(history, preserveRecent)
 	if cutoff < 0 {
 		return history, nil
 	}
@@ -1773,13 +2278,52 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 		return s
 	}
 
+	// The checkpoint at history[0] stands for checkpointed; the summary also
+	// folds whatever follows it up to cutoff, including turns the pre-compact
+	// hook pushed out of the preserved tail.
+	partnerSource := history[:cutoff]
+	if checkpointed != nil {
+		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
+	}
+	reminder, carry, summarized := cm.partnerCarry(ctx, partnerSource, len(partnerSource), partnerCarryCeiling(cm.currentProfile()))
+
 	var b strings.Builder
+	// The partner's messages the turn will not quote come first, so the
+	// summarizer reads every one of them whatever else the budget cuts; past
+	// half the history budget they arrive condensed in bounded batches
+	// (condensePartnerMessages).
+	if len(summarized) > 0 {
+		// Each message goes in whole; one longer than a part is split into
+		// overlapping, numbered parts rather than cut short, small enough that
+		// two share a batch.
+		var lines []string
+		for _, entry := range summarized {
+			parts := splitMessage(entry.Text, maxHistoryChars/6, 400)
+			for i, part := range parts {
+				label := "User: "
+				if len(parts) > 1 {
+					label = fmt.Sprintf("User (part %d of %d of one message): ", i+1, len(parts))
+				}
+				lines = append(lines, label+part+"\n")
+			}
+		}
+		condensed, err := cm.condensePartnerMessages(ctx, lines, maxHistoryChars/2)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString("Your human partner's messages that the handoff will not quote, oldest first; summarize them:\n")
+		b.WriteString(condensed)
+		b.WriteString("\nThe conversation:\n")
+	}
 	for i := range cutoff {
 		t := history[i]
 		switch t.Kind {
 		case schema.TurnUserInput:
 			// Preserve user messages verbatim. Cap at 5k to protect the cheap
-			// model's context — normal messages are well under this.
+			// model's context — normal messages are well under this. On the
+			// MaybeCompact and ForceCompact paths the checkpoint layer has
+			// already folded these turns, so their user messages arrive inside
+			// the checkpoint (a previous compaction) instead of here.
 			text := t.Message.Text()
 			if len(text) > 5000 {
 				text = text[:5000] + "..."
@@ -1788,8 +2332,16 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			b.WriteString(text)
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
+			// A previous compaction is the only record of the conversation it
+			// folded. It gets up to a checkpoint's size, so a deterministic
+			// checkpoint (earlier summaries first, then the newest folded
+			// conversation) always arrives whole; the rest of the budget stays
+			// for the turns it precedes. A longer one keeps its head, where
+			// both summary prompts put the permissions and holds it quotes.
+			// Left-out partner messages written first take their share of
+			// the budget from it.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncText(t.Message.Text(), 1000))
+			b.WriteString(truncText(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
@@ -1826,10 +2378,20 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 				}
 			}
 		case schema.TurnSteering:
-			b.WriteString("System: ")
+			// Labeled for the summary prompt's quoting rule.
+			if isPartnerSteering(t) {
+				b.WriteString("User: ")
+			} else {
+				b.WriteString("System: ")
+			}
 			b.WriteString(t.Message.Text())
 			b.WriteString("\n")
 		}
+		// The cap is checked after each turn, so the history can run past it
+		// by the last turn written. Every turn kind but steering has its own
+		// cap (a previous compaction's is maxCheckpointChars), which
+		// bounds that overrun; it is a soft limit protecting the summarizer's
+		// context, not a hard one.
 		if b.Len() > maxHistoryChars {
 			b.WriteString("\n[... truncated ...]\n")
 			break
@@ -1839,12 +2401,23 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
 	sumProfile := cm.currentProfile()
-	resp, err := cm.completeSummarization(ctx, sumProfile, prompt)
+	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply llm.Response) error {
+		if err := checkSummaryReply(reply.Text(), instructions); err != nil {
+			return err
+		}
+		return checkNotCutOff(reply)
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"
+	// The turn is the model's reply, bounded by the provider's output limit,
+	// plus the partner's messages, bounded by maxCheckpointChars; the preserved
+	// recent turns sit outside it. One combined budget would mean truncating
+	// the reply or shedding partner messages below the cap the #4173 ruling
+	// chose for them.
+	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
+		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryTurnEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
@@ -1907,14 +2480,23 @@ func countLines(s string) int {
 	return strings.Count(s, "\n") + 1
 }
 
-func countNonEmptyLines(s string) int {
-	n := 0
-	for line := range strings.SplitSeq(s, "\n") {
-		if strings.TrimSpace(line) != "" {
-			n++
+// searchSummary is a search result's one-line summary, "[head]", with the
+// notes the tool put after its entries (searchresult.Split) added inside the
+// brackets, each without brackets of its own, so a compacted search still
+// says it was cut short or left paths out. Anything the registry appended
+// after another blank line is left out; after a result with no notes of its
+// own, a registry nudge reads as its note (#4223 tracks giving notes a field
+// of their own).
+func searchSummary(head, output string) string {
+	_, notes := searchresult.Split(output)
+	notes, _, _ = strings.Cut(notes, "\n\n")
+	parts := []string{head}
+	for line := range strings.SplitSeq(notes, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
 		}
 	}
-	return n
+	return "[" + strings.Join(parts, "; ") + "]"
 }
 
 func parseExitCode(shellOutput string) string {

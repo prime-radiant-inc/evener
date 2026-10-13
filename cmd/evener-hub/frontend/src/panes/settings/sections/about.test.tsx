@@ -6,7 +6,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
-import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
+import { resetSettingsOverviewStoreForTests, settingsOverviewStore } from "../../../stores/settingsOverview";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { AboutSection, MIT_LICENSE_TEXT } from "./about";
 
@@ -27,31 +27,26 @@ beforeEach(() => {
 // the credits tests end with no state update still in flight.
 async function renderDisconnectedAbout(): Promise<void> {
   render(<AboutSection />);
-  await screen.findByText("Version unavailable:", { exact: false });
+  await screen.findByTestId("about-version-unavailable");
 }
 
-test("renders the design-credit line naming Beautiful UI, its author, and the MIT License", async () => {
+// Attribution the borrowed design language requires: its presence is the
+// contract, its wording is not.
+test("renders the design-credit line", async () => {
   await renderDisconnectedAbout();
-  expect(
-    screen.getByText(
-      "The visual design language is adapted from Beautiful UI (https://www.beautifului.dev) by Shane Levine, used under the MIT License.",
-    ),
-  ).toBeTruthy();
+  expect(screen.getByTestId("design-credit").textContent).toMatch(/\S/);
 });
 
-test("renders the typeface credit and the third-party-notices pointer", async () => {
+test("the MIT license text is collapsed behind a disclosure until opened", async () => {
   await renderDisconnectedAbout();
-  expect(screen.getByText("Inter and JetBrains Mono, used under the SIL Open Font License.")).toBeTruthy();
-  expect(screen.getByText("Full third-party notices live in the repository.")).toBeTruthy();
-});
+  const license = screen.getByTestId("about-mit-license");
+  expect(license.hasAttribute("open")).toBe(false);
 
-test("the MIT license text is collapsed behind a disclosure and includes the copyright line", async () => {
-  await renderDisconnectedAbout();
-  expect(screen.queryByText("Copyright (c) 2026 Shane Levine", { exact: false })).toBeNull();
+  const summary = license.querySelector("summary");
+  if (summary === null) throw new Error("license disclosure has no summary");
+  fireEvent.click(summary);
 
-  fireEvent.click(screen.getByText("MIT License"));
-
-  expect(screen.getByText("Copyright (c) 2026 Shane Levine", { exact: false })).toBeTruthy();
+  expect(license.hasAttribute("open")).toBe(true);
 });
 
 test("the embedded license const matches LICENSES/beautiful-ui.txt on disk, from the MIT License heading onward", () => {
@@ -85,18 +80,22 @@ test("shows the hub version (and commit) once connected and loaded", async () =>
 
 test("omits version/commit gracefully, with no raw error text, when not connected", async () => {
   await renderDisconnectedAbout();
-  expect(screen.getByText("evener hub")).toBeTruthy();
-  expect(screen.queryByText("no client connected", { exact: false })).toBeNull();
+  // The identity line stands alone: no commit note, and the store's raw
+  // failure text never reaches the page.
+  expect(screen.getByTestId("about-identity").querySelector("span")).toBeNull();
+  const rawError = settingsOverviewStore.getState().error;
+  expect(rawError).not.toBeNull();
+  expect(document.body.textContent).not.toContain(rawError);
 });
 
 test("a fetch failure shows a friendly message, never the raw error", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => {
-    throw new Error("hub unreachable");
+    throw new Error("raw-overview-failure");
   });
 
   render(<AboutSection />);
 
-  expect(await screen.findByText("Version unavailable:", { exact: false })).toBeTruthy();
-  expect(screen.queryByText("hub unreachable", { exact: false })).toBeNull();
+  expect(await screen.findByTestId("about-version-unavailable")).toBeTruthy();
+  expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
 });

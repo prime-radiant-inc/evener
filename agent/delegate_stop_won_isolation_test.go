@@ -64,10 +64,10 @@ func TestDelegateResourceCreate_StopWinningConstructFailureCleansIsolation(t *te
 	if !aggregate.Resumable || aggregate.CurrentRunOpen {
 		t.Fatalf("stop-racing delegate = %#v, want settled with durable resumability retained", aggregate)
 	}
-	// The lease lives inside the scratch dir, so the directory's removal is the
-	// lease's removal too.
-	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the lane clone's scratch %s survived the stop-won construct failure: stat err = %v", scratch, err)
+	// The stopped delegate stays resumable, so its named scratch is kept for
+	// that resume and its root's archive.
+	if _, err := os.Stat(scratch); err != nil {
+		t.Errorf("the stop-won construct failure removed the resumable delegate's scratch %s: %v", scratch, err)
 	}
 	if laneWorktreePresent(isolation.worktreePath) {
 		t.Errorf("the isolation lane %s survived the stop-won construct failure", isolation.worktreePath)

@@ -71,13 +71,29 @@ func equalWeights(listOutput string) []testCost {
 // test costs on average.
 const minTestCost = 0.005
 
+var (
+	errNoTestsToShard = errors.New("found no tests to shard")
+	errNotBijection   = errors.New("partition is not a bijection over the test set")
+)
+
+// emptyShardsError is packShards' refusal when fewer tests than shards leave
+// some shards empty; it names the env knob that lowers the shard count.
+type emptyShardsError struct {
+	asked, nonEmpty int
+	envPrefix       string
+}
+
+func (e *emptyShardsError) Error() string {
+	return fmt.Sprintf("asked for %d shards but only %d are non-empty; lower %s_SHARD_COUNT", e.asked, e.nonEmpty, e.envPrefix)
+}
+
 // packShards partitions costs into n cost-balanced bins, longest processing
 // time first, and proves the partition is a bijection over the test set
 // before anything runs: a filter bug that dropped tests would otherwise
 // present as a faster, still-green suite.
 func packShards(costs []testCost, n int, envPrefix string) (bins [][]string, loads []float64, err error) {
 	if len(costs) == 0 {
-		return nil, nil, errors.New("found no tests to shard")
+		return nil, nil, errNoTestsToShard
 	}
 	byCost := make([]testCost, len(costs))
 	copy(byCost, costs)
@@ -105,14 +121,14 @@ func packShards(costs []testCost, n int, envPrefix string) (bins [][]string, loa
 	for _, bin := range bins {
 		for _, name := range bin {
 			if seen[name] || !want[name] {
-				return nil, nil, errors.New("partition is not a bijection over the test set")
+				return nil, nil, errNotBijection
 			}
 			seen[name] = true
 			placed++
 		}
 	}
 	if placed != len(want) {
-		return nil, nil, errors.New("partition is not a bijection over the test set")
+		return nil, nil, errNotBijection
 	}
 	nonEmpty := 0
 	for _, bin := range bins {
@@ -121,7 +137,7 @@ func packShards(costs []testCost, n int, envPrefix string) (bins [][]string, loa
 		}
 	}
 	if nonEmpty != n {
-		return nil, nil, fmt.Errorf("asked for %d shards but only %d are non-empty; lower %s_SHARD_COUNT", n, nonEmpty, envPrefix)
+		return nil, nil, &emptyShardsError{asked: n, nonEmpty: nonEmpty, envPrefix: envPrefix}
 	}
 	return bins, loads, nil
 }

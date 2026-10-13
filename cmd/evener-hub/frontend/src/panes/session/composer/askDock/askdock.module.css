@@ -100,24 +100,15 @@
   color: var(--ink-mid);
 }
 
-.visuallyHidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-}
-
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
  * 4): the tab strip is dense (kata 99yf's question-switcher, several tabs
  * side by side), so a coarse pointer needs the platform's 44px tap floor -
  * min-height, not height, so the desktop sizing above stays the desktop
- * rule and this only ever grows it. (pointer: coarse), not a width
+ * rule and this only ever grows it. (any-pointer: coarse), not a width
  * breakpoint like button.module.css's own phone block: this strip isn't a
  * widgets/button consumer, so it follows the pointer type directly rather
  * than reaching for --tap-min's own ≤900px gate a second way. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .tab {
     min-height: var(--tap-min);
   }

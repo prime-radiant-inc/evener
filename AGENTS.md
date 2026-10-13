@@ -4,6 +4,10 @@
 
 Always create an isolated worktree for feature, bug-fix, and PR work. You have permission.
 Keep unrelated changes in the current checkout out of the worktree and PR.
+The git stash list is shared repo-wide across every worktree and the main
+checkout, so another session's stashes sit in the same list: inspect
+`git stash list` before creating or popping one, and prefer file-scoped
+`git restore` over stash for mutation checks inside worktrees.
 
 ## Product behavior and evergreen documentation
 
@@ -49,6 +53,9 @@ reconnect after loading multiple pages, including a visible row on a later page.
 ## Testing
 
 Before adding or changing tests, read `docs/developing-evener/testing.md`.
+Never assert on phrasing: no test may check that copy, error messages, or other
+human-readable strings match a hardcoded phrase or a constant imported from the
+code. Assert the behavior instead ("Copy Is Not a Test Oracle" in that doc).
 For the rest of the dev-facing docs (building, linting, coverage, fuzzing,
 environment, worktrees), see `docs/developing-evener/README.md`; for every
 `make` target with a one-line summary, run `make help`.
@@ -70,6 +77,10 @@ full suite as the source of truth. Reserve a local full run (`make test`,
 `make merge-approval-gate`) for when you need it, such as reproducing a CI
 failure.
 
+Run the heavy local gates one at a time — `make test-web`, `make vet` and
+`make lint` — not as parallel background jobs: they compete for the same CPU,
+and contention is how a gate's timing budget gets breached.
+
 Use this boundary:
 
 - Evener plumbing: use a scripted provider at the LLM boundary and exercise real
@@ -82,6 +93,15 @@ Use this boundary:
 
 A provider API key by itself must never cause default tests to issue live
 requests.
+
+## Building web UI
+
+Before adding or changing UI in `cmd/evener-hub/frontend/src`, read
+`docs/developing-evener/design-system.md`. Build from the widget library
+(`src/widgets`, imported through its barrel) and design tokens: no raw
+`<button>`/`<input>`/`<select>`/`<textarea>` outside `src/widgets`, no CSS
+that reaches into a widget's DOM, and no new widget or widget prop without
+asking Jesse first.
 
 ## Frontend gates
 
@@ -108,7 +128,11 @@ rules, so an explicit-path Biome run over them reports violations the gate does
 not enforce. Do not "fix" those to satisfy an out-of-scope invocation. Use
 `make test-web` as the canonical frontend unit, typecheck, and Biome gate; on
 Chrome-capable hosts, also run `make test-web-browser` for real geometry and
-browser guards. CI checks Biome formatting. Avoid `noNonNullAssertion` and
+browser guards. `npm test`/vitest never typechecks — esbuild strips types —
+so a green targeted vitest run says nothing about `tsc`: `npm run typecheck`
+in `cmd/evener-hub/frontend` is the fast check before claiming a frontend
+change typechecks.
+CI checks Biome formatting. Avoid `noNonNullAssertion` and
 array-index-key violations.
 
 The typecheck step runs `npm run typecheck` (`tsc --noEmit --incremental

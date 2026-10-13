@@ -13,6 +13,7 @@ import {
   browserDraftKey,
   getBrowserDraftRepository,
 } from "../../../stores/browserDraftRepository";
+import { serializeSessionKey } from "../../../stores/compositionRevision";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import type {
   MutationOutboxIndexedDB,
@@ -162,6 +163,54 @@ export function sameSkillSelections(left: readonly string[], right: readonly str
 
 export function restoredSkillNames(value: SkillEditorValue): string[] {
   return serializeSkillDocument(parseSkillDocument(value)).skillNames;
+}
+
+// The per-ref registry of live composer sources. The resume carry must not
+// race a live source's serial draft-commit queue: a draft typed while the
+// resume was in flight can still be queued when a reader (the carry) looks at
+// the repository. Sources register their settle seam for their whole lifetime,
+// so a carry can drain every live source under the old ref first and then
+// carry what actually exists.
+const draftSourceSettles = new Map<string, Set<() => Promise<void>>>();
+
+/** Drains every live source's pending draft commits for the ref, in parallel. */
+export function settleBrowserDraftsForRef(ref: string): Promise<void> {
+  const settles = draftSourceSettles.get(ref);
+  if (settles === undefined) return Promise.resolve();
+  return Promise.all([...settles].map((settle) => settle())).then(() => undefined);
+}
+
+// One in-flight resume carry per destination draft key, registered BEFORE any
+// await inside it runs. A composer hydrating the destination awaits the
+// registry first, so a resume that navigates while its carry is still writing
+// cannot show the destination without the carried draft.
+const pendingDraftCarries = new Map<string, Promise<void>>();
+
+/** Carries the superseded ref's draft to the resumed identity, settling live sources first. */
+export function carryBrowserDraft(fromRef: string, toRef: string): Promise<void> {
+  const repository = getBrowserDraftRepository();
+  const from = browserDraftKey(fromRef);
+  const to = browserDraftKey(toRef);
+  const run = (async () => {
+    // A draft typed during the resume can still be in a live source's serial
+    // queue under the old ref; carrying the repository row before that queue
+    // lands would strand the typed text there.
+    await settleBrowserDraftsForRef(fromRef);
+    await repository.carryDraft(from, to);
+  })();
+  const destination = serializeSessionKey(to);
+  const chained = (pendingDraftCarries.get(destination) ?? Promise.resolve()).then(() => run);
+  pendingDraftCarries.set(destination, chained);
+  return chained.then(() => {
+    if (pendingDraftCarries.get(destination) === chained) pendingDraftCarries.delete(destination);
+  });
+}
+
+/** Awaits any in-flight resume carry writing INTO the key. */
+export function awaitDraftCarryInto(key: BrowserDraftKey): Promise<void> {
+  const pending = pendingDraftCarries.get(serializeSessionKey(key));
+  if (pending === undefined) return Promise.resolve();
+  return pending;
 }
 
 /** Original conversation work belongs to its pane, not to an editor mount. */
@@ -399,6 +448,10 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       const r = repository;
       const k = draftKey;
       if (!r || !k) return;
+      // A resume that navigated here may still be carrying this key's draft
+      // from the superseded identity: hydrating before that write lands would
+      // show the destination without the carried text.
+      await awaitDraftCarryInto(k);
       const transfer = await r.transferSupportedDrafts(k.namespace);
       if (transfer.state !== "committed") throw new Error("Draft transfer is pending. Try again.");
       let row = await r.load(k);
@@ -1193,6 +1246,13 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     if (!disposed) pushToast("error", "Couldn't load the draft. Try again.");
   });
 
+  const settleEntry = () => whenSettled();
+  {
+    const settles = draftSourceSettles.get(ref) ?? new Set<() => Promise<void>>();
+    settles.add(settleEntry);
+    draftSourceSettles.set(ref, settles);
+  }
+
   return {
     ref,
     sourceId,
@@ -1273,6 +1333,11 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     dispose() {
       if (disposed) return;
       disposed = true;
+      const settles = draftSourceSettles.get(ref);
+      if (settles !== undefined) {
+        settles.delete(settleEntry);
+        if (settles.size === 0) draftSourceSettles.delete(ref);
+      }
       retirementHolds.clear();
       retirementPersistenceAttempt = null;
       if (pendingRetirement) {

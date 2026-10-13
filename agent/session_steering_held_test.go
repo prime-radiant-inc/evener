@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/provenance"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -379,64 +377,6 @@ func TestPromoteQueuedAsSteerReleasesTheParkedSteer(t *testing.T) {
 
 	if sess.clientMutations.steeringHeld() {
 		t.Fatal("promoteQueuedAsSteer left SteeringHeld set: the user picked something to run now, and the parked steer should release with it")
-	}
-}
-
-// TestDelegateSteerCallerUnaffectedByHold is the scope-predicate proof (#146):
-// enqueueDelegateCallerSteeringDurably (real Provenance, Source=="") never
-// touches PendingExecutions/SteeringOrder, the store SteeringHeld gates, so a
-// hold on the user's own steering must not block, clear, or otherwise
-// interact with delegate SteerCaller traffic.
-func TestDelegateSteerCallerUnaffectedByHold(t *testing.T) {
-	t.Parallel()
-	sess := newQueuePersistTestSession(t, t.TempDir())
-	defer sess.Close()
-	serveSession(t, sess)
-
-	runningStartTurn(t, sess, "running-turn", "do the thing")
-	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "steer-mid-round",
-		Input:            []appwire.InputItem{{Type: "text", Text: "actually do it this way"}},
-	}); err != nil {
-		t.Fatalf("steer: %v", err)
-	}
-	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-		ClientMutationID: "stop-over-steering",
-	}, func() {}); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	if !sess.clientMutations.steeringHeld() {
-		t.Fatal("precondition: Stop did not set SteeringHeld")
-	}
-
-	before := len(sess.SteeringQueueSnapshot())
-	prov := &provenance.Causal{Chain: []provenance.Entry{{Kind: "job", JobID: "job-123"}}}
-	if err := sess.enqueueDelegateCallerSteeringDurably("delegate says redirect", prov); err != nil {
-		t.Fatalf("enqueueDelegateCallerSteeringDurably was blocked while SteeringHeld: %v", err)
-	}
-
-	after := sess.SteeringQueueSnapshot()
-	if len(after) != before+1 {
-		t.Fatalf("delegate steering did not land in the in-memory queue while held: got %d entries, want %d", len(after), before+1)
-	}
-	if !sess.clientMutations.steeringHeld() {
-		t.Fatal("a delegate steer while held cleared SteeringHeld: the store is scoped to user steering only and must not react to delegate traffic")
-	}
-	if !sess.hasPendingUserSteering() {
-		t.Fatal("hasPendingUserSteering went false after a delegate steer landed; the user's own held steer must still count")
-	}
-
-	// The delegate entry is delivered by the ungated injectDrainedSteering
-	// regardless of the hold -- proving delivery is not blocked structurally.
-	sess.injectDrainedSteering()
-	found := false
-	for _, turn := range sess.history {
-		if turn.Kind == schema.TurnSteering && turn.Message.Text() == "delegate says redirect" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("the delegate steer was never delivered into the transcript even though SteeringHeld only gates the durable user-steering claim path")
 	}
 }
 

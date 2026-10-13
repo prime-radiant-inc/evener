@@ -172,8 +172,8 @@ func TestTranscript_RangeLastN(t *testing.T) {
 	if r.TurnsRendered != 1 || r.Elided != 2 {
 		t.Errorf("last:1 rendered/elided = %d/%d, want 1/2", r.TurnsRendered, r.Elided)
 	}
-	if r.Turns[0].Index != 3 {
-		t.Errorf("last:1 should show turn index 3, got %d", r.Turns[0].Index)
+	if r.Turns[0].Turn == nil || *r.Turns[0].Turn != 2 {
+		t.Errorf("last:1 should show turn 2, got %v", r.Turns[0].Turn)
 	}
 }
 

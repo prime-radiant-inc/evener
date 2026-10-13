@@ -110,12 +110,18 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		resourceCapsJSON = renderResourceCapsJSON(resources.CPUs, resources.MemoryMB)
 	}
 
+	read := s.memoryContextEnabled()
+	saves := s.memorySaveInstructionsEnabled()
 	data := promptData{
 		NonInteractive:           s.cfg.noOneToAsk(),
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
-		IsSubagent:               s.depth > 0,
+		IsSubagent:               s.isSubagentSession(),
 		Surface:                  s.profile.Surface(),
 		TurnEndsProcess:          s.cfg.TurnEndsProcess,
+		MemoryRead:               read,
+		MemorySearch:             read && s.canInstructTool("memory_search"),
+		MemorySaves:              saves,
+		ProjectMemory:            read && s.cfg.MemoryProjectID != "",
 		WorkingDir:               s.envInfo.WorkingDir,
 		IsGitRepo:                s.envInfo.IsGitRepo,
 		GitBranch:                s.envInfo.GitBranch,
@@ -176,6 +182,9 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// point 1); reading it back from the registry avoids a second predicate
 	// that could drift from the real gate.
 	data.HasAskUser = s.reg.Get("ask_user") != nil
+	// end_reason shares that gate: the registered communicate schema takes
+	// it by this same predicate (toolDeps.offersEndReason).
+	data.HasEndReason = s.hasHumanPartnerToAsk()
 
 	// Available subagent types
 	data.AvailableAgents = s.availableAgentEntries()
@@ -235,7 +244,7 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 				line += ". Your file tools may write only inside this scratch directory; all other file-tool writes are denied"
 			}
 		}
-		line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
+		line += ". It is deleted when your root session is archived; return what your parent needs in your result."
 	}
 	return line
 }

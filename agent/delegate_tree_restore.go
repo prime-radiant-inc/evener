@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 )
 
@@ -79,6 +80,10 @@ type delegateOwedAttentionStart struct {
 	attentionID string
 	generation  uint64
 	pendingIDs  []string
+	// turns are the durable turns behind the trigger and the pending items,
+	// read by the same scan that found the generation, so recovery needs no
+	// transcript read after the start commits.
+	turns []schema.Turn
 }
 
 func (c *delegateTreeController) takeOwedAttentionAdmission() bool {
@@ -171,6 +176,7 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 				attentionID: resume.attentionID,
 				generation:  resume.generation,
 				pendingIDs:  fold.pendingIDs(),
+				turns:       fold.pendingTurns(resume.attentionID),
 			})
 		}
 	}
@@ -715,7 +721,24 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 		}
 		return c.ReportAttentionStabilized(plan.lease, plan.attentionID, plan.runtime)
 	}
-	if err := c.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{plan.attentionID}, plan.disposition); err != nil {
+	// A stop discards only attention the transcript still owes. A noted wake
+	// can outlive its item's resolution: a delegate generation consumes what
+	// its settled requests presented, and its wake stays (see
+	// clearResolvedDelegateAttention). Discarding that item again would be a
+	// conflicting resolution, so the stop re-resolves it as recorded instead:
+	// that appends nothing and renews the durability barrier for a marker whose
+	// fsync may have failed, before the wake is forgotten.
+	disposition, generation := plan.disposition, uint64(0)
+	if plan.disposition == delegateAttentionDiscarded {
+		recorded, recordedGeneration, resolved, err := c.recordedDelegateAttentionResolution(plan.transcriptRef, plan.attentionID)
+		if err != nil {
+			return err
+		}
+		if resolved {
+			disposition, generation = recorded, recordedGeneration
+		}
+	}
+	if err := c.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{plan.attentionID}, disposition, generation); err != nil {
 		return err
 	}
 	if plan.disposition == delegateAttentionConsumed {
@@ -726,12 +749,29 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 	return err
 }
 
+// recordedDelegateAttentionResolution returns the resolution the receiver
+// transcript holds for attentionID, if any: its disposition and resume
+// generation. A resolution is appended before it is reported, so the file
+// holds it for a resident runtime too.
+func (c *delegateTreeController) recordedDelegateAttentionResolution(transcriptRef, attentionID string) (delegateAttentionResolution, uint64, bool, error) {
+	path, sessionID, err := delegateTranscriptPathFromRef(c.stateDir, transcriptRef)
+	if err != nil {
+		return "", 0, false, err
+	}
+	fold, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return "", 0, false, err
+	}
+	disposition, resolved := fold.resolutions[attentionID]
+	return disposition, fold.resumeGenerations[attentionID], resolved, nil
+}
+
 // resolveDelegateAttentionDurably appends attention resolution markers through
 // the resident runtime's one writer when it exists, and through a cold writer
 // on the receiver transcript otherwise.
-func (c *delegateTreeController) resolveDelegateAttentionDurably(runtime *Session, transcriptRef string, ids []string, disposition delegateAttentionResolution) error {
+func (c *delegateTreeController) resolveDelegateAttentionDurably(runtime *Session, transcriptRef string, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
 	if runtime != nil {
-		return runtime.resolveAttentionDurably(ids, disposition)
+		return runtime.resolveAttentionDurablyForGeneration(ids, disposition, resumeGeneration)
 	}
 	path, expectedSessionID, err := delegateTranscriptPathFromRef(c.stateDir, transcriptRef)
 	if err != nil {
@@ -741,7 +781,7 @@ func (c *delegateTreeController) resolveDelegateAttentionDurably(runtime *Sessio
 	if open == nil {
 		open = transcript.OpenWriterForSession
 	}
-	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, open)
+	return appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID, ids, disposition, resumeGeneration, open)
 }
 
 func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (delegateMutationPlans, error) {

@@ -13,10 +13,15 @@ import {
 	pressable,
 	render,
 	renderedText,
+	settle,
 	swipeRowFully,
 	textOf,
+	unmountMountedTrees,
 } from "../renderNative.testkit";
+import { SwipeRow } from "../board/SwipeRow";
+import { hasTestID, markedNodes, markers, withTestID } from "../markerTestUtils";
 import type { Routes } from "../screens";
+import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { type NotesHost, NotesSheet, notesHosts } from "./NotesSheet";
@@ -85,7 +90,6 @@ function memoryStorage(): SyncStringStorage {
 
 let owner: object;
 let controller: NotesController | null = null;
-const mounted: ReactTestRenderer[] = [];
 
 /** The screen's side: a controller over a hub that saves and removes, and the
  * host it provides under the session's key. */
@@ -127,8 +131,14 @@ function sheet(focusEditor?: boolean): ReactTestRenderer {
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "NotesSheet">;
 	const tree = render(<NotesSheet {...props} />);
-	mounted.push(tree);
 	return tree;
+}
+
+/** What the status line under the editor says. */
+function statusText(tree: ReactTestRenderer): string {
+	const [line] = markedNodes(tree, "note-status");
+	if (!line) throw new Error("no note status line");
+	return textOf(line);
 }
 
 const editor = (tree: ReactTestRenderer) =>
@@ -143,12 +153,6 @@ function editorStyle(input: ReactTestInstance) {
 const symbols = (tree: ReactTestRenderer) =>
 	tree.root.findAll((node) => String(node.type) === "SymbolView").map((node) => node.props.name);
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
 const actionSheet = vi.mocked(ActionSheetIOS.showActionSheetWithOptions);
 
 beforeEach(() => {
@@ -160,7 +164,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const tree of mounted.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	notesHosts.release(sheetKey(HUB, REF), owner);
 	controller?.dispose();
 	controller = null;
@@ -197,6 +201,12 @@ describe("your note (spec 8.8)", () => {
 		expect(editor(tree)?.props.value).toBe("keep the tests green");
 	});
 
+	it("lets a drag of the sheet put the keyboard away", () => {
+		provide(session());
+		const tree = sheet();
+		expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+	});
+
 	it("draws the focus ring while focused, and leaving it schedules the save", () => {
 		const { notes } = provide(session());
 		const tree = sheet();
@@ -228,10 +238,10 @@ describe("your note (spec 8.8)", () => {
 	it("says under the editor what saving will do, following the phase", () => {
 		provide(session());
 		const tree = sheet();
-		expect(renderedText(tree)).toContain("Your note stays on this session. Saving it will wake the agent.");
+		expect(markers(tree, "note-status")).toEqual(["wakesAgent"]);
 		act(() => editor(tree)?.props.onChangeText("draft"));
 		act(() => editor(tree)?.props.onBlur());
-		expect(renderedText(tree)).toContain("Saves in 10 seconds, or when you close this.");
+		expect(markers(tree, "note-status")).toEqual(["scheduled"]);
 	});
 
 	it("announces each change to the status line, since iOS ignores accessibilityLiveRegion (#2903)", () => {
@@ -245,12 +255,20 @@ describe("your note (spec 8.8)", () => {
 		act(() => editor(tree)?.props.onChangeText("draft"));
 		expect(announce).not.toHaveBeenCalled();
 		act(() => editor(tree)?.props.onBlur());
-		expect(announce).toHaveBeenCalledWith("Saves in 10 seconds, or when you close this.");
+		expect(announce).toHaveBeenCalledWith(statusText(tree));
+		expect(announce).toHaveBeenCalledOnce();
 	});
 
-	it("says the agent is told when the agent is working", () => {
+	it("says the agent is told when the agent is working, where an idle one is woken", () => {
+		provide(session());
+		const idle = statusText(sheet());
+		unmountMountedTrees();
+		notesHosts.release(sheetKey(HUB, REF), owner);
+		controller?.dispose();
 		provide(session({ status: { type: "active" } as ThreadModel["status"] }));
-		expect(renderedText(sheet())).toContain("Your note stays on this session. The agent is told when it changes.");
+		const tree = sheet();
+		expect(markers(tree, "note-status")).toEqual(["tellsAgent"]);
+		expect(statusText(tree)).not.toBe(idle);
 	});
 
 	it.each([
@@ -264,22 +282,22 @@ describe("your note (spec 8.8)", () => {
 		const tree = sheet(true);
 		expect(editor(tree)).toBeUndefined();
 		expect(renderedText(tree)).toContain("keep the tests");
-		expect(renderedText(tree)).not.toContain("Saving it will wake the agent");
+		expect(markers(tree, "note-status")).toEqual([]);
 	});
 
 	it("says No shared notes, and nothing else, for a read-only session with nothing saved", () => {
 		provide(session({ status: { type: "ended" } as ThreadModel["status"] }));
 		const tree = sheet();
 		expect(editor(tree)).toBeUndefined();
-		expect(renderedText(tree)).toContain("No shared notes");
-		for (const words of ["Agent", "No agent note yet", "No links yet"]) expect(renderedText(tree)).not.toContain(words);
+		expect(markers(tree, "empty-state")).toEqual(["nothingShared"]);
+		expect(markers(tree, "notes-section")).toEqual([]);
 	});
 
 	it("omits the empty Your note group for a read-only session, when it has an agent note or links instead", () => {
 		provide(session({ status: { type: "ended" } as ThreadModel["status"], agentNote: "on it" }));
 		const tree = sheet();
 		expect(editor(tree)).toBeUndefined();
-		expect(renderedText(tree)).not.toContain("Your note");
+		expect(markers(tree, "notes-section")).toEqual(["agent", "links"]);
 		expect(renderedText(tree)).toContain("on it");
 	});
 });
@@ -290,12 +308,14 @@ describe("the agent's note", () => {
 		const tree = sheet();
 		const note = tree.root.find((node) => String(node.type) === "Text" && textOf(node) === "reading the router");
 		expect(note.props.style).toMatchObject({ fontFamily: "SourceSerif4-Regular", color: palette.prose });
-		expect(renderedText(tree)).toContain("Agent");
+		const [agent] = withTestID(tree, "notes-section:agent");
+		expect(agent && textOf(agent)).toContain("reading the router");
 	});
 
 	it("says No agent note yet when there is none", () => {
 		provide(session());
-		expect(renderedText(sheet())).toContain("No agent note yet");
+		const [agent] = withTestID(sheet(), "notes-section:agent");
+		expect(agent && markers(agent, "empty-state")).toEqual(["noAgentNote"]);
 	});
 });
 
@@ -305,18 +325,19 @@ describe("links", () => {
 		const tree = sheet();
 		expect(symbols(tree)).toEqual(["globe", "doc.text"]);
 		const text = renderedText(tree);
-		expect(text).toContain("The PR");
+		expect(text).toContain(web.label);
 		expect(text).toContain("https:/​/​example.com/​pr/​1");
 		expect(text).toContain("file:/​/​/​Users/​j/​plan.md");
 		const url = tree.root.find((node) => String(node.type) === "Text" && textOf(node).startsWith("https:"));
 		expect(url.props.numberOfLines).toBeUndefined();
 		expect(url.props.style).toMatchObject({ fontFamily: "Menlo", fontSize: 13, lineHeight: 18, color: palette.inkMid });
-		expect(renderedText(tree)).toContain("The agent adds links as it works. Swipe left on one to remove it.");
+		expect(hasTestID(tree, "links-hint")).toBe(true);
 	});
 
 	it("says No links yet when there are none", () => {
 		provide(session());
-		expect(renderedText(sheet())).toContain("No links yet");
+		const [links] = withTestID(sheet(), "notes-section:links");
+		expect(links && markers(links, "empty-state")).toEqual(["noLinks"]);
 	});
 
 	it("opens a web link in the in-app browser, and leaves a file link alone", () => {
@@ -346,6 +367,7 @@ describe("links", () => {
 			hubId: HUB,
 			sessionRef: REF,
 			path: "docs/plan.md",
+			reference: { path: "docs/plan.md", cwd: CWD, readTarget: `${CWD}/docs/plan.md`, provenance: "absolute" },
 			sessionTitle: "Fix race",
 		});
 		expect(symbols(tree)).toEqual(["doc.text"]);
@@ -384,19 +406,19 @@ describe("links", () => {
 		act(() => choose?.(2));
 		// Spec 16.6: rigid on a destructive choice, and only that one.
 		expect(playedHaptics).toEqual(["impact:rigid"]);
-		await flush();
+		await settle();
 		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
 			"u1",
 		]);
-		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
+		expect(markers(tree, "toast")).toEqual(["link:removed"]);
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
 
-	it("offers the same choices through Android's alert, since ActionSheetIOS doesn't exist there (RoboRev #2769 round 2)", () => {
+	it("offers the same choices through Android's alert, since ActionSheetIOS doesn't exist there (RoboRev #2769 round 2)", async () => {
 		const os = Platform.OS;
 		(Platform as { OS: string }).OS = "android";
 		try {
-			provide(session({ sessionUrls: [web] }));
+			const { requests } = provide(session({ sessionUrls: [web] }));
 			const tree = sheet();
 			act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
 			const request = alertRequests.at(-1);
@@ -407,6 +429,11 @@ describe("links", () => {
 			playedHaptics.length = 0;
 			act(() => request?.buttons?.[2]?.onPress?.());
 			expect(playedHaptics).toEqual(["impact:rigid"]);
+			await settle();
+			expect(
+				requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id),
+			).toEqual(["u1"]);
+			expect(markers(tree, "toast")).toEqual(["link:removed"]);
 		} finally {
 			(Platform as { OS: string }).OS = os;
 		}
@@ -417,8 +444,8 @@ describe("links", () => {
 		const tree = sheet();
 		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
 		act(() => actionSheet.mock.calls[0]?.[1](2));
-		await flush();
-		expect(renderedText(tree)).toContain("Couldn't remove that link.");
+		await settle();
+		expect(markers(tree, "toast")).toEqual(["link:removeFailed"]);
 	});
 
 	it("drops a link the hub already removed, rather than leaving it listed (RoboRev #2769)", async () => {
@@ -426,9 +453,9 @@ describe("links", () => {
 		const tree = sheet();
 		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
 		act(() => actionSheet.mock.calls[0]?.[1](2));
-		await flush();
+		await settle();
 		expect(requests.filter((request) => request.method === "urls/remove")).toHaveLength(1);
-		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
+		expect(markers(tree, "toast")).toEqual(["link:removed"]);
 		expect(renderedText(tree)).not.toContain("example.com");
 		expect(symbols(tree)).toEqual([]);
 	});
@@ -438,7 +465,7 @@ describe("links", () => {
 		const tree = sheet();
 		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
 		act(() => actionSheet.mock.calls[0]?.[1](2));
-		await flush();
+		await settle();
 		expect(symbols(tree)).toEqual([]);
 		const removedOwner = owner;
 		// The hub re-reads with the row gone, then lists it again.
@@ -459,13 +486,13 @@ describe("links", () => {
 		const tree = sheet();
 		const swipeables = tree.root.findAllByType("ReanimatedSwipeable" as never);
 		expect(swipeables).toHaveLength(2);
-		expect(renderedText(render(swipeables[0]?.props.renderRightActions()))).toBe("Remove");
+		expect(tree.root.findAllByType(SwipeRow)[0]?.props.destructive?.key).toBe("remove");
 		swipeRowFully(swipeables[0], "left");
-		await flush();
+		await settle();
 		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
 			"u1",
 		]);
-		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
+		expect(markers(tree, "toast")).toEqual(["link:removed"]);
 	});
 
 	it("paints a swiped link the sheet's canvas, since the row itself has no fill", () => {
@@ -482,18 +509,18 @@ describe("links", () => {
 		const row = pressable(tree, "The PR, https://example.com/pr/1");
 		expect(row?.props.accessibilityActions).toEqual([{ name: "remove", label: "Remove link" }]);
 		act(() => row?.props.onAccessibilityAction({ nativeEvent: { actionName: "remove" } }));
-		await flush();
+		await settle();
 		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
 			"u1",
 		]);
-		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
+		expect(markers(tree, "toast")).toEqual(["link:removed"]);
 	});
 
 	it("never removes a link from a swipe that began in the screen's left edge band", async () => {
 		const { requests } = provide(session({ sessionUrls: [web] }));
 		const tree = sheet();
 		swipeRowFully(tree.root.findAllByType("ReanimatedSwipeable" as never)[0], "left", { pageX: 10 });
-		await flush();
+		await settle();
 		expect(requests.filter((request) => request.method === "urls/remove")).toEqual([]);
 	});
 
@@ -503,7 +530,7 @@ describe("links", () => {
 		act(() => pressable(tree, "The plan, file:///Users/j/plan.md")?.props.onLongPress());
 		expect(actionSheet.mock.calls[0]?.[0]).toMatchObject({ options: ["Copy link", "Cancel"], cancelButtonIndex: 1 });
 		expect(actionSheet.mock.calls[0]?.[0].destructiveButtonIndex).toBeUndefined();
-		expect(renderedText(tree)).not.toContain("Swipe left on one to remove it.");
+		expect(hasTestID(tree, "links-hint")).toBe(false);
 		expect(tree.root.findAllByType("ReanimatedSwipeable" as never)).toHaveLength(0);
 		expect(pressable(tree, "The plan, file:///Users/j/plan.md")?.props.accessibilityActions).toBeUndefined();
 	});
@@ -513,7 +540,7 @@ describe("closing the sheet", () => {
 	it("is titled Notes & links, and Done goes back", () => {
 		provide(session());
 		const tree = sheet();
-		expect(renderedText(tree)).toContain("Notes & links");
+		expect(tree.root.findByType(Sheet).props.title).toEqual(expect.stringMatching(/\S/));
 		act(() => pressable(tree, "Done")?.props.onPress());
 		expect(navigation.goBack).toHaveBeenCalledOnce();
 	});
@@ -523,8 +550,7 @@ describe("closing the sheet", () => {
 		const tree = sheet();
 		act(() => editor(tree)?.props.onChangeText("keep the tests"));
 		act(() => tree.unmount());
-		mounted.splice(mounted.indexOf(tree), 1);
-		await flush();
+		await settle();
 		expect(
 			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
 		).toEqual(["keep the tests"]);
@@ -538,11 +564,10 @@ describe("closing the sheet", () => {
 		act(() => {
 			for (const listener of [...appState.listeners]) listener("background");
 		});
-		await flush();
+		await settle();
 		expect(requests.map((request) => request.method)).toEqual(["notes/human/set"]);
 		expect(saved).not.toHaveBeenCalled();
 		act(() => tree.unmount());
-		mounted.splice(mounted.indexOf(tree), 1);
 		expect(appState.listeners).toEqual([]);
 	});
 
@@ -563,8 +588,7 @@ describe("closing the sheet", () => {
 		// finish() unmounts this component after that release, in that order.
 		act(() => notesHosts.release(sheetKey(HUB, REF), owner));
 		act(() => tree.unmount());
-		mounted.splice(mounted.indexOf(tree), 1);
-		await flush();
+		await settle();
 		expect(
 			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
 		).toEqual(["keep the tests"]);

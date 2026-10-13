@@ -144,8 +144,13 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
   });
 
   test("an empty value shows the layer's own default marker", () => {
+    const { unmount } = render(<ScalarField option={pathOption()} layer="global" value="" onChange={() => {}} />);
+    const globalMarker = screen.getByLabelText(pathOption().label).textContent;
+    unmount();
     render(<ScalarField option={pathOption()} layer="project" value="" onChange={() => {}} />);
-    expect(screen.getByText("(use global default)")).toBeTruthy();
+    const projectMarker = screen.getByLabelText(pathOption().label).textContent;
+    expect(projectMarker).toMatch(/\S/);
+    expect(projectMarker).not.toBe(globalMarker);
   });
 
   test("a file-kind field browses the value's own directory with files included", async () => {
@@ -242,10 +247,10 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
         layer="global"
         value="/not/writable"
         onChange={() => {}}
-        error="invalid path"
+        error="error-from-props"
       />,
     );
-    expect(screen.getByText("invalid path")).toBeTruthy();
+    expect(screen.getByText("error-from-props")).toBeTruthy();
     expect(screen.queryByText("Write a trace here.")).toBeNull();
   });
 
@@ -274,7 +279,8 @@ describe("ScalarField: modelPicker renders the rich model catalog", () => {
 
   test("an empty value shows the default marker", () => {
     render(<ScalarField option={modelPickerOption()} layer="global" value="" onChange={() => {}} />);
-    expect(screen.getByText("(default)")).toBeTruthy();
+    const trigger = screen.getByRole("button", { name: /change model/i });
+    expect(trigger.querySelector("[data-state='default']")).not.toBeNull();
   });
 
   test("picking a model from the catalog reports its qualified id via onChange", async () => {
@@ -370,7 +376,10 @@ describe("ScalarField: integer renders a numeric Input", () => {
         resolvedDefaults={{ maxRounds: -1 }}
       />,
     );
-    expect(screen.getByLabelText("Max rounds").getAttribute("placeholder")).toBe("unlimited (default)");
+    // The -1 "unlimited" sentinel is named, never shown as a raw number.
+    const placeholder = screen.getByLabelText("Max rounds").getAttribute("placeholder");
+    expect(placeholder).toMatch(/\S/);
+    expect(placeholder).not.toContain("-1");
   });
 });
 
@@ -683,10 +692,10 @@ describe("PromptCompositeField", () => {
         onModeChange={() => {}}
         onFileChange={() => {}}
         onTextChange={() => {}}
-        fileError="invalid path"
+        fileError="error-from-props"
       />,
     );
-    expect(screen.getByText("invalid path")).toBeTruthy();
+    expect(screen.getByText("error-from-props")).toBeTruthy();
   });
 
   test("choosing 'file' calls onModeChange with 'file'", async () => {

@@ -12,7 +12,7 @@ export function normalizeViewportSpec(viewport, caseName) {
     throw new Error(`${caseName}: viewport must be an object`);
   }
 
-  const { width, height, deviceScaleFactor, mobile } = viewport;
+  const { width, height, deviceScaleFactor, mobile, touch } = viewport;
 
   if (!isPositiveInteger(width)) {
     throw new Error(`${caseName}: viewport.width must be a finite positive integer`);
@@ -26,12 +26,16 @@ export function normalizeViewportSpec(viewport, caseName) {
   if (mobile !== undefined && typeof mobile !== "boolean") {
     throw new Error(`${caseName}: viewport.mobile must be a boolean`);
   }
+  if (touch !== undefined && typeof touch !== "boolean") {
+    throw new Error(`${caseName}: viewport.touch must be a boolean`);
+  }
 
   return {
     width,
     height,
     ...(deviceScaleFactor !== undefined ? { deviceScaleFactor } : {}),
     ...(mobile !== undefined ? { mobile } : {}),
+    ...(touch !== undefined ? { touch } : {}),
   };
 }
 

@@ -5,6 +5,43 @@ import { retainedTranscriptReadView } from "./transcriptReadView";
 
 afterEach(resetWorkspaceStoreForTests);
 
+test("newer reader input clears and invalidates the retained capture", () => {
+  const pane: OpenPaneRecord = { id: "pane", type: "transcript", params: { ref: "root" }, slot: "main" };
+  workspaceStore.setState({ panes: [pane] });
+  const view = retainedTranscriptReadView(conversationPaneLifetime(pane), "root", "transcript");
+  const revision = view.positioningRevision ?? 0;
+  const captured = {
+    anchorId: "current-entry",
+    anchorOffset: -900,
+    normalizedOffset: 0.3,
+    followingBottom: false,
+    positioningRevision: revision,
+  };
+  view.setCapture(captured);
+  view.supersedePositioning?.();
+  expect(view.getCapture()).toBeUndefined();
+  expect(view.positioningRevision).toBe(revision + 1);
+  view.setCapture(captured);
+  expect(view.getCapture()).toBeUndefined();
+});
+
+test("retiring a reader clears its capture without retiring an independent same-ref reader", () => {
+  const first: OpenPaneRecord = { id: "first", type: "transcript", params: { ref: "root" }, slot: "main" };
+  const second: OpenPaneRecord = { id: "second", type: "transcript", params: { ref: "root" }, slot: "secondary" };
+  workspaceStore.setState({ panes: [first, second] });
+  const a = retainedTranscriptReadView(conversationPaneLifetime(first), "root", "transcript");
+  const b = retainedTranscriptReadView(conversationPaneLifetime(second), "root", "transcript");
+  const captured = { anchorId: "current-entry", anchorOffset: -900, normalizedOffset: 0.3, followingBottom: false };
+  a.setCapture(captured);
+  b.setCapture(captured);
+  a.dispose();
+  expect(a.getCapture()).toBeUndefined();
+  expect(b.getCapture()).toBe(captured);
+  expect(b.alive).toBe(true);
+  a.setCapture(captured);
+  expect(a.getCapture()).toBeUndefined();
+});
+
 test("a pane retains each ref and role's capture when its reader collapses", () => {
   const pane: OpenPaneRecord = { id: "pane:root", type: "transcript", params: { ref: "root" }, slot: "main" };
   workspaceStore.setState({ panes: [pane] });

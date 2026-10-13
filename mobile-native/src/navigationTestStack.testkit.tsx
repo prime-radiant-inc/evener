@@ -18,3 +18,10 @@ function TestStack({ children, initialRouteName }: { children: ReactNode; initia
 }
 
 export const createTestStack = createNavigatorFactory(TestStack);
+
+/** A page whose content a test never reads. Declared once at module scope:
+ * React Navigation warns about a component written inline in a Screen,
+ * which would be a new type on every render. */
+export function BlankPage() {
+	return null;
+}

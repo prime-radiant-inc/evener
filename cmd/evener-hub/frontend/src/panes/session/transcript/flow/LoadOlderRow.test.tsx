@@ -183,13 +183,17 @@ test("there is no 'load more' button to press - paging is automatic", () => {
 test("shows a quiet loading state while a page is in flight", () => {
   const port = OVERFLOWING();
   render(<LoadOlderRow onLoad={() => {}} loading={true} error={null} scrollElement={() => port.el} />);
-  expect(screen.getByTestId("load-older-row").textContent).toMatch(/loading older turns/i);
+  const row = screen.getByTestId("load-older-row");
+  expect(row.getAttribute("data-state")).toBe("loading");
+  expect(row.textContent).not.toBe("");
 });
 
 test("idle with more history to fetch, it shows no banner at all", () => {
   const port = OVERFLOWING();
   render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} scrollElement={() => port.el} />);
-  expect(screen.queryByText(/older turns/i)).toBeNull();
+  const row = screen.getByTestId("load-older-row");
+  expect(row.getAttribute("data-state")).toBe("idle");
+  expect(row.textContent).toBe("");
 });
 
 test("a failed fetch surfaces inline, announced, with a Retry - never silently", () => {

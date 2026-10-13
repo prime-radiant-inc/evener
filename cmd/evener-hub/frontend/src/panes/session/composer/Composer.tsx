@@ -95,6 +95,7 @@ import {
   SendIcon,
   Tooltip,
   useToasts,
+  VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { retryDocumentReaders } from "../../doc/documentReadState";
@@ -151,7 +152,6 @@ const CLASS = {
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
@@ -199,13 +199,19 @@ const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
-  // Delivery-uncertain rows: while any exist the hub's explicit Resume still
-  // performs reconciliation, so the resume-only carve-out does not apply and
-  // Send stays fenced (see isResumeOnlyLocal's hasUncertainMessages).
+  // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
+  // fold's uncertainMessages clause (isResumeOnlyLocal, read from
+  // hasBlockedUnknown), so a local fenced session falls to the Send-resumes
+  // face, where the press parks its send and the store drives the resume.
   const blockedMutations = useBlockedMutationEntries(ref);
   // A Force stop this page started is still draining: the hub refuses even
   // turn/start for that window, so the resume-only carve-out does not apply.
   const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
+  // The mutation-recency mark the Send-resumes face reads (stores/liveControls
+  // .ts's isSendResumesLocal): a local snapshot whose parent still owns its
+  // uncertain rows is not Send-driven. Read reactively, like the fence around
+  // it, so the badge clears when a resume makes the snapshot authoritative.
+  const mutationAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
   const submitting = useComposerSubmitting(ref);
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
@@ -455,6 +461,29 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     source.refreshRecovery();
   }, [source]);
 
+  // A store-driven resume failure (the Send-resumes face) surfaces as a toast
+  // naming the reason: a store cannot push one, so it publishes the failure and
+  // this composer - the press surface, mounted whenever a session pane is -
+  // reports it. The toast therefore needs a mounted composer; with none, the
+  // failure is only in the store. The pressed text is already a durable outbox
+  // row and Send stays offered, so a later press re-drives the resume.
+  const resumeFailure = useThreadsStore((s) => s.resumeFailures.get(ref));
+  const toastedResumeFailureSeqRef = useRef<number | null>(null);
+  useEffect(() => {
+    const seq = resumeFailure?.seq ?? 0;
+    // Seed from the store on the first run: a failure already published when
+    // this composer mounted has been reported, and a remount (dockview unmounts
+    // inactive panes routinely) must not re-toast it. Only a failure published
+    // after mount is new to this instance.
+    if (toastedResumeFailureSeqRef.current === null) {
+      toastedResumeFailureSeqRef.current = seq;
+      return;
+    }
+    if (seq <= toastedResumeFailureSeqRef.current) return;
+    toastedResumeFailureSeqRef.current = seq;
+    if (resumeFailure) toasts.push("error", `Resume failed: ${resumeFailure.message}`);
+  }, [resumeFailure, toasts]);
+
   // The approved browser-reader ready trigger: once this composer's source is
   // ready, nudge retained document annotation retries. Host cleanup cancels only
   // this listener; it never retires the shared reader work or runtime. The
@@ -680,6 +709,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     uncertainMessages: blockedMutations.length > 0,
     stopInFlight: stopping,
     queuedNonSend: hasQueuedNonSend(ref),
+    mutationStateAuthoritative: mutationAuthoritative,
   };
   const fence = recoveryFence(ref, model, recoveryRequired, resumeOnlySignals);
   const queueDepth = model.queue?.depth ?? 0;
@@ -728,6 +758,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // merely-resumable session (shut-down snapshot, no Stop in flight) folds
     // the resume into the send, so Send is offered while Queue is not.
     const targetFence = recoveryFence(target.ref, target, restartObligated, signals);
+    // The Send-resumes face offers Send and only Send, and a parked send in
+    // front of it does NOT suppress it: the store's driver resumes behind
+    // whichever rows are parked and the dispatcher drains them FIFO, so there
+    // is nothing for a second press to jump (reviewer A finding F1). Queue is
+    // not offered in the fence window.
+    if (targetFence.sendResumes) return { canSend: true, canQueue: false };
     if (targetFence.stillFenced) return { canSend: false, canQueue: false };
     // A pending send is already on its way; offering a second one here would
     // route it to turn/start during the resume window instead of waiting. This
@@ -792,10 +828,14 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // card for exactly the sessions the hub says are resumable. When the wire
   // really advertises no send, no card is rendered at all - an unusable field
   // is worse than no field.
-  const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.resumeOnly);
+  // The Send-resumes face is a stopped (ended) snapshot too, and its Send face
+  // must keep the card reachable for its retained draft - the canonical
+  // wire shape is notLoaded + send:false, which the capability alone would not
+  // render a card for.
+  const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.sendDriven);
   // Only the editor shrinks at rest. Controls stay available without typing.
   // Drafts, attachments and recovery keep enough writing space after blur.
-  const followUpEngaged = fence.fencedLocal || fence.resumeOnly || followUpFocused || hasContent;
+  const followUpEngaged = fence.fencedLocal || fence.sendDriven || followUpFocused || hasContent;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
@@ -1357,6 +1397,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           uncertainMessages: hasBlockedUnknown(ref),
           stopInFlight: threadsStore.getState().stoppingRefs.has(ref),
           queuedNonSend: hasQueuedNonSend(ref),
+          // Read live like the signals beside it: the render passes this too, so
+          // a snapshot that became authoritative between the render and the
+          // press routes to the Send-resumes face rather than reading as an
+          // owner-retained snapshot and refusing.
+          mutationStateAuthoritative: threadsStore.getState().mutationAuthorityRefs.has(ref),
         },
       ),
     });
@@ -1577,9 +1622,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           the textarea itself is visibly back, there is nothing left for a
           permanent "ready" line to usefully say (honest-liveness: only
           announce a real transition, never a static claim). */}
-      <div className={CLASS.visuallyHidden} role="status" aria-live="polite">
-        {readyAnnouncement}
-      </div>
+      <VisuallyHidden>
+        <span role="status" aria-live="polite" data-testid="composer-ready-announcement">
+          {readyAnnouncement}
+        </span>
+      </VisuallyHidden>
       {/* T3: queue strip - the queue preview (model.queue) above the input
           row; getComposerText/onRestoreToComposer/onDrainSuccess are this
           integration's own seam implementations, see each one's own doc
@@ -1653,7 +1700,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
               onSelect={commitSlashCompletion}
             />
           )}
-          <form ref={formRef} onSubmit={handleFormSubmit}>
+          <form
+            ref={formRef}
+            onSubmit={handleFormSubmit}
+            data-testid="composer-form"
+            data-mode={ended ? "follow-up" : "message"}
+          >
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
               <PromptCard
                 data-testid="composer-input-card"
@@ -1765,7 +1817,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                           actionPending ||
                           !hasContent ||
                           !(ended
-                            ? (canSendWhenEnded || fence.resumeOnly) && canCompose && !fence.stillFenced
+                            ? (canSendWhenEnded || fence.sendDriven) && canCompose && !fence.stillFenced
                             : canCompose)
                         }
                       >

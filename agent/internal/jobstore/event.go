@@ -36,8 +36,9 @@ type Event struct {
 	WatchID string `json:"watch_id,omitempty"`
 
 	// job_started payload
-	Type    JobType `json:"type,omitempty"`
-	Command string  `json:"command,omitempty"`
+	Type       JobType `json:"type,omitempty"`
+	Command    string  `json:"command,omitempty"`
+	Background bool    `json:"background,omitempty"`
 	// Intent carries JobRecord.Intent for job_started (see its doc comment).
 	Intent           string     `json:"intent,omitempty"`
 	Task             string     `json:"task,omitempty"`

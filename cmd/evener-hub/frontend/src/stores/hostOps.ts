@@ -27,6 +27,8 @@ import type {
   HostPlan,
   HostPlanStaleFacts,
   HostTeardownAttestation,
+  HostTeardownRecoverResult,
+  MethodTypes,
   OperationProgressEntry,
   OperationRecord,
 } from "@evener/appwire-client";
@@ -35,6 +37,8 @@ import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";
 import { HOST_GATE_TIMEOUT_MS, type HostMutationPair, hostsStore } from "./hosts";
 import { createSecureUUID } from "./secureUUID";
+
+type HostTeardownRetryResult = MethodTypes["evener/host/teardown-retry"]["result"];
 
 // --- the §11 refusal vocabulary ----------------------------------------------
 //
@@ -987,17 +991,7 @@ function markOperationGone(set: OperationSet, name: string, id: string): void {
 
 /** retryViewOf projects one `teardown-retry` arm (registry spec 08 §11's six
  * outcome x hostKind arms) onto the view the surfaces render. */
-function retryViewOf(
-  result: {
-    outcome: string;
-    hostKind: string;
-    host: { name: string; removed: boolean };
-    remnantId: string;
-    escalationAgeSec?: number;
-    seam?: string;
-  },
-  fallbackRemnantId: string,
-): HostTeardownRetryView {
+function retryViewOf(result: HostTeardownRetryResult, fallbackRemnantId: string): HostTeardownRetryView {
   const view: HostTeardownRetryView = {
     outcome: result.outcome,
     remnantId: result.remnantId === "" ? fallbackRemnantId : result.remnantId,
@@ -1006,15 +1000,12 @@ function retryViewOf(
     hostRemoved: result.host.removed === true,
   };
   if (result.escalationAgeSec !== undefined) view.escalationAgeSec = result.escalationAgeSec;
-  if (result.seam !== undefined) view.seam = result.seam;
+  if ("seam" in result && result.seam !== undefined) view.seam = result.seam;
   return view;
 }
 
 /** clearViewOf projects `teardown-recover`'s single `recovered-cleared` arm. */
-function clearViewOf(
-  result: { remnantId: string; clearedName: string; clearedAt: string; hostKind: string },
-  fallbackRemnantId: string,
-): HostTeardownClearView {
+function clearViewOf(result: HostTeardownRecoverResult, fallbackRemnantId: string): HostTeardownClearView {
   return {
     remnantId: result.remnantId === "" ? fallbackRemnantId : result.remnantId,
     clearedName: result.clearedName,
@@ -1082,10 +1073,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         set((previous) => ({ plans: { ...previous.plans, [name]: planConnectionChangedArm() } }));
         return;
       }
-      // The generated union carries `outcome` as `string`, so the arms are
-      // narrowed by the fields only one of them declares - the same structural
-      // discriminator stores/hosts.ts reads for the mutation-result union.
-      if ("plan" in result && "token" in result) {
+      if (result.outcome === "planned") {
         set((previous) => ({
           plans: {
             ...previous.plans,

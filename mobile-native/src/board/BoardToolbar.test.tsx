@@ -3,7 +3,7 @@ import { AccessibilityInfo } from "react-native";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { render } from "../renderNative.testkit";
+import { render, unmountMountedTrees } from "../renderNative.testkit";
 import { BoardToolbar } from "./BoardToolbar";
 
 vi.mock("react-native", async () => ({
@@ -27,6 +27,7 @@ beforeEach(() => {
 	vi.useFakeTimers();
 });
 afterEach(() => {
+	unmountMountedTrees();
 	vi.useRealTimers();
 });
 

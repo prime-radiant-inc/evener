@@ -3,9 +3,9 @@
 package execenv
 
 import (
-	"unsafe"
-
 	"golang.org/x/sys/unix"
+
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // canonicalRecheckRequired is true on macOS: the default APFS volume is
@@ -18,19 +18,7 @@ const canonicalRecheckRequired = true
 // canonicalPathOfFd returns the kernel's canonical path for an open fd via
 // fcntl(F_GETPATH), which reports the path with its real on-disk casing and
 // normalization — defeating case/normalization-insensitive masking bypasses.
-func canonicalPathOfFd(fd int) (string, error) {
-	var buf [unix.PathMax]byte
-	// x/sys does not expose an F_GETPATH-specific wrapper, but its supported
-	// FcntlInt wrapper accepts the Darwin fcntl pointer argument on arm64.
-	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buf[0])))); err != nil {
-		return "", err
-	}
-	n := 0
-	for n < len(buf) && buf[n] != 0 {
-		n++
-	}
-	return string(buf[:n]), nil
-}
+func canonicalPathOfFd(fd int) (string, error) { return sandbox.FdPath(fd) }
 
 // openBeneathRoot opens rel beneath rootFd refusing every symlink and any escape
 // above rootFd. macOS has no openat2, so this walks rel one component at a time

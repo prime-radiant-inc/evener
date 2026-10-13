@@ -8,12 +8,14 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
@@ -51,16 +53,25 @@ func TestApplyNoToolCallsDecision_PersistsNoToolCallsKind(t *testing.T) {
 }
 
 // TestInjectPostToolSteering_PersistsTaskReminderKind drives the task-reminder
-// tail of injectPostToolSteering (trigger 3: task_list never used, 10+
-// rounds in) directly. Only one trigger is exercised here — the site's fix
-// (appendSteeringTurn) is generic over whichever kind maybeInjectTaskReminder
-// returns, and round 1's TestMaybeInjectTaskReminder_* tests already cover
-// that each trigger returns the right kind value.
+// tail of injectPostToolSteering (an in-progress task, task_list idle for 25+
+// rounds) directly. The site's fix (appendSteeringTurn) is generic over
+// whichever kind maybeInjectTaskReminder returns, and the
+// TestMaybeInjectTaskReminder_* tests already cover the kind it returns.
 func TestInjectPostToolSteering_PersistsTaskReminderKind(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
+	s := newTestSessionForState(t) // a temp-dir workspace, so the task store can save
+	defer s.Close()
+	store := s.getOrCreateTaskStore()
+	if _, err := store.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"}}); err != nil {
+		t.Fatalf("add task 1: %v", err)
+	}
+	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("mark task 1 in_progress: %v", err)
+	}
 	s.mu.Lock()
-	s.totalRounds = 10 // trigger 3: never used task_list, 10+ rounds in.
+	s.taskToolEverUsed = true
+	s.taskToolLastRound = 0
+	s.totalRounds = 25
 	s.mu.Unlock()
 
 	var toolSigs []string
@@ -75,8 +86,8 @@ func TestInjectPostToolSteering_PersistsTaskReminderKind(t *testing.T) {
 	if last.Kind != schema.TurnSteering {
 		t.Fatalf("last turn kind = %v, want TurnSteering", last.Kind)
 	}
-	if last.SteeringKind != events.SteeringKindTaskNudge {
-		t.Errorf("SteeringKind = %q, want %q", last.SteeringKind, events.SteeringKindTaskNudge)
+	if last.SteeringKind != events.SteeringKindTaskInactive {
+		t.Errorf("SteeringKind = %q, want %q", last.SteeringKind, events.SteeringKindTaskInactive)
 	}
 }
 
@@ -358,4 +369,68 @@ func (file *delegateToolResultBarrierFile) Sync() error {
 	file.fs.once.Do(func() { close(file.fs.syncEntered) })
 	<-file.fs.allowSync
 	return file.File.Sync()
+}
+
+// A steer that arrives while the session's tool-result append is still
+// fsyncing waits in the durable steering queue; it never lands in history
+// inside the unfinished tool round. It drains only after the round completes.
+func TestSteeringArrivingDuringToolResultAppendWaitsForTheRoundToFinish(t *testing.T) {
+	t.Parallel()
+	fs := newDelegateToolResultBarrierFS()
+	writer, err := transcript.NewWriterWithFS(fs, "/root.jsonl", transcript.Header{SessionID: "root-session"})
+	if err != nil {
+		t.Fatalf("create root transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	root := &Session{id: "root-session", stateDir: t.TempDir()}
+	root.attachTranscript(writer)
+
+	fs.blockSync = true
+	// A fatal assertion below must not leave the append blocked in Sync while
+	// it holds the writer mutex, or writer.Close in the cleanup above hangs.
+	// Cleanups run last-in first-out, so this release runs before that Close.
+	var releaseSync sync.Once
+	release := func() { releaseSync.Do(func() { close(fs.allowSync) }) }
+	t.Cleanup(release)
+	done := make(chan error, 1)
+	go func() {
+		msg := llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "root-call", Name: "delegate", Content: `{"status":"running"}`}}}}
+		done <- root.appendTurnWithDurableTranscriptMessage(schema.TurnToolResults, msg, msg)
+	}()
+	select {
+	case <-fs.syncEntered:
+	case err := <-done:
+		t.Fatalf("tool-result append returned before fsync barrier: %v", err)
+	case <-time.After(30 * time.Second): // TRIPWIRE: scripted in-process fsync barrier; only fires on a genuine hang.
+		t.Fatal("tool-result append never reached the fsync barrier")
+	}
+
+	if err := root.SteerKind("arrived during tool round", events.SteeringKindAgentMessage); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	queue := root.SteeringQueueSnapshot()
+	if len(queue) != 1 || queue[0].Text != "arrived during tool round" {
+		t.Fatalf("steering queue during blocked tool result = %#v", queue)
+	}
+	persisted, _, err := loadQueues(root.stateDir, root.id)
+	if err != nil || len(persisted) != 1 || persisted[0].Text != "arrived during tool round" {
+		t.Fatalf("durable steering queue during blocked tool result = %#v err=%v", persisted, err)
+	}
+	root.mu.Lock()
+	for _, turn := range root.history {
+		if turn.Kind == schema.TurnSteering {
+			root.mu.Unlock()
+			t.Fatalf("steering appended into unfinished tool round: %#v", turn)
+		}
+	}
+	root.mu.Unlock()
+
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("finish tool-result append: %v", err)
+	}
+	entries := decodeTranscriptEntries(t, fs.Fs, "/root.jsonl")
+	if len(entries) != 1 || entries[0].Turn.Kind != schema.TurnToolResults {
+		t.Fatalf("transcript before steering drain = %#v, want only the completed tool result", entries)
+	}
 }

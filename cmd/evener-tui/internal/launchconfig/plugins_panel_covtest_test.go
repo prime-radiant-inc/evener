@@ -496,7 +496,7 @@ func TestCovHandleRuneInstalledAutoUpgrade(t *testing.T) {
 }
 
 func TestCovHandleRuneInstalledUpgrade(t *testing.T) {
-	p := PluginsPanel{tab: pluginsTabInstalled, plugins: []appwire.PluginEntry{{Plugin: "p", Marketplace: "mp"}}}
+	p := PluginsPanel{tab: pluginsTabInstalled, plugins: []appwire.PluginEntry{{Plugin: "p", Marketplace: "mp", UpdateAvailable: true}}}
 	_, cmd := p.handleRune("u")
 	if cmd == nil {
 		t.Fatal("u should produce a cmd")
