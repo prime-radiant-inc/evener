@@ -757,12 +757,15 @@ func (cm *Manager) MaybeCompact(
 }
 
 // claimAssumedWindowDisclosure hands out the right to emit the unknown-window
-// disclosure exactly once per Manager, so a session that runs many rounds
-// under an unknown window hears the assumption once.
-func (cm *Manager) claimAssumedWindowDisclosure() bool {
+// disclosure exactly once per model target: the latch is unset AND the
+// manager's current profile is still the caller's captured one, checked under
+// the same lock that latches. A SetProfile that swapped targets in between
+// reset the latch, and the stale caller must not consume the switched-to
+// model's disclosure; the current model's own pass claims it instead.
+func (cm *Manager) claimAssumedWindowDisclosure(caller *provider.Profile) bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if cm.assumedWindowDisclosed {
+	if cm.assumedWindowDisclosed || !sameProfileTarget(cm.profile, caller) {
 		return false
 	}
 	cm.assumedWindowDisclosed = true
@@ -788,7 +791,7 @@ func assumedWindowWarning(prof *provider.Profile) events.WarningData {
 // (issue #4564): the window the caller's layers run against is an assumption,
 // not a fact, and the session hears that once per model.
 func discloseAssumedWindow(cm *Manager, prof *provider.Profile, emitFn func(events.EventKind, events.EventData)) {
-	if _, assumed := effectiveWindowOf(prof); assumed && cm.claimAssumedWindowDisclosure() {
+	if _, assumed := effectiveWindowOf(prof); assumed && cm.claimAssumedWindowDisclosure(prof) {
 		emitFn(events.EventWarning, assumedWindowWarning(prof))
 	}
 }

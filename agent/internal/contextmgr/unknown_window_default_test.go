@@ -369,3 +369,43 @@ func TestStrategyTripwireDropsOnMidPassModelSwitch(t *testing.T) {
 		})
 	}
 }
+
+// TestDisclosureClaimRejectsStaleProfile pins the latch claim's atomicity: a
+// caller that captured an unknown-window model BEFORE a switch must neither
+// emit nor latch — the claim validates the caller's model under the same lock
+// that latches, so the switched-to model's own pass still hears its
+// assumption exactly once.
+func TestDisclosureClaimRejectsStaleProfile(t *testing.T) {
+	t.Parallel()
+	cm := NewManager(unknownGatewayProfile(), nil, cheapmodel.New(nil))
+
+	// The stale caller captured model A before the switch; the switch to a
+	// different unknown-window model resets the latch.
+	staleCaller := unknownGatewayProfile()
+	modelB := provider.FromResolved(registry.Resolved{
+		Instance: "gw", ModelID: "glm-5-flash", WireID: "glm-5-flash",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
+	}, nil)
+	cm.SetProfile(modelB)
+
+	var emitted []events.WarningData
+	emit := func(kind events.EventKind, data events.EventData) {
+		if w, ok := data.(events.WarningData); ok {
+			emitted = append(emitted, w)
+		}
+	}
+	discloseAssumedWindow(cm, staleCaller, emit)
+	if len(emitted) != 0 {
+		t.Fatalf("stale caller emitted %d disclosures after the switch, want 0", len(emitted))
+	}
+
+	// The latch must still be unset for the switched-to model: its own pass
+	// discloses exactly once, not zero — the stale caller must not have
+	// consumed the latch.
+	history := bulkHistory(10, 10_000)
+	spy := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &history, 0, spy.fn)
+	if n := spy.disclosures(); n != 1 {
+		t.Fatalf("the switched-to model's own pass disclosed %d times, want 1: the stale caller consumed its latch", n)
+	}
+}
