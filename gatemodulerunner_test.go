@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // moduleRunnerScript is the gate that owns module selection, private per-module
@@ -648,21 +649,48 @@ func TestTimed(t *testing.T) {}
 // plain truncating redirection, so a symlink planted at that predictable path
 // was followed and its target overwritten before publication. The temp file is
 // created exclusively instead, so a planted symlink is never written through.
-// The plant lands while the fixture's own test run is still going, long before
-// the export, so the ordering is structural rather than a race.
+//
+// The fixture holds its own test open until the caller has planted the symlink,
+// so the plant is provably before the export rather than racing it: a test that
+// only hoped to win the race could pass against the vulnerable implementation.
 func TestModuleRunnerDoesNotWriteThroughASiblingSymlink(t *testing.T) {
 	root, modules, ctrl := newRunnerFixture(t)
 	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
 
-import "testing"
+import (
+	"os"
+	"testing"
+	"time"
+)
 
-func TestTimed(t *testing.T) {}
+// TestTimed announces itself, then blocks until the caller releases it, so the
+// caller can plant its symlink before this run reaches its timing export.
+func TestTimed(t *testing.T) {
+	started := os.Getenv("FIXTURE_STARTED")
+	release := os.Getenv("FIXTURE_RELEASE")
+	if started == "" || release == "" {
+		return
+	}
+	if err := os.WriteFile(started, []byte("started\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(release); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the handshake release file never appeared")
+}
 `)
 
 	dest := filepath.Join(root, "measured.tsv")
 	victim := filepath.Join(root, "victim.txt")
 	const precious = "PRECIOUS\n"
 	writeTestFile(t, victim, []byte(precious), 0o644)
+	started := filepath.Join(root, "fixture-started")
+	release := filepath.Join(root, "fixture-release")
 
 	script, err := filepath.Abs(moduleRunnerScript)
 	if err != nil {
@@ -671,17 +699,35 @@ func TestTimed(t *testing.T) {}
 	cmd := exec.Command("bash", script, "-short", "-count=1")
 	cmd.Dir = modules
 	cmd.Env = runnerEnv(t, append(controlledScratchEnv(ctrl),
-		"MODULES=timingmod", "EVENER_GATE_TIMING_TSV="+dest)...)
+		"MODULES=timingmod", "EVENER_GATE_TIMING_TSV="+dest,
+		"FIXTURE_STARTED="+started, "FIXTURE_RELEASE="+release)...)
 	var out strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting the runner: %v", err)
 	}
+	// The fixture's own test is inside its run by now, which is before the
+	// export by construction.
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("the fixture never announced itself:\n%s", out.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	// $$ in the script is this bash process's pid.
 	planted := fmt.Sprintf("%s.tmp-%d", dest, cmd.Process.Pid)
 	if err := os.Symlink(victim, planted); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		t.Fatalf("planting the symlink at %s: %v", planted, err)
 	}
+	writeTestFile(t, release, []byte("go\n"), 0o644)
 	waitErr := cmd.Wait()
 
 	got, err := os.ReadFile(victim)
