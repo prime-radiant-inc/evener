@@ -3110,6 +3110,40 @@ describe("useThreadsStore.ensureThread", () => {
       threadsStore.getState().releaseWatchedThread("ref_a");
     });
 
+    test("a lean watch's ordinary rejection preserves the tracked read's repair status", async () => {
+      const fake = connectFakeClient();
+      let reads = 0;
+      fake.on("thread/read", () => {
+        reads += 1;
+        if (reads === 1) throw rebuildingRejection();
+        throw new RequestTimeoutError("lean watch read timed out");
+      });
+
+      // The tracked first open answers rebuilding: the owned retry stands and
+      // the status flag is set by the read that observed the answer.
+      const ensuring = threadsStore.getState().ensureThread("ref_a");
+      await flushUntil(() => scheduledHydrationRetries.length === 1);
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      // A lean watcher's read times out — an ordinary transport failure that
+      // says nothing about the transcript index. It must not replace the
+      // tracked repair's status; the lean read's own retry still converges.
+      const watching = threadsStore.getState().watchThread("ref_a");
+      await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length === 2);
+      await settleCallerContinuations();
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      // The tracked retry's own read succeeds: the flag clears through the
+      // owner that observed the answer.
+      fake.on("thread/read", () => readResponse("ref_a", { name: "Repaired" }));
+      runScheduledHydrationRetry(0);
+      await ensuring;
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+
+      threadsStore.getState().releaseWatchedThread("ref_a");
+      void watching.catch(() => undefined);
+    });
+
     test("a lean watch does not silence a tracked read's own repair verdict", async () => {
       const fake = connectFakeClient();
       let reads = 0;
@@ -9582,12 +9616,14 @@ describe("retry-safe mutation outbox integration", () => {
     await flushIndexedDBUntil(() => scheduledHydrationRetries[0]?.cancelled === true);
 
     // A pane opens. Its own read must hydrate it — the retired rejoin read
-    // is not a promise it can adopt.
+    // is not a promise it can adopt, and not one its own hydration queues
+    // behind either: the pane hydrates while the drained request is still
+    // unresolved on the wire.
     fake.on("thread/read", () => readResponse("ref_a", { name: "Fresh" }));
     const ensuring = threadsStore.getState().ensureThread("ref_a");
-    reads[0]!.reject(new RequestTimeoutError("the drained rejoin read timed out"));
     await ensuring;
     expect(threadsStore.getState().threads.get("ref_a")?.name).toBe("Fresh");
+    reads[0]!.reject(new RequestTimeoutError("the drained rejoin read timed out"));
 
     threadsStore.getState().releaseThread("ref_a");
   });
@@ -17918,7 +17954,7 @@ describe("pending shared membership acquisition", () => {
     threadsStore.getState().releaseWatchedThread("ref_a");
     threadsStore.getState().releaseWatchedThread("ref_a");
   });
-  test("release and reacquire waits for pending membership and fences the retired model", async () => {
+  test("release and reacquire supersedes the departed acquisition's pending membership and fences the retired model", async () => {
     const fake = connectFakeClient(),
       initial = deferred<ThreadReadResponse>(),
       replacement = deferred<ThreadReadResponse>();
@@ -17928,12 +17964,14 @@ describe("pending shared membership acquisition", () => {
     await flushUntil(() => reads === 1);
     threadsStore.getState().releaseThread("ref_a");
     const second = threadsStore.getState().ensureThread("ref_a");
-    await flushMicrotasks();
-    expect(reads).toBe(1);
+    // The reopened pane's own read issues now — it does not queue behind the
+    // departed holder's still-pending request, which may never settle.
+    await flushUntil(() => reads === 2);
+    expect(reads).toBe(2);
     initial.resolve(
       readResponse("ref_a", { turns: [{ id: "old", status: "completed", itemsView: "full", items: [] }] }),
     );
-    await flushUntil(() => reads === 2);
+    await flushMicrotasks();
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
     replacement.resolve(
       readResponse("ref_a", { turns: [{ id: "new", status: "completed", itemsView: "full", items: [] }] }),

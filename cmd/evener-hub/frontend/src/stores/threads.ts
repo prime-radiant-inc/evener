@@ -2638,8 +2638,13 @@ async function hydrateAndSubscribeWatch(
     markThreadDeletedIfFenced(ref, err);
     // #4343: same per-ref recording as hydrateAndSubscribe's own catch —
     // the watched read is this ref's latest read too, under the same
-    // ownership fence.
-    publishThreadRepairing("watched", ref, pending, isTranscriptIndexRebuildingError(err));
+    // ownership fence. A lean read publishes only an explicit rebuilding
+    // answer it received itself: its ordinary rejection says nothing about
+    // the transcript index, so it must not replace a tracked read's repair
+    // status (the rejection-side twin of the success gate above).
+    if (includeTurns || isTranscriptIndexRebuildingError(err)) {
+      publishThreadRepairing("watched", ref, pending, isTranscriptIndexRebuildingError(err));
+    }
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
       putWatchedThreadModel(
         ref,
