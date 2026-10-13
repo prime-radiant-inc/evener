@@ -1056,6 +1056,7 @@ type EvenerThread struct {
 	ContextUsed      int                `json:"contextUsed,omitempty"`
 	ContextWindow    int                `json:"contextWindow,omitempty"`
 	ContextRemaining int                `json:"contextRemaining,omitempty"`
+	ContextAssumed   bool               `json:"contextAssumed,omitempty"`
 	Capabilities     ThreadCapabilities `json:"capabilities"`
 	Diagnostics      *EvenerDiagnostics `json:"diagnostics,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
