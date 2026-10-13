@@ -444,7 +444,11 @@ func TestMemoryScopeRootRecovery(t *testing.T) {
 			wantState, wantBody = "unavailable", ""
 			run()
 			for _, name := range []string{"memory_read", "memory_write", "memory_delete"} {
-				if res := memoryExec(t, s, name, map[string]any{"scope": scope, "file_path": "fact.md", "content": "bad"}); !res.IsError {
+				args := map[string]any{"scope": scope, "file_path": "fact.md"}
+				if name == "memory_write" {
+					args["when"], args["body"] = "w", "bad"
+				}
+				if res := memoryExec(t, s, name, args); !res.IsError {
 					t.Fatalf("symlink replacement accepted %s", name)
 				}
 			}
@@ -1414,7 +1418,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			}
 			// A delegate never writes memory; the stored file stands in for
 			// memory its parent saved, which must survive every restore below.
-			if res := memoryExec(t, child.sess, "memory_write", map[string]any{"scope": "project", "file_path": "child.txt", "content": "opaque-child-57"}); !res.IsError {
+			if res := memoryExec(t, child.sess, "memory_write", map[string]any{"scope": "project", "file_path": "child.txt", "when": "w", "body": "opaque-child-57"}); !res.IsError {
 				t.Fatal("delegate wrote memory")
 			}
 			if err := os.WriteFile(filepath.Join(host, "projects", project.ID, "memory", "child.txt"), []byte("opaque-child-57"), 0o600); err != nil {
@@ -1779,7 +1783,7 @@ func TestMemoryBindingSeparation(t *testing.T) {
 	hostA, hostB := t.TempDir(), t.TempDir()
 	for _, tc := range []struct{ workspace, host, id, body string }{{workspaceA, hostA, projectA.ID, "opaque-project-a-33"}, {workspaceB, hostA, projectB.ID, "opaque-project-b-45"}, {workspaceA, hostB, projectA.ID, "opaque-host-b-66"}} {
 		s := newSession(t, withDir(tc.workspace), withConfig(SessionConfig{MemoryStateRoot: tc.host, MemoryProjectID: tc.id}))
-		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "fact.md", "content": tc.body}); res.IsError {
+		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "fact.md", "when": "w", "body": tc.body}); res.IsError {
 			t.Fatal(res.Output)
 		}
 		// A real command using another cwd cannot rebind the session's memory.
@@ -1832,7 +1836,7 @@ func TestMemoryDelegateReadCeilingNoIO(t *testing.T) {
 		t.Fatalf("read ceiling native accesses=%d", calls.Load())
 	}
 	// Removing read does not remove an independently allowed memory write.
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "allowed.txt", "content": "opaque-write-75"}); res.IsError {
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "allowed.txt", "when": "w", "body": "opaque-write-75"}); res.IsError {
 		t.Fatal(res.Output)
 	}
 }
@@ -2116,11 +2120,11 @@ func TestMemoryFreshSession(t *testing.T) {
 	t.Parallel()
 	root, workspace := t.TempDir(), t.TempDir()
 	cfg := SessionConfig{MemoryStateRoot: root, MemoryProjectID: "fixture-project"}
-	body := "opaque-lesson-71\n[unresolved](missing)\n(created someday)\n"
+	body := "[unresolved](missing)\n(created someday)\n"
 	topic := "opaque-topic-83\nnot markdown, no date\n"
 	a := newSession(t, withDir(workspace), withConfig(cfg), withSteps(
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_write", map[string]any{"scope": "project", "file_path": "lesson.md", "content": body, "intent": "Saving fixture data"})
+			return memoryCallResponse("memory_write", map[string]any{"scope": "project", "file_path": "lesson.md", "when": "opaque-lesson-71", "body": body, "intent": "Saving fixture data"})
 		},
 		func(req llm.Request) llm.Response {
 			for _, msg := range req.Messages {
@@ -2130,14 +2134,14 @@ func TestMemoryFreshSession(t *testing.T) {
 					}
 				}
 			}
-			return memoryCallResponse("memory_write", map[string]any{"scope": "project", "file_path": "nested/unusual name.txt", "content": topic, "intent": "Saving topic data"})
+			return memoryCallResponse("memory_write", map[string]any{"scope": "project", "file_path": "nested/unusual name.txt", "when": "w", "body": topic, "intent": "Saving topic data"})
 		},
 		func(llm.Request) llm.Response { return finalResponse("saved") },
 	))
 	if _, err := a.ProcessInput(context.Background(), "save", nil); err != nil {
 		t.Fatal(err)
 	}
-	for path, want := range map[string]string{"lesson.md": "---\n" + memoryOwnStamps(a) + "---\n" + body, "nested/unusual name.txt": topic} {
+	for path, want := range map[string]string{"lesson.md": "---\nwhen: opaque-lesson-71\n" + memoryOwnStamps(a) + "---\n\n" + body, "nested/unusual name.txt": memoryWhenBlock + topic} {
 		got, err := os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", path))
 		if err != nil || string(got) != want {
 			t.Fatalf("path=%s bytes=%q err=%v", path, got, err)
@@ -2211,7 +2215,7 @@ func TestMemoryScopesLiveInTheirStateDirectories(t *testing.T) {
 		if got := s.memoryScopeRoot(scope); got != filepath.Dir(want) {
 			t.Fatalf("%s root=%q want %q", scope, got, filepath.Dir(want))
 		}
-		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "mine.md", "content": "---\ndescription: " + scope + "\n---\n"}); res.IsError {
+		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "mine.md", "when": scope, "body": ""}); res.IsError {
 			t.Fatalf("%s write: %s", scope, res.Output)
 		}
 		if _, err := os.Stat(want); err != nil {
@@ -2260,14 +2264,14 @@ func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
 				args    map[string]any
 				isError bool
 			}{
-				{"memory_write", map[string]any{"file_path": "dir/page.md", "content": "---\ndescription: d\n---\nopaque-needle\n"}, false},
+				{"memory_write", map[string]any{"file_path": "dir/page.md", "when": "d", "body": "opaque-needle\n"}, false},
 				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "opaque-needle", "new_string": "opaque-needle-2"}, false},
 				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "absent-text", "new_string": "x"}, true},
 				{"memory_edit", map[string]any{"file_path": "missing.md", "old_string": "a", "new_string": "b"}, true},
 				{"memory_read", map[string]any{"file_path": "missing.md"}, true},
 				{"memory_search", map[string]any{"pattern": "opaque-needle"}, false},
 				{"memory_search", map[string]any{"pattern": "opaque-needle", "output_mode": "files_with_matches"}, false},
-				{"memory_write", map[string]any{"file_path": "dir/other.md", "content": "x"}, false},
+				{"memory_write", map[string]any{"file_path": "dir/other.md", "when": "w", "body": "x"}, false},
 				{"memory_delete", map[string]any{"file_path": "dir/page.md"}, false},
 			} {
 				call.args["scope"] = scope
@@ -2283,7 +2287,7 @@ func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
 			}
 			// A page's own text is never rewritten, even where it quotes a host path.
 			quoted := "see " + filepath.Join(root, "quoted.md") + "\n"
-			if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "quoting.txt", "content": quoted}); res.IsError {
+			if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "quoting.txt", "when": "w", "body": quoted}); res.IsError {
 				t.Fatal(res.Output)
 			}
 			for _, call := range []struct {
@@ -2524,31 +2528,31 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		{"layout.bin", "not a canonical layout\n[broken](absent)\n"}, {"empty", ""}, {"nested/unusual name.txt", "opaque-nested-52\n"},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
-			res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": tc.path, "content": tc.body})
+			res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": tc.path, "when": "w", "body": tc.body})
 			if res.IsError {
 				t.Fatal(res.Output)
 			}
 			got, err := os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", tc.path))
-			if err != nil || string(got) != tc.body {
+			if err != nil || string(got) != memoryWhenBlock+tc.body {
 				t.Fatalf("bytes=%q err=%v", got, err)
 			}
 		})
 	}
 	// Independent page calls leave incomplete organization intact.
-	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "overview.md", "content": "opaque-index-94\n"})
+	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "overview.md", "when": "w", "body": "opaque-index-94\n"})
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", "nested", "unusual name.txt"))
-	if err != nil || string(got) != "opaque-nested-52\n" {
+	if err != nil || string(got) != memoryWhenBlock+"opaque-nested-52\n" {
 		t.Fatalf("page=%q err=%v", got, err)
 	}
-	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "duplicate.txt", "content": "before\nToken\nToken\nafter\n"})
+	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "duplicate.txt", "when": "w", "body": "before\nToken\nToken\nafter\n"})
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
-	res = memoryExec(t, s, "memory_read", map[string]any{"scope": "project", "file_path": "duplicate.txt", "offset": 2, "limit": 1})
-	if res.IsError || res.Output != "   2\tToken\n" {
+	res = memoryExec(t, s, "memory_read", map[string]any{"scope": "project", "file_path": "duplicate.txt", "offset": 6, "limit": 1})
+	if res.IsError || res.Output != "   6\tToken\n" {
 		t.Fatalf("window=%q error=%t", res.Output, res.IsError)
 	}
 	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "old_string": "Token", "new_string": "changed"})
@@ -2556,7 +2560,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		t.Fatal("duplicate edit accepted")
 	}
 	got, err = os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", "duplicate.txt"))
-	if err != nil || string(got) != "before\nToken\nToken\nafter\n" {
+	if err != nil || string(got) != memoryWhenBlock+"before\nToken\nToken\nafter\n" {
 		t.Fatalf("failed edit changed bytes=%q err=%v", got, err)
 	}
 	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "old_string": "Token", "new_string": "changed", "replace_all": true})
@@ -2564,7 +2568,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		t.Fatal(res.Output)
 	}
 	got, err = os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", "duplicate.txt"))
-	if err != nil || string(got) != "before\nchanged\nchanged\nafter\n" {
+	if err != nil || string(got) != memoryWhenBlock+"before\nchanged\nchanged\nafter\n" {
 		t.Fatalf("edit bytes=%q err=%v", got, err)
 	}
 	for _, tc := range []struct {
@@ -2572,7 +2576,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		max, context int
 		want         string
 	}{
-		{"content", 5, 1, "duplicate.txt-1-before\nduplicate.txt:2:changed\nduplicate.txt:3:changed\nduplicate.txt-4-after"},
+		{"content", 5, 1, "duplicate.txt-5-before\nduplicate.txt:6:changed\nduplicate.txt:7:changed\nduplicate.txt-8-after"},
 		{"files_with_matches", 5, 0, "duplicate.txt"}, {"count", 5, 0, "duplicate.txt:2"},
 	} {
 		res = memoryExec(t, s, "memory_search", map[string]any{"scope": "project", "path": "", "pattern": "^CHANG(E|ed)", "case_insensitive": true, "glob_filter": "*.txt", "output_mode": tc.mode, "max_results": tc.max, "context_lines": tc.context})
@@ -2592,7 +2596,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		t.Fatalf("delete=%v", err)
 	}
 	got, err = os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", "overview.md"))
-	if want := "---\n" + memoryOwnStamps(s) + "---\nopaque-index-94\n"; err != nil || string(got) != want {
+	if want := "---\nwhen: w\n" + memoryOwnStamps(s) + "---\n\nopaque-index-94\n"; err != nil || string(got) != want {
 		t.Fatalf("unrelated=%q err=%v", got, err)
 	}
 }
@@ -2634,7 +2638,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 				args["file_path"] = path
 			}
 			if name == "memory_write" {
-				args["content"] = "bad"
+				args["when"], args["body"] = "w", "bad"
 			}
 			if name == "memory_edit" {
 				args["old_string"] = "opaque"
@@ -2676,7 +2680,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 			t.Fatal(err)
 		}
 		other := newSession(t, withConfig(SessionConfig{MemoryStateRoot: host, MemoryProjectID: "fixture-project"}))
-		if res := memoryExec(t, other, "memory_write", map[string]any{"scope": tc.scope, "file_path": "data", "content": "bad"}); !res.IsError {
+		if res := memoryExec(t, other, "memory_write", map[string]any{"scope": tc.scope, "file_path": "data", "when": "w", "body": "bad"}); !res.IsError {
 			t.Fatalf("symlink root %s accepted", relative)
 		}
 	}
@@ -2727,11 +2731,11 @@ func TestMemoryReadGuardIsolation(t *testing.T) {
 				t.Fatal("project inherited personal read")
 			}
 		}
-		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "same.txt", "content": "updated-" + scope}); res.IsError {
+		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": scope, "file_path": "same.txt", "when": "w", "body": "updated-" + scope}); res.IsError {
 			t.Fatal(res.Output)
 		}
 		got, err := os.ReadFile(path)
-		if err != nil || string(got) != "updated-"+scope {
+		if err != nil || string(got) != memoryWhenBlock+"updated-"+scope {
 			t.Fatalf("bytes=%q err=%v", got, err)
 		}
 	}
@@ -2987,7 +2991,7 @@ func TestMemoryDisabledAndUnbound(t *testing.T) {
 		if _, err := s.ProcessInput(context.Background(), "continue", nil); err != nil {
 			t.Fatal(err)
 		}
-		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "data", "content": "bad"}); !res.IsError {
+		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "data", "when": "w", "body": "bad"}); !res.IsError {
 			t.Fatal("disabled dispatch accepted")
 		}
 		if _, err := s.openMemoryEnvironment("personal"); err == nil {
@@ -3172,14 +3176,14 @@ func TestMemorySetupRecoveryAndScopeIsolation(t *testing.T) {
 		return nil
 	}
 	s := newSession(t, withConfig(cfg))
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "data", "content": "opaque-project-89"}); !res.IsError {
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "data", "when": "w", "body": "opaque-project-89"}); !res.IsError {
 		t.Fatal("fault not surfaced")
 	}
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "data", "content": "opaque-personal-23"}); res.IsError {
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "data", "when": "w", "body": "opaque-personal-23"}); res.IsError {
 		t.Fatal(res.Output)
 	}
 	fail = false
-	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "data", "content": "opaque-project-89"}); res.IsError {
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "project", "file_path": "data", "when": "w", "body": "opaque-project-89"}); res.IsError {
 		t.Fatal(res.Output)
 	}
 	other := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root, MemoryProjectID: "other-project"}))
@@ -3204,7 +3208,7 @@ func TestMemoryTeardownPreservesFiles(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: root}))
-			if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "data", "content": "opaque-surviving-67"}); res.IsError {
+			if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "data", "when": "w", "body": "opaque-surviving-67"}); res.IsError {
 				t.Fatal(res.Output)
 			}
 			switch mode {
@@ -3225,7 +3229,7 @@ func TestMemoryTeardownPreservesFiles(t *testing.T) {
 				t.Fatalf("environments=%d", remaining)
 			}
 			got, err := os.ReadFile(filepath.Join(root, "memory", "data"))
-			if err != nil || string(got) != "opaque-surviving-67" {
+			if err != nil || string(got) != memoryWhenBlock+"opaque-surviving-67" {
 				t.Fatalf("bytes=%q err=%v", got, err)
 			}
 			if _, err := s.openMemoryEnvironment("personal"); err == nil {
@@ -3253,7 +3257,7 @@ func TestMemoryWarningDeliveryRestricted(t *testing.T) {
 	if warn == "" || local.FileExists(path) {
 		t.Fatal("scope warning not independent of workspace policy")
 	}
-	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "unread.txt", "content": "opaque-after-78"})
+	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "unread.txt", "when": "w", "body": "opaque-after-78"})
 	if res.IsError || !strings.HasPrefix(res.Output, warn) {
 		t.Fatalf("unread memory write=%+v", res)
 	}
@@ -3261,7 +3265,7 @@ func TestMemoryWarningDeliveryRestricted(t *testing.T) {
 		t.Fatal("memory write widened workspace permission")
 	}
 	got, err := os.ReadFile(path)
-	if err != nil || string(got) != "opaque-after-78" {
+	if err != nil || string(got) != memoryWhenBlock+"opaque-after-78" {
 		t.Fatalf("bytes=%q err=%v", got, err)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "workspace.txt")); !os.IsNotExist(err) {

@@ -435,6 +435,7 @@ export {
   memoryProgress,
   memoryReadSummary,
   memorySearchSummary,
+  memoryWritePage,
   memoryWriteSummary,
 } from "./memorySteps";
 export type {

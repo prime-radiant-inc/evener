@@ -192,27 +192,17 @@ func TestAskUser_InvisibleForSubagent(t *testing.T) {
 // ask_user.
 func TestAskUser_RestoredSubagentStaysInvisible(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	meta := schema.SessionMeta{
+	// restoreBareResumeSubagent leaves the spawn carrier zero (the empty-carrier
+	// case) and asserts that shape, so this test exercises the persisted-flag
+	// fallback rather than a live spawn carrier.
+	restored := restoreBareResumeSubagent(t, schema.SessionMeta{
 		ID:         "restored-subagent",
 		ProfileID:  "openai",
 		Model:      "gpt-5.2",
 		IsSubagent: true,
 		Config:     (SessionConfig{}).toSnapshot(),
-	}
-	// restoreCfg.spawn intentionally left zero: the empty-carrier case.
-	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{})
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
-	}
-	defer restored.Close()
+	}, RestoreSessionConfig{})
 
-	if restored.cfg.spawn.parentSessionID != "" {
-		t.Fatalf("test setup: spawn carrier not empty (%q) — the case under test requires it empty", restored.cfg.spawn.parentSessionID)
-	}
 	if hasToolDef(restored.ToolDefinitions(), "ask_user") {
 		t.Fatal("ask_user advertised in a restored bare-resume subagent session")
 	}

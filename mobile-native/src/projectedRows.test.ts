@@ -285,7 +285,7 @@ describe("projectedRow — item entries", () => {
 			type: "commandExecution",
 			toolName: "memory_write",
 			status: "completed",
-			argumentsJSON: JSON.stringify({ scope: "personal", file_path: "page.md", content: "# Page" }),
+			argumentsJSON: JSON.stringify({ scope: "personal", file_path: "page.md", body: "# Page" }),
 		});
 		const shell = item({
 			id: "shell",
@@ -325,7 +325,7 @@ describe("projectedRow — item entries", () => {
 			toolName: "memory_write",
 			status: "failed",
 			error,
-			argumentsJSON: JSON.stringify({ scope: "session", file_path: "notes.md", content: "# Note" }),
+			argumentsJSON: JSON.stringify({ scope: "session", file_path: "notes.md", body: "# Note" }),
 		});
 		const shell = item({
 			id: "shell",
@@ -735,7 +735,7 @@ it("renders recorded memory calls and an ordinary file read through the phone ti
 					recorded(
 						"write",
 						"memory_write",
-						JSON.stringify({ scope: "personal", file_path: "implementation-delegation.md", content: page }),
+						JSON.stringify({ scope: "personal", file_path: "implementation-delegation.md", body: page }),
 					),
 					recorded(
 						"edit",
