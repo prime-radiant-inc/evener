@@ -28,6 +28,10 @@ export interface DocumentAnnotationRuntime {
   retryPending(reason: AnnotationRetryReason): Promise<void>;
   whenIdle(): Promise<void>;
   storageSucceeded(): void;
+  // The repository's own retained work (a failed expiry fence) registers its
+  // retry need here: no failed save or pending handoff will, so without this
+  // the next storage-success notification cannot start the completing pass.
+  registerRetryNeed(): void;
   invalidate(key: DocumentKey): void;
   // Retire exactly ONE retained failed operation, keyed by its existing
   // namespace-qualified operation identity, leaving every other operation in the
@@ -153,6 +157,9 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     },
     storageSucceeded: () => {
       if (alive && retryNeeded && !pass) void retryPending("storage-recovered");
+    },
+    registerRetryNeed: () => {
+      needRetry();
     },
     invalidate: (key) => {
       for (const [operationKey, operation] of failed)

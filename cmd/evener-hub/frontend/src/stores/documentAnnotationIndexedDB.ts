@@ -80,6 +80,10 @@ export interface DocumentAnnotationOptions {
   onReadBoundary?: (event: AnnotationReadBoundary) => void;
   beforeExpiryFence?: (ticket: ReadTicket) => Promise<void>;
   onStorageSuccess?: () => void;
+  // Observational, outside every transaction: a failed expiry fence retained
+  // retryable repository work. The retry runtime registers the need so a later
+  // storage-success notification can start the pass that completes the fence.
+  onPendingExpiryRetained?: () => void;
 }
 
 // Operation-scoped cancellation for ONE in-flight save. The runtime owns the
@@ -651,6 +655,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
             ticketKey: ticket.key,
           },
         );
+        // Observational, after the retention is recorded: the runtime's retry
+        // health learns about this work here, because no failed save or pending
+        // handoff will ever mark it and storage-success recovery alone must be
+        // able to complete the fence. An observer fault cannot change the
+        // retained work or the honest expiry-pending outcome.
+        invokeObserver(() => this.#options.onPendingExpiryRetained?.());
         return { state: "expiry-pending" };
       }
     } catch (error) {

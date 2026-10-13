@@ -163,6 +163,7 @@ export async function fixture(
       | "onReadBoundary"
       | "beforeExpiryFence"
       | "onStorageSuccess"
+      | "onPendingExpiryRetained"
     >
   > = {},
 ) {

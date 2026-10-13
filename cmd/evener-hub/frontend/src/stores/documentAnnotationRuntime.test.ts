@@ -5,12 +5,13 @@
 import type { SaveReceipt } from "@evener/appwire-client";
 import { IDBObjectStore } from "fake-indexeddb";
 import { expect, it, vi } from "vitest";
-import { REFERENCE } from "../panes/doc/testing/annotationFixtures";
+import { REFERENCE, SOURCE } from "../panes/doc/testing/annotationFixtures";
 import {
   acceptedOperation,
   attachmentIdentity,
   blobBytes,
   cleanupAfterTest,
+  docContent,
   expectStampedNoEarlierThan,
   fixture,
   rowsForTests,
@@ -18,8 +19,10 @@ import {
 import { createDocumentAnnotationRepository } from "../stores/documentAnnotationIndexedDB";
 import { createDocumentAnnotationRuntime, type DocumentAnnotationRuntime } from "../stores/documentAnnotationRuntime";
 import {
+  ANNOTATION_HEADS_STORE,
   ANNOTATION_OPERATIONS_STORE,
   ANNOTATION_PAYLOADS_STORE,
+  type AnnotationHeadRow,
   type AnnotationOperationRow,
   type AnnotationPayloadRow,
   COMPOSER_DRAFTS_STORE,
@@ -508,4 +511,42 @@ it.each([
   );
   expect(enqueues).not.toHaveBeenCalled();
   expect(resends).not.toHaveBeenCalled();
+});
+
+it("a failed expiry fence recovers through the next storage-success notification", async () => {
+  let failFence = true;
+  let runtime: DocumentAnnotationRuntime | undefined;
+  const f = await fixture("expiry-fence-retry", {
+    beforeCommit: (operation) => {
+      if (operation === "expiry" && failFence) throw new Error("fence fault");
+    },
+    onPendingExpiryRetained: () => runtime?.registerRetryNeed(),
+  });
+  runtime = createDocumentAnnotationRuntime(f.repo);
+  const retainedRuntime = runtime;
+  cleanupAfterTest(async () => {
+    try {
+      await retainedRuntime.whenIdle();
+    } finally {
+      retainedRuntime.dispose();
+    }
+  });
+  // A changed read confirms expiry; the fence transaction fails, so the
+  // repository retains the pending expiry and the read is expiry-pending.
+  const ticket = await f.repo.beginRead(f.document);
+  const fenced = await f.repo.acceptRead(ticket, docContent(SOURCE, "rev-B"));
+  expect(fenced.state).toBe("expiry-pending");
+  const headBefore = (await rowsForTests<AnnotationHeadRow>(f.factory, f.databaseName, ANNOTATION_HEADS_STORE))[0];
+  if (!headBefore) throw new Error("durable head row missing before recovery");
+
+  // Recovery arrives ONLY through the storage-success notification: no
+  // foreground event, no composer open, no other reader action.
+  failFence = false;
+  retainedRuntime.storageSucceeded();
+  await retainedRuntime.whenIdle();
+  const headAfter = (await rowsForTests<AnnotationHeadRow>(f.factory, f.databaseName, ANNOTATION_HEADS_STORE))[0];
+  if (!headAfter) throw new Error("durable head row missing after recovery");
+  // The pass completed the retained fence: the durable head moved off the
+  // expired epoch without any reader-driven trigger.
+  expect(headAfter.epoch).not.toBe(headBefore.epoch);
 });
