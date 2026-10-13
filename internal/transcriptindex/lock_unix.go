@@ -25,8 +25,9 @@ func lockFile(f *os.File, exclusive bool) error {
 }
 
 // lockFileTry takes the advisory lock without waiting: shared for readers,
-// exclusive for the one extender. Contention returns an error the refusing
-// handle translates to ErrLockBusy.
+// exclusive for the one extender. Contention returns the errno
+// isLockContention names; every other failure is a lock fault the refusing
+// handle must surface as itself, not fold into ErrLockBusy.
 func lockFileTry(f *os.File, exclusive bool) error {
 	how := unix.LOCK_SH | unix.LOCK_NB
 	if exclusive {
@@ -37,6 +38,13 @@ func lockFileTry(f *os.File, exclusive bool) error {
 			return err
 		}
 	}
+}
+
+// isLockContention reports whether err is the errno flock answers for a held
+// lock under LOCK_NB — the one failure that means another writer holds the
+// sidecar. Every other errno is a fault on the lock itself.
+func isLockContention(err error) bool {
+	return errors.Is(err, unix.EWOULDBLOCK)
 }
 
 func unlockFile(f *os.File) error {

@@ -293,8 +293,9 @@ func Open(path, dir string) (*Index, error) {
 // OpenRefusing opens a handle that performs no full rebuild and never blocks
 // on the sidecar's lock, in any operation: catch-up, extension, window reads
 // and repair-builder paths answer ErrRebuildRequired or ErrLockBusy instead
-// of running or waiting on one. It opens without catching up; the caller runs
-// CatchUp explicitly.
+// of running or waiting on one, and a fault on the lock itself answers an
+// ordinary error rather than masquerading as contention. It opens without
+// catching up; the caller runs CatchUp explicitly.
 func OpenRefusing(path, dir string) (*Index, error) {
 	return openHandle(path, dir, true)
 }
@@ -367,7 +368,14 @@ func (x *Index) locked(exclusive bool, fn func() error) error {
 	}
 	if x.refusing {
 		if err := lockFileTry(x.lock, exclusive); err != nil {
-			return ErrLockBusy
+			// Only contention is busy: a fault on the lock itself — a dead
+			// fd, an exhausted lock table — must surface as itself, or the
+			// refresher skips it silently every cycle and the hub answers
+			// it as rebuilding-or-transient, and no diagnosis can name it.
+			if isLockContention(err) {
+				return ErrLockBusy
+			}
+			return fmt.Errorf("try lock transcript index: %w", err)
 		}
 	} else if err := lockFile(x.lock, exclusive); err != nil {
 		return fmt.Errorf("lock transcript index: %w", err)
