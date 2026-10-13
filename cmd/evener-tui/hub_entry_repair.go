@@ -105,20 +105,27 @@ func (m *hubModel) entryRepairRetire() {
 // retry — another pick armed its own, or a landing retired this one — is
 // ignored: retiring here would clear the standing retry's status out from
 // under the session the user just picked. The matching retry's intent
-// stands while its armed ref is still the armed retry, no session switch
-// or cycling pick has bumped the generation, and the user has not left
-// for the spawn surface — so the entry read re-issues, tagged, and the
-// pace grows for the round after; or the intent has departed, and the
-// retry retires entering nothing. A session may well be displayed while
-// the retry stands (the palette can pick a session from inside another):
-// the displayed ref is not the intent; the generation is.
+// stands while its armed ref is still the armed retry and no session
+// switch or navigation departure has bumped the generation — so the
+// entry read re-issues, tagged, and the pace grows for the round after;
+// or the intent has departed, and the retry retires entering nothing. A
+// session may well be displayed while the retry stands (the palette can
+// pick a session from inside another): the displayed ref is not the
+// intent; the generation is.
 func (m *hubModel) updateHubEntryRepairTick(msg hubEntryRepairTickMsg) (tea.Model, tea.Cmd) {
 	if m.entryRepairRef != msg.ref || m.entryRepairSeq != msg.seq {
 		// A tick belonging to another retry: the newer navigation owns the
 		// model. Ignore it, never retire the standing one for it.
 		return *m, nil
 	}
-	if m.entryRepairSeq != m.liveNavSeq || m.mode == hubModeSpawn {
+	if m.entryRepairSeq != m.liveNavSeq {
+		// The retry's navigation intent departed — a pick, a cycling press,
+		// a departure to the dashboard or spawn form advances the
+		// generation, and those paths retire the retry themselves. The
+		// spawn surface no longer retires here: a spawn's own entry read
+		// may answer rebuilding while the form still stands, and the
+		// user has departed nowhere — the standing form is not a
+		// departure, and the retry must converge the entry.
 		m.entryRepairRetire()
 		return *m, nil
 	}

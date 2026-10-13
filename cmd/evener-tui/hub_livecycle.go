@@ -124,6 +124,11 @@ func (m hubModel) switchToAdjacentLiveSession(step int) (hubModel, tea.Cmd) {
 	}
 	m.liveNavSeq++
 	m.liveNavPendingRef = target.String()
+	// The cycling press is an explicit navigation (#4343's "entering
+	// another session"): the pending entry-repair retry retires with it
+	// now, not lazily at its next tick — a reconnect between the two must
+	// find nothing armed to revive.
+	m.entryRepairRetire()
 	seq := m.liveNavSeq
 	read := fetchHubSession(m.frames, m.client, target)
 	return m, func() tea.Msg {

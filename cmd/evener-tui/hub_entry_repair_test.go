@@ -991,3 +991,178 @@ func TestOpeningTheSpawnFormInvalidatesAnInFlightPick(t *testing.T) {
 		t.Fatal("the invalidated pick's rejection scheduled work")
 	}
 }
+
+// An active fork draft is the same class of unsent work as composer text,
+// even with the prefilled text deleted: the cycling switch holds for it,
+// and the automatic completion must too — switching away would discard the
+// fork target and its original text with the forkDraft the entry clears.
+func TestASuccessfulRetryReadHoldsForAnActiveForkDraft(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session A is displayed with an active fork draft — its prefilled text
+	// deleted — when the user palette-picks B, whose repair is pending.
+	enteredA, _ := m.Update(hubSessionMsg{
+		ref:    refA.String(),
+		detail: hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	shown := enteredA.(hubModel)
+	shown.forkDraft = &hubForkDraft{}
+	updated, cmd := shown.Update(hubSessionMsg{ref: refB.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	armedSeq := armed.entryRepairSeq
+	armed.Update(executeEntryRepairCmd(t, cmd)) // B's re-read in flight
+
+	// B's re-read succeeds: the hold must fire for the fork draft exactly
+	// as it does for composer text — the switch is declined, A keeps its
+	// surface, and the retry retires.
+	late := hubSessionMsg{
+		ref:           refB.String(),
+		detail:        hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	}
+	afterLate, _ := armed.Update(late)
+	held := afterLate.(hubModel)
+	if held.mode != hubModeSession || held.detail.Ref != refA.String() {
+		t.Fatalf("the automatic entry switched away from a fork draft: mode = %v detail = %v", held.mode, held.detail.Ref)
+	}
+	if held.forkDraft == nil {
+		t.Fatal("the automatic entry cleared the fork draft")
+	}
+	if held.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the held entry retry stayed armed after declining the switch")
+	}
+}
+
+// A live-session cycling press is an explicit navigation: the standing
+// entry retry retires with it, immediately — not lazily at its next tick.
+func TestACyclingPressRetiresTheStandingEntryRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m, _, cleanup := newLiveCycleModel(t, "local:01C", liveCycleTree())
+	defer cleanup()
+	refA := mustParseRef(t, "local:01A")
+
+	// A palette pick of A from inside the displayed session answers
+	// rebuilding: the retry arms with C displayed.
+	updated, _ := m.Update(hubSessionMsg{ref: refA.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	if armed.entryRepairRef != refA {
+		t.Fatal("the retry did not arm before the cycling press")
+	}
+
+	// The cycling press is the newer navigation intent: the retry retires
+	// with it, and its late tick enters nothing.
+	afterPress, _ := armed.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	pressed := afterPress.(hubModel)
+	if pressed.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the cycling press left the superseded entry retry armed")
+	}
+}
+
+// The reconnect rebind must not revive a retry a newer navigation already
+// superseded: only a retry current before the reconnect's bump rebinds —
+// a superseded one retires at its next tick instead of becoming current
+// again.
+func TestAReconnectDoesNotReviveASupersededEntryRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	ref := mustParseRef(t, "local:01EVENER")
+
+	updated, _ := m.Update(hubSessionMsg{ref: ref.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	oldSeq := armed.entryRepairSeq
+
+	// A navigation generation bump the retry never caught (the pre-fix
+	// cycling shape — the press retires immediately now, so this
+	// constructs the defensive case directly).
+	armed.liveNavSeq++
+
+	freshClient, freshFeed, cleanup2 := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup2()
+	after, _ := armed.Update(hubReconnectMsg{client: freshClient, frames: freshFeed})
+	rebound := after.(hubModel)
+
+	// The superseded retry's own tick lands: it retires, entering nothing —
+	// not a rebind that makes abandoned navigation current again.
+	afterTick, tickCmd := rebound.Update(hubEntryRepairTickMsg{ref: ref, seq: oldSeq})
+	ticked := afterTick.(hubModel)
+	if ticked.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the reconnect revived a superseded entry retry")
+	}
+	if tickCmd != nil {
+		t.Fatal("the superseded retry's tick re-issued a read after the reconnect")
+	}
+}
+
+// A spawn's own entry read may answer rebuilding: the session was just
+// created and the user has not departed anywhere — the form still being
+// displayed is not a departure, and the retry must converge the entry.
+func TestASpawnLandingEntryMayRetryWhileTheFormStands(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{wireErrorByRef: map[string]appwire.WireError{
+		"local:01S": appwire.WithHistoryReadIdentity(appwire.TranscriptIndexRebuilding(), appwire.DaemonlessBootGeneration, 0),
+	}}
+	m, cleanup := newEntryPickModel(t, reads)
+	defer cleanup()
+	refS := mustParseRef(t, "local:01S")
+
+	// The user opens the spawn form and the spawn succeeds: its entry read
+	// is issued while the form still stands.
+	opened, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	spawned, read := opened.(hubModel).Update(hubSpawnMsg{resp: hubSpawnResponse{Ref: refS.String()}})
+	if read == nil {
+		t.Fatal("the spawn landing issued no entry read")
+	}
+
+	// The entry read answers rebuilding, tagged as the spawn's pick: the
+	// retry arms.
+	answer := read().(hubSessionMsg)
+	armed, tick := spawned.Update(answer)
+	armedModel := armed.(hubModel)
+	if armedModel.entryRepairRef != refS {
+		t.Fatalf("the spawn's rebuilding entry did not arm: ref = %v", armedModel.entryRepairRef)
+	}
+
+	// The retry's first tick must re-read — the standing form is not a
+	// departure — and the eventual success enters the spawned session.
+	afterTick, reread := armedModel.Update(executeEntryRepairCmd(t, tick))
+	if reread == nil {
+		t.Fatal("the spawn's entry retry died at its first tick: the standing form was read as a departure")
+	}
+	armedSeq := armedModel.entryRepairSeq
+	success := hubSessionMsg{
+		ref:           refS.String(),
+		detail:        hubSessionDetail{Ref: refS.String(), SessionID: "sess_s", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	}
+	entered, _ := afterTick.(hubModel).Update(success)
+	shown := entered.(hubModel)
+	if shown.mode != hubModeSession || shown.detail.Ref != refS.String() {
+		t.Fatalf("the spawned session never entered: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	if shown.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the entered spawn's retry stayed armed")
+	}
+}

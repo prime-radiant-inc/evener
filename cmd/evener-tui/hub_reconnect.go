@@ -92,6 +92,7 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 	// instead of overwriting the fresh connection's resynchronized session
 	// (roborev PR #1044 round-8 medium 4). The pending target goes with it -
 	// the new connection has no cycling read in flight.
+	preReconnectSeq := m.liveNavSeq
 	m.liveNavSeq++
 	m.liveNavPendingRef = ""
 	m.liveNavNeedsReconcile = false // the reconnect's own tagged resub re-establishes
@@ -102,12 +103,15 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 
 	cmds := []tea.Cmd{waitHubNotification(m.frames), fetchHubTree(m.client)}
 	// A pending entry repair (#4343) is navigation intent, not connection
-	// state: the connection dying is not the user departing. Rebind the
-	// armed retry to the replacement connection's generation — the dead
-	// connection's in-flight response and pending tick then land as
-	// superseded — and issue a fresh tick on the new generation, so the
-	// paced read resumes on the replacement connection.
-	if m.entryRepairRef != (appwire.Ref{}) {
+	// state: the connection dying is not the user departing. Rebind an
+	// armed retry that was still current before the bump to the
+	// replacement connection's generation — the dead connection's
+	// in-flight response and pending tick then land as superseded — and
+	// issue a fresh tick on the new generation, so the paced read resumes
+	// on the replacement connection. A retry a newer navigation had
+	// already superseded does not rebind: reviving it would make
+	// abandoned navigation current again, and its next tick retires it.
+	if m.entryRepairRef != (appwire.Ref{}) && m.entryRepairSeq == preReconnectSeq {
 		m.entryRepairSeq = m.liveNavSeq
 		cmds = append(cmds, hubEntryRepairRetryCmd(m.entryRepairDelay, m.entryRepairRef, m.entryRepairSeq))
 	}

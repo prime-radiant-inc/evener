@@ -97,7 +97,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// when they are ready. A rejected re-read keeps the retry
 			// armed: the ordinary-transient contract below stands.
 			if msg.err == nil && m.mode == hubModeSession && m.detail.Ref != msg.ref &&
-				(m.session.input.Value() != "" || len(m.pendingAttachments) > 0) {
+				(m.session.input.Value() != "" || len(m.pendingAttachments) > 0 || m.forkDraft != nil) {
 				m.entryRepairRetire()
 				return m.discardSupersededSessionRead()
 			}
