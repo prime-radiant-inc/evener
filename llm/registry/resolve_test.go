@@ -227,6 +227,19 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
 		t.Fatalf("cross-protocol alias must derive budget from the inherited catalog controls: %+v", alias.Caps.ThinkingShape)
 	}
+
+	// A cross-protocol target whose effort control its own derivation
+	// invented — empty catalog reasoning_options — is not evidence either:
+	// the alias must not derive a level from it (roborev round 5).
+	r2 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.img-alias]\nalias_of = \"openrouter/google/gemini-3-pro-image\"\n")
+	target = mustResolve(t, r2, "openrouter/google/gemini-3-pro-image")
+	if target.Provenance["ReasoningControls"] != "derived" {
+		t.Fatalf("the target's effort control must be derived, not recorded: %v", target.Provenance)
+	}
+	alias = mustResolve(t, r2, "google/img-alias")
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("alias of a derived-controls target must derive no shape, got %v", *alias.Caps.ThinkingShape)
+	}
 }
 
 // TestResolve_Opus45OneMStillBeta pins Opus 4.5's [1m] rows as beta-gated,

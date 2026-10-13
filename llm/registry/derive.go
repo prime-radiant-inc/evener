@@ -19,9 +19,12 @@ type deriveInput struct {
 	// the target's own derivation invented would otherwise read as catalog
 	// evidence. A cross-protocol alias's target never asked the question
 	// (its protocol has no shape), so the alias derives from the inherited
-	// catalog controls like any directly named row.
-	Aliased             bool
-	AliasTargetProtocol string
+	// catalog controls like any directly named row — except controls the
+	// target's derivation invented, which AliasControlsDerived flags so they
+	// are not mistaken for catalog evidence on this side either.
+	Aliased              bool
+	AliasTargetProtocol  string
+	AliasControlsDerived bool
 }
 
 const provDerived = "derived"
@@ -89,7 +92,10 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		switch {
 		case slices.Contains(c.ReasoningControls, "budget_tokens"):
 			shape = "budget"
-		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty:
+		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty && !in.AliasControlsDerived:
+			// The effort control must be recorded evidence: one derivation
+			// invented for an empty list, here or on the alias's target, says
+			// nothing about what the model accepts.
 			shape = "level"
 		}
 		if shape != "" {
