@@ -142,7 +142,11 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 		branch = strings.TrimSpace(br.Stdout)
 	}
 
-	if st, err := run("status", "--porcelain"); err == nil && st.ExitCode == 0 {
+	// A truncated capture is refused, not decoded: counting a partial status
+	// stream would report a smaller change set than the repository holds. Like
+	// a failed exec above, a truncated one yields no counts rather than a wrong
+	// one (#4568 round 2).
+	if st, err := run("status", "--porcelain"); err == nil && st.ExitCode == 0 && st.Truncated() == nil {
 		for line := range strings.SplitSeq(strings.ReplaceAll(st.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -163,7 +167,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	// (workspace_prompt_program_fuzz_test.go) and git_snapshot_test.go key
 	// their scripted responses on — switching it would be pure fixture churn
 	// for no behavior change.
-	if lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 {
+	if lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 && lg.Truncated() == nil {
 		for line := range strings.SplitSeq(strings.ReplaceAll(lg.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {

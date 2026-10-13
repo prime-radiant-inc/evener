@@ -641,6 +641,13 @@ func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.G
 		if err != nil {
 			return res.Stdout, err
 		}
+		// A capped capture is head and tail fragments, not a record stream: a
+		// porcelain parser would read a partial listing as the whole one. Refuse
+		// it here, at the boundary every worktree parser reads through, so the
+		// caller treats the read as failed rather than decoding it (#4568 round 2).
+		if terr := res.Truncated(); terr != nil {
+			return res.Stdout, fmt.Errorf("git %s: %w", strings.Join(args, " "), terr)
+		}
 		return res.Stdout, nil
 	}
 }

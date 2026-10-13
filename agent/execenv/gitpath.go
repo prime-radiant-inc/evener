@@ -126,6 +126,12 @@ func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) 
 	if res.ExitCode != 0 {
 		return "", true // git ran and said this is not a repository
 	}
+	// A truncated capture is a partial path, not a verdict: report it unknown
+	// rather than resolve a wrong root from head and tail fragments (#4568
+	// round 2).
+	if res.Truncated() != nil {
+		return "", false
+	}
 	root = strings.TrimSpace(res.Stdout)
 	if root == "" {
 		return "", true

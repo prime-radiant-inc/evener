@@ -11,6 +11,16 @@ import (
 // ErrDetachUnsupported reports that an environment cannot disown commands.
 var ErrDetachUnsupported = errors.New("detached commands are not supported by this execution environment")
 
+// ErrOutputTruncated reports that a buffered command's stdout or stderr
+// capture tripped the per-stream cap, so that stream's text is the retained
+// head and tail around an omission marker, not the complete output. A caller
+// that decodes the text as records — a porcelain listing, a status table, a
+// log line set — must refuse a truncated capture rather than parse a partial
+// stream as if it were whole (#4568 round 2). Grep's ripgrep arm is the one
+// exception: it discards the capture and reruns the search natively, so it
+// keeps its own special handling.
+var ErrOutputTruncated = errors.New("command output truncated at the capture cap")
+
 // ExecResult holds the outcome of a command executed in an ExecutionEnvironment.
 type ExecResult struct {
 	Stdout     string `json:"stdout"`
@@ -26,6 +36,16 @@ type ExecResult struct {
 	// same way.
 	StdoutTruncated bool `json:"stdout_truncated,omitempty"`
 	StderrTruncated bool `json:"stderr_truncated,omitempty"`
+}
+
+// Truncated reports a capture whose per-stream cap tripped: ErrOutputTruncated
+// when either stream is truncated, else nil. A record parser checks it before
+// decoding the text.
+func (r ExecResult) Truncated() error {
+	if r.StdoutTruncated || r.StderrTruncated {
+		return ErrOutputTruncated
+	}
+	return nil
 }
 
 // DirEntry describes a single entry returned when listing a directory.
