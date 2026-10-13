@@ -15,7 +15,7 @@
 // it.
 
 import type { ItemModel } from "@evener/appwire-client";
-import { clip, parseArgs, str, toolStepSummary } from "@evener/appwire-client";
+import { clip, parseArgs, str } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { CodeBlock, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -193,9 +193,6 @@ function CompactContextBody({ item, live }: ToolRenderProps) {
 registerToolRenderer({
   match: "compact_context",
   icon: "fold",
-  // The shared housekeeping words (housekeepingSteps.ts) - exactly what the
-  // raw default produced, so web, native and run lines never drift.
-  summary: toolStepSummary,
   body: CompactContextBody,
   // A row whose body would render nothing offers no disclosure that opens
   // to nothing: the live note-clearing call (no fields, no leftovers, no

@@ -119,3 +119,16 @@ test("body is optional on a registered descriptor (no expand affordance) - only 
   registerToolRenderer({ match: "tt_no_body", summary: () => "s" });
   expect(toolRendererFor("tt_no_body").body).toBeUndefined();
 });
+
+// summary is optional the way body is: a descriptor that wants exactly the
+// default row words (the shared housekeeping words via toolStepSummary) omits
+// it and inherits DEFAULT_DESCRIPTOR's own, rather than copying the lambda and
+// drifting from it. "Wants the default" becomes expressible, and the default's
+// plumbing (e.g. ctx threading) lives in one place.
+test("a descriptor that omits summary resolves to the DEFAULT descriptor's words", () => {
+  registerToolRenderer({ match: "tt_omits_summary" });
+  // The default's own words for this name, pinned whole (never a substring).
+  expect(toolRendererFor("tt_omits_summary").summary(item({ toolName: "tt_omits_summary" }))).toBe(
+    "Used tt omits summary",
+  );
+});
