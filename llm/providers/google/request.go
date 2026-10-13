@@ -118,6 +118,13 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 // without it the model thinks internally but streams no thought parts, so the
 // live-thinking backend has nothing to render.
 func thinkingConfig(effort string, caps registry.Caps) map[string]any {
+	// Normalize first: a non-canonical off ("NONE", " off ") or an empty
+	// effort names no thinking on either shape, where before the shape split
+	// ReasoningBudget swallowed them by returning zero.
+	effort = llm.NormalizeReasoningEffort(effort)
+	if effort == "" || effort == llm.ReasoningEffortNone {
+		return nil
+	}
 	shape := map[string]any{"includeThoughts": true}
 	if slices.Contains(caps.ReasoningControls, "budget_tokens") {
 		budget := llm.ReasoningBudget(effort)
@@ -127,6 +134,11 @@ func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 		shape["thinkingBudget"] = budget
 		return shape
 	}
+	if !slices.Contains(caps.ReasoningControls, "effort") {
+		// A row whose catalog names controls but not effort — a toggle-only
+		// row — vouches for neither spelling, so no thinking object is sent.
+		return nil
+	}
 	level := effort
 	if len(caps.EffortValues) > 0 {
 		// A row with a ladder spells only a level the ladder vouches for.
@@ -135,9 +147,15 @@ func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 			return nil
 		}
 	}
-	// A row with no ladder — including an uncataloged row — spells the
-	// requested effort as-is: the level form is the current wire shape, and
-	// there is no ladder to clamp against.
+	if caps.Reasoning == nil {
+		// An uncataloged row — a live-listed model with no catalog facts —
+		// carries a derived effort control, not a vouched one, and a legacy
+		// budget-era model in that state rejects the level field. Send nothing.
+		return nil
+	}
+	// A cataloged effort row with no ladder spells the requested effort
+	// as-is: there is no ladder to clamp against, and the row vouches that
+	// the model takes levels.
 	shape["thinkingLevel"] = level
 	return shape
 }

@@ -98,7 +98,11 @@ func TestProtocolBuildBody(t *testing.T) {
 func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 	level := func(t *testing.T, body map[string]any) any {
 		t.Helper()
-		thinking := body["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
+		gen, _ := body["generationConfig"].(map[string]any)
+		thinking, ok := gen["thinkingConfig"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected a thinkingConfig, body: %v", body)
+		}
 		if _, has := thinking["thinkingBudget"]; has {
 			t.Fatalf("level-shaped row sent thinkingBudget: %v", thinking)
 		}
@@ -126,11 +130,46 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 		t.Fatalf("a budget-shaped row never sends thinkingLevel: %v", thinking)
 	}
 
-	// An uncataloged row knows nothing about the model's controls; Gemini's
-	// current generation takes levels, so that is the default shape.
-	unknown := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.ReasoningControls = nil }))
-	if got := level(t, unknown); got != "high" {
-		t.Fatalf("unknown row thinkingLevel = %v", got)
+	// A cataloged reasoning row whose catalog recorded no reasoning_options
+	// still reaches the builder with the derived effort control (derive.go
+	// defaults empty controls to ["effort"]); it spells the level.
+	derived := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.EffortValues = nil }))
+	if got := level(t, derived); got != "high" {
+		t.Fatalf("cataloged row with a derived control thinkingLevel = %v", got)
+	}
+
+	// A row that names no control the builder maps — a toggle-only row —
+	// sends no thinking object at all: neither spelling is vouched.
+	toggle := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.ReasoningControls = []string{"toggle"} }))
+	if _, has := toggle["generationConfig"].(map[string]any)["thinkingConfig"]; has {
+		t.Fatalf("a toggle-only row has no mappable control: %v", toggle)
+	}
+
+	// An uncataloged row — a live-listed model with no catalog facts, where
+	// Reasoning is unset — spells no level: the effort control is derived,
+	// not vouched, and a legacy budget-era model in that state 400'd on the
+	// level field before.
+	uncataloged := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.Reasoning = nil }))
+	if _, has := uncataloged["generationConfig"].(map[string]any)["thinkingConfig"]; has {
+		t.Fatalf("an uncataloged row sends no thinking object: %v", uncataloged["generationConfig"])
+	}
+}
+
+// Off and empty efforts never reach the wire as a thinking object on either
+// shape, including without a ladder to clamp against.
+func TestProtocolBuildBody_ThinkingOffAndEmpty(t *testing.T) {
+	shapes := []func(*registry.Caps){
+		nil, // effort-only, no ladder
+		func(c *registry.Caps) { c.ReasoningControls = nil },                       // uncataloged
+		func(c *registry.Caps) { c.ReasoningControls = []string{"budget_tokens"} }, // budget row
+	}
+	for i, mutate := range shapes {
+		for _, effort := range []string{"", "NONE", " none "} {
+			body := protoBuild(t, protoReq(effort), protoRes(mutate))
+			if _, has := body["generationConfig"].(map[string]any)["thinkingConfig"]; has {
+				t.Fatalf("shape %d effort %q must not send thinkingConfig: %v", i, effort, body["generationConfig"])
+			}
+		}
 	}
 }
 
