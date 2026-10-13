@@ -5,7 +5,10 @@
 // prose, text-node parentage or the browser Selection string. Every saved note
 // is rendered as literal, inert text under `data-annotation-note`, revealed on
 // hover, keyboard focus or a click/tap for EVERY annotation overlapping the
-// touched passage. Bands are real buttons, so they are natively keyboard
+// touched passage, and dismissed by a repeated tap, a tap outside every band,
+// or focus leaving the bands and the revealed surface — so the underlying
+// prose is always reachable again. Bands are real buttons, so they are natively
+// keyboard
 // reachable in the document's sequential navigation order. Geometry is
 // recomputed from the real scroll owner after scroll, resize,
 // font-set/visual-viewport changes and map replacement; React owns the rendered
@@ -38,10 +41,17 @@ function overlaps(a: SourceRange, b: SourceRange): boolean {
 export function DocumentHighlights({ map, annotations, scrollElement }: DocumentHighlightsProps) {
   const [fragments, setFragments] = useState<readonly HighlightFragment[]>([]);
   const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
+  // The delegated listeners live for the effect's whole lifetime, so they read
+  // the currently revealed note through this ref rather than a stale closure.
+  const activeOperationIdRef = useRef<string | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const notesRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    const setActive = (operationId: string | null): void => {
+      activeOperationIdRef.current = operationId;
+      setActiveOperationId(operationId);
+    };
     const measure = (): void => {
       const clip = scrollElement.getBoundingClientRect();
       const targets = annotations.map((annotation) => ({
@@ -75,7 +85,26 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
         const hover = (event.type === "mouseover" || event.type === "mousemove") && event.buttons === 0;
         if (hover || event.type === "click") operationId = bandAtPoint(event.clientX, event.clientY);
       }
-      if (operationId) setActiveOperationId(operationId);
+      // A click is also the dismissal path, so the revealed note never traps the
+      // underlying prose: pressing the same band again toggles the note away, and
+      // a press that lands on no band clears whatever was revealed. A click that
+      // merely trails an already-handled pointer press is consumed here. Hover
+      // keeps its reveal-only semantics.
+      if (event.type === "click") {
+        if (
+          event instanceof MouseEvent &&
+          handledTap !== null &&
+          Math.abs(event.clientX - handledTap.x) < 5 &&
+          Math.abs(event.clientY - handledTap.y) < 5 &&
+          Date.now() - handledTap.at < 1500
+        ) {
+          handledTap = null;
+          return;
+        }
+        setActive(operationId !== null && operationId === activeOperationIdRef.current ? null : operationId);
+        return;
+      }
+      if (operationId) setActive(operationId);
     };
     // A genuine tap is a stationary primary press over a band's rectangle,
     // completed by the SAME uncancelled pointer's release — never a Shift
@@ -86,6 +115,12 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
     let tapStart: { x: number; y: number } | null = null;
     let tapOperationId: string | null = null;
     let tapMoved = false;
+    // A real press reaches the browser as pointerdown/up AND THEN a click at
+    // the same coordinates. The tap path has already handled the interaction,
+    // so the trailing click must be consumed — otherwise a reveal's own click
+    // would toggle it back off. Keyboard-activated clicks have no preceding
+    // pointer press and keep the full toggle path.
+    let handledTap: { x: number; y: number; at: number } | null = null;
     const onPointerDown = (event: PointerEvent): void => {
       if (event.button !== 0 || event.isPrimary === false || event.shiftKey) return;
       tapPointerId = event.pointerId;
@@ -99,7 +134,19 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
     };
     const onPointerUp = (event: PointerEvent): void => {
       if (event.pointerId !== tapPointerId) return;
-      if (tapOperationId && !tapMoved && !event.shiftKey) setActiveOperationId(tapOperationId);
+      if (!tapMoved && !event.shiftKey) {
+        // The tap mirrors the click's dismissal contract: a repeated stationary
+        // tap on the same band toggles the note away, and a stationary tap that
+        // lands on no band clears the revealed note so touch users get the
+        // underlying prose back. A moved tap is a selection drag and reveals
+        // or dismisses nothing.
+        if (tapOperationId === null) {
+          if (activeOperationIdRef.current !== null) setActive(null);
+        } else {
+          setActive(tapOperationId === activeOperationIdRef.current ? null : tapOperationId);
+        }
+        handledTap = { x: event.clientX, y: event.clientY, at: Date.now() };
+      }
       tapPointerId = null;
       tapStart = null;
       tapOperationId = null;
@@ -111,6 +158,19 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
       tapStart = null;
       tapOperationId = null;
       tapMoved = false;
+    };
+    // Keyboard reachability is symmetric: when focus leaves the bands and the
+    // revealed surface, the note goes with it. Focus moving between the bands
+    // or into the note stack's own controls keeps the note.
+    const onFocusOut = (event: FocusEvent): void => {
+      const next = event.relatedTarget;
+      if (
+        next instanceof Element &&
+        (next.closest("[data-document-highlight]") !== null || notesRef.current?.contains(next) === true)
+      ) {
+        return;
+      }
+      setActive(null);
     };
     // The revealed note surface is pointer-events:none so it never intercepts a
     // selection press or release; that also makes its scrollbar non-hit-testable,
@@ -160,6 +220,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
     scrollElement.addEventListener("mousemove", activate, true);
     scrollElement.addEventListener("click", activate, true);
     scrollElement.addEventListener("focus", activate, true);
+    scrollElement.addEventListener("focusout", onFocusOut, true);
     scrollElement.addEventListener("pointerdown", onPointerDown, true);
     scrollElement.addEventListener("wheel", onWheel, { passive: false });
     ownerDocument.addEventListener("pointermove", onPointerMove);
@@ -177,6 +238,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
       scrollElement.removeEventListener("mousemove", activate, true);
       scrollElement.removeEventListener("click", activate, true);
       scrollElement.removeEventListener("focus", activate, true);
+      scrollElement.removeEventListener("focusout", onFocusOut, true);
       scrollElement.removeEventListener("pointerdown", onPointerDown, true);
       scrollElement.removeEventListener("wheel", onWheel);
       ownerDocument.removeEventListener("pointermove", onPointerMove);
