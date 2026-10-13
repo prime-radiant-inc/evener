@@ -41,6 +41,9 @@ import (
 //   - TestInitInside_ForeignBareLockUnknownOwnerWarns — same reasonless lock shape
 //   - TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot —
 //     same bare-lock shape with the snapshot reporting not-a-repo (#4132)
+//   - TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe —
+//     the same bare-lock shape with the git probe starved past its deadline
+//     (#4132)
 //   - TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey — the lock
 //     key must match git's canonical porcelain entry for the lane
 
