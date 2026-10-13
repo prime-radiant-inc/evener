@@ -2,10 +2,8 @@ package execenv
 
 import (
 	"context"
-	"errors"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 )
 
@@ -186,23 +184,33 @@ func listDirListingName(relPrefix string) string {
 	return relPrefix
 }
 
-// listDirBaseFS opens the filesystem the off-sandbox list_dir walk lists,
-// rooted at the resolved base directory — the same shape, and for the same
-// reason, as globBaseFS: a variable so tests can drive the exported entry
-// point over a filesystem they control, while every listing that reaches the
-// walk is chunked and charged through the glob budget machinery no matter
-// what observes it from above.
-var listDirBaseFS = func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
-	return boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}
+// listDirReadOS lists one directory in charged, cancellation-checked chunks
+// through the shared chunked reader, over the raw descriptor os.Open hands
+// back. The walk reads OS paths instead of going through an fs.FS because a
+// directory name that is not valid UTF-8 is a legal Linux filename that io/fs
+// path validation rejects — a recursive listing over such a tree must
+// traverse it the way the legacy walk's raw paths did, not error on the name
+// and discard the page. dir names the listing for the budget's accounting
+// (see listDirListingName); the descriptor's own name is the absolute path,
+// so its entries' Info resolves against real paths.
+func listDirReadOS(ctx context.Context, absPath, dir string, budget *GlobBudget) ([]fs.DirEntry, error) {
+	f, err := os.Open(absPath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return readDirChunked(ctx, f, dir, budget)
 }
 
-// listDirWalk collects DirEntry values beneath fsys — a cancelFS wrapping a
-// boundedDirFS on the off-sandbox arm, so every listing is read in chunks and
-// charged to the budget by the shared reader — recursing up to depth levels
-// in the legacy walk's order: each directory's entries sorted by name, a
-// subdirectory's descendants following it immediately (preorder DFS). rel is
-// the fs path of the directory being listed; prefix is the caller-facing
-// relative path its entries are named with ("." and "" at the root).
+// listDirRead is the seam over one directory's listing, a variable so tests
+// can interpose on the walk — count its listings, or cancel at a chosen one.
+var listDirRead = listDirReadOS
+
+// listDirWalk collects DirEntry values beneath absDir, recursing up to depth
+// levels in the legacy walk's order: each directory's entries sorted by name,
+// a subdirectory's descendants following it immediately (preorder DFS). prefix
+// is the caller-facing relative path its entries are named with ("" at the
+// root).
 //
 // The walk stops — unwinding without error — the moment the budget's page
 // need is met, which is the fix for #2375's unbounded walk: a small page
@@ -213,13 +221,13 @@ var listDirBaseFS = func(ctx context.Context, dir string, budget *GlobBudget) fs
 // beyond the page cannot fail a call whose page is already valid.
 // Cancellation outranks the cap, matching glob's convention, and every entry
 // passes the glob budget's per-directory and live-entry bounds on its way in.
-func listDirWalk(ctx context.Context, fsys fs.FS, absRoot, rel, prefix string, depth int, out *[]DirEntry, budget *DirListBudget) error {
+func listDirWalk(ctx context.Context, absDir, prefix string, depth int, out *[]DirEntry, budget *DirListBudget) error {
 	if berr := budget.glob.listing(true); berr != nil {
 		return berr
 	}
-	ents, err := fs.ReadDir(fsys, rel)
+	ents, err := listDirRead(ctx, absDir, listDirListingName(prefix), budget.glob)
 	if err != nil {
-		return listDirListingErr(err, absRoot, prefix)
+		return err
 	}
 	budget.listings++
 	if budget.onListing != nil {
@@ -265,28 +273,10 @@ func listDirWalk(ctx context.Context, fsys fs.FS, absRoot, rel, prefix string, d
 			}
 		}
 		if ent.IsDir() && depth > 1 {
-			if err := listDirWalk(ctx, fsys, absRoot, path.Join(rel, name), relName, depth-1, out, budget); err != nil {
+			if err := listDirWalk(ctx, filepath.Join(absDir, name), relName, depth-1, out, budget); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-// listDirListingErr restores the legacy walk's error path. The fs walk names
-// directories the way os.DirFS sees them — "." for the requested root, a
-// slash-relative path beneath — so a listing failure arrives as "open .: no
-// such file or directory", which tells the model nothing about which of its
-// paths was wrong. The legacy walk read absolute paths and its errors named
-// them; rewriting the fs path to the resolved absolute one (absRoot, or the
-// subdirectory prefix names beneath it) reproduces that, for the root and
-// descendants alike. Non-PathError failures — the budget's refusals,
-// cancellation — pass through untouched, and the underlying error rides
-// along so errors.Is still answers for it.
-func listDirListingErr(err error, absRoot, prefix string) error {
-	var perr *fs.PathError
-	if !errors.As(err, &perr) {
-		return err
-	}
-	return &fs.PathError{Op: perr.Op, Path: filepath.Join(absRoot, prefix), Err: perr.Err}
 }

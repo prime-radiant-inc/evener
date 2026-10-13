@@ -8,8 +8,8 @@ package execenv
 // more exist) instead of enumerating the whole requested subtree first, and
 // reports the cap it stopped at through TruncatedAt.
 //
-// Both arms are pinned here: the unconfined walk (local.go, driving an
-// os.DirFS through the bounded chunked reader) and the confined fd-anchored
+// Both arms are pinned here: the unconfined walk (local.go, reading raw OS
+// paths through the bounded chunked reader) and the confined fd-anchored
 // walk (securepath_fdops_unix.go). The legacy ListDirectory remains the oracle
 // for completed walks: it is pinned by the existing tests and the fuzz
 // oracles, so exact prefix equality against it proves the budgeted walk emits
@@ -30,15 +30,15 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
-// stubListDirBaseFS interposes on the fs.FS the off-sandbox list_dir walk
-// uses, so a test can drive the exported entry point over a filesystem it
-// controls, and restores the seam when the test ends. Not parallel: the seam
-// is a package variable.
-func stubListDirBaseFS(t *testing.T, open func(ctx context.Context, dir string, budget *GlobBudget) fs.FS) {
+// stubListDirRead interposes on the directory-listing seam the off-sandbox
+// list_dir walk reads through, so a test can drive the exported entry point
+// while counting — or cancelling at — each real listing, and restores the
+// seam when the test ends. Not parallel: the seam is a package variable.
+func stubListDirRead(t *testing.T, read func(ctx context.Context, absPath, dir string, budget *GlobBudget) ([]fs.DirEntry, error)) {
 	t.Helper()
-	orig := listDirBaseFS
-	listDirBaseFS = open
-	t.Cleanup(func() { listDirBaseFS = orig })
+	orig := listDirRead
+	listDirRead = read
+	t.Cleanup(func() { listDirRead = orig })
 }
 
 // stubMaxListDirWalkEntries lowers the entry-visit cap of one list_dir walk
@@ -131,7 +131,7 @@ func TestListDirBudgetCompletesASmallDirectoryExactlyLikeTheLegacyWalk(t *testin
 // regression proof for the unconfined arm: the walk must stop once it has
 // collected enough entries to answer the page — one page entry plus the one
 // that proves more exist — rather than enumerating the whole subtree. The
-// instrumented base filesystem counts directory listings: a completed walk
+// instrumented listing seam counts directory listings: a completed walk
 // over this fixture lists all 7 directories, a limit=1 page must stop after 2
 // (the root and the first subdirectory) holding the exact legacy prefix.
 func TestListDirBudgetStopsWalkingOnceThePageIsFull(t *testing.T) {
@@ -142,22 +142,22 @@ func TestListDirBudgetStopsWalkingOnceThePageIsFull(t *testing.T) {
 		t.Fatalf("legacy ListDirectory: %v", err)
 	}
 
-	var control *countingFS
-	stubListDirBaseFS(t, func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
-		control = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
-		return control
+	var control int
+	stubListDirRead(t, func(ctx context.Context, absPath, dir string, budget *GlobBudget) ([]fs.DirEntry, error) {
+		control++
+		return listDirReadOS(ctx, absPath, dir, budget)
 	})
 	if _, err := env.ListDirectoryWithBudget(t.Context(), root, 4, NewDirListBudget(0, 1000, 0)); err != nil {
 		t.Fatalf("control run: %v", err)
 	}
-	if control == nil || control.calls != 7 {
-		t.Fatalf("control run made %v listings, want 7 (every directory in the fixture)", control)
+	if control != 7 {
+		t.Fatalf("control run made %d listings, want 7 (every directory in the fixture)", control)
 	}
 
-	var capped *countingFS
-	stubListDirBaseFS(t, func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
-		capped = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
-		return capped
+	var capped int
+	stubListDirRead(t, func(ctx context.Context, absPath, dir string, budget *GlobBudget) ([]fs.DirEntry, error) {
+		capped++
+		return listDirReadOS(ctx, absPath, dir, budget)
 	})
 	budget := NewDirListBudget(0, 1, 0)
 	got, err := env.ListDirectoryWithBudget(t.Context(), root, 4, budget)
@@ -173,11 +173,11 @@ func TestListDirBudgetStopsWalkingOnceThePageIsFull(t *testing.T) {
 	if budget.TruncatedAt() != 2 {
 		t.Fatalf("limit=1 walk reported truncatedAt=%d, want 2", budget.TruncatedAt())
 	}
-	if capped == nil || capped.calls != 2 {
-		t.Fatalf("limit=1 walk made %v directory listings, want 2 (the root and the first subdirectory)", capped)
+	if capped != 2 {
+		t.Fatalf("limit=1 walk made %d directory listings, want 2 (the root and the first subdirectory)", capped)
 	}
-	if capped.calls >= control.calls {
-		t.Fatalf("limit=1 walk listed %d directories, want fewer than the completed walk's %d", capped.calls, control.calls)
+	if capped >= control {
+		t.Fatalf("limit=1 walk listed %d directories, want fewer than the completed walk's %d", capped, control)
 	}
 }
 
@@ -223,24 +223,27 @@ func TestListDirBudgetPagesCoherentlyAcrossCalls(t *testing.T) {
 // TestListDirBudgetStopsOnCancellationMidWalk is the issue's cancellation
 // regression proof for the unconfined arm: cancelling the context mid-walk
 // must abort the traversal and surface the cancellation, not let the walk
-// run to completion. The instrumented filesystem cancels on its second
+// run to completion. The instrumented listing seam cancels on its second
 // listing, partway through the fixture.
 func TestListDirBudgetStopsOnCancellationMidWalk(t *testing.T) {
 	root := listDirTreeFixture(t)
 	env := NewLocalExecutionEnvironment(root)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	var counter *countingFS
-	stubListDirBaseFS(t, func(cctx context.Context, dir string, budget *GlobBudget) fs.FS {
-		counter = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: cctx}, cancelOn: 2, cancel: cancel}
-		return counter
+	listings := 0
+	stubListDirRead(t, func(cctx context.Context, absPath, dir string, budget *GlobBudget) ([]fs.DirEntry, error) {
+		listings++
+		if listings == 2 {
+			cancel()
+		}
+		return listDirReadOS(cctx, absPath, dir, budget)
 	})
 	entries, err := env.ListDirectoryWithBudget(ctx, root, 4, NewDirListBudget(0, 1000, 0))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("mid-walk cancellation = (%v, %v), want context.Canceled", entries, err)
 	}
-	if counter == nil || counter.calls > 2 {
-		t.Fatalf("walk kept going after cancellation: %v listings", counter)
+	if listings > 2 {
+		t.Fatalf("walk kept going after cancellation: %d listings", listings)
 	}
 }
 
@@ -525,12 +528,12 @@ func TestSandboxedListDirBudgetClampsModelSuppliedDepth(t *testing.T) {
 }
 
 // TestListDirBudgetNamesTheRequestedPathInRootErrors pins the fix-round
-// finding for #2375: the budgeted unconfined walk is fs-rooted, so its
-// listing failures arrive carrying the fs path — "open .: no such file or
-// directory" — which tells the model nothing about which of its paths was
-// wrong. The legacy walk read absolute paths and its errors named them; the
-// budgeted walk must name the requested path the same way, with the
-// underlying error (here fs.ErrNotExist) preserved for errors.Is.
+// finding for #2375: a root-listing failure must name the requested path. The
+// first budgeted walk was fs-rooted and reported "open .: no such file or
+// directory", which told the model nothing about which of its paths was
+// wrong; the walk now reads absolute OS paths, whose listing errors name the
+// path exactly the legacy walk's raw paths did. The underlying error (here
+// fs.ErrNotExist) must stay preserved for errors.Is.
 func TestListDirBudgetNamesTheRequestedPathInRootErrors(t *testing.T) {
 	t.Parallel()
 	const missing = "/definitely-not-here-xyz"
@@ -713,6 +716,76 @@ func TestSandboxedListDirBudgetStopsAtTheRenderedCharacterBudget(t *testing.T) {
 	}
 	if budget.listings != 1 {
 		t.Fatalf("the confined walk listed %d directories, want 1 (the root only; the oversized directory beyond the rendered page must not be opened)", budget.listings)
+	}
+}
+
+// writeListDirBadName builds the non-UTF-8 scenario: a root holding plain.txt
+// and a directory whose name contains a byte sequence that is a legal Linux
+// filename but not valid UTF-8, which io/fs path validation rejects. The
+// names are written through raw OS calls — os.Mkdir and os.WriteFile with the
+// byte string — because fs helpers would refuse the name just as io/fs does.
+func writeListDirBadName(t *testing.T, root string) {
+	t.Helper()
+	// "bad" plus one raw 0xff byte, built from a byte slice so the invalid
+	// byte is spelled as a byte rather than an escape a reader must decode.
+	badName := "bad" + string([]byte{0xff})
+	bad := filepath.Join(root, badName)
+	if err := os.Mkdir(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "leaf.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plain.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestListDirBudgetListsDirectoriesWhoseNamesAreNotValidUTF8 pins the
+// traverse a directory whose name io/fs path validation rejects, exactly as
+// the legacy walk's raw OS paths did, instead of failing the whole page on
+// it.
+func TestListDirBudgetListsDirectoriesWhoseNamesAreNotValidUTF8(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeListDirBadName(t, root)
+	env := NewLocalExecutionEnvironment(root)
+
+	legacy, err := env.ListDirectory(root, 2)
+	if err != nil {
+		t.Fatalf("legacy walk over a non-UTF-8 name: %v", err)
+	}
+	got, err := env.ListDirectoryWithBudget(t.Context(), root, 2, NewDirListBudget(0, 1000, 0))
+	if err != nil {
+		t.Fatalf("a recursive listing must traverse a non-UTF-8 directory name the way the legacy walk does, not error on it: %v", err)
+	}
+	if !slices.Equal(got, legacy) {
+		t.Fatalf("budgeted walk = %v, want exactly the legacy listing %v", got, legacy)
+	}
+	if !slices.ContainsFunc(got, func(e DirEntry) bool { return e.Name == "bad\xff" && e.IsDir }) {
+		t.Fatalf("the non-UTF-8 directory is missing from the listing: %v", got)
+	}
+}
+
+// TestSandboxedListDirBudgetListsDirectoriesWhoseNamesAreNotValidUTF8 pins
+// the same contract for the confined arm, which reads through descriptors and
+// openat with raw names and never consults io/fs path validation — so a
+// non-UTF-8 name must list identically on both walks.
+func TestSandboxedListDirBudgetListsDirectoriesWhoseNamesAreNotValidUTF8(t *testing.T) {
+	t.Parallel()
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	writeListDirBadName(t, worktree)
+
+	legacy, err := env.ListDirectory(worktree, 2)
+	if err != nil {
+		t.Fatalf("legacy confined walk over a non-UTF-8 name: %v", err)
+	}
+	got, err := env.ListDirectoryWithBudget(t.Context(), worktree, 2, NewDirListBudget(0, 1000, 0))
+	if err != nil {
+		t.Fatalf("confined budgeted walk over a non-UTF-8 name: %v", err)
+	}
+	if !slices.Equal(got, legacy) {
+		t.Fatalf("confined budgeted walk = %v, want exactly the legacy confined listing %v", got, legacy)
 	}
 }
 
