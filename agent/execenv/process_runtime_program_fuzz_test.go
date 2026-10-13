@@ -137,6 +137,23 @@ func (f *processRuntimeFactory) Shell(command string) commandRuntime {
 }
 
 func (f *processRuntimeFactory) Argv(name string, args ...string) commandRuntime {
+	// The rg arm's oversize-disclosure listings are plumbing, not a scenario:
+	// they answer from a scripted empty successful listing rather than
+	// consuming the sequentially planned commands, so a planned grep result
+	// is never eaten by a listing call (#4574 round 8) and the trace carries
+	// only what the scenarios script.
+	if slices.Contains(args, "--files") {
+		f.created++
+		return &processRuntimeCommand{
+			plan:       processRuntimePlan{name: "rg-files-listing"},
+			kind:       "argv",
+			request:    name,
+			args:       append([]string{name}, args...),
+			pid:        50_000 + f.created,
+			terminated: make(chan struct{}),
+			trace:      f.trace,
+		}
+	}
 	return f.nextCommand("argv", name, append([]string{name}, args...))
 }
 
