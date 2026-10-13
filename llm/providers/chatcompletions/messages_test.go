@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -146,5 +147,40 @@ func TestToChatMessages_ImageDetailHonorsRowCap(t *testing.T) {
 	}
 	if got := detailOf(t, withCap("low"), userImage("high")); got != "high" {
 		t.Fatalf("a part's own detail must win over the row cap, got %v", got)
+	}
+	if got := detailOf(t, withCap("omit"), userImage("low")); got != nil {
+		t.Fatalf(`image_detail "omit" must drop the field even when the part names a detail, got %v`, got)
+	}
+}
+
+// TestToChatMessages_NeverEmitsOriginalImageDetail pins the #4489 invariant:
+// the cap vocabulary's "original" is not a valid Chat Completions detail, so no
+// combination of row cap and part detail may put the literal "original" on the
+// wire. Strict OpenAI-compatible endpoints reject it with HTTP 400.
+func TestToChatMessages_NeverEmitsOriginalImageDetail(t *testing.T) {
+	capsFor := func(d string) registry.Caps {
+		if d == "" {
+			return registry.Caps{}
+		}
+		return registry.Caps{ImageDetail: &d}
+	}
+	for _, capDetail := range []string{"", "original", "omit", "low", "high"} {
+		for _, partDetail := range []string{"", "original", "low", "high", "auto"} {
+			msg := llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "look"},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{1}, MediaType: "image/png", Detail: partDetail}},
+			}}
+			out, err := toChatMessages([]llm.Message{msg}, capsFor(capDetail), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), `"original"`) {
+				t.Fatalf("cap %q part %q emitted the invalid detail %q", capDetail, partDetail, raw)
+			}
+		}
 	}
 }

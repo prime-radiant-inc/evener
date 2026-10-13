@@ -311,35 +311,13 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[str
 				continue
 			}
 			urlObj := map[string]any{"url": imgURL}
-			if detail := chatImageDetail(caps, p.Image.Detail); detail != "" {
+			if detail := llm.ChatImageDetail(p.Image.Detail, registry.StringValue(caps.ImageDetail)); detail != "" {
 				urlObj["detail"] = detail
 			}
 			out = append(out, map[string]any{"type": "image_url", "image_url": urlObj})
 		}
 	}
 	return out
-}
-
-// chatImageDetail is the detail a chat image part carries on the wire: the
-// part's own detail when it names one, otherwise the row's image_detail cap.
-// The chat wire accepts only OpenAI's auto|low|high, and strict
-// OpenAI-compatible endpoints reject anything else with HTTP 400, so the cap
-// vocabulary's "original" (full resolution) maps to "high" and "omit" (and an
-// unset value) drops the field. The Responses builder carries the row's value
-// verbatim; chat must normalize it.
-func chatImageDetail(caps registry.Caps, partDetail string) string {
-	d := strings.ToLower(strings.TrimSpace(partDetail))
-	if d == "" {
-		d = strings.ToLower(strings.TrimSpace(registry.StringValue(caps.ImageDetail)))
-	}
-	switch d {
-	case "", "omit":
-		return ""
-	case "original":
-		return "high"
-	default:
-		return d
-	}
 }
 
 // requestWithoutToolResultImages returns a request whose tool-result image

@@ -142,8 +142,8 @@ the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
 `MaxOutputTokens`, `EffortValues`, `DefaultEffort`, `Cost`, `Reasoning`, plus
 `ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`).
 `InputModalities` comes from OpenRouter's `architecture.input_modalities`, or,
-when a gateway publishes no architecture, from its `capabilities.vision` (an
-advertised vision capability is `["text", "image"]`). It
+when that list is empty, from a gateway's `capabilities.vision` (an advertised
+vision capability is `["text", "image"]`). It
 overrides catalog and curated facts but **never a field the user layer (layer
 4) set**, and it never touches any other wire-shaping cap. Live rows matching
 the non-chat pattern list (`embedding`, `whisper`, `tts`, `dall-e`,
@@ -465,10 +465,10 @@ Load rules, enforced with errors that name the instance and key:
   guard); `thinking_format`, `thinking_shape`, `max_tokens_field`,
   `cache_control`, `reasoning_field`, `host_rule`, `image_detail` are
   validated against their vocabularies (`image_detail` is the wire detail an
-  image part carries: the Responses builder sends the row's value verbatim,
-  defaulting to `high`, while the Chat Completions builder takes the part's own
-  value or, when the part names none, the row's value, mapping `original` to
-  `high` and `omit` to an omitted field); `reasoning_controls` entries must be
+  image part carries: both builders send the part's own detail, else the row's
+  value — defaulting to `high` on the Responses side — and drop the field
+  outright for `omit`; the Chat Completions builder additionally maps the cap's
+  `original` to `high`, because its wire accepts only `auto|low|high`); `reasoning_controls` entries must be
   `effort`/`budget_tokens`/`toggle`; `effort_values` entries must be
   non-empty, and `"off"` is rejected. `default_effort` must be one of the six
   tiers or `none` — the clamp passes an unrankable level straight through, so

@@ -35,9 +35,11 @@ defects:
 
 ## Non-goals
 
-- No change to the Responses builder: it keeps carrying the row's
-  `image_detail` verbatim (its default is `high`), which
-  `llm/providers/responses/request_test.go` pins.
+- No change to the Responses builder's code: it still sends the part's own
+  detail, else the row's value (default `high`), and drops the field for
+  `omit`; its tests pin that shape. Because the side-channel's part no longer
+  names a detail, a Responses-route description now carries the builder's
+  default `high` where it previously carried the literal `original`.
 - No change to models.dev conversion, the curated overlay, or the user config
   schema.
 - No change to *when* the side-channel runs: it is still skipped only for
@@ -48,9 +50,12 @@ defects:
 ## Behavior
 
 - A chat image part's wire detail is the part's own value when it names one,
-  otherwise the row's `image_detail`: `original` maps to `high`, `omit` and an
-  unset value omit the field, and other values (`auto`, `low`, `high`) pass
-  through.
+  otherwise the row's `image_detail`. `original` from either source maps to
+  `high` (the chat wire accepts only `auto|low|high`); a row set to `omit`
+  drops the field even when the part names a detail; an unset value drops it;
+  `auto`, `low` and `high` pass through. One shared `llm.ChatImageDetail`
+  produces this for both the builder and the token estimator, so the billed
+  detail matches the sent one.
 - The side-channel's image part names no detail, so the row cap (and each
   builder's own default) governs.
 - The live listing maps `capabilities.vision: true` to
@@ -66,15 +71,23 @@ defects:
   `original` is normalized.
 - Responses rows and non-vision chat rows keep their existing wire shape.
 
-## Whole-journey test plan
+## Test plan
 
-- Unit, test-first (each watched red, then green):
-  `TestToChatMessages_ImageDetailHonorsRowCap`,
-  `TestListModelsReadsGatewayVisionCapability`,
-  `TestS3Cov_DescribeImage_DoesNotPinDetail`.
-- Provider acceptance (manual, evidenced against the real gateway): the same
-  image with `detail:"high"` returns HTTP 200 with a correct transcription,
-  and with `detail:"original"` returns HTTP 400 naming `image_url.detail`.
+- Test-first unit tests (each watched red, then green):
+  `TestS3Cov_DescribeImage_DoesNotPinDetail` (the side-channel's part names no
+  detail), `TestToChatMessages_ImageDetailHonorsRowCap` and
+  `TestToChatMessages_NeverEmitsOriginalImageDetail` (the chat detail mapping,
+  including the #4489 invariant that no cap/part combination emits `original`),
+  `TestListModelsReadsGatewayVisionCapability` (the live listing), and the
+  estimator test that the billed detail matches the wire.
+- Journey coverage. The request spans two layers: the side-channel builds the
+  image part in `agent`, and the protocol builder serializes it in
+  `llm/providers/chatcompletions`. No single test drives both, because a
+  session test reaches the builder through the protocol adapter it replaces
+  with a fake; each leg is covered by the tests above. End-to-end behavior is
+  confirmed against the real gateway (manual, evidenced): the same image with
+  `detail:"high"` returns HTTP 200 and a correct transcription, and with
+  `detail:"original"` returns HTTP 400 naming `image_url.detail`.
 - Package suites: `go test ./llm/...`; `go test ./agent/` alone with
   `-timeout 20m`.
 
