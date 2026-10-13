@@ -56,6 +56,12 @@ export function getDocumentAnnotationPorts(): DocumentAnnotationPorts {
     onPendingExpiryRetained: () => runtime?.registerRetryNeed(),
   });
   runtime = createDocumentAnnotationRuntime(repository);
+  // The foreground retry listener belongs to the application runtime's
+  // lifetime, not the reader count: the runtime and its persisted pending
+  // handoffs outlive every open reader, so a foreground return after the
+  // last pane closed must still retry them. addEventListener is idempotent
+  // for the same listener, and teardown removes it exactly once.
+  document.addEventListener("visibilitychange", onReaderForeground);
   const ports: DocumentAnnotationPorts = { repository, runtime };
   browserPorts = ports;
   return ports;
@@ -65,6 +71,8 @@ export function getDocumentAnnotationPorts(): DocumentAnnotationPorts {
 // retry pass reaches them exactly as production reaches the real singleton.
 export function setDocumentAnnotationPortsForTests(ports: DocumentAnnotationPorts | undefined): void {
   browserPorts = ports;
+  if (ports) document.addEventListener("visibilitychange", onReaderForeground);
+  else document.removeEventListener("visibilitychange", onReaderForeground);
 }
 
 type ReaderEntry = { work: DocumentReaderWork; listeners: Set<() => void>; unsubscribe: () => void };
@@ -128,7 +136,6 @@ export function documentReaderWork(
   entry.unsubscribe = ports.repository.subscribe(key, () => {
     void refreshSavedAttempt(work);
   });
-  if (readers.size === 1) document.addEventListener("visibilitychange", onReaderForeground);
   return work;
 }
 
@@ -146,7 +153,6 @@ export function disposeDocumentReaderWork(viewerId: string): void {
   if (!entry) return;
   entry.unsubscribe();
   readers.delete(viewerId);
-  if (readers.size === 0) document.removeEventListener("visibilitychange", onReaderForeground);
 }
 
 // Genuine application teardown of the ONE lazy production singleton. It retires
@@ -161,6 +167,7 @@ export function disposeDocumentReaderWork(viewerId: string): void {
 export function disposeDocumentAnnotationPorts(): void {
   const ports = browserPorts;
   browserPorts = undefined;
+  document.removeEventListener("visibilitychange", onReaderForeground);
   for (const viewerId of [...readers.keys()]) disposeDocumentReaderWork(viewerId);
   if (!ports) return;
   ports.runtime.dispose();

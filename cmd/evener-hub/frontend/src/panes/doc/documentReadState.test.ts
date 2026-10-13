@@ -597,3 +597,38 @@ test("composer-open retry reaches the application runtime after every reader has
   await retryDocumentReaders("composer-open");
   expect((await f.drafts.load(f.key))?.text).toBe(`${baselineText}\n\n${REFERENCE}`);
 });
+
+test("a foreground return retries the application runtime's pending handoff after the last reader closes", async () => {
+  let failAppend = false;
+  const f = await fixture("reader-retry-foreground", {
+    beforeAbortableCompletion: () => {
+      if (failAppend) throw new Error("append boundary");
+    },
+  });
+  await settleBaseline(f);
+  const ports = openPorts(f);
+  // The application owns these ports beyond any open reader, exactly as
+  // production owns its singleton.
+  setDocumentAnnotationPortsForTests(ports);
+  cleanupAfterTest(() => setDocumentAnnotationPortsForTests(undefined));
+  const work = openWork("viewer-fg-retry", f.document, ports);
+  work.lease = f.operation.lease;
+  work.comment = selectCommentPassage(editCommentText(work.comment, "Keep this scope."), f.operation.capture);
+  failAppend = true;
+  await saveReaderAnnotation(work, f.destination);
+  const pending = (await f.repo.listAnnotations(f.document)).find((entry) => entry.handoff.state === "pending");
+  if (!pending) throw new Error("handoff did not stay pending across the faulted append");
+  const baselineText = (await f.drafts.load(f.key))?.text;
+  if (!baselineText) throw new Error("baseline draft missing");
+
+  // The last reader closes; the application runtime and its persisted pending
+  // handoff stay alive. Returning to the foreground must retry through the
+  // application-owned runtime: the foreground listener's owner is the
+  // runtime's lifetime, not the reader count.
+  disposeDocumentReaderWork("viewer-fg-retry");
+  failAppend = false;
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  document.dispatchEvent(new Event("visibilitychange"));
+  await ports.runtime.whenIdle();
+  expect((await f.drafts.load(f.key))?.text).toBe(`${baselineText}\n\n${REFERENCE}`);
+});
