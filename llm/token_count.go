@@ -727,7 +727,7 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 		return 0
 	}
 	family := t.mediaFamily()
-	detail := effectiveImageDetail(t, img)
+	detail := imageDetail(t.protocol, img.Detail, t.imageDetail)
 	if family == "openai" && strings.EqualFold(strings.TrimSpace(detail), "low") {
 		// OpenAI bills a low-detail image a fixed 85 tokens without reading its
 		// dimensions, so an image whose dimensions cannot be decoded locally (a
@@ -749,14 +749,6 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 	default:
 		return fallbackMediaTokens + len(img.MediaType)/4 + len(img.Detail)/4
 	}
-}
-
-// effectiveImageDetail is the detail the target's adapter puts on the wire for
-// the image, so the estimate bills what the request sends. It reads the same
-// resolver the protocol's builder reads (ImageDetail), so the precedence rule
-// lives in one place.
-func effectiveImageDetail(t targetInfo, img *ImageData) string {
-	return ImageDetail(t.protocol, img.Detail, t.imageDetail)
 }
 
 func imageDimensions(img *ImageData) (int, int, bool) {

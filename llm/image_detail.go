@@ -50,12 +50,14 @@ func ResponsesImageDetail(partDetail, capDetail string) string {
 	return "high"
 }
 
-// ImageDetail is the wire detail an image part carries under a protocol: the
-// protocol builder's own rule for openai-chat and openai-responses, and the
-// part's own value alone for every other protocol, whose builders emit no
-// detail field — only the token estimator reads that value. An empty result
-// means the field is omitted.
-func ImageDetail(protocol, partDetail, capDetail string) string {
+// imageDetail is the detail the token estimator charges for an image under a
+// protocol: the protocol's own wire rule for openai-chat and openai-responses,
+// and the part's own value alone for every other protocol, whose builders emit
+// no detail field. An empty result means the field is omitted. It is unexported
+// because each builder calls its own protocol's rule directly
+// (ChatImageDetail, ResponsesImageDetail); only the estimator needs to dispatch
+// on the protocol.
+func imageDetail(protocol, partDetail, capDetail string) string {
 	switch protocol {
 	case registry.ProtocolOpenAIChat:
 		return ChatImageDetail(partDetail, capDetail)

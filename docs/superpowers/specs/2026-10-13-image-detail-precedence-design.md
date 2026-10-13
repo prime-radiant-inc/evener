@@ -23,8 +23,9 @@ a reviewer caught it.
 ## Scope
 
 - `llm/image_detail.go`: add `ResponsesImageDetail` (the Responses rule, with its
-  `high` default) and `ImageDetail(protocol, part, cap)` as the protocol
-  dispatch; `ChatImageDetail` stays as the chat branch.
+  `high` default) and an unexported `imageDetail(protocol, part, cap)` dispatch
+  for the estimator; `ChatImageDetail` stays as the chat branch, and each
+  builder calls its own protocol's rule directly.
 - `llm/providers/responses/request.go`: pass the raw `image_detail` cap through
   instead of pre-defaulting it to `high`.
 - `llm/providers/responses/input.go`: both image blocks call
@@ -94,7 +95,7 @@ Every wire outcome is unchanged. One estimate moves:
 
 ## Test plan
 
-- New `llm/image_detail_test.go`: `ImageDetail` across the table, including the
+- New `llm/image_detail_test.go`: `imageDetail` across the table, including the
   unknown-protocol branch, `omit` dropping even a part-named detail, and the
   chat vocabulary mapping.
 - Builder wiring: the Responses tests keep pinning the user-message block

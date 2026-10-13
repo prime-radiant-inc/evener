@@ -214,9 +214,10 @@ func TestBuildBody_CodexLite(t *testing.T) {
 }
 
 // TestBuildBody_ToolResultImageDetail pins the builder's second image block: a
-// tool-result image carries the same resolved detail as a user-message image,
-// and a row set to "omit" drops it there too. The two blocks inline the rule
-// separately, so each needs its own guard.
+// tool-result image resolves its detail through the same rule as a user-message
+// image, from the row's cap or the "high" default, and a row set to "omit"
+// drops it there too. Both blocks call the shared rule with different arguments
+// — a part detail there, none here — so each needs its own guard.
 func TestBuildBody_ToolResultImageDetail(t *testing.T) {
 	var encoded bytes.Buffer
 	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {

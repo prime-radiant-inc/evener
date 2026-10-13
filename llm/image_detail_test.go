@@ -31,8 +31,8 @@ func TestImageDetail(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ImageDetail(tc.protocol, tc.part, tc.cap); got != tc.want {
-				t.Fatalf("ImageDetail(%q, %q, %q) = %q, want %q", tc.protocol, tc.part, tc.cap, got, tc.want)
+			if got := imageDetail(tc.protocol, tc.part, tc.cap); got != tc.want {
+				t.Fatalf("imageDetail(%q, %q, %q) = %q, want %q", tc.protocol, tc.part, tc.cap, got, tc.want)
 			}
 		})
 	}
