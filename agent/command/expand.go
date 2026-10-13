@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -188,7 +187,7 @@ func readInlineFile(path string, env execenv.ExecutionEnvironment) string {
 		return fmt.Sprintf("[refusing @%s: escapes working directory]", path)
 	}
 	full := filepath.Join(env.WorkingDirectory(), path)
-	data, err := os.ReadFile(full)
+	data, err := execenv.ReadFileCapped(full)
 	if err != nil {
 		return fmt.Sprintf("[error reading %s: %v]", path, err)
 	}

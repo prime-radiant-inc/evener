@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
@@ -34,7 +34,7 @@ type SkillDocument struct {
 
 // Load reads and validates the exact source recorded by d.
 func Load(d Descriptor) (LoadedSkill, []Diagnostic, error) {
-	data, err := os.ReadFile(d.Meta.SkillFile)
+	data, err := execenv.ReadFileCapped(d.Meta.SkillFile)
 	if err != nil {
 		diagnostic := Diagnostic{
 			Category: "unreadable_source",

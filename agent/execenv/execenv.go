@@ -207,3 +207,20 @@ type GlobExcluder interface {
 type GlobBudgeter interface {
 	GlobWithBudget(ctx context.Context, pattern, basePath string, includeIgnored bool, budget *GlobBudget) (matches []string, excluded int, err error)
 }
+
+// DirListBudgeter is an optional capability an ExecutionEnvironment's
+// ListDirectory may additionally implement, modelled on GlobBudgeter for the
+// same reason: it keeps the context-aware, budgeted walk off ListDirectory's
+// own signature, which every implementation — including test doubles with no
+// budget accounting — would otherwise have to grow a meaningless extra
+// parameter for. The caller supplies the budget and reads what the call had
+// to cut off it once the call returns; environments without the capability
+// keep the legacy whole-tree walk.
+type DirListBudgeter interface {
+	// ListDirectoryWithBudget lists entries under path, recursing up to
+	// depth levels, like ListDirectory — but it stops once the budget's page
+	// need is met (see NewDirListBudget) or its bounds refuse, instead of
+	// enumerating the whole requested subtree first, and a cancelled ctx
+	// aborts the walk.
+	ListDirectoryWithBudget(ctx context.Context, path string, depth int, budget *DirListBudget) ([]DirEntry, error)
+}
