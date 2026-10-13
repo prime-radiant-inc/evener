@@ -74,6 +74,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextUsed: 0,
     contextWindow: 0,
     contextPressure: 0,
+    contextAssumed: false,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -602,6 +603,24 @@ test("renders exact context counts and percentage in its accessible label and ho
   );
 });
 
+// An assumed window (#4596): the daemon budgets an unknown window against a
+// conservative default and says so on the wire (contextAssumed). The strip's
+// spoken and hover label marks the capacity with the same "~" that marks the
+// cost row's derived estimate, never as an error - while a window something
+// vouches for keeps the exact unmarked label the test above pins.
+test("an assumed context window marks the capacity as an estimate in its label", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({ contextUsed: 64_000, contextWindow: 128_000, contextPressure: 0.5, contextAssumed: true })}
+      now={1_000_000}
+    />,
+  );
+  const label = "Context: 64000 of ~128000 tokens used, 50 percent";
+  expect(screen.getByRole("meter").getAttribute("aria-label")).toBe(label);
+  expect(screen.getByTestId("status-row-context").getAttribute("title")).toBe(label);
+});
+
 // The gauge's severity comes from the shared contextTone ladder (see
 // statusFormat.ts), which the details panel reads too - the same session must
 // never look calm on one surface and alarming on the other. DetailsPanel.test
@@ -677,6 +696,7 @@ test.each(["ended", "closed", "notLoaded"] as const)(
           contextUsed: 64_000,
           contextWindow: 128_000,
           contextPressure: 0.5,
+          contextAssumed: false,
           workMillis: 840_000,
           cost: "~$1.83",
         })}

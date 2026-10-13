@@ -499,6 +499,7 @@ describe("ActivityService — projectActivity", () => {
 					contextWindow: 200_000,
 					contextRemaining: 150_000,
 					contextPressure: 0.25,
+					contextAssumed: true,
 				}),
 			});
 			const view = service.projectActivity(t);
@@ -506,6 +507,7 @@ describe("ActivityService — projectActivity", () => {
 			expect(view.usage.contextWindow).toBe(200_000);
 			expect(view.usage.contextRemaining).toBe(150_000);
 			expect(view.usage.contextPressure).toBe(0.25);
+			expect(view.usage.contextAssumed).toBe(true);
 		});
 
 		it("projects work duration from workMillis", () => {

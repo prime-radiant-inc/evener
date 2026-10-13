@@ -112,6 +112,7 @@ export function activityDetailsThread(ref = "remote:about-owner", overrides: Par
         contextUsed: 42_000,
         contextWindow: 100_000,
         contextPressure: 0.42,
+        contextAssumed: false,
         workMillis: 4_200,
         usage: { inputTokens: 100_000, outputTokens: 20_000 },
         cost: "~$1.00",
