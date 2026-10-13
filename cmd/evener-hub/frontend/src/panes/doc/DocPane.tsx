@@ -6,6 +6,7 @@ import {
   type DestinationProvenance,
   type DocumentKey,
   displayedFingerprint,
+  type ExpiryReceipt,
   editCommentText,
   invalidateCommentCapture,
   selectCommentPassage,
@@ -236,6 +237,10 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   const [readNonce, setReadNonce] = useState(0);
   const [, bump] = useState(0);
   const hostRef = useRef<HTMLDivElement>(null);
+  // The most recent fence's receipt, awaiting this reader's reread: the reread's
+  // acceptance proves the fence settled and completes the expired epoch's
+  // deletion then. A fault leaves the persisted receipt for the retry sweep.
+  const expiryReceiptRef = useRef<ExpiryReceipt | null>(null);
 
   const key: DocumentKey = useMemo(
     () => ({ namespace: { kind: "browser", origin: location.origin }, sessionRef: session, path }),
@@ -409,13 +414,27 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         setAuthoritySuspended(false);
         setIdentity({ displayedSnapshotId: accepted.lease.displayedSnapshotId, mappingId: createSecureUUID() });
         publishReader(work);
+        const fencedExpiry = expiryReceiptRef.current;
+        if (fencedExpiry !== null) {
+          expiryReceiptRef.current = null;
+          // This acceptance proves the fence committed, so the expired epoch's
+          // deletion can complete now. A faulting deletion leaves the
+          // persisted receipt unfinished for the next retry pass's sweep; the
+          // reader tries once per acceptance and never blocks adoption on it.
+          void ports.repository.finishExpiry(fencedExpiry).catch(() => undefined);
+        }
         return;
       }
       // A RETURNED expiry-pending is confirmed source expiry, even while its
       // fence commit is still pending: retire the stale capture/attempt but keep
       // the exact note, then adopt the replacement epoch when the fence commits.
       enterExpiryPending();
-      if (accepted.receipt) setReadNonce((value) => value + 1);
+      if (accepted.receipt) {
+        // Retain the receipt: the reread's acceptance settles the fence and
+        // completes the expired epoch's deletion there.
+        expiryReceiptRef.current = accepted.receipt;
+        setReadNonce((value) => value + 1);
+      }
     })();
     return () => {
       cancelled = true;

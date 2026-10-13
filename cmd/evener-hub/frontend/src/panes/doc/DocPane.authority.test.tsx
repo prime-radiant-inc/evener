@@ -32,10 +32,15 @@ import { resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { createDocumentAnnotationRuntime, type DocumentAnnotationPorts } from "../../stores/documentAnnotationRuntime";
 import {
+  ANNOTATION_EVIDENCE_STORE,
+  ANNOTATION_EXPIRY_STORE,
   ANNOTATION_HEADS_STORE,
   ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_OPERATIONS_STORE,
   ANNOTATION_PAYLOADS_STORE,
+  type AnnotationEvidenceRow,
+  type AnnotationExpiryRow,
+  type AnnotationHeadRow,
   type AnnotationOperationRow,
   type AnnotationPayloadRow,
 } from "../../stores/localCompositionSchema";
@@ -584,4 +589,126 @@ test("a beginRead fault suspends the reader, unavailable Send cannot create or p
   const prohibited = new Set(["turn/start", "turn/steer", "turn/queue", "thread/start", "thread/resume"]);
   expect(client.calls.slice(callBaseline).filter((call) => prohibited.has(call.method))).toEqual([]);
   expect((await f.outbox.listOutbox()).map((row) => row.clientMutationId)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// Expiry deletion through the real reader (roborev: expiry never deletes
+// payloads in production). The fence invalidates the old epoch immediately,
+// but the deletion contract completes only when finishExpiry runs: the
+// reader owns the opportunistic call when its reread adopts the replacement
+// epoch, and the retry pass's persisted sweep owns the retry after a fault.
+// ---------------------------------------------------------------------------
+
+test("a confirmed source change deletes the expired epoch's payload and evidence rows when the reread adopts the replacement", async () => {
+  const f = await fixture("reader-expiry-deletion");
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { acceptances } = observeReadOwners(f.repo);
+  const listReads = observeListAnnotations(f.repo);
+  mountAnnotated(f, ports, client, "doc-expiry-deletion");
+  const work = documentReaderWork("doc-expiry-deletion", f.document, ports);
+  await waitForCurrentBoundMap(work, maps);
+
+  const headBefore = (await rowsForTests<AnnotationHeadRow>(f.factory, f.databaseName, ANNOTATION_HEADS_STORE))[0];
+  const oldEpoch = headBefore?.epoch;
+  const oldEvidenceKey = headBefore?.evidenceKey;
+  if (!oldEpoch || !oldEvidenceKey) throw new Error("baseline head row missing");
+  expect(
+    (await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)).filter(
+      (row) => row.epoch === oldEpoch,
+    ).length,
+  ).toBeGreaterThan(0);
+
+  // A real changed source through the read boundary: the fence invalidates the
+  // old epoch and the pane's own reread adopts the replacement.
+  const acceptBase = acceptances.length;
+  const mapBase = maps.length;
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+    await ports.runtime.whenIdle();
+  });
+  const fresh = await waitForFreshAcceptedMap(acceptances, maps, work, acceptBase, mapBase);
+  if (fresh.state !== "accepted") throw new Error("reread was not accepted");
+
+  // The reread's acceptance settles the fence, and with it the expired epoch's
+  // deletion: the receipt goes terminal and the payload and old evidence rows
+  // are removed. The deletion's own wake is joined so no update escapes act.
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  const expiry = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
+  expect(expiry.map((row) => row.receipt.phase)).toEqual(["deleted"]);
+  const payloads = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
+  expect(payloads.filter((row) => row.epoch === oldEpoch)).toEqual([]);
+  const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
+  expect(evidence.filter((row) => row.evidenceKey === oldEvidenceKey)).toEqual([]);
+});
+
+test("a faulted expiry deletion keeps the receipt and the next retry pass completes it", async () => {
+  let failDeletion = true;
+  const f = await fixture("reader-expiry-deletion-fault", {
+    beforeCommit: (operation) => {
+      if (operation === "deleteExpiry" && failDeletion) throw new Error("delete fault");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { acceptances } = observeReadOwners(f.repo);
+  const listReads = observeListAnnotations(f.repo);
+  mountAnnotated(f, ports, client, "doc-expiry-deletion-fault");
+  const work = documentReaderWork("doc-expiry-deletion-fault", f.document, ports);
+  await waitForCurrentBoundMap(work, maps);
+
+  const headBefore = (await rowsForTests<AnnotationHeadRow>(f.factory, f.databaseName, ANNOTATION_HEADS_STORE))[0];
+  const oldEpoch = headBefore?.epoch;
+  const oldEvidenceKey = headBefore?.evidenceKey;
+  if (!oldEpoch || !oldEvidenceKey) throw new Error("baseline head row missing");
+
+  const acceptBase = acceptances.length;
+  const mapBase = maps.length;
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+    await ports.runtime.whenIdle();
+  });
+  await waitForFreshAcceptedMap(acceptances, maps, work, acceptBase, mapBase);
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+
+  // The reader's opportunistic deletion faulted: the receipt must stay
+  // persisted unfinished, and the expired epoch's rows must survive it.
+  const expiryRetained = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
+  expect(expiryRetained.map((row) => row.receipt.phase)).toEqual(["fenced"]);
+  const retainedPayloads = await rowsForTests<AnnotationPayloadRow>(
+    f.factory,
+    f.databaseName,
+    ANNOTATION_PAYLOADS_STORE,
+  );
+  expect(retainedPayloads.filter((row) => row.epoch === oldEpoch).length).toBeGreaterThan(0);
+
+  // The next retry pass owns the retry: its persisted sweep completes the
+  // deletion, with the sweep's own wake joined inside act.
+  failDeletion = false;
+  await act(async () => {
+    await f.repo.retryPending("reader-open");
+    await settleReaderRefreshes(listReads);
+  });
+  const expiryAfter = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
+  expect(expiryAfter.map((row) => row.receipt.phase)).toEqual(["deleted"]);
+  const payloads = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
+  expect(payloads.filter((row) => row.epoch === oldEpoch)).toEqual([]);
+  const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
+  expect(evidence.filter((row) => row.evidenceKey === oldEvidenceKey)).toEqual([]);
 });

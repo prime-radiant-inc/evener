@@ -1634,10 +1634,10 @@ it("save/fence failure is honest and retry keeps the same operation id", async (
   }
   expect(failedFence.expiries).toEqual([]);
 
-  // Clearing the fault, the real retry fences/cancels the pending work durably:
-  // cancelled receipts and a real fenced expiry row. Listing is empty and both
-  // complete composition rows, source values and fresh attachment bytes stay
-  // unchanged.
+  // Clearing the fault, the real retry fences/cancels the pending work durably
+  // AND completes the fence's deletion in the same pass: cancelled receipts and
+  // a terminal expiry receipt. Listing is empty and both complete composition
+  // rows, source values and fresh attachment bytes stay unchanged.
   failFence = false;
   await f.repo.retryPending("reader-open");
   const healed = await annotationSnapshot(f);
@@ -1648,7 +1648,7 @@ it("save/fence failure is honest and retry keeps the same operation id", async (
     ).toBe("cancelled");
   }
   expect(healed.expiries).toHaveLength(1);
-  expect(healed.expiries[0]?.receipt.phase).toBe("fenced");
+  expect(healed.expiries[0]?.receipt.phase).toBe("deleted");
   expect(await f.repo.listAnnotations(f.document)).toEqual([]);
   expect(await f.drafts.load(f.key)).toEqual(fenceBaseline.ordinary);
   const recoveryAfterFence = await f.outbox.getRecovery("rec-1");
@@ -1998,15 +1998,16 @@ it("a failed reset keeps retained expiry work recoverable", async () => {
   expect(f.source.getSnapshot()).toEqual(sourceBefore);
 
   // Heal both faults and finish the retained expiry DIRECTLY: the aborted reset
-  // must not have dropped it, so the pending operation cancels and one durable
-  // fenced expiry receipt commits. Listing emptiness alone is insufficient
-  // because in-memory suppression already hides the note.
+  // must not have dropped it, so the pending operation cancels, the fence
+  // commits and the same pass completes its deletion (the receipt is
+  // terminal). Listing emptiness alone is insufficient because in-memory
+  // suppression already hides the note.
   failFence = false;
   failReset = false;
   await f.repo.retryPending("reader-open");
   const healed = await annotationSnapshot(f);
   expect(healed.expiries).toHaveLength(1);
-  expect(healed.expiries[0]?.receipt.phase).toBe("fenced");
+  expect(healed.expiries[0]?.receipt.phase).toBe("deleted");
   expect(healed.operations.find((row) => row.operationKey === f.operationKey)?.state).toBe("cancelled");
   expect(await f.repo.listAnnotations(f.document)).toEqual([]);
   expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
@@ -3190,3 +3191,56 @@ it.each(["same-adapter", "second-adapter"] as const)(
     expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryAfter);
   },
 );
+
+it("retryPending completes a persisted unfinished expiry receipt from a fresh adapter", async () => {
+  const f = await fixture("read-expiry-retry-sweep");
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  const operationsBefore = await rowsForTests<AnnotationOperationRow>(
+    f.factory,
+    f.databaseName,
+    ANNOTATION_OPERATIONS_STORE,
+  );
+  const operationBefore = operationsBefore.find((row) => row.operationKey === f.operationKey);
+  if (!operationBefore) throw new Error("fixture operation row missing");
+  const oldEvidenceKey = (await rowsForTests<AnnotationHeadRow>(f.factory, f.databaseName, ANNOTATION_HEADS_STORE))[0]
+    ?.evidenceKey;
+  if (oldEvidenceKey === undefined) throw new Error("fixture evidence key missing");
+
+  // A real fence persists the receipt at phase "fenced"; the payload and old
+  // evidence rows survive the fence (deletion is finishExpiry's own contract).
+  const changed = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-B", true));
+  expect(changed.state).toBe("expiry-pending");
+  if (changed.state !== "expiry-pending" || !changed.receipt) throw new Error("missing fenced expiry");
+  expect(
+    (await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)).some(
+      (row) => row.payloadKey === f.operationKey,
+    ),
+  ).toBe(true);
+
+  // A restart-shaped fresh adapter: no in-memory expiry state exists, so the
+  // retry pass must complete the deletion from the persisted receipt row.
+  const second = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => null,
+  });
+  cleanupAfterTest(() => second.close());
+  await second.retryPending("reader-open");
+
+  expect(
+    (await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE)).map(
+      (row) => row.receipt.phase,
+    ),
+  ).toEqual(["deleted"]);
+  expect(
+    (await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)).some(
+      (row) => row.payloadKey === f.operationKey,
+    ),
+  ).toBe(false);
+  expect(
+    (await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE)).some(
+      (row) => row.evidenceKey === oldEvidenceKey,
+    ),
+  ).toBe(false);
+});
