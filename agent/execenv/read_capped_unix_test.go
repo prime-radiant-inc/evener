@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/spf13/afero"
 )
 
 // The off (not fd-anchored) arm of the file tools reads through the injected
@@ -180,5 +182,77 @@ func writeDenseOversize(t *testing.T, path string) {
 	}
 	if _, err := f.WriteString("a"); err != nil {
 		t.Fatalf("write dense oversize tail: %v", err)
+	}
+}
+
+// wrappingFS wraps every file it opens, the SetFs-supported shape that hides
+// the bare *os.File handle a type assertion would key on. The admission the
+// off arm enforces must hold through it exactly as for a bare handle.
+type wrappingFS struct{ afero.Fs }
+
+func (w wrappingFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := w.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return wrappedFile{f}, nil
+}
+
+type wrappedFile struct{ afero.File }
+
+// newWrappedEnv returns an off-arm environment whose OS-backed filesystem
+// wraps every handle.
+func newWrappedEnv(t *testing.T) (*LocalExecutionEnvironment, string) {
+	t.Helper()
+	dir := t.TempDir()
+	return NewLocalExecutionEnvironment(dir).SetFs(wrappingFS{afero.NewOsFs()}), dir
+}
+
+// TestReadFileOffArmRefusesADeviceThroughAWrappedFilesystem pins the admission
+// through a wrapped handle: /dev/null must be refused exactly as it is through
+// a bare one, not read back as empty content (issue #4556).
+func TestReadFileOffArmRefusesADeviceThroughAWrappedFilesystem(t *testing.T) {
+	t.Parallel()
+	env, _ := newWrappedEnv(t)
+	_, err := env.ReadFile(os.DevNull, nil, nil)
+	if !errors.Is(err, errNotRegularFile) {
+		t.Fatalf("ReadFile(%s) through a wrapped handle err = %v, want the not-regular refusal", os.DevNull, err)
+	}
+}
+
+// TestReadFileOffArmRefusesAFIFOThroughAWrappedFilesystem pins the same
+// admission for a writerless named pipe through a wrapped handle: it must be
+// refused, not read back as empty content.
+func TestReadFileOffArmRefusesAFIFOThroughAWrappedFilesystem(t *testing.T) {
+	t.Parallel()
+	env, dir := newWrappedEnv(t)
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	_, err := env.ReadFile(fifo, nil, nil)
+	if !errors.Is(err, errNotRegularFile) {
+		t.Fatalf("ReadFile(FIFO) through a wrapped handle err = %v, want the not-regular refusal", err)
+	}
+}
+
+// Not parallel: the allocation measurement must exclude sibling test activity.
+// TestReadFileOffArmRefusesOversizeThroughAWrappedFilesystemBeforeReadingIt
+// pins the stat-size refusal through a wrapped handle: an oversized regular
+// file fails before a byte is read, not by reading to the cap first.
+func TestReadFileOffArmRefusesOversizeThroughAWrappedFilesystemBeforeReadingIt(t *testing.T) {
+	env, dir := newWrappedEnv(t)
+	path := filepath.Join(dir, "oversize.log")
+	sparseOversize(t, path)
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, _, err := env.ReadFileAndBytes(path, nil, nil)
+	runtime.ReadMemStats(&after)
+	if _, capped := errors.AsType[*ReadLimitError](err); !capped {
+		t.Fatalf("ReadFileAndBytes(oversize, wrapped) err = %v, want the read-limit refusal", err)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<20 {
+		t.Fatalf("refusing an oversize file through a wrapped handle allocated %d bytes, want the refusal before any read", allocated)
 	}
 }

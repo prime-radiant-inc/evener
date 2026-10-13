@@ -59,31 +59,31 @@ func ReadFileCapped(path string) ([]byte, error) {
 }
 
 // readFileCapped is the off arm's whole-file read: it opens without blocking
-// (openNonblock, so a FIFO with no writer cannot hang the open), admits an OS
-// descriptor only when it stats regular on that same descriptor — mirroring
-// admitReadFD, so a device or FIFO the off arm once read is refused — and stops
-// at MaxWholeFileReadBytes. O_NONBLOCK never needs clearing here: only a
-// regular file is read, and a regular file's reads do not honor it. The
-// admission runs only on *os.File handles: an injected in-memory filesystem
-// cannot hold a device or FIFO, and its FileInfo need not carry a real type,
-// while the cap applies to every input.
+// (openNonblock, so a FIFO with no writer cannot hang the open), admits the
+// handle only when it stats regular on that same handle — mirroring
+// admitReadFD, so a device or FIFO the off arm once read is refused — and
+// stops at MaxWholeFileReadBytes. O_NONBLOCK never needs clearing here: only
+// a regular file is read, and a regular file's reads do not honor it. The
+// admission runs through the afero.File interface, never a *os.File type
+// assertion: SetFs accepts OS-backed wrappers (fault.FS, BasePathFs) whose
+// wrapped handles must not hide the file's type, while an injected in-memory
+// filesystem cannot hold a device or FIFO and its FileInfo modes carry no
+// file-type bits, so the admission never refuses them.
 func readFileCapped(fsys afero.Fs, name string) ([]byte, error) {
 	f, err := fsys.OpenFile(name, os.O_RDONLY|openNonblock, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	if osf, ok := f.(*os.File); ok {
-		info, serr := osf.Stat()
-		if serr != nil {
-			return nil, serr
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("read %q: %w", name, errNotRegularFile)
-		}
-		if info.Size() > MaxWholeFileReadBytes {
-			return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
-		}
+	info, serr := f.Stat()
+	if serr != nil {
+		return nil, serr
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("read %q: %w", name, errNotRegularFile)
+	}
+	if info.Size() > MaxWholeFileReadBytes {
+		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 	}
 	return readAllCapped(f, MaxWholeFileReadBytes)
 }
