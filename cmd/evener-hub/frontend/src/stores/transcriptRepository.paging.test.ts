@@ -488,6 +488,72 @@ test("a newer item version and the page's other rows both survive a merge-eligib
   expect(orderedPositions(repo.getSnapshot())).toEqual([3, 4, 5, 6, 7, 8]);
 });
 
+test.each(["read", "page"])("a versionless recorded header survives %s ingestion and local reopen", async (source) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  const reader = repo.attachReader();
+  // The daemon's immutable header has a stable key/position but version zero,
+  // omitted by Go's JSON encoder (TestHeaderPreludeItemsKeyAtTheHeader).
+  const header: ThreadItem = {
+    id: "item_system_prompt",
+    type: "systemMessage",
+    transcriptKey: "apptranscript-item-v2:prelude:header:0",
+    position: { entry: 0, item: 0 },
+    turnId: "turn_system",
+    text: "Recorded system header",
+  };
+  const headerTurn = { id: "turn_system", itemsView: "full" as const, status: "completed" as const, items: [header] };
+  const response = readOf([1, 2], { length: 2, ...(source === "page" ? { olderCursor: "C1" } : {}) });
+  if (source === "read") response.thread.turns?.unshift(headerTurn);
+  repo.acceptRead(response, { lifetime: 1, readId: "r1", boundary: "b1" });
+  if (source === "page") {
+    const page = pageOf([], { length: 2 });
+    page.data = [headerTurn];
+    expect(
+      repo.acceptPage(page, {
+        lifetime: 1,
+        readId: "r1",
+        boundary: "p1",
+        authority: repo.getBaselineIdentity(),
+        requestCursor: "C1",
+      }),
+    ).toBe(true);
+  }
+  await repo.settled();
+  expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toContain(header.text);
+  expect(await fixture.cache.getLatest(historyKey, 40)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        transcriptKey: header.transcriptKey,
+        position: header.position,
+        version: 0,
+        item: expect.objectContaining({ text: header.text }),
+      }),
+    ]),
+  );
+  reader.dispose();
+  const reopened = repo.attachReader();
+  try {
+    const opened = await reopened.openLocal(40);
+    expect(opened.status).toBe("current");
+    expect(opened.model?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toEqual([
+      header.text,
+      "row-1",
+      "row-2",
+    ]);
+    // Ordinary older demand at the restored start of history must not ask the
+    // store to reconcile a header the accepted read/page already supplied.
+    // A read has no page certificate; its server continuation is a no-op when
+    // the model has no cursor. A terminal page has a certified exhaustion.
+    expect((await repo.loadOlderPage(40, 1)).kind).toBe(source === "read" ? "server" : "exhausted");
+    expect(repo.getSnapshot()?.olderCursor).toBeUndefined();
+  } finally {
+    reopened.dispose();
+    repo.dispose();
+  }
+});
+
 test("several older pages survive close/reopen, serve locally in order and hand the server cursor across the join", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);

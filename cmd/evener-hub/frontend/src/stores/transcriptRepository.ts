@@ -1683,12 +1683,14 @@ export class TranscriptRepository {
   }
 
   #row(item: ItemModel): TranscriptItemRow<CachedSessionItem> | undefined {
-    if (!item.transcriptKey || !item.position || item.version === undefined) return undefined;
+    if (!item.transcriptKey || !item.position) return undefined;
     return {
       historyKey: this.#binding.historyKey,
       transcriptKey: item.transcriptKey,
       position: item.position,
-      version: item.version,
+      // Immutable recorded headers have version zero, omitted by the wire
+      // encoder. Their key and position still identify a durable source item.
+      version: item.version ?? 0,
       item: encodeTranscriptItem(item),
     };
   }
