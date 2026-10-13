@@ -211,3 +211,32 @@ func TestLatestSignalPrefersAWaitingSecondSignal(t *testing.T) {
 		t.Fatalf("with a second signal waiting, latestSignal = %v, want it", got)
 	}
 }
+
+// TestWebCheckSpecAddsTheVitestJSONReporter pins issue #144's frontend seam:
+// with EVENER_WEB_VITEST_JSON set, only the test check carries the extra
+// vitest reporter flags the timing ratchet reads, written per-reporter
+// (--outputFile.json) so the default reporter keeps the human log. typecheck
+// and lint are untouched.
+func TestWebCheckSpecAddsTheVitestJSONReporter(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "report.json")
+	t.Setenv("EVENER_WEB_VITEST_JSON", out)
+	want := []string{"npm", "run", "test", "--", "--reporter=default", "--reporter=json", "--outputFile.json=" + out}
+	if got := webCheckSpec("test", t.TempDir()).argv; !slices.Equal(got, want) {
+		t.Fatalf("test spec argv = %v, want %v", got, want)
+	}
+	for _, check := range []string{"typecheck", "lint"} {
+		if got := webCheckSpec(check, t.TempDir()).argv; !slices.Equal(got, []string{"npm", "run", check}) {
+			t.Fatalf("%s spec argv = %v, want the plain npm run, unchanged", check, got)
+		}
+	}
+}
+
+// TestWebCheckSpecWithoutTheJSONEnvIsUnchanged pins the other half: unset, the
+// test check runs exactly `npm run test`, so a run that captures no durations
+// pays nothing for the seam.
+func TestWebCheckSpecWithoutTheJSONEnvIsUnchanged(t *testing.T) {
+	t.Setenv("EVENER_WEB_VITEST_JSON", "")
+	if got := webCheckSpec("test", t.TempDir()).argv; !slices.Equal(got, []string{"npm", "run", "test"}) {
+		t.Fatalf("test spec argv = %v, want the plain npm run", got)
+	}
+}

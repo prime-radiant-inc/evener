@@ -187,6 +187,10 @@ fi
 # The gate's test-selection surface lives in one shared file so the coverage
 # ratchet can measure exactly what this gate proves; see gate-surface-lib.sh.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
+# The timing ratchet's row contract, shared with test-timing-budget.sh: when
+# EVENER_GATE_TIMING_TSV is set this gate writes those rows from the tests it
+# already runs, so the ratchet no longer needs a second full pass (issue #144).
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/timing-tsv-lib.sh"
 fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
 root_skip="$fuzz_test_skip"
@@ -306,6 +310,109 @@ failed_modules=()
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
+# --- The gate's single measured run (issue #144) -------------------------
+#
+# EVENER_GATE_TIMING_TSV names a file to write the timing ratchet's rows into.
+# When it is set, this gate captures the durations from the SAME tests it runs
+# (the ratchet's own producer used to be a complete second pass, doubling the
+# gate): plain modules run `go test -json` and their human log is rendered back
+# out of the stream, a sharded package is captured as durable `-test.v` logs
+# the caller turns into rows offline, and the frontend stream writes vitest's
+# JSON reporter. Rows land under $timing_rows_dir and are assembled into the
+# target at the end, before a green run's scratch cleanup. Unset, every path
+# below is byte-for-byte the run it was.
+timing_enabled=0
+timing_rows_dir="$logdir/json"
+if [ -n "${EVENER_GATE_TIMING_TSV:-}" ]; then
+	timing_enabled=1
+	mkdir -p "$timing_rows_dir"
+fi
+timing_slug() { printf '%s' "$1" | tr '/.' '__'; }
+
+# shard_package LABEL — the import path a sharded package's timing rows name.
+# The runner needs it because it emits the package's own wall-time row; it is
+# the same root-module prefix gate-root-shards.sh composes for its own table.
+shard_package() {
+	case "$1" in
+		hub) printf 'primeradiant.com/evener/cmd/evener-hub' ;;
+		cli) printf 'primeradiant.com/evener/cmd/evener' ;;
+		agent) printf 'primeradiant.com/evener/agent' ;;
+		*) printf 'primeradiant.com/evener/%s' "$1" ;;
+	esac
+}
+
+# run_go_test_capture LABEL PKGLIST -- <go test args...>
+# — run the module's go test. Timing off: exactly `go test` as before. Timing
+# on: capture the -json stream and the ratchet's rows, and render the human log
+# back out of the stream so the failure dump and the `ok ` no-op check read
+# what a plain run's log reads (issue #144: the JSON must not erase the
+# diagnostics). $2 is the package inventory the completeness check reads.
+run_go_test_capture() {
+	local label="$1" pkglist="$2"; shift 2
+	if [ "$timing_enabled" -eq 0 ]; then
+		/usr/bin/time -p go test "$@"
+		return $?
+	fi
+	local slug jsonl stderrlog rows rc
+	slug="$(timing_slug "$label")"
+	jsonl="$timing_rows_dir/$slug.jsonl"
+	stderrlog="$timing_rows_dir/$slug.stderr"
+	rows="$timing_rows_dir/$slug.rows"
+	/usr/bin/time -p go test -json "$@" >"$jsonl" 2>"$stderrlog"
+	rc=$?
+	# The human log first (it is what the failure dump and the zero-test check
+	# read), then the go command's own stderr (the `real` line and any build
+	# error) after it, exactly where /usr/bin/time leaves it today.
+	if ! "$EVENER_DEV_BIN" dev timing-render --json "$jsonl"; then
+		printf 'run-module-tests.sh: could not render the log for %s (see %s)\n' "$label" "$jsonl" >&2
+		# Keep the test's own nonzero status when it has one: a red module must
+		# still read as the test's failure, not as a rendering accident.
+		[ "$rc" -ne 0 ] && return "$rc"
+		return 1
+	fi
+	cat "$stderrlog" || :
+	if ! go_test_json_to_tsv "$jsonl" "$pkglist" >"$rows"; then
+		printf 'run-module-tests.sh: timing rows for %s could not be parsed (see %s)\n' "$label" "$jsonl" >&2
+		return 1
+	fi
+	return "$rc"
+}
+
+# capture_shard_rows LABEL — turn the durable `-test.v` shard logs a sharded
+# package's runner wrote into the ratchet's rows for it. Per-test rows come
+# from the shard streams (test2json reads each test's printed duration); the
+# package's own SUM is the shard phase the runner measured, because summing
+# overlapping shards would count contention as work (issue #172).
+capture_shard_rows() {
+	local label="$1"
+	[ "$timing_enabled" -eq 1 ] || return 0
+	local dir="$timing_rows_dir/shards/$label"
+	local slug pkg pkglist jsonl rows f
+	slug="$(timing_slug "$label")"
+	pkg="$(shard_package "$label")"
+	pkglist="$timing_rows_dir/$slug.packages"
+	jsonl="$timing_rows_dir/$slug.jsonl"
+	rows="$timing_rows_dir/$slug.rows"
+	printf '%s\n' "$pkg" >"$pkglist"
+	: >"$jsonl"
+	for f in "$dir/$label"-shard*.v; do
+		[ -f "$f" ] || continue
+		go tool test2json -t -p "$pkg" <"$f" >>"$jsonl" || return 1
+	done
+	# awk, not `grep -v`: under `set -o pipefail` a grep that selects no line
+	# exits 1 and would read as a parse failure.
+	if ! go_test_json_to_tsv "$jsonl" "$pkglist" | awk '!/^SUM/' >"$rows"; then
+		printf 'run-module-tests.sh: timing rows for %s could not be parsed (see %s)\n' "$label" "$jsonl" >&2
+		return 1
+	fi
+	if [ -f "$dir/$label.package.tsv" ]; then
+		cat "$dir/$label.package.tsv" >>"$rows"
+	else
+		printf 'run-module-tests.sh: no package timing row for %s (see %s)\n' "$label" "$dir" >&2
+		return 1
+	fi
+}
+
 # run_bounded_timeout_diagnostic <what> <bound> <module> <log-file> — the
 # cache-stall diagnostic run_bounded (scripts/lib/gate-bounded.sh) calls on a
 # timeout. It names the module the step ran in and a retry command anchored at
@@ -416,18 +523,26 @@ run_module() {
 		# Test/Example surface, which the runner applies itself. Each is timed
 		# like the go test below, so the module's reported wall time (the last
 		# "real" line) covers whichever stream finished last.
-		local -a shard_pids=()
+		local -a shard_pids=() shard_labels=() shard_env=()
 		local skip_var status=0 root_status=0
 		while read -r label prefix; do
 			skip_var="${prefix}_SHARD_SKIP"
-			env "$skip_var=$(gate_shard_skip "$root_skip" "${!skip_var:-}")" /usr/bin/time -p go run ./cmd/evener-dev/bin dev "$label-shards" ${test_flags[@]+"${test_flags[@]}"} </dev/null &
+			shard_env=("$skip_var=$(gate_shard_skip "$root_skip" "${!skip_var:-}")")
+			if [ "$timing_enabled" -eq 1 ]; then
+				shard_env+=("EVENER_SHARD_JSON_DIR=$timing_rows_dir/shards/$label" "EVENER_SHARD_JSON_PACKAGE=$(shard_package "$label")")
+			fi
+			env "${shard_env[@]}" /usr/bin/time -p go run ./cmd/evener-dev/bin dev "$label-shards" ${test_flags[@]+"${test_flags[@]}"} </dev/null &
 			shard_pids+=("$!")
+			shard_labels+=("$label")
 		done < <(root_shard_runners)
 		# ROOT_FULL removes short mode through module_test_flags_array while
 		# retaining the regular Test/Example name filter. Fuzz-owned targets and
 		# sanity functions stay under the explicit make fuzz gate.
 		if root_rest_enabled; then
-			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}" || root_status=$?
+			if [ "$timing_enabled" -eq 1 ]; then
+				printf '%s\n' "${packages[@]}" >"$timing_rows_dir/root.packages"
+			fi
+			run_go_test_capture root "$timing_rows_dir/root.packages" ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}" || root_status=$?
 		fi
 		local pid rc
 		for pid in ${shard_pids[@]+"${shard_pids[@]}"}; do
@@ -436,6 +551,14 @@ run_module() {
 			# Report the first failing shard runner's status.
 			[ "$status" -ne 0 ] || status=$rc
 		done
+		# The shard runners wrote their durable logs; turn them into rows now
+		# that they have all finished.
+		if [ "$timing_enabled" -eq 1 ] && [ "$status" -eq 0 ]; then
+			local sl
+			for sl in ${shard_labels[@]+"${shard_labels[@]}"}; do
+				capture_shard_rows "$sl" || status=1
+			done
+		fi
 		[ "$root_status" -ne 0 ] && return "$root_status"
 		return "$status"
 	fi
@@ -468,7 +591,14 @@ run_module() {
 		# zero-vs-nonzero is read below, so nothing depends on them).
 		# The shards get the gate's fuzz-owned skip like every other module;
 		# coverage-floor.sh already measures agent without those tests.
-		(cd .. && AGENT_SHARD_SKIP="$(gate_shard_skip "$fuzz_test_skip" "${AGENT_SHARD_SKIP:-}")" "$agent_shards_bin" dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		local -a agent_env=("AGENT_SHARD_SKIP=$(gate_shard_skip "$fuzz_test_skip" "${AGENT_SHARD_SKIP:-}")")
+		if [ "$timing_enabled" -eq 1 ]; then
+			agent_env+=("EVENER_SHARD_JSON_DIR=$timing_rows_dir/shards/agent" "EVENER_SHARD_JSON_PACKAGE=$(shard_package agent)")
+		fi
+		(cd .. && env "${agent_env[@]}" "$agent_shards_bin" dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		if [ "$timing_enabled" -eq 1 ] && [ "$shardStatus" -eq 0 ]; then
+			capture_shard_rows agent || shardStatus=1
+		fi
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list
@@ -482,11 +612,26 @@ run_module() {
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
 		done <"$agent_list"
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
-			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+			if [ "$timing_enabled" -eq 1 ]; then
+				printf '%s\n' "${subpkgs[@]}" >"$timing_rows_dir/agent-subpkgs.packages"
+			fi
+			run_go_test_capture agent-subpkgs "$timing_rows_dir/agent-subpkgs.packages" ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi
-	/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
+	if [ "$timing_enabled" -eq 1 ]; then
+		# The inventory must use the caller's package-selection flags, exactly as
+		# the root and sharded-agent paths do: -tags, -race or -overlay can add or
+		# drop whole packages from ./..., and a flagless `go list` would then name
+		# a package this run never built. The completeness oracle reads that as a
+		# dropped package and fails an otherwise green module (issue #144 review).
+		local pkg_file
+		pkg_file="$logdir/$(timing_slug "$m").packages"
+		derive_list_flags "$m" || return $?
+		run_enumeration "$m" "$pkg_file" || return $?
+		cp "$pkg_file" "$timing_rows_dir/$(timing_slug "$m").packages" || return 1
+	fi
+	run_go_test_capture "$m" "$timing_rows_dir/$(timing_slug "$m").packages" ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each
@@ -562,12 +707,33 @@ if [ "$ROOT_FULL" -eq 1 ]; then
 	done <"$root_flags_log"
 fi
 
+# Build evener-dev once when durations are captured: its timing-parse turns the
+# JSON streams into rows and timing-render puts the human log back, so the two
+# helpers share one bounded build rather than a `go run` compile per module.
+if [ "$timing_enabled" -eq 1 ]; then
+	EVENER_DEV_BIN="$logdir/evener-dev"
+	if ! run_bounded_build "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev timing-parse build' 'gate' "$logdir/evener-dev-build" "$EVENER_DEV_BIN" "$repo_root" ./cmd/evener-dev/bin; then
+		printf 'run-module-tests.sh: could not build evener-dev for the timing capture\n' >&2
+		exit 1
+	fi
+	export EVENER_DEV_BIN
+fi
+
 # Start the frontend gate first so it runs across both Go waves. It is joined
 # after wave 2, so its cost is hidden unless it outlives the Go work.
 web_pid=""
+web_json_report=""
 if [ "$WEB" -ne 0 ]; then
 	web_tmp="$(tmppath web)"
-	( mkdir -p "$web_tmp" && TMPDIR="$web_tmp" XDG_CONFIG_HOME="$web_tmp/xdg-config" XDG_CACHE_HOME="$web_tmp/xdg-cache" XDG_STATE_HOME="$web_tmp/xdg-state" /usr/bin/time -p "${MAKE:-make}" test-web ) >"$(logpath web)" 2>&1 &
+	# The frontend's durations come from the same vitest run the web gate
+	# already pays for: EVENER_WEB_VITEST_JSON asks it to write vitest's JSON
+	# reporter alongside the default reporter's human log (issue #144).
+	web_env=("TMPDIR=$web_tmp" "XDG_CONFIG_HOME=$web_tmp/xdg-config" "XDG_CACHE_HOME=$web_tmp/xdg-cache" "XDG_STATE_HOME=$web_tmp/xdg-state")
+	if [ "$timing_enabled" -eq 1 ]; then
+		web_json_report="$timing_rows_dir/vitest-report.json"
+		web_env+=("EVENER_WEB_VITEST_JSON=$web_json_report")
+	fi
+	( mkdir -p "$web_tmp" && env "${web_env[@]}" /usr/bin/time -p "${MAKE:-make}" test-web ) >"$(logpath web)" 2>&1 &
 	web_pid="$!"
 	active_pids+=("$web_pid")
 fi
@@ -577,6 +743,18 @@ run_wave $WAVE1
 run_wave $WAVE2
 
 [ -n "$web_pid" ] && finish_stream web "$web_pid"
+
+# The frontend's rows come from the JSON report vitest wrote during that same
+# stream; a missing report means the frontend was not measured, which fails
+# loud rather than leaving the "web" row unchecked.
+if [ "$timing_enabled" -eq 1 ] && [ -n "$web_pid" ]; then
+	if [ -f "$web_json_report" ]; then
+		vitest_json_to_tsv "$web_json_report" >"$timing_rows_dir/web.rows" || fail=1
+	else
+		printf 'run-module-tests.sh: no vitest report at %s; the frontend was not measured\n' "$web_json_report" >&2
+		fail=1
+	fi
+fi
 
 # A -run pattern that matches no test name is not an error to `go test`: every
 # package reports "[no tests to run]" and exits 0, so every module reports PASS
@@ -633,6 +811,26 @@ if [ "$zero_test_run" -ne 0 ]; then
 	echo "full logs: $logdir"
 	keep_failed_logs=1
 	fail=1
+fi
+
+# Assemble the ratchet's rows, now that every producer has finished, and write
+# them where the caller asked. Only a green run writes the file — a partial
+# measurement must not read as a complete one. No rows at all is a broken
+# capture, not an empty measurement, so it fails loud either way.
+if [ "$timing_enabled" -eq 1 ]; then
+	row_files=()
+	while IFS= read -r row_file; do
+		[ -n "$row_file" ] && row_files+=("$row_file")
+	done < <(ls "$timing_rows_dir"/*.rows 2>/dev/null | sort)
+	if [ "$fail" -ne 0 ]; then
+		:
+	elif [ "${#row_files[@]}" -eq 0 ]; then
+		printf 'run-module-tests.sh: the timing capture produced no rows; not writing %s\n' "$EVENER_GATE_TIMING_TSV" >&2
+		fail=1
+	elif ! cat "${row_files[@]}" >"$EVENER_GATE_TIMING_TSV"; then
+		printf 'run-module-tests.sh: could not write the timing rows to %s\n' "$EVENER_GATE_TIMING_TSV" >&2
+		fail=1
+	fi
 fi
 
 normal_completion=1
