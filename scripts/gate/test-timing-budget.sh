@@ -41,6 +41,11 @@
 # "packages" map is empty, the WHOLE run is that same warn state and --check
 # always exits 0: the tree must stay green until a real baseline is blessed
 # (`make test-rebaseline`), never fail on a budget nobody has measured yet.
+# A MALFORMED budget file is different: only a missing (or empty) file is the
+# deliberate warn state. An unparseable file is a broken config, not an absent
+# one, so it fails in every mode naming the file and the parse error — otherwise
+# a stray comma would read as no baseline and silently disarm every ratio and
+# every perTestCeilingClasses ceiling (issue #4609).
 #
 # The one thing that fails in EVERY mode, --check or not, is a broken
 # measurement: `go list` or `go test` exiting nonzero, or a package go list
@@ -330,11 +335,26 @@ with open(measured_path) as fh:
 			if parts[1]:
 				sums.setdefault(parts[1], 0.0)
 
+def fail_malformed(what):
+	# A malformed budget is a broken config, not an absent one. The missing-file
+	# warn state below is deliberate (kata b6rv): the tree stays green until a
+	# measured baseline is blessed. A syntax error must not ride that path —
+	# collapsing it into `budget = {}` reads as no baseline and silently disarms
+	# every package ratio and every perTestCeilingClasses ceiling, with nothing
+	# naming the syntax error (issue #4609). Fail in every mode, before any bless,
+	# naming the file and the problem.
+	with open(out_path, "w") as fh:
+		fh.write("FAIL  MALFORMED BUDGET: testing-budget.json " + what
+			+ " (" + budget_path + ")\n")
+	sys.exit(1)
+
 try:
 	with open(budget_path) as fh:
 		budget = json.load(fh)
-except (FileNotFoundError, ValueError):
+except FileNotFoundError:
 	budget = {}
+except ValueError as exc:
+	fail_malformed("could not be parsed: " + str(exc))
 
 packages = budget.get("packages") or {}
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
