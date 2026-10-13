@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -105,11 +106,13 @@ func TestManualRetireKeepsWaitingWhenTheTreeCannotBeRead(t *testing.T) {
 		t.Fatal("fixture has no shared delegate tree; the wait pre-check tree path is not exercised")
 	}
 	tree.mu.Lock()
+	unlockTree := sync.OnceFunc(tree.mu.Unlock)
+	defer unlockTree()
 	done := startManualClaim(c)
 	// TRIPWIRE: an unread tree must not skip the wait; the helper fails if the
 	// retire answers before parking its timer on the namer.
 	awaitManualClaimWaiting(t, clk, done)
-	tree.mu.Unlock()
+	unlockTree()
 	release()
 	select {
 	case got := <-done:
@@ -158,5 +161,47 @@ func TestManualRetireDiscardsASupersededReadWhenItWaits(t *testing.T) {
 	// a hang.
 	case <-time.After(30 * time.Second):
 		t.Fatal("manual retire did not return after the namer settled")
+	}
+}
+
+// The root runtime is read without the tree's owner mutex, so tree contention
+// must not hide the root's own obligations: with an armed notification on the
+// root beside the namer, the retire refuses at once even while the tree lock is
+// held, and the refusal names the notification (#4055).
+func TestManualRetireSkipsTheWaitWhenTreeContentionHidesOnlyTreeEvidence(t *testing.T) {
+	t.Parallel()
+	root, c, clk, _ := blockedNamerSession(t)
+	root.pendingJobNotifsMu.Lock()
+	root.pendingJobNotifs = append(root.pendingJobNotifs, jobNotification{
+		Kind:   jobNotificationKindTerminal,
+		JobID:  "job-4055-contended",
+		Status: "completed",
+	})
+	root.pendingJobNotifsMu.Unlock()
+
+	tree := root.delegateController
+	if tree == nil {
+		t.Fatal("fixture has no shared delegate tree; the wait pre-check tree path is not exercised")
+	}
+	tree.mu.Lock()
+	unlockTree := sync.OnceFunc(tree.mu.Unlock)
+	defer unlockTree()
+	done := startManualClaim(c)
+	select {
+	case got := <-done:
+		unlockTree()
+		if got.err != nil || got.claim != nil {
+			t.Fatalf("manual retire under tree contention beside a root notification = claim %v, %v; want a refusal", got.claim, got.err)
+		}
+		if !hasRetirementBlockerFor(got.snapshot.Blockers, "notification", root.ID()) {
+			t.Fatalf("refusal snapshot lost the root notification under tree contention: %+v", got.snapshot.Blockers)
+		}
+		if n := clk.BlockedCount(); n != 0 {
+			t.Fatalf("manual retire parked %d timer(s) under tree contention despite a root notification", n)
+		}
+	// TRIPWIRE: the refusal returns at once; 30s only fires if the retire waited
+	// on the fake clock for the namer.
+	case <-time.After(30 * time.Second):
+		t.Fatalf("manual retire waited out the namer under tree contention beside a root notification")
 	}
 }

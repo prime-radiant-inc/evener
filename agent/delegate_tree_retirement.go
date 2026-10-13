@@ -241,20 +241,28 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 // clear.
 //
 // includeNaming keeps every member's own naming.pending contribution (#4055):
-// true for the claim snapshot; false for the manual retire's wait pre-check,
-// which instead reads an unreadable tree as no evidence. The pre-check only
-// decides whether to skip a wait, so an unread tree has to leave today's wait in
-// place rather than fabricate a blocker from lock contention, while the snapshot
-// path keeps the fail-closed placeholder.
+// true for the claim snapshot; false for the manual retire's wait pre-check.
+// When c.mu is busy the owner scan and the members cannot be read, but the root
+// runtime is read without c.mu and still counts; the unread part must not
+// fabricate a reason to skip a wait, so the pre-check keeps today's wait on it
+// and the snapshot keeps the fail-closed placeholder.
 func (c *delegateTreeController) retirementNonBlockingEvidenceRead(includeNaming bool) []RetirementBlocker {
 	if c == nil {
 		return nil
 	}
 	if !c.mu.TryLock() {
+		// The owner scan needs c.mu, so the tree's own owner state and every
+		// member are unreadable now. The root runtime is read without c.mu, so its
+		// obligations stay readable and still count. The wait pre-check must not
+		// skip a wait on the unread part, so it returns only the root's evidence
+		// and otherwise keeps today's wait; the decision snapshot also adds the
+		// fail-closed placeholder below.
+		var root []RetirementBlocker
+		if c.rootRuntime != nil {
+			root = c.rootRuntime.retirementNonBlockingEvidenceWithNaming(includeNaming)
+		}
 		if !includeNaming {
-			// The manual-retire wait pre-check: an unread tree is not evidence
-			// to skip a wait on, so report nothing and keep today's wait.
-			return nil
+			return root
 		}
 		// The placeholder is deliberately shape-honest: an empty DelegateID names
 		// no specific delegate, because none was read. It states that root-owned
@@ -262,7 +270,7 @@ func (c *delegateTreeController) retirementNonBlockingEvidenceRead(includeNaming
 		// delegate is blocked. It never gates the retire/refuse decision, which
 		// uses retirementEvidence (blocks for c.mu); it can only add a caution to
 		// an already-refusing diagnostic snapshot.
-		return []RetirementBlocker{{Category: "delegate", SessionID: c.rootSessionID}}
+		return append(root, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID})
 	}
 	members := make(map[string]struct{}, len(c.durable))
 	for id := range c.durable {
