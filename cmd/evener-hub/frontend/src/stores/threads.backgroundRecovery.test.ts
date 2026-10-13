@@ -12,7 +12,14 @@ import { describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
-import { resetThreadsStoreForTests, settleBackgroundTranscriptsForTests, threadsStore } from "./threads";
+import {
+  acquireBackgroundThread,
+  installHydrationRetrySchedulerForTests,
+  resetThreadsStoreForTests,
+  setProductionEntryCacheForTests,
+  settleBackgroundTranscriptsForTests,
+  threadsStore,
+} from "./threads";
 
 const ref = "local:one";
 
@@ -29,6 +36,63 @@ function _threadReads(fake: FakeClient): number {
 }
 
 describe("background transcript recovery", () => {
+  test("foreground retry survives a completed background-only ownership lifetime", async () => {
+    resetThreadsStoreForTests();
+    const cache = new SessionEntryCache({
+      indexedDB: new IDBFactory(),
+      keyRange: IDBKeyRange,
+      databaseName: "foreground-retry-generation",
+    });
+    setProductionEntryCacheForTests(cache);
+    const retries: Array<() => void> = [];
+    const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+      let active = true;
+      retries.push(() => {
+        if (active) retry();
+      });
+      return () => {
+        active = false;
+      };
+    });
+    try {
+      const fake = _connectFakeClient();
+      const background = acquireBackgroundThread(ref);
+      await background.ready;
+      await background.release();
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+      // No cached seed may hide the foreground transport failure.
+      await cache.clear();
+      let reads = 0;
+      fake.on("thread/read", (params) => {
+        if (++reads === 1) throw new Error("transient foreground read failure");
+        return { ...currentRead(ref), requestGeneration: params.requestGeneration };
+      });
+      const opening = threadsStore
+        .getState()
+        .ensureThread(ref)
+        .then(
+          () => ({ ok: true }),
+          (error: unknown) => ({ ok: false, error }),
+        );
+      await vi.waitFor(() => expect(retries).toHaveLength(1));
+      retries[0]!();
+      await expect(opening).resolves.toEqual({ ok: true });
+      expect(reads).toBe(2);
+      expect(
+        threadsStore
+          .getState()
+          .threads.get(ref)
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.text),
+      ).toContain("alpha");
+    } finally {
+      restoreScheduler();
+      resetThreadsStoreForTests();
+      connectionStore.setState({ client: null, state: "idle" });
+      cache.close();
+    }
+  });
+
   test("a sibling Clear of the entry cache lets a fresh explicit open re-cache under the new epoch", async () => {
     const selected = "local:entry-sibling-clear";
     const factory = new IDBFactory();

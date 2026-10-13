@@ -38,6 +38,7 @@ import {
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
   comparePositions,
+  encodeTranscriptItem,
   errorText,
   hydrateThread,
   type InputAttachment,
@@ -678,6 +679,8 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   // publication and persistence claims. An aborted Clear clears it, re-enabling
   // the same held route without a release/reacquire.
   clearInert?: boolean;
+  // One scalar per owned route, never a replay buffer of suppressed frames.
+  clearRefreshGeneration?: number;
   // The durable authorities the installed repository captured. A later read
   // that observes a newer Clear epoch or deletion generation retires it, so a
   // fresh explicit foreground acquisition begins caching under the current
@@ -882,11 +885,18 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     // Cache proof can be unavailable while the live model already carries the
     // complete requested window. Recover missing bodies, not merely a missing
     // certificate, which would replace usable paged history with a latest read.
-    const displayed = new Set(
-      result.model?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey ?? item.id)),
+    const displayed = new Map(
+      result.model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
     );
     const requested = result.model?.history?.turns.flatMap((turn) => turn.items).slice(-200) ?? [];
-    return requested.every((item) => displayed.has(item.transcriptKey ?? item.id));
+    return requested.every((item) => {
+      const restored = displayed.get(item.transcriptKey ?? item.id);
+      return (
+        restored !== undefined &&
+        (restored.version ?? 0) >= (item.version ?? 0) &&
+        !encodeTranscriptItem(restored).identityOnly
+      );
+    });
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
@@ -4760,10 +4770,17 @@ function bufferPendingNotification(
   };
   if ((backgroundRefCounts.get(ref) ?? 0) > 0) {
     if (!transcriptResidency().reservePending(ref, update.bytes)) {
-      // Entry input already reached its repository. Retire this read's
-      // replay copy so its incomplete tail cannot overwrite that owner.
-      // The scheduler retains the request slot until its actual settlement.
-      retirePendingHydration(ref, pending, pendingHydrations);
+      // An established repository already owns accepted input, so only its
+      // incomplete replay copy is retired. Initial hydration has no such
+      // owner: arm paced replacement while the pending claim still exists.
+      // Neither path frees the issued request's slot before it settles.
+      if (acceptedEntry) retirePendingHydration(ref, pending, pendingHydrations);
+      else
+        scheduleOwnedHydrationRetry(
+          pendingHydrations === pendingWatchedHydrations ? "watched" : "thread",
+          ref,
+          pending,
+        );
       return;
     }
     pending.backgroundBytes += update.bytes;
@@ -5235,6 +5252,14 @@ function handleNotification(n: AnyNotification): void {
     const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
     for (const ref of refs) {
       const fixture = entryTranscriptRoute(ref);
+      if (
+        fixture &&
+        threadsStore.getState().clearInFlight !== undefined &&
+        (n.method === "history/updated" || n.method.startsWith("overlay/")) &&
+        canonicalThreadOwnerActive(ref)
+      ) {
+        fixture.clearRefreshGeneration = hydrationOwnerGeneration("thread", ref);
+      }
       if (fixture?.ref === ref && fixture.repository && threadsStore.getState().clearInFlight === undefined) {
         const beforeInvalidation = fixture.repository.getSnapshot()?.history?.invalidatedAtGeneration;
         if (fixture.repository.accept(n, { lifetime: fixture.lifetime })) {
@@ -6391,7 +6416,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // scheduled retry for this owner generation, and every concurrent
           // owner waits on that one lifecycle rather than reading again here.
           const owned = ownedThreadHydrations.get(ref);
-          if (owned?.generation !== generation) throw err;
+          if (owned?.generation !== hydrationOwnerGeneration("thread", ref)) throw err;
           await owned.firstHydration;
           // Fall through to the shared re-arm below: it returns when the claim
           // is gone or a model published, and otherwise rejoins the newest
@@ -7388,6 +7413,25 @@ function deleteCachedRefs(refs: string[]): void {
   });
 }
 
+function reconcileClearInput(): void {
+  if (threadsStore.getState().clearInFlight !== undefined) return;
+  for (const route of entryTranscriptRoutes()) {
+    const generation = route.clearRefreshGeneration;
+    route.clearRefreshGeneration = undefined;
+    if (
+      generation === undefined ||
+      generation !== hydrationOwnerGeneration("thread", route.ref) ||
+      !canonicalThreadOwnerActive(route.ref) ||
+      threadsStore.getState().deletedRefs.has(route.ref) ||
+      wiredClient?.state !== "ready"
+    )
+      continue;
+    // The ordinary refresh keeps read/publication ownership fences and the
+    // held cache lifetime's suppression. Reconnect owns a non-ready client.
+    void retryTrackedHydration(wiredClient, readyEpoch, route.ref).catch(() => {});
+  }
+}
+
 /** Clear cached session content (spec, "The clear-cached-sessions setting").
  * Synchronous in-memory step first — the only order that works, since
  * in-memory timer state cannot commit transactionally — then one
@@ -7445,6 +7489,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
       route.repository?.resumePersistence();
     }
     residencyIfCreated?.releaseClearClaim();
+    reconcileClearInput();
     return { committed: false };
   }
   // An isolated fixture keeps its own cache; clear it too. If its transaction
@@ -7474,6 +7519,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   });
   cacheChannel.connect();
   cacheChannel.postMessage({ kind: "clear", epoch: result.epoch });
+  reconcileClearInput();
   return { committed: !entryIncomplete };
 }
 

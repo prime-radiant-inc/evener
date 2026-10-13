@@ -1,4 +1,4 @@
-import type { AnyNotification, ThreadItem } from "@evener/appwire-client";
+import type { AnyNotification, CachedSessionItem, ThreadItem } from "@evener/appwire-client";
 import {
   encodeTranscriptItem,
   hydrateThread,
@@ -30,6 +30,7 @@ import {
   clearCachedSessions,
   countCachedSessions,
   markCacheSessionsDeleted,
+  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
   setProductionEntryCacheForTests,
@@ -404,6 +405,116 @@ it.each(["evicted", "failed-write"] as const)(
     ).toEqual(["recorded"]);
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
     background.release();
+  },
+);
+
+it.each([false, true])("opening verifies accepted bodies when the latest write was lost: %s", async (lost) => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  let latest = response("local:a", [turn("K", 1, "version one")]);
+  const client = connect(latest);
+  client.on("thread/read", (params) => ({ ...latest, requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest(key, 10))[0]?.version).toBe(1);
+  const updated = turn("K", 1, "version two exact body");
+  for (const item of updated.items ?? []) item.version = 2;
+  latest = response("local:a", [updated]);
+  const writes = lost
+    ? vi.spyOn(storage, "commitBatch").mockResolvedValue({ outcome: "failed", error: new Error("lost write") })
+    : undefined;
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 3 },
+      items: updated.items,
+    },
+  });
+  if (lost) await expect(settleEntryTranscriptForTests("local:a")).rejects.toThrow("transcript recovery failed");
+  else await settleEntryTranscriptForTests("local:a");
+  expect((await storage.getLatest(key, 10))[0]?.version).toBe(lost ? 1 : 2);
+  expect(threadsStore.getState().threads.get("local:a")?.history?.turns[0]?.items[0]?.text).toBe("");
+  writes?.mockRestore();
+  const reads = client.calls.filter((call) => call.method === "thread/read").length;
+  await threadsStore.getState().ensureThread("local:a");
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + (lost ? 1 : 0));
+  expect(
+    threadsStore
+      .getState()
+      .threads.get("local:a")
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toEqual(["version two exact body"]);
+  background.release();
+});
+
+it.each(["body", "empty", "omitted"] as const)(
+  "a retained %s payload opens without a cache certificate or source read",
+  async (kind) => {
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const client = connect();
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:a");
+    const repository = productionEntryTranscriptForTests("local:a").repository;
+    if (!repository) throw new Error("expected background repository");
+    const retained = repository.attachReader();
+    await retained.openLocal(200);
+    const item: ThreadItem =
+      kind === "omitted"
+        ? {
+            id: "recorded",
+            transcriptKey: "recorded",
+            turnId: "recorded",
+            position: { entry: 1, item: 0 },
+            version: 2,
+            type: "toolCall",
+            toolName: "exec_command",
+            output: "exact tool output",
+            status: "completed",
+          }
+        : { ...turn("recorded", 1, kind === "empty" ? "" : "retained exact body").items![0]!, version: 2 };
+    const writes = vi
+      .spyOn(storage, "commitBatch")
+      .mockResolvedValue({ outcome: "failed", error: new Error("lost write") });
+    try {
+      client.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: "local:a",
+          threadId: "thread-a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-a", length: 3 },
+          items: [item],
+        },
+      });
+      await expect(settleEntryTranscriptForTests("local:a")).rejects.toEqual(
+        new Error("transcript recovery is outstanding"),
+      );
+      const reads = client.calls.filter((call) => call.method === "thread/read").length;
+      await threadsStore.getState().ensureThread("local:a");
+      expect(productionEntryTranscriptForTests("local:a").lastLocalOpenStatus).toBe("recovery-needed");
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+      const displayed = threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)[0];
+      expect(displayed?.version).toBe(2);
+      if (kind === "omitted") expect(displayed?.output).toBe("exact tool output");
+      else expect(displayed?.text).toBe(kind === "empty" ? "" : "retained exact body");
+    } finally {
+      writes.mockRestore();
+      retained.dispose();
+      background.release();
+    }
   },
 );
 
@@ -935,6 +1046,80 @@ it("ordinary Clear removes entries once and suppresses the held cache lifetime w
   await threadsStore.getState().ensureThread(ref);
   await settleEntryTranscriptForTests(ref);
   expect(await countCachedSessions()).toBe(1);
+});
+
+it.each([true, false])("input suppressed during Clear is reconciled after committed=%s", async (committed) => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const held = deferred<void>();
+  const originalClear = storage.clear.bind(storage);
+  vi.spyOn(storage, "clear").mockImplementation(async () => {
+    await held.promise;
+    return committed ? originalClear() : { committed: false, epoch: 0 };
+  });
+  const clearing = clearCachedSessions();
+  expect(threadsStore.getState().clearInFlight).toBeDefined();
+  const latest = response("local:a", [turn("recorded"), turn("during-clear", 2, "new recorded body")]);
+  const slot = {
+    key: "clear-stream",
+    kind: "stream" as const,
+    streamId: "clear-stream",
+    roundId: "clear-round",
+    turnId: "clear-turn",
+    anchor: { entry: 3, item: 0 },
+    item: { id: "clear-output", type: "agentMessage" as const, text: "active output" },
+  };
+  latest.overlay = [{ ...slot, item: { ...slot.item, text: "active output plus delta" } }];
+  client.on("thread/read", (params) => ({ ...latest, requestGeneration: params.requestGeneration }));
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 3 },
+      items: latest.thread.turns?.[1]?.items,
+    },
+  });
+  client.emitNotification({ method: "overlay/upserted", params: { ref: "local:a", threadId: "thread-a", item: slot } });
+  client.emitNotification({
+    method: "overlay/delta",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      key: slot.key,
+      field: "text",
+      delta: " plus delta",
+    },
+  });
+  const reads = client.calls.filter((call) => call.method === "thread/read").length;
+  held.resolve();
+  expect(await clearing).toEqual({ committed });
+  await vi.waitFor(() => {
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["recorded", "new recorded body", "active output plus delta"]);
+  });
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+  await settleEntryTranscriptForTests("local:a");
+  if (committed) {
+    expect(await storage.getLatest(key, 10)).toEqual([]);
+    expect(threadsStore.getState().cacheLifetimes.get("local:a")?.suppressed).toBe(true);
+  } else {
+    expect((await storage.getLatest<CachedSessionItem>(key, 10)).map((row) => row.item.text)).toEqual([
+      "recorded",
+      "new recorded body",
+    ]);
+  }
 });
 
 it("an aborted ordinary Clear preserves disk rows and the held entry route resumes writes", async () => {

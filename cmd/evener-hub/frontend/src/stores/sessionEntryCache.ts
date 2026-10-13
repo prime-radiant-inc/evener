@@ -114,6 +114,8 @@ export interface EntryBatch {
 export type EntryWriteOutcome =
   | { outcome: "committed"; coverage: "extended" | "unchanged" | "not-extended"; encodedBytes: number }
   | { outcome: "refused"; reason: "clear-epoch" | "history-fence" | "capacity" }
+  // Failure withholds a commit claim, not proof of rollback. In particular a
+  // lost completion event can time out after the transaction durably committed.
   | { outcome: "failed"; error: unknown };
 
 export interface EntryWindow {
@@ -128,6 +130,7 @@ export interface EntryWindow {
 const AGGREGATE_META_KEY = "__aggregate";
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 const DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const WRITE_WAIT_MS = 10_000;
 const WRITE_STORES = [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE] as const;
 const CLEAR_STORES = [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE] as const;
 
@@ -657,83 +660,113 @@ export class SessionEntryCache {
     ) {
       return { outcome: "failed", error: new Error("entry metadata does not match its resolved history identity") };
     }
-    let transaction: IDBTransaction | undefined;
-    let complete: Promise<void> | undefined;
     try {
       const database = await this.#connection.open();
-      transaction = database.transaction([...WRITE_STORES], "readwrite");
-      complete = transactionCompletion(transaction);
-      void complete.catch(() => {});
-      const itemStore = transaction.objectStore(ENTRY_ITEM_STORE);
-      const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
-      const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
-      const metaStore = transaction.objectStore(ENTRY_META_STORE);
-      const durableEpoch =
-        (await requestResult(metaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))?.epoch ?? 0;
-      if (durableEpoch !== batch.clearEpoch) {
-        transaction.abort();
-        await complete.catch(() => {});
-        return { outcome: "refused", reason: "clear-epoch" };
-      }
+      const outcome = await this.#runWriteTransaction(database, async (transaction, complete) => {
+        const itemStore = transaction.objectStore(ENTRY_ITEM_STORE);
+        const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
+        const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
+        const metaStore = transaction.objectStore(ENTRY_META_STORE);
+        const durableEpoch =
+          (await requestResult(metaStore.get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>))?.epoch ??
+          0;
+        if (durableEpoch !== batch.clearEpoch) {
+          transaction.abort();
+          await complete.catch(() => {});
+          return { outcome: "refused", reason: "clear-epoch" };
+        }
 
-      const historyMeta = (await requestResult(
-        metaStore.get(batch.historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
-      )) ?? { historyKey: batch.historyKey, encodedBytes: 0, itemCount: 0 };
-      if ((historyMeta.generation ?? 0) !== (batch.historyGeneration ?? 0)) {
-        transaction.abort();
-        await complete.catch(() => {});
-        return { outcome: "refused", reason: "history-fence" };
-      }
-      const aggregateMeta = (await requestResult(
-        metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
-      )) ?? { historyKey: AGGREGATE_META_KEY, encodedBytes: 0 };
-      let historyBytes = historyMeta.encodedBytes;
-      let aggregateBytes = aggregateMeta.encodedBytes;
-      const written = await applyEntryRows(itemStore, turnStore, batch.historyKey, batch.items, batch.turns ?? []);
-      historyBytes += written.byteDelta;
-      aggregateBytes += written.byteDelta;
-      const changedItems = written.changedItems;
+        const historyMeta = (await requestResult(
+          metaStore.get(batch.historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
+        )) ?? { historyKey: batch.historyKey, encodedBytes: 0, itemCount: 0 };
+        if ((historyMeta.generation ?? 0) !== (batch.historyGeneration ?? 0)) {
+          transaction.abort();
+          await complete.catch(() => {});
+          return { outcome: "refused", reason: "history-fence" };
+        }
+        const aggregateMeta = (await requestResult(
+          metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
+        )) ?? { historyKey: AGGREGATE_META_KEY, encodedBytes: 0 };
+        let historyBytes = historyMeta.encodedBytes;
+        let aggregateBytes = aggregateMeta.encodedBytes;
+        const written = await applyEntryRows(itemStore, turnStore, batch.historyKey, batch.items, batch.turns ?? []);
+        historyBytes += written.byteDelta;
+        aggregateBytes += written.byteDelta;
+        const changedItems = written.changedItems;
 
-      const coverageResult = await this.#applyCoverage(coverageStore, batch.historyKey, batch.coverage);
-      historyBytes += coverageResult.byteDelta;
-      aggregateBytes += coverageResult.byteDelta;
-      if (batch.sessionMetadata) {
-        const previousPayload = sessionMetadataPayload(historyMeta);
-        const nextPayload = sessionMetadataPayload(batch.sessionMetadata);
-        const previousBytes = previousPayload ? encodedBytes(previousPayload) : 0;
-        const nextBytes = nextPayload ? encodedBytes(nextPayload) : 0;
-        historyBytes += nextBytes - previousBytes;
-        aggregateBytes += nextBytes - previousBytes;
-      }
-      metaStore.put({
-        ...historyMeta,
-        ...batch.sessionMetadata,
-        historyKey: batch.historyKey,
-        encodedBytes: historyBytes,
-        itemCount: historyMeta.itemCount + changedItems,
+        const coverageResult = await this.#applyCoverage(coverageStore, batch.historyKey, batch.coverage);
+        historyBytes += coverageResult.byteDelta;
+        aggregateBytes += coverageResult.byteDelta;
+        if (batch.sessionMetadata) {
+          const previousPayload = sessionMetadataPayload(historyMeta);
+          const nextPayload = sessionMetadataPayload(batch.sessionMetadata);
+          const previousBytes = previousPayload ? encodedBytes(previousPayload) : 0;
+          const nextBytes = nextPayload ? encodedBytes(nextPayload) : 0;
+          historyBytes += nextBytes - previousBytes;
+          aggregateBytes += nextBytes - previousBytes;
+        }
+        metaStore.put({
+          ...historyMeta,
+          ...batch.sessionMetadata,
+          historyKey: batch.historyKey,
+          encodedBytes: historyBytes,
+          itemCount: historyMeta.itemCount + changedItems,
+        });
+        metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: aggregateBytes });
+        const policy = await this.#enforcePolicy(transaction, { kind: "entry", historyKey: batch.historyKey });
+        if (policy.overCapacity) {
+          transaction.abort();
+          await complete.catch(() => {});
+          return { outcome: "refused", reason: "capacity" };
+        }
+        await complete;
+        return {
+          outcome: "committed",
+          coverage: policy.protectedSurvived ? coverageResult.result : "not-extended",
+          encodedBytes: policy.aggregateBytes,
+        };
       });
-      metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: aggregateBytes });
-      const policy = await this.#enforcePolicy(transaction, { kind: "entry", historyKey: batch.historyKey });
-      if (policy.overCapacity) {
-        transaction.abort();
-        await complete.catch(() => {});
-        return { outcome: "refused", reason: "capacity" };
-      }
-      await complete;
-      this.#notifyWrites();
-      return {
-        outcome: "committed",
-        coverage: policy.protectedSurvived ? coverageResult.result : "not-extended",
-        encodedBytes: policy.aggregateBytes,
-      };
+      // Only the winning result may publish. A timed-out body's late completion
+      // is observed by the runner but cannot notify or certify this write.
+      if (outcome.outcome === "committed") this.#notifyWrites();
+      return outcome;
     } catch (error) {
-      try {
-        transaction?.abort();
-      } catch {
-        // The transaction may already have finished.
-      }
-      await complete?.catch(() => {});
       return { outcome: "failed", error };
+    }
+  }
+
+  async #runWriteTransaction(
+    database: IDBDatabase,
+    operation: (transaction: IDBTransaction, complete: Promise<void>) => Promise<EntryWriteOutcome>,
+  ): Promise<EntryWriteOutcome> {
+    const transaction = database.transaction([...WRITE_STORES], "readwrite");
+    const complete = transactionCompletion(transaction);
+    void complete.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        // Abort may be too late, and even a successful call may never deliver
+        // its terminal event. Neither is proof of an observed rollback.
+        reject(new Error("session entry cache write timed out; durable outcome is unknown"));
+        tryAbortTransaction(transaction);
+        this.#connection.retire(database);
+      }, WRITE_WAIT_MS);
+    });
+    const work = async () => {
+      try {
+        return await operation(transaction, complete);
+      } catch (error) {
+        tryAbortTransaction(transaction);
+        await complete.catch(() => {});
+        throw error;
+      }
+    };
+    try {
+      // The bound covers request work AND terminal/abort cleanup, not just
+      // completion. Promise.race also observes any late rejection from work.
+      return await Promise.race([work(), deadline]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 

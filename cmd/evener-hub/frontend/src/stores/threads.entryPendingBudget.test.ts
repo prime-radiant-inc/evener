@@ -10,6 +10,7 @@ import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
+  installHydrationRetrySchedulerForTests,
   observePendingHydrationRetirementsForTests,
   pendingThreadHydrationUpdatesForTests,
   productionEntryTranscriptForTests,
@@ -161,6 +162,52 @@ test.each([false, true])("completed recorded input has a bounded real resync buf
     }
   } finally {
     source.resolve(currentResponse(ref, frames));
+    await background.release();
+  }
+});
+
+test("first background hydration replaces an exhausted buffer without another notification", async () => {
+  const ref = "local:first-buffer-overflow";
+  const fake = connectClient();
+  const source = deferred<ThreadReadResponse>();
+  const frames = Array.from({ length: 5 }, (_, index) => completedFrame(ref, 41 + index));
+  const retries: Array<() => void> = [];
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    retries.push(retry);
+    return () => {};
+  });
+  let reads = 0;
+  fake.on("thread/read", async (params) => ({
+    ...(++reads === 1 ? await source.promise : currentResponse(ref, frames)),
+    requestGeneration: params.requestGeneration,
+  }));
+  const background = acquireBackgroundThread(ref);
+  try {
+    await vi.waitFor(() => expect(reads).toBe(1));
+    expect(productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+    for (const frame of frames) {
+      fake.emitNotification(frame);
+      expect(actualBufferedBytes()).toBeLessThanOrEqual(LIMIT);
+    }
+    expect(actualBufferedBytes()).toBe(0);
+    expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBe(0);
+    expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(1);
+    source.resolve(currentResponse(ref, frames));
+    await background.ready;
+    await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
+    expect(retries).toHaveLength(1);
+    retries[0]!();
+    await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(true));
+    const repository = productionEntryTranscriptForTests(ref).repository;
+    expect(repository).toBeDefined();
+    await repository?.settled();
+    await expectDurableFrames(ref, frames);
+    expect(reads).toBe(2);
+    expect(retries).toHaveLength(1);
+    expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(0);
+  } finally {
+    source.resolve(currentResponse(ref, frames));
+    restoreScheduler();
     await background.release();
   }
 });
