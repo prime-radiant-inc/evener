@@ -463,7 +463,11 @@ func confinedReferencedFiles(candidates, writable []string) []string {
 	// Writable roots are judged at their literal AND resolved spellings, like
 	// unmaskedContentRoots: an extra writable root the user configured as a symlink
 	// makes the files beneath its TARGET writable through the alias, so a candidate
-	// under the target is as swappable as one under the link.
+	// under the target is as swappable as one under the link. Containment itself is
+	// then decided by FILE IDENTITY, not by comparing the spellings: a
+	// case-insensitive volume (macOS by default) and the data-volume firmlink both
+	// give one directory several spellings, and the session can write the file
+	// through any of them.
 	writableAll := make([]string, 0, 2*len(writable))
 	for _, w := range writable {
 		writableAll = append(writableAll, w)
@@ -481,7 +485,7 @@ func confinedReferencedFiles(candidates, writable []string) []string {
 		if err != nil || StripDataVolumeAlias(resolved) != StripDataVolumeAlias(clean) {
 			continue
 		}
-		if isUnderAnyRoot(clean, writableAll) {
+		if slices.ContainsFunc(writableAll, func(w string) bool { return underByIdentity(clean, w) }) {
 			continue
 		}
 		out = append(out, clean)

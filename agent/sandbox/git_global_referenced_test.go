@@ -699,6 +699,40 @@ func TestGlobalGitReferencedFileUnderAWritableAliasIsRefused(t *testing.T) {
 	}
 }
 
+// TestGlobalGitReferencedFileUnderAWritableRootInAnotherSpelling pins containment by
+// file identity, which a spelling comparison cannot do: on a case-insensitive volume
+// (macOS by default) `/Users/u/PROJECT/ignore` and a writable root at
+// `/Users/u/project` are one directory, and the session can write the file through
+// either spelling. It skips on a case-sensitive filesystem, where the shape cannot be
+// built at all.
+func TestGlobalGitReferencedFileUnderAWritableRootInAnotherSpelling(t *testing.T) {
+	t.Parallel()
+	home := clean(t.TempDir())
+	work := filepath.Join(home, "project")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	referenced := filepath.Join(work, "ignore")
+	writeFixtureFile(t, referenced, "ignored.txt\n")
+	otherSpelling := filepath.Join(home, "PROJECT", "ignore")
+	if _, err := os.Stat(otherSpelling); err != nil {
+		t.Skip("case-sensitive filesystem: PROJECT and project are different directories here")
+	}
+
+	host := darwinSeatbeltHost()
+	host.Home = home
+	host.GitGlobalReferencedPaths = []string{otherSpelling}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, ExtraWritableRoots: []string{work}}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, root := range []string{otherSpelling, referenced} {
+		if slices.Contains(rp.Spawned.ReadRoots, root) {
+			t.Errorf("a file inside a writable root must not be granted under ANY spelling of that root (%q): %v", root, rp.Spawned.ReadRoots)
+		}
+	}
+}
+
 // referencedFilesFixture materializes a home holding two referenced files (one per
 // core key) and returns their paths.
 func referencedFilesFixture(t *testing.T) (home, ignore, attrs string) {
