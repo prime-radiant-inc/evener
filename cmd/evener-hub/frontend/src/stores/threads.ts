@@ -7498,7 +7498,7 @@ export async function settleBackgroundTranscriptsForTests(): Promise<void> {
   // outstanding; that throw propagates, matching settleEntryTranscriptForTests,
   // so this drain never reports a clean settle while background work remains.
   await residencyIfCreated?.settled();
-  await Promise.all(entryTranscriptRoutes().map((route) => route.repository?.settled()));
+  await Promise.all(entryTranscriptRoutes().map((route) => route.repository?.settled(false)));
 }
 
 /** @internal Observe actual store hydration before the entry commit, without issuing a read. */

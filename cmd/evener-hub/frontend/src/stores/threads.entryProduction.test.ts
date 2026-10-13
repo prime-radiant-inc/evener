@@ -32,6 +32,7 @@ import {
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
   setProductionEntryCacheForTests,
+  settleBackgroundTranscriptsForTests,
   settleEntryTranscriptForTests,
   subscribeCacheWrites,
   threadsStore,
@@ -1554,6 +1555,34 @@ const tool: AnyNotification = {
     },
   },
 };
+
+it("background disk settlement does not await a pending end read", async () => {
+  cache();
+  const client = new FakeClient("ready");
+  const pendingEnd = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", () => (++reads === 2 ? pendingEnd.promise : readOf()));
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+  const owner = acquireBackgroundThread(ref);
+  await owner.ready;
+  await settleEntryTranscriptForTests(ref);
+  client.emitNotification(tool);
+  client.emitNotification(end);
+  await vi.waitFor(() => expect(reads).toBe(2));
+  let settled = false;
+  const settling = settleBackgroundTranscriptsForTests().then(() => {
+    settled = true;
+  });
+  try {
+    await vi.waitFor(() => expect(settled).toBe(true));
+    expect(reads).toBe(2);
+  } finally {
+    pendingEnd.resolve({ ...readOf([recorded("end")], 41), overlay: [], requestGeneration: 2 });
+    await settling;
+    await owner.release();
+  }
+});
 
 it("ordinary default reconnect handles the retired end-read rejection without an unhandled promise", async () => {
   const storage = cache();
