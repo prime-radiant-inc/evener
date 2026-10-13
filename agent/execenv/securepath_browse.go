@@ -493,6 +493,14 @@ func grepTakesNativeArm(dir string) bool {
 	if isPseudoFsPath(dir) || grepReachesPseudoRoot(dir) {
 		return true
 	}
+	// A symlink alias can spell pseudo-filesystem content as an ordinary
+	// path — /tmp/proc-alias -> /proc — so classify what the target resolves
+	// to as well: os.Stat follows the alias and reports a small regular
+	// file. Resolution walks ancestors and leaf alike and needs no
+	// permission beyond stat.
+	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil && (isPseudoFsPath(resolved) || grepReachesPseudoRoot(resolved)) {
+		return true
+	}
 	info, err := os.Stat(dir)
 	if err != nil || info.IsDir() {
 		return false
