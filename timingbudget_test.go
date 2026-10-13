@@ -513,13 +513,7 @@ func TestTimingBudgetFailsWhenThePackagesValueIsNotAnObject(t *testing.T) {
 	for _, value := range []string{`[]`, `0`, `false`, `""`, `null`, `"x"`, `5`, `true`} {
 		t.Run(value, func(t *testing.T) {
 			out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", `{"packages":`+value+`}`)
-			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-				t.Fatalf("a present non-object packages value (%s) must fail --check --strict with exit 1: exit = %v\n%s", value, err, out)
-			}
-			if strings.Contains(out, "Traceback") {
-				t.Fatalf("a non-object packages value (%s) crashed with a traceback instead of failing structurally:\n%s", value, out)
-			}
+			assertPackagesValueFails(t, out, err)
 		})
 	}
 }
@@ -540,49 +534,40 @@ func TestTimingBudgetFailsOnANonObjectPackagesValueInEveryMode(t *testing.T) {
 	const measured = "SUM\tpkg\t100.00\n"
 	for _, value := range []string{`[]`, `false`, `null`, `5`} {
 		budget := `{"packages":` + value + `}`
-		postures := []struct {
-			name string
-			run  func(t *testing.T) (string, error)
-		}{
-			{"bare", func(t *testing.T) (string, error) {
-				return runTimingBudgetScript(t, measured, budget, nil, nil)
-			}},
-			{"warn-only", func(t *testing.T) (string, error) {
-				return runTimingBudgetCompareMode(t, measured, budget, false)
-			}},
-			{"ci-env", func(t *testing.T) (string, error) {
-				return runTimingBudgetScript(t, measured, budget, []string{"--check"}, []string{"CI=1"})
-			}},
-			{"bless", func(t *testing.T) (string, error) {
-				out, _, err := runBlessCommand(t, budget, "--modules", "no-such-module")
-				return out, err
-			}},
-		}
-		for _, p := range postures {
-			t.Run(value+"/"+p.name, func(t *testing.T) {
-				out, err := p.run(t)
-				var exitErr *exec.ExitError
-				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-					t.Fatalf("a non-object packages value (%s) must exit 1 in the %s posture: exit = %v\n%s", value, p.name, err, out)
-				}
-				if strings.Contains(out, "Traceback") {
-					t.Fatalf("a non-object packages value (%s) crashed with a traceback in the %s posture:\n%s", value, p.name, out)
-				}
-			})
-		}
+		t.Run(value+"/bare", func(t *testing.T) {
+			out, err := runTimingBudgetScript(t, measured, budget, nil, nil)
+			assertPackagesValueFails(t, out, err)
+		})
+		t.Run(value+"/warn-only", func(t *testing.T) {
+			out, err := runTimingBudgetCompareMode(t, measured, budget, false)
+			assertPackagesValueFails(t, out, err)
+		})
+		t.Run(value+"/ci-env", func(t *testing.T) {
+			out, err := runTimingBudgetScript(t, measured, budget, []string{"--check"}, []string{"CI=1"})
+			assertPackagesValueFails(t, out, err)
+		})
+		t.Run(value+"/bless", func(t *testing.T) {
+			out, got, err := runBlessCommand(t, budget, "--modules", "no-such-module")
+			assertPackagesValueFails(t, out, err)
+			if got != budget {
+				t.Fatalf("--bless overwrote a non-object-packages budget instead of refusing it:\n%s", got)
+			}
+		})
 	}
+}
 
-	t.Run("bless-leaves-the-file-untouched", func(t *testing.T) {
-		const budget = `{"packages":[]}`
-		out, got, err := runBlessCommand(t, budget, "--modules", "no-such-module")
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-			t.Fatalf("--bless must exit 1 on a non-object packages value: exit = %v\n%s", err, out)
-		}
-		if got != budget {
-			t.Fatalf("--bless overwrote a non-object-packages budget instead of refusing it:\n%s", got)
-		}
-	})
+// assertPackagesValueFails asserts the #4614 contract structurally: exit 1 and
+// no traceback. The diagnostic wording is never asserted
+// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
+func assertPackagesValueFails(t *testing.T, out string, err error) {
+	t.Helper()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("a present non-object packages value must exit 1, not pass or crash: exit = %v\n%s", err, out)
+	}
+	if strings.Contains(out, "Traceback") {
+		t.Fatalf("a non-object packages value crashed with a traceback instead of failing structurally:\n%s", out)
+	}
 }
 
 // TestTimingBudgetKeepsThePackagesFallbacks pins the values the #4614 guard

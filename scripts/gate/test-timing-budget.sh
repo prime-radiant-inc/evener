@@ -361,20 +361,18 @@ except FileNotFoundError:
 except ValueError as exc:
 	fail_malformed("could not be parsed: " + str(exc))
 
-# A `packages` value that is present but not an object is a broken config, not an
-# empty map (issue #4614). `packages or {}` would swallow the falsy mistakes
-# ([], 0, false, "") into the NO BASELINE warn state — exit 0 with every ratio
-# and every class ceiling silently unenforced — and crash on the truthy ones
-# ("x", 5, true) with a traceback. Test the KEY, not the value: `budget.get`
-# cannot tell an absent key from an explicit `null`, and `{"packages": null}`
-# disarms the same way. Route it through the same malformed-config path as a
-# parse error above (#4609), which fails in every mode naming the file. The
-# `isinstance(budget, dict)` guard keeps a non-object TOP-level budget on its
-# existing path (a traceback), which #4609 deliberately left alone.
+# A `packages` value present but not an object is a broken config, not an empty
+# map: `packages or {}` swallowed the falsy mistakes ([], 0, false, "") into the
+# NO BASELINE warn state (exit 0, nothing enforced) and crashed on the truthy
+# ones (issue #4614). Test the KEY, not the value — `budget.get` cannot tell an
+# absent key from an explicit `null`, and `{"packages": null}` disarms the same
+# way — and route it through the malformed-config path above (#4609), which fails
+# in every mode naming the file. `isinstance(budget, dict)` keeps a non-object
+# TOP-level budget on its existing path (a traceback), which #4609 left alone.
 if isinstance(budget, dict) and "packages" in budget and not isinstance(budget["packages"], dict):
 	fail_malformed("packages must be an object mapping each package to its budget seconds (got "
 		+ type(budget["packages"]).__name__ + ")")
-packages = budget.get("packages") or {}
+packages = budget.get("packages", {})
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 
 # The per-class ceilings (#4601, ruling 2026-10-13). A test whose name is listed
