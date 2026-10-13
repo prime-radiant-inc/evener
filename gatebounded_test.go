@@ -200,6 +200,24 @@ run_enumeration . /tmp/unused
 	}
 }
 
+// TestRunBoundedBuildClearsGoflags pins the run-module-tests.sh review finding:
+// run_bounded_build compiles infrastructure (this checkout's evener-dev) from
+// the repository root, so it must not inherit GOFLAGS. A caller's relative
+// -overlay or -modfile in GOFLAGS is meant for a module directory, and applying
+// it from the repository root fails the build; the existing flag helpers clear
+// GOFLAGS for the same reason (issue #144 review).
+func TestRunBoundedBuildClearsGoflags(t *testing.T) {
+	got := runBoundedCase(t, `
+set -uo pipefail
+. `+gateBoundedLib+`
+run_bounded() { shift 4; printf 'goflags:[%s]\n' "${GOFLAGS-<unset>}"; }
+GOFLAGS=-overlay=overlay.json run_bounded_build 300 "evener-dev build" agent /tmp/l /tmp/out /tmp ./cmd/evener-dev/bin
+`)
+	if want := "goflags:[]"; got != want {
+		t.Fatalf("run_bounded_build = %q, want %q (an infrastructure build must not inherit GOFLAGS)", got, want)
+	}
+}
+
 // TestRunBoundedBuildHandsTheTargetToGoBuild pins the wiring that lets the gate
 // prebuild a shard runner under a bound: the build's directory and target must
 // reach `go build` through run_bounded, so the compile `go run` used to perform

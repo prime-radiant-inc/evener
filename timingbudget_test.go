@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,36 +164,84 @@ func TestTimingBudgetBlessDoesNotStampAStaleFile(t *testing.T) {
 	}
 }
 
-// TestTimingBudgetStillEnforcesTheWebRowWithoutTheMarker pins the scope of the
-// stale-units suspension: the "web" entry is the vitest reporter's assertion
-// durations, the metric issue #172 did not change, so it stays comparable to the
-// checked-in budget and over 1.5x must still fail even while the Go packages'
-// units are stale.
-func TestTimingBudgetStillEnforcesTheWebRowWithoutTheMarker(t *testing.T) {
+// TestTimingBudgetWarnsOnTheWebRowWithoutTheMarker pins the 2026-10-13 ruling
+// on PR #4600: the checked-in `"web"` baseline was blessed on a quiet
+// workstation, and a four-core CI runner's vitest parallelism measures the same
+// suite 2.6x to 3.9x higher (356.45s over a 90.77s budget on the run that
+// produced this test), so the row is not comparable to this run any more than
+// the Go packages' pre-#172 numbers are. Both therefore warn, with the numbers
+// printed, until #141 re-blesses the baseline for the host class CI uses. The
+// exit status is the assertion.
+func TestTimingBudgetWarnsOnTheWebRowWithoutTheMarker(t *testing.T) {
 	measured := "SUM\tweb\t10.00\n"
 	budget := `{"perTestCeilingSeconds":3,"packages":{"web":1}}`
 	out, err := runTimingBudgetCompare(t, measured, budget)
-	if err == nil {
-		t.Fatalf("the web row's units did not change, so over 1.5x must still fail:\n%s", out)
+	if err != nil {
+		t.Fatalf("an incomparable-baseline ratio must warn, not fail:\n%s", out)
 	}
-	if !strings.Contains(out, "FAIL  web") {
-		t.Fatalf("no FAIL for the web row over 1.5x:\n%s", out)
+	for _, want := range []string{"WARN  web", "#141"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("web-row warning missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Fatalf("the stale web ratio was enforced as a failure:\n%s", out)
 	}
 }
 
-// TestTimingBudgetStillEnforcesTheCeilingWithoutTheMarker pins that the per-test
-// ceiling stays enforced while the Go-package ratios are suspended: its seconds
-// come from the same field on both sides of issue #172, so a breach is a defect
-// regardless of the budget's metric.
-func TestTimingBudgetStillEnforcesTheCeilingWithoutTheMarker(t *testing.T) {
+// TestTimingBudgetWarnsOnThePreExistingCeilingBreach pins the landing posture
+// (ruling, 2026-10-13). The flat per-test ceiling has never run in CI, #4601
+// records the pre-existing breaches, and a 50-second install test is a ceiling
+// that never met an install test rather than a defect. So even under the
+// CI-strict policy a breach is reported and named but does not fail the gate;
+// the package-ratio check and the missing-measurement refusal keep their
+// strictness (see TestTimingBudgetFailsOnWallTimeBudgets and
+// TestTimingBudgetFailsWhenTheMeasuredFileIsMissing). The exit status is the
+// assertion.
+func TestTimingBudgetWarnsOnThePreExistingCeilingBreach(t *testing.T) {
 	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestSlow\t9.00\n"
 	budget := `{"perTestCeilingSeconds":3,"packages":{"pkg":100}}`
 	out, err := runTimingBudgetCompare(t, measured, budget)
-	if err == nil {
-		t.Fatalf("the per-test ceiling is metric-independent; a breach must still fail:\n%s", out)
+	if err != nil {
+		t.Fatalf("a per-test ceiling breach must warn, not fail, until #4601 clears:\n%s", out)
 	}
 	if !strings.Contains(out, "per-test ceiling") {
-		t.Fatalf("no ceiling FAIL while the metric marker is absent:\n%s", out)
+		t.Fatalf("the ceiling breach was not reported at all:\n%s", out)
+	}
+	if !strings.Contains(out, "#4601") {
+		t.Fatalf("the ceiling warning does not name the #4601 backlog that holds it:\n%s", out)
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Fatalf("a warn-only ceiling breach was enforced as a failure:\n%s", out)
+	}
+}
+
+// TestTimingBudgetFailsWhenTheMeasuredFileIsMissing pins the gate's fail-loud
+// contract for issue #144. Once the ratchet reads durations from the gate's own
+// run, a run that produced no duration file must stop the gate, not compare an
+// empty measurement and pass: a missing file silently treated as "nothing over
+// budget" would turn the whole ratchet into a no-op the moment it is wired in.
+// The exit status is the assertion — what fails here is that the check stops.
+func TestTimingBudgetFailsWhenTheMeasuredFileIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	budget := filepath.Join(dir, "budget.json")
+	writeAuditScriptFixture(t, budget,
+		`{"metric":"package-wall-seconds","perTestCeilingSeconds":3,"packages":{"example.com/mod":1}}`)
+	tmpDir := filepath.Join(dir, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", tmpDir, err)
+	}
+	missing := filepath.Join(dir, "no-such-measured.tsv")
+	cmd := exec.Command("bash", timingBudgetScript,
+		"--measured", missing, "--budget", budget, "--no-web", "--check", "--strict")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a missing measured file must fail --check, not pass silently:\n%s", out)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("exit = %v, want exit status 1:\n%s", err, out)
 	}
 }
 
