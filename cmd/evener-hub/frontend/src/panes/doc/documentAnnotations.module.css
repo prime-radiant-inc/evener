@@ -103,6 +103,18 @@
   overflow-y: auto;
 }
 
+/* A phone has no wheel for the component's forwarded scroll, so under a coarse
+ * pointer the revealed note surface accepts the gesture itself: hit-testable,
+ * panning vertically. The pending reference stays selectable either way, and
+ * fine pointers keep the non-hit-testable surface above, so a revealed note
+ * can never intercept a selection press or release over the prose. */
+@media (pointer: coarse) {
+  .highlightNotes {
+    pointer-events: auto;
+    touch-action: pan-y;
+  }
+}
+
 .annotationNote {
   padding: var(--space-2) var(--space-3);
   background: var(--surface-2);
