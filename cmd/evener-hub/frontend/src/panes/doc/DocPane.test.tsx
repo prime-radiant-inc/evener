@@ -70,6 +70,7 @@ import {
   blobBytes,
   cleanupAfterTest,
   docContent,
+  expectStampedNoEarlierThan,
   fixture,
   rowsForTests,
 } from "./testing/annotationRepositoryFixtures";
@@ -983,8 +984,11 @@ for (const reason of RETRY_REASONS) {
           ...baseline,
           text: `${baseline.text}\n\n${reference}`,
           token: { ...baseline.token, sessionRevision: baseline.token.sessionRevision + 1 },
+          editedAt: expect.any(Number),
         };
-        expect(await f.drafts.load(f.key)).toEqual(expectedDraft);
+        const draftAfter = await f.drafts.load(f.key);
+        expect(draftAfter).toEqual(expectedDraft);
+        expectStampedNoEarlierThan(draftAfter, baseline);
         const live = f.source.getSnapshot();
         expect(live.text).toBe(expectedDraft.text);
         expect(live.skillNames).toEqual(baseline.skillNames);
@@ -2279,6 +2283,7 @@ test("Cancel after a failed first Send retires only that operation, and another 
     ...baseline,
     text: `${baseline.text}\n\n${siblingReference}`,
     token: { ...baseline.token, sessionRevision: baseline.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
 
   // (3) The already-saved annotation/applied draft survive; unrelated recovery and
@@ -2566,6 +2571,7 @@ test("Cancel at the real precommit boundary of a foreground retry leaves no canc
     ...baseline,
     text: `${baseline.text}\n\n${siblingReference}`,
     token: { ...baseline.token, sessionRevision: baseline.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
 
   // Real remount of the cancelled reader: no reopened comment box.
@@ -2822,7 +2828,9 @@ test("a failed first Send keeps its exact immutable operation, note and capture 
     ...baseline,
     text: `${baseline.text}\n\n${keepReference}`,
     token: { ...baseline.token, sessionRevision: baseline.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(draftAfter, baseline);
   // The saved baseline and unrelated state survive; no submission mutation.
   expect((await f.repo.listAnnotations(f.document)).find((v) => v.receipt.operationId === "op-1")).toEqual(baselineOp1);
   const liveAfter = f.source.getSnapshot();
@@ -2958,7 +2966,9 @@ test("a failed first Send survives an unchanged acceptRead fault with its author
     ...baseline,
     text: `${baseline.text}\n\n${keepReference}`,
     token: { ...baseline.token, sessionRevision: baseline.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(draftAfter, baseline);
   expect((await f.repo.listAnnotations(f.document)).find((v) => v.receipt.operationId === "op-1")).toEqual(baselineOp1);
   const liveAfter = f.source.getSnapshot();
   expect(liveAfter.text).toBe(draftAfter.text);

@@ -23,12 +23,13 @@ import {
   blobBytes,
   cleanupAfterTest,
   docContent,
+  expectStampedNoEarlierThan,
   fixture,
   preparedAnnotationFromLease,
   rowsForTests,
 } from "../panes/doc/testing/annotationRepositoryFixtures";
 import { createComposerSourceState } from "../panes/session/composer/sourceState";
-import { type BrowserDraftKey, browserDraftKey, type StoredComposerDraft } from "../stores/browserDraftRepository";
+import { type BrowserDraftKey, browserDraftKey } from "../stores/browserDraftRepository";
 import { type NamespaceRow, serializeSessionKey } from "../stores/compositionRevision";
 import { createDocumentAnnotationRepository } from "../stores/documentAnnotationIndexedDB";
 import {
@@ -1148,17 +1149,6 @@ function expectResolvedRead(outcome: ReadOutcome): AcceptedReadResult {
 }
 
 type PendingOperationRow = Extract<AnnotationOperationRow, { state: "pending" }>;
-
-// `editedAt` is optional on rows an older build wrote, so even a narrowed row
-// types its stamp as `number | undefined`. The full-row comparison preceding
-// every call site proved both stamps exist; narrow them for the ordering check
-// and fail loudly if one is missing.
-function expectStampedNoEarlierThan(stamped: StoredComposerDraft | null, baseline: StoredComposerDraft | null): void {
-  if (stamped?.editedAt === undefined || baseline?.editedAt === undefined) {
-    throw new Error("edit stamp missing for ordering comparison");
-  }
-  expect(stamped.editedAt).toBeGreaterThanOrEqual(baseline.editedAt);
-}
 
 // The terminal applied receipt is the pending row with its payload binding
 // stripped and the draft revision advanced once, matching the adapter's applied

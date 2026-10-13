@@ -51,7 +51,14 @@ import * as documentSourceMapModule from "../../widgets/markdown/documentSourceM
 import DocPane from "./DocPane";
 import { type DocumentReaderWork, disposeDocumentReaderWork, documentReaderWork } from "./documentReadState";
 import { FIRST, SOURCE } from "./testing/annotationFixtures";
-import { blobBytes, cleanupAfterTest, docContent, fixture, rowsForTests } from "./testing/annotationRepositoryFixtures";
+import {
+  blobBytes,
+  cleanupAfterTest,
+  docContent,
+  expectStampedNoEarlierThan,
+  fixture,
+  rowsForTests,
+} from "./testing/annotationRepositoryFixtures";
 
 // Only the raw-file read is mocked; DocFileError / DOC_FILE_MAX_BYTES / the URL
 // builder stay real so the pane's error-kind switch runs for real. Each test
@@ -428,7 +435,9 @@ test("a failed first Send survives a coverage-differing reread whose acceptRead 
     ...baseline,
     text: `${baseline.text}\n\n${KEEP_REFERENCE}`,
     token: { ...baseline.token, sessionRevision: baseline.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(draftAfter, baseline);
   // Baseline saved note, live composer metadata, recovery/attachment state and
   // zero ordinary submissions all survive.
   expect((await f.repo.listAnnotations(f.document)).find((v) => v.receipt.operationId === "op-1")).toEqual(baselineOp1);
@@ -576,7 +585,9 @@ test("a beginRead fault suspends the reader, unavailable Send cannot create or p
     ...baseline,
     text: `${baseline.text}\n\n${KEEP_REFERENCE}`,
     token: { ...baseline.token, sessionRevision: baseline.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(draftAfter, baseline);
   expect((await f.repo.listAnnotations(f.document)).find((v) => v.receipt.operationId === "op-1")).toEqual(baselineOp1);
   const liveAfter = f.source.getSnapshot();
   expect(liveAfter.text).toBe(draftAfter.text);

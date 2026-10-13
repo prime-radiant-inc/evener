@@ -11,6 +11,7 @@ import {
   attachmentIdentity,
   blobBytes,
   cleanupAfterTest,
+  expectStampedNoEarlierThan,
   fixture,
   rowsForTests,
 } from "../panes/doc/testing/annotationRepositoryFixtures";
@@ -246,7 +247,13 @@ it.each(["draft", "recovery"] as const)(
     expect(expectedText.split(reference).length - 1).toBe(1);
     expect(afterOrdinary?.token).toEqual({ ...ordinary.token, sessionRevision: ordinary.token.sessionRevision + 1 });
     if (backing === "draft") {
-      expect(afterOrdinary).toEqual({ ...ordinary, text: expectedText, token: afterOrdinary?.token });
+      expect(afterOrdinary).toEqual({
+        ...ordinary,
+        text: expectedText,
+        token: afterOrdinary?.token,
+        editedAt: expect.any(Number),
+      });
+      expectStampedNoEarlierThan(afterOrdinary, ordinary);
       expect(afterRecovery).toEqual(recovery);
     } else {
       expect(afterOrdinary).toEqual({ ...ordinary, token: afterOrdinary?.token });
@@ -487,7 +494,9 @@ it.each([
     ...ordinaryBefore,
     text: `${ordinaryBefore.text}\n\n${noteReference}`,
     token: { ...ordinaryBefore.token, sessionRevision: ordinaryBefore.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(ordinaryRecovered, ordinaryBefore);
   expect(recoveryRecovered).toEqual(recoveryBefore);
 
   // Replay is idempotent and leaves the recovered token and rows unchanged.
