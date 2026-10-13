@@ -23,7 +23,7 @@ import {
 	plainQuoteLine,
 	shellJobState,
 } from "@evener/appwire-client";
-import { AGENT_QUIET_AFTER_MS, subagentQuietLine, waitingOnSubagents } from "../board/attention";
+import { waitingOnSubagents } from "../board/attention";
 import { compactDuration, spokenDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
@@ -322,13 +322,13 @@ export function stripSegments(
 
 export interface SubagentWhy {
 	/** What the line reports: a failure, a stop, a report or a bare finish; a
-	 * working row's stated tool intent, a running command, the subagents it
-	 * waits on, or its quiet clock. */
-	kind: "failed" | "stopped" | "report" | "finished" | "intent" | "command" | "waiting" | "working" | "quiet";
+	 * running row's stated tool intent, a running command, the subagents it
+	 * waits on, or nothing while the dot alone speaks its clock. */
+	kind: "failed" | "stopped" | "report" | "finished" | "intent" | "command" | "waiting" | "silent";
 	/** The actual unsuccessful outcome, displayed beside its cause. */
 	word?: "Failed";
 	text: string;
-	/** The silence that turns this line Quiet (subagentQuietLine). */
+	/** The live silence that dims the row's dot; the list's wake times it. */
 	quietForMs?: number;
 }
 
@@ -349,22 +349,26 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 			typeof delegate.reportPreview === "string" ? firstLine(plainQuoteLine(delegate.reportPreview), 120) : "";
 		return report ? { kind: "report", text: report } : { kind: "finished", text: "Finished" };
 	}
+	// The dot alone speaks the fresh-versus-quiet distinction, so every
+	// running line carries its live silence for the screen's wake, whatever
+	// the line says. A frozen snapshot stays out: its silence never grows, so
+	// waking for it would fire again and again for nothing.
+	const timing = delegateTiming(delegate, now);
+	const quietForMs = timing.quietLive ? timing.quietForMs : undefined;
 	// The shared display rule: a running row's non-empty stated intent stands
 	// in for the whole line. The predicate's empty answer is the point — this
 	// line has no word of its own to keep, so the rule alone decides, and
 	// today's chain stays the fallback.
 	const stated = delegateStatedIntent(delegate);
-	if (stated !== "") return { kind: "intent", text: stated };
+	if (stated !== "") return { kind: "intent", text: stated, quietForMs };
 	const command = runningCommand(delegate.child);
-	if (command) return { kind: "command", text: `Running ${command}` };
+	if (command) return { kind: "command", text: `Running ${command}`, quietForMs };
 	const waiting = runningSubagentCount(
 		(delegate.child?.entries ?? []).filter((entry) => entry.kind === "delegate").map((entry) => entry.delegate),
 	);
-	if (waiting > 0) return { kind: "waiting", text: waitingOnSubagents(waiting) };
-	const timing = delegateTiming(delegate, now);
-	// quietOrWorking's threshold, which picks the line's words.
-	const quiet = (timing.quietForMs ?? 0) >= AGENT_QUIET_AFTER_MS;
-	return { kind: quiet ? "quiet" : "working", ...subagentQuietLine(timing) };
+	if (waiting > 0) return { kind: "waiting", text: waitingOnSubagents(waiting), quietForMs };
+	// Nothing to say: the line stays empty and the dot alone speaks.
+	return { kind: "silent", text: "", quietForMs };
 }
 
 // Cache the same qualified entity identity used by the shared projection.
