@@ -1163,7 +1163,16 @@ function currentDispatchClient(
   requireArmed = true,
   options?: { storageBlockedAdmissible?: boolean },
 ): AppwireClientLike | null {
-  if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
+  // The dispatch-ready generation is the reconciled one, and reconciliation
+  // needs durable storage. With no runtime there is nothing to reconcile, so the
+  // wired ready client IS the dispatch generation: a send must still reach the
+  // daemon when the tab has no IndexedDB at all (#4194).
+  // The dispatch-ready generation is the reconciled one, and reconciliation
+  // needs durable storage. With no runtime there is nothing to reconcile, so the
+  // wired ready client IS the dispatch generation: a send must still reach the
+  // daemon when the tab has no IndexedDB at all (#4194).
+  if (getMutationRuntime() !== null && (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch))
+    return null;
   if (targetRef && requireArmed && !dispatchableMutationRefs.has(targetRef)) return null;
   const state = threadsStore.getState();
   // A storage-blocked ref (its reconcile failed only because storage would not
@@ -1543,9 +1552,14 @@ function getMutationRuntime(): MutationRuntime | null {
   return initializedRuntime;
 }
 
+// The refusal for a mutation that needed local persistence this tab does not
+// have. Shared by requireMutationRuntime and the send funnel's no-IndexedDB
+// branch so the two text cannot drift.
+const INDEXEDDB_UNAVAILABLE = "threads store: IndexedDB is unavailable; mutation was not sent";
+
 function requireMutationRuntime(): MutationRuntime {
   const runtime = getMutationRuntime();
-  if (!runtime) throw new Error("threads store: IndexedDB is unavailable; mutation was not sent");
+  if (!runtime) throw new Error(INDEXEDDB_UNAVAILABLE);
   return runtime;
 }
 
@@ -2930,6 +2944,34 @@ const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
 // catch in enqueueMutationIntent.
 const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set(Object.values(COMPOSER_ROUTE_METHODS));
 
+// The one eligibility rule for a send that may take the direct path with no
+// durable row: an ordinary enqueue of one of the four composer send verbs.
+// turn/interrupt's cancel transaction and every non-send durable write keep
+// their own contracts, so they never qualify.
+function directSendEligible(method: string, durableWrite: "enqueue" | "interruptAndCancel"): boolean {
+  return durableWrite === "enqueue" && DIRECT_FALLBACK_METHODS.has(method);
+}
+
+// The direct-dispatch admission for a composer send with no durable row behind
+// it, shared by the two callers that may take that path: the storage-failure
+// fallback in enqueueMutationIntent and its no-IndexedDB branch. It re-earns the
+// admission the dispatcher would grant (currentDispatchClient, which re-checks
+// the wired client and the ref's fences) and refuses to jump earlier durable
+// work for the ref: undeliveredMutationIds holds the committed rows this tab has
+// not proven delivered, and inflightDurableEnqueues counts durable enqueues
+// whose write has not settled yet. Returns the client to dispatch against, or
+// null when a fence or either ordering guard refuses it - the caller decides
+// what a refusal raises.
+function admitDirectSend(
+  ref: string,
+  intent: MutationIntent,
+  options?: { storageBlockedAdmissible?: boolean },
+): AppwireClientLike | null {
+  const client = currentDispatchClient(ref, intent.method, false, options);
+  if (client === null || hasUndeliveredMutation(ref) || (inflightDurableEnqueues.get(ref) ?? 0) > 0) return null;
+  return client;
+}
+
 // Decrement a ref's in-flight durable-enqueue count, dropping the entry at
 // zero. Paired exactly with the increment in enqueueMutationIntent and
 // trackOutboxWrite, on both the settle and the throw path. A release with no
@@ -3046,7 +3088,22 @@ async function enqueueMutationIntent(
     throw new Error(fenceRefusal);
   const client = requireClient();
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
-  const runtime = requireMutationRuntime();
+  const runtime = getMutationRuntime();
+  if (runtime === null) {
+    // No IndexedDB at all: no durable row can be written, so the click-time
+    // capture, the reconcile bookkeeping and the dispatcher do not exist either.
+    // A composer send still goes out directly (see admitDirectSend); every other
+    // durable write keeps its fail-closed contract. A ref the recovery fence
+    // refuses to dispatch - a Send-resumes local session whose obligation still
+    // stands, say - is refused here too, just as the storage-failure fallback
+    // below refuses it.
+    const dispatchClient = directSendEligible(intent.method, durableWrite) ? admitDirectSend(ref, intent) : null;
+    if (dispatchClient === null) {
+      throw new Error(INDEXEDDB_UNAVAILABLE);
+    }
+    await dispatchMutationDirectly(dispatchClient, intent);
+    return undefined;
+  }
   // §4's stop barrier, the click-time half: the capture's read transaction is
   // REQUESTED here, at true click time — inside the click's own synchronous
   // prefix, before `await runtime.start` and every other wait in the enqueue
@@ -3101,7 +3158,7 @@ async function enqueueMutationIntent(
     // has settled, so drop the ref's arm if it is now idle - see
     // disarmQuiescedMutationArm. (A Stop therefore lands here, not in the
     // fallback below, so its fail-closed decision lives with its invariant.)
-    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageFailure(error)) {
+    if (!directSendEligible(intent.method, durableWrite) || !isStorageFailure(error)) {
       disarmQuiescedMutationArm(ref);
       throw error;
     }
@@ -3120,7 +3177,8 @@ async function enqueueMutationIntent(
     // pending reconciliation, a reconciliation failure, a Stop drain via
     // stoppingRefs, the restart obligation with turn/start's resume-only
     // carve-out, and restartRequired). requireArmed is off: the fallback's own
-    // ordering guard is not the dispatcher's arm but the two checks below.
+    // ordering guard is not the dispatcher's arm but the checks admitDirectSend
+    // applies.
     // A reconcile the same storage wedge failed is admissible here and nowhere
     // else: storage-blocked is the one fence whose cause cannot be waited out
     // inside the wedge, so the fallback waives it (and the reconcile still
@@ -3163,9 +3221,8 @@ async function enqueueMutationIntent(
         mutationReconciliationStorageBlocked: new Set(state.mutationReconciliationStorageBlocked).add(ref),
       }));
     }
-    const dispatchClient = currentDispatchClient(ref, intent.method, false, { storageBlockedAdmissible: true });
-    const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
-    if (dispatchClient === null || hasUndeliveredMutation(ref) || concurrentEnqueueOutstanding) {
+    const dispatchClient = admitDirectSend(ref, intent, { storageBlockedAdmissible: true });
+    if (dispatchClient === null) {
       disarmQuiescedMutationArm(ref);
       throw error;
     }
