@@ -742,6 +742,10 @@ class ProvenanceTokenizer extends Tokenizer {
         let itemContents = "";
         let rawTrace = empty();
         let contentsTrace = empty();
+        // Continuation pieces accumulate and materialize once per item: the
+        // dedent slice breaks the shared-storage chain, so concatenating the
+        // accumulated trace per line re-materialized every span each time.
+        const continuationTraces: Trace[] = [];
         cap = itemRegex.exec(src);
         if (!cap) {
           break;
@@ -844,7 +848,7 @@ class ProvenanceTokenizer extends Tokenizer {
 
             if (nextLineWithoutTabs.search(this.rules.other.nonSpaceChar) >= indent || !nextLine.trim()) {
               // Dedent if possible
-              contentsTrace = concat(contentsTrace, slice(rawTrace, -1), slice(nextLineTrace, indent));
+              continuationTraces.push(slice(rawTrace, -1), slice(nextLineTrace, indent));
               itemContents += `\n${nextLineWithoutTabs.slice(indent)}`;
             } else {
               // not enough indentation
@@ -867,7 +871,7 @@ class ProvenanceTokenizer extends Tokenizer {
                 break;
               }
 
-              contentsTrace = concat(contentsTrace, slice(rawTrace, -1), rawLineTrace);
+              continuationTraces.push(slice(rawTrace, -1), rawLineTrace);
               itemContents += `\n${nextLine}`;
             }
 
@@ -899,7 +903,10 @@ class ProvenanceTokenizer extends Tokenizer {
           text: itemContents,
           tokens: [],
         };
-        itemTraces.set(item, { raw: rawTrace, text: contentsTrace });
+        itemTraces.set(item, {
+          raw: rawTrace,
+          text: continuationTraces.length > 0 ? concatAll([contentsTrace, ...continuationTraces]) : contentsTrace,
+        });
         list.items.push(item);
 
         list.raw += raw;
