@@ -865,6 +865,16 @@ async function sourceMutationJourney() {
   await driver.clearComposerDraft(ref);
   await driver.focusComposer(ref);
   await driver.typeText(ref, busyInput);
+  // The first submit below orders turn/start, which submitRouting emits only
+  // while the session is idle: deriveSendQueueAvailability routes a session the
+  // wire calls active, or one still holding this client's pending send, to the
+  // queue. The preceding mixedSourceJourney submits a turn of its own, so wait
+  // out the source's positive turn-end barrier before arming the outbox hold -
+  // a lingering turn then degrades into a bounded, named wait instead of a
+  // turn/queue record under the storage acknowledgement (#4233). The gate sits
+  // after clearComposerDraft because the barrier's durable-recovery predicate
+  // only releases once clearComposerDraft has drained the record it owns.
+  await driver.waitForTurnIdle(ref);
   await holdStorageAcknowledgement(ref, busyInput);
   const after = frames.length;
   await driver.clickSubmit(ref, { text: busyInput, chips: [], tiles: 0 });
@@ -874,7 +884,7 @@ async function sourceMutationJourney() {
   assert.ok(held?.clientMutationId, "real committed source mutation retains its identity");
   assert.ok(held.payload.input.some(item => item.text === busyInput), "actual committed record contains the original source input");
   assert.equal(held.targetRef, ref);
-  assert.equal(held.method, "turn/start");
+  assert.equal(held.method, "turn/start", `the first source submit for ${held.targetRef} must order turn/start; the outbox recorded ${held.method} (input ${JSON.stringify(held.payload.input.map(item => item.text))}), so the source was still busy when it submitted`);
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await returnToSource();
