@@ -59,6 +59,14 @@ const PAGE_LIFETIME_NONCE = (() => {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 })();
 
+let sourceReadSequence = 0;
+
+/** Unique across routes, repository replacements, tabs and browser reloads. */
+export function nextTranscriptReadIdentity(): { readId: string; boundary: string } {
+  const identity = `${PAGE_LIFETIME_NONCE}:${++sourceReadSequence}`;
+  return { readId: `read:${identity}`, boundary: `boundary:${identity}` };
+}
+
 function comparePosition(
   left: { entry: number; item: number; sub?: number },
   right: { entry: number; item: number; sub?: number },
@@ -1872,6 +1880,20 @@ export class TranscriptRepository {
       // The background drain already holds the slot and retained these bodies.
       return this.#issueCommit(batch, bodies, issuedRevision, true, false);
     }
+    const readId = batch.coverage?.kind === "suffix" ? batch.coverage.readId : undefined;
+    const waitsForPredecessor =
+      readId !== undefined &&
+      (this.#retryQueue.some((entry) => entry.batch.coverage?.readId === readId) ||
+        (this.#retryInFlight && [...this.#inFlight.keys()].some((entry) => entry.coverage?.readId === readId)) ||
+        this.#backgroundAccepts.some((entry) => entry.batch.coverage?.readId === readId));
+    if (waitsForPredecessor) {
+      // Publication already happened. Persistence must not overtake a failed
+      // predecessor, including while its retry or queued successors are draining.
+      if (!this.#admission.retain(bodies, this, "background")) return this.#dropForOverflow(batch);
+      this.#backgroundAccepts.push({ batch, revision: issuedRevision, bodies });
+      this.#continueBackground();
+      return Promise.resolve();
+    }
     const oversize = bodyBytes > this.#admission.limit;
     if (oversize) {
       // The sole immediate bounded batch. Only one may be in flight; a competing
@@ -2192,9 +2214,9 @@ export class TranscriptRepository {
   /**
    * Run at most one background database batch across every entry repository
    * sharing this admission. A queued retry takes precedence over a queued
-   * no-reader accepted write because its causal coverage is required; foreground
-   * accepted writes never enter here, so a stalled background batch cannot block
-   * them. When the slot is busy this repository waits and is resumed by
+   * accepted write because its causal coverage is required. Foreground writes
+   * wait here only for their own repository's predecessors, not other sessions.
+   * When the slot is busy this repository waits and is resumed by
    * `releaseBackground`, which prioritises live reader demand.
    */
   #drainBackground(): void {
@@ -2218,6 +2240,7 @@ export class TranscriptRepository {
       this.#abandonQueue("cancelled");
       this.#retryQueue.length = 0;
     }
+    if (this.#retryQueue.length > 0 && this.#retryScheduled) return;
     if (this.#retryQueue.length === 0 && this.#backgroundAccepts.length === 0) return;
     if (
       !this.#admission.tryAcquireBackground(
