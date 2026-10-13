@@ -60,7 +60,7 @@ import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
-import { readDraft, writeDraft } from "./composer/draft";
+import { composerDraftStorageKey, readDraft, writeDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
@@ -5142,7 +5142,19 @@ test("a child whose reads are permanently unavailable shows the shared terminal 
 // openNestedSessionWithOwner, which opened a second pane and left the original
 // on its superseded ref; the notification was cleared all the same. Cover the
 // addressed pane following the resume in place through real workspace records.
-test("a resumed secondary child replaces its own pane record in place, preserving its owner", async () => {
+//
+// The retype preserves the pane's lifetime, so the resume must also move the
+// lifetime's retained SOURCE ownership onto the resumed ref (Session's
+// onResumedIdentity calls adoptResumedSource). The REAL composer proves it:
+// after A -> B the editor restores B's own stored draft, never A's, and an
+// edit made after the resume persists under B so a reload of B keeps it. The
+// stubbed composer this test used to mount read no source and persisted
+// nothing, which is why the regression slipped past it.
+test("a resumed secondary child replaces its own pane record in place, preserving its owner and adopting the resumed composer", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
   const owner = "local:owner";
   const child = "local:child";
   const resumed = "local:child-resumed";
@@ -5154,6 +5166,19 @@ test("a resumed secondary child replaces its own pane record in place, preservin
   const childPane: OpenPaneRecord = { id: "child-pane", type: "session", slot: "secondary", params: { ref: child } };
   workspaceStore.setState({ panes: [ownerPane, childPane], focusedPaneId: childPane.id });
   recordConversationOpenParent(childPane, owner);
+
+  // Two persisted drafts: the superseded ref's older one, and a NEWER one
+  // already stored under the resumed ref. The carry keeps the newer
+  // destination, and the resumed composer must load it rather than the old
+  // ref's text.
+  localStorage.setItem(
+    composerDraftStorageKey(child),
+    JSON.stringify({ text: "from superseded A", skillNames: [], editedAt: 1000 }),
+  );
+  localStorage.setItem(
+    composerDraftStorageKey(resumed),
+    JSON.stringify({ text: "destination B draft", skillNames: [], editedAt: 2000 }),
+  );
 
   // The real shell renders a pane from its workspace record; this harness does
   // the same, so a resume that never moves the record cannot pass by only
@@ -5167,14 +5192,26 @@ test("a resumed secondary child replaces its own pane record in place, preservin
     return <Session params={pane.params as { ref: string }} paneId={paneId} focused={focused} />;
   }
 
+  // The REAL composer carries the pane's source and keys draft persistence by
+  // it, so address each pane's editor by the composer ref it renders under.
+  function composerEditor(ref: string): HTMLElement {
+    const anchor = document.querySelector(`[data-composer="${ref}"]`);
+    if (!(anchor instanceof HTMLElement)) throw new Error(`no composer anchored for ${ref}`);
+    return within(anchor).getByRole("textbox", { name: /^message$/i });
+  }
+
   window.history.replaceState({}, "", `/s/${encodeURIComponent(child)}`);
-  render(
+  const user = userEvent.setup();
+  const app = render(
     <ClientProvider client={fake}>
       <WorkspacePane paneId={ownerPane.id} focused={false} />
       <WorkspacePane paneId={childPane.id} focused={true} />
     </ClientProvider>,
   );
   await waitFor(() => expect(document.querySelector(`[data-pane-scaffold="session:${child}"]`)).not.toBeNull());
+  // The addressed pane's real composer mounts on the superseded ref and shows
+  // that ref's own persisted draft.
+  await waitFor(() => expect(composerEditor(child).textContent).toBe("from superseded A"));
 
   act(() => {
     threadsStore.setState((state) => ({ resumedIdentities: new Map(state.resumedIdentities).set(child, resumed) }));
@@ -5193,6 +5230,19 @@ test("a resumed secondary child replaces its own pane record in place, preservin
   expect(threadsStore.getState().resumedIdentities.has(child)).toBe(false);
   expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumed)}`);
 
+  // The pane's retained composer moved onto the resumed ref: the editor
+  // restores the resumed ref's own newer stored draft, never the superseded
+  // ref's. Before the fix the pane still supplied A's composer here and this
+  // read A's text.
+  await waitFor(() => expect(composerEditor(resumed).textContent).toBe("destination B draft"));
+
+  // An edit made now persists under the RESUMED ref, not the superseded one.
+  await user.click(composerEditor(resumed));
+  await user.type(composerEditor(resumed), "EDIT");
+  await waitFor(() => expect(readDraft(resumed)).toContain("EDIT"));
+  const editedText = readDraft(resumed);
+  expect(readDraft(child)).toBe("from superseded A");
+
   // The route placement the shell runs for a nested session reuses this pane
   // instead of opening a second child beside the owner.
   act(() => {
@@ -5204,4 +5254,15 @@ test("a resumed secondary child replaces its own pane record in place, preservin
     .panes.filter((pane) => pane.type === "session" && (pane.params as { ref: string }).ref === resumed);
   expect(childPanes).toHaveLength(1);
   expect(childPanes[0]?.id).toBe(childPane.id);
+
+  // Reloading the resumed conversation keeps the edit: a fresh mount reads the
+  // draft the composer persisted under B.
+  app.unmount();
+  const reloaded = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: resumed }} paneId="reloaded-pane" focused />
+    </ClientProvider>,
+  );
+  const reloadedEditor = await within(reloaded.container).findByRole("textbox", { name: /^message$/i });
+  expect(reloadedEditor.textContent).toBe(editedText);
 });

@@ -143,7 +143,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           .getState()
           .panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref);
         if (!addressed) return false;
+        // The pane's lifetime survives the retype (paneLifetime's onPaneRetype
+        // moves it onto the replacement record), so its retained SOURCE
+        // ownership has to move with it. Leaving sourceRef on the superseded ref
+        // would keep supplying that ref's composer - whose draft persistence
+        // and submission are bound to that ref - to the resumed conversation,
+        // so a later edit would be stored under the old ref and reloading the
+        // resumed ref would lose it. Moving it here retires the superseded
+        // composer and lets the resumed ref's own (or carried) draft load,
+        // exactly as resumeCascadeScope does for its source column. Read the
+        // lifetime BEFORE the retype: the retype listener rekeys the WeakMap,
+        // so a later lookup would mint a fresh lifetime and miss this one.
+        const lifetime = conversationPaneLifetime(addressed);
         if (!workspaceStore.getState().retypePane(addressed, "session", { ref: resumedRef })) return false;
+        lifetime.adoptResumedSource(resumedRef);
         const url = paneToURL("session", { ref: resumedRef });
         if (url !== null) navigate(url, { replace: true });
         return true;
