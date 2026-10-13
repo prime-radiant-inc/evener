@@ -972,10 +972,17 @@ async function assertOverlap(ref, text, label) {
     });
   })()`);
   assert.deepEqual(atoms, overlapMentions(text), `${label}, atom kind and exact text-owned offsets`);
-  const stored = await read(`JSON.parse(localStorage.getItem(${q(`evener.composer.draft.v2.${ref}`)}))`);
-  const { editedAt, ...record } = stored;
-  assert.deepEqual(record, { text, skillNames:['cascade-overlap'], commandNames:['cascade-overlap'], mentions:overlapMentions(text) }, `${label}, complete real persisted draft`);
-  assert.equal(typeof editedAt, 'number', `${label}, draft record carries its write stamp`);
+  // The durable draft row lives in the composition database's composerDrafts
+  // store, not the retired localStorage key: the row carries the key, token
+  // and write stamp beside the composer's structured value, so each field the
+  // old record compared is asserted explicitly.
+  const stored = await read(driver.draftRowExpr(ref));
+  assert.ok(stored, `${label}, durable draft row present in the composition database`);
+  assert.equal(stored.text, text, `${label}, exact UTF-16 text and inert prose in the durable draft`);
+  assert.deepEqual(stored.skillNames, ['cascade-overlap'], `${label}, only the selected skill is a durable skill atom`);
+  assert.deepEqual(stored.commandNames, ['cascade-overlap'], `${label}, only the completed command is a durable command atom`);
+  assert.deepEqual(stored.mentions, overlapMentions(text), `${label}, durable atom kind and exact text-owned offsets`);
+  assert.equal(typeof stored.editedAt, 'number', `${label}, draft record carries its write stamp`);
 }
 
 async function mixedSourceJourney() {

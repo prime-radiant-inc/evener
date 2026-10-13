@@ -892,14 +892,72 @@ export class Driver {
     })()`;
   }
 
+  // The composer's durable draft rows live in the local composition database's
+  // composerDrafts store (browserDraftRepository), the same database the outbox
+  // reader above opens; draft persistence moved off localStorage with the
+  // draft-authority work, so the retired "evener.composer.draft.*" keys hold
+  // nothing. Observation never creates the database: an absent database or
+  // store reads as "no drafts" so the assertions fail with the honest empty
+  // state, while a read error rejects loudly instead of claiming emptiness.
+  // Rows dump as {key, value} with the full record JSON, so the assertions
+  // that decode {text, skillNames} from each value keep working unchanged.
   draftStorageExpr() {
-    return `(() => {
-      const out = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key.startsWith("evener.composer.draft.")) out.push({ key, value: localStorage.getItem(key) });
-      }
-      return out.length > 0 ? out : [];
+    return `(async () => {
+      const openDB = (name) => new Promise((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.addEventListener("success", () => resolve(request.result), { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("upgradeneeded", () => {
+          try { request.transaction.abort(); } catch {}
+          resolve(null);
+        }, { once: true });
+      });
+      const database = await openDB("evener-mutation-outbox");
+      if (!database) return [];
+      try {
+        if (!database.objectStoreNames.contains("composerDrafts")) return [];
+        return await new Promise((resolve, reject) => {
+          const request = database.transaction("composerDrafts", "readonly").objectStore("composerDrafts").getAll();
+          request.addEventListener("success", () => {
+            resolve((request.result ?? []).map((row) => ({ key: row.serializedKey, value: JSON.stringify(row) })));
+          }, { once: true });
+          request.addEventListener("error", () => reject(request.error), { once: true });
+        });
+      } finally { database.close(); }
+    })()`;
+  }
+
+  // One session's durable draft row from the same store, or null when the
+  // session holds none. The row carries the composer's structured value
+  // (text, skillNames, commandNames, mentions) plus its key, token and write
+  // stamp, so a caller can assert the complete persisted record.
+  draftRowExpr(ref) {
+    return `(async () => {
+      const openDB = (name) => new Promise((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.addEventListener("success", () => resolve(request.result), { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("upgradeneeded", () => {
+          try { request.transaction.abort(); } catch {}
+          resolve(null);
+        }, { once: true });
+      });
+      const database = await openDB("evener-mutation-outbox");
+      if (!database) return null;
+      try {
+        if (!database.objectStoreNames.contains("composerDrafts")) return null;
+        return await new Promise((resolve, reject) => {
+          const request = database.transaction("composerDrafts", "readonly").objectStore("composerDrafts").getAll();
+          request.addEventListener("success", () => {
+            const row = (request.result ?? []).find(
+              (candidate) =>
+                candidate?.key?.sessionRef === ${JSON.stringify(ref)} && candidate?.key?.namespace?.kind === "browser",
+            );
+            resolve(row ? JSON.parse(JSON.stringify(row)) : null);
+          }, { once: true });
+          request.addEventListener("error", () => reject(request.error), { once: true });
+        });
+      } finally { database.close(); }
     })()`;
   }
 
