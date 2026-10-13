@@ -214,7 +214,7 @@ func srspCloseWorktree(t *testing.T) {
 	h.s.worktreeCurrentManaged = false
 	h.s.worktreeRestoreEnv = nil
 	h.s.mu.Unlock()
-	h.s.applyInitInsideWorktreeLock(true)
+	h.s.applyInitInsideWorktreeLock()
 	if got, want := entry.lockReason, worktree.FormatSessionMarker(h.s.ID()); got != want {
 		t.Fatalf("init occupancy lock = %q, want %q", got, want)
 	}
@@ -227,16 +227,22 @@ func srspCloseWorktree(t *testing.T) {
 	}
 }
 
+// srspInitWorktree drives one applyInitInsideWorktreeLock shape. mode 0 is the
+// containment no-op (a Git checkout not under a managed lane); 1 the subagent
+// return; 2 a non-local env; 3 a lock-listing failure; 4 a lock failure; 5 the
+// own-marker adoption; 6 a foreign lock; 7 already-tracked re-entry.
 func srspInitWorktree(t *testing.T, mode byte) {
 	t.Helper()
 	h, faults := newWorktreeFaultSession(t)
 	if mode == 0 {
-		h.s.applyInitInsideWorktreeLock(false)
+		// The launch cwd is a Git checkout but not under a managed lane: the
+		// containment check makes this a no-op.
+		h.s.applyInitInsideWorktreeLock()
 		return
 	}
 	if mode == 1 {
 		h.s.cfg.spawn.parentSessionID = "parent"
-		h.s.applyInitInsideWorktreeLock(true)
+		h.s.applyInitInsideWorktreeLock()
 		return
 	}
 	path := scriptedCreate(t, h, "srsp-init")
@@ -264,7 +270,7 @@ func srspInitWorktree(t *testing.T, mode byte) {
 	case 7:
 		h.s.worktreeCurrentPath = path
 	}
-	h.s.applyInitInsideWorktreeLock(true)
+	h.s.applyInitInsideWorktreeLock()
 	if mode == 5 && h.s.worktreeCurrentPath != path {
 		t.Fatalf("own init lock was not adopted: %q, want %q", h.s.worktreeCurrentPath, path)
 	}
