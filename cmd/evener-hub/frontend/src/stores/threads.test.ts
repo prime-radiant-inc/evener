@@ -9439,6 +9439,96 @@ describe("retry-safe mutation outbox integration", () => {
     expect(readAttempts).toBe(2);
   });
 
+  // The drain's repair-status obligations (#4343): the flag a pinned ref's
+  // read set cannot outlive the pin, and a read still on the wire when the
+  // pin leaves cannot recreate it for a lifetime that just ended.
+  test("settling the last durable record clears the repair status its ref's read set", async () => {
+    await seedPinnedIntent("ref_a", "mutation-a");
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => {
+      const read = deferred<ThreadReadResponse>();
+      reads.push(read);
+      return read.promise;
+    });
+    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+
+    // The ready transition rejoins the discovered pinned ref and publishes
+    // its snapshot, so a resync can put a second read on the wire. The
+    // macrotask settles the first read's consumer chain — the lease resolves
+    // it through a timer hop — so no late step of it can land after the
+    // events the assertions below pin.
+    fake.emitReady();
+    await flushIndexedDBUntil(() => reads.length === 1);
+    reads[0]!.resolve(readResponse("ref_a"));
+    await flushIndexedDBUntil(() => threadsStore.getState().threads.has("ref_a"));
+    await settleCallerContinuations();
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushIndexedDBUntil(() => reads.length === 2);
+
+    // That read answers the hub's rebuilding code: the flag is set.
+    reads[1]!.reject(
+      new WireError("thread history is being rebuilt in the background", -32000, {
+        evenerErrorInfo: "transcriptIndexRebuilding",
+      }),
+    );
+    await flushIndexedDBUntil(() => threadsStore.getState().repairingRefs.has("ref_a"));
+    expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+    // Settling the record drops the pin — the ref's only owner — so the
+    // repair status cannot outlive it.
+    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
+    await flushIndexedDBUntil(() => !threadsStore.getState().threads.has("ref_a"));
+    expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+  });
+
+  test("a rejoin read that answers rebuilding after its record settles recreates no repair status", async () => {
+    await seedPinnedIntent("ref_a", "mutation-a");
+    const reads: Array<{
+      promise: Promise<ThreadReadResponse>;
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => {
+      const read = deferred<ThreadReadResponse>();
+      reads.push(read);
+      return read.promise;
+    });
+    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => reads.length === 1);
+    reads[0]!.resolve(readResponse("ref_a"));
+    await flushIndexedDBUntil(() => threadsStore.getState().threads.has("ref_a"));
+    // The macrotask settles the first read's consumer chain — the lease
+    // resolves it through a timer hop — so its late steps cannot land after
+    // the drain and muddy what the assertions below pin.
+    await settleCallerContinuations();
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushIndexedDBUntil(() => reads.length === 2);
+
+    // The pin leaves while the read is still on the wire: the drain retires
+    // the lifetime, so the read's late rebuilding answer must publish
+    // nothing. The rejection settles through the lease's timer hop too, so
+    // one macrotask covers the consumer's catch chain.
+    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
+    await flushIndexedDBUntil(() => !threadsStore.getState().threads.has("ref_a"));
+    reads[1]!.reject(
+      new WireError("thread history is being rebuilt in the background", -32000, {
+        evenerErrorInfo: "transcriptIndexRebuilding",
+      }),
+    );
+    // The lease's read is a derived promise, so settling the raw deferred
+    // does not settle the consumer's catch chain; one macrotask does.
+    await reads[1]!.promise.catch(() => undefined);
+    await settleCallerContinuations();
+    expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+  });
+
   // The mirror of the case above, one step earlier: here the pin goes away
   // while the read is still on the wire, so there is no lifecycle to retire
   // yet. Opening one anyway would arm a retry for a ref nothing owns - a timer

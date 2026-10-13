@@ -1249,6 +1249,11 @@ function dropUnpinnedModel(ref: string): void {
   clearOversizeMemo(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
+  // A read still on the wire when the pin left belongs to the lifetime this
+  // drain just ended: retire its pending entry the way releaseThread does,
+  // so its late resolution — a model or #4343's repair flag — finds the
+  // publication fence closed.
+  pendingThreadHydrations.delete(ref);
   // The model is leaving `threads` here, so its index membership leaves with
   // it (see putThreadModel/removeThreadModel — the membership paths).
   const dropped = threadsStore.getState().threads.get(ref);
@@ -1273,6 +1278,9 @@ function dropUnpinnedModel(ref: string): void {
     const cacheLifetimes = releaseCacheLifetime(state.cacheLifetimes, ref);
     return { threads, frameTimes, hydrations, cacheLifetimes };
   });
+  // With the last durable claim gone, the repair flag follows unless a
+  // watcher still holds the ref.
+  clearThreadRepairingIfUnowned(ref);
 }
 
 async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterable<string>): Promise<void> {
