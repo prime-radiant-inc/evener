@@ -28,6 +28,18 @@ const DOT_TINT: Record<DelegateDotState, keyof Palette | null> = {
 	idle: null,
 };
 
+// The dot's state word for the accessible label: the tint is invisible to a
+// screen reader, so the spoken line keeps the fresh-versus-quiet distinction
+// the visible why line gave up, and names the attention a running row can
+// owe. A settled row has no word (the state word already speaks it).
+const DOT_WORD: Record<DelegateDotState, string | undefined> = {
+	fresh: "Working",
+	quiet: "Quiet",
+	attention: "Needs you",
+	failed: "Failed",
+	idle: undefined,
+};
+
 /** Words that replace a row's why line, and what they report: a stop
  * request on its way (sent through the coordinator or directly) or settled. */
 export interface SubagentNote {
@@ -58,11 +70,20 @@ export const SubagentRowView = memo(function SubagentRowView({
 	const time = timeInState(row, now);
 	const why = subagentWhy(row, now);
 	const last = subagentLastLine(row, coordinatorModel, modelName);
-	const tint = DOT_TINT[delegateDotState(row.delegate, now)];
+	const dot = delegateDotState(row.delegate, now);
+	const stateWord = subagentStateWord(row.state);
+	const dotWord = DOT_WORD[dot];
+	const tint = DOT_TINT[dot];
 	// Preserve the outcome and cause; a note replaces the why line.
 	const failure = note === undefined && why.word === "Failed";
 	const whyLine = note?.text ?? why.text;
-	const label = [row.title, subagentStateWord(row.state), whyLine, time === null ? null : spokenDuration(time)]
+	const label = [
+		row.title,
+		stateWord,
+		dotWord !== undefined && dotWord !== stateWord ? dotWord : null,
+		whyLine,
+		time === null ? null : spokenDuration(time),
+	]
 		.filter((part) => part)
 		.join(", ");
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };

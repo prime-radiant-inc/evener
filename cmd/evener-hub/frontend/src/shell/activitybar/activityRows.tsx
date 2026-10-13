@@ -65,13 +65,23 @@ function useDotFlip(sub: SessionDelegate): number {
   const [, setFlippedAt] = useState(() => Date.now());
   useEffect(() => {
     if (sub.terminal === true) return;
-    const timing = delegateTiming(sub, Date.now());
-    // A frozen snapshot never grows - waking for it would re-render the row
-    // forever without ever flipping the dot, the native wake's own guard.
-    if (!timing.quietLive || timing.quietForMs === undefined) return;
-    const remaining = DELEGATE_QUIET_AFTER_MS - timing.quietForMs;
-    if (remaining <= 0) return; // the dot already renders quiet
-    const timer = setTimeout(() => setFlippedAt(Date.now()), remaining + 1);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // The daemon's clock can run ahead of this one, clamping the measured
+    // silence to zero while the anchor is still in the future: every fire
+    // re-arms until the live silence has actually crossed the threshold.
+    const arm = () => {
+      const timing = delegateTiming(sub, Date.now());
+      // A frozen snapshot never grows - waking for it would re-render the row
+      // forever without ever flipping the dot, the native wake's own guard.
+      if (!timing.quietLive || timing.quietForMs === undefined) return;
+      const remaining = DELEGATE_QUIET_AFTER_MS - timing.quietForMs;
+      if (remaining <= 0) return; // the dot already renders quiet
+      timer = setTimeout(() => {
+        setFlippedAt(Date.now());
+        arm();
+      }, remaining + 1);
+    };
+    arm();
     return () => clearTimeout(timer);
   }, [sub]);
   return Date.now();

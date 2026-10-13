@@ -30,6 +30,23 @@ test("a running delegate's dot dims at the quiet threshold", () => {
   expect(screen.getByRole("img", { name: "Quiet" })).toBeTruthy();
 });
 
+test("a running delegate's dot still flips when the daemon's clock runs ahead", () => {
+  vi.useFakeTimers();
+  const now = Date.now();
+  render(<AgentRow sub={activityDelegate({ latestActivityAt: new Date(now + 30_000).toISOString() })} />);
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+  act(() => {
+    vi.advanceTimersByTime(20_001);
+  });
+  // The anchor is still in the future, so the measured silence reads zero:
+  // the wake re-arms instead of leaving the dot fresh forever.
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+  act(() => {
+    vi.advanceTimersByTime(35_000);
+  });
+  expect(screen.getByRole("img", { name: "Quiet" })).toBeTruthy();
+});
+
 test("a delegate awaiting input keeps the attention dot", () => {
   render(
     <AgentRow

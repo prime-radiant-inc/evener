@@ -218,7 +218,7 @@ it("keeps a terminal parent's running child and stop identity reachable with his
 		parentTitle: "Fix race in tree settle",
 	});
 	expect(stopOffer({ row: child, requested: false, direct: "yes" })).toBe("stop");
-	act(() => pressable(tree, "Reproduce the race, Running, 4 minutes")?.props.onPress());
+	act(() => pressable(tree, "Reproduce the race, Running, Working, 4 minutes")?.props.onPress());
 	expect(navigation.push).toHaveBeenCalledWith("Subagent", {
 		hubId: "hub-1",
 		ref: "local:repro",
@@ -537,6 +537,9 @@ it("tints an attention subagent's dot amber", async () => {
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	expect(dotTint(tree, "approval")).toBe(paletteFor("light").attention);
+	// Attention is spoken too: a human being needed is the one state a
+	// screen reader must never miss.
+	expect(pressable(tree, "Ask before merging, Running, Needs you, 4 minutes")).toBeDefined();
 });
 
 // The why line shows the subagent's stated intent, while the accessible label
@@ -553,7 +556,11 @@ it("shows a running subagent's stated intent as its row's why line", async () =>
 	const shown = text(tree);
 	expect(shown).toContain("Reading the board's row tests.");
 	expect(shown).not.toContain("Working");
-	expect(pressable(tree, "Inspect the cache, Running, Reading the board's row tests., 4 minutes")).toBeDefined();
+	// The label speaks the dot's state word beside the state word, so the
+	// fresh-versus-quiet distinction stays reachable without the visible line.
+	expect(
+		pressable(tree, "Inspect the cache, Running, Working, Reading the board's row tests., 4 minutes"),
+	).toBeDefined();
 });
 
 // A subagent's screen is its session (ruling 30), over this list.
