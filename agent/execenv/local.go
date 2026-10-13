@@ -2375,6 +2375,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 		root:        path,
 		ctx:         ctx,
 		admitDevice: singleFile,
+		rootPseudo:  grepRootIsPseudo(path),
 	}
 	// No masking concept off the sandboxed path: no-op skip.
 	ignoreFS := fsys
@@ -2386,6 +2387,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 			root:        filepath.Join(path, walkRoot),
 			ctx:         ctx,
 			admitDevice: true,
+			rootPseudo:  grepRootIsPseudo(filepath.Join(path, walkRoot)),
 		}
 	}
 	ignores, err := loadIgnoreSet(ctx, ignoreFS, func(rel string) bool {

@@ -417,10 +417,13 @@ var errNotRegularFile = errors.New("not a regular file")
 // keeps an allowed FIFO or device from blocking at open; the type is then
 // fstat'd on the same descriptor, so it cannot be swapped between the check and
 // the bytes. O_NONBLOCK is cleared once the type is admitted, so callers get the
-// ordinary blocking descriptor they expect. On a non-nil error the caller owns
-// nothing (the file, and its fd, are closed); on success the returned *os.File
-// owns fd.
-func admitReadFD(fd int, name string, allowDir bool) (*os.File, error) {
+// ordinary blocking descriptor they expect — except a regular file with
+// streamed set: one whose path names pseudo-filesystem content can block in
+// read(2) although it stats regular (/proc/kmsg), so it keeps the flag and
+// the runtime poller, letting a read deadline interrupt it (#4574 round 4).
+// On a non-nil error the caller owns nothing (the file, and its fd, are
+// closed); on success the returned *os.File owns fd.
+func admitReadFD(fd int, name string, allowDir, streamed bool) (*os.File, error) {
 	file := os.NewFile(uintptr(fd), name)
 	if file == nil {
 		_ = unix.Close(fd)
@@ -435,6 +438,9 @@ func admitReadFD(fd int, name string, allowDir bool) (*os.File, error) {
 	if !admitted {
 		_ = file.Close()
 		return nil, errNotRegularFile
+	}
+	if info.Mode().IsRegular() && streamed {
+		return file, nil
 	}
 	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
 	if err != nil {
@@ -456,7 +462,7 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := admitReadFD(fd, abs, false)
+	f, err := admitReadFD(fd, abs, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}

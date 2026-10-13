@@ -53,8 +53,12 @@ func OpenRegularNoFollow(path string) (*os.File, error) {
 // as a search target is still read, bounded by the caller's cap. A device
 // keeps O_NONBLOCK — the runtime poller owns the descriptor, so a read
 // deadline can interrupt a stream that never yields — while a regular file
-// or directory gets the ordinary blocking descriptor back.
-func openRegularFollow(path string, admitDevice bool) (*os.File, error) {
+// or directory gets the ordinary blocking descriptor back, except a
+// regular file with streamed set: one whose path names pseudo-filesystem
+// content (/proc/kmsg reports itself regular, and its read blocks in
+// read(2) where no deadline can reach it) is a stream like a device, so it
+// keeps O_NONBLOCK for the poller and the deadline (#4574 round 4).
+func openRegularFollow(path string, admitDevice, streamed bool) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
@@ -76,6 +80,9 @@ func openRegularFollow(path string, admitDevice bool) (*os.File, error) {
 		return nil, fmt.Errorf("open %q: not a regular file", path)
 	}
 	if !mode.IsRegular() && !info.IsDir() {
+		return file, nil
+	}
+	if mode.IsRegular() && streamed {
 		return file, nil
 	}
 	flags, ferr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)

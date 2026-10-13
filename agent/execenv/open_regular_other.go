@@ -35,7 +35,10 @@ func OpenRegularNoFollow(path string) (*os.File, error) {
 // FIFO-blocking hazard the unix variant guards against is unix-shaped. The
 // rest of the contract holds: the descriptor is fstat'd, and only a regular
 // file, a directory, or — where allowed — a device reaches the caller.
-func openRegularFollow(path string, admitDevice bool) (*os.File, error) {
+// The unix variant's streamed flag (a pseudo-rooted regular is a stream
+// there) is accepted and ignored: the blocking hazard it guards against is
+// unix-shaped too.
+func openRegularFollow(path string, admitDevice, streamed bool) (*os.File, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

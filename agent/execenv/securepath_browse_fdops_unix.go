@@ -54,11 +54,16 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: toFsErr(err)}
 	}
-	file, err := admitReadFD(fd, name, true)
+	// A regular file whose resolved path sits inside a pseudo root is a
+	// stream (it stats regular; its read can block), so it keeps the flag,
+	// and the grepCtxFile wrapper lets the capped read arm its deadline.
+	// openBeneathRoot refuses symlinks, so the spelled path is the resolved
+	// one.
+	file, err := admitReadFD(fd, name, true, isPseudoFsPath(filepath.Join(f.basePath, name)))
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 	}
-	return file, nil
+	return &grepCtxFile{File: file, ctx: f.ctx}, nil
 }
 
 // ReadDir lists name through readDirChunked, the same helper boundedDirFS
@@ -306,7 +311,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 // out, non-regular files, and binary files (grepAccum.feed) are skipped. Its
 // output path is ".", the unsandboxed walk's name for a named file.
 func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globFilters []string, skip func(rel string) bool) (string, error) {
-	f, err := admitReadFD(fd, path, false)
+	f, err := admitReadFD(fd, path, false, isPseudoFsPath(path))
 	if err != nil {
 		return "", nil //nolint:nilerr // best-effort grep: a non-regular file is skipped, as in the walk
 	}
@@ -318,7 +323,7 @@ func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globF
 	if selected, err := grepFileSelected(name, ".", globFilters, skip); !selected {
 		return "", err
 	}
-	data, err := grepCappedRead(f)
+	data, err := grepCappedRead(&grepCtxFile{File: f, ctx: ctx})
 	if cancelErr := ctx.Err(); cancelErr != nil {
 		return "", cancelErr
 	}

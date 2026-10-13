@@ -311,6 +311,15 @@ func walkSkipsPseudoDir(root, dir string) bool {
 	return isPseudoFsPath(dir) && !isPseudoFsPath(root)
 }
 
+// grepRootIsPseudo reports whether the walk root itself resolves inside a
+// pseudo root: a search rooted there is a deliberate request to search that
+// tree, and every regular file it reads is a stream whose descriptor must
+// keep the nonblocking flag. A root that cannot be resolved is not one.
+func grepRootIsPseudo(root string) bool {
+	resolved, err := filepath.EvalSymlinks(root)
+	return err == nil && isPseudoFsPath(resolved)
+}
+
 // grepReachesPseudoRoot reports whether a walk from the absolute directory
 // dir would reach one of the pseudoFsRoots: dir is the filesystem root —
 // every absolute path's ancestor — or a proper ancestor of one of them. A
@@ -450,6 +459,11 @@ type grepAdmitFS struct {
 	// deliberate request; a FIFO or socket is never admitted, deliberate or
 	// not, because reading one needs a peer that may never appear.
 	admitDevice bool
+	// rootPseudo reports whether the walk root itself resolves inside a
+	// pseudo root: every file this search opens is a pseudo-rooted stream
+	// then, so each open keeps the nonblocking flag without resolving the
+	// file's own path.
+	rootPseudo bool
 }
 
 func (f grepAdmitFS) Open(name string) (fs.File, error) {
@@ -459,11 +473,28 @@ func (f grepAdmitFS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
-	file, err := openRegularFollow(filepath.Join(f.root, filepath.FromSlash(name)), f.admitDevice)
+	full := filepath.Join(f.root, filepath.FromSlash(name))
+	file, err := openRegularFollow(full, f.admitDevice, f.pseudoStreamed(full))
 	if err != nil {
 		return nil, err
 	}
 	return &grepCtxFile{File: file, ctx: f.ctx}, nil
+}
+
+// pseudoStreamed reports whether full names a file whose resolved path sits
+// inside a pseudo root — the walk root already does, or the leaf is a
+// symlink alias into one. Such a file is a stream that can block in read(2)
+// although it stats regular (/proc/kmsg), so its descriptor must keep
+// O_NONBLOCK for the capped read's deadline to reach it (#4574 round 4).
+func (f grepAdmitFS) pseudoStreamed(full string) bool {
+	if f.rootPseudo {
+		return true
+	}
+	if info, err := os.Lstat(full); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(full)
+	return err == nil && isPseudoFsPath(resolved)
 }
 
 // ReadDir and Stat forward to the wrapped filesystem rather than letting
