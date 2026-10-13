@@ -8,6 +8,7 @@ import type {
   SubmittedDraft,
 } from "@evener/appwire-client/state/mutation";
 import {
+  type ComposerDraft,
   composerDraftStorageKey,
   decodeSupportedComposerDraft,
   draftStorageKey,
@@ -133,7 +134,7 @@ interface InspectedDraft {
   legacyKeyV2: string;
   legacyV1: string | null;
   structuredV2: string | null;
-  value: SkillEditorValue;
+  value: ComposerDraft;
 }
 
 const STORAGE_WAIT_MS = 10_000;
@@ -606,7 +607,15 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
           // Initialization only: a durable row or a previously inspected outcome
           // is never re-imported and never overwritten.
           if (!current && markerV1 === undefined && markerV2 === undefined) {
-            await requestResult(drafts.add(newSessionRow(incoming.key, incoming.value, incarnation)));
+            const imported = newSessionRow(incoming.key, incoming.value, incarnation);
+            // The imported row keeps the legacy draft's own wall-clock stamp so
+            // later cross-session carries order by genuine edit order, not by
+            // this transfer's import order; an unstamped legacy draft stays
+            // unstamped and the carry's conservative rule orders it.
+            const legacyStamp = incoming.value.editedAt;
+            if (legacyStamp === undefined) delete imported.editedAt;
+            else imported.editedAt = legacyStamp;
+            await requestResult(drafts.add(imported));
             changed.push(incoming.key);
           }
           await requestResult(

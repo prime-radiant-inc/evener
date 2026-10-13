@@ -93,6 +93,10 @@ function decodeStructuredComposerDraft(structured: string | null): ComposerDraft
     skillNames: canonicalSkillNames(parsed.skillNames),
     ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
     ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
+    // The validated wall-clock stamp travels with the draft: the legacy
+    // transfer orders later cross-session carries by it, so a migration-wide
+    // restamp would order by import order instead of edit order.
+    ...(parsed.editedAt !== undefined ? { editedAt: parsed.editedAt } : {}),
   };
 }
 
