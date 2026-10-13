@@ -62,6 +62,9 @@ func TestSummarizeWithLLM_StoresTheReplyAsWritten(t *testing.T) {
 		"quoted in a fence": "## Progress\n~~~\n" + summaryMarkerStart + "\ntext\n" + summaryMarkerEnd + "\n~~~",
 		"indented marker":   "## Progress\n    " + summaryMarkerEnd + "\nFixed the auth bug.",
 		"list-item fence":   "## Progress\nSTATE\n- ~~~text\n  " + summaryMarkerEnd + "\n  ~~~",
+		// A backtick fence's info string may not contain a backtick, so this is
+		// an inline code span on a list item, not a fence (#4435).
+		"inline code span": "## Progress\n- ```status=done```",
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
@@ -124,5 +127,102 @@ func TestSummarizeWithLLM_ReadsASectionAfterAnIndentedDelimiter(t *testing.T) {
 	}
 	if stored := result[0].Message.Text(); !strings.Contains(stored, "## Progress\nFixed the auth bug.") {
 		t.Fatalf("the section after the block was not read:\n%s", stored)
+	}
+}
+
+// Markdown opens a fenced block on a list item's first line. The tracker read
+// the "- ~~~text" line as ordinary text, so it never opened the block and the
+// closing "  ~~~" line was read as a fresh opener: a reply whose whole body is
+// such a fenced quote of the framing was accepted, its "[END SUMMARY]" line
+// misjudged as the summary's own content (#4435).
+func TestSummarizeWithLLM_RejectsAFencedQuoteInAListItem(t *testing.T) {
+	reply := "## Progress\n- ~~~text\n  " + summaryMarkerEnd + "\n  ~~~"
+	if result, err := summarizeReplying(t, reply, ""); err == nil {
+		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error; the %q line inside the list item's fence was read as reply content",
+			result[0].Message.Text(), summaryMarkerEnd)
+	}
+}
+
+// A list item's content indentation is the marker and the spaces that follow
+// it, so an item whose fence opens two spaces past the marker reads its closing
+// fence three columns further. The tracker anchored the closing window one
+// column past the marker instead, so the block stayed open and its closing
+// fence was read as content (#4435).
+func TestSummarizeWithLLM_RejectsAFencedQuoteInAListItemWithSpacedMarker(t *testing.T) {
+	reply := "## Progress\n-  ~~~text\n   " + summaryMarkerEnd + "\n      ~~~"
+	if result, err := summarizeReplying(t, reply, ""); err == nil {
+		t.Fatalf("summarizeWithLLM stored %q as a summary, want an error; the list item's closing fence was read as content",
+			result[0].Message.Text())
+	}
+}
+
+// A fence opened inside a list item does not swallow the block heading after
+// it: with the tracker blind to the list item's fence, the closing line opened
+// a block that stayed open, so the "### Agent" heading was read as text inside
+// the user's block (#4435). Every list marker Markdown knows opens such a
+// container, and the closing fence sits at the item's content indentation.
+func TestParseMarkdownBlocks_KeepsTheHeadingAfterAListItemFence(t *testing.T) {
+	for name, item := range map[string]struct{ open, content, close string }{
+		"issue example": {"- ~~~text", "  " + summaryMarkerEnd, "  ~~~"},
+		"one space":     {"- ~~~text", "  quoted", "  ~~~"},
+		"two spaces":    {"-  ~~~text", "   quoted", "   ~~~"},
+		"three spaces":  {"-   ~~~text", "    quoted", "    ~~~"},
+		"four spaces":   {"-    ~~~text", "     quoted", "     ~~~"},
+		"ordered":       {"1. ~~~text", "   quoted", "   ~~~"},
+		"star":          {"* ~~~text", "  quoted", "  ~~~"},
+		"plus":          {"+ ~~~text", "  quoted", "  ~~~"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			section := "### User\n\n" + item.open + "\n" + item.content + "\n" + item.close + "\n\n### Agent\n\nreply"
+			blocks := parseMarkdownBlocks(section)
+			if len(blocks) != 2 || blocks[0].Heading != "User" || blocks[1].Heading != "Agent" {
+				t.Fatalf("blocks = %#v, want the User block followed by the Agent block; the list item's fence swallowed the heading", blocks)
+			}
+			if blocks[1].Text != "reply" {
+				t.Fatalf("Agent block text = %q, want %q", blocks[1].Text, "reply")
+			}
+		})
+	}
+}
+
+// A list item ends at a non-blank line indented less than its content, and the
+// fence the item holds ends with it. The tracker kept such a block open, so a
+// heading after it was read as text inside the block and swallowed (#4435).
+func TestParseMarkdownBlocks_AHeadingEndsAListItemFence(t *testing.T) {
+	for name, section := range map[string]string{
+		"fence left open": "### User\n\n- ~~~text\n  " + summaryMarkerEnd + "\n\n### Agent\n\nreply",
+		"closer too deep": "### User\n\n- ~~~text\n  quoted\n      ~~~\n\n### Agent\n\nreply",
+	} {
+		t.Run(name, func(t *testing.T) {
+			blocks := parseMarkdownBlocks(section)
+			if len(blocks) != 2 || blocks[0].Heading != "User" || blocks[1].Heading != "Agent" {
+				t.Fatalf("blocks = %#v, want the User block followed by the Agent block; the list item swallowed the heading", blocks)
+			}
+		})
+	}
+}
+
+// A second fence in the same list item is read at the item's indentation, not
+// as a new top-level fence: closing the first fence does not end the item. The
+// tracker reset the item indentation when a fence closed, so the second fence
+// opened a top-level block that swallowed the heading after the item (#4435).
+func TestParseMarkdownBlocks_ReadsASecondFenceInAListItem(t *testing.T) {
+	section := "### User\n\n- ~~~text\n  quoted\n  ~~~\n  ~~~\n\n### Agent\n\nreply"
+	blocks := parseMarkdownBlocks(section)
+	if len(blocks) != 2 || blocks[0].Heading != "User" || blocks[1].Heading != "Agent" {
+		t.Fatalf("blocks = %#v, want the User block followed by the Agent block; the item's second fence swallowed the heading", blocks)
+	}
+}
+
+// The same shape as a reply: the section after the item is still read when the
+// item holds two fences, so a valid summary is not rejected (#4435).
+func TestSummarizeWithLLM_ReadsASectionAfterASecondFenceInAListItem(t *testing.T) {
+	reply := "- ~~~text\n  ~~~\n  ~~~\n### Progress\nFixed the bug."
+	result, err := summarizeReplying(t, reply, "")
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+	if stored := result[0].Message.Text(); !strings.Contains(stored, "Fixed the bug.") {
+		t.Fatalf("the section after the list item's second fence was not read:\n%s", stored)
 	}
 }
