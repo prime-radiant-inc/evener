@@ -91,10 +91,7 @@ export function createTranscriptResidency(
   let networkHydrations = 0;
   let disposed = false;
   let retiringHydrations = false;
-  const clearClaimRetiredRefs = new Map<
-    string,
-    { intent: "background" | "foreground"; run?: (signal: AbortSignal) => Promise<void> }
-  >();
+  const clearClaimRetiredRefs = new Map<string, "background" | "foreground">();
 
   function settleHydration(task: HydrationTask, error?: unknown): void {
     if (task.settled) return;
@@ -244,16 +241,18 @@ export function createTranscriptResidency(
     },
     retireClaims() {
       for (const task of [...hydrationTasks]) {
-        clearClaimRetiredRefs.set(task.ref, { intent: task.intent, run: task.run });
+        clearClaimRetiredRefs.set(task.ref, task.intent);
       }
       retireHydrations();
     },
     releaseClearClaim() {
       const refs = [...clearClaimRetiredRefs];
       clearClaimRetiredRefs.clear();
-      for (const [ref, retired] of refs) {
+      for (const [ref, intent] of refs) {
         if (!ready || disposed) continue;
-        void residency.scheduleHydration(ref, retired.intent, retired.run);
+        // A captured page/end callback owns retired request state. Ask the port
+        // for a fresh read instead, and consume any owner/transport rejection.
+        void residency.scheduleHydration(ref, intent).catch(() => {});
       }
     },
     clear(_epoch) {

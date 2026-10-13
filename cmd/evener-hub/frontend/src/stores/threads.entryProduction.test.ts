@@ -26,6 +26,7 @@ import {
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
+  backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
   countCachedSessions,
   markCacheSessionsDeleted,
@@ -1555,6 +1556,48 @@ const tool: AnyNotification = {
     },
   },
 };
+
+it("aborted Clear restarts a pending end read from the current owner", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = new FakeClient("ready");
+  const pendingEnd = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", (params) => {
+    reads += 1;
+    return reads === 2
+      ? pendingEnd.promise
+      : {
+          ...(reads === 1 ? readOf() : readOf([recorded("fresh-end")], 41)),
+          requestGeneration: params.requestGeneration,
+        };
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+  const owner = acquireBackgroundThread(ref);
+  await owner.ready;
+  await settleEntryTranscriptForTests(ref);
+  client.emitNotification(tool);
+  client.emitNotification(end);
+  await vi.waitFor(() => expect(reads).toBe(2));
+  const clearing = deferred<{ committed: false }>();
+  vi.spyOn(storage, "clear").mockReturnValueOnce(clearing.promise);
+  const clear = clearCachedSessions();
+  pendingEnd.resolve({ ...readOf([recorded("obsolete-end")], 41), overlay: [], requestGeneration: 2 });
+  await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
+  clearing.resolve({ committed: false });
+  expect(await clear).toEqual({ committed: false });
+  await vi.waitFor(() => expect(reads).toBe(3));
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({
+    clientId: location.origin,
+    hostId: "local",
+    sessionId: readOf().thread.sessionId,
+    incarnation: "inc-1",
+  });
+  expect(JSON.stringify(await storage.getLatest(key, 100))).toContain("fresh-end");
+  await owner.release();
+});
 
 it("background disk settlement does not await a pending end read", async () => {
   cache();

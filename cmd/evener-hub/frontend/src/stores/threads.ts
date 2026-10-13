@@ -7368,7 +7368,6 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     // The abort drops only its own marker — lifetime suppression is never touched,
     // so another source's mid-flight arming stands. Durable observations
     // never need reverting: optimistic arming did not change their epoch.
-    residencyIfCreated?.releaseClearClaim();
     threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
     // Neither database changed, so the suppressed entry route is re-enabled: a
     // still-held foreground model resumes ordinary recorded ingestion
@@ -7377,6 +7376,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
       route.clearInert = false;
       route.repository?.resumePersistence();
     }
+    residencyIfCreated?.releaseClearClaim();
     return { committed: false };
   }
   // An isolated fixture keeps its own cache; clear it too. If its transaction
@@ -7473,7 +7473,7 @@ function transcriptResidency(): TranscriptResidency {
       hydrate: async (ref, intent, signal) => {
         if (signal.aborted) return;
         const client = await requireReadyClient();
-        if (signal.aborted) return;
+        if (signal.aborted || !canonicalThreadOwnerActive(ref)) return;
         const epoch = readyEpoch;
         await refreshTrackedThreadNow(client, epoch, ref, false, false, undefined, undefined, intent, signal);
       },

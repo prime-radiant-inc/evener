@@ -155,8 +155,16 @@ describe("transcript residency: hydration scheduling", () => {
   });
 
   test("retireClaims retires in-flight hydration and releaseClearClaim re-issues it", async () => {
-    const { residency } = setup();
     const runs: string[] = [];
+    const residency = createTranscriptResidency(
+      {
+        hydrate: async () => {
+          runs.push("fresh");
+        },
+      },
+      DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS,
+    );
+    residency.connection(1, true);
     const first = deferred<void>();
     const task = residency.scheduleHydration("local:one", "background", async () => {
       runs.push("run");
@@ -171,6 +179,7 @@ describe("transcript residency: hydration scheduling", () => {
     // abort re-issued a fresh run.
     residency.releaseClearClaim();
     await vi.waitFor(() => expect(runs.length).toBe(2));
+    expect(runs).toEqual(["run", "fresh"]);
     residency.dispose();
   });
 
