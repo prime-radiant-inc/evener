@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -193,6 +194,35 @@ func TestTimingBudgetStillEnforcesTheCeilingWithoutTheMarker(t *testing.T) {
 	}
 	if !strings.Contains(out, "per-test ceiling") {
 		t.Fatalf("no ceiling FAIL while the metric marker is absent:\n%s", out)
+	}
+}
+
+// TestTimingBudgetFailsWhenTheMeasuredFileIsMissing pins the gate's fail-loud
+// contract for issue #144. Once the ratchet reads durations from the gate's own
+// run, a run that produced no duration file must stop the gate, not compare an
+// empty measurement and pass: a missing file silently treated as "nothing over
+// budget" would turn the whole ratchet into a no-op the moment it is wired in.
+// The exit status is the assertion — what fails here is that the check stops.
+func TestTimingBudgetFailsWhenTheMeasuredFileIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	budget := filepath.Join(dir, "budget.json")
+	writeAuditScriptFixture(t, budget,
+		`{"metric":"package-wall-seconds","perTestCeilingSeconds":3,"packages":{"example.com/mod":1}}`)
+	tmpDir := filepath.Join(dir, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", tmpDir, err)
+	}
+	missing := filepath.Join(dir, "no-such-measured.tsv")
+	cmd := exec.Command("bash", timingBudgetScript,
+		"--measured", missing, "--budget", budget, "--no-web", "--check", "--strict")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a missing measured file must fail --check, not pass silently:\n%s", out)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("exit = %v, want exit status 1:\n%s", err, out)
 	}
 }
 

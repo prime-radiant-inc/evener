@@ -218,18 +218,23 @@ test-short:
 # hosts are handled inside the tests themselves: the live/e2e families probe
 # their own capabilities and t.Skip (internal/e2ecap).
 ## The canonical serial post-merge gate: lint, build, full tests, and native/package qualification.
-## proves: make lint, make build, ROOT_FULL=1 make test, make test-native and
+## proves: make lint, make build, ROOT_FULL=1 make test, the timing budget
+##   checked against the rows that same test run produced, make test-native and
 ##   make test-api-package all pass, in that order.
 ## trigger: Local pre-merge/post-merge; CI keeps equivalent checks in
 ##   separate named jobs.
 ## requires: Does not run fuzz search, race testing, provider calls, or
-##   browser guards; those have separate owners.
+##   browser guards; those have separate owners. The timing check reads the
+##   gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is
+##   strict where the ratchet's own policy is (CI) and warn-only on a local run.
 ## fails-when: The first failing phase stops the gate and returns nonzero;
 ##   do not infer a verdict from partial logs.
 merge-approval-gate:
-	@$(MAKE) lint && \
+	@tsv="$$(mktemp)"; trap 'rm -f "$$tsv"' EXIT INT TERM; \
+		$(MAKE) lint && \
 		$(MAKE) build && \
-		ROOT_FULL=1 $(MAKE) test && \
+		ROOT_FULL=1 EVENER_GATE_TIMING_TSV="$$tsv" $(MAKE) test && \
+		scripts/gate/test-timing-budget.sh --check --measured "$$tsv" && \
 		$(MAKE) test-native test-api-package
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=6
@@ -279,8 +284,7 @@ vet:
 # a flat per-test ceiling, so an unexamined timing regression cannot silently
 # erode the wins docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md
 # recorded. CHECK=1 enforces (strict in CI, warn-only on a local run); bare
-# invocation only measures and prints. Companion to coverage-floor,
-# same heavy + local posture.
+# invocation measures by running the suite itself. Companion to coverage-floor.
 ## Ratchet per-package test wall time against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
 ##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat
@@ -289,10 +293,12 @@ vet:
 ##   wall time), the Go-package ratio check is suspended to a warning; the
 ##   frontend ("web") row and the per-test ceiling keep their unchanged metrics
 ##   and stay enforced.
-## trigger: Local/on-demand; not required CI — deliberately not part of make
-##   merge-approval-gate, since measuring durations means a second full test
-##   run. CHECK=1 enforces the ratios; bare invocation only measures and
-##   prints them, except for a broken measurement, which is nonzero either way.
+## trigger: Local/on-demand. merge-approval-gate runs the check through
+##   --measured over the rows its own ROOT_FULL=1 make test run captured, so
+##   enforcing the budget no longer needs a second full test run (issue #144);
+##   invoked bare it still measures by running the suite itself. CHECK=1
+##   enforces the ratios; bare invocation only measures and prints them, except
+##   for a broken measurement, which is nonzero either way.
 ## requires: Deterministic; no provider calls. Reuses gate-surface-lib.sh, so
 ##   it measures the same surface ROOT_FULL=1 make test proves.
 ## fails-when: A broken measurement — go list or go test exiting nonzero, or a

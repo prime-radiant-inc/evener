@@ -88,6 +88,13 @@ type shardsConfig struct {
 	stdout         io.Writer
 	stderr         io.Writer
 	signals        <-chan os.Signal
+	// jsonDir, when set (EVENER_SHARD_JSON_DIR), writes each shard's run as
+	// durable `-test.v` text under it and one package-wall row at the end, so
+	// run-module-tests.sh can turn a sharded package into the timing ratchet's
+	// rows without running its tests a second time (issue #144). jsonPackage is
+	// the import path those rows name; ignored when jsonDir is "".
+	jsonDir     string
+	jsonPackage string
 	// slotWait, when set, is called each time a shard has to wait for a free
 	// concurrency slot: the observable moment the runner holds a shard back.
 	// A test seam; nil in production.
@@ -164,6 +171,8 @@ func runPackageShards(label, moduleDir, pkgDir, envPrefix string, args []string)
 		stdout:         os.Stdout,
 		stderr:         os.Stderr,
 		signals:        signals,
+		jsonDir:        os.Getenv("EVENER_SHARD_JSON_DIR"),
+		jsonPackage:    os.Getenv("EVENER_SHARD_JSON_PACKAGE"),
 	})
 }
 
@@ -484,6 +493,26 @@ func runShards(cfg shardsConfig) int {
 	}
 	slots := make(chan struct{}, limit)
 
+	// The ratchet capture (issue #144): a durable per-shard `-test.v` log the
+	// caller turns into timing rows offline, and the wall time of the shard
+	// phase for the package's own budget number. Test output goes to the
+	// durable file rather than a scratch log so it outlives a green run's
+	// scratch cleanup; the failure replay below reads the same path.
+	jsonShards := cfg.jsonDir != ""
+	if jsonShards {
+		if err := os.MkdirAll(cfg.jsonDir, 0o755); err != nil {
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
+			return 1
+		}
+	}
+	shardLogPath := func(i int) string {
+		if jsonShards {
+			return filepath.Join(cfg.jsonDir, fmt.Sprintf("%s-shard%d.v", cfg.label, i))
+		}
+		return filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
+	}
+	phaseStart := time.Now()
+
 	// Launch shards, at most limit at a time. Slots are acquired before
 	// starting a shard and released by the goroutine that waits for it, so a
 	// long shard holds its slot exactly as long as the process lives. Each
@@ -523,6 +552,12 @@ func runShards(cfg shardsConfig) int {
 			return 1
 		}
 		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel)}
+		if jsonShards {
+			// -test.v is what puts each test's own verdict line in the log,
+			// which `go tool test2json` needs to recover per-test durations
+			// from it offline (issue #144).
+			args = append(args, "-test.v")
+		}
 		// The skip reaches the shards, not just the survey: a cached survey
 		// means no survey runs at all, and the shards would then run the very
 		// test the operator asked to skip.
@@ -530,7 +565,7 @@ func runShards(cfg shardsConfig) int {
 			args = append(args, "-test.skip", cfg.skip)
 		}
 		args = append(args, extraFlags...)
-		log, err := os.Create(filepath.Join(logdir, fmt.Sprintf("shard%d.log", i)))
+		log, err := os.Create(shardLogPath(i))
 		if err != nil {
 			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 			return 1
@@ -576,6 +611,19 @@ func runShards(cfg shardsConfig) int {
 		return code
 	}
 
+	// The package's own wall time under the sharded surface is the shard
+	// phase, not the sum of overlapping shards (issue #172's contention trap):
+	// the shards run concurrently, so one SUM row for the phase is the honest
+	// number. A failed phase is no measurement, so it is not written.
+	if jsonShards && cfg.jsonPackage != "" && !fail {
+		phase := time.Since(phaseStart).Seconds()
+		row := fmt.Sprintf("PKG\t%s\nSUM\t%s\t%s\n", cfg.jsonPackage, cfg.jsonPackage, formatSeconds(phase))
+		if err := os.WriteFile(filepath.Join(cfg.jsonDir, cfg.label+".package.tsv"), []byte(row), 0o644); err != nil {
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
+			return 1
+		}
+	}
+
 	if fail {
 		// Replay by verdict, never by matching failure markers in the log. A
 		// shard can fail with no `go test` marker anywhere in its output — a
@@ -588,7 +636,7 @@ func runShards(cfg shardsConfig) int {
 			_, _ = fmt.Fprintln(cfg.stdout)
 			_, _ = fmt.Fprintln(cfg.stdout, "=== failing shard output ===")
 			for _, i := range failed {
-				log := filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
+				log := shardLogPath(i)
 				_, _ = fmt.Fprintf(cfg.stdout, "----- %s:%d -----\n", cfg.label, i)
 				if !copyFileTo(cfg.stdout, log) {
 					_, _ = fmt.Fprintf(cfg.stdout, "(no output captured: %s is empty or missing)\n", log)

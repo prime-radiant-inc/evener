@@ -123,6 +123,9 @@ fi
 # surface no gate reproduces.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/scratch-lib.sh"
+# The row contract (go_test_json_to_tsv / vitest_json_to_tsv) is shared with
+# run-module-tests.sh, the gate's single measured producer (issue #144).
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/timing-tsv-lib.sh"
 
 if [ -n "$strict_override" ]; then
 	strict=$([ "$strict_override" = "1" ] && echo true || echo false)
@@ -137,55 +140,6 @@ scratch_dir work evener-testbudget
 
 measured="$work/measured.tsv"
 : >"$measured"
-
-# go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE
-# — prints the ratchet's rows for one module: one "PKG\t<package>" line per
-# package-level terminal event, one "TEST\t<package>\t<name>\t<seconds>" line per
-# test AND subtest result (what the ceiling check needs to catch a slow subtest a
-# top-level-only view would hide), and one "SUM\t<package>\t<seconds>" line per
-# package, the package's own wall time read from its terminal event's Elapsed
-# field. (The SUM used to be the sum of top-level Test/Example Elapsed; under
-# t.Parallel that counts overlapping tests additively, so it measured contention
-# as much as work — issue #172.)
-#
-# go test -json emits exactly one terminal event for EVERY package it was asked
-# to test — including a package with no test files (skip) and a package that
-# fails to build (fail). $2 lists what `go list ./...` reported, one import path
-# per line; any of those the stream never ends is the silent-drop shape issue
-# #172 filed (a build-failed package contributing no rows, so --bless quietly
-# wrote a budget without it) and fails the whole run.
-#
-# The parsing is `evener-dev timing-parse`, unit-tested in Go against JSON stream
-# strings rather than through a faked toolchain (issue #172 review;
-# docs/developing-evener/testing.md's port-on-touch rule). GOFLAGS= keeps an
-# inherited GOFLAGS from changing how the helper itself builds.
-go_test_json_to_tsv() {
-	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev timing-parse --json "$1" --packages "$2" )
-}
-
-# vitest_json_to_tsv REPORT_JSON >> measured.tsv — rolls the whole frontend
-# suite up under one package key, "web": vitest has no per-package shape the
-# way a Go module does, and the budget's own doc comment names this as the
-# design. duration is milliseconds in the vitest/Jest-compatible JSON reporter;
-# everything else in this file is seconds.
-vitest_json_to_tsv() {
-	python3 - "$1" <<'PY'
-import json, sys
-
-with open(sys.argv[1]) as fh:
-	report = json.load(fh)
-
-total = 0.0
-for suite in report.get("testResults", []):
-	for a in suite.get("assertionResults", []):
-		secs = a.get("duration") or 0
-		secs = secs / 1000.0
-		name = a.get("fullName") or a.get("title") or "(unnamed)"
-		print(f"TEST\tweb\t{name}\t{secs}")
-		total += secs
-print(f"SUM\tweb\t{total}")
-PY
-}
 
 module_short_flag() {
 	[ "$1" = "." ] && printf '' || printf -- '-short'

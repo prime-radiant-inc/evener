@@ -24,6 +24,7 @@ var subcommands = map[string]func(args []string) int{
 	"module-lint":        lintMain,
 	"root-test-flags":    rootTestFlagsMain,
 	"timing-parse":       timingParseMain,
+	"timing-render":      timingRenderMain,
 	"web-checks":         runWebChecks,
 	"web-browser-guards": runWebBrowserGuards,
 }
