@@ -55,7 +55,6 @@ import { useDocumentRead } from "./useDocumentRead";
 
 const CLASS = {
   markdown: requireClass(styles.markdown, "docpane.module.css", "markdown"),
-  pre: requireClass(styles.pre, "docpane.module.css", "pre"),
   image: requireClass(styles.image, "docpane.module.css", "image"),
   lightboxImg: requireClass(styles.lightboxImg, "docpane.module.css", "lightboxImg"),
   notice: requireClass(styles.notice, "docpane.module.css", "notice"),
@@ -652,7 +651,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           )}
         </div>
       ) : (
-        <pre className={CLASS.pre}>{content.text}</pre>
+        <CodeBlock text={content.text} fold={false} />
       )}
     </>,
     boxVisible ? (

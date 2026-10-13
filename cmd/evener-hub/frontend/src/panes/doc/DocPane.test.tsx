@@ -3084,3 +3084,15 @@ test("unbound restored read waits for ready before one owning lease and releases
   await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1));
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
 });
+
+test("the annotated reader keeps a plain text file's copyable code block", async () => {
+  mockRead.mockResolvedValue(textContent({ text: "plain body line" }));
+  const f = await fixture("reader-plain-copy");
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const host = annotedRender(f, ports, client, "doc-plain-copy", "src/notes.txt");
+  cleanupAfterTest(() => disposeDocumentReaderWork("doc-plain-copy"));
+  cleanupAfterTest(() => host.unmount());
+  expect((await screen.findByText("plain body line")).closest("pre")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+});

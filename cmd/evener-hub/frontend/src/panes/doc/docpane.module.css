@@ -1,15 +1,3 @@
-.pre {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-body);
-  line-height: var(--line-height-body);
-  color: var(--ink-hi);
-  /* wrap long lines instead of forcing the whole pane to scroll sideways;
-   * break-word keeps an unbroken token (a long URL/hash) from overflowing */
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 /* The pane's reading surface: the Markdown widget composes with its host
  * (1em fallback), so the pane pins the shared prose reading step here for
  * markdown documents. */
