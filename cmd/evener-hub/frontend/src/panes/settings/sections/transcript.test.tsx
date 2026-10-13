@@ -1,5 +1,12 @@
 import type { AnyNotification } from "@evener/appwire-client";
-import { makeTranscriptDisplayConfig, shippedDefault, toWireConfig, WireError } from "@evener/appwire-client";
+import {
+  ConnectionClosedError,
+  friendlyErrorMessage,
+  makeTranscriptDisplayConfig,
+  shippedDefault,
+  toWireConfig,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -572,4 +579,23 @@ test("reports a conflict instead of acknowledging two patches with one expected 
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: firstDraft });
   expect(screen.getAllByRole("button", { name: "Retry" }).length).toBeGreaterThan(0);
+});
+
+// The store keeps its own failure messages, and gives a hub WireError and the
+// client's connection-state failure their friendly form, so the notice never
+// shows the client's wiring text.
+test.each([
+  ["a hub-reported WireError", new WireError("transcript defaults are being rewritten", -32000)],
+  ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+])("a hub read failure from %s shows its friendly form", async (_name, err) => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/transcriptDisplay/get", () => {
+    throw err;
+  });
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubError).not.toBeNull());
+  expect(document.body.textContent).toContain(friendlyErrorMessage(err));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
 });

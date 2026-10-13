@@ -2,11 +2,14 @@ import type { KeybindingsOverrides, KeybindingsRule } from "@evener/appwire-clie
 import {
   ACTIONS,
   CHARACTER_KEY_TRIGGER_BINDING_ID,
+  ConnectionClosedError,
   DEFAULT_BINDINGS,
+  friendlyErrorMessage,
   parseChord,
   registerDefaultBindings,
   SETTINGS_SCOPE,
   serializeChord,
+  WireError,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -1466,4 +1469,22 @@ test("Retry is disabled while a refresh is in flight through the rollback window
   resolveGet?.(overridesPayload(1, []));
   await waitFor(() => expect(keybindingsStore.getState().hubError).toBeNull());
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+});
+
+// The store keeps its own failure messages, and gives a hub WireError and the
+// client's connection-state failure their friendly form, so the alert never
+// shows the client's wiring text.
+test.each([
+  ["a hub-reported WireError", new WireError("keybindings.toml is being rewritten", -32000)],
+  ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+])("a hub load failure from %s shows its friendly form", async (_name, err) => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => {
+    throw err;
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(err));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
 });

@@ -332,6 +332,18 @@ export function friendlyErrorMessage(error: unknown): string {
   return GENERIC_ERROR_MESSAGE;
 }
 
+// storeErrorText is the stored failure text for a store whose catch sees both
+// request rejections and failures it threw itself with a message written for
+// the user (a malformed reply, an unavailable hub). Those keep their text. A
+// hub WireError and the client-unreachable family take friendlyErrorMessage's
+// form, so the client's connection-state wiring text never reaches the
+// screen. A store whose catch sees only request rejections stores
+// friendlyErrorMessage(err) instead.
+export function storeErrorText(error: unknown): string {
+  if (error instanceof WireError || isClientUnreachableError(error)) return friendlyErrorMessage(error);
+  return errorText(error);
+}
+
 // DAEMON_MISSING_MESSAGE is what friendlyLaunchErrorMessage shows for the
 // daemon-missing family (errorKind's "daemon-missing"): the hub answered,
 // but no agent daemon could be reached to serve the request - the first-run

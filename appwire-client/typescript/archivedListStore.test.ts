@@ -8,6 +8,7 @@ import {
   archivedListKey,
   createArchivedListStore,
 } from "./archivedListStore";
+import { ConnectionClosedError, friendlyErrorMessage, WireError } from "./errors";
 import { deferred } from "./testing/deferred";
 import { callsTo, FakeClient } from "./testing/fakeClient";
 import { completeSession } from "./testing/navigation";
@@ -502,5 +503,29 @@ describe("the list's revision", () => {
     await store.refresh("projects", "proj");
     await store.refresh("projects", "proj");
     expect(seen[1]).toEqual({ catalog: "projects", projectKey: "proj" });
+  });
+});
+
+describe("failure text", () => {
+  // The store composes its own message for a malformed page and keeps it; a
+  // hub WireError keeps its own explanation; only the client's
+  // connection-state wiring text is replaced by the shared friendly sentence.
+  test.each([
+    ["a hub-reported WireError", new WireError("archive index is rebuilding", -32000)],
+    ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+  ])("a failed refresh from %s records its friendly form", async (_label, err) => {
+    fake.on("evener/archived/list", () => {
+      throw err;
+    });
+    await store.refresh("projects", "proj");
+    expect(entry("projects", "proj").error).toBe(friendlyErrorMessage(err));
+  });
+
+  test("a malformed page keeps the store's own diagnosis rather than the generic sentence", async () => {
+    fake.on("evener/archived/list", () => ({ sessions: [{ ref: "local:bad" }], total: 1 }));
+    await store.refresh("projects", "proj");
+    const error = entry("projects", "proj").error;
+    expect(error).not.toBeNull();
+    expect(error).not.toBe(friendlyErrorMessage(new Error("any client-side failure")));
   });
 });

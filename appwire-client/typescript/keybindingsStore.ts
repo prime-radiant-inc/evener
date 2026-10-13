@@ -36,7 +36,7 @@ import {
   discardStoredDraft,
   UnreadableDraftError,
 } from "./draftCheckpointPort";
-import { errorText, wireRejectionPayload } from "./errors";
+import { storeErrorText, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
@@ -114,6 +114,8 @@ export interface KeybindingsDraft {
 export interface KeybindingsStoreFields {
   hubSupport: KeybindingsSupport;
   hubLoading: boolean;
+  /** The last hub failure as storeErrorText: the store's own message, or a
+   * request failure's friendly form; render it as-is. */
   hubError: string | null;
   /** Revision of the last confirmed hub payload (0 = shipped defaults). */
   revision: number;
@@ -918,7 +920,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       applyHubOverrides(payload, settled);
       return null;
     } catch (error) {
-      setState({ ...settled, hubError: errorText(error) });
+      setState({ ...settled, hubError: storeErrorText(error) });
       return error;
     }
   }
@@ -1063,7 +1065,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // Same posture as refreshFor: a reconcile failure surfaces as hubError
       // (the registry has already rolled back to its last good state), never
       // as an exception escaping the client's notification dispatch.
-      setState({ hubError: errorText(error) });
+      setState({ hubError: storeErrorText(error) });
     }
   }
 
@@ -1141,7 +1143,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         void refreshFor(generation);
       }
     } catch (error) {
-      if (stillMine()) setState({ hubError: errorText(error), hubLoading: false });
+      if (stillMine()) setState({ hubError: storeErrorText(error), hubLoading: false });
     }
   }
 
@@ -1199,7 +1201,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // Same posture as the changed-notification path: a reconcile failure
       // surfaces as hubError (the registry has already rolled back to its last
       // good state), never as an exception escaping the pref dispatch.
-      setState({ hubError: errorText(error) });
+      setState({ hubError: storeErrorText(error) });
     }
   }
 
@@ -1307,7 +1309,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
             // state, so refresh to it and surface the conflict.
             const current = rejectionPayload(error, "conflict", "current");
             if (current !== undefined) applyHubOverrides(current);
-            const message = errorText(error);
+            const message = storeErrorText(error);
             setState({ hubError: message, ...(current === undefined ? {} : { conflict: message }) });
           }
           throw error;

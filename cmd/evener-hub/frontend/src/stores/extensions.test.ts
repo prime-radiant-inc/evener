@@ -563,7 +563,7 @@ describe("browseMarketplace", () => {
     });
   });
 
-  test("caches a failure as status:error with the error message", async () => {
+  test("caches a failure as status:error with the error's friendly form", async () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/browse", () => {
       throw new Error("network down");
@@ -571,7 +571,7 @@ describe("browseMarketplace", () => {
     await extensionsStore.getState().browseMarketplace("acme-plugins");
     expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({
       status: "error",
-      error: "network down",
+      error: friendlyErrorMessage(new Error("network down")),
     });
   });
 
@@ -881,7 +881,7 @@ describe("fetchLaunchLayer", () => {
       throw new Error("boom");
     });
     await expect(extensionsStore.getState().fetchLaunchLayer()).resolves.toBeUndefined();
-    expect(extensionsStore.getState().launchLayerError).toBe("boom");
+    expect(extensionsStore.getState().launchLayerError).toBe(friendlyErrorMessage(new Error("boom")));
   });
 });
 

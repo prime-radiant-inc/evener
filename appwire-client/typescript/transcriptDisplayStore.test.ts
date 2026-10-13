@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { WireError } from "./errors";
+import { ConnectionClosedError, friendlyErrorMessage, WireError } from "./errors";
 import { deferred } from "./testing/deferred";
 import { memoryDraftStorage } from "./testing/draftStorage";
 import { FakeClient } from "./testing/fakeClient";
@@ -2250,5 +2250,30 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toBeNull();
     expect(() => store.getState().discardDraft()).not.toThrow();
     expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
+  });
+});
+
+describe("read failure text", () => {
+  // The store composes its own failure messages (a malformed reply) and keeps
+  // them; a hub WireError keeps its own explanation; only the client's
+  // connection-state wiring text is replaced by the shared friendly sentence.
+  test.each([
+    ["a hub-reported WireError", new WireError("transcript defaults are being rewritten", -32000)],
+    ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+  ])("a failed read from %s records its friendly form", async (_label, err) => {
+    const client = new FakeClient("ready");
+    client.on(getMethod, () => {
+      throw err;
+    });
+    const store = await readyStore(client);
+    expect(store.getState().hubError).toBe(friendlyErrorMessage(err));
+  });
+
+  test("a malformed reply keeps the store's own diagnosis rather than the generic sentence", async () => {
+    const client = new FakeClient("ready");
+    client.on(getMethod, () => ({ desktop: "not a default" }) as never);
+    const store = await readyStore(client);
+    expect(store.getState().hubError).not.toBeNull();
+    expect(store.getState().hubError).not.toBe(friendlyErrorMessage(new Error("any client-side failure")));
   });
 });

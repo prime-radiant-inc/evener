@@ -3,7 +3,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { type ConnectionState, createHubOverviewStore, friendlyErrorMessage } from "@evener/appwire-client";
+import { type ConnectionState, createHubOverviewStore } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
@@ -230,15 +230,15 @@ function HubSettings({
 								<Copy muted>MCP discovery unavailable.</Copy>
 							) : (
 								<>
-									<ErrorMessage
-										message={data.mcpDiscovered.error ? friendlyErrorMessage(data.mcpDiscovered.error) : null}
-									/>
+									{/* The hub composes these diagnostics and sends them as data, not
+									    as a rejection, so they are shown as the hub wrote them. */}
+									<ErrorMessage message={data.mcpDiscovered.error || null} />
 									{data.mcpDiscovered.servers?.map((server) => (
 										<View key={server.name} style={{ gap: 3 }}>
 											<Copy>{server.name}</Copy>
 											<Detail label="Transport" value={server.transport} />
 											<Detail label="Status" value={server.status} />
-											<ErrorMessage message={server.error ? friendlyErrorMessage(server.error) : null} />
+											<ErrorMessage message={server.error || null} />
 										</View>
 									))}
 									{!data.mcpDiscovered.error && data.mcpDiscovered.servers?.length === 0 && (

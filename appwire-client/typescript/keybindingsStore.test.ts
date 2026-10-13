@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { UnreadableDraftError } from "./draftCheckpointPort";
-import { WireError } from "./errors";
+import { ConnectionClosedError, friendlyErrorMessage, WireError } from "./errors";
 import { ACTIONS } from "./keybindingActions";
 import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
@@ -1867,5 +1867,30 @@ describe("payload rules shared by both apps", () => {
     // stores and serves such a rule and this client must not discard it.
     const payload = { version: 1, revision: 1, rules: [{ action: "\ufeff", chord: "\ufeff" }] };
     expect(fromWireOverrides(payload)).toEqual(payload);
+  });
+});
+
+describe("read failure text", () => {
+  // The store composes its own failure messages (a malformed reply) and keeps
+  // them; a hub WireError keeps its own explanation; only the client's
+  // connection-state wiring text is replaced by the shared friendly sentence.
+  test.each([
+    ["a hub-reported WireError", new WireError("keybindings.toml is being rewritten", -32000)],
+    ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+  ])("a failed read from %s records its friendly form", async (_label, err) => {
+    const client = new FakeClient("ready");
+    client.on(getMethod, () => {
+      throw err;
+    });
+    const store = await readyStore(client);
+    expect(store.getState().hubError).toBe(friendlyErrorMessage(err));
+  });
+
+  test("a malformed reply keeps the store's own diagnosis rather than the generic sentence", async () => {
+    const client = new FakeClient("ready");
+    client.on(getMethod, () => ({ version: 1, revision: "two", rules: [] }) as never);
+    const store = await readyStore(client);
+    expect(store.getState().hubError).not.toBeNull();
+    expect(store.getState().hubError).not.toBe(friendlyErrorMessage(new Error("any client-side failure")));
   });
 });

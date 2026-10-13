@@ -12,7 +12,7 @@
 import { assertDraftDiscardable, discardCheckpointedDraft, persistCheckpointedDraft } from "./checkpointedDraftEditor";
 import type { AppwireClient } from "./client";
 import { canonicalJson, createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
-import { errorText, WireError, wireRejectionPayload } from "./errors";
+import { storeErrorText, WireError, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { isPlainObject } from "./plainObject";
 import { createReadyGenerationFence, type ReadyGenerationFence } from "./readyGenerationFence";
@@ -94,6 +94,9 @@ export interface TranscriptDraft {
 export interface TranscriptDisplayStoreFields {
   hubSupport: TranscriptDisplaySupport;
   hubLoading: boolean;
+  /** The last hub read failure, and each layout's last write failure, as
+   * storeErrorText: the store's own message, or a request failure's friendly
+   * form; render them as-is. */
   hubError: string | null;
   hubErrors: Partial<Record<ViewportClass, string>>;
   /** Confirmed defaults keep presenting across a transient disconnect. */
@@ -872,7 +875,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         void refreshFor(generation);
       }
     } catch (error) {
-      if (stillMine()) setState({ hubError: errorText(error), hubLoading: false });
+      if (stillMine()) setState({ hubError: storeErrorText(error), hubLoading: false });
     }
   }
 
@@ -1000,7 +1003,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         applyHubDefault(layout, canonical);
         if (!stillMine()) return getState().hub[layout] ?? canonical;
       }
-      const message = errorText(error);
+      const message = storeErrorText(error);
       setState({
         ...clearPreview(layout),
         ...layoutError(layout, message),
