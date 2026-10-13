@@ -176,12 +176,16 @@ func DirEntryRenderSize(e DirEntry) int {
 // listDirListingName names a directory listing for the budget's live-entry
 // accounting: the walk root comes through with an empty prefix, which the
 // ancestor reasoning reads as ".", the convention the glob walkers charge
-// under (isGlobWalkAncestor treats "." as an ancestor of everything).
+// under (isGlobWalkAncestor treats "." as an ancestor of everything). The
+// name is slash-form because that is what the ancestor recognition matches
+// on, so on Windows the walk's native prefixes cross through
+// filepath.ToSlash here — for this key alone, never for the native paths
+// that keep flowing to filesystem operations and the rendered entries.
 func listDirListingName(relPrefix string) string {
 	if relPrefix == "" {
 		return "."
 	}
-	return relPrefix
+	return filepath.ToSlash(relPrefix)
 }
 
 // listDirReadOS lists one directory in charged, cancellation-checked chunks

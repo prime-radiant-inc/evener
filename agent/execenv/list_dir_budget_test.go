@@ -375,6 +375,33 @@ func TestListDirBudgetRefusalAdviceNamesTheListDirLever(t *testing.T) {
 	}
 }
 
+// TestListDirListingNameIsTheSlashKeyTheAncestorLogicRecognizes pins the
+// budget-key half of the walk's accounting: the name a listing is charged
+// under must be the slash-separated form isGlobWalkAncestor matches on, with
+// the walk's root charging as "." — the ancestor of everything. The
+// Windows-native half of the contract (a relPrefix like "a\b" crossing
+// through filepath.ToSlash into "a/b" for the key alone) is the windows
+// crossbuild's to compile and a Windows runner's to execute; a non-Windows
+// runner never produces a backslashed prefix to feed it.
+func TestListDirListingNameIsTheSlashKeyTheAncestorLogicRecognizes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ relPrefix, want string }{
+		{"", "."},
+		{"dir00", "dir00"},
+		{"dir00/leaf.md", "dir00/leaf.md"},
+	} {
+		if got := listDirListingName(tc.relPrefix); got != tc.want {
+			t.Fatalf("listDirListingName(%q) = %q, want %q", tc.relPrefix, got, tc.want)
+		}
+	}
+	if !isGlobWalkAncestor(listDirListingName(""), listDirListingName("dir00")) {
+		t.Fatalf("the root's listing name %q must be an ancestor key of %q", listDirListingName(""), listDirListingName("dir00"))
+	}
+	if !isGlobWalkAncestor("dir00", listDirListingName("dir00/leaf.md")) {
+		t.Fatalf("the nested listing name %q lost its ancestor %q", listDirListingName("dir00/leaf.md"), "dir00")
+	}
+}
+
 // TestSandboxedListDirBudgetMatchesTheLegacyWalkExactly pins the confined
 // arm's parity: with a budget generous enough to finish, the fd-anchored
 // budgeted walk preserves the legacy walk's semantics exactly — masked
