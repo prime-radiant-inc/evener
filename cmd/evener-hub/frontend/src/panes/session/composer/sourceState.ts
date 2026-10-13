@@ -637,7 +637,13 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     // rewrite durable state, and their preparation failures keep dispatching
     // nothing at all.
     const tolerateFault = opts?.tolerateStorageFault === true;
-    await ready().catch(() => undefined);
+    // Readiness keeps its own honest contract and reports the failure. An
+    // ordinary send still proceeds from its captured payload without a
+    // durable draft, but the strict paths rewrite durable state: for them a
+    // failed readiness IS a failed preparation, and refusing here is what
+    // keeps their callers dispatching nothing.
+    if (tolerateFault) await ready().catch(() => undefined);
+    else await ready();
     if (tolerateFault) await whenSettled().catch(() => undefined);
     else await whenSettled();
     // Accepted recovery work is part of the submission's durable state: drain it
