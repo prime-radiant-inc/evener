@@ -2380,3 +2380,116 @@ it("arms a fresh reconciliation for a newer snapshot at the same positions and s
   reader.dispose();
   owner.dispose();
 });
+
+it("recovers durable readiness after a foreground predecessor abort blocks its committed successor", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const reconcile = vi.fn(() => {
+    owner.acceptRead(readItems("repaired", 3, [item("base", 1), item("alpha", 2), item("beta", 3)]), {
+      lifetime: 1,
+      readId: "read-repaired",
+      boundary: "boundary-repaired",
+    });
+  });
+  const owner = repository(fixture.cache, 1, undefined, scheduler, undefined, reconcile);
+  const reader = owner.attachReader();
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+  const held = deferred<EntryWriteOutcome>();
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const successorCommitted = deferred<void>();
+  const commit = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockImplementation(async (batch) => {
+      const outcome = await realCommit(batch);
+      if (batch.items.some((row) => row.transcriptKey === "item-beta")) successorCommitted.resolve();
+      return outcome;
+    })
+    .mockImplementationOnce(() => held.promise);
+  try {
+    owner.accept(historyNotification("alpha", 2, 2), { lifetime: 1 });
+    owner.accept(historyNotification("beta", 3, 3), { lifetime: 1 });
+    await successorCommitted.promise;
+    expect((await fixture.cache.getCoverage(historyKey, "read:read-base"))?.suffixBlocked).toBe(true);
+    held.resolve({ outcome: "failed", error: new Error("foreground A abort") });
+    await owner.settled().catch(() => undefined);
+    expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+    // Exercise all existing paced work, including the owner's authoritative
+    // reconciliation response. No fresh input is supplied outside that callback.
+    let fired = 0;
+    while (fired < scheduled.length && fired < 5) {
+      scheduled[fired++]!.fire();
+      await owner.settled().catch(() => undefined);
+    }
+    expect((await fixture.cache.getCoverage(historyKey, "read:read-repaired"))?.representedSnapshot).toBe(3);
+    expect(owner.getRecoveryStateForTesting()).toMatchObject({ recoveryNeeded: false, cacheContinuityLost: false });
+    expect((await reader.openLocal(40)).status).toBe("current");
+    expect(
+      reader
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["base", "alpha", "beta"]);
+    expect((await keysInCache(fixture.cache)).sort()).toEqual(["item-alpha", "item-base", "item-beta"]);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    await owner.settled();
+  } finally {
+    held.resolve({ outcome: "failed", error: new Error("cleanup") });
+    commit.mockRestore();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("requests bounded reconciliation for committed not-extended suffix coverage", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const reconcile = vi.fn();
+  const owner = repository(fixture.cache, 1, undefined, scheduler, undefined, reconcile);
+  const reader = owner.attachReader();
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  // Exercise the real cache's mismatch/block outcome, not a fabricated success.
+  const commit = vi.spyOn(fixture.cache, "commitBatch").mockImplementationOnce((batch) =>
+    realCommit({
+      ...batch,
+      coverage:
+        batch.coverage?.kind === "suffix"
+          ? { ...batch.coverage, previousBoundary: "missing-predecessor" }
+          : batch.coverage,
+    }),
+  );
+  try {
+    owner.accept(historyNotification("alpha", 2, 2), { lifetime: 1 });
+    await owner.settled().catch(() => undefined);
+    expect((await fixture.cache.getCoverage(historyKey, "read:read-base"))?.suffixBlocked).toBe(true);
+    expect(
+      reader
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["base", "alpha"]);
+    expect(scheduled).toHaveLength(1);
+    expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+    scheduled[0]!.fire();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    await expect(owner.settled()).rejects.toThrow();
+    expect(scheduled).toHaveLength(1);
+    owner.acceptRead(readItems("repaired", 2, [item("base", 1), item("alpha", 2)]), {
+      lifetime: 1,
+      readId: "read-repaired",
+      boundary: "boundary-repaired",
+    });
+    await owner.settled();
+    expect((await fixture.cache.getCoverage(historyKey, "read:read-repaired"))?.representedSnapshot).toBe(2);
+    expect((await reader.openLocal(40)).status).toBe("current");
+    expect(scheduled).toHaveLength(1);
+  } finally {
+    commit.mockRestore();
+    reader.dispose();
+    owner.dispose();
+  }
+});
