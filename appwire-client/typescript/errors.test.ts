@@ -204,6 +204,12 @@ describe("the transcript-index-locked discriminant is bound to appwire/errors.go
     expect(ErrorTranscriptIndexLocked).toBe(goErrorInfo("ErrorTranscriptIndexLocked"));
   });
 
+  test("the package root re-exports both names, the only surface consumers import", async () => {
+    const root = await import("./index");
+    expect(root.ErrorTranscriptIndexLocked).toBe(ErrorTranscriptIndexLocked);
+    expect(root.isTranscriptIndexLockedError).toBe(isTranscriptIndexLockedError);
+  });
+
   test("the predicate reads only that discriminant", () => {
     const locked = new WireError("thread history index is busy with a live writer", -32603, {
       evenerErrorInfo: ErrorTranscriptIndexLocked,
