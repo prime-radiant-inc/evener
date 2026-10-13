@@ -2213,6 +2213,42 @@ test("with no IndexedDB the composer still attempts the send and keeps its draft
   expect(ids.size).toBe(1);
 });
 
+// The other half of #4194: a storage platform that EXISTS but fails - every
+// repository open errors, the corrupted/quota shape - must not take the send
+// down with it. The submission's durable preparation (settle and metadata
+// load) is local persistence; the send still goes out from the captured
+// payload, the platform's failure reports honestly, and the draft is kept
+// when the transport fails on top of it.
+test("a repository whose opens fail still attempts the send and keeps the draft", async () => {
+  const factory = new IDBFactory();
+  vi.spyOn(factory, "open").mockImplementation(() => {
+    const request = new EventTarget() as unknown as IDBOpenDBRequest;
+    setTimeout(() => request.dispatchEvent(new Event("error")), 0);
+    return request;
+  });
+  vi.stubGlobal("indexedDB", factory);
+  resetBrowserDraftRepositoryForTests();
+  try {
+    const user = userEvent.setup();
+    const fake = await act(async () => mountComposer("ref_a"));
+
+    const editor = textarea();
+    if (editor === null) throw new Error("composer editor did not render");
+    await user.type(editor, "hello");
+    await user.click(submitButton());
+    await flushPendingTurnsProjectionForTests();
+
+    // The send still goes out on the direct path from the captured payload;
+    // the dead storage reports honestly and the failed transport keeps the
+    // draft, exactly as in the no-IndexedDB world.
+    const attempts = fake.calls.filter((call) => call.method === "turn/start");
+    expect(attempts.length).toBeGreaterThan(0);
+    expect(editor.textContent).toBe("hello");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 test("a lost response never restores submitted content over a newer composer draft", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");

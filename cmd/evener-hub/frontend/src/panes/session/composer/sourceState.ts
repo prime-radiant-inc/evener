@@ -148,7 +148,7 @@ export interface ComposerSourceState {
   prepareAnnotation(): Promise<ComposerPreparation | null>;
   ownsPreparation(preparation: ComposerPreparation): boolean;
   acknowledgeAnnotation(preparation: ComposerPreparation, token: DraftSessionToken, value: SkillEditorValue): void;
-  submissionDraft(value?: SkillEditorValue): Promise<SubmittedDraft>;
+  submissionDraft(value?: SkillEditorValue, opts?: { tolerateStorageFault?: boolean }): Promise<SubmittedDraft>;
   ownsSubmissionSnapshot(submitted: SubmittedDraft, items: readonly PendingAttachment[]): boolean;
   recoveryWriteGuard(submitted: SubmittedDraft): RecoveryWriteGuard;
   acknowledgeRecoveryWrite(guard: RecoveryWriteGuard): RecoveryWriteGuard;
@@ -591,7 +591,10 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     DraftSettlementGuard,
     { replacementEpoch: number; items: PendingAttachment[] }
   >();
-  async function submissionDraft(value?: SkillEditorValue): Promise<SubmittedDraft> {
+  async function submissionDraft(
+    value?: SkillEditorValue,
+    opts?: { tolerateStorageFault?: boolean },
+  ): Promise<SubmittedDraft> {
     const payload = cloneValue(value ?? currentValue());
     const entryGeneration = localGeneration;
     const entryBacking: DraftBackingIdentity = { ...runtimeBacking };
@@ -604,15 +607,25 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     // readiness keeps its own honest contract - it rejects with the platform's
     // error and reports it - but the submission proceeds from the captured
     // payload without a durable draft instead of inheriting that refusal.
+    // An ordinary send extends the same rule to the settle sequence and the
+    // durable metadata load: a platform that EXISTS but fails (a corrupted or
+    // quota-exhausted database) may refuse the settlement, never the send.
+    // Recovery resends and built-in commands keep strict preparation: they
+    // rewrite durable state, and their preparation failures keep dispatching
+    // nothing at all.
+    const tolerateFault = opts?.tolerateStorageFault === true;
     await ready().catch(() => undefined);
-    await whenSettled();
+    if (tolerateFault) await whenSettled().catch(() => undefined);
+    else await whenSettled();
     // Accepted recovery work is part of the submission's durable state: drain it
     // before capturing the guard so the guard matches the durable row.
     await recoveryWrites.catch(() => undefined);
     const submissionRepository = repository;
     const submissionKey = draftKey;
     if (submissionRepository && submissionKey) {
-      const row = await submissionRepository.load(submissionKey);
+      const row = tolerateFault
+        ? await submissionRepository.load(submissionKey).catch(() => null)
+        : await submissionRepository.load(submissionKey);
       if (row) draftToken = row.token;
     }
     const token = getDraftToken();
