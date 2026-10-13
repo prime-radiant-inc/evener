@@ -5,7 +5,6 @@ package execenv
 import (
 	"context"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -21,7 +20,7 @@ import (
 
 var (
 	secureBrowseWalkDir  = fs.WalkDir
-	secureBrowseReadFile = fs.ReadFile
+	secureBrowseReadFile = grepReadFileCapped
 )
 
 // secureDirFS is an fs.FS rooted at a base directory fd that refuses symlink
@@ -319,12 +318,12 @@ func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globF
 	if selected, err := grepFileSelected(name, ".", globFilters, skip); !selected {
 		return "", err
 	}
-	data, err := io.ReadAll(f)
+	data, err := grepCappedRead(f)
 	if cancelErr := ctx.Err(); cancelErr != nil {
 		return "", cancelErr
 	}
 	if err != nil {
-		return "", nil //nolint:nilerr // best-effort grep: an unreadable file is skipped, as in the walk
+		return "", nil //nolint:nilerr // best-effort grep: an unreadable or oversized file is skipped, as in the walk
 	}
 	a.feed(".", data)
 	return a.finish(), nil

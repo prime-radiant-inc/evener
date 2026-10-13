@@ -3,7 +3,10 @@ package execenv
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -321,6 +324,56 @@ func grepReachesPseudoRoot(dir string) bool {
 		}
 	}
 	return false
+}
+
+// grepMaxFileBytes bounds how much of one file a grep reads. A file is a
+// stream as far as the reader is concerned — /proc/kcore presents as a
+// regular file of ~128TB and /dev/zero as a size-0 source that never ends —
+// so the read itself has to stop somewhere, and a file with more bytes than
+// this is skipped the way a binary or unreadable one is (#4480). 16 MiB sits
+// far above any file a text search reads whole while keeping one file's
+// transient bytes a rounding error against the process's memory. A variable
+// so a test can exercise the skip with a fixture-sized file.
+var grepMaxFileBytes = 16 << 20
+
+// errGrepFileTooLarge reports a source with more bytes than grepMaxFileBytes;
+// the walk's unreadable-file handling skips the file and keeps walking.
+var errGrepFileTooLarge = errors.New("file exceeds the grep read cap")
+
+// grepCappedRead reads r until grepMaxFileBytes and reports errGrepFileTooLarge
+// when more bytes remain, so an effectively-unbounded source costs one bounded
+// read instead of the whole file.
+func grepCappedRead(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, int64(grepMaxFileBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > grepMaxFileBytes {
+		return nil, errGrepFileTooLarge
+	}
+	return data, nil
+}
+
+// grepReadFileCapped reads one file of a grep walk through fsys, bounded by
+// grepMaxFileBytes. It is the default of both arms' reader seams, so a test
+// stubbing a seam replaces the failure it injects, not the cap.
+func grepReadFileCapped(fsys fs.FS, name string) ([]byte, error) {
+	f, err := fsys.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return grepCappedRead(f)
+}
+
+// grepNamedFileOverReadCap reports whether the resolved grep target names a
+// single file whose size already exceeds the per-file read cap. ripgrep
+// ignores --max-filesize for a file named on its command line, so such a
+// target takes the native arm, which caps the read and skips the file exactly
+// as both arms skip an oversized file found in a walk.
+func grepNamedFileOverReadCap(dir string) bool {
+	info, err := os.Stat(dir)
+	return err == nil && !info.IsDir() && info.Size() > int64(grepMaxFileBytes)
 }
 
 // sortPathStat is the stat the glob result ordering runs on; a variable so

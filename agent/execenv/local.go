@@ -1355,7 +1355,7 @@ var (
 		return execCommandContext(ctx, name, args...).Output()
 	}
 	shellStat              = os.Stat
-	grepReadFile           = fs.ReadFile
+	grepReadFile           = grepReadFileCapped
 	grepWalk               = fs.WalkDir
 	listReadDir            = os.ReadDir
 	streamBeforeSignalOnce = func(func()) {}
@@ -2084,8 +2084,9 @@ func resolveGrepDir(path, rootDir string) string {
 
 // buildRipgrepArgs builds the ripgrep argument vector for a Grep call. It is the
 // pure arg-construction core: a fixed no-heading / no-color prefix, then exactly
-// one output-mode flag (files-with-matches / count / line-number), then optional
-// case-insensitivity and glob filter, then the trailing pattern and directory.
+// one output-mode flag (files-with-matches / count / line-number), then a NUL
+// path delimiter and the per-file size cap, then optional case-insensitivity
+// and glob filter, then the trailing pattern and directory.
 func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string, contextLines int) []string {
 	filters := []string(nil)
 	if strings.TrimSpace(globFilter) != "" {
@@ -2107,7 +2108,11 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 	// --null ends each path with a NUL in place of its ":" or "-" (or line
 	// ending), so ripgrepOutputLines can find the whole path even when the
 	// name holds a newline.
-	args = append(args, "--null")
+	// --max-filesize mirrors the native reader's per-file cap: rg skips a
+	// file whose size already exceeds it, exactly as grepCappedRead stops and
+	// the walk skips the file, so an oversized file is treated the same with
+	// and without ripgrep.
+	args = append(args, "--null", "--max-filesize", strconv.Itoa(grepMaxFileBytes))
 	if caseInsensitive {
 		args = append(args, "-i")
 	}
@@ -2182,6 +2187,12 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
+		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
+	}
+	// rg applies --max-filesize only to files it finds in a walk, never to
+	// one named on its command line, so a named file past the read cap goes
+	// to the native arm: both arms then skip it.
+	if grepNamedFileOverReadCap(dir) {
 		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
 	}
 
@@ -2413,9 +2424,9 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 					excludedByIgnore++
 					return filepath.SkipDir
 				}
-					if walkSkipsPseudoDir(path, filepath.Join(path, p)) {
-						return filepath.SkipDir
-					}
+				if walkSkipsPseudoDir(path, filepath.Join(path, p)) {
+					return filepath.SkipDir
+				}
 			}
 			// fs.WalkDir never follows a directory symlink, so this walk
 			// cannot cycle back into itself the way the glob pattern walk's
