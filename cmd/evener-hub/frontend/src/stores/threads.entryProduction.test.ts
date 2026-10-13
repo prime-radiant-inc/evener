@@ -641,6 +641,31 @@ it("ordinary disk-only restore refuses a captured body after a silent durable hi
   }
 });
 
+it("includeTurns watches preserve recorded snapshot and notification bodies", async () => {
+  const client = connect();
+  await threadsStore.getState().watchThread("local:a", { includeTurns: true });
+  const texts = () =>
+    threadsStore
+      .getState()
+      .watchedThreads.get("local:a")
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text);
+  expect(texts()).toEqual(["recorded"]);
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("live-recorded", 2).items,
+    },
+  });
+  expect(texts()).toEqual(["recorded", "live-recorded"]);
+  threadsStore.getState().releaseWatchedThread("local:a");
+});
+
 it("production cache writes and reopens keyed entries on the real database", async () => {
   const first = cache();
   const item = turn("disk-row").items?.[0];

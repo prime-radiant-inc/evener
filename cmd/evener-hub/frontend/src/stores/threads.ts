@@ -5614,7 +5614,7 @@ function handleNotification(n: AnyNotification): void {
     let projected: Map<string, ThreadModel> | undefined;
     for (const ref of changedWatchedThreads) {
       const model = nextWatchedThreads.get(ref);
-      if (!model || !usesEntryTranscripts(ref)) continue;
+      if (!model || !usesEntryTranscripts(ref) || watchIncludeTurns.get(ref)) continue;
       projected ??= new Map(nextWatchedThreads);
       projected.set(ref, pruneBackgroundHistoryBodies(model));
     }
@@ -5755,7 +5755,7 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
   invalidateGoalResponseFallback(ref);
   invalidateNotesResponseFallback(ref);
-  putWatchedThreadModel(ref, usesEntryTranscripts(ref) ? pruneBackgroundHistoryBodies(model) : model);
+  putWatchedThreadModel(ref, usesEntryTranscripts(ref) && !includeTurns ? pruneBackgroundHistoryBodies(model) : model);
 }
 
 function ownedHydrationsFor(kind: HydrationOwnerKind): Map<string, OwnedHydration> {
