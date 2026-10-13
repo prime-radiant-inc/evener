@@ -14273,9 +14273,13 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       const fake = connectMutationClient();
       await ensureActiveMutationTarget(fake, "ref_a");
 
+      // The refusal's text is copy, not a contract: assert the behavior (no
+      // durable row could be written, so the verb fails closed and no RPC
+      // leaves) rather than the message (docs/developing-evener/testing.md,
+      // "Copy Is Not a Test Oracle").
       await expect(
         threadsStore.getState().promoteQueuedAsSteer("ref_a", 1, "entry_2", { text: "queued message" }),
-      ).rejects.toThrow("IndexedDB is unavailable");
+      ).rejects.toThrow();
       expect(fake.calls.some((call) => call.method === "turn/promoteQueuedAsSteer")).toBe(false);
     } finally {
       vi.stubGlobal("indexedDB", savedIndexedDB);
