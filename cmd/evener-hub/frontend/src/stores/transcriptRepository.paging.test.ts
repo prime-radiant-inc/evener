@@ -559,6 +559,42 @@ test("a connected-but-unverified frontier returns reconcile, not server", async 
   expect(served.kind).toBe("reconcile");
 });
 
+test("Clear committed while older-page turn metadata is pending prevents publication", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  const reader = repo.attachReader();
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await repo.settled();
+  await commitLocalPage(fixture.cache, repo.getBaselineIdentity());
+  let release!: () => void;
+  let entered!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const called = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const getTurn = fixture.cache.getTurn.bind(fixture.cache);
+  vi.spyOn(fixture.cache, "getTurn").mockImplementation(async (...args) => {
+    const metadata = await getTurn(...args);
+    entered();
+    await held;
+    return metadata;
+  });
+  const published = vi.fn();
+  repo.subscribe(published);
+  const lookup = repo.loadOlderPage(40, 1);
+  await called;
+  expect(await fixture.cache.clear()).toEqual({ committed: true, epoch: 1 });
+  release();
+  expect((await lookup).kind).toBe("reconcile");
+  expect(published).not.toHaveBeenCalled();
+  expect(orderedPositions(reader.getSnapshot())).toEqual([6, 7, 8]);
+  reader.dispose();
+  repo.dispose();
+});
+
 test("a recorded update during the local lookup is preserved", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
