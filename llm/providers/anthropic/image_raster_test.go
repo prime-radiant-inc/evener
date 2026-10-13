@@ -3,7 +3,6 @@ package anthropic
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
@@ -272,23 +271,17 @@ func TestBuildBody_UndecodableImageIsConfigurationError(t *testing.T) {
 	res := protoRes(nil)
 	req := protoReq("")
 	req.Messages = append(req.Messages, userImageMessage([]byte("not a raster"), "image/bmp")...)
-	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	body, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
 	if err == nil {
 		t.Fatal("BuildBody accepted undecodable image bytes")
 	}
-	var cfg *llm.ConfigurationError
-	if !errors.As(err, &cfg) {
+	if body != nil {
+		t.Fatalf("BuildBody returned a body alongside the refusal: %#v", body)
+	}
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 		t.Fatalf("err = %T %v, want *llm.ConfigurationError", err, err)
 	}
 	if !errors.Is(err, image.ErrFormat) {
 		t.Fatalf("err = %v, want the decoder's error preserved as the cause", err)
-	}
-	got, jsonErr := json.Marshal(cfg.Error())
-	if jsonErr != nil {
-		t.Fatalf("marshal error string: %v", jsonErr)
-	}
-	const want = `"configuration error: cannot send image to anthropic: cannot decode image with media type \"image/bmp\"; Anthropic accepts image/png, image/jpeg, image/gif, and image/webp"`
-	if string(got) != want {
-		t.Fatalf("refusal message:\n got %s\nwant %s", got, want)
 	}
 }

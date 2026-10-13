@@ -32,7 +32,9 @@ func toolResultHasProviderImage(result *llm.ToolResultData) bool {
 // the single still the wire carries. claimedMediaType appears only in the
 // error text.
 func normalizeImageInput(data []byte, claimedMediaType string) ([]byte, string, error) {
-	if _, format, err := image.Decode(bytes.NewReader(data)); err == nil && format == "gif" {
+	// DecodeConfig reads only the header, so a non-GIF costs one header parse
+	// and the full decode happens once, inside NormalizeImageBlock.
+	if _, format, err := image.DecodeConfig(bytes.NewReader(data)); err == nil && format == "gif" {
 		// image.Decode reads only a GIF's first frame, so a corrupt later frame
 		// slips past it; gif.DecodeAll is the full-file check. Its error must
 		// propagate: falling through would hand the malformed GIF to the
