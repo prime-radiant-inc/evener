@@ -3385,11 +3385,8 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, ad
 			t.Logf("failed supervision wait snapshot: %#v", stableSupervisionFailureSnapshot(root, sub, adapter))
 		}
 	}()
-	sub.mu.Lock()
-	hasChannel := sub.done != nil
-	sub.mu.Unlock()
-	if !hasChannel {
-		t.Fatalf("stable child %q has no completion channel", childID)
+	if refusal := stableSupervisionEntryRefusal(sub, childID); refusal != "" {
+		t.Fatalf("%s", refusal)
 	}
 	desc := fmt.Sprintf("stable child %q supervision to quiesce", childID)
 	// why is the last check that refused; a timeout reports it with the state
@@ -3411,6 +3408,38 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, ad
 		return why == ""
 	})
 	quiesced = true
+}
+
+// stableSupervisionEntryRefusal is waitForStableSupervisionRun's entry
+// precondition: it returns the fatal message when sub positively has no
+// completion channel to wait on, or "" when the channel is present or when
+// sub.mu is busy.
+//
+// The read is non-blocking. waitForStableSupervisionRun makes it before it
+// enters its 30s bounded poll, so a blocking sub.mu.Lock() here would wait on a
+// stall that holds sub.mu, keeping the wait from ever reaching its poll — and
+// so from ever firing the bound and the #4513 timeout report that runs only
+// after it — the same class #4548 removed from the poll predicate. A busy
+// sub.mu observes neither presence nor absence, so it returns "" and falls
+// through to the poll, whose predicate re-TryLocks sub.mu and refuses
+// ("subagent lock busy") for as long as it stays held; a busy source therefore
+// keeps the wait waiting and can never be read as a present channel or as a
+// missing one. The fatal is returned only after positively observing
+// sub.done == nil under its own lock. sub.done is nil only until the child's
+// first run starts — a cold-restored record is built without a runner channel,
+// and a run start assigns a fresh one (resetSubagentForRunLocked) — and it is
+// never nilled once assigned, so the fatal is reachable only for a child that
+// has not run in this process.
+func stableSupervisionEntryRefusal(sub *subagent, childID string) string {
+	if !sub.mu.TryLock() {
+		return ""
+	}
+	channel := sub.done
+	sub.mu.Unlock()
+	if channel != nil {
+		return ""
+	}
+	return fmt.Sprintf("stable child %q has no completion channel", childID)
 }
 
 // stableSupervisionRefusal is the first stage of stable child supervision

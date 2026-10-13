@@ -280,9 +280,13 @@ func anthropicImageBlock(p llm.ContentPart) (map[string]any, error) {
 				mt = "image/png"
 			}
 		}
+		normalized, normalizedMediaType, normErr := anthropicImageBytes(b, mt)
+		if normErr != nil {
+			return nil, normErr
+		}
 		return map[string]any{
 			"type":   "image",
-			"source": anthropicBase64Source(mt, b),
+			"source": anthropicBase64Source(normalizedMediaType, normalized),
 		}, nil
 	}
 	if u != "" {
@@ -292,6 +296,41 @@ func anthropicImageBlock(p llm.ContentPart) (map[string]any, error) {
 		}, nil
 	}
 	return nil, nil
+}
+
+// anthropicImageBytes returns bytes and a media type Anthropic's image block
+// accepts. A claimed media type already in that set is kept and the bytes pass
+// through unchanged: Anthropic validates its own bytes, and the local decoder
+// cannot read every raster the wire accepts (an animated WebP, say). A type
+// outside the set is decoded and re-encoded as PNG (a BMP or TIFF result would
+// otherwise be rejected and fail the whole turn, #4464); bytes that are not a
+// decodable raster are refused loudly through anthropicImageRefusalMessage.
+func anthropicImageBytes(data []byte, claimedMediaType string) ([]byte, string, error) {
+	if mt := llm.ImageBlockMediaType(claimedMediaType); mt != "" {
+		return data, mt, nil
+	}
+	normalized, normalizedType, err := llm.NormalizeImageBlock(data)
+	if err != nil {
+		return nil, "", &llm.ConfigurationError{
+			Message: anthropicImageRefusalMessage(claimedMediaType),
+			Cause:   err,
+		}
+	}
+	return normalized, normalizedType, nil
+}
+
+// anthropicImageRefusalMessage renders the loud configuration error the builder
+// returns when image bytes cannot be normalized into a media type Anthropic's
+// image block accepts. The claimed type and the accepted set are the whole
+// point: the provider would otherwise reject the request with an opaque 400
+// that fails the turn. The decoder's own error rides ConfigurationError.Cause
+// rather than this prose, so the message stays the builder's to own.
+func anthropicImageRefusalMessage(claimedMediaType string) string {
+	claimed := strings.TrimSpace(claimedMediaType)
+	if claimed == "" {
+		claimed = "unknown"
+	}
+	return fmt.Sprintf("cannot send image to anthropic: cannot decode image with media type %q; Anthropic accepts image/png, image/jpeg, image/gif, and image/webp", claimed)
 }
 
 // anthropicBase64Source builds the inline source an image or document content
@@ -488,9 +527,10 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					outStr = string(b)
 				}
 				// Tool-result bytes ride inline as an image block for image
-				// media only. Anthropic's image block rejects a document media
-				// type — a PDF result written as an image 400s the whole turn
-				// (#4209) — and the design keeps documents on the side-channel
+				// media only, normalized to a media type Anthropic's image
+				// block accepts (a BMP or TIFF result would otherwise 400 the
+				// whole turn, #4464, as a document media type does, #4209).
+				// The design keeps documents on the side-channel
 				// (llm.DeliversToolResultMedia is image-only), so a non-image
 				// result contributes its text alone.
 				resultContent := any(outStr)
@@ -500,9 +540,13 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 						mediaType = "image/png"
 					}
 					if strings.HasPrefix(strings.ToLower(mediaType), "image/") {
+						data, normalizedType, normErr := anthropicImageBytes(p.ToolResult.ImageData, mediaType)
+						if normErr != nil {
+							return "", nil, normErr
+						}
 						resultContent = []map[string]any{
 							{"type": "text", "text": outStr},
-							{"type": "image", "source": anthropicBase64Source(mediaType, p.ToolResult.ImageData)},
+							{"type": "image", "source": anthropicBase64Source(normalizedType, data)},
 						}
 					}
 				}
