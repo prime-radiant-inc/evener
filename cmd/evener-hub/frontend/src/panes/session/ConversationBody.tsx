@@ -1,12 +1,14 @@
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
-import { paneToURL } from "../../shell/routing";
+import { paneToURL, refParam } from "../../shell/routing";
+import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
+import { zoomPaneCoversConversation } from "../zoom/cascadeCoverage";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
@@ -86,6 +88,20 @@ export interface ConversationParts {
   cadence: React.ReactNode;
 }
 
+// Whether a workspace view other than `exceptPaneId` still retains `ref` and so
+// still has to follow a resume published for it: a session pane naming the ref
+// in its params, or a cascade pane whose path covers it. The seat's own hosting
+// pane is excluded — a cascade column replaces its whole path in place, so its
+// interior scopes are handled with it — and a ref left with no other view is the
+// ordinary single-view case, cleared as before.
+function otherRetainedViewOf(ref: string, exceptPaneId: string): boolean {
+  return workspaceStore.getState().panes.some((pane) => {
+    if (pane.id === exceptPaneId) return false;
+    if (pane.type === "session") return refParam(pane.params) === ref;
+    return zoomPaneCoversConversation(pane, ref);
+  });
+}
+
 // The live conversation for one ref: transcript, composer, live surfaces and
 // their retention. One implementation, two seats. The deleted and loading
 // faces stay with the seat — the shell callback branches on `state` and
@@ -141,13 +157,21 @@ export function ConversationBody({
   // hydrated under the new ref (the driver's refreshThread). The draft
   // carries to the resumed identity in every seat; the seat then decides
   // whether its frame follows the new ref (a pane route) or lets cascade
-  // reconciliation replace the scope in place.
+  // reconciliation replace the scope in place. One ref can be retained by more
+  // than one view at once — an ordinary pane and a cascade column embedding it,
+  // or a collapsed column in another cascade — and dockview unmounts an inactive
+  // pane's whole tree, so the notification is consumed only once no OTHER
+  // retained view of `ref` still has to follow: an inactive view reads the
+  // surviving entry on its next mount instead of reopening on the superseded
+  // identity.
   const resumedIdentity = useThreadsStore((s) => s.resumedIdentities.get(ref));
   useEffect(() => {
     if (resumedIdentity === undefined) return;
     carryComposerDraft(ref, resumedIdentity);
     const applied = seat.onResumedIdentity?.(resumedIdentity);
-    if (applied !== false) threadsStore.getState().clearResumedIdentity(ref);
+    if (applied !== false && !otherRetainedViewOf(ref, seat.viewFallbackId)) {
+      threadsStore.getState().clearResumedIdentity(ref);
+    }
   }, [resumedIdentity, ref, seat]);
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);

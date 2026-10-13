@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
+import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { registerPaneForTests } from "../../shell/paneRegistry";
 import {
   conversationOpenParentRef,
@@ -17,6 +18,7 @@ import { resetThreadsStoreForTests } from "../../stores/threads";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
+import { returnFromAgentCascade } from "../zoom/actions";
 import { installJobLogGeometry, jobLogCommandText, jobLogOutputText } from "./JobLogTestUtils";
 import Transcript from "./testing/CommittedTranscript";
 
@@ -148,6 +150,56 @@ test("a legacy transcript pane's parent context survives the migration", async (
   const migrated = workspaceStore.getState().panes.find((pane) => pane.id === "p1");
   expect(migrated?.type).toBe("session");
   expect(migrated && conversationOpenParentRef(migrated)).toBe("ref_parent");
+});
+
+// A legacy cascade saved without an inspection origin Returns by retyping its
+// pane back to the source descriptor it was opened from (actions.ts's
+// intentFor keeps a legacy source's own type, "transcript"), not by closing to
+// a bound origin. When that source conversation is ALSO already open beside
+// it, the retyped pane is the ref's second conversation view: the migration
+// guard leaves it typed "transcript" (migrating would put two panes on one
+// conversation), and Session resolves no lifetime for a transcript record, so
+// the selected view has no composer. Closing the conflicting conversation must
+// let the migration re-evaluate its workspace membership and recover the view.
+test("a legacy cascade Returned beside a live conversation recovers when the duplicate closes", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  const liveId = workspaceStore.getState().openPane("session", { ref: "ref_a" });
+  const returnedId = workspaceStore
+    .getState()
+    .openPane(
+      "sessionZoom",
+      { ref: "ref_child", source: { type: "transcript", params: { ref: "ref_a" } }, edges: [] },
+      { slot: "secondary" },
+    );
+  returnFromAgentCascade(returnedId);
+  // The Return left the pane as the legacy source conversation it named,
+  // beside the live one that already holds the ref.
+  const returned = workspaceStore.getState().panes.find((pane) => pane.id === returnedId);
+  expect(returned?.type).toBe("transcript");
+  if (!returned) throw new Error("returned pane missing");
+  // The pane's lifetime carries its retained work (composer draft, read view);
+  // the close-triggered migration must keep it, not replace the record.
+  const lifetime = conversationPaneLifetime(returned);
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_a" }} paneId={returnedId} focused={false} />
+    </ClientProvider>,
+  );
+
+  // Beside the live conversation the retyped pane stays a transcript with no
+  // composer: it is not the ref's unit view, so it must not migrate.
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === returnedId)?.type).toBe("transcript");
+  expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+
+  // The conflicting conversation closing is the migration's cue to re-run; the
+  // selected view then recovers as the live conversation with its composer.
+  act(() => workspaceStore.getState().closePane(liveId));
+  await screen.findByRole("textbox", { name: "Message" });
+  const migrated = workspaceStore.getState().panes.find((pane) => pane.id === returnedId);
+  expect(migrated?.type).toBe("session");
+  expect(migrated && conversationPaneLifetime(migrated)).toBe(lifetime);
 });
 
 // --- "Open this shell transcript in a pane": a "job:<id>" ref is a shell

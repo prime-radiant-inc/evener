@@ -7,6 +7,7 @@
 // could not rewrite) recovers as the live conversation rather than losing
 // the view.
 import { useEffect } from "react";
+import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { refParam } from "../../shell/routing";
 import { recordConversationOpenParent, workspaceStore } from "../../shell/workspace";
@@ -36,27 +37,40 @@ export default function Transcript({ params, paneId, focused }: PaneProps<Transc
   // live rather than as dead history. A conversation pane's identity is its ref
   // alone, so migrating beside a surviving session pane for the same ref would
   // put two panes on one conversation — the duplicate the restore-time
-  // reconciliation exists to prevent; leave it to that pane in that case. This
-  // runs after commit (never during render, which would update the subscribing
+  // reconciliation exists to prevent; leave it to that pane in that case.
+  //
+  // "Alone" is a SUBSCRIPTION, not a one-time read: a legacy cascade can Return
+  // onto a ref that is already open elsewhere, and the conflicting pane can
+  // leave the workspace afterwards (the user closes it). Re-evaluating against
+  // the current membership is what recovers the selected view's composer then;
+  // a mount-time read would strand it typed transcript with no composer. The
+  // selector returns only this boolean, so unrelated pane changes do not
+  // re-render the pane.
+  const alone = useStore(
+    workspaceStore,
+    (state) =>
+      !state.panes.some(
+        (pane) =>
+          pane.id !== paneId &&
+          (pane.type === "session" || pane.type === "transcript") &&
+          refParam(pane.params) === params.ref,
+      ),
+  );
+
+  // Runs after commit (never during render, which would update the subscribing
   // host mid-render) and is guarded on the record still being a transcript, so
-  // it runs once and cannot loop. The parent context the legacy params carried
-  // moves to the conversation edge the saved-layout migration records it on.
+  // it migrates once and cannot loop. The parent context the legacy params
+  // carried moves to the conversation edge the saved-layout migration records
+  // it on.
   useEffect(() => {
-    if (job) return;
+    if (job || !alone) return;
     const workspace = workspaceStore.getState();
     const record = workspace.panes.find((pane) => pane.id === paneId);
     if (record?.type !== "transcript") return;
-    const alone = !workspace.panes.some(
-      (pane) =>
-        pane.id !== paneId &&
-        (pane.type === "session" || pane.type === "transcript") &&
-        refParam(pane.params) === params.ref,
-    );
-    if (!alone) return;
     workspace.retypePane(record, "session", { ref: params.ref });
     const migrated = workspaceStore.getState().panes.find((pane) => pane.id === paneId);
     if (migrated) recordConversationOpenParent(migrated, params.parentRef);
-  }, [job, paneId, params.ref, params.parentRef]);
+  }, [job, alone, paneId, params.ref, params.parentRef]);
 
   if (job) {
     return <JobLog jobRef={params.ref} parentRef={params.parentRef} paneId={paneId} />;
