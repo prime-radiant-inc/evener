@@ -3,16 +3,18 @@ package copyonly
 import (
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
-// The TypeScript scanner reads one line at a time, as inventory.py does, so it
-// shares that tool's limits: a multi-line template literal or block comment
-// can blur a test's boundaries, an assertion split across lines is classified
-// by its first line, and assertion forms it doesn't recognise (expect.soft,
-// expect.poll) are not checks.
+// The TypeScript scanner sanitizes and classifies one line at a time, as
+// inventory.py does; only test declarations and their parentheses are matched
+// across lines. It shares that tool's other limits: a multi-line template
+// literal or block comment can blur a test's boundaries, an assertion split
+// across lines is classified by its first line, and assertion forms it doesn't
+// recognise (expect.soft, expect.poll) are not checks.
 
 const (
 	tsString = "(?:\"((?:[^\"\\\\]|\\\\.)*)\"|'((?:[^'\\\\]|\\\\.)*)'|`((?:[^`\\\\$]|\\\\.)*)`)"
@@ -29,8 +31,10 @@ var (
 	// copyIdent is an identifier named like copy (*_MESSAGE, *Label, ...).
 	copyIdent = regexp.MustCompile(`(MESSAGE|LABEL|COPY|TEXT|TITLE|HINT|ERROR|PROMPT|USAGE|PLACEHOLDER|Message|Label|Copy|Text|Title|Hint|Error|Prompt|Usage|Placeholder)S?$`)
 
-	tsTestStart = regexp.MustCompile(`^\s*(?:test|it)(?:\.(?:only|skip|concurrent|each\(.*?\)))?\s*\(\s*` + tsString)
-	tsCheck     = regexp.MustCompile(`\bexpect\(|\b(?:get|find)(?:All)?By\w+\(`)
+	// tsTestCall starts a test declaration; group 1 marks a test.each table.
+	tsTestCall = regexp.MustCompile(`^\s*(?:test|it)(?:\.(?:only|skip|concurrent))?(\.each)?\s*\(`)
+	tsStringAt = regexp.MustCompile(`^` + tsString)
+	tsCheck    = regexp.MustCompile(`\bexpect\(|\b(?:get|find)(?:All)?By\w+\(`)
 	// tsBehaviorOnLine is a check about something other than the wording,
 	// even when a copy hit sits on the same line: an expected error, a count
 	// or comparison, or text used only to find an element whose attribute or
@@ -85,8 +89,9 @@ func (s *scanner) scanTS(path, text string) []Target {
 			continue
 		}
 		var inputs []string
-		for i, line := range b.lines[1:] {
-			if !isCheck[i+1] && !tsNotInput.MatchString(line) {
+		// The declaration, name included, supplies nothing.
+		for i, line := range b.lines[b.header:] {
+			if !isCheck[b.header+i] && !tsNotInput.MatchString(line) {
 				inputs = append(inputs, line)
 			}
 		}
@@ -164,40 +169,93 @@ func (s *scanner) tsLineHasCopy(line string, imported map[string]bool) bool {
 	return false
 }
 
-// tsBlock is one test(...) call: its name, the line it starts on, and its
-// lines.
+// tsBlock is one test(...) call: its name, the line it starts on, its lines,
+// and how many of them hold the declaration up to the end of the name.
 type tsBlock struct {
-	name  string
-	start int
-	lines []string
+	name   string
+	start  int
+	lines  []string
+	header int
 }
 
-// tsTestBlocks finds each test in a file. A test ends where its test(...)
-// call closes, which also covers expression-bodied callbacks with no braces.
+// tsTestBlocks finds each test in a file. A declaration may spread over
+// several lines, its name on a later line or behind a multi-line test.each
+// table, so calls and their parentheses are matched in the whole file's
+// sanitized text. A test ends where its test(...) call closes, which also
+// covers expression-bodied callbacks with no braces.
 func tsTestBlocks(text string) []tsBlock {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	code := make([]string, len(lines))
+	starts := make([]int, len(lines))
+	for i, line := range lines {
+		code[i] = sanitizeTS(line)
+		if i > 0 {
+			starts[i] = starts[i-1] + len(lines[i-1]) + 1
+		}
+	}
+	// sanitizeTS keeps every offset, so a position in san is the same
+	// position in orig.
+	orig, san := strings.Join(lines, "\n"), strings.Join(code, "\n")
+	lineOf := func(off int) int { return sort.SearchInts(starts, off+1) - 1 }
+
 	var blocks []tsBlock
 	for i := 0; i < len(lines); {
-		m := tsTestStart.FindStringSubmatchIndex(lines[i])
+		m := tsTestCall.FindStringSubmatchIndex(code[i])
 		if m == nil {
 			i++
 			continue
 		}
-		name, _ := firstGroup(lines[i], m, 1, 4)
-		depth, opened, j := 0, false, i
-		for j < len(lines) {
-			code := sanitizeTS(lines[j])
-			depth += strings.Count(code, "(") - strings.Count(code, ")")
-			opened = opened || strings.Contains(code, "(")
-			j++
-			if opened && depth <= 0 {
-				break
+		open := starts[i] + m[1] - 1 // the call's "("
+		if m[2] >= 0 {
+			// test.each(table)(name, fn): the test's own arguments follow
+			// the table.
+			open = skipSpace(san, closeParen(san, open))
+			if open >= len(san) || san[open] != '(' {
+				i++
+				continue
 			}
 		}
-		blocks = append(blocks, tsBlock{name: name, start: i + 1, lines: lines[i:j]})
-		i = j
+		at := skipSpace(san, open+1)
+		lineEnd := len(orig)
+		if nl := strings.IndexByte(orig[at:], '\n'); nl >= 0 {
+			lineEnd = at + nl
+		}
+		sm := tsStringAt.FindStringSubmatchIndex(orig[at:lineEnd])
+		if sm == nil {
+			i++
+			continue
+		}
+		name, _ := firstGroup(orig[at:lineEnd], sm, 1, 4)
+		last := lineOf(closeParen(san, open) - 1)
+		blocks = append(blocks, tsBlock{name: name, start: i + 1, lines: lines[i : last+1], header: lineOf(at+sm[1]-1) - i + 1})
+		i = last + 1
 	}
 	return blocks
+}
+
+// closeParen returns the offset just past the ")" that closes the "(" at
+// open, or len(code) when it never closes.
+func closeParen(code string, open int) int {
+	depth := 0
+	for k := open; k < len(code); k++ {
+		switch code[k] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return k + 1
+			}
+		}
+	}
+	return len(code)
+}
+
+func skipSpace(code string, at int) int {
+	for at < len(code) && unicode.IsSpace(rune(code[at])) {
+		at++
+	}
+	return at
 }
 
 func isAlnum(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }

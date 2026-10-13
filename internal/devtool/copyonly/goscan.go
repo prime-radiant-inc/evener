@@ -212,10 +212,17 @@ func isNumber(e ast.Expr) bool {
 	return ok && (lit.Kind == token.INT || lit.Kind == token.FLOAT)
 }
 
-// conditionTerms splits a condition at its top-level && and || operators,
-// looking through parentheses.
+// conditionTerms splits a condition at its && and || operators, looking
+// through parentheses and negation: by De Morgan, !(a && b) is !a || !b, so
+// it has the same terms as a && b, and a negated term asks about the same
+// thing as the term itself.
 func conditionTerms(cond ast.Expr) []ast.Expr {
 	cond = ast.Unparen(cond)
+	if u, ok := cond.(*ast.UnaryExpr); ok && u.Op == token.NOT {
+		if terms := conditionTerms(u.X); len(terms) > 1 {
+			return terms
+		}
+	}
 	if b, ok := cond.(*ast.BinaryExpr); ok && (b.Op == token.LAND || b.Op == token.LOR) {
 		return append(conditionTerms(b.X), conditionTerms(b.Y)...)
 	}

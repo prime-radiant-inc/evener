@@ -44,8 +44,9 @@ type Target struct {
 }
 
 // tsTrees are the TypeScript source trees: tests in them are scanned, and
-// their non-test sources are the TypeScript production corpus.
-var tsTrees = []string{"cmd/evener-hub/frontend/src/", "mobile-native/", "appwire-client/typescript/"}
+// their non-test sources are the TypeScript production corpus. mobile/src is
+// the shared tree mobile-native typechecks and tests.
+var tsTrees = []string{"cmd/evener-hub/frontend/src/", "mobile-native/", "mobile/src/", "appwire-client/typescript/"}
 
 var (
 	tsSource = regexp.MustCompile(`\.(ts|tsx|mts)$`)

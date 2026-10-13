@@ -488,6 +488,46 @@ func TestPromptMentionsTools(t *testing.T) {
 `,
 			want: []string{"TestPromptMentionsTools"},
 		},
+		{
+			name: "go: a behavior term under a negated compound is a behavior claim",
+			path: "a_test.go",
+			src: `package x
+func TestHelpShowsUsage(t *testing.T) {
+	out, status := run("--help")
+	if !(status == expectedStatus && strings.Contains(out, "Usage: evener")) {
+		t.Fatal(out)
+	}
+}
+`,
+			prod: []string{"Usage: evener"},
+		},
+		{
+			name: "go: copy terms under a negated compound are still copy claims",
+			path: "a_test.go",
+			src: `package x
+func TestHelpShowsUsage(t *testing.T) {
+	out := run("--help")
+	if !(strings.Contains(out, "Usage: evener") || !(out != "Try again")) {
+		t.Fatal(out)
+	}
+}
+`,
+			prod: []string{"Usage: evener", "Try again"},
+			want: []string{"TestHelpShowsUsage"},
+		},
+		{
+			name: "ts: a multi-line declaration's name is not a fixture input",
+			path: "a.test.tsx",
+			src: `test(
+  "renders Try again",
+  () => {
+    expect(screen.getByText("Try again")).toBeTruthy();
+  },
+);
+`,
+			prod: []string{"Try again"},
+			want: []string{"renders Try again"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -583,6 +623,78 @@ test("renders the hint", () => {
 	}
 }
 
+// TestTSDeclarationFormsGiveTheSameTargets pins that formatting alone can't
+// hide a copy-only test: a declaration whose name starts on a later line, and
+// a test.each table spread over several lines, give the same targets and the
+// same boundaries as their one-line forms.
+func TestTSDeclarationFormsGiveTheSameTargets(t *testing.T) {
+	t.Parallel()
+	const neighbours = `
+test("sends the request", async () => {
+  await send();
+  expect(fake.calls).toHaveLength(1);
+});
+
+test("shows the label", () => {
+  expect(screen.getByText("Retry")).toBeTruthy();
+});
+`
+	const body = `expect(screen.getByText("Try again")).toBeTruthy();`
+	forms := map[string]struct{ name, src string }{
+		"one line": {"renders the hint", `test("renders the hint", () => {
+  ` + body + `
+});
+`},
+		"name on the next line": {"renders the hint", `test(
+  "renders the hint",
+  () => {
+    ` + body + `
+  },
+);
+`},
+		"modifier, name on the next line": {"renders the hint", `it.only(
+  "renders the hint",
+  () => {
+    ` + body + `
+  },
+);
+`},
+		"each on one line": {"renders hint %s", `it.each([1, 2])("renders hint %s", (n) => {
+  ` + body + `
+});
+`},
+		"each over several lines": {"renders hint %s", `test.each([
+  [1, "one"],
+  [2, "two"],
+])(
+  "renders hint %s",
+  (n) => {
+    ` + body + `
+  },
+);
+`},
+		"each table closing alone": {"renders hint %s", `test.each(
+  cases
+)("renders hint %s", (n) => {
+  ` + body + `
+});
+`},
+	}
+	for form, tc := range forms {
+		got := scanFixture(t, "a.test.tsx", tc.src+neighbours, "Try again", "Retry")
+		var names []string
+		for _, target := range got {
+			names = append(names, target.Test)
+		}
+		if want := []string{tc.name, "shows the label"}; !reflect.DeepEqual(names, want) {
+			t.Errorf("%s: targets = %q, want %q", form, names, want)
+		}
+		if len(got) > 0 && got[0].Line != 1 {
+			t.Errorf("%s: first target starts on line %d, want 1", form, got[0].Line)
+		}
+	}
+}
+
 func TestRegexCore(t *testing.T) {
 	t.Parallel()
 	for rx, want := range map[string]string{
@@ -657,6 +769,11 @@ func TestScanReadsTheRepositoryCorpus(t *testing.T) {
 	write("other/src/Other.test.tsx", tsTest("shows the other phrase", "Other tree phrase"))
 	write("mobile-native/node_modules/dep/index.ts", "export const d = \"Vendored phrase\";\n")
 	write("mobile-native/src/Dep.test.ts", tsTest("shows the vendored phrase", "Vendored phrase"))
+	// mobile-native typechecks and tests the shared mobile/src tree, so its
+	// tests are scanned and its sources are production copy for both trees.
+	write("mobile/src/state/shared.ts", "export const s = \"Shared mobile phrase\";\n")
+	write("mobile/src/state/shared.test.ts", tsTest("shows the shared phrase", "Shared mobile phrase"))
+	write("mobile-native/src/Shared.test.ts", tsTest("shows the shared phrase", "Shared mobile phrase"))
 
 	write("pkg/untracked_test.go", "package x\n"+goTest("TestShowsUntrackedPhrase", "Go phrase here"))
 	for _, args := range [][]string{{"init", "-q"}, {"add", "--", "."}, {"rm", "-q", "--cached", "--", "pkg/untracked_test.go"}} {
@@ -673,6 +790,8 @@ func TestScanReadsTheRepositoryCorpus(t *testing.T) {
 	}
 	want := []Target{
 		{File: "cmd/evener-hub/frontend/src/Empty.test.tsx", Test: "shows nothing", Line: 1},
+		{File: "mobile-native/src/Shared.test.ts", Test: "shows the shared phrase", Line: 1},
+		{File: "mobile/src/state/shared.test.ts", Test: "shows the shared phrase", Line: 1},
 		{File: "pkg/x_test.go", Test: "TestShowsGoPhrase", Line: 2},
 		{File: "pkg/x_test.go", Test: "TestShowsAssetPhrase", Line: 7},
 	}
