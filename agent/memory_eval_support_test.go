@@ -68,12 +68,7 @@ func memoryEvalResolveToolchain(compiledRoot string) (string, error) {
 		proxy = memoryEvalFileProxy(filepath.Join(cache, "cache", "download"))
 	}
 	cmd := exec.CommandContext(ctx, goBinary, "env", "GOROOT", "GOVERSION")
-	cmd.Env = []string{"GOENV=off", "GOTOOLCHAIN=" + selection, "GOPROXY=" + proxy, "GOSUMDB=off", "GOWORK=off"}
-	for _, key := range []string{"PATH", "HOME", "GOPATH", "GOMODCACHE", "GOCACHE"} {
-		if value, ok := os.LookupEnv(key); ok {
-			cmd.Env = append(cmd.Env, key+"="+value)
-		}
-	}
+	cmd.Env = memoryEvalToolchainEnv(selection, proxy)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("memory eval exact offline Go resolution failed: %w", err)
@@ -122,6 +117,22 @@ func memoryEvalGoModCache() string {
 		return ""
 	}
 	return filepath.Join(entries[0], "pkg", "mod")
+}
+
+// memoryEvalToolchainEnv is the environment the fallback runs the PATH Go in: the
+// toolchain selection it must honor, the proxy it must fetch through, and the
+// settings that keep that lookup offline. It is built here rather than inline so
+// a test can pin the contract — including the proxy a comma-bearing cache path
+// produces — without needing an older Go on the host to run it
+// (TestMemoryEvalToolchainEnvCarriesTheOfflineContract).
+func memoryEvalToolchainEnv(selection, proxy string) []string {
+	env := []string{"GOENV=off", "GOTOOLCHAIN=" + selection, "GOPROXY=" + proxy, "GOSUMDB=off", "GOWORK=off"}
+	for _, key := range []string{"PATH", "HOME", "GOPATH", "GOMODCACHE", "GOCACHE"} {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
 }
 
 // memoryEvalPathGoSupportsToolchainSelection reports whether the PATH Go a

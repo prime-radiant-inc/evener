@@ -106,6 +106,58 @@ func TestMemoryEvalToolchainNoCompiledRoot(t *testing.T) {
 	}
 }
 
+// The fallback's child environment is the whole offline contract: which
+// toolchain to select, which proxy to fetch it from, and that nothing consults
+// the network or a checksum database. Pinned here deterministically, because the
+// end-to-end fallback tests can only exercise an older PATH Go where a host has
+// one — CI installs the pin natively, so there GOTOOLCHAIN=<pin> is a no-op and
+// the proxy is never consulted.
+func TestMemoryEvalToolchainEnvCarriesTheOfflineContract(t *testing.T) {
+	t.Setenv("GOMODCACHE", filepath.Join(t.TempDir(), "modcache"))
+	commaCache := string(filepath.Separator) + filepath.Join("mod,cache", "cache", "download")
+	env := memoryEvalToolchainEnv(runtime.Version(), memoryEvalFileProxy(commaCache))
+	got := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("environment entry %q is not KEY=VALUE", entry)
+		}
+		got[key] = value
+	}
+	want := map[string]string{
+		"GOENV":       "off",
+		"GOTOOLCHAIN": runtime.Version(),
+		"GOSUMDB":     "off",
+		"GOWORK":      "off",
+		"GOMODCACHE":  os.Getenv("GOMODCACHE"),
+	}
+	if got["PATH"] == "" {
+		t.Fatal("environment drops the inherited PATH")
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("environment %s = %q, want %q", key, got[key], value)
+		}
+	}
+	proxy := got["GOPROXY"]
+	if proxy == "" {
+		t.Fatal("environment carries no GOPROXY")
+	}
+	if strings.ContainsAny(proxy, "|") || strings.Count(proxy, ",") != 0 {
+		t.Fatalf("GOPROXY %q carries a separator that splits it into several proxies", proxy)
+	}
+	if !strings.HasSuffix(proxy, "/mod%2Ccache/cache/download") {
+		t.Fatalf("GOPROXY %q does not name the comma-bearing cache path with the comma escaped", proxy)
+	}
+}
+
+// The fallback tests below exercise an older PATH Go materializing the pinned
+// toolchain offline. That scenario needs a host that has such a Go: CI installs
+// the pin natively, so there GOTOOLCHAIN=<pin> is a no-op and the proxy is never
+// consulted. The contract they would exercise is therefore also pinned
+// deterministically by TestMemoryEvalToolchainEnvCarriesTheOfflineContract and
+// TestMemoryEvalFileProxyEscapesGoproxySeparators.
+
 // GOPROXY splits its list on "," and "|", so a cache path holding one of those
 // must be escaped in the file proxy URL. url.URL leaves a comma unescaped (an
 // RFC 3986 sub-delim), which turned one proxy into two — the second not a URL —
