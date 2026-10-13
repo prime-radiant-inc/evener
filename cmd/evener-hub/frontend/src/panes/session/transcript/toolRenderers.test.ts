@@ -119,3 +119,28 @@ test("body is optional on a registered descriptor (no expand affordance) - only 
   registerToolRenderer({ match: "tt_no_body", summary: () => "s" });
   expect(toolRendererFor("tt_no_body").body).toBeUndefined();
 });
+
+// summary is optional the way body is: a descriptor that wants exactly the
+// default row words omits it and inherits DEFAULT_DESCRIPTOR's own, rather than
+// copying the lambda and drifting from it. "Wants the default" becomes
+// expressible, and the default's plumbing (e.g. ctx threading) lives in one
+// place. The test proves the inheritance and the rendering, never the copy: a
+// wording change in the shared default cannot fail it.
+test("a descriptor that omits summary inherits the DEFAULT descriptor's own summary", () => {
+  registerToolRenderer({ match: "tt_omits_summary", icon: "file" });
+  const omitted = toolRendererFor("tt_omits_summary");
+  const fallback = toolRendererFor("tt_never_registered");
+  const call = item({ toolName: "tt_omits_summary" });
+  // Inherited by reference, so it renders the default's own words...
+  expect(omitted.summary).toBe(fallback.summary);
+  expect(omitted.summary(call)).toBe(fallback.summary(call));
+  // ...while the fields the descriptor did supply survive registration.
+  expect(omitted.icon).toBe("file");
+});
+
+// A descriptor that supplies its own summary keeps it - the default fills an
+// omission, it never clobbers a real summary.
+test("a descriptor that supplies its own summary keeps it", () => {
+  registerToolRenderer({ match: "tt_keeps_summary", summary: () => "chose these words" });
+  expect(toolRendererFor("tt_keeps_summary").summary(item({ toolName: "tt_keeps_summary" }))).toBe("chose these words");
+});
