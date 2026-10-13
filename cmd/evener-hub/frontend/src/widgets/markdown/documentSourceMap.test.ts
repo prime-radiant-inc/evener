@@ -305,6 +305,35 @@ test("maps a long list continuation with exact coordinates", () => {
   expect(source.slice(tailFirst.start, tailLast.end)).toBe("Tail");
 });
 
+// A long list item with thousands of INDENTED continuation lines: the dedent
+// slice starts its spans where the accumulated trace ends at the raw line's
+// end, so the pieces are never contiguous and every continuation
+// re-materialized the ENTIRE accumulated span array - quadratic span copying
+// during the list tokenizer's synchronous render. The pieces now accumulate
+// and materialize once per item; the ratchet's per-test ceiling guards the
+// bound, and the assertions pin the mapping's exactness at scale.
+test("maps a long indented list continuation with exact coordinates", () => {
+  const lines: string[] = [];
+  for (let i = 1; i < 3000; i += 1) {
+    lines.push(`    Line ${i} with indented continuation text.`);
+  }
+  const source = `# Indented continuation\n\n- Item start.\n${lines.join("\n")}\n\n## Tail\n`;
+  const { map, segments } = renderDocument(source, { displayedSnapshotId: "snap-ind", mappingId: "map-ind" });
+  expect(segments.length).toBeGreaterThan(0);
+  const mid = map.textRuns.find((run) => run.renderedText.includes("Line 1500 with indented"));
+  if (!mid) throw new Error("missing mid-document text run");
+  const midFirst = mid.sourceSpans[0];
+  const midLast = mid.sourceSpans.at(-1);
+  if (!midFirst || !midLast) throw new Error("missing mid run spans");
+  expect(source.slice(midFirst.start, midLast.end)).toContain("Line 1500 with indented continuation text.");
+  const tail = map.textRuns.find((run) => run.renderedText === "Tail");
+  if (!tail) throw new Error("missing tail heading run");
+  const tailFirst = tail.sourceSpans[0];
+  const tailLast = tail.sourceSpans.at(-1);
+  if (!tailFirst || !tailLast) throw new Error("missing tail heading spans");
+  expect(source.slice(tailFirst.start, tailLast.end)).toBe("Tail");
+});
+
 // String.replace interprets $$ and $& in a replacement string; authored code
 // must reach the DOM and the provenance map literally.
 test("renders and maps literal dollar replacement sequences in code", () => {
