@@ -888,13 +888,10 @@ function removeThreadModel(ref: string): void {
     nextFrameTimes.delete(ref);
     const nextDeletedRefs = new Set(s.deletedRefs);
     nextDeletedRefs.delete(ref);
-    const nextRepairingRefs = new Set(s.repairingRefs);
-    nextRepairingRefs.delete(ref);
     return {
       threads: nextThreads,
       frameTimes: nextFrameTimes,
       deletedRefs: nextDeletedRefs,
-      repairingRefs: nextRepairingRefs,
     };
   });
 }
@@ -2350,6 +2347,36 @@ function setThreadRepairing(ref: string, repairing: boolean): void {
   });
 }
 
+// publishThreadRepairing is setThreadRepairing behind the same ownership fence
+// publishThreadHydration and scheduleOwnedHydrationRetry use: only the ref's
+// CURRENT pending hydration may publish its read's repair outcome. A late
+// resolution from an attempt a newer one superseded, or from a lifetime its
+// owner released (the releases delete the pending entry first), must not
+// clear a flag the newer read set or recreate one a newer read already
+// answered.
+function publishThreadRepairing(
+  kind: HydrationOwnerKind,
+  ref: string,
+  pending: PendingThreadHydration,
+  repairing: boolean,
+): void {
+  const pendingHydrations = kind === "watched" ? pendingWatchedHydrations : pendingThreadHydrations;
+  if (pendingHydrations.get(ref) !== pending) return;
+  setThreadRepairing(ref, repairing);
+}
+
+// The repair flag never outlives its owners: the release that drops the ref's
+// last holder of either kind clears it, because no read that could answer it
+// honestly is still in flight — this release already deleted the pending
+// entry a late read would need to publish one — and no owner remains to
+// re-open the ref. A remaining holder of the other kind keeps the flag: their
+// pane or card still renders the same in-flight repair.
+function clearThreadRepairingIfUnowned(ref: string): void {
+  if ((refCounts.get(ref) ?? 0) > 0 || pinnedMutationRefs.has(ref)) return;
+  if ((watchRefCounts.get(ref) ?? 0) > 0) return;
+  setThreadRepairing(ref, false);
+}
+
 interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
@@ -2381,8 +2408,9 @@ async function hydrateAndSubscribe(
     markThreadDeletedIfFenced(ref, err);
     // #4343: a typed "index rebuilding" answer is a retryable state — record
     // it for the loading surface (set on this code, cleared by any other
-    // outcome, the success path below included).
-    setThreadRepairing(ref, isTranscriptIndexRebuildingError(err));
+    // outcome of this attempt's read, the success path below included; the
+    // publishThreadRepairing fence drops a superseded attempt's late say).
+    publishThreadRepairing("thread", ref, pending, isTranscriptIndexRebuildingError(err));
     // A structured "history failed" response is not a transport hiccup: the
     // spec says the client shows one visible diagnostic and waits for a later
     // read to succeed, never auto-retrying in a loop. Applied only against
@@ -2395,8 +2423,9 @@ async function hydrateAndSubscribe(
     }
     throw err;
   }
-  // The read succeeded: any repairing status from an earlier read is over.
-  setThreadRepairing(ref, false);
+  // The read succeeded: any repairing status from this attempt's earlier
+  // read is over — a superseded attempt leaves the newer one's say standing.
+  publishThreadRepairing("thread", ref, pending, false);
   if (discardHeldHistory) clearOversizeMemo(ref); // the stale-snapshot retry's replacement is a mid-lifetime shrink
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
@@ -2524,8 +2553,9 @@ async function hydrateAndSubscribeWatch(
   } catch (err) {
     markThreadDeletedIfFenced(ref, err);
     // #4343: same per-ref recording as hydrateAndSubscribe's own catch —
-    // the watched read is this ref's latest read too.
-    setThreadRepairing(ref, isTranscriptIndexRebuildingError(err));
+    // the watched read is this ref's latest read too, under the same
+    // ownership fence.
+    publishThreadRepairing("watched", ref, pending, isTranscriptIndexRebuildingError(err));
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
       putWatchedThreadModel(
         ref,
@@ -2536,8 +2566,9 @@ async function hydrateAndSubscribeWatch(
     }
     throw err;
   }
-  // The read succeeded: any repairing status from an earlier read is over.
-  setThreadRepairing(ref, false);
+  // The read succeeded: any repairing status from this attempt's earlier
+  // read is over — a superseded attempt leaves the newer one's say standing.
+  publishThreadRepairing("watched", ref, pending, false);
   // See hydrateAndSubscribe's identical comment: a retry that dropped the
   // held snapshot must fully replace history, not merge into it.
   const model =
@@ -5216,6 +5247,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // should start fresh, the same way it re-reads a fresh model.
     flushCacheWrite(ref); // the tail commits before the model leaves the map
     removeThreadModel(ref);
+    // With the last tracked holder gone, the repair flag follows unless a
+    // watched lifecycle still holds the ref.
+    clearThreadRepairingIfUnowned(ref);
   },
 
   // watchThread is the transcript/tools stream's own sanctioned addition:
@@ -5365,6 +5399,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // too does the wire subscription have no remaining holder.
 
     removeWatchedThreadModel(ref);
+    // With the last watcher gone, the repair flag follows unless a tracked
+    // pane still holds the ref.
+    clearThreadRepairingIfUnowned(ref);
   },
 
   async refreshThread(ref, beforePublish): Promise<void> {

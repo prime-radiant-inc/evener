@@ -2926,6 +2926,115 @@ describe("useThreadsStore.ensureThread", () => {
       expect(threadsStore.getState().threads.get("ref_a")?.history?.failed).toBe("thread history failed at entry 3");
       expect(scheduledHydrationRetries.length).toBe(1);
     });
+
+    test("a superseded read's late success does not clear the repair status the newer read owns", async () => {
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => readResponse("ref_a", { name: "Open" }));
+      await threadsStore.getState().ensureThread("ref_a");
+
+      // Attempt A hangs on the wire.
+      const hungRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+      fake.on(
+        "thread/read",
+        () =>
+          new Promise<ThreadReadResponse>((resolve) => {
+            hungRead.resolve = resolve;
+          }),
+      );
+      const refreshA = threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length === 2);
+
+      // Attempt B supersedes A on the wire and answers rebuilding: the flag is
+      // B's outcome to own.
+      fake.on("thread/read", () => {
+        throw rebuildingRejection();
+      });
+      const refreshB = threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      await flushUntil(() => threadsStore.getState().repairingRefs.has("ref_a"));
+
+      // A resolves late with success. Publication was already refused for it
+      // (superseded); its repair-status update must be refused the same way.
+      hungRead.resolve?.(readResponse("ref_a", { name: "Late" }));
+      await refreshA;
+      await refreshB;
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      threadsStore.getState().releaseThread("ref_a");
+    });
+
+    test("releasing a first open that never published still clears the repair status", async () => {
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => {
+        throw rebuildingRejection();
+      });
+      const ensuring = threadsStore.getState().ensureThread("ref_a");
+      await flushUntil(() => threadsStore.getState().repairingRefs.has("ref_a"));
+      expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+      threadsStore.getState().releaseThread("ref_a");
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+      void ensuring.catch(() => undefined);
+    });
+
+    test("releasing the last watcher still clears the repair status", async () => {
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => {
+        throw rebuildingRejection();
+      });
+      const watching = threadsStore.getState().watchThread("ref_a");
+      await flushUntil(() => threadsStore.getState().repairingRefs.has("ref_a"));
+
+      threadsStore.getState().releaseWatchedThread("ref_a");
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+      void watching.catch(() => undefined);
+    });
+
+    test("a watched release leaves the tracked pane's repair status alone", async () => {
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => {
+        throw rebuildingRejection();
+      });
+      const ensuring = threadsStore.getState().ensureThread("ref_a");
+      await flushUntil(() => threadsStore.getState().repairingRefs.has("ref_a"));
+
+      const watching = threadsStore.getState().watchThread("ref_a");
+      threadsStore.getState().releaseWatchedThread("ref_a");
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      threadsStore.getState().releaseThread("ref_a");
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+      void ensuring.catch(() => undefined);
+      void watching.catch(() => undefined);
+    });
+
+    test("a tracked release leaves a remaining watcher's repair status alone", async () => {
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => readResponse("ref_a", { name: "Open" }));
+      await threadsStore.getState().ensureThread("ref_a");
+
+      fake.on("thread/read", () => {
+        throw rebuildingRejection();
+      });
+      const watching = threadsStore.getState().watchThread("ref_a");
+      await flushUntil(() => threadsStore.getState().repairingRefs.has("ref_a"));
+
+      // The pane leaves; the delegate card's watched lifecycle keeps the
+      // in-flight repair's status for its own surface — nothing published for
+      // the watcher (its read rejected too), so the surviving flag is the
+      // held-owner proof.
+      threadsStore.getState().releaseThread("ref_a");
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      threadsStore.getState().releaseWatchedThread("ref_a");
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+      void watching.catch(() => undefined);
+    });
   });
 
   // ensureThread's client-swap re-arm waits for the replacement client to reach
