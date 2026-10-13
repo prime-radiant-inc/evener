@@ -136,6 +136,12 @@ func markerOnly(line string) bool {
 // whitespace, a tab reaching the next four-column stop), whose text is the
 // model's content even when it names the framing.
 func indentedCode(line string) bool {
+	return strings.TrimSpace(line) != "" && leadingColumns(line) >= 4
+}
+
+// leadingColumns returns the columns of whitespace line starts with, a tab
+// reaching the next four-column stop. A blank line is all its whitespace.
+func leadingColumns(line string) int {
 	columns := 0
 	for _, r := range line {
 		switch r {
@@ -144,10 +150,10 @@ func indentedCode(line string) bool {
 		case '\t':
 			columns += 4 - columns%4
 		default:
-			return columns >= 4
+			return columns
 		}
 	}
-	return false // the line is whitespace only
+	return columns
 }
 
 // summaryPointerLead begins the compaction pointer line a summary turn opens
@@ -437,6 +443,12 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 	}
 
 	for line := range strings.SplitSeq(section, "\n") {
+		// The fence is stepped before a heading is read: a "### " line indented
+		// less than a list item's content ends the item's fence, and is read as
+		// a heading rather than as fenced text. A fence opened before the first
+		// heading is tracked the same way, so a heading inside it is not read as
+		// one.
+		isFence := fence.step(line)
 		if !fence.inside() && strings.HasPrefix(line, "### ") {
 			flush()
 			heading = strings.TrimSpace(strings.TrimPrefix(line, "### "))
@@ -447,7 +459,7 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 		if heading == "" {
 			continue
 		}
-		if fence.step(line) {
+		if isFence {
 			sawFence = true
 			continue
 		}
@@ -466,9 +478,36 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 // fenceTracker follows Markdown fenced code blocks line by line. A block opens
 // on a line starting with three or more backticks or tildes, and closes on a
 // line of the same character, at least as long, with nothing after it.
+//
+// It also follows a fence opened INSIDE a single list item, the shape a model
+// writing a bullet with a fenced example produces (#4435):
+//
+//   - ~~~text
+//     quoted
+//     ~~~
+//
+// Markdown opens the block on the item's first line. The item's content
+// indentation is recorded when such a fence opens, and the matching closing
+// fence is read at that indentation, so the item's own closing line no longer
+// reads as a fresh, top-level opener.
+//
+// This stays a line-oriented subset, not a CommonMark block parser. Only one
+// list container is modelled. A fence's own indentation is spaces; the item
+// boundary counts columns, a tab reaching the next four-column stop. Only a
+// closing fence at or within three columns past the content indentation closes
+// a block; a non-blank line indented less than the content leaves the item, and
+// the fence with it. Nested containers, block quotes and lazy continuation
+// lines are not modelled. A numbered marker other than one cannot interrupt a
+// paragraph in CommonMark; this tracker keeps no paragraph state, so it reads
+// any list marker at the line's start the same way.
 type fenceTracker struct {
 	char   byte
 	length int
+	// container is the content indentation of the list item the tracker is
+	// inside, which is the column a fence in the item opens at, or 0 outside a
+	// list item. It outlives one block, so a second fence in the same item is
+	// read at the item's indentation too, not as a new top-level fence.
+	container int
 }
 
 // inside reports whether the lines stepped so far leave a block open.
@@ -476,13 +515,31 @@ func (f *fenceTracker) inside() bool { return f.length > 0 }
 
 // step advances over line and reports whether it opened or closed a block.
 func (f *fenceTracker) step(line string) bool {
-	char, n, after := fenceRun(line)
-	if n == 0 {
-		return false
+	// A non-blank line indented less than the list item's content leaves the
+	// item, and any fence the item holds ends with it: the line is read on its
+	// own from here, as a new opener or as ordinary content. A blank line stays
+	// inside the item.
+	if f.container > 0 && strings.TrimSpace(line) != "" && leadingColumns(line) < f.container {
+		f.length, f.container = 0, 0
 	}
 	if f.length == 0 {
-		f.char, f.length = char, n
-		return true
+		// A fence at the item's content indentation while the item holds (a
+		// top-level fence is the container-0 case), else a fence on a new list
+		// item's own line. A list fence is only looked for while no block is
+		// open: a "- ~~~" line inside an open block is content.
+		if char, n, _ := fenceRunAt(line, f.container); n != 0 {
+			f.char, f.length = char, n
+			return true
+		}
+		if char, n, container := fenceRunInList(line); n != 0 {
+			f.char, f.length, f.container = char, n, container
+			return true
+		}
+		return false
+	}
+	char, n, after := fenceRunAt(line, f.container)
+	if n == 0 {
+		return false
 	}
 	if char == f.char && n >= f.length && strings.TrimSpace(after) == "" {
 		f.length = 0
@@ -496,6 +553,18 @@ func (f *fenceTracker) step(line string) bool {
 // is 0 when the line does not start with a fence (three or more backticks or
 // tildes).
 func fenceRun(line string) (char byte, n int, after string) {
+	return fenceRunAt(line, 0)
+}
+
+// fenceRunAt returns the fence a line starts with when it is indented by base
+// columns of list-container indentation and then by up to three more spaces:
+// its character, its length and the rest of the line. The length is 0 when the
+// line is not indented that far or does not start with a fence.
+func fenceRunAt(line string, base int) (char byte, n int, after string) {
+	if len(line) < base || strings.TrimLeft(line[:base], " ") != "" {
+		return 0, 0, ""
+	}
+	line = line[base:]
 	indent := len(line) - len(strings.TrimLeft(line, " "))
 	if indent > 3 || indent == len(line) || (line[indent] != '`' && line[indent] != '~') {
 		return 0, 0, ""
@@ -506,7 +575,59 @@ func fenceRun(line string) (char byte, n int, after string) {
 	if n < 3 {
 		return 0, 0, ""
 	}
+	// A backtick fence's info string may not contain a backtick, so a line like
+	// "- ```status=done```" is an inline code span, not a fence (#4435).
+	if char == '`' && strings.Contains(rest, "`") {
+		return 0, 0, ""
+	}
 	return char, n, rest
+}
+
+// fenceRunInList returns the fence a line opens inside a single list item: a
+// list marker, then one to four spaces, then a fence. container is the item's
+// content indentation: the marker and the spaces after it, which is the column
+// the fence opens at, and the column the matching closing fence is read from.
+// Its fence is 0 when the line is not a fence on a list item.
+func fenceRunInList(line string) (char byte, n, container int) {
+	indent := len(line) - len(strings.TrimLeft(line, " "))
+	if indent > 3 || indent == len(line) {
+		return 0, 0, 0
+	}
+	marker, ok := listMarker(line[indent:])
+	if !ok {
+		return 0, 0, 0
+	}
+	after := line[indent+marker:]
+	spaces := len(after) - len(strings.TrimLeft(after, " "))
+	if spaces < 1 || spaces > 4 {
+		return 0, 0, 0
+	}
+	char, n, _ = fenceRun(after[spaces:])
+	if n == 0 {
+		return 0, 0, 0
+	}
+	// The item's content indentation is the marker and the spaces that follow
+	// it; the opening fence sits at its start. A closing fence may sit up to
+	// three columns further (fenceRunAt allows that), but not less.
+	return char, n, indent + marker + spaces
+}
+
+// listMarker returns the length in bytes of the list marker line starts with:
+// "-", "+" or "*", or one to nine digits followed by "." or ")". The space that
+// must follow the marker is not part of it.
+func listMarker(line string) (int, bool) {
+	switch line[0] {
+	case '-', '+', '*':
+		return 1, true
+	}
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == 0 || i > 9 || i >= len(line) || (line[i] != '.' && line[i] != ')') {
+		return 0, false
+	}
+	return i + 1, true
 }
 
 func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkpointConversationEntry {
