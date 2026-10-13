@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/devtool/procgroup"
 )
 
 // moduleRunnerScript is the gate that owns module selection, private per-module
@@ -703,8 +705,16 @@ func TestTimed(t *testing.T) {
 		"FIXTURE_STARTED="+started, "FIXTURE_RELEASE="+release)...)
 	var out strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := cmd.Start(); err != nil {
+	// The runner is a bash script that forks the module's `go test`; starting it
+	// through procgroup puts the whole tree in one process group so a failed
+	// handshake can be reaped as a unit. Killing only the bash would leave a
+	// descendant holding the output pipe and block Wait.
+	if err := procgroup.Start(cmd); err != nil {
 		t.Fatalf("starting the runner: %v", err)
+	}
+	abort := func() {
+		procgroup.Kill(cmd.Process.Pid)
+		_ = cmd.Wait()
 	}
 	// The fixture's own test is inside its run by now, which is before the
 	// export by construction.
@@ -714,8 +724,7 @@ func TestTimed(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+			abort()
 			t.Fatalf("the fixture never announced itself:\n%s", out.String())
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -723,8 +732,7 @@ func TestTimed(t *testing.T) {
 	// $$ in the script is this bash process's pid.
 	planted := fmt.Sprintf("%s.tmp-%d", dest, cmd.Process.Pid)
 	if err := os.Symlink(victim, planted); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		abort()
 		t.Fatalf("planting the symlink at %s: %v", planted, err)
 	}
 	writeTestFile(t, release, []byte("go\n"), 0o644)
