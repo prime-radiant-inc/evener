@@ -2309,8 +2309,15 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// rg skips over-cap files by --max-filesize without a trace in its
 		// output, so the same omission note the native walk's finishWalk
 		// composes is composed here, from ripgrep's own views of the tree.
-		if oversized := e.grepRgOversizeCount(ctx, rg, dir, globFilters); oversized > 0 {
+		oversized, cerr := e.grepRgOversizeCount(ctx, rg, dir, globFilters)
+		if cerr != nil {
+			return "", cerr
+		}
+		if oversized > 0 {
 			notes = append(notes, grepOversizeNote(oversized))
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
 		}
 		if len(notes) > 0 {
 			return searchresult.WithNotes(strings.Join(lines[:min(len(lines), maxResults)], "\n"), notes...), nil
@@ -2322,7 +2329,14 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// A directory whose only matching files were over-cap was not
 		// searched to its end: the empty says so rather than reading as
 		// "genuinely no matches".
-		if oversized := e.grepRgOversizeCount(ctx, rg, dir, globFilters); oversized > 0 {
+		oversized, cerr := e.grepRgOversizeCount(ctx, rg, dir, globFilters)
+		if cerr != nil {
+			return "", cerr
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if oversized > 0 {
 			return searchresult.WithNotes("", grepOversizeNote(oversized)), nil
 		}
 		return "", nil
@@ -2337,26 +2351,41 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 // through the same ripgrep with the same glob filters, so the count is rg's
 // own view of the tree — its ignore rules included — not a guess about which
 // files it would search. A named file never needs the count (an over-cap one
-// routes to the native arm), and any listing that fails returns none: the
-// disclosure is best-effort and never fails the search it describes.
-func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg, dir string, globFilters []string) int {
+// routes to the native arm), a cancelled search reports its cancellation,
+// and any listing that fails another way returns none: the disclosure is
+// best-effort and never fails the search it describes.
+func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg, dir string, globFilters []string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if grepTargetsOneFile(dir) {
-		return 0
+		return 0, nil
 	}
-	all := e.grepRgListFiles(ctx, rg, dir, globFilters, false)
-	under := e.grepRgListFiles(ctx, rg, dir, globFilters, true)
-	if all < 0 || under < 0 || under > all {
-		return 0
+	all, err := e.grepRgListFiles(ctx, rg, dir, globFilters, false)
+	if err != nil {
+		return 0, err
 	}
-	return all - under
+	under, err := e.grepRgListFiles(ctx, rg, dir, globFilters, true)
+	if err != nil {
+		return 0, err
+	}
+	if under > all {
+		return 0, nil
+	}
+	return all - under, nil
 }
 
 // grepRgListFiles counts one rg --files listing of dir: --null keeps the
-// paths separable and only their number matters, and --max-filesize — when
-// capped — is the same filter the search itself passes. rg exits 1 for a
-// listing that found no file, so both 0 and 1 are a listing's answers and
-// only anything else is a failure.
-func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir string, globFilters []string, capped bool) int {
+// paths separable and only their number matters — counted as they stream
+// through, so a listing of any size is never retained — and --max-filesize,
+// when capped, is the same filter the search itself passes. rg exits 1 for
+// a listing that found no file, so both 0 and 1 are a listing's answers;
+// anything else is a failure, which is no note, while a cancellation is the
+// search's error to report.
+func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir string, globFilters []string, capped bool) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	args := []string{"--files", "--null"}
 	if capped {
 		args = append(args, "--max-filesize", strconv.Itoa(grepMaxFileBytes))
@@ -2367,11 +2396,27 @@ func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir
 		}
 	}
 	args = append(args, "--", dir)
-	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
-	if err != nil && res.ExitCode != 0 && res.ExitCode != 1 {
-		return -1
+	counter := &nulCounter{}
+	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, counter)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return 0, cerr
+		}
+		if res.ExitCode != 0 && res.ExitCode != 1 {
+			return 0, nil
+		}
 	}
-	return strings.Count(res.Stdout, "\x00")
+	return int(counter.n), nil
+}
+
+// nulCounter counts the NUL delimiters ripgrep --null ends each path with,
+// retaining nothing: whatever streams through is counted and dropped, so a
+// listing costs its delimiters' count and one pipe block of memory.
+type nulCounter struct{ n int64 }
+
+func (c *nulCounter) Write(p []byte) (int, error) {
+	c.n += int64(bytes.Count(p, []byte{0}))
+	return len(p), nil
 }
 
 // grepTargetsOneFile reports whether a grep's resolved target names a single
@@ -2695,6 +2740,17 @@ func (e *LocalExecutionEnvironment) resolveCommandWorkingDir(workingDir string) 
 }
 
 func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
+	return e.execPreparedCommandStdout(ctx, cmd, timeoutMS, workingDir, envVars, nil)
+}
+
+// execPreparedCommandStdout is execPreparedCommand with stdout, when sink is
+// not nil, streamed to sink as it arrives instead of captured: a caller that
+// only counts or scans the stream lets any volume flow through without any
+// of it being retained. The same lifecycle owns the run — cancellation, the
+// timeout, process-group termination, the drain barrier, exit-code mapping —
+// and Stdout stays empty on the result, since the buffer nothing streamed
+// into is never read.
+func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string, sink io.Writer) (ExecResult, error) {
 	if timeoutMS <= 0 {
 		timeoutMS = 10_000
 	}
@@ -2713,6 +2769,9 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 		Stderr:           &stderr,
 		Wrapper:          e.Wrapper,
 		TerminationGrace: e.terminationGraceDuration(),
+	}
+	if sink != nil {
+		config.Stdout = sink
 	}
 	if args := cmd.Args(); len(args) > 0 {
 		if resolved, ok := lookPathInEnv(args[0], env); ok {
