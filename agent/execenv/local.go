@@ -2311,7 +2311,13 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// composes is composed here, from ripgrep's own views of the tree.
 		oversized, cerr := e.grepRgOversizeCount(ctx, rg, dir, globFilters)
 		if cerr != nil {
-			return "", cerr
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
+			// A listing that failed another way is no note: the disclosure
+			// is best-effort and must not assert a count it could not
+			// obtain — a failed listing is not an empty one.
+			oversized = 0
 		}
 		if oversized > 0 {
 			notes = append(notes, grepOversizeNote(oversized))
@@ -2331,7 +2337,10 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// "genuinely no matches".
 		oversized, cerr := e.grepRgOversizeCount(ctx, rg, dir, globFilters)
 		if cerr != nil {
-			return "", cerr
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
+			oversized = 0
 		}
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -2380,8 +2389,9 @@ func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg,
 // through, so a listing of any size is never retained — and --max-filesize,
 // when capped, is the same filter the search itself passes. rg exits 1 for
 // a listing that found no file, so both 0 and 1 are a listing's answers;
-// anything else is a failure, which is no note, while a cancellation is the
-// search's error to report.
+// anything else is a failure, which propagates so the caller suppresses the
+// note rather than deriving a count from a half-failed pair of listings,
+// while a cancellation is the search's error to report.
 func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir string, globFilters []string, capped bool) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -2403,7 +2413,7 @@ func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir
 			return 0, cerr
 		}
 		if res.ExitCode != 0 && res.ExitCode != 1 {
-			return 0, nil
+			return 0, err
 		}
 	}
 	return int(counter.n), nil

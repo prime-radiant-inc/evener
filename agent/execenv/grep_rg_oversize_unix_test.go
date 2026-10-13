@@ -110,3 +110,56 @@ func TestRgArmDisclosesFilesPastTheReadCapOnNoMatches(t *testing.T) {
 		t.Error("rg-arm no-match search with an over-cap file omitted the over-cap note from its empty result")
 	}
 }
+
+// A listing that fails is not a listing that came back empty: when the
+// capped listing fails (here it exits 2), the uncapped one's count must not
+// be read as "every candidate oversized" — the note is suppressed, because a
+// best-effort disclosure must not assert a count it could not obtain
+// (#4574 round 8, medium 2).
+func TestRgArmSuppressesTheOversizeNoteWhenAListingFails(t *testing.T) {
+	// Not parallel: stubGrepMaxFileBytes swaps the package's read cap.
+	root := t.TempDir()
+	rg := filepath.Join(root, "rg")
+	script := `#!/bin/sh
+capped=0
+files=0
+dir=
+for arg in "$@"; do
+	case "$arg" in
+	--files) files=1 ;;
+	--max-filesize) capped=1 ;;
+	*) dir="$arg" ;;
+	esac
+done
+if [ "$files" = 1 ]; then
+	if [ "$capped" = 1 ]; then
+		exit 2
+	fi
+	printf 'small.txt\000big.log\000'
+	exit 0
+fi
+printf '%s/small.txt\0001:needle small\n' "$dir"
+`
+	if err := os.WriteFile(rg, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "small.txt"), []byte("needle small\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubGrepMaxFileBytes(t, 64)
+	env := NewLocalExecutionEnvironment(root)
+	defer env.Cleanup()
+	env.lookPath = func(string) (string, error) { return rg, nil }
+
+	got, err := env.Grep(t.Context(), "needle", root, "", false, 100, "content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, notes := searchresult.Split(got)
+	if entries != "small.txt:1:needle small" {
+		t.Fatalf("search with a failed capped listing = %q, want entries %q", got, "small.txt:1:needle small")
+	}
+	if notes != "" {
+		t.Fatalf("a failed capped listing produced a note anyway: %q, want none — a failed listing is not an empty one", notes)
+	}
+}
