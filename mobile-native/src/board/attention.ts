@@ -10,7 +10,7 @@
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
 // session's Subagents list holds the detail.
 import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
-import { quietState, taskSettledCount } from "@evener/appwire-client";
+import { DELEGATE_QUIET_AFTER_MS, quietState, taskSettledCount } from "@evener/appwire-client";
 import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { compactDuration } from "../session/format";
 
@@ -332,11 +332,11 @@ export function waitingOnSubagents(count: number): string {
 }
 
 /** No update for this long reads "Quiet" in a session's tray, on a
- * subagent's row and in the Activity list: the web transcript's threshold
- * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts).
- * The tray also waits this long before showing a first model retry. The
- * Board's rows read the package's quietState instead. */
-export const AGENT_QUIET_AFTER_MS = 20_000;
+ * subagent's row and in the Activity list, and dims a subagent row's dot:
+ * the shared client's quiet threshold, so every surface flips at the same
+ * instant. The tray also waits this long before showing a first model retry.
+ * The Board's rows read the package's quietState instead. */
+export const AGENT_QUIET_AFTER_MS = DELEGATE_QUIET_AFTER_MS;
 
 /** The why line of a running agent with nothing more to say: Quiet once it
  * has gone AGENT_QUIET_AFTER_MS without an update, else Working. */

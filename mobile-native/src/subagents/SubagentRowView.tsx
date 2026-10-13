@@ -4,7 +4,8 @@
 import { SymbolView } from "expo-symbols";
 import { Fragment, memo, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { fonts } from "../design/tokens";
+import { type DelegateDotState, delegateDotState } from "@evener/appwire-client";
+import { type Palette, fonts } from "../design/tokens";
 import { compactDuration, spokenDuration } from "../session/format";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
@@ -15,6 +16,29 @@ import {
 	subagentWhy,
 	timeInState,
 } from "./subagentModel";
+
+// The dot's tints, from the shared rule: alive while fresh, quiet ink past
+// the threshold, amber for attention, red for failure. A settled run shows
+// no mark at all; the band headers carry those states.
+const DOT_TINT: Record<DelegateDotState, keyof Palette | null> = {
+	fresh: "alive",
+	quiet: "inkLow",
+	attention: "attention",
+	failed: "danger",
+	idle: null,
+};
+
+// The dot's state word for the accessible label: the tint is invisible to a
+// screen reader, so the spoken line keeps the fresh-versus-quiet distinction
+// the visible why line gave up, and names the attention a running row can
+// owe. A settled row has no word (the state word already speaks it).
+const DOT_WORD: Record<DelegateDotState, string | undefined> = {
+	fresh: "Working",
+	quiet: "Quiet",
+	attention: "Needs you",
+	failed: "Failed",
+	idle: undefined,
+};
 
 /** Words that replace a row's why line, and what they report: a stop
  * request on its way (sent through the coordinator or directly) or settled. */
@@ -46,10 +70,20 @@ export const SubagentRowView = memo(function SubagentRowView({
 	const time = timeInState(row, now);
 	const why = subagentWhy(row, now);
 	const last = subagentLastLine(row, coordinatorModel, modelName);
+	const dot = delegateDotState(row.delegate, now);
+	const stateWord = subagentStateWord(row.state);
+	const dotWord = DOT_WORD[dot];
+	const tint = DOT_TINT[dot];
 	// Preserve the outcome and cause; a note replaces the why line.
 	const failure = note === undefined && why.word === "Failed";
 	const whyLine = note?.text ?? why.text;
-	const label = [row.title, subagentStateWord(row.state), whyLine, time === null ? null : spokenDuration(time)]
+	const label = [
+		row.title,
+		stateWord,
+		dotWord !== undefined && dotWord !== stateWord ? dotWord : null,
+		whyLine,
+		time === null ? null : spokenDuration(time),
+	]
 		.filter((part) => part)
 		.join(", ");
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
@@ -70,13 +104,7 @@ export const SubagentRowView = memo(function SubagentRowView({
 			})}
 		>
 			<View style={{ width: 28, height: 22 * scale, alignItems: "center", justifyContent: "center" }}>
-				{row.state === "running" ? (
-					<SymbolView name="circle.fill" size={8} tintColor={palette.alive} />
-				) : row.state === "failed" ? (
-					<SymbolView name="xmark.octagon.fill" size={20} tintColor={palette.inkLow} />
-				) : (
-					<SymbolView name="checkmark" size={14} tintColor={palette.inkLow} />
-				)}
+				{tint === null ? null : <SymbolView name="circle.fill" size={8} tintColor={palette[tint]} />}
 			</View>
 			<View style={{ flex: 1, minWidth: 0, gap: 2 }}>
 				<View style={{ flexDirection: "row", alignItems: "baseline", columnGap: 8 }}>

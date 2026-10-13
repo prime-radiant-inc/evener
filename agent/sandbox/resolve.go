@@ -123,8 +123,9 @@ type ResolvedPolicy struct {
 	CacheStrategy CacheStrategy // how cache roots are served (never persistent-writable)
 	SessionTmp    bool          // a per-session writable tmp (TMPDIR) is provisioned
 
-	// CacheRoots are the absolute language cache directories (~/.cache, ~/.npm,
-	// ~/.cargo and Go's, see goCacheRoots) served under the cache strategy: overlaid read-real/
+	// CacheRoots are the absolute language cache directories (~/.cache with
+	// $XDG_CACHE_HOME, ~/.npm with $npm_config_cache, ~/.cargo with $CARGO_HOME,
+	// and Go's, see goCacheRoots) served under the cache strategy: overlaid read-real/
 	// write-private when CacheStrategy is CacheOverlay, or redirected via env to
 	// the session tmp when CacheSessionPrivate. Empty when no cache handling is
 	// needed (off, read-only). Populated for the writable modes.
@@ -607,9 +608,17 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 	}
 }
 
+// npmConfigCacheEnv is npm's cache-location variable. It is spelled lowercase by
+// npm itself and is not an evener environment variable, so it lives here rather
+// than in envvars.
+const npmConfigCacheEnv = "npm_config_cache"
+
 // defaultCacheRoots are the language cache directories served under the cache
 // strategy, expressed relative to $HOME. $XDG_CACHE_HOME joins ~/.cache when
-// set, and Go's roots follow the host's go settings (goCacheRoots).
+// set, npm's and cargo's join ~/.npm and ~/.cargo when $npm_config_cache and
+// $CARGO_HOME set them, and Go's roots follow the host's go settings
+// (goCacheRoots). A host that moves a cache this way would otherwise leave the
+// real cache outside every overlay root, read-only to a cold build (#4225).
 var defaultCacheRoots = []string{".npm", ".cargo"}
 
 // cacheRootsFor returns the absolute cache roots for a mode: the writable modes
@@ -624,13 +633,13 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		// ~/.cache stays served alongside $XDG_CACHE_HOME, for tools that
 		// write it whatever XDG says.
 		out := []string{filepath.Join(host.Home, ".cache")}
-		if filepath.IsAbs(host.XDGCacheHome) {
-			out = append(out, host.XDGCacheHome)
-		}
+		out = append(out, absRoots(host.XDGCacheHome)...)
+		// Likewise the $HOME npm/cargo defaults above stay served alongside a
+		// configured value.
 		for _, rel := range defaultCacheRoots {
 			out = append(out, filepath.Join(host.Home, rel))
 		}
-		roots := guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
+		roots := guardedHostRoots(slices.Concat(out, npmCargoCacheRoots(host), goCacheRoots(host)), host.Home, worktree)
 		// A root that is not a directory yet (a file, a dangling link to an
 		// unmounted drive) stays: each spawn decides whether it is overlaid
 		// (liveCacheRoots), so one that becomes available is served.
@@ -791,11 +800,30 @@ func goCacheRoots(host HostFacts) []string {
 		roots = append(roots, filepath.Join(def[0], "pkg"))
 	}
 	for _, dir := range []string{host.GoModCache, host.GoCache} {
-		if filepath.IsAbs(dir) {
-			roots = append(roots, dir)
-		}
+		roots = append(roots, absRoots(dir)...)
 	}
 	return roots
+}
+
+// npmCargoCacheRoots are the cache directories npm and cargo move with the
+// environment: $npm_config_cache and $CARGO_HOME. A relative value, which each
+// tool resolves against its own working directory, is not a stable root and
+// contributes nothing — the go command's rule for its cache settings.
+func npmCargoCacheRoots(host HostFacts) []string {
+	return absRoots(host.NpmConfigCache, host.CargoHome)
+}
+
+// absRoots returns the absolute entries of dirs, in order, dropping the rest: a
+// relative configured cache location resolves against each tool's own working
+// directory, so it names no stable root.
+func absRoots(dirs ...string) []string {
+	out := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		if filepath.IsAbs(dir) {
+			out = append(out, dir)
+		}
+	}
+	return out
 }
 
 // cacheStrategyFor picks the cache strategy: workspace-write overlays only on a
