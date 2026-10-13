@@ -423,9 +423,18 @@ var admitReadFD = func(fd int, name string, allowDir, streamed bool) (*os.File, 
 // specials stat regular at terabyte sizes — fails fast instead of loading
 // (issue #4556). A regular the classification routes as a stream (see
 // fdStreamed) can block in read(2) although it stats regular, so that read is
-// also bounded in time by grepReadStallTimeout; the seam has no context to
-// observe, which is the filed full-parity work, not this one.
+// also bounded in time by grepReadStallTimeout and cancellation-observable
+// (see readFileCtx). This context-less entry is the Background default for
+// callers without one.
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
+	return s.readFileCtx(context.Background(), tool, abs)
+}
+
+// readFileCtx is readFile with the caller's context threaded to the read, so a
+// cancelled tool call ends the read instead of parking it on a stream. The
+// read itself goes through readBounded, the single bounded-read constructor
+// that arms the byte cap, the stall deadline, and the ctx watcher together.
+func (s *sandboxFS) readFileCtx(ctx context.Context, tool, abs string) ([]byte, error) {
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return nil, err
@@ -436,16 +445,8 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
 	defer func() { _ = f.Close() }()
-	// The deadline is what turns a never-ready stream — one that keeps its
-	// O_NONBLOCK because the classification routed it here — from a read
-	// parked on the runtime poller forever into a failure at the stall
-	// timeout. An ordinary regular never takes it: its descriptor is
-	// blocking and its read ends at the data.
-	if streamed {
-		_ = f.SetReadDeadline(time.Now().Add(grepReadStallTimeout))
-	}
 	// Refuse at the stat size before reading a byte, matching the off arm's
-	// fstat refusal; readAllCapped still bounds the read for a file that grows
+	// fstat refusal; readBounded still bounds the read for a file that grows
 	// past the cap after this check.
 	info, serr := f.Stat()
 	if serr != nil {
@@ -454,9 +455,9 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	if info.Size() > MaxWholeFileReadBytes {
 		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 	}
-	data, rerr := readAllCapped(f, MaxWholeFileReadBytes)
+	data, _, rerr := readBounded(ctx, f, f, MaxWholeFileReadBytes)
 	if rerr != nil {
-		if errors.Is(rerr, os.ErrDeadlineExceeded) {
+		if errors.Is(rerr, errGrepStreamStalled) {
 			return nil, fmt.Errorf("read %q: %w", abs, errGrepStreamStalled)
 		}
 		return nil, rerr
