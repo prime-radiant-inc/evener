@@ -329,6 +329,17 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 		if active {
 			return true, nil
 		}
+		// A delegate whose finish append failed reads quiet on its own run flags
+		// but still holds an open generation behind the controller's recovery
+		// latch. Counting it as live would hang the drain until a stop or restart
+		// reconciliation clears the latch; ignoring it is a false quiescence that
+		// lets the drain (and Close) proceed with the generation unsettled.
+		// Report it as outstanding-but-not-live, so the stall watchdog gives up
+		// after DrainStallTimeout with a warning naming the work instead of
+		// exiting as if nothing were owed (issue #179 item b).
+		if child != nil && child.owningDelegateID != "" && s.delegateController.finalizationRecoveryHolds(child.owningDelegateID) {
+			return true, nil
+		}
 		if child != nil {
 			outstanding, err := child.treeHasOutstandingWork()
 			if err != nil {
