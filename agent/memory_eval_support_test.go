@@ -124,27 +124,32 @@ func memoryEvalGoModCache() string {
 	return filepath.Join(entries[0], "pkg", "mod")
 }
 
-// memoryEvalToolchainDownloadPresent reports whether cache holds the download
-// records of the compiling toolchain, which is what the file proxy serves. A
-// machine that installed the pin natively rather than through the module cache
-// this process points at has none, and no offline fallback can materialize it
-// there. Tests that need the fallback to fetch the toolchain say so rather than
-// failing on the machine's installation shape.
+// memoryEvalToolchainDownloadPresent reports whether cache holds the compiling
+// toolchain in a shape the file proxy can serve offline: the extracted
+// installation, or a download record with both its zip and its ziphash (an
+// interrupted download leaves metadata such as .info behind without either, and
+// the proxy cannot serve a toolchain from those). A machine that installed the
+// pin natively rather than through the module cache this process points at has
+// none, and no offline fallback can materialize it there. Tests that need the
+// fallback to fetch the toolchain say so rather than failing on the machine's
+// cache state.
 func memoryEvalToolchainDownloadPresent(cache string) bool {
 	if cache == "" {
 		return false
 	}
 	name := "v0.0.1-" + runtime.Version() + "." + runtime.GOOS + "-" + runtime.GOARCH
+	if info, err := os.Stat(filepath.Join(cache, "golang.org", "toolchain@"+name)); err == nil && info.IsDir() {
+		return true
+	}
 	entries, err := os.ReadDir(filepath.Join(cache, "cache", "download", "golang.org", "toolchain", "@v"))
 	if err != nil {
 		return false
 	}
+	have := make(map[string]bool, len(entries))
 	for _, entry := range entries {
-		if entry.Name() == name+".zip" || entry.Name() == name+".info" {
-			return true
-		}
+		have[entry.Name()] = true
 	}
-	return false
+	return have[name+".zip"] && have[name+".ziphash"]
 }
 
 type memoryEvalAdmission struct {

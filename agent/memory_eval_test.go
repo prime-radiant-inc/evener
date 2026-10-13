@@ -126,6 +126,50 @@ func TestMemoryEvalFileProxyEscapesGoproxySeparators(t *testing.T) {
 	}
 }
 
+// A lone metadata file does not make a toolchain servable: an interrupted
+// download leaves .info behind without the zip, and enabling the fallback tests
+// on that cache state fails the default suite for a reason that has nothing to
+// do with the code. The predicate must accept only an extracted installation or
+// a download record with both its zip and its ziphash.
+func TestMemoryEvalToolchainDownloadPresentRequiresAUsableToolchain(t *testing.T) {
+	t.Parallel()
+	name := "v0.0.1-" + runtime.Version() + "." + runtime.GOOS + "-" + runtime.GOARCH
+	shapes := []struct {
+		name  string
+		files []string
+		dirs  []string
+		want  bool
+	}{
+		{name: "empty cache", want: false},
+		{name: "metadata only", files: []string{"cache/download/golang.org/toolchain/@v/" + name + ".info"}, want: false},
+		{name: "zip without ziphash", files: []string{"cache/download/golang.org/toolchain/@v/" + name + ".zip"}, want: false},
+		{name: "complete download", files: []string{"cache/download/golang.org/toolchain/@v/" + name + ".zip", "cache/download/golang.org/toolchain/@v/" + name + ".ziphash"}, want: true},
+		{name: "extracted installation", dirs: []string{"golang.org/toolchain@" + name}, want: true},
+	}
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			cache := t.TempDir()
+			for _, rel := range shape.files {
+				path := filepath.Join(cache, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatalf("prepare %s: %v", rel, err)
+				}
+				if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+					t.Fatalf("write %s: %v", rel, err)
+				}
+			}
+			for _, rel := range shape.dirs {
+				if err := os.MkdirAll(filepath.Join(cache, filepath.FromSlash(rel)), 0o755); err != nil {
+					t.Fatalf("prepare %s: %v", rel, err)
+				}
+			}
+			if got := memoryEvalToolchainDownloadPresent(cache); got != shape.want {
+				t.Fatalf("memoryEvalToolchainDownloadPresent(%s) = %v, want %v", shape.name, got, shape.want)
+			}
+		})
+	}
+}
+
 // The fallback names the module cache as a file proxy, so a cache root whose own
 // path contains a GOPROXY separator must still resolve the compiling toolchain.
 // The cache is reached through a symlink from a comma-bearing root, which is the
