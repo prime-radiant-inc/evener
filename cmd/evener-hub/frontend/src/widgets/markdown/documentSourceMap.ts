@@ -29,33 +29,86 @@ export interface BoundDocumentMap {
 
 // Every transformation below runs over the pinned parser's rules/captures.
 // Recognition, token ordering, reference resolution and masking stay in Marked.
+interface SpanView {
+  // One shared dense array (a span per original UTF-16 unit, or repeated
+  // ranges after spelling transforms) addressed by offset. A slice is O(1)
+  // span work: the pinned tokenizer probes every block against the remaining
+  // text, so copying that tail's span array per probe made rendering
+  // quadratic over documents with many blocks.
+  readonly data: SourceRange[];
+  readonly start: number;
+  readonly end: number;
+}
 interface Trace {
   text: string;
-  spans: SourceRange[];
+  spans: SpanView;
   newline?: Trace;
 }
 interface Provenance {
   raw: Trace;
   text?: Trace;
 }
+const NO_SPANS: SourceRange[] = [];
+// Concrete spans for the consumers that need an array: the final text runs
+// and a concat over pieces that cannot share storage. This is where a view
+// materializes - only consumed ranges ever copy.
+function spansOf(value: Trace): SourceRange[] {
+  const { data, start, end } = value.spans;
+  return start === 0 && end === data.length ? data : data.slice(start, end);
+}
 function originalTrace(source: string): Trace {
-  return { text: source, spans: Array.from({ length: source.length }, (_, start) => ({ start, end: start + 1 })) };
+  return {
+    text: source,
+    spans: {
+      data: Array.from({ length: source.length }, (_, start) => ({ start, end: start + 1 })),
+      start: 0,
+      end: source.length,
+    },
+  };
 }
 function slice(value: Trace, start = 0, end = value.text.length): Trace {
   const a = start < 0 ? Math.max(0, value.text.length + start) : start;
   const b = end < 0 ? Math.max(0, value.text.length + end) : end;
-  return { text: value.text.slice(a, b), spans: value.spans.slice(a, b) };
+  return {
+    text: value.text.slice(a, b),
+    spans: { data: value.spans.data, start: value.spans.start + a, end: value.spans.start + b },
+  };
 }
 function concat(...values: Trace[]): Trace {
-  return { text: values.map((v) => v.text).join(""), spans: values.flatMap((v) => v.spans) };
+  if (values.length === 0) return empty();
+  const first = values[0];
+  const last = values.at(-1);
+  if (!first || !last) throw new Error("Unverified concat inputs");
+  if (values.length === 1) return first;
+  let shared = true;
+  for (let i = 1; i < values.length; i++) {
+    const previous = values[i - 1]?.spans;
+    const current = values[i]?.spans;
+    if (!previous || !current || previous.data !== current.data || previous.end !== current.start) {
+      shared = false;
+      break;
+    }
+  }
+  const text = values.map((v) => v.text).join("");
+  if (shared) return { text, spans: { data: first.spans.data, start: first.spans.start, end: last.spans.end } };
+  const data = values.flatMap((v) => spansOf(v));
+  return { text, spans: { data, start: 0, end: data.length } };
 }
-const empty = (): Trace => ({ text: "", spans: [] });
+const empty = (): Trace => ({ text: "", spans: { data: NO_SPANS, start: 0, end: 0 } });
 function spelling(value: Trace, text: string): Trace {
   if (!text) return empty();
-  const first = value.spans[0],
-    last = value.spans.at(-1);
+  const { data, start, end } = value.spans;
+  const first = end > start ? data[start] : undefined;
+  const last = end > start ? data[end - 1] : undefined;
   if (!first || !last) throw new Error("Unverified Marked insertion");
-  return { text, spans: Array.from({ length: text.length }, () => ({ start: first.start, end: last.end })) };
+  return {
+    text,
+    spans: {
+      data: Array.from({ length: text.length }, () => ({ start: first.start, end: last.end })),
+      start: 0,
+      end: text.length,
+    },
+  };
 }
 function replace(value: Trace, regex: RegExp, replacement: (match: Trace, captures: Trace[]) => Trace): Trace {
   const re = new RegExp(regex.source, regex.flags.includes("d") ? regex.flags : `${regex.flags}d`);
@@ -940,7 +993,7 @@ export function renderDocument(
     if (!trace) throw new Error(`Unverified rendered token ${token.type}`);
     const text = decode ? decodeEntities(trace, raw) : trace;
     const id = `document-run-${runs.length}`;
-    runs.push({ id, renderedText: text.text, sourceSpans: text.spans });
+    runs.push({ id, renderedText: text.text, sourceSpans: spansOf(text) });
     return `<span data-document-run="${id}">${escapeHtml(text.text)}</span>`;
   }
   const parser = new Marked({
@@ -990,15 +1043,23 @@ export function renderDocument(
         const raw = lexer.provenance.get(token)?.raw;
         if (!raw) throw new Error("Unverified diagram raw");
         const content = capture(raw, lexer.tokenizerRef.rules.block.fences, 3);
-        const last = content.spans.at(-1);
+        const contentSpans = content.spans;
+        const last = contentSpans.end > contentSpans.start ? contentSpans.data[contentSpans.end - 1] : undefined;
         const next = last?.end;
-        const newline = input.spans.findIndex((span) => span.start === next);
+        const inputSpans = input.spans;
+        let newline = -1;
+        for (let i = inputSpans.start; i < inputSpans.end; i++) {
+          if (inputSpans.data[i]?.start === next) {
+            newline = i - inputSpans.start;
+            break;
+          }
+        }
         const unit = slice(input, newline, newline + 1);
         if (unit.text !== "\n") throw new Error("Unverified Mermaid final newline");
         fallback = concat(trace, unit);
       }
       const runId = `document-run-${runs.length}`;
-      runs.push({ id: runId, renderedText: text, sourceSpans: fallback.spans });
+      runs.push({ id: runId, renderedText: text, sourceSpans: spansOf(fallback) });
       segments.push({ kind: "mermaid", text, runId, key: `mermaid-${segments.length}` });
     } else prose.push(token);
   }
