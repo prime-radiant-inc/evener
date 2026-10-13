@@ -164,20 +164,28 @@ func TestTimingBudgetBlessDoesNotStampAStaleFile(t *testing.T) {
 	}
 }
 
-// TestTimingBudgetStillEnforcesTheWebRowWithoutTheMarker pins the scope of the
-// stale-units suspension: the "web" entry is the vitest reporter's assertion
-// durations, the metric issue #172 did not change, so it stays comparable to the
-// checked-in budget and over 1.5x must still fail even while the Go packages'
-// units are stale.
-func TestTimingBudgetStillEnforcesTheWebRowWithoutTheMarker(t *testing.T) {
+// TestTimingBudgetWarnsOnTheWebRowWithoutTheMarker pins the 2026-10-13 ruling
+// on PR #4600: the checked-in `"web"` baseline was blessed on a quiet
+// workstation, and a four-core CI runner's vitest parallelism measures the same
+// suite 2.6x to 3.9x higher (356.45s over a 90.77s budget on the run that
+// produced this test), so the row is not comparable to this run any more than
+// the Go packages' pre-#172 numbers are. Both therefore warn, with the numbers
+// printed, until #141 re-blesses the baseline for the host class CI uses. The
+// exit status is the assertion.
+func TestTimingBudgetWarnsOnTheWebRowWithoutTheMarker(t *testing.T) {
 	measured := "SUM\tweb\t10.00\n"
 	budget := `{"perTestCeilingSeconds":3,"packages":{"web":1}}`
 	out, err := runTimingBudgetCompare(t, measured, budget)
-	if err == nil {
-		t.Fatalf("the web row's units did not change, so over 1.5x must still fail:\n%s", out)
+	if err != nil {
+		t.Fatalf("an incomparable-baseline ratio must warn, not fail:\n%s", out)
 	}
-	if !strings.Contains(out, "FAIL  web") {
-		t.Fatalf("no FAIL for the web row over 1.5x:\n%s", out)
+	for _, want := range []string{"WARN  web", "#141"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("web-row warning missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Fatalf("the stale web ratio was enforced as a failure:\n%s", out)
 	}
 }
 

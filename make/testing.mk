@@ -295,9 +295,12 @@ vet:
 ##   per-test ceiling. While the budget file's metric marker is absent (the
 ##   checked-in pre-#172 baseline, until a rebaseline rewrites it under package
 ##   wall time), the Go-package ratio check is suspended to a warning; the
-##   frontend ("web") row keeps its unchanged metric and stays enforced; the
-##   per-test ceiling is warn-only in every mode, CHECK=1 included, until it is
-##   segmented by test class and enforced (#4601).
+##   frontend ("web") row warns with them: its metric did not change, but the
+##   checked-in number was blessed on a quiet workstation and a four-core CI
+##   runner measures the same suite 2.6x-3.9x higher, so it is not comparable to
+##   a CI run either. While the file carries no wall-time marker every ratio
+##   warns with its numbers; the per-test ceiling is warn-only in every mode,
+##   CHECK=1 included, until it is segmented by test class and enforced (#4601).
 ## trigger: Local/on-demand. merge-approval-gate runs the check through
 ##   --measured over the rows its own ROOT_FULL=1 make test run captured, so
 ##   enforcing the budget no longer needs a second full test run (issue #144);
@@ -313,11 +316,10 @@ vet:
 ##   did not measure; a full rebaseline also drops entries go list no longer
 ##   reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x
 ##   its budget is nonzero once the budget file carries the wall-time metric
-##   marker; while the marker is absent those ratios are warnings. The "web" row
-##   is metric-independent and nonzero regardless; a per-test ceiling breach is
-##   reported and named but nonzero in no mode until the ceiling is segmented by
-##   test class and enforced (#4601). A missing or empty budget file always exits
-##   zero.
+##   marker; while the marker is absent those ratios warn, the "web" row among
+##   them. A per-test ceiling breach is reported and named but nonzero in no mode
+##   until the ceiling is segmented by test class and enforced (#4601). A missing
+##   or empty budget file always exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 
