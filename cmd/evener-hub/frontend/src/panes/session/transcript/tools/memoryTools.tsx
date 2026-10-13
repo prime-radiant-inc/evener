@@ -20,6 +20,8 @@ import {
 
 function MemoryWriteBody({ item, live }: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
+  // Only the current argument shape renders; a fallback for the older `content`
+  // argument is a compatibility decision that needs Jesse's approval.
   const body = str(args, "body");
   // An empty page renders the confirmation, not an empty markdown block -
   // the same empty-body guard the native evidence applies.

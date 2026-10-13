@@ -245,6 +245,8 @@ function memoryEvidence(label: string, detail: ActivityDetail): Evidence[] {
 	switch (label) {
 		case "memory_write": {
 			const args = parseArgs(detail.arguments);
+			// Only the current argument shape renders; a fallback for the older
+			// `content` argument is a compatibility decision that needs Jesse's approval.
 			const body = str(args, "body");
 			if (!body) return jsonEvidence(detail, text);
 			return [{ kind: "markdown", title: memoryFileTarget(args) ?? "Memory page", markdown: body }];

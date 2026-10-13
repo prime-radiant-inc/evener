@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +38,7 @@ func TestMemoryPageFromFieldsRequiresWhen(t *testing.T) {
 			args["when"] = when
 		}
 		_, err := memoryPageFromFields(args)
-		if err == nil || err.Error() != "memory_write needs a when: one line saying when a future session needs the page" {
+		if !errors.Is(err, errMemoryWriteNeedsWhen) {
 			t.Fatalf("when %q: err = %v", when, err)
 		}
 	}
@@ -45,15 +46,17 @@ func TestMemoryPageFromFieldsRequiresWhen(t *testing.T) {
 
 func TestMemoryPageFromFieldsRefusesFrontmatterInBody(t *testing.T) {
 	t.Parallel()
-	const want = "body starts with a frontmatter block; put the when line in its own field and pass only the page's Markdown as body"
 	for _, body := range []string{"---\ndescription: d\n---\nfact\n", "\n---\nwhen: w\n---\n"} {
 		_, err := memoryPageFromFields(map[string]any{"when": "w", "body": body})
-		if err == nil || err.Error() != want {
+		if !errors.Is(err, errMemoryBodyFrontmatter) {
 			t.Fatalf("body %q: err = %v", body, err)
 		}
 	}
-	if _, err := memoryPageFromFields(map[string]any{"when": "w", "body": "# T\nfact\n\n---\n\nmore\n"}); err != nil {
-		t.Fatalf("a rule later in the body was refused: %v", err)
+	// A horizontal rule is not a frontmatter block, however it opens the body.
+	for _, body := range []string{"# T\nfact\n\n---\n\nmore\n", "----\n# T\nfact\n", "---\n# T\nfact\n"} {
+		if _, err := memoryPageFromFields(map[string]any{"when": "w", "body": body}); err != nil {
+			t.Fatalf("body %q was refused: %v", body, err)
+		}
 	}
 }
 
