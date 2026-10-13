@@ -547,7 +547,11 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     // The shared per-ref edit revision at entry: another same-ref source's
     // explicit edit since this point advances it.
     const entryEditRevision = readDraftRevision(ref);
-    await ready();
+    // A send must still go out when local persistence is unavailable (#4194):
+    // readiness keeps its own honest contract - it rejects with the platform's
+    // error and reports it - but the submission proceeds from the captured
+    // payload without a durable draft instead of inheriting that refusal.
+    await ready().catch(() => undefined);
     await whenSettled();
     // Accepted recovery work is part of the submission's durable state: drain it
     // before capturing the guard so the guard matches the durable row.
