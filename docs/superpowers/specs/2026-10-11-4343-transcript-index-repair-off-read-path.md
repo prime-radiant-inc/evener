@@ -327,6 +327,13 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      read or any other failure — including the budget-exhausted
      `transcriptHistoryFailed`, which rides the store's existing
      history-failed diagnostic and never a false repair status). The
+     rule is per read kind: a watched read that requests history
+     publishes its verdict like a tracked one, while a metadata-only
+     (lean) watched read — which the hub can answer without touching
+     the transcript index — neither advances the flag's ordering
+     sequence nor publishes any verdict except an explicit rebuilding
+     answer it received itself, so a lean watch can never clear or
+     silence a repair status another read owns. The
      session's loading surface reads the flag and shows the concise
      status "Repairing session history" (agreed with Jesse, 2026-10-11).
      A budget-exhausted already-open session with a model shows the
