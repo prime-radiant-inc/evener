@@ -394,7 +394,12 @@ func TestRefusingCatchUpRefusesEachRebuildTrigger(t *testing.T) {
 		want := lastRecordedEntry(t, dir)
 		appendBytes(t, path, lines[1])
 		simulateTurnKill(t)
-		requireRefusal(t, x.CatchUp(), want)
+		err := x.CatchUp()
+		requireRefusal(t, err, want)
+		var refusal *RebuildRequiredError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("the refusal carried no typed identity: %v", err)
+		}
 		testKillAtTurnUpdateLog = nil
 
 		// The fault cleared, and the same handle retries before any repair
@@ -404,6 +409,42 @@ func TestRefusingCatchUpRefusesEachRebuildTrigger(t *testing.T) {
 		before := snapshotSidecar(t, dir, true)
 		requireRefusal(t, x.CatchUp(), want)
 		assertSameSidecar(t, "retry after the cleared fault", before, snapshotSidecar(t, dir, true))
+
+		// The window and change reads must refuse too, with the same typed
+		// refusal: the half-applied item sits past the committed counts in
+		// this handle's memory, and serving it — or changes built on it —
+		// under the old snapshot length would publish an entry no committed
+		// build covers.
+		_, err = x.Latest(40)
+		requireRefusal(t, err, want)
+		_, err = x.ChangedSince(x.meta.Length)
+		requireRefusal(t, err, want)
+
+		// The repair's own recipe — an ordinary handle's revalidating
+		// rebuild against the build the refusal named — commits a fresh
+		// build, and the refusing handle's next refresh adopts it: the
+		// reads recover, agreeing with an ordinary handle's.
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := h.RebuildIfStillRefused(info.Size(), refusal.Build); err != nil {
+			t.Fatalf("the repair recipe: %v", err)
+		}
+		window, err := x.Latest(40)
+		if err != nil {
+			t.Fatalf("window after the repair: %v", err)
+		}
+		reference, err := h.Latest(40)
+		if err != nil {
+			t.Fatalf("the ordinary handle's window: %v", err)
+		}
+		if len(window.Candidates) != len(reference.Candidates) || len(window.Candidates) == 0 {
+			t.Fatalf("window after the repair = %d candidates, want the ordinary handle's %d", len(window.Candidates), len(reference.Candidates))
+		}
+		if _, err := x.ChangedSince(x.meta.Length); err != nil {
+			t.Fatalf("changes after the repair: %v", err)
+		}
 	})
 
 	t.Run("pending communicate", func(t *testing.T) {

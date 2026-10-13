@@ -434,6 +434,14 @@ func (x *Index) locked(exclusive bool, fn func() error) error {
 		}
 		return err
 	}
+	// A refused fallback rebuild marked this handle's build stale: its
+	// memory holds a half-applied scan past the committed counts, and no
+	// read — window, changes, or another catch-up — may serve it under the
+	// old snapshot length. Refuse everything until refresh adopts the
+	// repair's build, the load that clears the mark.
+	if x.refusing && x.stale {
+		return x.refuseRebuild()
+	}
 	return fn()
 }
 

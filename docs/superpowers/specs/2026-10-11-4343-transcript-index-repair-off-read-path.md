@@ -92,18 +92,24 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      catch-up, extension, window reads, repair-builder paths alike. It
      opens without catching up; the caller runs `CatchUp()` explicitly.
      The policy is a property of the handle, armed at open and consulted
-     at three points: the lock acquisition in `locked` (a new
+     at four points: the lock acquisition in `locked` (a new
      non-blocking `lockFileTry`, in both `lock_unix.go` and
      `lock_windows.go`; contention returns `ErrLockBusy`); the top of
      the internal rebuild (`x.rebuild`, `index.go:720`, the choke point
      every one of the five call sites — and `Index.Rebuild` — funnels
      through; on a refusing handle it returns `ErrRebuildRequired`);
-     and, for the leftover-update-rows trigger only, the trigger site
+     for the leftover-update-rows trigger only, the trigger site
      (`index.go:478`), where `extend` has already collected the unsafe
      offsets but has not yet truncated the tables or scanned — a refusal
      there precedes every mutation that trigger would perform (this can
      refuse where a completed scan would have healed, which converges
-     through the repair). The sentinel is the refusal-mode translation
+     through the repair); and after a successful refresh in `locked`,
+     where a handle whose refused fallback rebuild marked its build
+     stale refuses every operation — a half-applied scan's items sit
+     past the committed counts in that handle's memory, and no window
+     or change read may serve them under the old snapshot length —
+     until the refresh adopts the repair's committed build, the load
+     that clears the mark. The sentinel is the refusal-mode translation
      of the internal `errRebuild` the scan already uses
      (`build.go:23`); the internal sentinel keeps its mid-scan meaning.
    - On a refusing handle, a read that fails because the sidecar is
