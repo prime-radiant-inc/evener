@@ -27,6 +27,17 @@ declare module "node:child_process" {
   export function execFileSync(file: string, args: string[], options: { encoding: "utf8"; maxBuffer?: number }): string;
 }
 
+declare module "node:process" {
+  export const argv: string[];
+  export const stdout: { write(chunk: string): boolean };
+}
+
+// Node sets import.meta.main on the entry module; src/dev/copyonly/copyonly.ts
+// runs its command line only then.
+interface ImportMeta {
+  readonly main?: boolean;
+}
+
 declare module "node:path" {
   export function dirname(path: string): string;
   export function join(...segments: string[]): string;

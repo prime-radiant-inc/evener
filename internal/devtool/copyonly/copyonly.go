@@ -16,9 +16,11 @@
 // not text the test itself supplied: seeing a test's own fixture come back out
 // is a real behavioral check.
 //
-// This is the Go port of tools/copy-oracle/inventory.py --copy-only. Tests are
-// read through go/ast, so conditions split across lines and raw strings
-// holding braces are understood exactly.
+// Inventory also lists every copy hit (go-errstring, go-copy, go-asset) and
+// the fixture literals per package; `evener dev copy-oracle` merges it with the
+// TypeScript half and prints the report. Tests are read through go/ast, so
+// conditions split across lines and raw strings holding braces are understood
+// exactly.
 package copyonly
 
 import (
@@ -27,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -48,19 +51,47 @@ type Target struct {
 var assetExts = []string{".md", ".tmpl", ".txt", ".gotmpl", ".prompt"}
 
 // Scan reports every target among the Go tests git tracks in the checkout at
-// root, sorted by file and line. Tracked files are read as they are in the
-// working tree. Untracked files are left out, so a scratch file another test
-// is writing can't change the answer; a new test counts once it is added.
+// root, sorted by file and line: the copy-only tests whose name says their
+// subject is wording.
 func Scan(root string) ([]Target, error) {
-	files, err := listFiles(root)
+	r, err := inventory(root, "", false)
 	if err != nil {
 		return nil, err
+	}
+	var targets []Target
+	for _, t := range r.CopyOnly {
+		if t.Purpose == PurposeCopy {
+			targets = append(targets, Target{File: t.File, Test: t.Test, Line: t.Line})
+		}
+	}
+	return targets, nil
+}
+
+// Inventory reports the copy hits, fixture counts and copy-only tests of the
+// Go tests git tracks in the checkout at root whose path starts with prefix,
+// copy-only tests sorted by file and line. Tracked files are read as they are
+// in the working tree. Untracked files are left out, so a scratch file
+// another test is writing can't change the answer; a new test counts once it
+// is added.
+func Inventory(root, prefix string) (Report, error) {
+	return inventory(root, prefix, true)
+}
+
+// inventory is Inventory, leaving out the hits and fixture counts unless
+// withHits is set: they look up every literal in every test, which the
+// audit's copy-only scan does not need.
+func inventory(root, prefix string, withHits bool) (Report, error) {
+	files, err := listFiles(root)
+	if err != nil {
+		return Report{}, err
 	}
 	var tests, prod, assets []string
 	for _, f := range files {
 		switch {
 		case strings.HasSuffix(f, "_test.go"):
-			tests = append(tests, f)
+			if strings.HasPrefix(f, prefix) {
+				tests = append(tests, f)
+			}
 		case strings.HasSuffix(f, ".go"):
 			prod = append(prod, f)
 		case isAsset(f):
@@ -69,28 +100,32 @@ func Scan(root string) ([]Target, error) {
 	}
 	s := newScanner(readAll(root, prod), readAll(root, assets))
 
-	var targets []Target
+	r := Report{Fixtures: map[string]int{}}
 	for _, f := range tests {
 		src, err := os.ReadFile(filepath.Join(root, f))
 		if os.IsNotExist(err) {
 			continue // tracked but deleted in the working tree
 		}
 		if err != nil {
-			return nil, fmt.Errorf("copyonly: %w", err)
+			return Report{}, fmt.Errorf("copyonly: %w", err)
 		}
-		found, err := s.scanGo(f, string(src))
+		found, err := s.scanGo(f, string(src), withHits)
 		if err != nil {
-			return nil, fmt.Errorf("copyonly: %s: %w", f, err)
+			return Report{}, fmt.Errorf("copyonly: %s: %w", f, err)
 		}
-		targets = append(targets, found...)
+		r.Hits = append(r.Hits, found.hits...)
+		r.CopyOnly = append(r.CopyOnly, found.copyOnly...)
+		if found.fixtures > 0 {
+			r.Fixtures[path.Dir(f)] += found.fixtures
+		}
 	}
-	sort.SliceStable(targets, func(i, j int) bool {
-		if targets[i].File != targets[j].File {
-			return targets[i].File < targets[j].File
+	sort.SliceStable(r.CopyOnly, func(i, j int) bool {
+		if r.CopyOnly[i].File != r.CopyOnly[j].File {
+			return r.CopyOnly[i].File < r.CopyOnly[j].File
 		}
-		return targets[i].Line < targets[j].Line
+		return r.CopyOnly[i].Line < r.CopyOnly[j].Line
 	})
-	return targets, nil
+	return r, nil
 }
 
 // listFiles lists root's files as git sees them, minus vendored dependencies.

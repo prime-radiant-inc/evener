@@ -3,8 +3,11 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { contractShaped, regexCore, Scanner, scanRepo } from "./copyonly";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** The names of the targets in one test file, scanned against a production corpus of prod. */
 function targetNames(src: string, prod: string[], file = "a.test.tsx"): string[] {
@@ -398,6 +401,9 @@ describe("counts, structure and state are behavior", () => {
     `expect.soft(screen.getAllByText("Recommended")).toHaveLength(2);`,
     `await expect.poll(() => screen.queryAllByText("Recommended")).toHaveLength(2);`,
     `await expect.poll(() => screen.queryAllByText("Recommended").length).toBe(2);`,
+    `(expect(screen.getAllByText("Recommended"))).toHaveLength(2);`,
+    `(expect(screen.getAllByText("Recommended")) as Assertion<HTMLElement[]>).toHaveLength(2);`,
+    `(expect(screen.getAllByText("Recommended")) satisfies unknown as Assertion<HTMLElement[]>).toHaveLength(2);`,
   ])("%s", (check) => {
     const src = `test("renders Recommended in both themes", () => {\n  render(<Specimen />);\n  ${check}\n});\n`;
     expect(targetNames(src, ["Recommended"])).toEqual([]);
@@ -489,6 +495,85 @@ test("contractShaped tells machine contracts from copy", () => {
     ["<tag attr=", true],
   ];
   for (const [lit, want] of cases) expect([lit, contractShaped(lit)]).toEqual([lit, want]);
+});
+
+describe("inventory", () => {
+  const SRC = `import { EMPTY_MESSAGE } from "./Empty";
+import { FIXTURE_LABEL } from "./testing/fixtures";
+
+test("renders the empty state", () => {
+  expect(screen.getByText("No sessions yet")).toBeTruthy();
+});
+
+test("retries after a failure", async () => {
+  await user.click(screen.getByText("Retry"));
+  fireEvent.click(screen.getByTitle("Close panel"));
+  expect(screen.getByText(EMPTY_MESSAGE)).toBeTruthy();
+  expect(screen.getByText(FIXTURE_LABEL)).toBeTruthy();
+});
+
+test("sends the request", () => {
+  // expect(screen.getByText("Commented copy")).toBeTruthy();
+  expect(status.textContent).toBe(
+    "Saved to disk",
+  );
+  expect(screen.getByText("only in this test")).toBeTruthy();
+  expect(screen.getByText("session_running")).toBeTruthy();
+});
+`;
+  const prod = ["No sessions yet", "Retry", "Close panel", "Saved to disk", "Commented copy", "session_running"];
+
+  test("lists every copy hit by category, comments excluded and split assertions included", () => {
+    const got = new Scanner(prod.join("\n")).inventoryFile("src/a.test.tsx", SRC);
+    expect(got.hits).toEqual([
+      { file: "src/a.test.tsx", line: 5, category: "ts-assert", literal: "No sessions yet" },
+      { file: "src/a.test.tsx", line: 9, category: "ts-locator", literal: "Retry" },
+      { file: "src/a.test.tsx", line: 10, category: "ts-locator", literal: "Close panel" },
+      { file: "src/a.test.tsx", line: 11, category: "ts-constant", literal: "EMPTY_MESSAGE" },
+      { file: "src/a.test.tsx", line: 17, category: "ts-assert", literal: "Saved to disk" },
+    ]);
+    // "only in this test" is fixture data; "session_running" is contract-shaped.
+    expect(got.fixtures).toBe(1);
+  });
+
+  test("lists copy-only tests named for behavior as incidental", () => {
+    const got = new Scanner(prod.join("\n")).inventoryFile("src/a.test.tsx", SRC);
+    expect(got.copyOnly).toEqual([
+      { file: "src/a.test.tsx", line: 4, test: "renders the empty state", purpose: "copy" },
+    ]);
+    const behavior = `test("retries after a failure", () => {\n  expect(screen.getByText("Retry")).toBeTruthy();\n});\n`;
+    expect(new Scanner("Retry").inventoryFile("src/b.test.tsx", behavior).copyOnly).toEqual([
+      { file: "src/b.test.tsx", line: 1, test: "retries after a failure", purpose: "behavior" },
+    ]);
+  });
+
+  test("runs under node and prints the inventory as JSON for evener dev copy-oracle", () => {
+    const root = mkdtempSync(join(tmpdir(), "copyonly-cli-"));
+    try {
+      const front = "cmd/evener-hub/frontend/src/";
+      mkdirSync(join(root, front), { recursive: true });
+      writeFileSync(join(root, `${front}Empty.tsx`), `export const Empty = () => <p>No sessions yet</p>;\n`);
+      writeFileSync(join(root, `${front}Empty.test.tsx`), SRC);
+      execFileSync("git", ["-C", root, "init", "-q"], { encoding: "utf8" });
+      execFileSync("git", ["-C", root, "add", "--", "."], { encoding: "utf8" });
+      const out = execFileSync("node", [join(HERE, "copyonly.ts"), "--root", root, "--path", front], {
+        encoding: "utf8",
+      });
+      const report = JSON.parse(out) as {
+        hits: { category: string }[];
+        fixtures: Record<string, number>;
+        copy_only: { test: string; purpose: string }[];
+      };
+      expect(report.hits.map((h) => h.category)).toEqual(["ts-assert", "ts-constant"]);
+      // Retry, Close panel, Saved to disk and the test-only text; the comment is not code.
+      expect(report.fixtures).toEqual({ "cmd/evener-hub/frontend/src": 4 });
+      expect(report.copy_only).toEqual([
+        { file: `${front}Empty.test.tsx`, line: 4, test: "renders the empty state", purpose: "copy" },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 test("scanRepo reads tracked tests in the TypeScript trees against their production sources", () => {
