@@ -724,15 +724,44 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     // The real failure still propagates through the later `await completed`, and
     // atomic rollback and `tryAbortTransaction` are unchanged.
     void completed.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        // Best effort while the transaction can still abort: prove the
+        // rollback. Retiring first would close the database, and a finished
+        // transaction refuses abort().
+        tryAbortTransaction(transaction);
+        this.#connection.retire(database);
+        // Unlike the outbox (whose delivery state machines must not observe a
+        // fabricated mutation outcome), every drafts operation re-reads
+        // durable state on retry: seedDraft reports conflict, commitEdit
+        // unavailable, appendAnnotation already-applied. An unobserved
+        // transaction is therefore honestly reported as a storage fault — the
+        // send path's tolerateStorageFault and each operation's own state
+        // handling take over — instead of leaving the caller pending forever.
+        timedOut = true;
+        reject(new Error("Browser draft repository transaction timed out"));
+      }, STORAGE_WAIT_MS);
+    });
     try {
-      const result = await body(transaction);
-      if (operation) this.#beforeCommit?.(operation);
-      await completed;
+      const work = body(transaction).then((result) => {
+        if (operation) this.#beforeCommit?.(operation);
+        return result;
+      });
+      // Promise.all rejects on either failure without waiting for the other
+      // input. A terminal abort therefore releases even a stalled body, while
+      // success requires both the result and the durable commit event.
+      const [result] = await Promise.race([Promise.all([work, completed]), deadline]);
       return result;
     } catch (error) {
-      tryAbortTransaction(transaction);
-      await completed.catch(() => undefined);
+      if (!timedOut) {
+        tryAbortTransaction(transaction);
+        await completed.catch(() => undefined);
+      }
       throw error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
