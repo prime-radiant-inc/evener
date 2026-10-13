@@ -2281,6 +2281,7 @@ _(no fields)_
 | `archived` | `bool` | yes |  |
 | `hits` | `[]appwire.SearchHit` | yes |  |
 | `hitCount` | `int` | yes |  |
+| `topLevel` | `*appwire.SearchTopLevel` | yes |  |
 
 
 ### `SearchSnippetPart`
@@ -2289,6 +2290,20 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `text` | `string` |  |  |
 | `match` | `bool` | yes |  |
+
+
+### `SearchTopLevel`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `title` | `string` |  |  |
+| `project` | `string` | yes |  |
+| `state` | `string` |  |  |
+| `age` | `string` | yes |  |
+| `askPending` | `bool` | yes |  |
+| `approvalPending` | `bool` | yes |  |
 
 
 ### `SessionActivityAncestor`

@@ -57,6 +57,19 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 		entries = cfg.Roster.List()
 		sortLiveForSearch(entries, cfg.Past)
 	}
+	// roots is the lineage index the past results' grouping annotations come
+	// from, hoisted out of the roster block because ended matches annotate
+	// without any live session at all.
+	roots := hubcore.NewRootIndex(nil)
+	if cfg.Past != nil {
+		roots = cfg.Past.RootIndex()
+	}
+	liveByID := make(map[string]hubcore.LiveEntry, len(entries))
+	for _, le := range entries {
+		if le.SessionID != "" {
+			liveByID[le.SessionID] = le
+		}
+	}
 	// A live session's meta sits in the past index too, so a prompt or
 	// working-directory match there lists it here, live. Resolve every live
 	// session's own past-index match in one lookup, ahead of the bounded Past
@@ -86,10 +99,6 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 		// does not need (#2574). A subagent is one its meta marks, or one a live
 		// entry reports as its running child — the same `isSubagent` rule the
 		// tree builds rows by.
-		roots := hubcore.NewRootIndex(nil)
-		if cfg.Past != nil {
-			roots = cfg.Past.RootIndex()
-		}
 		running := hubcore.RunningSubagentIDs(entries)
 		for _, le := range entries {
 			if le.SessionID == "" {
@@ -121,7 +130,17 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			return !isLive[e.Meta.ID] && searchScopeAdmits(scope, pastArchived(e, decisions, now), false)
 		})
 		for _, e := range pastMatches {
-			resp.Past = append(resp.Past, pastSearchResult(e, decisions, now))
+			result := pastSearchResult(e, decisions, now)
+			// A matching subagent names the top-level session it groups
+			// under, so clients nest it instead of filing it as a primary
+			// result. Unresolvable ancestry keeps today's flat row: the
+			// match is never lost to the grouping.
+			if roots.IsSubagent(e.Meta.ID) {
+				if tl, ok := searchTopLevelFor(cfg, roots, liveByID, e.Meta.ID, decisions, now); ok {
+					result.TopLevel = tl
+				}
+			}
+			resp.Past = append(resp.Past, result)
 		}
 	}
 	resp.InSessions, err = searchInSessions(ctx, cfg, params.Query, scope, live, decisions, now)
@@ -255,6 +274,65 @@ func pastArchived(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool, no
 	// applying one the tree would not (#2775).
 	projectID, _ := stateDirProjectID(e.StateDir)
 	return hubcore.SessionArchived(decisions, e.Meta.ID, projectID, "", hubcore.OrderUpdatedAt(e.Meta.UpdatedAt, e.Meta.CreatedAt), now)
+}
+
+// searchTopLevelFor resolves the top-level session a matching subagent groups
+// under, as the wire's SearchTopLevel anchor data. The lineage walk is
+// RootIndex.WalkToTopLevel, the one implementation the tree's rollup shares,
+// so search and the rail cannot disagree about which session is top-level;
+// search's own rules are meta-only lineage (a past match's meta is indexed by
+// definition, and the live-reported fallback exists only for live children the
+// Live group already excludes) and a known ancestor being either indexed or
+// live on the roster. The anchor's data is the ancestor's own search result —
+// live from the roster entry when it is running, ended from the past index
+// otherwise — so a client renders the anchor exactly as that session's row.
+func searchTopLevelFor(cfg hubcore.WebConfig, roots *hubcore.RootIndex, liveByID map[string]hubcore.LiveEntry, id string, decisions map[hubcore.ArchiveKey]bool, now time.Time) (*appwire.SearchTopLevel, bool) {
+	parentOf := func(aid string) string {
+		if cfg.Past == nil {
+			return ""
+		}
+		if pe, ok := cfg.Past.Find(aid); ok && pe.Meta.IsSubagent && pe.Meta.ParentSessionID != "" {
+			return pe.Meta.ParentSessionID
+		}
+		return ""
+	}
+	known := func(aid string) bool {
+		if cfg.Past != nil {
+			if _, ok := cfg.Past.Find(aid); ok {
+				return true
+			}
+		}
+		_, isLive := liveByID[aid]
+		return isLive
+	}
+	walk, ok := roots.WalkToTopLevel(id, parentOf, roots.IsSubagent, known)
+	if !ok {
+		return nil, false
+	}
+	var result appwire.SearchResult
+	if le, isLive := liveByID[walk.Top]; isLive {
+		result = liveSearchResult(cfg, le, decisions, now)
+	} else if pe, ok := cfg.Past.Find(walk.Top); ok {
+		result = pastSearchResult(pe, decisions, now)
+	} else {
+		return nil, false
+	}
+	return topLevelFromResult(result), true
+}
+
+// topLevelFromResult projects a session's own search result onto the anchor
+// shape a grouped hit carries.
+func topLevelFromResult(result appwire.SearchResult) *appwire.SearchTopLevel {
+	return &appwire.SearchTopLevel{
+		ID:              result.ID,
+		Ref:             result.Ref,
+		Title:           result.Title,
+		Project:         result.Project,
+		State:           result.State,
+		Age:             result.Age,
+		AskPending:      result.AskPending,
+		ApprovalPending: result.ApprovalPending,
+	}
 }
 
 // searchInSessions is the In sessions group (S14): the sessions whose messages
