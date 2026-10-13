@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { afterEach, expect, test } from "vitest";
 import { FIRST, RICH_RANGES, RICH_SOURCE, SECOND, SOURCE } from "../../panes/doc/testing/annotationFixtures";
 import { DocumentMarkdown } from "./DocumentMarkdown";
-import type { BoundDocumentMap } from "./documentSourceMap";
+import { type BoundDocumentMap, renderDocument } from "./documentSourceMap";
 
 afterEach(() => window.getSelection()?.removeAllRanges());
 function documentFor(source: string) {
@@ -210,4 +210,35 @@ test("rejects outside, empty and disposed selections", () => {
   map.dispose();
   expect(map.capture(s)).toEqual({ state: "unmapped", reason: "stale" });
   expect(map.rangesFor({ start: 0, end: 4 })).toEqual([]);
+});
+
+// A heavily formatted ~200KB document: rendering and mapping must stay
+// linear-time. The tokenizer probes every block against the remaining text,
+// so slicing that tail's span storage per probe was quadratic - this
+// document's render measured 20.5s before slices became offsets into shared
+// storage. The timing ratchet's per-test ceiling (testing-budget.json) guards
+// the bound; the assertions here pin the mapping's exactness at scale.
+test("maps a large heavily formatted document with exact coordinates", () => {
+  const blocks: string[] = [];
+  for (let i = 0; i < 2000; i++) {
+    blocks.push(
+      `Paragraph ${i}: **bold ${i}** and *em* with \`code ${i}\` plus [link ${i}](https://example.test/${i}) tail.`,
+    );
+  }
+  const source = `# Large document\n\n${blocks.join("\n\n")}\n\n## Tail\n`;
+  const { map, segments } = renderDocument(source, { displayedSnapshotId: "snap-large", mappingId: "map-large" });
+  expect(segments.length).toBeGreaterThan(0);
+  expect(map.textRuns.length).toBeGreaterThan(4000);
+  const bold = map.textRuns.find((run) => run.renderedText === "bold 1000");
+  if (!bold) throw new Error("missing middle bold run");
+  const boldFirst = bold.sourceSpans[0];
+  const boldLast = bold.sourceSpans.at(-1);
+  if (!boldFirst || !boldLast) throw new Error("missing bold run spans");
+  expect(source.slice(boldFirst.start, boldLast.end)).toBe("bold 1000");
+  const tail = map.textRuns.find((run) => run.renderedText === "Tail");
+  if (!tail) throw new Error("missing tail heading run");
+  const tailFirst = tail.sourceSpans[0];
+  const tailLast = tail.sourceSpans.at(-1);
+  if (!tailFirst || !tailLast) throw new Error("missing tail heading spans");
+  expect(source.slice(tailFirst.start, tailLast.end)).toBe("Tail");
 });
