@@ -558,6 +558,48 @@ it("reports a failed settlement for a failed write with no demand", async () => 
   owner.dispose();
 });
 
+it("keeps a new foreground suffix behind a failed predecessor awaiting retry", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  const reader = owner.attachReader();
+  owner.acceptRead(readItems("base", 1, [item("base", 1)]), {
+    lifetime: 1,
+    readId: "read-base",
+    boundary: "boundary-base",
+  });
+  await owner.settled();
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("suffix A abort") });
+  try {
+    owner.accept(historyNotification("alpha", 2, 2), { lifetime: 1 });
+    await expect(owner.settled()).rejects.toThrow(/outstanding/);
+    failure.mockRestore();
+    expect(scheduled).toHaveLength(1);
+
+    owner.accept(historyNotification("beta", 3, 3), { lifetime: 1 });
+    expect(
+      reader
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["base", "alpha", "beta"]);
+    await expect(owner.settled()).rejects.toThrow(/outstanding/);
+    scheduled[0]!.fire();
+    await owner.settled();
+
+    expect((await fixture.cache.getCoverage(historyKey, "read:read-base"))?.suffixBlocked).not.toBe(true);
+    expect((await fixture.cache.getCoverage(historyKey, "suffix:read-base"))?.representedSnapshot).toBe(3);
+    expect((await keysInCache(fixture.cache)).sort()).toEqual(["item-alpha", "item-base", "item-beta"]);
+  } finally {
+    failure.mockRestore();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
 // N1 (P1): a repeatedly failed predecessor must not be moved behind its
 // dependent suffix. Consecutive suffix notifications recovered in order
 // certify the chain; the reverse order blocks it forever.
