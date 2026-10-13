@@ -179,7 +179,7 @@ func isMemoryIndexPath(file string) bool {
 
 const (
 	memoryMissingDescriptionNote    = "\n\nThis page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter."
-	memoryMissingWhenNote           = "\n\nThis page has no when line in its frontmatter. Add when: <one line> naming the one situation in which a future session needs this page."
+	memoryMissingWhenNote           = "\n\nThis page has no when line in its frontmatter. Add when: <one line> saying when a future session needs this page: the moments it would otherwise get this wrong, at the level that covers all of them."
 	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a description that contains a colon."
 )
 
