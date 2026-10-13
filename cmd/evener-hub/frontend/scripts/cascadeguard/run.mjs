@@ -52,9 +52,9 @@ const drilledTrack = (level) => {
 const column = (ref) => `${inspectorRoot} [data-testid="cascade-column"][data-scope-ref=${q(ref)}]`;
 const row = (edge) => `[data-activity-anchor=${q(`delegate:${JSON.stringify([edge.childRef, edge.delegateId])}`)}]`;
 const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[data-testid=${q(testid)}]')].map(node => node.dataset.scopeRef))`;
-const wait = (expression, label) => {
+const wait = (expression, label, options = {}) => {
   new Function(`return (${expression})`);
-  return driver.waitPage(expression, { label });
+  return driver.waitPage(expression, { label, ...options });
 };
 const read = (expression) => evaluate(driver.send, expression);
 const scope = (ref) => `${inspectorRoot} [data-scope-ref=${q(ref)}]`;
@@ -343,19 +343,19 @@ async function sharedWidthJourney() {
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   // The origin conversation never renders in the pane, so the first drill's
-  // lone column is itself the read-only cascade reader under proof.
+  // lone column is itself the cascade column reader under proof.
   await driver.send("Emulation.setDeviceMetricsOverride", { width:1640, height:900, deviceScaleFactor:1, mobile:false });
   const portExpr = `document.querySelector(${q(scroll(fixture.refs[1]))})`;
   await wait(`(() => {
     const port = ${portExpr}, bounds = port?.getBoundingClientRect();
     return port?.clientWidth > 0 && port.clientHeight > 0 && bounds.width > 0 && bounds.height > 0;
-  })()`, "read-only cascade has a visible native wheel target");
-  await readInsideTallEntry(portExpr, "read-only cascade");
+  })()`, "cascade column has a visible native wheel target");
+  await readInsideTallEntry(portExpr, "cascade column");
   await widthOnlyReflow(portExpr, 2000, 900, "cascade-reader-width-reflow");
   await widthOnlyReflow(portExpr, 1640, 900, "cascade-reader-width-return");
   await heightOnlyChange(portExpr, 760, "cascade-reader-height-only");
   await heightOnlyChange(portExpr, 900, "cascade-reader-height-return");
-  await assertInspectorReadOnly();
+  await assertColumnConversations();
   await capture("shared-reader-width-reflow");
   await returnToSource();
   await driver.send("Emulation.setDeviceMetricsOverride", { width:1000, height:900, deviceScaleFactor:1, mobile:false });
@@ -556,8 +556,32 @@ async function nativePositioningInterruption(input) {
   await assertSourceDom();
 }
 
-async function assertInspectorReadOnly() {
-  assert.equal(await read(`document.querySelector(${q(inspectorRoot)}).querySelectorAll('[role="textbox"], input[type="file"]').length`), 0, "only inspection is read only");
+// The readable column IS the conversation now: each one embeds its scope's
+// live ConversationBody - transcript plus composer - on the cascade's own
+// frame, and nothing else in the pane mounts a composer for any scope. The
+// center keeps its original editor and file picker; inspection never
+// replaces the source pane.
+async function assertColumnConversations() {
+  const snapshot = await read(`(() => {
+    const root = document.querySelector(${q(inspectorRoot)});
+    if (!root) return null;
+    const columns = [...root.querySelectorAll('[data-testid="cascade-column"]')];
+    return {
+      columns: columns.map(node => ({
+        ref: node.dataset.scopeRef,
+        composer: node.querySelector("[data-composer]")?.dataset.composer ?? null,
+        editor: node.querySelector('[data-composer] [role="textbox"]') !== null,
+      })),
+      composerRefs: [...root.querySelectorAll("[data-composer]")].map(node => node.dataset.composer),
+    };
+  })()`);
+  assert.ok(snapshot && snapshot.columns.length >= 1, "the inspector hosts readable columns");
+  assert.deepEqual(snapshot.composerRefs, snapshot.columns.map(column => column.ref),
+    "every readable column embeds exactly its own conversation composer and nothing else does");
+  for (const column of snapshot.columns) {
+    assert.equal(column.composer, column.ref, `the readable column for ${column.ref} embeds its own conversation`);
+    assert.equal(column.editor, true, `the embedded conversation for ${column.ref} mounts its composer editor`);
+  }
   assert.ok(await read(`document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]') != null`), "the center keeps its original editor");
   assert.ok(await read(`${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('input[type="file"]') != null`), "the center keeps its original file picker");
 }
@@ -736,7 +760,7 @@ async function pendingImage(name, success) {
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await read('window.__cascadeTraceSource("after-drill")');
-  await assertInspectorReadOnly();
+  await assertColumnConversations();
   await assertSourceDom();
   await read(`window.__cascadeEncode.release(${success})`);
   await read('window.__cascadeTraceSource("after-release")');
@@ -841,6 +865,16 @@ async function sourceMutationJourney() {
   await driver.clearComposerDraft(ref);
   await driver.focusComposer(ref);
   await driver.typeText(ref, busyInput);
+  // The first submit below orders turn/start, which submitRouting emits only
+  // while the session is idle: deriveSendQueueAvailability routes a session the
+  // wire calls active, or one still holding this client's pending send, to the
+  // queue. The preceding mixedSourceJourney submits a turn of its own, so wait
+  // out the source's positive turn-end barrier before arming the outbox hold -
+  // a lingering turn then degrades into a bounded, named wait instead of a
+  // turn/queue record under the storage acknowledgement (#4233). The gate sits
+  // after clearComposerDraft because the barrier's durable-recovery predicate
+  // only releases once clearComposerDraft has drained the record it owns.
+  await driver.waitForTurnIdle(ref);
   await holdStorageAcknowledgement(ref, busyInput);
   const after = frames.length;
   await driver.clickSubmit(ref, { text: busyInput, chips: [], tiles: 0 });
@@ -850,7 +884,7 @@ async function sourceMutationJourney() {
   assert.ok(held?.clientMutationId, "real committed source mutation retains its identity");
   assert.ok(held.payload.input.some(item => item.text === busyInput), "actual committed record contains the original source input");
   assert.equal(held.targetRef, ref);
-  assert.equal(held.method, "turn/start");
+  assert.equal(held.method, "turn/start", `the first source submit for ${held.targetRef} must order turn/start; the outbox recorded ${held.method} (input ${JSON.stringify(held.payload.input.map(item => item.text))}), so the source was still busy when it submitted`);
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await returnToSource();
@@ -1077,12 +1111,38 @@ function placement(layout, id) {
   return found;
 }
 
-async function clickColumnAction(ref, text) {
-  await clickWhenReady(
-    `[...document.querySelectorAll(${q(`${column(ref)} button`)})].find(node => node.textContent.trim() === ${q(text)})`,
-    `${text} in actual ${ref} column`,
-    "nearest",
-  );
+// The column's read-only surface and its Open-conversation link are gone:
+// the drilled column IS the child's live conversation. The explicit open of
+// a child conversation as its own ordinary pane now rides the root
+// transcript's delegate row - the same openTranscript entry subagent rows
+// use everywhere else. The root transcript is virtualized and the row sits
+// deep in it under the paging delegates, so the probe drives the real port:
+// jump to the top, then step half a viewport per poll until the virtualizer
+// mounts the row. The row is matched by the token the child was spawned
+// with - its prompt or its stated intent, either renders in the row - and
+// only that row's transcript_ref opens this child.
+async function openChildConversationFromDelegateRow() {
+  await read("window.__cascadeDelegateRowScan = { stepped: false }");
+  await clickWhenReady(`(() => {
+    const pane = ${driver.paneScopeExpr(fixture.rootRef)};
+    if (!pane) return null;
+    const row = [...pane.querySelectorAll('[data-testid="tool-row"]')]
+      .find(node => node.textContent.includes(${q("CASCADE_ROLE_1_SENTINEL")})
+        || node.textContent.includes(${q("Creating the next real cascade browser scope")}));
+    const button = row?.querySelector('button[aria-label="Open conversation"]');
+    if (button) return button;
+    const port = pane.querySelector('[data-testid="transcript-virtual-list"] > div');
+    const scan = window.__cascadeDelegateRowScan;
+    if (!port || !scan) return null;
+    if (!scan.stepped) { port.scrollTop = 0; scan.stepped = true; }
+    else port.scrollTop = Math.min(port.scrollTop + port.clientHeight * 0.5, port.scrollHeight - port.clientHeight);
+    return null;
+  })()`, "Open conversation in the actual root delegate row", "nearest");
+  // Return the reader to the bottom it came from: the scan mounted every
+  // paging delegate's card, and each card's child watch queues a slow read
+  // at the hub - leaving them mounted would park the just-opened child
+  // conversation's own read behind the whole queue.
+  await read(`(() => { const port = ${sourcePortExpr}; if (port) port.scrollTop = port.scrollHeight; })()`);
 }
 
 async function activeTabText(scaffold) {
@@ -1147,8 +1207,15 @@ async function reloadAndMobileJourney() {
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   const openedInspectorTabText = await activeTabText(inspectorRoot);
-  await clickColumnAction(fixture.childRef, "Open conversation");
-  await wait(`document.querySelector(${q(driver.composerSelector(fixture.childRef))}) !== null`, "explicit independent child conversation");
+  await openChildConversationFromDelegateRow();
+  // The pane's conversation re-hydrates from a fresh thread/read once the
+  // inspector's column releases it, so this budget covers one full read under
+  // the fixture's 57-session slow-read contention, not just the pane mount;
+  // typing needs the editor the same hydration produces.
+  await wait(`(() => {
+    const composers = document.querySelectorAll(${q(driver.composerSelector(fixture.childRef))});
+    return composers.length === 1 && ${driver.paneScopeExpr(fixture.childRef)}?.contains(composers[0]) === true;
+  })()`, "explicit independent child conversation owns the only mounted composer for its ref", { timeoutMs: 45000 });
   await driver.focusComposer(fixture.childRef);
   await driver.typeText(fixture.childRef, "CASCADE_UNSENT_UNRELATED_DRAFT");
   const unrelatedId = await read(`${driver.paneScopeExpr(fixture.childRef)}.querySelector('[data-testid="statusbar"] [data-pane-id]').dataset.paneId`);
@@ -1158,12 +1225,12 @@ async function reloadAndMobileJourney() {
   fixture.sourceTabCount++;
   const removedInspectorId = fixture.inspectorPaneId;
   await activateTab(openedInspectorTabText, `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`, removedInspectorId);
-  // The child conversation is already open as its own ordinary pane, so Open
-  // conversation resolves that existing branch: the child pane is focused and
-  // the inspection keeps its tab. The original root conversation no longer
-  // renders in the pane, so the old root-column Open shortcut that closed
-  // inspection is unreachable from this pane.
-  await clickColumnAction(fixture.childRef, "Open conversation");
+  // The child conversation is already open as its own ordinary pane, so the
+  // delegate row's Open conversation resolves that existing branch: the child
+  // pane is focused and the inspection keeps its tab. The original root
+  // conversation never rendered in the pane, so the old root-column Open
+  // shortcut that closed inspection is gone with the column's link.
+  await openChildConversationFromDelegateRow();
   await wait(`(() => {
     const scope = ${driver.paneScopeExpr(fixture.childRef)};
     // The mounted child scaffold proves the existing pane became its group's
@@ -1197,7 +1264,7 @@ async function reloadAndMobileJourney() {
     return panel?.params?.paneType === 'sessionZoom' && panel.params.paneParams.ref === ${q(fixture.refs[6])} && saved.panels[${q(fixture.sourcePaneId)}]?.params?.paneType === 'session' ? saved : null;
   })()`, "native debounce persisted selected leaf intent");
   const expectedIntent = {
-    ref: fixture.refs[6], source: { type: "transcript", params: { ref: fixture.rootRef } },
+    ref: fixture.refs[6], source: { type: "session", params: { ref: fixture.rootRef } },
     edges: fixture.edges.map(({ ownerRef, childRef, delegateId }) => ({ ownerRef, childRef, delegateId })),
     inspection: { origin: { paneId: fixture.sourcePaneId, type: "session", ref: fixture.rootRef } },
   };
@@ -1286,7 +1353,7 @@ async function reloadAndMobileJourney() {
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "close desktop sidebar before phone scene");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
-  await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`, "saved phone cascade contains only selected readonly leaf");
+  await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`, "saved phone cascade contains only the selected leaf");
   await wait(cascadeUntitledExpr, "the phone cascade has no path nav and no pane title");
   await assertPaneBodyFlush("phone");
   await wait(`(() => {
@@ -1294,11 +1361,11 @@ async function reloadAndMobileJourney() {
     if (!col) return null;
     const footer = col.querySelector('[data-testid="cascade-column-footer"]');
     return col.querySelector("h3") === null
-      && (footer?.querySelector("button")?.textContent.trim() === "Open conversation")
+      && footer !== null
       && col.querySelector('[data-testid="cascade-column-content"]').compareDocumentPosition(footer)
         & Node.DOCUMENT_POSITION_FOLLOWING
       && document.querySelector(${q(inspectorFooter)}) === null;
-  })()`, "the phone column carries no duplicate title, keeps status and Open conversation at its bottom, and renders no pane footer status bar");
+  })()`, "the phone column carries no duplicate title, keeps status and the conversation footer at its bottom, and renders no pane footer status bar");
   // env(safe-area-inset-bottom) cannot be emulated through CDP, so drive the
   // shared clearance formula's --keyboard-inset custom property seam with a
   // negative stand-in for a 44px home-indicator band: only the phone media
@@ -1316,8 +1383,19 @@ async function reloadAndMobileJourney() {
     Number.parseFloat(phonePadding) > 44,
     `the phone column's activity controls reserve the home-indicator band (got ${phonePadding})`,
   );
-  assert.equal(await read('document.querySelectorAll("[role=textbox]").length'), 0, "saved phone cascade has no composer");
   await wait(`document.querySelector(${q(column(fixture.refs[6]))}).textContent.includes('CASCADE_ROLE_6_SENTINEL')`, "real selected phone transcript");
+  // The composer renders with the live conversation, so this runs after the
+  // transcript proved live: the column's bottom bar holds the conversation's
+  // own composer with its editable editor mounted.
+  assert.ok(
+    await read(`(() => {
+      const col = document.querySelector(${q(column(fixture.refs[6]))});
+      const footer = col?.querySelector('[data-testid="cascade-column-footer"]');
+      return footer?.querySelector(${q(`[data-composer="${fixture.refs[6]}"]`)}) != null
+        && col?.querySelector(${q(`[data-composer="${fixture.refs[6]}"] [role="textbox"]`)}) != null;
+    })()`),
+    "the saved phone cascade's column embeds the selected conversation with its composer at its bottom",
+  );
   driver.milestone("mobile-saved-cascade");
   await capture("mobile-saved-cascade");
   await driver.clickByText("Return to previous view");
@@ -1342,7 +1420,12 @@ async function reloadAndMobileJourney() {
   await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   await driver.click(mobileRow);
-  await wait('document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1 && document.querySelectorAll("[role=textbox]").length === 0 && document.querySelector("[data-pane-scaffold=cascade]") === null', "ordinary mobile Agents transcript action stays readonly without cascade");
+  await wait(`(() => {
+    const scope = ${driver.paneScopeExpr(fixture.childRef)};
+    return document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1
+      && scope?.querySelector(${q(`[data-composer="${fixture.childRef}"] [role="textbox"]`)}) != null
+      && document.querySelector("[data-pane-scaffold=cascade]") === null ? true : null;
+  })()`, "the mobile Agents row opens the child's live conversation without a cascade");
   await wait("document.body.textContent.includes('CASCADE_ROLE_1_SENTINEL')", "real ordinary phone child transcript");
   assert.equal(await read('document.querySelectorAll("[data-testid=cascade-column], [data-testid=cascade-spine]").length'), 0);
   assert.deepEqual((await read(layoutExpr)).panels[unrelatedId], unrelatedPanel, "phone action retains independent pane identity");
@@ -1434,7 +1517,7 @@ async function drill(edge, level) {
   if (fixture.inspectorPaneId) assert.equal(id, fixture.inspectorPaneId, "drill reuses the inspector");
   else fixture.inspectorPaneId = id;
   assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount + 1);
-  await assertInspectorReadOnly();
+  await assertColumnConversations();
 }
 
 try {

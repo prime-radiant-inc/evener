@@ -189,15 +189,21 @@ const pendingDraftCarries = new Map<string, Promise<void>>();
 
 /** Carries the superseded ref's draft to the resumed identity, settling live sources first. */
 export function carryBrowserDraft(fromRef: string, toRef: string): Promise<void> {
-  const repository = getBrowserDraftRepository();
   const from = browserDraftKey(fromRef);
   const to = browserDraftKey(toRef);
   const run = (async () => {
     // A draft typed during the resume can still be in a live source's serial
     // queue under the old ref; carrying the repository row before that queue
-    // lands would strand the typed text there.
-    await settleBrowserDraftsForRef(fromRef);
-    await repository.carryDraft(from, to);
+    // lands would strand the typed text there. A storage fault at any step -
+    // including an unavailable platform - keeps the source copy under the old
+    // ref: the carry is background preservation and must never break the
+    // resume that triggered it.
+    try {
+      await settleBrowserDraftsForRef(fromRef);
+      await getBrowserDraftRepository().carryDraft(from, to);
+    } catch {
+      return;
+    }
   })();
   const destination = serializeSessionKey(to);
   const chained = (pendingDraftCarries.get(destination) ?? Promise.resolve()).then(() => run);

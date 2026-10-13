@@ -24,6 +24,7 @@ import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosur
 import { getToasts, pushToast, resetToastStoreForTests } from "../../widgets/toast/store";
 import { useAttachments } from "../session/composer/attachments/useAttachments";
 import { readComposerDraft } from "../session/composer/draft";
+import { retainedConversationComposer } from "../session/composer/retainedComposer";
 import { installControlledImageEncoding } from "../session/testing/imageEncoding";
 import { enterAgentCascade } from "./actions";
 import { cascadeClient, cascadeContext, cascadeScope } from "./cascadeTestUtils";
@@ -105,6 +106,11 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
 function scope(ref: string) {
   return within(cascadeScope(ref));
 }
+// The column embeds the live conversation, so its composer's textbox is the
+// readiness signal the removed "Open conversation" button used to carry.
+async function conversationMounted(ref: string) {
+  await scope(ref).findByRole("textbox", { name: /^message$/i });
+}
 async function openPeek(ref: string, tab = "Agents") {
   const trigger = await scope(ref).findByRole("button", { name: new RegExp(`^${tab},.* - peek at ${ref}$`) });
   await act(async () => fireEvent.click(trigger));
@@ -120,7 +126,7 @@ test.each(["root", "child", "grandchild"])(
   "cascade scope %s keeps About out of its four activity peeks",
   async (ref) => {
     fixture().mount();
-    await scope("child").findByRole("button", { name: "Open conversation" });
+    await conversationMounted("child");
     const controls = scope(ref);
     for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
       expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
@@ -137,7 +143,7 @@ test.each(["success", "failure"] as const)(
     const encoding = installControlledImageEncoding();
     const { mount } = fixture();
     const view = mount();
-    await scope("child").findByRole("button", { name: "Open conversation" });
+    await conversationMounted("child");
     const old = workspaceStore.getState().panes[0];
     if (!old) throw new Error("Missing original cascade");
     const lifetime = conversationPaneLifetime(old);
@@ -168,7 +174,14 @@ test.each(["success", "failure"] as const)(
     const durableBefore = await getBrowserDraftRepository().load(browserDraftKey("root"));
     expect(durableBefore).toMatchObject({ text, skillNames: [] });
     mount();
-    await scope("grandchild").findByRole("button", { name: "Open conversation" });
+    await conversationMounted("grandchild");
+    // The merged column mounts a composer whose retained source hydrates from
+    // the browser draft repository asynchronously; settle it inside act so its
+    // update cannot escape the test's windows.
+    await act(async () => {
+      const live = conversationPaneLifetime(restored);
+      await retainedConversationComposer(live, "grandchild")?.ready();
+    });
     await act(async () => {
       if (outcome === "success") await encoding.resolve();
       else await encoding.reject();
@@ -237,7 +250,7 @@ test("only a user drill animates a new scope while late ancestry commits immedia
     ref === "fourth" ? authority.promise : { ...activitySummary(ref, scope), context: context(ref) },
   );
   mount();
-  await scope("child").findByRole("button", { name: "Open conversation" });
+  await conversationMounted("child");
   const focused = screen.getByRole("button", { name: "Return to previous view" });
   focused.focus();
   act(() =>
@@ -267,7 +280,7 @@ test("only a user drill animates a new scope while late ancestry commits immedia
 test("an ancestor peek drills its explicit owner and truncates the branch while leaving other panes intact", async () => {
   const { client, delegatesPage, mount } = fixture();
   mount();
-  await scope("child").findByRole("button", { name: "Open conversation" });
+  await conversationMounted("child");
   const other = { id: "other", type: "doc" as const, slot: "secondary" as const, params: { ref: "unrelated" } };
   act(() => workspaceStore.setState((state) => ({ panes: [...state.panes, other], focusedPaneId: other.id })));
   // The root peek's rows arrive late, as on a loaded host, so the find below
@@ -390,7 +403,7 @@ test("a parent Tasks peek mounts the existing scoped task list and opens no task
     data: [{ id: 1, type: "implement", description: "Parent scoped task", prompt: "", status: "open" }],
   }));
   mount();
-  await scope("child").findByRole("button", { name: "Open conversation" });
+  await conversationMounted("child");
   expect(client.calls.filter((call) => call.method === "evener/tasks/list")).toHaveLength(0);
   const peek = await openPeek("child", "Tasks");
   expect(await within(peek).findByText("Parent scoped task")).toBeTruthy();

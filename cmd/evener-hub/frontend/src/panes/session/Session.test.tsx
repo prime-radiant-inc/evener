@@ -19,8 +19,9 @@ import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { urlToPane } from "../../shell/routing";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
+import { browserDraftKey, getBrowserDraftRepository } from "../../stores/browserDraftRepository";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -47,6 +48,8 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import ReadOnlyTranscript from "../transcript/testing/CommittedTranscript";
+import { resumeCascadeScope } from "../zoom/actions";
+import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
@@ -105,6 +108,22 @@ async function openForceStopDialog(user: ReturnType<typeof userEvent.setup>): Pr
 async function confirmForceStop(user: ReturnType<typeof userEvent.setup>): Promise<void> {
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await flushPendingTurnsProjectionForTests();
+}
+
+// The same race as confirmForceStop, for the tests that confirm the dialog
+// themselves and must keep asserting while it is still open: the refused stop
+// leaves the dialog up, so "wait for the close" cannot be their bound. What
+// they can wait for is the ref's stopping fence, which beginStop arms
+// synchronously in the click and endStop clears in the stop's own `finally` -
+// for the accepted and the refused stop alike. forceStop also looks its client
+// up only AFTER its cancellation await (threads.ts's `requireClient()`), so a
+// stop still in flight when the test ends lands its `evener/thread/forceStop`
+// on the NEXT test's fake and breaks that test's "no forceStop yet" check.
+// Waiting here does not stand in for any assertion: the call-count assertion
+// that follows is still what proves the stop reached the wire.
+async function settleForceStop(ref: string): Promise<void> {
+  await waitFor(() => expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false));
   await flushPendingTurnsProjectionForTests();
 }
 
@@ -3836,17 +3855,20 @@ test.each(["success", "refused"])(
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     if (outcome === "success") {
       // Force stop's durable cancellation and stop RPC run past the click; the
-      // pane starts its refresh only once they have settled.
+      // pane starts its refresh only once they have settled, and the recovery
+      // face exists only once that refresh has PUBLISHED the stopped snapshot.
+      // The call alone carries no model, so wait for the refresh to settle (the
+      // same edge the dialog closes on) before reading the face.
       await waitFor(() => expect(refresh).toHaveBeenCalledWith(ref));
+      await act(async () => {
+        await refresh.mock.results[0]?.value;
+      });
       // R09: confirmed recovery now surfaces as Send on the Send-resumes face,
       // not a standalone Resume control.
       expect(sendResumesLocalModel(ref)).toBe(true);
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
       // Hydration publishes Resume before storage reconciliation completes.
       // The dialog closes only when the complete refresh promise settles.
-      await act(async () => {
-        await refresh.mock.results[0]?.value;
-      });
       expect(screen.queryByRole("dialog")).toBeNull();
     } else {
       expect(await screen.findByText("no direct daemon ownership claim")).toBeTruthy();
@@ -3894,8 +3916,10 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
-  // land after the click resolves; wait for it rather than racing the write.
-  await flushPendingTurnsProjectionForTests();
+  // land after the click resolves; wait for the stop to settle rather than
+  // racing the write. The refused row leaves the dialog open, so the stopping
+  // fence is the bound both rows share.
+  await settleForceStop(ref);
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
     { method: "evener/thread/forceStop", params: { ref } },
   ]);
@@ -3909,15 +3933,18 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("restartRequired");
   } else {
     // R09: the recovered session offers Send on the Send-resumes face, and the
-    // send drives the resume - no standalone Resume control.
-    expect(sendResumesLocalModel(ref)).toBe(true);
-    expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
-    // Hydration publishes Resume before storage reconciliation completes.
-    // The dialog closes only when the complete refresh promise settles.
+    // send drives the resume - no standalone Resume control. The call only
+    // starts the pane's refresh; the face exists once that refresh has
+    // PUBLISHED the stopped snapshot, so wait for it to settle before reading
+    // the face (the same edge the dialog closes on).
     expect(refresh).toHaveBeenCalledWith(ref);
     await act(async () => {
       await refresh.mock.results[0]?.value;
     });
+    expect(sendResumesLocalModel(ref)).toBe(true);
+    expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+    // Hydration publishes Resume before storage reconciliation completes.
+    // The dialog closes only when the complete refresh promise settles.
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
     await resumeViaSend(ref);
@@ -4320,7 +4347,7 @@ test.each(["pending", "failed"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
-      await flushPendingTurnsProjectionForTests();
+      await settleForceStop(ref);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
       ]);
@@ -4723,7 +4750,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   await user.click(menuTrigger);
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
-  await flushPendingTurnsProjectionForTests();
+  await settleForceStop(ref);
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
     { method: "evener/thread/forceStop", params: { ref } },
   ]);
@@ -4836,10 +4863,227 @@ test("visible retained transcript resolves qualified job and stable delegate row
     expect.arrayContaining([expect.objectContaining({ params: { ref: "job:provided-ref", parentRef: ref } })]),
   );
   fireEvent.click(screen.getByRole("button", { name: "Open delegate transcript" }));
-  expect(workspaceStore.getState().panes.filter((p) => p.type === "transcript")).toEqual(
-    expect.arrayContaining([expect.objectContaining({ params: { ref: "source:opaque-child", parentRef: ref } })]),
+  expect(workspaceStore.getState().panes.filter((p) => p.type === "session")).toEqual(
+    expect.arrayContaining([expect.objectContaining({ params: { ref: "source:opaque-child" } })]),
   );
   expect(
     fake.calls.filter((c) => c.method === "evener/jobs/list" || c.method === "evener/thread/watches/list"),
   ).toHaveLength(0);
+});
+
+// One store-driven resume is published per ref (resumedIdentities is keyed by
+// the ref the pane was showing), but a ref can be retained by more than one
+// workspace view at once: an ordinary session pane and a cascade column
+// embedding the same conversation both mount ConversationBody, and dockview
+// unmounts a pane's whole tree while its tab is inactive. The first view to
+// follow the resume must not consume the notification for a view that is not
+// mounted at that moment, or that view reopens on the superseded identity.
+// See ConversationBody.tsx's resume effect.
+const subscribePopstate = (notify: () => void) => {
+  window.addEventListener("popstate", notify);
+  return () => window.removeEventListener("popstate", notify);
+};
+
+function transcriptRead(ref: string | undefined): ThreadReadResponse {
+  if (ref === undefined) throw new Error("thread/read requires ref");
+  return readResponse(ref, {
+    turns: [
+      {
+        id: `turn_${ref}`,
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: `item_${ref}`,
+            turnId: `turn_${ref}`,
+            type: "agentMessage",
+            text: `${ref} transcript`,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+}
+
+// The finding: an ordinary conversation tab is inactive while its cascade
+// column resumes. The column consumes the notification and the retained tab
+// never follows the resumed identity. Cover resuming while the other view is
+// inactive, then reopening it.
+test("a cascade column's resume reaches an ordinary view of the same ref when it reopens", async () => {
+  const sourceRef = "local:root";
+  const ref = "local:child";
+  const resumed = "local:child-resumed";
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => transcriptRead(readRef));
+
+  // Two retained views of `ref`: the cascade pane embedding it (its column is
+  // mounted here) and the ordinary session pane, inactive (its Session is not
+  // mounted). A draft typed for the conversation sits under `ref`.
+  const cascadePane: OpenPaneRecord = {
+    id: "cascade",
+    type: "sessionZoom",
+    slot: "secondary",
+    params: {
+      ref,
+      source: { type: "session", params: { ref: sourceRef } },
+      edges: [{ ownerRef: sourceRef, childRef: ref, delegateId: "d1" }],
+    },
+  };
+  const ordinaryPane: OpenPaneRecord = { id: "ordinary", type: "session", slot: "main", params: { ref } };
+  workspaceStore.setState({ panes: [ordinaryPane, cascadePane], focusedPaneId: cascadePane.id });
+  const cascadeLifetime = conversationPaneLifetime(cascadePane);
+  const cascadeSeat: ConversationSeat = {
+    readView: null,
+    composerSource: null,
+    keepViewRemount: () => true,
+    viewFallbackId: cascadePane.id,
+    focused: false,
+    keyboardScrollPaneId: null,
+    onResumedIdentity: (resumedRef) => resumeCascadeScope(cascadeLifetime, ref, resumedRef),
+  };
+  // The conversation's draft lives in the browser draft repository; the
+  // merged resume carry (carryBrowserDraft) moves that row. Seed it through
+  // the app's own singleton instance: this suite swaps the global IndexedDB
+  // factory per test, so a fresh repository instance would seed a different
+  // database than the one the carry reads.
+  await getBrowserDraftRepository().seedDraft(browserDraftKey(ref), {
+    text: "draft typed before the resume",
+    skillNames: [],
+    mentions: [],
+  });
+
+  function OrdinaryView({ open }: { open: boolean }) {
+    // AppShell drives a session pane from the URL, so a followed resume
+    // re-renders it on the resumed ref; `open` stands for dockview mounting the
+    // pane's tree only while its tab is the active one.
+    const pathname = useSyncExternalStore(subscribePopstate, () => window.location.pathname);
+    if (!open) return null;
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") return null;
+    return <Session params={route.params as { ref: string }} paneId={ordinaryPane.id} focused={true} />;
+  }
+  function Harness({ open }: { open: boolean }) {
+    return (
+      <>
+        <ConversationBody
+          ref={ref}
+          seat={cascadeSeat}
+          render={({ content }) => <div data-testid="cascade-column">{content}</div>}
+        />
+        <OrdinaryView open={open} />
+      </>
+    );
+  }
+
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(ref)}`);
+  const { rerender } = render(
+    <ClientProvider client={fake}>
+      <Harness open={false} />
+    </ClientProvider>,
+  );
+  await act(async () => {});
+
+  // The store-driven resume publishes the identity (its own hydration of the
+  // resumed ref already landed; see resumeFencedForSend).
+  act(() => {
+    threadsStore.setState((state) => ({ resumedIdentities: new Map(state.resumedIdentities).set(ref, resumed) }));
+  });
+  await act(async () => {});
+
+  // The cascade column followed, but the ordinary view is still inactive and
+  // has not followed: the notification must survive for it.
+  expect(threadsStore.getState().resumedIdentities.get(ref)).toBe(resumed);
+  // The draft carried to the resumed identity: the repository row moves
+  // asynchronously, so the assertion waits for the carry to land.
+  await waitFor(async () =>
+    expect((await getBrowserDraftRepository().load(browserDraftKey(resumed)))?.text).toBe(
+      "draft typed before the resume",
+    ),
+  );
+
+  // Reopen the ordinary view: it must follow the retained identity.
+  rerender(
+    <ClientProvider client={fake}>
+      <Harness open={true} />
+    </ClientProvider>,
+  );
+  await screen.findByText(`${resumed} transcript`);
+  expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumed)}`);
+  // The last view has followed, so the notification is now consumed.
+  expect(threadsStore.getState().resumedIdentities.has(ref)).toBe(false);
+});
+
+// The finding's other shape: a collapsed column in another cascade. That pane
+// still covers the ref but mounts no ConversationBody until it becomes active,
+// so the mounted column must leave the notification for it.
+test("a resume survives a collapsed column in another cascade until that cascade mounts", async () => {
+  const sourceRef = "local:root";
+  const ref = "local:child";
+  const resumed = "local:child-resumed";
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => transcriptRead(readRef));
+
+  const cascadeParams = (leaf: string) => ({
+    ref: leaf,
+    source: { type: "session" as const, params: { ref: sourceRef } },
+    edges: [{ ownerRef: sourceRef, childRef: leaf, delegateId: "d1" }],
+  });
+  const mountedPane: OpenPaneRecord = {
+    id: "cascade-a",
+    type: "sessionZoom",
+    slot: "main",
+    params: cascadeParams(ref),
+  };
+  const collapsedPane: OpenPaneRecord = {
+    id: "cascade-b",
+    type: "sessionZoom",
+    slot: "secondary",
+    params: cascadeParams(ref),
+  };
+  workspaceStore.setState({ panes: [mountedPane, collapsedPane], focusedPaneId: mountedPane.id });
+  const seatFor = (pane: OpenPaneRecord): ConversationSeat => {
+    const lifetime = conversationPaneLifetime(pane);
+    return {
+      readView: null,
+      composerSource: null,
+      keepViewRemount: () => true,
+      viewFallbackId: pane.id,
+      focused: false,
+      keyboardScrollPaneId: null,
+      onResumedIdentity: (resumedRef) => resumeCascadeScope(lifetime, ref, resumedRef),
+    };
+  };
+  const mountedSeat = seatFor(mountedPane);
+  const collapsedSeat = seatFor(collapsedPane);
+
+  function Harness({ open }: { open: boolean }) {
+    return (
+      <>
+        <ConversationBody ref={ref} seat={mountedSeat} render={({ content }) => <div>{content}</div>} />
+        {open && <ConversationBody ref={ref} seat={collapsedSeat} render={({ content }) => <div>{content}</div>} />}
+      </>
+    );
+  }
+
+  const { rerender } = render(
+    <ClientProvider client={fake}>
+      <Harness open={false} />
+    </ClientProvider>,
+  );
+  await act(async () => {});
+
+  act(() => {
+    threadsStore.setState((state) => ({ resumedIdentities: new Map(state.resumedIdentities).set(ref, resumed) }));
+  });
+  await act(async () => {});
+  expect(threadsStore.getState().resumedIdentities.get(ref)).toBe(resumed);
+
+  rerender(
+    <ClientProvider client={fake}>
+      <Harness open={true} />
+    </ClientProvider>,
+  );
+  await act(async () => {});
+  expect(threadsStore.getState().resumedIdentities.has(ref)).toBe(false);
 });

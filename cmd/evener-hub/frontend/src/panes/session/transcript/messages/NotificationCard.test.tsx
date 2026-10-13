@@ -679,7 +679,7 @@ test("renders parsed job fields and excerpt as ordinary readable text", async ()
   expect(screen.getByTestId("notification-raw").textContent).toContain("raw");
 });
 
-test("a valid local child ref opens the shared transcript action beside the focused main pane", async () => {
+test("a valid local child ref opens the conversation beside the focused main pane", async () => {
   workspaceStore.setState({
     panes: [{ id: "main", type: "session", params: { ref: "local:parent" }, slot: "main" }],
     focusedPaneId: "main",
@@ -696,7 +696,9 @@ test("a valid local child ref opens the shared transcript action beside the focu
   const button = screen.getByRole("button", { name: "Open subagent" });
   expect(button.textContent).toBe(""); // the one icon-only form: no visible words
   await user.click(button);
-  const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
+  const opened = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === "local:child");
   expect(opened?.params).toEqual({ ref: "local:child" });
   expect(opened?.slot).toBe("secondary");
 });
@@ -725,8 +727,10 @@ test("a real delegate frame without a transcript_ref opens the subagent resolved
     />,
   );
   await user.click(screen.getByRole("button", { name: "Open subagent" }));
-  const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
-  expect(opened?.params).toEqual({ ref: "local:child", parentRef: "local:s" });
+  const opened = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === "local:child");
+  expect(opened?.params).toEqual({ ref: "local:child" });
 });
 
 test("a delegate frame whose delegate id the entity map cannot answer shows no dead Open control", () => {
@@ -820,11 +824,11 @@ test("opening a child restores the notification owner as main when an unrelated 
     (pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === "local:owner",
   );
   const child = state.panes.find(
-    (pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:child",
+    (pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === "local:child",
   );
   expect(state.panes.some((pane) => (pane.params as { ref?: string }).ref === "local:unrelated")).toBe(false);
   expect(owner?.slot).toBe("main");
-  expect(child?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
+  expect(child?.params).toEqual({ ref: "local:child" });
   expect(child?.slot).toBe("secondary");
   expect(state.mainPane()?.id).toBe(owner?.id);
   expect(state.focusedPaneId).toBe(child?.id);
@@ -842,9 +846,12 @@ test("a qualified remote child ref keeps its identity when opened", async () => 
     />,
   );
   await user.click(screen.getByRole("button", { name: "Open subagent" }));
-  expect(workspaceStore.getState().panes.find((pane) => pane.type === "transcript")?.params).toEqual({
-    ref: "remote:child",
-  });
+  expect(
+    workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === "remote:child")
+      ?.params,
+  ).toEqual({ ref: "remote:child" });
 });
 
 test("missing and malformed refs have no dead open-subagent action", () => {

@@ -72,10 +72,12 @@ const BOOT = {
 // actually overflowing its port (a collapsed pane would otherwise settle
 // trivially at a 0px bottom gap and read as a pass), no older page auto-fetched
 // on open, no jump pill at open, and the landing held at the true bottom across
-// the settle. `paneFooter` is the surface's own DOM marker - the live Session
-// renders its pane-footer/SessionChrome slot, the read-only pane renders none -
-// so a pass that meant to exercise one surface while the other rendered is
-// caught here instead of passing tautologically.
+// the settle. `paneFooter` is the live conversation's own DOM marker: the
+// read-only surface is gone from the product, so every pass - the live Session
+// and the session-ref transcript pane recovered as the conversation - must
+// render the pane footer. A pass that landed on a footer-less view (a
+// regression back to a read-only surface) is caught here instead of passing
+// tautologically.
 function assertPagedOpenContract(failures, label, m, { paneFooter = true } = {}) {
   if (m.errors.length > 0) failures.push(`page errors on ${label} paged open: ${m.errors.join("; ")}`);
   if (m.clientHeight <= 0) {
@@ -338,20 +340,24 @@ async function main() {
       if (scrolled.errors.length > 0) failures.push(`page errors while paging: ${scrolled.errors.join("; ")}`);
       if (scrolled.listCalls < 1) failures.push("scrolling to the top of a paged session fetched no older page");
 
-      // The READ-ONLY transcript pane runs the SAME scroll coordinator (#2963:
-      // it lands on the latest row on open, follows a prepend without stranding
-      // the reader, and never auto-loads an older page just because it opened),
-      // but the guard only ever rendered the live Session. This pass renders
-      // the read-only Transcript and holds it to the same open contract: the
-      // paging row mounted, no older page fetched on open, and the landing
-      // held at the true bottom across the settle.
+      // The session-ref transcript pane has no read-only surface to render
+      // anymore: it recovers as the live conversation, the same
+      // ConversationBody the Session pane renders. This pass renders the
+      // transcript pane for a session ref and holds the recovered conversation
+      // to the SAME open contract (#2963's scroll coordinator is unchanged
+      // machinery): the paging row mounted, no older page fetched on open, the
+      // landing held at the true bottom across the settle, and the live
+      // conversation's pane footer rendered.
       await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?paged=1&readonly=1`, BOOT);
       await waitForFonts(send);
-      const readOnlyOpened = JSON.parse(
+      const recoveredOpened = JSON.parse(
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
-      assertPagedOpenContract(failures, "the read-only transcript pane", readOnlyOpened, { paneFooter: false });
-
+      assertPagedOpenContract(failures, "the session-ref transcript pane recovered as the live conversation", recoveredOpened);
+      // The dock leg's retained-reader guarantees now run on conversation
+      // panes too: the harness's openTranscript calls open the live
+      // conversation pane for session refs, so the dock group below proves
+      // the same scroll retention against the conversations the entries open.
       // A pane that unmounts MID-PASS: each post-settle wait must report the
       // named state, not the internal error its reads used to throw. One page
       // load per wait, because unmounting the pane is the end of that page -
@@ -462,7 +468,7 @@ async function main() {
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
           `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
           `a session opened with older history stayed at the bottom without auto-loading a page; ` +
-          `the read-only transcript pane did the same; deferred hydration waited for the mounted paged viewport; ` +
+          `the session-ref transcript pane recovered as the live conversation and did the same; deferred hydration waited for the mounted paged viewport; ` +
           `all ${MID_PASS_UNMOUNT_WAITS.length} post-settle waits named a pane that unmounted under them`,
       );
     } else {

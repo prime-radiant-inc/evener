@@ -14,6 +14,7 @@ import {
   sourcePaneSessionRef,
   workspaceStore,
 } from "../../shell/workspace";
+import { zoomPaneCoversConversation } from "../zoom/cascadeCoverage";
 // Importing the opener registers the "doc" pane type (side effect of ./index):
 // every producer that can open a doc pane already imports this module, so the
 // pane is guaranteed registered before openDocBeside routes it through dockview.
@@ -51,6 +52,10 @@ export interface DocumentOpenRequest {
 }
 
 function paneOwnsSession(pane: OpenPaneRecord, session: string): boolean {
+  // An embedded cascade column has no pane of its own: the zoom pane
+  // hosting the conversation owns the request when its cascade covers the
+  // session.
+  if (pane.type === "sessionZoom") return zoomPaneCoversConversation(pane, session);
   if (pane.type !== "session" && pane.type !== "transcript") return false;
   return sourcePaneSessionRef(pane) === session;
 }
@@ -97,7 +102,12 @@ export function openDocBeside(request: DocumentOpenRequest): void {
     workspace.focusPane(existingDocument.id);
     return;
   }
-  if (origin) workspace.promotePane(origin.id);
+  // A cascade origin keeps its secondary slot: promoting the inspection into
+  // main would break "main is the routed session" for the origin
+  // conversation and let the next primary navigation replace the whole
+  // cascade. The document opens beside the zoom either way; conversation
+  // origins still take main so the document lands beside its source.
+  if (origin && origin.type !== "sessionZoom") workspace.promotePane(origin.id);
   paneActions.openBeside({ type: "doc", params });
   const document = workspaceStore.getState().panes.find((pane) => isRequestedDocument(pane, params));
   if (!document) return;

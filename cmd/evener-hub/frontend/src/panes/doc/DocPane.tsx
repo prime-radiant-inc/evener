@@ -476,7 +476,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     return () => {
       cancelled = true;
     };
-  }, [session, path, readTarget, key, ports, work, readNonce, enterExpiryPending]);
+  }, [session, readTarget, key, ports, work, readNonce, enterExpiryPending]);
 
   // A genuine foreground reread of the current ticket, in addition to the shared
   // retained-attempt retry.
