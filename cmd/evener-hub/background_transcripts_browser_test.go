@@ -919,14 +919,27 @@ func assertBackgroundEntryNarrowViewport(t *testing.T, milestones []skillGuardMi
 	}
 }
 
+func TestTraceWindowBytesEmpty(t *testing.T) {
+	for _, offset := range []int64{0, 2, 4} {
+		t.Run(fmt.Sprint(offset), func(t *testing.T) {
+			if got := traceWindowBytes(t, []byte("abc\n"), offset, offset); len(got) != 0 {
+				t.Fatalf("empty window returned %q", got)
+			}
+		})
+	}
+}
+
 // traceWindowBytes returns the trace slice [before, after) with any record that
 // straddles a boundary completed (or trimmed), so a request at the window's end
 // is not lost and a partial record is never parsed. It mirrors the byte
 // arithmetic the entry-opened assertion relies on.
 func traceWindowBytes(t *testing.T, trace []byte, before, after int64) []byte {
 	t.Helper()
-	if before < 0 || after <= before || after > int64(len(trace)) {
+	if before < 0 || after < before || after > int64(len(trace)) {
 		t.Fatalf("invalid trace window %d..%d (trace bytes %d)", before, after, len(trace))
+	}
+	if before == after {
+		return trace[before:after]
 	}
 	end := after
 	if trace[after-1] != '\n' {
