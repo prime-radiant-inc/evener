@@ -874,7 +874,7 @@ function publishEntryTranscriptModel(ref: string): void {
 
 async function openEntryTranscript(ref: string): Promise<boolean> {
   const fixture = entryTranscriptRoute(ref);
-  if (!fixture || fixture.ref !== ref || !fixture.repository) return false;
+  if (!fixture || fixture.ref !== ref || !fixture.repository) return true;
   const repository = fixture.repository;
   const openingToken = beginEntryTranscriptLocalOpening(ref);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -913,7 +913,15 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     ) {
       putThreadModel(ref, result.model);
     }
-    return result.status !== "recovery-needed";
+    if (result.status !== "recovery-needed") return true;
+    // Cache proof can be unavailable while the live model already carries the
+    // complete requested window. Recover missing bodies, not merely a missing
+    // certificate, which would replace usable paged history with a latest read.
+    const displayed = new Set(
+      result.model?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey ?? item.id)),
+    );
+    const requested = result.model?.history?.turns.flatMap((turn) => turn.items).slice(-200) ?? [];
+    return requested.every((item) => displayed.has(item.transcriptKey ?? item.id));
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
