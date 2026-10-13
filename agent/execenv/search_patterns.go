@@ -438,10 +438,14 @@ type globBudgetError struct {
 // gets listed, so tightening it is the first thing to try. A grep's pattern is
 // a regex matched against file contents after the walk has already listed
 // everything, so narrowing it changes nothing about the listings; only a
-// smaller base directory does.
+// smaller base directory does. A list_dir call has no pattern at all; its
+// levers are the path it points at and the depth it asks for.
 func (e *globBudgetError) advice() string {
 	if e.op == "grep" {
 		return "narrow the base directory"
+	}
+	if e.op == "list_dir" {
+		return "narrow the path or reduce depth"
 	}
 	return "narrow the pattern or its base directory"
 }
@@ -449,10 +453,14 @@ func (e *globBudgetError) advice() string {
 // entryAdvice names the lever that gets a caller past one oversized
 // directory, the entries kind's counterpart to advice. A glob can spell a
 // pattern that matches inside the directory without listing all of it; a grep
-// cannot, so its only lever is a base that does not contain it.
+// cannot, so its only lever is a base that does not contain it; nor can a
+// list_dir, whose lever is the path it points at.
 func (e *globBudgetError) entryAdvice() string {
 	if e.op == "grep" {
 		return "that directory is too large to list, so point the base at a smaller directory that does not contain it"
+	}
+	if e.op == "list_dir" {
+		return "that directory is too large to list, so point path at a smaller directory that does not contain it"
 	}
 	return "that directory is too large to list, so match inside it more specifically or point the base elsewhere"
 }

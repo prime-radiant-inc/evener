@@ -41,13 +41,19 @@ type listDirResult struct {
 	Returned  int
 	Offset    int
 	Truncated bool
+	// WalkTruncatedAt is the entry-visit cap that stopped the listing's walk
+	// short of the whole requested subtree (#2375), 0 when the walk enumerated
+	// everything. While set, Total is a lower bound — how far the walk got —
+	// not the subtree's size, so the footer reports the cap instead of an
+	// exhaustive total.
+	WalkTruncatedAt int
 }
 
 // dirEntrySize over-estimates an entry's rendered line length (name as
 // formatDirListing writes it, an optional slash or tab-separated size, and a
 // newline) so the running budget keeps the rendered listing under the cap.
 func dirEntrySize(e execenv.DirEntry) int {
-	return len(execenv.OneLinePath(e.Name)) + 16
+	return execenv.DirEntryRenderSize(e)
 }
 
 // formatDirListing renders a page as plain text, ls-style: one entry per line,
@@ -76,7 +82,21 @@ func formatDirListing(r listDirResult) string {
 	if b.Len() > 0 {
 		b.WriteString("\n\n")
 	}
+	// A walk the budget stopped never learned the subtree's true size, so its
+	// Total is a lower bound; printing "x of N" with it would read as the
+	// exhaustive count the completed-walk footer prints. The cap line says
+	// what actually stopped the listing and how to see more.
 	switch {
+	case r.WalkTruncatedAt > 0:
+		switch {
+		case r.Truncated:
+			fmt.Fprintf(&b, "%d entries (offset %d) — more with list_dir(offset=%d)", r.Returned, r.Offset, r.Offset+r.Returned)
+		case r.Offset > 0:
+			fmt.Fprintf(&b, "%d entries (offset %d)", r.Returned, r.Offset)
+		default:
+			fmt.Fprintf(&b, "%d entries", r.Returned)
+		}
+		fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path or reduce depth to see the rest.", r.WalkTruncatedAt)
 	case r.Truncated:
 		fmt.Fprintf(&b, "%d of %d entries (offset %d) — more with list_dir(offset=%d)", r.Returned, r.Total, r.Offset, r.Offset+r.Returned)
 	case r.Offset > 0:
@@ -177,7 +197,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: tool.DefListDir(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
 			path := stringArg(args, "path")
 			depth := 1
 			if v, ok := args["depth"].(float64); ok && int(v) > 0 {
@@ -191,11 +210,49 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["limit"].(float64); ok && int(v) > 0 {
 				limit = int(v)
 			}
-			entries, err := env.ListDirectory(path, depth)
-			if err != nil {
-				return nil, err
+			// Resolved before the budget is built: the budgeted walk has to
+			// collect for the same page size paginateDirEntries renders, so an
+			// unset limit means defaultListDirLimit in both.
+			if limit <= 0 {
+				limit = defaultListDirLimit
 			}
-			return formatDirListing(paginateDirEntries(path, entries, offset, limit)), nil
+			// The budgeted walk stops once it has collected enough entries to
+			// answer this page (#2375) instead of enumerating the whole
+			// requested subtree, and ctx cancels it; both arms bound depth at
+			// MaxListDirDepth. Environments without the capability (test
+			// doubles) keep the legacy whole-tree walk.
+			var entries []execenv.DirEntry
+			walkTruncatedAt := 0
+			var res listDirResult
+			switch ld := env.(type) {
+			case execenv.DirListBudgeter:
+				budget := execenv.NewDirListBudget(offset, limit, listDirCharBudget)
+				var err error
+				entries, err = ld.ListDirectoryWithBudget(ctx, path, depth, budget)
+				if err != nil {
+					return nil, err
+				}
+				walkTruncatedAt = budget.TruncatedAt()
+				// The budgeted walk returns only the page window — the offset
+				// prefix was charged and discarded — so the page starts at the
+				// window's head while the footer still displays the requested
+				// offset, and a completed walk's exhaustive total is what it
+				// charged in total, not what it retained.
+				res = paginateDirEntries(path, entries, 0, limit)
+				res.Offset = offset
+				if walkTruncatedAt == 0 {
+					res.Total = budget.Visited()
+				}
+			default:
+				var err error
+				entries, err = env.ListDirectory(path, depth)
+				if err != nil {
+					return nil, err
+				}
+				res = paginateDirEntries(path, entries, offset, limit)
+			}
+			res.WalkTruncatedAt = walkTruncatedAt
+			return formatDirListing(res), nil
 		},
 	})
 
