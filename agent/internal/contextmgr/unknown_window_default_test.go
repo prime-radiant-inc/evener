@@ -306,3 +306,66 @@ func TestAssumedWindowDisclosureRefiresOnModelSwitch(t *testing.T) {
 		t.Fatalf("same model re-disclosed %d times, want 0", n)
 	}
 }
+
+// TestStrategyTripwireDropsOnMidPassModelSwitch pins the one-snapshot rule for
+// the captured tripwire: the fold gate re-snapshots pressure after the mask
+// layers, so a SetProfile landing between the capture and the gate must drop
+// the stale verdict — one model's measurement never forces another model's
+// fold; the switched-to model's own pass re-captures the tripwire on its
+// terms. The mask layer's own event is the deterministic seam: it fires
+// after the capture, before the re-snapshot.
+func TestStrategyTripwireDropsOnMidPassModelSwitch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		build func(t *testing.T, cm *Manager) Strategy
+	}{
+		{"session-log", func(t *testing.T, cm *Manager) Strategy {
+			return &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
+		}},
+		{"obs-mask", func(_ *testing.T, cm *Manager) Strategy { return NewObsMaskStrategy(cm) }},
+		{"checkpoint-pred", func(_ *testing.T, cm *Manager) Strategy { return NewCheckpointPredStrategy(cm) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := llm.NewClient()
+			client.Register(&stubSummarizeAdapter{name: "gw", respFn: func(llm.Request) (llm.Response, error) {
+				return llm.Response{Message: llm.Assistant("condensed context summary")}, nil
+			}})
+			// Model A: unknown window, thresholds out of reach, a measurement
+			// past the tripwire — only the captured tripwire can force a fold.
+			cm := NewManager(unknownGatewayProfile(), client, cheapmodel.New(client))
+			cm.CheckpointThreshold = 100
+			cm.SummarizeThreshold = 100
+			history := bulkHistory(12, 100) // ~1.8K tokens
+			cm.RecordInputTokens(UnknownWindowInputTripwire+50_000, len(history))
+
+			// Model B: a different target with a known window so wide its
+			// pressure never reaches the out-of-reach thresholds.
+			windowB := 1_000_000
+			modelB := provider.FromResolved(registry.Resolved{
+				Instance: "gw", ModelID: "glm-5-flash", WireID: "glm-5-flash",
+				Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
+				Caps: registry.Caps{ContextWindow: &windowB},
+			}, nil)
+
+			strategy := tc.build(t, cm)
+			switched := false
+			emit := func(kind events.EventKind, data events.EventData) {
+				if kind == events.EventContextCompaction && !switched {
+					switched = true
+					cm.SetProfile(modelB)
+				}
+			}
+			if err := strategy.ManageContext(context.Background(), &history, 0, emit); err != nil {
+				t.Fatalf("ManageContext: %v", err)
+			}
+			if !switched {
+				t.Fatal("the mid-pass switch never ran: the mask layer emitted no event")
+			}
+			if len(history) != 12 {
+				t.Fatalf("stale tripwire folded the switched-to model's history: %d turns (had 12)", len(history))
+			}
+		})
+	}
+}

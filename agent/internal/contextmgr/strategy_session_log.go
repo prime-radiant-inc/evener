@@ -73,8 +73,10 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	p, prof := estimatePressure()
 	// Captured before any layer invalidates the measurement: the tripwire
 	// (issue #4564) forces the checkpoint layer below whatever the pressure
-	// estimate says.
+	// estimate says. It carries the profile it was captured under and governs
+	// only while that profile is still the gate's model (tripwireGoverns).
 	tripwire := s.cm.unknownWindowTripwireFires(prof)
+	tripwireProf := prof
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
@@ -119,7 +121,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	}
 
 	// Layer 3 (replaced): Session-log checkpoint.
-	if p >= s.cm.CheckpointThreshold || tripwire {
+	if p >= s.cm.CheckpointThreshold || (tripwire && tripwireGoverns(tripwireProf, prof)) {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
 		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))

@@ -71,8 +71,10 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 	p, prof := pressure()
 	// Captured before any layer invalidates the measurement: the tripwire
 	// (issue #4564) forces the checkpoint layer below whatever the pressure
-	// estimate says.
+	// estimate says. It carries the profile it was captured under and governs
+	// only while that profile is still the gate's model (tripwireGoverns).
 	tripwire := s.cm.unknownWindowTripwireFires(prof)
+	tripwireProf := prof
 	compacted := false
 
 	if p >= s.cm.ObservationMaskThreshold {
@@ -101,7 +103,7 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 	}
 
 	// Layer 2: Deterministic checkpoint as fallback if masking wasn't enough.
-	if p >= s.cm.CheckpointThreshold || tripwire {
+	if p >= s.cm.CheckpointThreshold || (tripwire && tripwireGoverns(tripwireProf, prof)) {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
 		*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())

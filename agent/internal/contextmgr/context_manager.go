@@ -807,6 +807,17 @@ func (cm *Manager) unknownWindowTripwireFires(prof *provider.Profile) bool {
 	return unknown && cm.LastInputTokens() >= UnknownWindowInputTripwire
 }
 
+// tripwireGoverns reports whether a tripwire captured under captured still
+// decides for current. The strategy fold gates re-snapshot pressure after
+// their mask layers run, so a SetProfile landing in between would otherwise
+// let one model's measurement force another model's fold — the one-snapshot
+// rule the strategy comments state. The switched-to model's own pass
+// re-captures the tripwire on its terms, with the measurement the switch
+// cleared.
+func tripwireGoverns(captured, current *provider.Profile) bool {
+	return sameProfileTarget(captured, current)
+}
+
 // ForceCompact runs all compaction layers unconditionally, regardless of context pressure.
 // Used for user-initiated compaction (e.g. /compact command). instructions is forwarded
 // to the LLM summarization layer; pass "" for default behavior. Returns true if a summary
