@@ -58,7 +58,7 @@ func DefMemoryWrite() llm.ToolDefinition {
 			"properties": map[string]any{
 				"file_path": map[string]any{"type": "string"},
 				"when":      map[string]any{"type": "string", "description": "One line saying when a future session needs the page: the moments it would otherwise get this wrong, at the level that covers all of them (\"When a log line could include a customer's street address\"). If those moments call for different facts, the page holds several facts, so give each its own page, even facts your partner told you in one breath."},
-				"body":      map[string]any{"type": "string", "description": "The page's Markdown, without frontmatter: a first heading naming what the page is about, such as \"Customer addresses in logs\" rather than the rule itself, which becomes the page's title; then one durable fact, led by the fact or rule, a one-line **Why:** (with where the fact came from, when that matters) and a one-line **How to apply:** saying when it bears on work, with absolute dates."},
+				"body":      map[string]any{"type": "string", "description": "The page's Markdown, without frontmatter: a first heading naming what the page is about, such as \"Customer addresses in logs\" rather than the rule itself; then one durable fact, led by the fact or rule, a one-line **Why:** (with where the fact came from, when that matters) and a one-line **How to apply:** saying when it bears on work, with absolute dates."},
 			},
 			"required": []string{"file_path", "when", "body"},
 		},

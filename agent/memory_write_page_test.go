@@ -25,7 +25,7 @@ func TestMemoryPageFromFieldsAssemblesFrontmatter(t *testing.T) {
 		t.Fatalf("got %q\nwant %q", page, want)
 	}
 	p := parseMemoryPage("cents.md", []byte(page), time.Time{})
-	if p.Unreadable || p.When != "When code stores, computes or prints a money amount: any of them" || p.Title != "Money is integer cents" {
+	if p.Unreadable || p.When != "When code stores, computes or prints a money amount: any of them" {
 		t.Fatalf("page reads back as %+v", p)
 	}
 }
@@ -76,7 +76,7 @@ func TestMemoryWriteWritesStampedPageFromFields(t *testing.T) {
 		t.Fatalf("got %q\nwant %q", raw, want)
 	}
 	page := parseMemoryPage("cents.md", raw, time.Time{})
-	if got := memoryIndexLine(page); !strings.HasPrefix(got, "- [Money is integer cents](cents.md) — When code handles money (updated ") {
+	if got := memoryIndexLine(page); !strings.HasPrefix(got, "- [cents.md](cents.md) — When code handles money (updated ") {
 		t.Fatalf("index line %q", got)
 	}
 	if strings.Contains(page.Description, memoryNoDescription) {

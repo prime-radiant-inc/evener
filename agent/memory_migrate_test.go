@@ -512,8 +512,9 @@ func TestParseLegacyMemoryIndexSkipsOnlyUnlinkedLines(t *testing.T) {
 func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {
 	t.Parallel()
 	for _, rel := range []string{"plain.md", "my notes (old).md", `a \> b.md`, `a\>b.md`, "<x> y.md", "sub/half).md", "a#b.md"} {
-		for _, title := range []string{"T", `[WIP] Fix \ it`} {
-			line := memoryIndexLine(memoryPage{Path: rel, Title: title, Description: "d"})
+		// Indexes written before lines linked the path carry a title as link text.
+		for _, text := range []string{rel, "T", `[WIP] Fix \ it`} {
+			line := "- [" + memoryTextEscaper.Replace(text) + "](" + memoryLinkTarget(rel) + ") — d"
 			got := parseLegacyMemoryIndex(line + "\n")
 			if len(got) != 1 || got[0].Links[0] != rel || got[0].Description != "d" {
 				t.Fatalf("%q from %q: got %+v", rel, line, got)
