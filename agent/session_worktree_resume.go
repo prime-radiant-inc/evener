@@ -263,9 +263,22 @@ func worktreeGitEntryExists(path string) bool {
 // the parent's own lock or emit a spurious co-occupying warning on every
 // spawn.
 //
-// isGitRepo is the caller's already-computed snapshotGit result (session_init.go),
-// passed in to skip the ResolveMainRepoRoot git fork entirely for the common
-// non-repo case.
+// The function decides repo-ness from its own structural facts —
+// ResolveProjectWith (which resolves a managed-lane root from its
+// linked-worktree `.git` pointer without forking git) and projectIsGitCheckout
+// (a stat of <root>/.git) — NOT from the caller's session-start git snapshot.
+// The snapshot's IsGitRepo comes from snapshotGit, whose every git exec is
+// bounded by gitExecTimeout (2s), and snapshotGit reports a probe that timed
+// out or failed as "not a repo", indistinguishable from a genuine non-repo.
+// Gating this function on that value let a starved probe silently disable the
+// whole occupancy lock — no co-occupying warning and no tracked worktree —
+// which is #4132. The old isGitRepo parameter was documented as an
+// optimization to skip ResolveMainRepoRoot's git fork for the common non-repo
+// case; that rationale does not hold here, because a managed-lane root never
+// needs that fork (its `.git` is a linked-worktree pointer; only a submodule
+// `.git` pointer reaches the git-binary fallback, and that is not a managed
+// lane) and the function returns for every non-local env below, so the
+// parameter could only ever subtract correctness.
 //
 // Invariant carried from Task 18 into Task 21: this scoping was sound when
 // every spawn path hardcoded workingDir="" (a child always inherited
@@ -277,8 +290,8 @@ func worktreeGitEntryExists(path string) bool {
 // at `git worktree add` time on the PARENT side, before the child spawns, so
 // there is no unlocked window for this function to (mis)detect on the
 // child's own init.
-func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
-	if !isGitRepo || s.isSubagentSession() {
+func (s *Session) applyInitInsideWorktreeLock() {
+	if s.isSubagentSession() {
 		return
 	}
 	s.mu.Lock()

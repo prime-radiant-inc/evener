@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -38,6 +39,8 @@ import (
 //   - TestResumeWorktreeReentry_ManagedForeignBareLockUnknownOwnerNotice — the
 //     real --porcelain shape of a reasonless `git worktree lock`
 //   - TestInitInside_ForeignBareLockUnknownOwnerWarns — same reasonless lock shape
+//   - TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot —
+//     same bare-lock shape with the snapshot reporting not-a-repo (#4132)
 //   - TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey — the lock
 //     key must match git's canonical porcelain entry for the lane
 
@@ -886,24 +889,23 @@ func TestInitInside_NonLocalEnvNoOp(t *testing.T) {
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 	r.s.mu.Unlock()
 
-	r.s.applyInitInsideWorktreeLock(true)
+	r.s.applyInitInsideWorktreeLock()
 
 	if got := r.s.Meta().WorktreePath; got != "" {
 		t.Errorf("Meta().WorktreePath = %q, want empty (non-local env must no-op)", got)
 	}
 }
 
-// TestInitInside_UnresolvableMainRootNoOp: isGitRepo is the caller's
-// already-computed snapshotGit result; when it says true but the launch cwd
-// genuinely is not part of any repository, ResolveMainRepoRoot legitimately
-// returns "" and the function must no-op rather than panic or guess.
+// TestInitInside_UnresolvableMainRootNoOp: when the launch cwd genuinely is
+// not part of any repository, ResolveProjectWith legitimately reports no Git
+// project and the function must no-op rather than panic or guess.
 func TestInitInside_UnresolvableMainRootNoOp(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t)
 	notARepo := scriptedCanonicalDir(t, t.TempDir())
 	sess := r.launchInside(t, notARepo).s
 
-	sess.applyInitInsideWorktreeLock(true)
+	sess.applyInitInsideWorktreeLock()
 
 	if got := sess.Meta().WorktreePath; got != "" {
 		t.Errorf("Meta().WorktreePath = %q, want empty (unresolvable main root must no-op)", got)
@@ -936,7 +938,7 @@ func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
 		return next(args...)
 	})
 
-	sess.applyInitInsideWorktreeLock(true)
+	sess.applyInitInsideWorktreeLock()
 
 	msgs := pendingTranscriptWarningMessages(sess)
 	if !anyContainsAll(msgs, path, "could not inspect the lock") {
@@ -970,7 +972,7 @@ func TestInitInside_RelockFailsWarns(t *testing.T) {
 	fail, _ := second.failLockRunner()
 	fail.Store(true)
 
-	sess.applyInitInsideWorktreeLock(true)
+	sess.applyInitInsideWorktreeLock()
 
 	msgs := pendingTranscriptWarningMessages(sess)
 	if !anyContainsAll(msgs, path, "failed to lock worktree") {
@@ -1000,6 +1002,87 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	wtGit(t, r.mainRoot, "worktree", "lock", path) // bare lock: no --reason
 
 	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+
+	msgs := warningMessages(sess)
+	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
+		t.Errorf("no co-occupying notice naming an unknown owner: %v", msgs)
+	}
+	if got := sess.Meta().WorktreePath; got != path {
+		t.Errorf("Meta().WorktreePath = %q, want %q (co-occupying still tracked)", got, path)
+	}
+}
+
+// TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot: the
+// occupancy lock must not be disabled by the session-start git snapshot saying
+// "not a repo". That answer comes from snapshotGit, whose every git exec is
+// bounded by gitExecTimeout (2s) and which reports a probe that timed out or
+// failed as inRepo=false — indistinguishable from a genuine non-repo. Gating
+// applyInitInsideWorktreeLock on it let a starved probe silently drop both the
+// co-occupying warning and the tracked worktree path (#4132). Launching with
+// the snapshot reporting not-a-repo (withoutGitSnapshot, the same value a
+// starved probe yields) while the cwd is a real, foreign-bare-locked managed
+// lane reproduces that condition deterministically: the function's own
+// structural checks must still warn and track.
+//
+// REAL git: only real git emits the reasonless `locked` porcelain line the
+// empty occupant is parsed from.
+func TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	wtGit(t, r.mainRoot, "worktree", "unlock", path)
+	wtGit(t, r.mainRoot, "worktree", "lock", path) // bare lock: no --reason
+
+	sess := newSession(t, withDir(path), withoutGitSnapshot(),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+
+	msgs := warningMessages(sess)
+	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
+		t.Errorf("no co-occupying notice naming an unknown owner: %v", msgs)
+	}
+	if got := sess.Meta().WorktreePath; got != path {
+		t.Errorf("Meta().WorktreePath = %q, want %q (co-occupying still tracked)", got, path)
+	}
+}
+
+// TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe is the
+// faithful reproducer for #4132: it drives the REAL session-start git probe
+// past its deadline — gitExecTimeout, the same bound that starved under
+// full-suite load — so snapshotGit reports the launch cwd as "not a repo"
+// while the cwd really is a foreign-bare-locked managed lane. Before the fix
+// the session silently neither warned nor tracked; the structural checks must
+// now still warn and track.
+//
+// Not parallel: it shrinks the package-wide gitExecTimeout for the duration of
+// one session's construction (restored before this session's Close runs), and
+// docs/developing-evener/testing.md requires a test that changes a package-level
+// var to stay serial. A one-nanosecond deadline deterministically fails every
+// probe exec, so no load is produced.
+//
+// REAL git: only real git emits the reasonless `locked` porcelain line the
+// empty occupant is parsed from.
+func TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe(t *testing.T) {
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	wtGit(t, r.mainRoot, "worktree", "unlock", path)
+	wtGit(t, r.mainRoot, "worktree", "lock", path) // bare lock: no --reason
+
+	orig := gitExecTimeout
+	gitExecTimeout = time.Nanosecond
+	// Restore immediately after construction so this session's own Close runs
+	// with the real deadline; the cleanup is a safety net for a fatal inside
+	// newSession (which would otherwise leak the starved deadline).
+	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	gitExecTimeout = orig
+	t.Cleanup(func() { gitExecTimeout = orig })
 
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
