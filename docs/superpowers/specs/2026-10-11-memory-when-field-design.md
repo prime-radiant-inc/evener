@@ -106,6 +106,27 @@ rounds, main agent writing memory, no librarian.
 
 The decision: show `when` instead of the description, falling back to the description.
 
+## Slim memory_write
+
+`memory_write` takes `scope`, `file_path`, `when` (required, non-blank) and `body`, and nothing
+else. Evener writes the frontmatter block holding `when`, stamps `updated` and `by`, then writes
+the body, so the model never writes frontmatter. New pages carry no `description`; pages that have
+one keep it and keep rendering. The guidance for each part lives in the parameter descriptions
+(the `when` description asks for the moments the page matters and one page per fact; the `body`
+description asks for a first heading naming the page's topic, not its rule), and the `## Memory`
+prompt section points at the fields instead of describing frontmatter. A blank `when` and a body
+that opens with its own frontmatter block are refused and write nothing. `memory_edit` stays a
+plain string edit.
+
+The memory lab compared this tool with the one that takes frontmatter inside a `content` string,
+over 12-rep downstream tasks on deepseek and glm: recall tied and lines came out 5% to 18%
+shorter. The tool is smaller and the model has less to get wrong, so it replaced the
+`content` tool outright.
+
+Write notes follow: a page that has a `when` gets no description note, a page left without a `when`
+(an edit removed it) gets the missing-`when` note, and the unreadable-frontmatter note stays. The
+`(no description)` marker never appears on a page that has a `when`.
+
 ## Out of scope
 
 - Tool-call triggers derived from `when` text (paths, commands) and keyword ranking for indexes

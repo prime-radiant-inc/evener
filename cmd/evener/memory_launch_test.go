@@ -193,7 +193,7 @@ func TestMemoryLaunchBindingFailure(t *testing.T) {
 			return scriptedToolCalls(scriptedWriteFileCall("ordinary-write", "ordinary.txt", "opaque-ordinary-46"))
 		},
 		func(llm.Request) llm.Response {
-			return scriptedToolCalls(llm.ToolCallData{ID: "personal-write", Name: "memory_write", Type: "function", Arguments: []byte(`{"scope":"personal","file_path":"topic.txt","content":"opaque-personal-58"}`)})
+			return scriptedToolCalls(llm.ToolCallData{ID: "personal-write", Name: "memory_write", Type: "function", Arguments: []byte(`{"scope":"personal","file_path":"topic.txt","when":"w","body":"opaque-personal-58"}`)})
 		},
 		func(llm.Request) llm.Response { return scriptedCommunicate("fixture complete") },
 	}}
@@ -214,7 +214,7 @@ func TestMemoryLaunchBindingFailure(t *testing.T) {
 	if !constructed {
 		t.Fatal("ordinary session not constructed")
 	}
-	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(cmdutil.DefaultStateRoot(), "memory", "topic.txt"): "opaque-personal-58"} {
+	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(cmdutil.DefaultStateRoot(), "memory", "topic.txt"): "---\nwhen: w\n---\n\nopaque-personal-58"} {
 		bytes, err := os.ReadFile(path)
 		if err != nil || string(bytes) != want {
 			t.Fatalf("path=%s bytes=%q err=%v", path, bytes, err)

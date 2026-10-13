@@ -271,6 +271,27 @@ func (c *delegateTreeController) stillFinalizing(delegateID string) bool {
 	return c.finalizingLocked(delegateID) != nil
 }
 
+// finalizationRecoveryHolds reports whether delegateID's last generation failed
+// its finish append and is still held behind the recovery latch
+// (finalizationRecoveryRequired). The delegate's own run flags read quiet in
+// that window — the run ended and its finalize tail cleared finalizing — yet the
+// durable generation never left PhaseRunning, so the delegate still owes drain
+// work. The drain consults this so a stranded finalization is outstanding (a
+// stall the watchdog can eventually give up on) rather than invisible
+// quiescence. It deliberately does NOT make the delegate live: the runner's own
+// finalize tail already reports active ownership through the subagent's
+// finalizing flag, and holding a latched recovery live forever would trade a
+// false quiescence for an unbounded hang (issue #179 item b).
+func (c *delegateTreeController) finalizationRecoveryHolds(delegateID string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	live := c.live[delegateID]
+	return live != nil && live.finalizationRecoveryRequired
+}
+
 // releaseFinalizationLocked releases live's finalization, if any, waking
 // every send waiting on it. The root's attention drive skips a delegate
 // while it finalizes, and nothing else wakes the drive for attention it
