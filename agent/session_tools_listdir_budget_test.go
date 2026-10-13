@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -205,5 +206,41 @@ func TestDefListDirDepthProseMatchesEnforcedClamp(t *testing.T) {
 	desc, _ := depth["description"].(string)
 	if !descriptionMentions(desc, execenv.MaxListDirDepth) {
 		t.Errorf("list_dir depth description should state the enforced clamp of %d, got: %q", execenv.MaxListDirDepth, desc)
+	}
+}
+
+// TestListDirToolStopsTheWalkAtTheRenderedCharacterBudget pins the tool-level
+// half of the character contract: the walk the tool budgets must stop at the
+// same rendered-size bound the footer's page enforces, so a page that fills
+// the character budget well before the entry limit reports the walk's own
+// stop position instead of walking on toward a page it will never render.
+func TestListDirToolStopsTheWalkAtTheRenderedCharacterBudget(t *testing.T) {
+	t.Parallel()
+	reg := w3sub_shellReg(t, nil)
+	root := t.TempDir()
+	// Seventy 250-character names: each renders as 266 budgeted characters,
+	// so the 16k-character page fits 60 entries and the walk stops on the
+	// 61st as its lookahead.
+	for i := 1; i <= 70; i++ {
+		name := fmt.Sprintf("long%04d%s", i, strings.Repeat("x", 242))
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+
+	res := listdirBudget_call(t.Context(), t, reg, env, map[string]any{"path": root})
+	if res.IsError {
+		t.Fatalf("list_dir over long names errored: %s", res.Output)
+	}
+	_, footer := listdirBudget_body(res.Output)
+	if !strings.Contains(footer, "list_dir(offset=60)") {
+		t.Fatalf("footer must offer the next page where the rendered page cut:\n%s", footer)
+	}
+	if !descriptionMentions(footer, 61) {
+		t.Fatalf("footer must report the walk's stop position of 61 (60 rendered entries plus the lookahead):\n%s", footer)
+	}
+	if descriptionMentions(footer, 70) {
+		t.Fatalf("footer claimed the exhaustive total of 70 from a walk the character budget stopped at 61:\n%s", footer)
 	}
 }

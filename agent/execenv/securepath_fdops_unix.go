@@ -750,11 +750,13 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, v
 // the budgeted list_dir walk (#2375): every listing is charged to the budget
 // and read in cancellation-checked chunks through the shared chunked reader
 // (see secureListDirChunked), the walk stops the moment the page need is met,
-// and ctx is checked between entries. A subdirectory whose entry fills the
-// need is never opened, so a huge one beyond the page cannot fail a call
-// whose page is already valid. A nil budget is the legacy walk exactly — the
-// whole-directory read through secureReadDirEntries, no charges, no stops —
-// which is the path ListVisibleDirectory and the fd-edge tests pin.
+// and ctx is checked between entries. The entries an offset skips are
+// charged and discarded rather than held, and a subdirectory whose entry
+// fills the need is never opened, so a huge one beyond the page cannot fail
+// a call whose page is already valid. A nil budget is the legacy walk
+// exactly — the whole-directory read through secureReadDirEntries, no
+// charges, no stops — which is the path ListVisibleDirectory and the
+// fd-edge tests pin.
 func (s *sandboxFS) walkDirFdBudgeted(ctx context.Context, dirFd int, relPrefix, baseAbs string, depth int, visibleOnly bool, out *[]DirEntry, budget *DirListBudget) error {
 	defer func() { _ = unix.Close(dirFd) }()
 	var ents []fs.DirEntry
@@ -790,6 +792,11 @@ func (s *sandboxFS) walkDirFdBudgeted(ctx context.Context, dirFd int, relPrefix,
 				return nil
 			}
 		}
+		// A discarded entry is charged but never assembled or retained; a
+		// discarded DIRECTORY still descends, because its descendants are part
+		// of the DFS sequence the skip counts through. The dot and masked
+		// skips come first, as in the legacy walk: a masked subtree is never
+		// entered — not even to count it — and neither skip is ever charged.
 		name := ent.Name()
 		if visibleOnly && IsDotPath(name) {
 			continue
@@ -802,29 +809,31 @@ func (s *sandboxFS) walkDirFdBudgeted(ctx context.Context, dirFd int, relPrefix,
 		if relPrefix != "" {
 			relName = filepath.Join(relPrefix, name)
 		}
-		de := DirEntry{Name: relName, IsDir: ent.IsDir()}
-		if ent.Type()&os.ModeSymlink != 0 {
-			de.IsSymlink = true
-		}
-		if !ent.IsDir() {
-			if size, mode, modTime, ierr := secureEntryInfo(dirFd, name); ierr == nil {
-				de.Size = size
-				de.ModTime = modTime
-				de.IsRegular = mode.IsRegular()
-				if mode&0o111 != 0 {
-					de.IsExec = true
+		retained := budget == nil || !budget.discard()
+		if retained {
+			de := DirEntry{Name: relName, IsDir: ent.IsDir()}
+			if ent.Type()&os.ModeSymlink != 0 {
+				de.IsSymlink = true
+			}
+			if !ent.IsDir() {
+				if size, mode, modTime, ierr := secureEntryInfo(dirFd, name); ierr == nil {
+					de.Size = size
+					de.ModTime = modTime
+					de.IsRegular = mode.IsRegular()
+					if mode&0o111 != 0 {
+						de.IsExec = true
+					}
 				}
 			}
-		}
-		*out = append(*out, de)
-		if budget != nil {
-			budget.collect()
-		}
-		if ent.IsDir() && depth > 1 {
-			if budget != nil && !budget.room() {
+			*out = append(*out, de)
+			if budget != nil && budget.collect(de) {
+				// The window holds the page plus its lookahead; nothing beyond
+				// it can be shown, so stop before openat-ing any child.
 				budget.stopWalk()
 				return nil
 			}
+		}
+		if ent.IsDir() && depth > 1 {
 			// Re-open the subdir beneath dirFd (O_NOFOLLOW): a symlinked dir is
 			// refused, and resolution stays anchored at the checked parent.
 			childFd, cerr := secureOpenat(dirFd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)

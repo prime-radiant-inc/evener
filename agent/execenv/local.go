@@ -1943,7 +1943,7 @@ func (e *LocalExecutionEnvironment) listDirectory(path string, depth int, visibl
 // into the rendered page is the caller's.
 func (e *LocalExecutionEnvironment) ListDirectoryWithBudget(ctx context.Context, path string, depth int, budget *DirListBudget) ([]DirEntry, error) {
 	if budget == nil {
-		return nil, errors.New("list_dir requires a budget: pass execenv.NewDirListBudget(offset, limit)")
+		return nil, errors.New("list_dir requires a budget: pass execenv.NewDirListBudget(offset, limit, charBudget)")
 	}
 	if depth <= 0 {
 		depth = 1

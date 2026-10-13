@@ -114,7 +114,7 @@ func TestListDirBudgetCompletesASmallDirectoryExactlyLikeTheLegacyWalk(t *testin
 	if err != nil {
 		t.Fatalf("legacy ListDirectory: %v", err)
 	}
-	budget := NewDirListBudget(0, 1000)
+	budget := NewDirListBudget(0, 1000, 0)
 	got, err := env.ListDirectoryWithBudget(t.Context(), root, 4, budget)
 	if err != nil {
 		t.Fatalf("budgeted walk over a small tree: %v", err)
@@ -147,7 +147,7 @@ func TestListDirBudgetStopsWalkingOnceThePageIsFull(t *testing.T) {
 		control = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
 		return control
 	})
-	if _, err := env.ListDirectoryWithBudget(t.Context(), root, 4, NewDirListBudget(0, 1000)); err != nil {
+	if _, err := env.ListDirectoryWithBudget(t.Context(), root, 4, NewDirListBudget(0, 1000, 0)); err != nil {
 		t.Fatalf("control run: %v", err)
 	}
 	if control == nil || control.calls != 7 {
@@ -159,7 +159,7 @@ func TestListDirBudgetStopsWalkingOnceThePageIsFull(t *testing.T) {
 		capped = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
 		return capped
 	})
-	budget := NewDirListBudget(0, 1)
+	budget := NewDirListBudget(0, 1, 0)
 	got, err := env.ListDirectoryWithBudget(t.Context(), root, 4, budget)
 	if err != nil {
 		t.Fatalf("limit=1 page: %v", err)
@@ -198,14 +198,14 @@ func TestListDirBudgetPagesCoherentlyAcrossCalls(t *testing.T) {
 	for _, page := range []struct{ offset, limit int }{
 		{0, 3}, {3, 3}, {6, 3}, {9, 3}, {12, 3}, {15, 3}, {18, 3},
 	} {
-		budget := NewDirListBudget(page.offset, page.limit)
+		budget := NewDirListBudget(page.offset, page.limit, 0)
 		got, err := env.ListDirectoryWithBudget(t.Context(), root, 4, budget)
 		if err != nil {
 			t.Fatalf("page (offset=%d, limit=%d): %v", page.offset, page.limit, err)
 		}
 		end := min(page.offset+page.limit+1, len(legacy))
-		if !slices.Equal(got, legacy[:end]) {
-			t.Fatalf("page (offset=%d, limit=%d) = %v, want the canonical listing through %d entries", page.offset, page.limit, got, end)
+		if !slices.Equal(got, legacy[page.offset:end]) {
+			t.Fatalf("page (offset=%d, limit=%d) = %v, want the canonical listing's window %v", page.offset, page.limit, got, legacy[page.offset:end])
 		}
 		wantTruncatedAt := 0
 		if end < len(legacy) {
@@ -213,6 +213,9 @@ func TestListDirBudgetPagesCoherentlyAcrossCalls(t *testing.T) {
 		}
 		if budget.TruncatedAt() != wantTruncatedAt {
 			t.Fatalf("page (offset=%d, limit=%d) reported truncatedAt=%d, want %d", page.offset, page.limit, budget.TruncatedAt(), wantTruncatedAt)
+		}
+		if wantTruncatedAt == 0 && budget.Visited() != len(legacy) {
+			t.Fatalf("completed page (offset=%d, limit=%d) visited %d entries, want the subtree's exhaustive %d", page.offset, page.limit, budget.Visited(), len(legacy))
 		}
 	}
 }
@@ -232,7 +235,7 @@ func TestListDirBudgetStopsOnCancellationMidWalk(t *testing.T) {
 		counter = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: cctx}, cancelOn: 2, cancel: cancel}
 		return counter
 	})
-	entries, err := env.ListDirectoryWithBudget(ctx, root, 4, NewDirListBudget(0, 1000))
+	entries, err := env.ListDirectoryWithBudget(ctx, root, 4, NewDirListBudget(0, 1000, 0))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("mid-walk cancellation = (%v, %v), want context.Canceled", entries, err)
 	}
@@ -255,7 +258,7 @@ func TestListDirBudgetClampsModelSuppliedDepth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("legacy walk at the clamp: %v", err)
 	}
-	got, err := env.ListDirectoryWithBudget(t.Context(), root, 1000, NewDirListBudget(0, 1000))
+	got, err := env.ListDirectoryWithBudget(t.Context(), root, 1000, NewDirListBudget(0, 1000, 0))
 	if err != nil {
 		t.Fatalf("budgeted walk at depth 1000: %v", err)
 	}
@@ -273,7 +276,7 @@ func TestListDirBudgetClampsModelSuppliedDepth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("legacy shallow walk: %v", err)
 	}
-	zeroDepth, err := env.ListDirectoryWithBudget(t.Context(), root, 0, NewDirListBudget(0, 1000))
+	zeroDepth, err := env.ListDirectoryWithBudget(t.Context(), root, 0, NewDirListBudget(0, 1000, 0))
 	if err != nil {
 		t.Fatalf("budgeted walk at depth 0: %v", err)
 	}
@@ -294,7 +297,7 @@ func TestListDirBudgetStopsAtTheWalkEntriesCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("legacy ListDirectory: %v", err)
 	}
-	budget := NewDirListBudget(0, 1000)
+	budget := NewDirListBudget(0, 1000, 0)
 	got, err := env.ListDirectoryWithBudget(t.Context(), root, 4, budget)
 	if err != nil {
 		t.Fatalf("capped walk: %v", err)
@@ -308,24 +311,29 @@ func TestListDirBudgetStopsAtTheWalkEntriesCap(t *testing.T) {
 }
 
 // TestListDirBudgetConstructorClampsOffsetAndLimit pins the arithmetic that
-// turns a page request into the walk's entry-visit need: offset+limit+1,
-// normalized (negative offset 0, limit below 1 treated as 1) and clamped to
-// the walk's cap without overflowing on model-supplied extremes.
+// turns a page request into the walk's skip and window: the offset is
+// charged-and-discarded prefix however deep it is, the retained window is
+// limit+1 clamped to the walk's cap, and no model-supplied extreme overflows
+// either.
 func TestListDirBudgetConstructorClampsOffsetAndLimit(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		offset, limit, want int
+		offset, limit, charBudget   int
+		wantSkip, wantWindow, wantC int
 	}{
-		{0, 1, 2},
-		{-5, 0, 2},
-		{4, 2, 7},
-		{0, maxListDirWalkEntries, maxListDirWalkEntries},
-		{maxListDirWalkEntries - 2, 5, maxListDirWalkEntries},
-		{maxListDirWalkEntries, 5, maxListDirWalkEntries},
-		{math.MaxInt, math.MaxInt, maxListDirWalkEntries},
+		{offset: 0, limit: 1, wantSkip: 0, wantWindow: 2},
+		{offset: -5, limit: 0, wantSkip: 0, wantWindow: 2},
+		{offset: 4, limit: 2, wantSkip: 4, wantWindow: 3},
+		{offset: 0, limit: maxListDirWalkEntries, wantSkip: 0, wantWindow: maxListDirWalkEntries},
+		{offset: maxListDirWalkEntries - 2, limit: 5, wantSkip: maxListDirWalkEntries - 2, wantWindow: 6},
+		{offset: maxListDirWalkEntries, limit: 5, wantSkip: maxListDirWalkEntries, wantWindow: 6},
+		{offset: math.MaxInt, limit: math.MaxInt, wantSkip: math.MaxInt, wantWindow: maxListDirWalkEntries},
+		{offset: 0, limit: 1, charBudget: -7, wantSkip: 0, wantWindow: 2, wantC: 0},
 	} {
-		if got := NewDirListBudget(tc.offset, tc.limit).need; got != tc.want {
-			t.Fatalf("NewDirListBudget(offset=%d, limit=%d).need = %d, want %d", tc.offset, tc.limit, got, tc.want)
+		b := NewDirListBudget(tc.offset, tc.limit, tc.charBudget)
+		if b.skip != tc.wantSkip || b.window != tc.wantWindow || b.charBudget != tc.wantC {
+			t.Fatalf("NewDirListBudget(offset=%d, limit=%d, charBudget=%d) = (skip=%d, window=%d, charBudget=%d), want (%d, %d, %d)",
+				tc.offset, tc.limit, tc.charBudget, b.skip, b.window, b.charBudget, tc.wantSkip, tc.wantWindow, tc.wantC)
 		}
 	}
 }
@@ -338,7 +346,7 @@ func TestListDirBudgetRefusesOnePathologicalDirectory(t *testing.T) {
 	stubMaxGlobDirEntries(t, 10)
 	root := flatEntriesFixture(t, 30)
 	env := NewLocalExecutionEnvironment(root)
-	entries, err := env.ListDirectoryWithBudget(t.Context(), root, 1, NewDirListBudget(0, 1000))
+	entries, err := env.ListDirectoryWithBudget(t.Context(), root, 1, NewDirListBudget(0, 1000, 0))
 	refusal, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("listing a 30-entry directory against a per-directory budget of 10 = (%d entries, %v), want a *globBudgetError", len(entries), err)
@@ -396,7 +404,7 @@ func TestSandboxedListDirBudgetMatchesTheLegacyWalkExactly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("legacy confined walk: %v", err)
 	}
-	budget := NewDirListBudget(0, 1000)
+	budget := NewDirListBudget(0, 1000, 0)
 	got, err := env.ListDirectoryWithBudget(t.Context(), home, 3, budget)
 	if err != nil {
 		t.Fatalf("budgeted confined walk: %v", err)
@@ -426,7 +434,7 @@ func TestSandboxedListDirBudgetStopsWalkingOnceThePageIsFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("legacy confined walk: %v", err)
 	}
-	budget := NewDirListBudget(0, 1)
+	budget := NewDirListBudget(0, 1, 0)
 	got, err := env.ListDirectoryWithBudget(t.Context(), worktree, 4, budget)
 	if err != nil {
 		t.Fatalf("limit=1 confined page: %v", err)
@@ -456,7 +464,7 @@ func TestSandboxedListDirBudgetStopsOnCancellationMidWalk(t *testing.T) {
 	writeListDirTree(t, worktree)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	budget := NewDirListBudget(0, 1000)
+	budget := NewDirListBudget(0, 1000, 0)
 	listings := 0
 	budget.onListing = func() {
 		listings++
@@ -486,7 +494,7 @@ func TestSandboxedListDirBudgetRefusesOnePathologicalDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	entries, err := env.ListDirectoryWithBudget(t.Context(), flat, 1, NewDirListBudget(0, 1000))
+	entries, err := env.ListDirectoryWithBudget(t.Context(), flat, 1, NewDirListBudget(0, 1000, 0))
 	refusal, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("confined listing of a 30-entry directory against a per-directory budget of 10 = (%d entries, %v), want a *globBudgetError", len(entries), err)
@@ -507,7 +515,7 @@ func TestSandboxedListDirBudgetClampsModelSuppliedDepth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("legacy confined walk at the clamp: %v", err)
 	}
-	got, err := env.ListDirectoryWithBudget(t.Context(), worktree, 1000, NewDirListBudget(0, 1000))
+	got, err := env.ListDirectoryWithBudget(t.Context(), worktree, 1000, NewDirListBudget(0, 1000, 0))
 	if err != nil {
 		t.Fatalf("budgeted confined walk at depth 1000: %v", err)
 	}
@@ -528,7 +536,7 @@ func TestListDirBudgetNamesTheRequestedPathInRootErrors(t *testing.T) {
 	const missing = "/definitely-not-here-xyz"
 	env := NewLocalExecutionEnvironment(t.TempDir())
 
-	_, err := env.ListDirectoryWithBudget(t.Context(), missing, 1, NewDirListBudget(0, 1000))
+	_, err := env.ListDirectoryWithBudget(t.Context(), missing, 1, NewDirListBudget(0, 1000, 0))
 	if err == nil {
 		t.Fatal("listing a missing directory succeeded")
 	}
@@ -556,7 +564,7 @@ func TestSandboxedListDirBudgetNamesTheRequestedPathInRootErrors(t *testing.T) {
 	const missing = "/definitely-not-here-xyz"
 	env, _, _ := sandboxedEnv(t, sandbox.ModeReadOnly)
 
-	_, err := env.ListDirectoryWithBudget(t.Context(), missing, 1, NewDirListBudget(0, 1000))
+	_, err := env.ListDirectoryWithBudget(t.Context(), missing, 1, NewDirListBudget(0, 1000, 0))
 	if err == nil {
 		t.Fatal("confined listing of a missing directory succeeded")
 	}
@@ -566,6 +574,145 @@ func TestSandboxedListDirBudgetNamesTheRequestedPathInRootErrors(t *testing.T) {
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("confined missing-root error = %q, want fs.ErrNotExist preserved through the wrap", err)
+	}
+}
+
+// TestListDirBudgetReachesPagesPastTheWalkEntriesCap pins the deep-offset
+// half of the window contract: the walk's entry cap bounds what is RETAINED —
+// the page window — not what is visited, so the offset prefix is charged and
+// discarded instead of clamping the walk short of the page. A flat directory
+// bigger than a shrunk cap must still answer a page from beyond the cap.
+func TestListDirBudgetReachesPagesPastTheWalkEntriesCap(t *testing.T) {
+	stubMaxListDirWalkEntries(t, 6)
+	root := flatEntriesFixture(t, 20)
+	env := NewLocalExecutionEnvironment(root)
+	legacy, err := env.ListDirectory(root, 1)
+	if err != nil {
+		t.Fatalf("legacy ListDirectory: %v", err)
+	}
+
+	budget := NewDirListBudget(8, 1, 0) // offset past the shrunk cap of 6
+	got, err := env.ListDirectoryWithBudget(t.Context(), root, 1, budget)
+	if err != nil {
+		t.Fatalf("offset-past-the-cap page: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("offset-past-the-cap page collected %d entries, want the page entry plus its lookahead (the prefix is charged, not held)", len(got))
+	}
+	if !slices.Equal(got, legacy[8:10]) {
+		t.Fatalf("offset-past-the-cap page = %v, want the canonical listing's window %v", got, legacy[8:10])
+	}
+	if budget.TruncatedAt() != 10 {
+		t.Fatalf("offset-past-the-cap page reported truncatedAt=%d, want 10 (the visit position where the walk stopped: 8 skipped plus the 2-entry window)", budget.TruncatedAt())
+	}
+}
+
+// TestSandboxedListDirBudgetReachesPagesPastTheWalkEntriesCap is the
+// deep-offset regression for the confined arm.
+func TestSandboxedListDirBudgetReachesPagesPastTheWalkEntriesCap(t *testing.T) {
+	stubMaxListDirWalkEntries(t, 6)
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	for i := range 20 {
+		if err := os.WriteFile(filepath.Join(worktree, fmt.Sprintf("leaf%03d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacy, err := env.ListDirectory(worktree, 1)
+	if err != nil {
+		t.Fatalf("legacy confined walk: %v", err)
+	}
+
+	budget := NewDirListBudget(8, 1, 0)
+	got, err := env.ListDirectoryWithBudget(t.Context(), worktree, 1, budget)
+	if err != nil {
+		t.Fatalf("confined offset-past-the-cap page: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("confined offset-past-the-cap page collected %d entries, want the page entry plus its lookahead", len(got))
+	}
+	if !slices.Equal(got, legacy[8:10]) {
+		t.Fatalf("confined offset-past-the-cap page = %v, want the canonical listing's window %v", got, legacy[8:10])
+	}
+	if budget.TruncatedAt() != 10 {
+		t.Fatalf("confined offset-past-the-cap page reported truncatedAt=%d, want 10", budget.TruncatedAt())
+	}
+}
+
+// listDirCharWindowFixture builds the character-budget scenario: a root of
+// eight short files followed by an oversized zz/ (bigCount files), with the
+// plain files sorting first so a page that fills its character budget ends
+// among them, the oversized directory still unvisited ahead.
+func listDirCharWindowFixture(t *testing.T, root string, bigCount int) {
+	t.Helper()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt", "g.txt", "h.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	zz := filepath.Join(root, "zz")
+	if err := os.MkdirAll(zz, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range bigCount {
+		if err := os.WriteFile(filepath.Join(zz, fmt.Sprintf("f%03d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestListDirBudgetStopsAtTheRenderedCharacterBudget pins the character half
+// of the window contract on the unconfined arm: the walk must stop once the
+// page's rendered size is full plus one lookahead, exactly where the rendered
+// page will cut — so an oversized directory beyond the rendered page is never
+// opened and cannot fail a call whose page is already complete.
+func TestListDirBudgetStopsAtTheRenderedCharacterBudget(t *testing.T) {
+	stubMaxGlobDirEntries(t, 10)
+	root := t.TempDir()
+	listDirCharWindowFixture(t, root, 30)
+	env := NewLocalExecutionEnvironment(root)
+
+	// Each 5-character name renders as 21 budgeted characters, so a
+	// 100-character page fits four entries and retains the fifth as its
+	// lookahead; zz/ sits beyond both and must never be opened.
+	budget := NewDirListBudget(0, 1000, 100)
+	got, err := env.ListDirectoryWithBudget(t.Context(), root, 2, budget)
+	if err != nil {
+		t.Fatalf("a page the character budget already filled must not be failed by the directory beyond it: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("character-budgeted walk collected %d entries, want the 4-entry page plus its lookahead", len(got))
+	}
+	if got[4].Name != "e.txt" {
+		t.Fatalf("the character budget's lookahead = %q, want the 5th file", got[4].Name)
+	}
+	if budget.TruncatedAt() != 5 {
+		t.Fatalf("character-budgeted walk reported truncatedAt=%d, want 5 (the visit position where the rendered page filled)", budget.TruncatedAt())
+	}
+	if budget.listings != 1 {
+		t.Fatalf("the walk listed %d directories, want 1 (the root only; the oversized directory beyond the rendered page must not be opened)", budget.listings)
+	}
+}
+
+// TestSandboxedListDirBudgetStopsAtTheRenderedCharacterBudget is the
+// character-budget regression for the confined arm.
+func TestSandboxedListDirBudgetStopsAtTheRenderedCharacterBudget(t *testing.T) {
+	stubMaxGlobDirEntries(t, 10)
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	listDirCharWindowFixture(t, worktree, 30)
+
+	budget := NewDirListBudget(0, 1000, 100)
+	got, err := env.ListDirectoryWithBudget(t.Context(), worktree, 2, budget)
+	if err != nil {
+		t.Fatalf("a confined page the character budget already filled must not be failed by the directory beyond it: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("confined character-budgeted walk collected %d entries, want the 4-entry page plus its lookahead", len(got))
+	}
+	if budget.TruncatedAt() != 5 {
+		t.Fatalf("confined character-budgeted walk reported truncatedAt=%d, want 5", budget.TruncatedAt())
+	}
+	if budget.listings != 1 {
+		t.Fatalf("the confined walk listed %d directories, want 1 (the root only; the oversized directory beyond the rendered page must not be opened)", budget.listings)
 	}
 }
 
@@ -602,7 +749,7 @@ func TestListDirBudgetKeepsThePageWhenTheLookaheadDirectoryIsTooBig(t *testing.T
 	listDirLookaheadFixture(t, root)
 	env := NewLocalExecutionEnvironment(root)
 
-	budget := NewDirListBudget(0, 1) // need 2: the page entry plus the lookahead
+	budget := NewDirListBudget(0, 1, 0) // need 2: the page entry plus the lookahead
 	got, err := env.ListDirectoryWithBudget(t.Context(), root, 2, budget)
 	if err != nil {
 		t.Fatalf("a page already collected must not be failed by a lookahead directory: %v", err)
@@ -631,7 +778,7 @@ func TestSandboxedListDirBudgetKeepsThePageWhenTheLookaheadDirectoryIsTooBig(t *
 	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
 	listDirLookaheadFixture(t, worktree)
 
-	budget := NewDirListBudget(0, 1)
+	budget := NewDirListBudget(0, 1, 0)
 	got, err := env.ListDirectoryWithBudget(t.Context(), worktree, 2, budget)
 	if err != nil {
 		t.Fatalf("a confined page already collected must not be failed by a lookahead directory: %v", err)

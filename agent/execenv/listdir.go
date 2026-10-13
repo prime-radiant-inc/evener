@@ -20,12 +20,15 @@ import (
 const MaxListDirDepth = 16
 
 // maxListDirWalkEntries caps how many entries one budgeted list_dir walk may
-// collect before it stops and reports partial results — the page-shaped
+// RETAIN — the page window — before it stops and reports partial results.
+// It bounds memory, not work: the entries a deep page skips ahead of its
+// window are charged and discarded, so an offset past this cap stays
+// reachable (the prefix costs work, never memory). The page-shaped
 // counterpart of glob's maxGlobMatches, sized at the same order: a default
 // list_dir page is 1000 entries with a 16k-char rendering budget that
-// usually binds first, so 10,000 collected entries is about ten pages of
+// usually binds first, so 10,000 retained entries is about ten pages of
 // headroom, while the whole-machine walk the issue cites (1-5M entries) must
-// stop. At roughly 120 bytes a DirEntry the accumulated slice stays near
+// stop. At roughly 120 bytes a DirEntry the retained window stays near
 // 1.2 MB, where the unbounded walk collected hundreds.
 var maxListDirWalkEntries = 10_000
 
@@ -40,13 +43,29 @@ var maxListDirWalkEntries = 10_000
 // unsynchronized, so it must not be shared across goroutines or reused.
 type DirListBudget struct {
 	glob *GlobBudget
-	// need is how many entries this walk collects before it stops: the
-	// page's offset+limit, plus one so a walk that reaches need can report
-	// that more entries exist rather than guessing, clamped to
+	// skip is how many entries the walk charges and discards before the
+	// page window starts: the page's offset, so deep pages cost their prefix
+	// as work but never as memory.
+	skip int
+	// window is how many entries the walk retains: the page's limit plus one
+	// lookahead that proves more entries exist, clamped to
 	// maxListDirWalkEntries.
-	need int
-	// collected counts the entries appended so far.
-	collected int
+	window int
+	// charBudget bounds the rendered size of the retained window (0
+	// disables the bound); the walk stops one retained entry past the point
+	// the page fills it, which is exactly where the rendered page cuts.
+	charBudget int
+	// usedChars is the retained window's rendered size so far.
+	usedChars int
+	// charFull marks that the character bound's lookahead was retained.
+	charFull bool
+	// held counts the entries retained in the window so far.
+	held int
+	// visited counts every entry the walk charged, skipped or retained. For
+	// a walk that enumerated the whole subtree it is the subtree's
+	// exhaustive total; for one the need stopped early it is the visit
+	// position where the walk stopped.
+	visited int
 	// walkStopped marks that the need cap, not the subtree's end, stopped
 	// the walk, so the listing is partial and its totals are lower bounds.
 	walkStopped bool
@@ -64,52 +83,96 @@ type DirListBudget struct {
 
 // NewDirListBudget constructs the budget for one page's walk from the page
 // parameters the list_dir tool parsed: offset entries already shown, limit
-// entries wanted. The walk collects offset+limit+1 entries at most — the +1
-// distinguishes "exactly offset+limit entries exist" from "more exist" —
-// clamped to maxListDirWalkEntries so a huge offset or limit cannot turn a
-// page request into an unbounded walk. Normalization (negative offset to 0,
-// limit below 1 to 1) mirrors the tool's argument parsing.
-func NewDirListBudget(offset, limit int) *DirListBudget {
+// entries wanted, and the rendered character budget the page must fit (0
+// disables the character bound). The walk retains limit+1 entries — the page
+// plus one lookahead that distinguishes "exactly limit entries exist" from
+// "more exist" — clamped to maxListDirWalkEntries; the offset prefix is
+// charged, never held. Normalization (negative offset to 0, limit below 1 to
+// 1) mirrors the tool's argument parsing.
+func NewDirListBudget(offset, limit, charBudget int) *DirListBudget {
 	if offset < 0 {
 		offset = 0
 	}
 	if limit < 1 {
 		limit = 1
 	}
-	need := maxListDirWalkEntries
-	if offset < maxListDirWalkEntries && limit < maxListDirWalkEntries-offset {
-		need = offset + limit + 1
+	window := maxListDirWalkEntries
+	if limit < maxListDirWalkEntries {
+		window = limit + 1
 	}
-	return &DirListBudget{glob: newGlobBudget("list_dir"), need: need}
+	if charBudget < 0 {
+		charBudget = 0
+	}
+	return &DirListBudget{glob: newGlobBudget("list_dir"), skip: offset, window: window, charBudget: charBudget}
 }
 
-// TruncatedAt reports the entry-visit cap that stopped the walk short of the
-// whole requested subtree, or 0 when the walk enumerated everything — the
-// same convention glob's budget reports through, so a caller can surface the
-// value to the model without duplicating the truncated check at every call
-// site.
+// TruncatedAt reports the visit position where the walk stopped short of the
+// whole requested subtree — skipped prefix plus retained window — or 0 when
+// the walk enumerated everything: the same convention glob's budget reports
+// through, so a caller can surface the value to the model without duplicating
+// the truncated check at every call site.
 func (b *DirListBudget) TruncatedAt() int {
 	if b.walkStopped {
-		return b.need
+		return b.visited
 	}
 	return 0
 }
 
-// room reports whether the walk may collect one more entry. When it returns
-// false the walk is over: the page it was collecting for can be answered.
+// Visited reports how many entries the walk charged in total. For a walk
+// that enumerated the whole subtree this is the subtree's exhaustive total,
+// which is what the footer's "of N" owes the model; for one the need stopped
+// early it is the same partial visit position TruncatedAt reports.
+func (b *DirListBudget) Visited() int { return b.visited }
+
+// room reports whether the walk may retain one more entry. When it returns
+// false the walk is over: the page it was collecting for is complete and its
+// lookahead is in hand.
 func (b *DirListBudget) room() bool {
-	return b.collected < b.need
+	return b.held < b.window && !b.charFull
 }
 
-// collect charges one collected entry against the page need.
-func (b *DirListBudget) collect() {
-	b.collected++
+// discard charges one visited entry and reports whether it belongs to the
+// skipped prefix ahead of the page window: the offset entries before the
+// page cost their work but never their memory.
+func (b *DirListBudget) discard() bool {
+	b.visited++
+	return b.visited <= b.skip
 }
 
-// stopWalk records that the need cap, not the subtree's end, ended the walk,
-// so TruncatedAt reports it and the caller knows the totals are partial.
+// collect retains one entry in the page window and reports whether the
+// window is now full: the page complete plus its lookahead, under whichever
+// bound fills first — the entry window, or the rendered size the page may
+// occupy. The entry that crosses the character bound is the lookahead: the
+// rendered page ends before it, exactly where paginateDirEntries will cut,
+// so the walk and the footer agree on what was shown.
+func (b *DirListBudget) collect(de DirEntry) bool {
+	b.held++
+	if b.charBudget > 0 && !b.charFull {
+		sz := DirEntryRenderSize(de)
+		if b.held == 1 || b.usedChars+sz <= b.charBudget {
+			b.usedChars += sz
+		} else {
+			b.charFull = true
+		}
+	}
+	return b.held >= b.window || b.charFull
+}
+
+// stopWalk records that the page need, not the subtree's end, ended the
+// walk, so TruncatedAt reports it and the caller knows the totals are
+// partial.
 func (b *DirListBudget) stopWalk() {
 	b.walkStopped = true
+}
+
+// DirEntryRenderSize over-estimates an entry's rendered line length the way
+// a list_dir page renders it — the name as OneLinePath writes it, an optional
+// type sigil and tab-separated size, and a newline — so a budgeted walk can
+// stop collecting at the same character bound the rendered page will
+// enforce. The agent package's dirEntrySize delegates here so the collector
+// and the renderer can never drift apart.
+func DirEntryRenderSize(e DirEntry) int {
+	return len(OneLinePath(e.Name)) + 16
 }
 
 // listDirListingName names a directory listing for the budget's live-entry
@@ -144,6 +207,8 @@ var listDirBaseFS = func(ctx context.Context, dir string, budget *GlobBudget) fs
 // The walk stops — unwinding without error — the moment the budget's page
 // need is met, which is the fix for #2375's unbounded walk: a small page
 // costs work proportional to the page plus one entry, not the subtree — the
+// entries an offset skips are charged and discarded rather than held, so
+// deep pages stay reachable without paying memory for their prefix, and the
 // subdirectory whose entry fills the need is never opened, so a huge one
 // beyond the page cannot fail a call whose page is already valid.
 // Cancellation outranks the cap, matching glob's convention, and every entry
@@ -168,32 +233,38 @@ func listDirWalk(ctx context.Context, fsys fs.FS, absRoot, rel, prefix string, d
 			budget.stopWalk()
 			return nil
 		}
+		// A discarded entry is charged but never assembled or retained; a
+		// discarded DIRECTORY still descends, because its descendants are part
+		// of the DFS sequence the skip counts through.
 		name := ent.Name()
 		relName := name
 		if prefix != "" {
 			relName = filepath.Join(prefix, name)
 		}
-		de := DirEntry{Name: relName, IsDir: ent.IsDir()}
-		if ent.Type()&os.ModeSymlink != 0 {
-			de.IsSymlink = true
-		}
-		if !ent.IsDir() {
-			if info, ierr := ent.Info(); ierr == nil {
-				de.Size = info.Size()
-				de.ModTime = info.ModTime()
-				de.IsRegular = info.Mode().IsRegular()
-				if info.Mode()&0o111 != 0 {
-					de.IsExec = true
+		if !budget.discard() {
+			de := DirEntry{Name: relName, IsDir: ent.IsDir()}
+			if ent.Type()&os.ModeSymlink != 0 {
+				de.IsSymlink = true
+			}
+			if !ent.IsDir() {
+				if info, ierr := ent.Info(); ierr == nil {
+					de.Size = info.Size()
+					de.ModTime = info.ModTime()
+					de.IsRegular = info.Mode().IsRegular()
+					if info.Mode()&0o111 != 0 {
+						de.IsExec = true
+					}
 				}
 			}
-		}
-		*out = append(*out, de)
-		budget.collect()
-		if ent.IsDir() && depth > 1 {
-			if !budget.room() {
+			*out = append(*out, de)
+			if budget.collect(de) {
+				// The window holds the page plus its lookahead; nothing beyond
+				// it can be shown, so stop before opening any child.
 				budget.stopWalk()
 				return nil
 			}
+		}
+		if ent.IsDir() && depth > 1 {
 			if err := listDirWalk(ctx, fsys, absRoot, path.Join(rel, name), relName, depth-1, out, budget); err != nil {
 				return err
 			}

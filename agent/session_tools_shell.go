@@ -53,7 +53,7 @@ type listDirResult struct {
 // formatDirListing writes it, an optional slash or tab-separated size, and a
 // newline) so the running budget keeps the rendered listing under the cap.
 func dirEntrySize(e execenv.DirEntry) int {
-	return len(execenv.OneLinePath(e.Name)) + 16
+	return execenv.DirEntryRenderSize(e)
 }
 
 // formatDirListing renders a page as plain text, ls-style: one entry per line,
@@ -223,23 +223,34 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			// doubles) keep the legacy whole-tree walk.
 			var entries []execenv.DirEntry
 			walkTruncatedAt := 0
+			var res listDirResult
 			switch ld := env.(type) {
 			case execenv.DirListBudgeter:
-				budget := execenv.NewDirListBudget(offset, limit)
+				budget := execenv.NewDirListBudget(offset, limit, listDirCharBudget)
 				var err error
 				entries, err = ld.ListDirectoryWithBudget(ctx, path, depth, budget)
 				if err != nil {
 					return nil, err
 				}
 				walkTruncatedAt = budget.TruncatedAt()
+				// The budgeted walk returns only the page window — the offset
+				// prefix was charged and discarded — so the page starts at the
+				// window's head while the footer still displays the requested
+				// offset, and a completed walk's exhaustive total is what it
+				// charged in total, not what it retained.
+				res = paginateDirEntries(path, entries, 0, limit)
+				res.Offset = offset
+				if walkTruncatedAt == 0 {
+					res.Total = budget.Visited()
+				}
 			default:
 				var err error
 				entries, err = env.ListDirectory(path, depth)
 				if err != nil {
 					return nil, err
 				}
+				res = paginateDirEntries(path, entries, offset, limit)
 			}
-			res := paginateDirEntries(path, entries, offset, limit)
 			res.WalkTruncatedAt = walkTruncatedAt
 			return formatDirListing(res), nil
 		},
