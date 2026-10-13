@@ -119,25 +119,26 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 // live-thinking backend has nothing to render.
 func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 	shape := map[string]any{"includeThoughts": true}
-	levelShaped := !slices.Contains(caps.ReasoningControls, "budget_tokens")
-	if levelShaped {
-		level := effort
-		if len(caps.EffortValues) > 0 {
-			// The wire spells a level the row lists; ShapeRequest has already
-			// clamped the request to the ladder.
-			level = llm.VouchedEffort(effort, caps.EffortValues)
-			if level == "" {
-				return nil
-			}
+	if slices.Contains(caps.ReasoningControls, "budget_tokens") {
+		budget := llm.ReasoningBudget(effort)
+		if budget <= 0 {
+			return nil
 		}
-		shape["thinkingLevel"] = level
+		shape["thinkingBudget"] = budget
 		return shape
 	}
-	budget := llm.ReasoningBudget(effort)
-	if budget <= 0 {
-		return nil
+	level := effort
+	if len(caps.EffortValues) > 0 {
+		// A row with a ladder spells only a level the ladder vouches for.
+		level = llm.VouchedEffort(effort, caps.EffortValues)
+		if level == "" {
+			return nil
+		}
 	}
-	shape["thinkingBudget"] = budget
+	// A row with no ladder — including an uncataloged row — spells the
+	// requested effort as-is: the level form is the current wire shape, and
+	// there is no ladder to clamp against.
+	shape["thinkingLevel"] = level
 	return shape
 }
 
