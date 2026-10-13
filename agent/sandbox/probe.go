@@ -139,6 +139,13 @@ type HostFacts struct {
 	// default GOCACHE; empty when unset.
 	XDGCacheHome string
 
+	// NpmConfigCache and CargoHome are $npm_config_cache and $CARGO_HOME, which
+	// move npm's and cargo's cache directories; empty when unset. They are read
+	// from the environment alone: cargo keeps no file for CARGO_HOME, and npm's
+	// .npmrc `cache=` is not consulted (a cache moved only there stays unserved).
+	NpmConfigCache string
+	CargoHome      string
+
 	// GoEnvFile is the go env file the probe read GoPath from ("" when none).
 	// The env floor reads it again at each spawn whose go reads the same file,
 	// since go reads it at every run.
@@ -299,6 +306,8 @@ func probeHost(system probeSystem) HostFacts {
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
 	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
+	facts.NpmConfigCache = system.getenv(npmConfigCacheEnv)
+	facts.CargoHome = system.getenv(envvars.CargoHome.Name)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path

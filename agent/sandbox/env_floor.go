@@ -98,7 +98,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 			{envvars.GoCache.Name, filepath.Join(sessionScratch, goCacheDirName)},
 			{envvars.GoModCache.Name, filepath.Join(sessionScratch, goModCacheDirName)},
 			{envvars.GoPath.Name, sessionGoPath(env, policy, sessionScratch)},
-			{"npm_config_cache", filepath.Join(sessionScratch, npmCacheDirName)},
+			{npmConfigCacheEnv, filepath.Join(sessionScratch, npmCacheDirName)},
 			{envvars.CargoHome.Name, filepath.Join(sessionScratch, cargoHomeDirName)},
 		} {
 			if redirected[r.name] {
@@ -135,7 +135,7 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 	pins := map[string]string{}
 	switch policy.CacheStrategy {
 	case CacheSessionPrivate:
-		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name} {
+		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name, npmConfigCacheEnv, envvars.CargoHome.Name} {
 			out[name] = true
 		}
 	case CacheOverlay:
