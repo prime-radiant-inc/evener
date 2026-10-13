@@ -169,6 +169,14 @@ type moduleRunnerResult struct {
 // location.
 func runModuleRunner(t *testing.T, workDir string, env ...string) moduleRunnerResult {
 	t.Helper()
+	return runModuleRunnerWithFlags(t, workDir, []string{"-short", "-count=1"}, env...)
+}
+
+// runModuleRunnerWithFlags is runModuleRunner with the caller's own gate flags
+// spelled out, so a case can drive the runner with a build flag (-tags) whose
+// effect on the package inventory is exactly what it is pinning.
+func runModuleRunnerWithFlags(t *testing.T, workDir string, flags []string, env ...string) moduleRunnerResult {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the module runner is a bash script")
 	}
@@ -179,7 +187,7 @@ func runModuleRunner(t *testing.T, workDir string, env ...string) moduleRunnerRe
 	if _, err := os.Stat(script); err != nil {
 		t.Fatalf("stat %s: %v", moduleRunnerScript, err)
 	}
-	cmd := exec.Command("bash", script, "-short", "-count=1")
+	cmd := exec.Command("bash", append([]string{script}, flags...)...)
 	cmd.Dir = workDir
 	cmd.Env = runnerEnv(t, env...)
 	out, err := cmd.CombinedOutput()
@@ -397,5 +405,125 @@ func TestModuleRunnerRefusesAZeroTestRun(t *testing.T) {
 	}
 	if !strings.Contains(result.output, "ran zero tests") {
 		t.Errorf("runner did not explain the silent no-op:\n%s", result.output)
+	}
+}
+
+// countingModuleSrc is a fixture test that appends one line per execution to
+// $EVENER_RUNNER_TEST_COUNT, so a case can count how many times the gate ran
+// it: the measured form of issue #144's "no test executes twice".
+func countingModuleSrc() string {
+	return `package fixture
+
+import (
+	"os"
+	"testing"
+)
+
+func TestCounted(t *testing.T) {
+	f, err := os.OpenFile(os.Getenv("EVENER_RUNNER_TEST_COUNT"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("run\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+`
+}
+
+// TestModuleRunnerCapturesTheTimingRowsItAlreadyRan pins issue #144's whole
+// point: with EVENER_GATE_TIMING_TSV set, one gate run both proves the tests and
+// writes the ratchet's rows for them, and the fixture's test executes exactly
+// once -- the capture adds no second run. The count file is the measurement; the
+// rows are asserted structurally.
+func TestModuleRunnerCapturesTheTimingRowsItAlreadyRan(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "timingmod", countingModuleSrc())
+	counts := filepath.Join(root, "counts")
+	tsv := filepath.Join(root, "measured.tsv")
+	res := runModuleRunner(t, modules, append(controlledScratchEnv(ctrl),
+		"MODULES=timingmod",
+		"EVENER_GATE_TIMING_TSV="+tsv,
+		"EVENER_RUNNER_TEST_COUNT="+counts)...)
+	if res.exitCode != 0 {
+		t.Fatalf("runner exit = %d, want 0\n%s", res.exitCode, res.output)
+	}
+	ran, err := os.ReadFile(counts)
+	if err != nil {
+		t.Fatalf("the fixture test did not run: %v\n%s", err, res.output)
+	}
+	if got := strings.Count(string(ran), "run\n"); got != 1 {
+		t.Fatalf("the fixture test executed %d times, want exactly 1 (issue #144: no test may run twice):\n%s", got, res.output)
+	}
+	rows, err := os.ReadFile(tsv)
+	if err != nil {
+		t.Fatalf("no timing rows written: %v\n%s", err, res.output)
+	}
+	for _, want := range []string{
+		"PKG\texample.com/timingmod\n",
+		"SUM\texample.com/timingmod\t",
+		"TEST\texample.com/timingmod\tTestCounted\t",
+	} {
+		if !strings.Contains(string(rows), want) {
+			t.Fatalf("timing rows missing %q:\n%s", want, rows)
+		}
+	}
+}
+
+// writeRunnerFixtureFile writes one file into a fixture's module tree, creating
+// the directories it needs.
+func writeRunnerFixtureFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, path, []byte(content), 0o644)
+}
+
+// TestModuleRunnerEnumerationHonorsTheCallersBuildFlags pins issue #144 review
+// finding 2: the plain-module package inventory must be enumerated with the
+// caller's package-selection flags, exactly as the root and sharded-agent paths
+// already do. `-tags` can drop a whole package from `./...`; a flagless
+// `go list ./...` still reports it, and the completeness oracle then rejects an
+// otherwise green run as missing that package's terminal event. The fixture's
+// `legacy` package exists only without the `special` tag.
+func TestModuleRunnerEnumerationHonorsTheCallersBuildFlags(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	mod := filepath.Join(modules, "tagmod")
+	writeRunnerFixtureFile(t, filepath.Join(mod, "go.mod"), "module example.com/tagmod\n\ngo 1.21\n")
+	writeRunnerFixtureFile(t, filepath.Join(mod, "plain", "plain_test.go"), `package plain
+
+import "testing"
+
+func TestPlain(t *testing.T) {}
+`)
+	writeRunnerFixtureFile(t, filepath.Join(mod, "legacy", "legacy.go"), "//go:build !special\n\npackage legacy\n")
+	writeRunnerFixtureFile(t, filepath.Join(mod, "legacy", "legacy_test.go"), `//go:build !special
+
+package legacy
+
+import "testing"
+
+func TestLegacy(t *testing.T) {}
+`)
+
+	tsv := filepath.Join(root, "measured.tsv")
+	res := runModuleRunnerWithFlags(t, modules, []string{"-short", "-count=1", "-tags", "special"},
+		append(controlledScratchEnv(ctrl),
+			"MODULES=tagmod",
+			"EVENER_GATE_TIMING_TSV="+tsv)...)
+	if res.exitCode != 0 {
+		t.Fatalf("runner exit = %d for a green run whose -tags excludes a package; the inventory ignored the caller's flags:\n%s", res.exitCode, res.output)
+	}
+	rows, err := os.ReadFile(tsv)
+	if err != nil {
+		t.Fatalf("no timing rows written: %v\n%s", err, res.output)
+	}
+	if !strings.Contains(string(rows), "PKG\texample.com/tagmod/plain\n") {
+		t.Fatalf("timing rows do not record the package the run measured:\n%s", rows)
+	}
+	if strings.Contains(string(rows), "legacy") {
+		t.Fatalf("the inventory still names a package -tags excluded from the run:\n%s", rows)
 	}
 }

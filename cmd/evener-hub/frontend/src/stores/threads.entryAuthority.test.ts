@@ -4,6 +4,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS } from "./backgroundTranscriptOptions";
 import { SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 
@@ -68,7 +69,7 @@ function suffix(entry: number): AnyNotification {
   };
 }
 
-async function openTab() {
+async function openTab(hydrate = true) {
   // Separate module graphs model separate browser lifetimes, not the isolated
   // fixture route. Both ordinary stores use the same IndexedDB factory/name.
   vi.resetModules();
@@ -90,10 +91,134 @@ async function openTab() {
   connection.connectionStore.getState().connect(client);
   const tab = { threads, connection, client, cache, commits };
   tabs.push(tab);
-  await threads.threadsStore.getState().ensureThread(ref);
-  await threads.settleEntryTranscriptForTests(ref);
+  if (hydrate) {
+    await threads.threadsStore.getState().ensureThread(ref);
+    await threads.settleEntryTranscriptForTests(ref);
+  }
   return tab;
 }
+
+it("replaces an overflowed background hydration when its retry fires before the held response", async () => {
+  const tab = await openTab(false);
+  const held = deferred<ThreadReadResponse>();
+  const retries: Array<() => void> = [];
+  const restoreScheduler = tab.threads.installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    retries.push(retry);
+    return () => {};
+  });
+  let reads = 0;
+  let active = 0;
+  let maximum = 0;
+  tab.client.on("thread/read", async (params) => {
+    maximum = Math.max(maximum, ++active);
+    try {
+      return { ...(++reads === 1 ? await held.promise : read(6)), requestGeneration: params.requestGeneration };
+    } finally {
+      active -= 1;
+    }
+  });
+  const background = tab.threads.acquireBackgroundThread(ref);
+  try {
+    await vi.waitFor(() => expect(reads).toBe(1));
+    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+    for (let entry = 1; entry <= 5; entry += 1) {
+      const update = suffix(entry);
+      if (update.method === "history/updated") update.params.items![0]!.text = "x".repeat(1024 * 1024);
+      tab.client.emitNotification(update);
+    }
+    expect(tab.threads.pendingThreadHydrationUpdatesForTests()).toHaveLength(0);
+    expect(retries).toHaveLength(1);
+    expect(tab.threads.backgroundTranscriptSnapshotForTests().networkHydrations).toBe(1);
+    retries[0]!();
+    // Retry demand arrives while the retired response still owns its slot.
+    expect(reads).toBe(1);
+    held.resolve(read());
+    await background.ready;
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await tab.threads.settleEntryTranscriptForTests(ref);
+    expect(tab.threads.threadsStore.getState().threads.has(ref)).toBe(true);
+    const historyKey = tab.threads.productionEntryTranscriptForTests(ref).historyKey!;
+    expect((await tab.cache.getLatest<{ text?: string }>(historyKey, 10)).map((row) => row.item.text)).toEqual([
+      "body-6",
+    ]);
+    expect(retries).toHaveLength(1);
+    expect(maximum).toBe(1);
+    expect(maximum).toBeLessThanOrEqual(DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS.networkHydrations);
+    // Opening uses the replacement's local bodies, with no extra activation read.
+    await tab.threads.threadsStore.getState().ensureThread(ref);
+    const model = tab.threads.threadsStore.getState().threads.get(ref);
+    expect(model?.turns.flatMap((turn) => turn.items.map((entry) => entry.text))).toEqual(["body-6"]);
+    expect(reads).toBe(2);
+  } finally {
+    held.resolve(read());
+    restoreScheduler();
+    await background.release();
+  }
+});
+
+it("same-client reconnect replaces hydrations held at cache authorities and retires outgoing queued work", async () => {
+  const tab = await openTab(false);
+  const refs = [ref, "local:reconnect-two", "local:reconnect-queued"];
+  const authorities = [deferred<number>(), deferred<number>()];
+  const entered = deferred<void>();
+  const getGeneration = tab.cache.getHistoryGeneration.bind(tab.cache);
+  let authorityReads = 0;
+  vi.spyOn(tab.cache, "getHistoryGeneration").mockImplementation((key) => {
+    const gate = authorities[authorityReads++];
+    if (authorityReads === 2) entered.resolve();
+    return gate ? gate.promise : getGeneration(key);
+  });
+  const reads: string[] = [];
+  let active = 0;
+  let maximum = 0;
+  tab.client.on("thread/read", async (params) => {
+    const target = params.ref!;
+    reads.push(target);
+    maximum = Math.max(maximum, ++active);
+    try {
+      await Promise.resolve();
+      const response = currentRead(target);
+      return {
+        ...response,
+        olderCursor: undefined,
+        overlay: [],
+        snapshot: { incarnation: "inc-1", length: 6 },
+        thread: { ...response.thread, turns: read(6).thread.turns },
+        requestGeneration: params.requestGeneration,
+      };
+    } finally {
+      active -= 1;
+    }
+  });
+  const backgrounds = refs.map((target) => tab.threads.acquireBackgroundThread(target));
+  try {
+    await entered.promise;
+    expect(reads).toEqual(refs.slice(0, 2));
+    expect(tab.threads.backgroundTranscriptSnapshotForTests().networkHydrations).toBe(2);
+    expect(tab.threads.backgroundTranscriptSnapshotForTests().queuedHydrationRefs).toEqual([refs[2]]);
+    // Deliberately no disconnected residency transition, only this client's onReady.
+    tab.client.emitStateChange("reconnecting");
+    tab.client.emitReady();
+    expect(tab.threads.backgroundTranscriptSnapshotForTests().networkHydrations).toBe(2);
+    expect(reads).toEqual(refs.slice(0, 2));
+    for (const authority of authorities) authority.resolve(0);
+    await vi.waitFor(() => {
+      for (const target of refs) expect(tab.threads.threadsStore.getState().threads.has(target)).toBe(true);
+    });
+    expect(reads).toEqual([...refs.slice(0, 2), ...refs]);
+    expect(maximum).toBeLessThanOrEqual(DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS.networkHydrations);
+    for (const target of refs) {
+      await tab.threads.settleEntryTranscriptForTests(target);
+      const historyKey = tab.threads.productionEntryTranscriptForTests(target).historyKey!;
+      expect((await tab.cache.getLatest<{ text?: string }>(historyKey, 10)).map((row) => row.item.text)).toEqual([
+        "body-6",
+      ]);
+    }
+  } finally {
+    for (const authority of authorities) authority.resolve(0);
+    await Promise.all(backgrounds.map((background) => background.release()));
+  }
+});
 
 it.each([false, true])(
   "namespaces read and suffix identities across production lifetimes, overlap=%s",
