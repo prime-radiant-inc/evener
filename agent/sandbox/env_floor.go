@@ -51,7 +51,7 @@ var floorPrefixDrops = []string{
 //     serve (see redirectedCacheVars).
 //
 // It returns a fresh slice and never reads the process environment; the overlay
-// branch inspects the filesystem at the cache paths it judges (overlayServes).
+// branch inspects the filesystem at the cache paths it judges (servedByOverlay).
 // Called at EVERY spawn site (shell jobs, rg, stdio MCP servers, hook commands)
 // so no spawned process escapes the floor.
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
@@ -70,7 +70,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		if name == "KUBECONFIG" && kubeconfigIsExternal(val, policy) {
 			continue
 		}
-		if redirected[name] {
+		if redirected[canonicalCacheVar(name)] {
 			continue // re-added below, pointing into the session scratch
 		}
 		if _, ok := pinned[name]; ok {
@@ -112,11 +112,13 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // redirectedCacheVars names the cache variables the floor points into the
 // session scratch: every one under the session-private strategy. Under the
 // overlay, any Go cache whose directory the overlay does not serve
-// (overlayGoCacheDirs; its root was dropped, say inside the worktree) or that
+// (overlayCacheDirs; its root was dropped, say inside the worktree) or that
 // lies in a persistent write root re-bound on top of the overlay, which would
 // otherwise stay persistently writable, and all of them when the spawn's
 // go env file cannot be judged (unreadable now, relative, or not the probe's),
-// since the overlay cannot know where go will write.
+// since the overlay cannot know where go will write. npm's and cargo's caches
+// go to the scratch when the overlay does not serve their directory and no
+// persistent write root covers it (an un-overlayable root, #4220, included).
 //
 // GOMODCACHE goes alongside GOCACHE because an ambient value can name any
 // directory. GOPATH goes because Go writes the checksum database's tree heads to
@@ -143,10 +145,23 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 		// cache root of theirs dropped from CacheRoots lies at or inside a
 		// directory the user made writable on purpose, whose writes this
 		// must not override.
-		dirs, unknown := overlayGoCacheDirs(env, policy)
+		dirs, unknown := overlayCacheDirs(env, policy)
 		writeRoots := bwrapWriteRoots(policy)
+		roots := liveCacheRoots(policy)
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
-			if dir := dirs[name]; unknown[name] || (filepath.IsAbs(dir) && (!overlayServes(policy, dir) || overlapsAnyRoot(dir, writeRoots))) {
+			if dir := dirs[name]; unknown[name] || (filepath.IsAbs(dir) && (!servedByOverlay(roots, dir) || overlapsAnyRoot(dir, writeRoots))) {
+				out[name] = true
+			}
+		}
+		// npm's and cargo's caches go to the scratch when the overlay does not
+		// serve their directory and no persistent write root covers it: read-only
+		// otherwise, whether the root was dropped or the host's filesystem refuses
+		// its overlay (#4220), or the directory lies outside every cache root (a
+		// child with no HOME resolving its own). A directory inside a write root
+		// keeps today's "leave it alone": those writes persist where the user
+		// granted.
+		for _, name := range []string{npmConfigCacheEnv, envvars.CargoHome.Name} {
+			if dir := dirs[name]; filepath.IsAbs(dir) && !servedByOverlay(roots, dir) && !overlapsAnyRoot(dir, writeRoots) {
 				out[name] = true
 			}
 		}
@@ -160,31 +175,35 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 	return out, pins
 }
 
-// overlayServes reports whether the overlay covers writes to dir: dir can be a
-// directory, and its real destination (following any symlink on the way,
-// existing or not yet created) lies under a root bwrap overlays at this spawn.
-// It is judged by real location only, so a spelling through another path to
-// the same storage is served, and a link from a served root into the worktree
-// is not.
+// servedByOverlay reports whether the overlay over roots covers writes to dir:
+// dir can be a directory, and its real destination (following any symlink on the
+// way, existing or not yet created) lies under one of them. roots is the caller's
+// liveCacheRoots, taken once per spawn. The answer follows the real location
+// only, so a spelling through another path to the same storage is served, and a
+// link from a served root into the worktree is not.
 //
 // A spawn that spells its own cache through a host link bwrap's private /tmp
 // hides (GOPATH=/tmp/gopath linked to a served root) keeps that spelling and
 // writes into the private /tmp instead. Only that spawn's own cache output is
 // lost; nothing leaves its grants, so the threat model leaves it to the spawn
 // (docs/sandboxing.md#threat-model).
-func overlayServes(policy ResolvedPolicy, dir string) bool {
-	// Only a root bwrap overlays at this spawn serves (liveCacheRoots).
-	roots := liveCacheRoots(policy)
+func servedByOverlay(roots []string, dir string) bool {
 	if !canBeDirectory(dir) {
 		return false
 	}
 	dest := resolveExistingPrefix(dir)
 	for _, r := range roots {
-		if pathUnder(dest, r) || pathUnder(dest, resolveExistingPrefix(r)) {
+		if landsUnder(dest, r) {
 			return true
 		}
 	}
 	return false
+}
+
+// landsUnder reports whether dest (a resolved location) is at or under root, by
+// spelling or by the root's own resolved location.
+func landsUnder(dest, root string) bool {
+	return pathUnder(dest, root) || pathUnder(dest, resolveExistingPrefix(root))
 }
 
 // overlapsAnyRoot reports whether dir lies at or under one of roots, or holds
@@ -219,15 +238,17 @@ func canBeDirectory(dir string) bool {
 	}
 }
 
-// overlayGoCacheDirs returns, for each Go cache variable, the directory a
-// spawned go would write that cache to: the spawn's own setting, else the
+// overlayCacheDirs returns, for each cache variable, the directory a spawned
+// command would write that cache to. For Go: the spawn's own setting, else the
 // value in the go env file it reads, else Go's default under the spawn's own
-// HOME and XDG_CACHE_HOME. GOPATH maps to its first absolute entry's pkg,
-// where the checksum database lives. The file counts only when it is the one
-// the probe read and the floor can read it as the spawn will (see below);
-// otherwise every setting the spawn's environment leaves to it is reported
-// unknown (the environment overrides the file).
-func overlayGoCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, map[string]bool) {
+// HOME and XDG_CACHE_HOME; GOPATH maps to its first absolute entry's pkg, where
+// the checksum database lives. The file counts only when it is the one the probe
+// read and the floor can read it as the spawn will (see below); otherwise every
+// setting the spawn's environment leaves to it is reported unknown (the
+// environment overrides the file). For npm and cargo: the spawn's own
+// $npm_config_cache / $CARGO_HOME, else ~/.npm / ~/.cargo under its own HOME
+// (neither has a config file the floor consults).
+func overlayCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, map[string]bool) {
 	host := policy.resolveHost
 	vars := envVars(env)
 	firstOr := func(values ...string) string {
@@ -296,6 +317,17 @@ func overlayGoCacheDirs(env []string, policy ResolvedPolicy) (map[string]string,
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
+	out[npmConfigCacheEnv] = envValueFold(env, npmConfigCacheEnv)
+	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
+	// With no HOME in the spawn's own environment (a clean EnvPolicyNone), npm
+	// and cargo fall back to the login user's home in the user database — not
+	// this process's own HOME, which a deployment may override — so their default
+	// caches are judged where the tools will really write.
+	npmHome := firstOr(home, host.LoginHome, host.Home)
+	if npmHome != "" {
+		out[npmConfigCacheEnv] = firstOr(out[npmConfigCacheEnv], filepath.Join(npmHome, ".npm"))
+		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(npmHome, ".cargo"))
+	}
 	return out, unknown
 }
 
@@ -309,6 +341,16 @@ func envVars(env []string) map[string]string {
 	return vars
 }
 
+// canonicalCacheVar maps npm's environment configuration name, which npm reads
+// case-insensitively, onto the one spelling the floor redirects it under. Every
+// other name is returned unchanged, so the lookup only widens for npm's variable.
+func canonicalCacheVar(name string) string {
+	if strings.EqualFold(name, npmConfigCacheEnv) {
+		return npmConfigCacheEnv
+	}
+	return name
+}
+
 // spawnGoEnvFileRefused reports whether the go env file a spawn's go would read
 // exists now but cannot be read as a small regular file (a FIFO, a device, an
 // oversized file), the way the probe reads it.
@@ -316,7 +358,7 @@ func spawnGoEnvFileRefused(env []string, policy ResolvedPolicy) bool {
 	file := goEnvFileFor(envVars(env), policy.resolveHost.OS)
 	// A relative file resolves against the spawn's own directory, which the
 	// floor does not know, so it is left to the spawn: its caches are already
-	// unknown (overlayGoCacheDirs), and turning it off would drop its other
+	// unknown (overlayCacheDirs), and turning it off would drop its other
 	// settings (GOPROXY, GOPRIVATE). A FIFO there is the session's own doing.
 	if file == "" || !filepath.IsAbs(file) {
 		return false
