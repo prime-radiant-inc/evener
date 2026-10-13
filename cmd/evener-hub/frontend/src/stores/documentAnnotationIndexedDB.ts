@@ -835,6 +835,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           transaction.objectStore(ANNOTATION_SEQUENCES_STORE).get(sessionKey),
         );
         const sessionSequence = (sequence?.lastSequence ?? 0) + 1;
+        // The durable head and its evidence still validate an epoch whose
+        // expiry a changed read already confirmed but whose fence transaction
+        // failed: the in-memory suppression is the only record the epoch is
+        // dead. A save committed here would return a receipt the caller
+        // treats as success - clearing its note - while the pending expiry
+        // deletes the payload with the epoch. Reject before any write; the
+        // note survives for reselection.
+        if (this.#suppressedEpochs.get(epochIdentity(captured.lease))?.confirmed === true) {
+          throw new Error("accepted lease epoch is confirmed expired");
+        }
         await requestResult(
           transaction.objectStore(ANNOTATION_PAYLOADS_STORE).put({
             payloadKey: operationKey,
@@ -1280,15 +1290,39 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     });
     const completed = transactionCompletion(transaction);
     void completed.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        // Best effort while the transaction can still abort: prove the
+        // rollback. Retiring first would close the database, and a finished
+        // transaction refuses abort().
+        tryAbortTransaction(transaction);
+        this.#connection.retire(database);
+        // Annotation writes reconcile on retry through their operation rows
+        // (the duplicate-operation identity check) and reads re-read durable
+        // state, so an unobserved outcome is honestly reported as a fault for
+        // the caller's own retry instead of leaving it pending forever - the
+        // same settle-the-caller call the drafts repository and session cache
+        // watchdogs make.
+        timedOut = true;
+        reject(new Error("Document annotation repository transaction timed out"));
+      }, STORAGE_WAIT_MS);
+    });
     try {
-      const result = await body(transaction);
-      await completed;
+      // Promise.all rejects on either failure without waiting for the other
+      // input. A terminal abort therefore releases even a stalled body, while
+      // success requires both the result and the durable commit event.
+      const [result] = await Promise.race([Promise.all([body(transaction), completed]), deadline]);
       return result;
     } catch (error) {
-      tryAbortTransaction(transaction);
-      await completed.catch(() => undefined);
+      if (!timedOut) {
+        tryAbortTransaction(transaction);
+        await completed.catch(() => undefined);
+      }
       throw error;
     } finally {
+      clearTimeout(timer);
       release?.();
     }
   }
