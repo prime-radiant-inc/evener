@@ -23,8 +23,8 @@
           "run": "python3 \"$LAB_DIR/memcheck.py\" new-pages --tags-subset-of api,cart,catalog,ci,coupons,docs,indexeddb,logging,pricing,release,tests,vitest"
         },
         {
-          "name": "new pages have a description",
-          "run": "python3 \"$LAB_DIR/memcheck.py\" new-pages --require-description"
+          "name": "new pages have a when line",
+          "run": "python3 \"$LAB_DIR/memcheck.py\" new-pages --require-when"
         }
       ],
       "trace": [

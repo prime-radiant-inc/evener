@@ -5,17 +5,18 @@ memory-lab passes the lab directory to every check as $LAB_DIR and the trial's
 memory root as $XDG_STATE_HOME, so a scenario runs:
 
     python3 "$LAB_DIR/memcheck.py" index-lines
-    python3 "$LAB_DIR/memcheck.py" new-pages --require-description --tags-subset-of a,b
+    python3 "$LAB_DIR/memcheck.py" new-pages --require-when --tags-subset-of a,b
 
 index-lines   Exit 1 when an index line is over 200 characters. It measures the
-              part of the line the model writes: a page's description, or each
-              line of a scope's root MEMORY.md (a build without the generated
-              index). The title, path, tags and date the product adds are not
+              part of the line the model writes: a page's when line, else its
+              description (the index shows the when line in place of the
+              description), or each line of a scope's root MEMORY.md (a build
+              without the generated index). The title, path, tags and date the product adds are not
               counted. Characters are runes, not bytes.
 new-pages     Looks only at project pages not marked `by: seed-fixture`: in a
               one-stage scenario, the pages the stage wrote; a later stage also
               sees an earlier one's. Exit 1 when there are none, or when
-              --require-description is set and one has no description, or when
+              --require-when is set and one has no when line, or when
               --tags-subset-of is set and one has no tags or a tag outside the list.
 
 Pages are read by bin/memscope, which lists and parses them with evener's own
@@ -46,7 +47,7 @@ MEMSCOPE_TIMEOUT = 60  # seconds; it only reads a few directories
 MEMSCOPE_BUILD = "build it in the lab directory: go build -o bin/memscope ./memscope"
 # The agent.MemoryScopePage fields the checks read; a memscope built before one
 # existed leaves it out, and one built before tags were always a list emits null.
-PAGE_FIELDS = {"path", "description", "has_description", "frontmatter", "unreadable", "tags", "by"}
+PAGE_FIELDS = {"path", "description", "has_description", "when", "frontmatter", "unreadable", "tags", "by"}
 
 
 class MemscopeError(RuntimeError):
@@ -123,11 +124,17 @@ def seed_problems(seed_dirs):
     return problems
 
 
+def index_text(page):
+    """The part of a page's index line the model writes: its when line, which the index shows in place of
+    the description, else its description, else "" (the fallback is evener's, not the model's)."""
+    return page["when"] or (page["description"] if page["has_description"] else "")
+
+
 def index_lines_ok(root):
     for scope, pages in scope_pages(scope_dirs(root, PERSONAL_AND_PROJECT_SCOPES)).items():
         index = root_index(scope)
         lines = [(index, line) for line in read(index).split("\n")] if index else []
-        lines += [(os.path.join(scope, p["path"]), p["description"]) for p in pages if p["has_description"]]
+        lines += [(os.path.join(scope, p["path"]), text) for p in pages if (text := index_text(p))]
         for path, line in lines:
             if len(line) > MAX_INDEX_LINE:
                 print(f"{path}: index line is {len(line)} characters", file=sys.stderr)
@@ -135,7 +142,7 @@ def index_lines_ok(root):
     return True
 
 
-def new_pages_ok(root, require_description, tags_subset):
+def new_pages_ok(root, require_when, tags_subset):
     new = 0
     for scope, pages in scope_pages(scope_dirs(root, [PROJECT_SCOPES])).items():
         for p in pages:
@@ -143,8 +150,8 @@ def new_pages_ok(root, require_description, tags_subset):
                 continue
             new += 1
             path, tags = os.path.join(scope, p["path"]), p["tags"]
-            if require_description and not p["has_description"]:
-                print(f"{path}: no description{' (frontmatter unreadable)' if p['unreadable'] else ''}", file=sys.stderr)
+            if require_when and not p["when"]:
+                print(f"{path}: no when line{' (frontmatter unreadable)' if p['unreadable'] else ''}", file=sys.stderr)
                 return False
             if tags_subset is not None and (not tags or not set(tags) <= tags_subset):
                 print(f"{path}: tags {tags} are not all seeded tags", file=sys.stderr)
@@ -159,7 +166,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("index-lines")
     np = sub.add_parser("new-pages")
-    np.add_argument("--require-description", action="store_true")
+    np.add_argument("--require-when", action="store_true")
     np.add_argument("--tags-subset-of", help="comma-separated tags new pages may use")
     args = ap.parse_args(argv)
     root = os.environ.get("XDG_STATE_HOME")
@@ -172,7 +179,7 @@ def main(argv=None):
             # Normalized as the product normalizes page tags: lowercased, whitespace runs as "-".
             subset = None if args.tags_subset_of is None else {
                 "-".join(t.lower().split()) for t in args.tags_subset_of.split(",") if t.strip()}
-            ok = new_pages_ok(root, args.require_description, subset)
+            ok = new_pages_ok(root, args.require_when, subset)
     except MemscopeError as e:
         sys.exit(f"memcheck: {e}")
     return 0 if ok else 1

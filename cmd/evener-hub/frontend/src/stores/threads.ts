@@ -1191,6 +1191,14 @@ function currentDispatchClient(
       // independently of restartBlockingObligations, which a stale thread
       // refresh can clear while the RPC is still in flight.
       state.stoppingRefs.has(targetRef) ||
+      // A graceful shutdown's own cancellation write is in flight: the write is
+      // an await and is not itself a fence, so a dispatch already scheduled for
+      // the ref could be admitted in that window and put the row the Stop is
+      // cancelling on the wire (#4552). Read only for the dispatcher's armed
+      // lookup (requireArmed): the Send faces and the storage-failure direct
+      // fallback must stay exactly as they were (Jesse's ruling), so a Send
+      // during the window is still admitted.
+      (requireArmed && shutdownDispatchGates.has(targetRef)) ||
       // A merely-resumable session's send must dispatch: the hub folds its
       // resume into turn/start, so the obligation does not park the mutation.
       // Only turn/start is carved out of the hub's recovery admission, though,
@@ -1692,6 +1700,49 @@ function endStop(ref: string, signalled: boolean): void {
     else restartBlockingObligations.set(ref, group.previousObligation);
     return { restartBlockingObligations };
   });
+}
+
+// The dispatch-only gate a graceful shutdown arms for the refs its cancellation
+// writes reach (#4552; Jesse's 2026-10-13 ruling). A Stop's cancellation write
+// is an await and is not itself a fence, so a dispatch already scheduled for the
+// ref can be admitted in that window and put the row the Stop is cancelling on
+// the wire. forceStop closes the window with stoppingRefs; a graceful shutdown
+// must NOT, because that fence also refuses a Send the user makes during the
+// window (isLocalRecoveryFenced and isSendResumesLocal read it). This gate is
+// read by currentDispatchClient ALONE, never by the Send faces, so only the
+// cancelled row is kept off the wire. The named ref's arm is held for the whole
+// shutdown; the resume-swap target's is released as soon as its own write
+// settles. Refcounted: two overlapping shutdowns must not clear each other's
+// arm.
+const shutdownDispatchGates = new Map<string, number>();
+
+function armShutdownDispatchGate(ref: string): () => void {
+  shutdownDispatchGates.set(ref, (shutdownDispatchGates.get(ref) ?? 0) + 1);
+  // The release is idempotent per call, so a call site can release an arm early
+  // (the resume-swap target's arm covers only its own write) and still release
+  // unconditionally in its outer finally without double-decrementing.
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const count = shutdownDispatchGates.get(ref);
+    if (count === undefined) return;
+    if (count > 1) {
+      shutdownDispatchGates.set(ref, count - 1);
+      return;
+    }
+    shutdownDispatchGates.delete(ref);
+    // The ref's dispatch was fenced for the gate's window, and a dispatch
+    // scheduled inside it (a Send admitted during the shutdown, say) was
+    // refused. Re-schedule on the way out rather than leave the row parked
+    // until the next discovery scan finds it.
+    // The ref's dispatch was fenced for the gate's window, and a dispatch
+    // scheduled inside it (a Send admitted during the shutdown, say) was
+    // refused. Re-schedule on the way out rather than leave the row parked for
+    // whatever later scan happens to find it.
+    const runtime = getMutationRuntime();
+    if (runtime) scheduleMutationDispatch(runtime, [ref]);
+  };
 }
 
 // The explicit Resume action is the one user intent that still starts a daemon
@@ -5706,14 +5757,36 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     cancelPendingUserIntents(ref);
     // Captured before the await, for forceStop's reason above.
     const swapTarget = resumeSwapTargetFor(ref);
-    await cancelUnattemptedMutations(ref);
-    // Same mid-swap reach as forceStop's cancel above.
-    await cancelResumeSwapTarget(swapTarget);
-    const client = requireClient();
+    // The dispatch-only gate (#4552, Jesse's ruling): forceStop closes its
+    // cancellation write's window with stoppingRefs, but a graceful shutdown
+    // must not, because that fence also refuses a Send the user makes during the
+    // window. This gate covers exactly the refs the Stop's cancellation writes
+    // reach and is read by currentDispatchClient alone. Armed synchronously,
+    // before the first await, so the whole write window is fenced.
+    const releaseRef = armShutdownDispatchGate(ref);
+    const releaseSwapTarget = swapTarget === undefined ? undefined : armShutdownDispatchGate(swapTarget);
     try {
-      await client.request("thread/shutdown", { ref });
-    } catch (err) {
-      throw mapConflict(err);
+      await cancelUnattemptedMutations(ref);
+      if (swapTarget !== undefined) {
+        // The swap target's own cancellation write is the only thing its arm
+        // covers, so release it here rather than gating a live resumed ref for
+        // the whole shutdown RPC.
+        try {
+          // Same mid-swap reach as forceStop's cancel above.
+          await cancelResumeSwapTarget(swapTarget);
+        } finally {
+          releaseSwapTarget?.();
+        }
+      }
+      const client = requireClient();
+      try {
+        await client.request("thread/shutdown", { ref });
+      } catch (err) {
+        throw mapConflict(err);
+      }
+    } finally {
+      releaseSwapTarget?.();
+      releaseRef();
     }
   },
 
@@ -6200,6 +6273,7 @@ export function resetThreadsStoreForTests(): void {
   userIntentStopGenerations.clear();
   userIntentStopSequence = 0;
   activeStops.clear();
+  shutdownDispatchGates.clear();
   inFlightResumes.clear();
   resumeSwapTargets.clear();
   resetHumanNoteDrafts();
