@@ -3045,6 +3045,37 @@ it.each([
   },
 );
 
+// A fresh adapter's changed read must suppress the expired epoch from the
+// validated durable head itself: a recreated adapter holds no in-memory
+// acceptance to install a provisional from, so when its fence fails the dead
+// epoch would otherwise stay visible to listing and handoff-eligible.
+it("hides the expired epoch from listing and handoff when a fresh adapter's changed read fails its fence", async () => {
+  const f = await fixture("fresh-adapter-failed-fence");
+  const ordinary = await f.drafts.load(f.key);
+  // A restart-shaped fresh adapter: the fixture's durable history is all it
+  // holds — no in-memory accepted read exists to install a provisional from.
+  // Its OWN fence faults, so the changed read lands in expiry-pending with no
+  // committed receipt, which is exactly the state the suppression must hold.
+  f.repo.close();
+  const replacement = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    beforeCommit: (operation) => {
+      if (operation === "expiry") throw new Error("fence fault");
+    },
+    targetFor: () => f.source,
+  });
+  cleanupAfterTest(() => replacement.close());
+  const changed = await replacement.acceptRead(await replacement.beginRead(f.document), docContent(SOURCE, "rev-B"));
+  expect(changed.state).toBe("expiry-pending");
+  // The fence failed, so no committed receipt exists yet — the confirmed
+  // suppression is the only thing holding the expired epoch closed.
+  expect(await replacement.listAnnotations(f.document)).toEqual([]);
+  expect((await replacement.handoff(f.document, "op-1")).state).toBe("cancelled");
+  expect(await f.drafts.load(f.key)).toEqual(ordinary);
+});
+
 // A failed FIRST save must stay retryable through a genuine identical reread:
 // the immutable operation captured from the first accepted lease is reused
 // verbatim, and an exactly identical acceptance preserves the accepted head
@@ -3191,6 +3222,60 @@ it.each(["same-adapter", "second-adapter"] as const)(
     expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryAfter);
   },
 );
+
+// A metadata-less reread (identical displayed text, revision absent) is not
+// exactly identical, so it advances the head revision within the same epoch.
+// That advance must not strand an immutable operation whose first save
+// failed: within the current unexpired epoch the durable evidence still
+// validates the capture, so the retry save goes through.
+it("reuses the original immutable operation after a failed first save and a metadata-less reread", async () => {
+  let fail = false;
+  const f = await fixture("failed-save-metadataless-reread", {
+    beforeCommit: (operation) => {
+      if (operation === "save" && fail) throw new Error("first-save fault");
+    },
+  });
+  const ordinaryBefore = await f.drafts.load(f.key);
+  const rowsBefore = await annotationRows(f);
+  const sequenceBefore = rowsBefore.sequences[0]?.lastSequence;
+  if (sequenceBefore === undefined) throw new Error("baseline sequence missing");
+
+  const capture = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-A"));
+  expect(capture.state).toBe("accepted");
+  if (capture.state !== "accepted") throw new Error("capture read not accepted");
+  const operation = preparedAnnotationFromLease(
+    capture.lease,
+    "op-metadataless",
+    "Keep this scope.",
+    f.destination,
+    "rev-A",
+  );
+  const original = structuredClone(operation);
+  const operationKey = annotationOperationKey(f.document.namespace, "op-metadataless");
+
+  fail = true;
+  await expect(f.repo.saveAnnotation(operation)).rejects.toThrow("first-save fault");
+
+  // The metadata-less reread: identical displayed text, revision absent. It is
+  // accepted within the same epoch and genuinely advances the head revision.
+  const reread = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, undefined));
+  expect(reread.state).toBe("accepted");
+  if (reread.state !== "accepted") throw new Error("metadata-less reread not accepted");
+  expect(reread.lease.epoch).toBe(original.lease.epoch);
+  expect(reread.lease.headRevision).toBe(original.lease.headRevision + 1);
+
+  // No source change was established, so the failed first save's retry must
+  // still go through against the current head's evidence.
+  fail = false;
+  const receipt = await f.repo.saveAnnotation(operation);
+  expect(receipt.operationId).toBe(operation.operationId);
+  expect(receipt.sessionSequence).toBe(sequenceBefore + 1);
+  const savedRows = await annotationRows(f);
+  const savedOperations = savedRows.operations.filter((row) => row.operationKey === operationKey);
+  expect(savedOperations).toHaveLength(1);
+  expect(savedOperations[0]?.state).toBe("pending");
+  expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
+});
 
 it("retryPending completes a persisted unfinished expiry receipt from a fresh adapter", async () => {
   const f = await fixture("read-expiry-retry-sweep");

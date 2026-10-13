@@ -614,7 +614,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         return { state: "accepted", lease: validation.lease };
       }
       // A current changed read: confirm suppression BEFORE scheduling its fence,
-      // then run the outside-transaction observation boundary.
+      // then run the outside-transaction observation boundary. A recreated
+      // adapter validated this change against durable history alone — it holds
+      // no in-memory acceptance, so no provisional exists to confirm. The
+      // expired epoch must be suppressed from the validated durable head
+      // itself, or a failed fence leaves the dead epoch visible to listing
+      // and handoff-eligible despite the confirmed source change.
+      this.#suppressedEpochs.set(epochIdentityOf(documentKey, validation.namespaceIncarnation, validation.head.epoch), {
+        requestId: ticket.requestId,
+        confirmed: true,
+      });
       finishValidation(true);
       await this.#options.beforeExpiryFence?.(ticket);
       try {
@@ -788,12 +797,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         const head = await requestResult<AnnotationHeadRow | undefined>(
           transaction.objectStore(ANNOTATION_HEADS_STORE).get(documentKey),
         );
-        if (
-          !head ||
-          head.namespaceIncarnation !== namespaceRow.incarnation ||
-          head.epoch !== captured.lease.epoch ||
-          head.headRevision !== captured.lease.headRevision
-        ) {
+        // The retained attempt validates against the current, unexpired
+        // epoch and its durable evidence, never against the exact head
+        // revision: a metadata-less reread advances the head revision within
+        // the epoch without establishing any source change, and holding a
+        // failed first save to the old revision would strand the comment
+        // permanently. A genuine source change fences into a new epoch, which
+        // the epoch equality here already rejects.
+        if (!head || head.namespaceIncarnation !== namespaceRow.incarnation || head.epoch !== captured.lease.epoch) {
           throw new Error("accepted lease does not match the durable head");
         }
         const evidence = await requestResult<AnnotationEvidenceRow | undefined>(
