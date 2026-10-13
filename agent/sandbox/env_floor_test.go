@@ -415,23 +415,39 @@ func TestEnvFloorRedirectsNpmAndCargoCachesUnderADegradedRoot(t *testing.T) {
 	home := servedHome(t)
 	tmp := "/tmp/evener-session-xyz"
 	roots := []string{home + "/.cache", home + "/.npm", home + "/.cargo", home + "/go/pkg"}
-	policy := ResolvedPolicy{
-		Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: roots,
-		OverlayDegradedRoots: []string{home + "/.npm", home + "/.cargo"},
-		Spawned:              AccessScope{Read: ReadAnywhere},
-		resolveHost:          HostFacts{OS: "linux", Home: home, GoEnvFile: filepath.Join(home, ".config", "go", "env")},
+	mk := func(refused ...string) ResolvedPolicy {
+		bad := map[string]bool{}
+		for _, r := range refused {
+			bad[r] = true
+		}
+		return ResolvedPolicy{
+			Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: roots,
+			Spawned: AccessScope{Read: ReadAnywhere},
+			resolveHost: HostFacts{
+				OS: "linux", Home: home, GoEnvFile: filepath.Join(home, ".config", "go", "env"),
+				OverlayLowerOK: func(r string) bool { return !bad[r] },
+			},
+		}
 	}
-	out := ApplyEnvFloor([]string{"HOME=" + home}, policy, tmp)
+	out := ApplyEnvFloor([]string{"HOME=" + home}, mk(home+"/.npm", home+"/.cargo"), tmp)
 	for name, want := range map[string]string{"npm_config_cache": tmp + "/npm", "CARGO_HOME": tmp + "/cargo"} {
 		if v, _ := envValue(out, name); v != want {
 			t.Errorf("a %s under a degraded root must go to the session scratch %q, got %q", name, want, v)
 		}
 	}
 
+	// The uppercase spelling of npm's variable names the same setting: it points
+	// at a degraded root the HOME default does not, and must not survive.
+	out = ApplyEnvFloor([]string{"HOME=" + home, "NPM_CONFIG_CACHE=" + home + "/.cargo"}, mk(home+"/.cargo"), tmp)
+	if v, _ := envValue(out, "npm_config_cache"); v != tmp+"/npm" {
+		t.Errorf("an uppercase NPM_CONFIG_CACHE under a degraded root must go to the scratch %q, got %q", tmp+"/npm", v)
+	}
+	if _, ok := envValue(out, "NPM_CONFIG_CACHE"); ok {
+		t.Errorf("the redirected uppercase spelling must not survive: %v", out)
+	}
+
 	// Control: with every root overlaid, the defaults are left alone.
-	healthy := policy
-	healthy.OverlayDegradedRoots = nil
-	out = ApplyEnvFloor([]string{"HOME=" + home}, healthy, tmp)
+	out = ApplyEnvFloor([]string{"HOME=" + home}, mk(), tmp)
 	for _, name := range []string{"npm_config_cache", "CARGO_HOME"} {
 		if v, ok := envValue(out, name); ok {
 			t.Errorf("a %s the overlay serves must be left alone, got %q", name, v)

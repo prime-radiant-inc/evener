@@ -150,6 +150,37 @@ func TestConfineTrustedInfraNilIsIdentity(t *testing.T) {
 	}
 }
 
+// A cache root that only becomes a directory after session start (an unmounted
+// drive) is judged by the overlay probe when it appears, so a root on a
+// filesystem that refuses the overlay is still left out rather than aborting the
+// first spawn that makes it servable (#4220).
+func TestServableCacheRootProbesARootThatAppearsLate(t *testing.T) {
+	dir := overlayFixtureDir(t)
+	drive := filepath.Join(dir, "unmounted", "drive")
+	link := filepath.Join(dir, "modcache")
+	if err := os.Symlink(drive, link); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{
+		CacheStrategy: CacheOverlay, CacheRoots: []string{link},
+		resolveHost: HostFacts{OS: "linux", Home: dir, OverlayLowerOK: func(string) bool { return false }},
+	}
+	if servableCacheRoot(rp, link) {
+		t.Fatal("a dangling cache root must not be served")
+	}
+	if err := os.MkdirAll(drive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if servableCacheRoot(rp, link) {
+		t.Errorf("a root the overlay cannot mount must stay unserved once it appears")
+	}
+	// Control: the same root on a host that can overlay it is served once it appears.
+	rp.resolveHost.OverlayLowerOK = func(string) bool { return true }
+	if !servableCacheRoot(rp, link) {
+		t.Errorf("an overlayable cache root that appears must be served")
+	}
+}
+
 // The session scratch is allocated after Resolve, so the wrapper drops any
 // cache root sharing storage with it (scratch kept under ~/.cache): an overlay
 // there would discard the scratch files between commands.

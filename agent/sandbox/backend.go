@@ -67,37 +67,15 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 }
 
 // prepareCacheRoots creates, empty, each overlaid cache root that does not exist
-// yet, then records the ones this host cannot overlay. Such a root has no lower
-// to overlay and a mount target bwrap cannot create in the read-only tree, so it
-// would stay read-only while GOCACHE or GOMODCACHE still point at it; the go
-// command would create the same empty directory on its first unsandboxed run. An
-// empty directory cannot poison a cache. A root that cannot be served yet stays
-// in the policy: each spawn judges it again (liveCacheRoots), so one that becomes
-// available is served.
+// yet. Such a root has no lower to overlay and a mount target bwrap cannot create
+// in the read-only tree, so it would stay read-only while GOCACHE or GOMODCACHE
+// still point at it; the go command would create the same empty directory on its
+// first unsandboxed run. An empty directory cannot poison a cache. A root that
+// cannot be served yet stays in the policy: each spawn judges it again
+// (liveCacheRoots), so one that becomes available is served.
 func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 	if rp.CacheStrategy == CacheOverlay {
 		recreateMissingCacheRoots(rp)
-		rp = dropUnoverlayableCacheRoots(rp)
-	}
-	return rp
-}
-
-// dropUnoverlayableCacheRoots records, in OverlayDegradedRoots, each cache root
-// this host's filesystem refuses to be an unprivileged overlay lower for
-// (HostFacts.OverlayLowerOK). A host-wide overlay capability is not enough: one
-// such root in the argv aborts the whole sandbox with EINVAL, failing every
-// spawn, so it is left to the session-private redirect instead. The verdict is
-// per session: the filesystem a root sits on does not change mid-session. A root
-// not yet a directory is left to the per-spawn judgment (servableCacheRoot), so
-// one that becomes available is still served.
-func dropUnoverlayableCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
-	if rp.resolveHost.OverlayLowerOK == nil {
-		return rp
-	}
-	for _, c := range rp.CacheRoots {
-		if servableCacheRoot(rp, c) && !rp.resolveHost.OverlayLowerOK(c) {
-			rp.OverlayDegradedRoots = append(rp.OverlayDegradedRoots, c)
-		}
 	}
 	return rp
 }
@@ -122,18 +100,16 @@ func recreateMissingCacheRoots(rp ResolvedPolicy) {
 // would otherwise move the overlay, and its discarded upper layer, into the
 // workspace.
 //
-// A root recorded in OverlayDegradedRoots is never servable: this host's
-// filesystem refuses its overlay lower, and emitting it would abort every spawn
-// (#4220).
+// A root whose filesystem this host refuses as an unprivileged overlay lower is
+// never servable (overlayLowerOK): emitting it would abort every spawn with
+// EINVAL (#4220). The verdict is judged here, at each spawn, so a root that only
+// becomes a directory later is judged when it appears.
 //
 // The session scratch is checked once, when the wrapper is built (NewWrapper):
 // a cache link retargeted onto the scratch mid-session would at worst send the
 // session's own scratch writes into the discarded layer, which the threat
 // model leaves to the session (docs/sandboxing.md#threat-model).
 func servableCacheRoot(rp ResolvedPolicy, c string) bool {
-	if slices.Contains(rp.OverlayDegradedRoots, c) {
-		return false
-	}
 	fi, err := os.Stat(c)
 	if err != nil || !fi.IsDir() || landsInPersistentRoot(rp, c) || linksThroughPrivateMount(c) ||
 		len(dropCacheRootsSharingWriteRoots([]string{c}, bwrapWriteRoots(rp))) == 0 {
@@ -141,7 +117,19 @@ func servableCacheRoot(rp ResolvedPolicy, c string) bool {
 	}
 	// The shared-tree guard Resolve applied, applied again to where the root
 	// resolves now: a retargeted parent must not make it a temp root or /.
-	return len(guardedHostRoots([]string{resolveExistingPrefix(c)}, rp.resolveHost.Home, rp.Git.WorktreeRoot)) == 1
+	return len(guardedHostRoots([]string{resolveExistingPrefix(c)}, rp.resolveHost.Home, rp.Git.WorktreeRoot)) == 1 &&
+		overlayLowerOK(rp, c)
+}
+
+// overlayLowerOK reports whether bwrap can mount an unprivileged overlay with c
+// as its lower on this host (HostFacts.OverlayLowerOK, #4220). A nil probe means
+// yes: no overlay support, or a hand-built policy in a test. The probe memoizes
+// per root, so asking at every spawn costs one probe per root per session.
+func overlayLowerOK(rp ResolvedPolicy, c string) bool {
+	if rp.resolveHost.OverlayLowerOK == nil {
+		return true
+	}
+	return rp.resolveHost.OverlayLowerOK(c)
 }
 
 // liveCacheRoots returns the cache roots bwrap overlays at this spawn: the

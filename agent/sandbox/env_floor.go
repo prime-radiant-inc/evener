@@ -70,7 +70,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		if name == "KUBECONFIG" && kubeconfigIsExternal(val, policy) {
 			continue
 		}
-		if redirected[name] {
+		if redirected[canonicalCacheVar(name)] {
 			continue // re-added below, pointing into the session scratch
 		}
 		if _, ok := pinned[name]; ok {
@@ -160,7 +160,7 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 		// than write into a read-only tree. A root dropped for sharing storage
 		// with a writable directory keeps today's "leave it alone".
 		for _, name := range []string{npmConfigCacheEnv, envvars.CargoHome.Name} {
-			if dir := dirs[name]; filepath.IsAbs(dir) && !overlayServes(policy, dir) && underOverlayDegradedRoot(policy, dir) {
+			if dir := dirs[name]; filepath.IsAbs(dir) && !overlayServes(policy, dir) && underUnoverlayableRoot(policy, dir) {
 				out[name] = true
 			}
 		}
@@ -201,17 +201,17 @@ func overlayServes(policy ResolvedPolicy, dir string) bool {
 	return false
 }
 
-// underOverlayDegradedRoot reports whether dir lies at or under one of the
-// policy's OverlayDegradedRoots — a cache root this host's filesystem refuses to
-// overlay (#4220). Such a root is not served, so what names it is redirected to
-// the session scratch rather than writing into a read-only tree.
-func underOverlayDegradedRoot(policy ResolvedPolicy, dir string) bool {
-	if len(policy.OverlayDegradedRoots) == 0 {
+// underUnoverlayableRoot reports whether dir lies at or under one of the
+// policy's cache roots whose overlay this host's filesystem refuses
+// (HostFacts.OverlayLowerOK, #4220). Such a root is not served, so what names it
+// is redirected to the session scratch rather than writing into a read-only tree.
+func underUnoverlayableRoot(policy ResolvedPolicy, dir string) bool {
+	if policy.resolveHost.OverlayLowerOK == nil {
 		return false
 	}
 	dest := resolveExistingPrefix(dir)
-	return slices.ContainsFunc(policy.OverlayDegradedRoots, func(r string) bool {
-		return pathUnder(dest, r) || pathUnder(dest, resolveExistingPrefix(r))
+	return slices.ContainsFunc(policy.CacheRoots, func(r string) bool {
+		return (pathUnder(dest, r) || pathUnder(dest, resolveExistingPrefix(r))) && !overlayLowerOK(policy, r)
 	})
 }
 
@@ -326,7 +326,7 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, m
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
-	out[npmConfigCacheEnv] = vars[npmConfigCacheEnv]
+	out[npmConfigCacheEnv] = envVarFold(env, npmConfigCacheEnv)
 	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
 	if home != "" {
 		out[npmConfigCacheEnv] = firstOr(out[npmConfigCacheEnv], filepath.Join(home, ".npm"))
@@ -343,6 +343,27 @@ func envVars(env []string) map[string]string {
 		vars[name] = val
 	}
 	return vars
+}
+
+// envVarFold returns the value of the first environment entry whose name
+// matches key case-insensitively (npm reads its configuration that way), or "".
+func envVarFold(env []string, key string) string {
+	for _, kv := range env {
+		if name, val, ok := strings.Cut(kv, "="); ok && strings.EqualFold(name, key) {
+			return val
+		}
+	}
+	return ""
+}
+
+// canonicalCacheVar maps npm's environment configuration name, which npm reads
+// case-insensitively, onto the one spelling the floor redirects it under. Every
+// other name is returned unchanged, so the lookup only widens for npm's variable.
+func canonicalCacheVar(name string) string {
+	if strings.EqualFold(name, npmConfigCacheEnv) {
+		return npmConfigCacheEnv
+	}
+	return name
 }
 
 // spawnGoEnvFileRefused reports whether the go env file a spawn's go would read

@@ -293,8 +293,11 @@ func TestBuildBwrapArgvLeavesOutAnUnoverlayableCacheRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(w.Policy().OverlayDegradedRoots, bad) {
-		t.Fatalf("a cache root the overlay cannot mount must be degraded: %v", w.Policy().OverlayDegradedRoots)
+	if slices.Contains(liveCacheRoots(w.Policy()), bad) {
+		t.Fatalf("a cache root the overlay cannot mount must not be served: %v", liveCacheRoots(w.Policy()))
+	}
+	if !slices.Contains(liveCacheRoots(w.Policy()), good) {
+		t.Fatalf("a healthy cache root must still be served: %v", liveCacheRoots(w.Policy()))
 	}
 	args := buildBwrapArgv(w.Policy(), w.SessionTmp(), cwd)
 	if hasSeq(args, "--overlay-src", bad, "--tmp-overlay", bad) {

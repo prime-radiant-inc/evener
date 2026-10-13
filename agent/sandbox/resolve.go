@@ -131,15 +131,6 @@ type ResolvedPolicy struct {
 	// needed (off, read-only). Populated for the writable modes.
 	CacheRoots []string
 
-	// OverlayDegradedRoots are the CacheRoots the overlay cannot mount on this
-	// host's filesystems, recorded once per session (dropUnoverlayableCacheRoots).
-	// Whether overlay is supported is host-wide (HostFacts.OverlaySupported), but
-	// whether one mounts depends on each lower directory's filesystem, and one
-	// EINVAL would otherwise abort every spawn. A degraded root stays in
-	// CacheRoots but is never overlaid; the env floor sends a cache variable
-	// naming one to the session scratch instead (#4220).
-	OverlayDegradedRoots []string
-
 	// FileTool is the in-process file-tool layer's grants (M2 satisfies).
 	FileTool AccessScope
 	// Spawned is the kernel-wrapped process layer's grants (M3/M6 satisfy).

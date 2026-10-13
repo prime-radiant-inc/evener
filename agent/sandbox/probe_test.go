@@ -62,6 +62,46 @@ type probeSystemWithRunErr struct {
 
 func (s probeSystemWithRunErr) run(context.Context, string, ...string) error { return s.err }
 
+// overlayProbeSystem is stubProbeSystem whose bwrap reports (or does not report)
+// overlay support, with a settable per-command result.
+type overlayProbeSystem struct {
+	stubProbeSystem
+	help   []byte
+	runErr error
+}
+
+func (s overlayProbeSystem) lookPath(name string) (string, error) {
+	if name == "bwrap" {
+		return "/usr/bin/bwrap", nil
+	}
+	return "", errors.New("not found")
+}
+
+func (s overlayProbeSystem) combinedOutput(context.Context, string, ...string) ([]byte, error) {
+	return s.help, nil
+}
+
+func (s overlayProbeSystem) run(context.Context, string, ...string) error { return s.runErr }
+
+// The per-root overlay probe is wired only on a host whose bwrap supports
+// overlay: without support every root would report un-overlayable, and the
+// overlay strategy would be lost on a build that cannot emit the flags at all
+// (#4220).
+func TestProbeHostWiresTheOverlayLowerProbeOnlyWithOverlaySupport(t *testing.T) {
+	t.Parallel()
+	supported := probeHost(overlayProbeSystem{help: []byte("--overlay-src")})
+	if supported.OverlayLowerOK == nil {
+		t.Fatal("an overlay-capable bwrap must supply the per-root overlay probe")
+	}
+	if !supported.OverlayLowerOK("/cache") {
+		t.Error("the probe must report a succeeding trivial overlay mount as fine")
+	}
+	unsupported := probeHost(overlayProbeSystem{help: []byte("no overlay here")})
+	if unsupported.OverlayLowerOK != nil {
+		t.Error("a bwrap without overlay support must supply no per-root overlay probe")
+	}
+}
+
 // TestFakeProberRepresentsFloorRows proves every host tier of the spec's
 // fail-closed floor matrix is representable as HostFacts and that the derived
 // capability predicate (SeatbeltAvailable) reads correctly.

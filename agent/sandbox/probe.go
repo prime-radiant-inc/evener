@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/envvars"
@@ -328,7 +329,7 @@ func probeHost(system probeSystem) HostFacts {
 		facts.BwrapCapable = bwrapUsernsWorks(system, path)
 		facts.OverlaySupported = bwrapSupportsOverlay(system, path)
 		if facts.OverlaySupported {
-			facts.OverlayLowerOK = func(root string) bool { return bwrapOverlayLowerWorks(system, path, root) }
+			facts.OverlayLowerOK = memoizedOverlayLower(system, path)
 		}
 	}
 
@@ -659,6 +660,27 @@ func bwrapOverlayLowerWorks(system probeSystem, path, root string) bool {
 	defer cancel()
 	args := bwrapOverlayProbeArgs(path, root)
 	return system.run(ctx, args[0], args[1:]...) == nil
+}
+
+// memoizedOverlayLower returns bwrapOverlayLowerWorks, remembering each root's
+// verdict so the probe runs once per root per session. The filesystem a root
+// sits on does not change mid-session, so a remembered verdict is as good as a
+// fresh one. The probe is asked from more than one spawn site, so the memo is
+// mutex-guarded: the closure is shared by every copy of the HostFacts it was
+// built into.
+func memoizedOverlayLower(system probeSystem, path string) func(root string) bool {
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	return func(root string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if ok, found := seen[root]; found {
+			return ok
+		}
+		ok := bwrapOverlayLowerWorks(system, path, root)
+		seen[root] = ok
+		return ok
+	}
 }
 
 // bwrapOverlayProbeArgs is the argv the per-root overlay probe runs: the same
