@@ -98,7 +98,7 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 		if i%4 == 0 {
 			tags = nil
 		}
-		overflow = append(overflow, memoryPage{Path: fmt.Sprintf("opaque-%03d.md", i), Title: fmt.Sprintf("opaque %03d", i),
+		overflow = append(overflow, memoryPage{Path: fmt.Sprintf("opaque-%03d.md", i),
 			Description: "opaque-description " + strings.Repeat("x", 64), HasDescription: true, Tags: tags, Updated: "2026-10-01"})
 	}
 	partial, full, truncated := projectMemoryIndex(overflow, memoryProjectionCap)

@@ -13,8 +13,7 @@ var (
 )
 
 // memoryPageFromFields assembles a page from memory_write's arguments: a
-// frontmatter block holding when, a blank line, then body, whose first
-// heading is the page's title. It refuses a missing when and a body that
+// frontmatter block holding when, a blank line, then body. It refuses a missing when and a body that
 // opens with its own complete frontmatter block.
 func memoryPageFromFields(args map[string]any) (string, error) {
 	when := strings.TrimSpace(stringArg(args, "when"))

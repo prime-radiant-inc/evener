@@ -22,7 +22,6 @@ func sprawlMemoryPages(n, tags int) []memoryPage {
 	for i := range n {
 		pages[i] = memoryPage{
 			Path:           fmt.Sprintf("notes/page-%04d.md", i),
-			Title:          fmt.Sprintf("Page %d", i),
 			Description:    fmt.Sprintf("How the build handles case %d when the cache is cold and the runner restarts", i),
 			HasDescription: true,
 			Tags:           []string{fmt.Sprintf("topic-%03d", i%tags)},

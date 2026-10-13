@@ -166,7 +166,9 @@ func TestMemoryContextCombinedMessageRendersEverySection(t *testing.T) {
 // A partial index refresh shows the line counting the pages it leaves out.
 func TestMemoryContextPartialIndexRendersNotShownLine(t *testing.T) {
 	rendered := renderDeliveredSystemItem(t, recordedWireItem(t, "memorycontextwire/events.json", "truncated-project"))
-	if !strings.Contains(rendered, "Not shown: ") || !strings.Contains(rendered, "untagged") {
+	// The renderer wraps at word boundaries, which can fall inside the line.
+	flat := strings.Join(strings.Fields(rendered), " ")
+	if !strings.Contains(flat, "Not shown: ") || !strings.Contains(flat, "untagged") {
 		t.Fatalf("partial index lost its Not shown line: %.400s", rendered)
 	}
 }

@@ -10,29 +10,29 @@ import (
 func TestRenderMemoryIndex(t *testing.T) {
 	t.Parallel()
 	pages := []memoryPage{
-		{Path: "vitest/loader.md", Title: "Vitest read-only loader", Description: "read-only Vitest needs --configLoader runner", HasDescription: true, Tags: []string{"vitest"}, Updated: "2026-10-07"},
-		{Path: "cents.md", Title: "Integer cents", Description: "Money is integer cents, never floats", HasDescription: true, When: "Formatting or storing a price", Tags: []string{"money", "formatting"}, Updated: "2026-10-08"},
-		{Path: "b.md", Title: "b", Description: "unstamped, older mtime", HasDescription: true, ModTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
-		{Path: "a.md", Title: "a", Description: "unstamped, same day as loader", HasDescription: true, ModTime: time.Date(2026, 10, 7, 23, 0, 0, 0, time.UTC)},
-		{Path: "fresh-bad.md", Title: "fresh-bad", Description: "fresh-bad.md", Unreadable: true, ModTime: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
-		{Path: "bad.md", Title: "Bad", Description: "Bad " + memoryNoDescription, Unreadable: true, Updated: "2026-12-31"},
+		{Path: "vitest/loader.md", Description: "read-only Vitest needs --configLoader runner", HasDescription: true, Tags: []string{"vitest"}, Updated: "2026-10-07"},
+		{Path: "cents.md", Description: "Money is integer cents, never floats", HasDescription: true, When: "Formatting or storing a price", Tags: []string{"money", "formatting"}, Updated: "2026-10-08"},
+		{Path: "b.md", Description: "unstamped, older mtime", HasDescription: true, ModTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{Path: "a.md", Description: "unstamped, same day as loader", HasDescription: true, ModTime: time.Date(2026, 10, 7, 23, 0, 0, 0, time.UTC)},
+		{Path: "fresh-bad.md", Description: "fresh-bad.md", Unreadable: true, ModTime: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
+		{Path: "bad.md", Description: "Bad " + memoryNoDescription, Unreadable: true, Updated: "2026-12-31"},
 	}
 	// Pages with unreadable frontmatter come last, by path, however fresh
 	// their files are.
 	want := "Tags: formatting (1), money (1), vitest (1)\n" +
-		"- [Integer cents](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)\n" +
-		"- [a](a.md) — unstamped, same day as loader\n" +
-		"- [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)\n" +
-		"- [b](b.md) — unstamped, older mtime\n" +
-		"- [Bad](bad.md) — Bad (no description) (frontmatter unreadable) (updated 2026-12-31)\n" +
-		"- [fresh-bad](fresh-bad.md) — fresh-bad.md (frontmatter unreadable)\n"
+		"- [cents.md](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)\n" +
+		"- [a.md](a.md) — unstamped, same day as loader\n" +
+		"- [vitest/loader.md](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)\n" +
+		"- [b.md](b.md) — unstamped, older mtime\n" +
+		"- [bad.md](bad.md) — Bad (no description) (frontmatter unreadable) (updated 2026-12-31)\n" +
+		"- [fresh-bad.md](fresh-bad.md) — fresh-bad.md (frontmatter unreadable)\n"
 	if got := renderMemoryIndex(pages); got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
 	if got := renderMemoryIndex(nil); got != "" {
 		t.Fatalf("empty scope rendered %q", got)
 	}
-	untagged := []memoryPage{{Path: "x.md", Title: "x", Description: "d", HasDescription: true}}
+	untagged := []memoryPage{{Path: "x.md", Description: "d", HasDescription: true}}
 	if got := renderMemoryIndex(untagged); strings.HasPrefix(got, "Tags:") {
 		t.Fatalf("header present with no tags: %q", got)
 	}
@@ -49,7 +49,7 @@ func overflowPages(n int) []memoryPage {
 			tags = nil
 		}
 		pages = append(pages, memoryPage{
-			Path: fmt.Sprintf("p%03d.md", i), Title: fmt.Sprintf("Page %03d", i),
+			Path:        fmt.Sprintf("p%03d.md", i),
 			Description: "opaque description " + strings.Repeat("x", 60), HasDescription: true,
 			Tags: tags, Updated: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, i).Format(time.DateOnly),
 		})
@@ -118,8 +118,8 @@ func TestMemoryNotShownLine(t *testing.T) {
 func TestProjectMemoryIndexHugeLine(t *testing.T) {
 	t.Parallel()
 	pages := []memoryPage{
-		{Path: "huge.md", Title: "huge", Description: strings.Repeat("y", 9000), HasDescription: true, Tags: []string{"big"}, Updated: "2026-10-08"},
-		{Path: "small.md", Title: "small", Description: "fits", HasDescription: true, Updated: "2026-10-01"},
+		{Path: "huge.md", Description: strings.Repeat("y", 9000), HasDescription: true, Tags: []string{"big"}, Updated: "2026-10-08"},
+		{Path: "small.md", Description: "fits", HasDescription: true, Updated: "2026-10-01"},
 	}
 	content, _, truncated := projectMemoryIndex(pages, memoryProjectionCap)
 	if !truncated || len(content) > memoryProjectionCap || strings.Contains(content, "yyy") {
@@ -141,7 +141,7 @@ func TestProjectMemoryIndexCapsTagLists(t *testing.T) {
 		if i%2 == 0 {
 			tags = append(tags, "common")
 		}
-		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: tags})
+		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Description: "d", HasDescription: true, Tags: tags})
 	}
 	content, full, truncated := projectMemoryIndex(pages, memoryProjectionCap)
 	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
@@ -168,7 +168,7 @@ func TestProjectMemoryIndexCapsTheHeaderAloneWhenEveryPageFits(t *testing.T) {
 	var pages []memoryPage
 	for i := range 60 {
 		tag := fmt.Sprintf("a-long-distinct-tag-name-that-takes-room-in-the-header-%03d", i)
-		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Title: "t", Description: "d", HasDescription: true, Tags: []string{tag}})
+		pages = append(pages, memoryPage{Path: fmt.Sprintf("p%03d.md", i), Description: "d", HasDescription: true, Tags: []string{tag}})
 	}
 	content, full, truncated := projectMemoryIndex(pages, memoryProjectionCap)
 	if len(full) <= memoryProjectionCap {
@@ -208,8 +208,8 @@ func TestMemoryIndexLineLinkTarget(t *testing.T) {
 		`a \> b.md`:      `<a \\\> b.md>`,
 		`a\>b.md`:        `<a\\\>b.md>`,
 	} {
-		line := memoryIndexLine(memoryPage{Path: rel, Title: "T", Description: "d"})
-		if wantLine := "- [T](" + want + ") — d"; line != wantLine {
+		line := memoryIndexLine(memoryPage{Path: rel, Description: "d"})
+		if wantLine := "- [" + memoryTextEscaper.Replace(rel) + "](" + want + ") — d"; line != wantLine {
 			t.Fatalf("%q: got %q, want %q", rel, line, wantLine)
 		}
 	}
@@ -234,24 +234,24 @@ func TestPatchMemoryIndexMatchesTheLeadingLink(t *testing.T) {
 }
 
 // An index line belongs to the page its leading link names, even when the
-// title holds a link or ") — ", or the description quotes another page's link.
+// path holds a link or ") — ", or the description quotes another page's link.
 func TestMemoryIndexLineFor(t *testing.T) {
 	t.Parallel()
-	linked := memoryIndexLine(memoryPage{Path: "a.md", Title: `Use [Cents](money.md) ) — here \`, Description: "d"})
+	linked := memoryIndexLine(memoryPage{Path: `Use [Cents](money.md) ) — here \.md`, Description: "d"})
 	for _, tc := range []struct {
 		line, rel string
 		want      bool
 	}{
-		{linked, "a.md", true},
+		{linked, `Use [Cents](money.md) ) — here \.md`, true},
 		{linked, "money.md", false},
 		{"- [A) — b](x.md) — desc", "x.md", true},
 		{"- [X](x.md) — see [y](y.md) — note", "x.md", true},
 		{"- [X](x.md) — see [y](y.md) — note", "y.md", false},
-		{memoryIndexLine(memoryPage{Path: "s/p.md", Title: "T", Description: "d"}), "s/p.md", true},
+		{memoryIndexLine(memoryPage{Path: "s/p.md", Description: "d"}), "s/p.md", true},
 		{"- [X](x.md.bak) — d", "x.md", false},
 		{"Tags: a (1)", "a", false},
-		{memoryIndexLine(memoryPage{Path: "my notes (old).md", Title: "T", Description: "d"}), "my notes (old).md", true},
-		{memoryIndexLine(memoryPage{Path: "my notes (old).md", Title: "T", Description: "d"}), "old).md", false},
+		{memoryIndexLine(memoryPage{Path: "my notes (old).md", Description: "d"}), "my notes (old).md", true},
+		{memoryIndexLine(memoryPage{Path: "my notes (old).md", Description: "d"}), "old).md", false},
 	} {
 		if got := memoryIndexLineFor(tc.line, tc.rel); got != tc.want {
 			t.Fatalf("%q for %q: got %t, want %t", tc.line, tc.rel, got, tc.want)
@@ -278,11 +278,11 @@ func TestMemoryIndexLineControlCharacterPath(t *testing.T) {
 		if !memoryIndexLineFor(line, rel) || memoryIndexLineFor(line, "other.md") {
 			t.Fatalf("%q: its line does not belong to it alone", rel)
 		}
-		index := renderMemoryIndex([]memoryPage{filenameMemoryPage(rel, time.Time{}), {Path: "a.md", Title: "A", Description: "d"}})
-		if want := "- [A](a.md) — d\n" + line + "\n"; index != want {
+		index := renderMemoryIndex([]memoryPage{filenameMemoryPage(rel, time.Time{}), {Path: "a.md", Description: "d"}})
+		if want := "- [a.md](a.md) — d\n" + line + "\n"; index != want {
 			t.Fatalf("%q: index %q, want %q", rel, index, want)
 		}
-		if got := patchMemoryIndex(index, rel, ""); got != "- [A](a.md) — d\n" {
+		if got := patchMemoryIndex(index, rel, ""); got != "- [a.md](a.md) — d\n" {
 			t.Fatalf("%q: delete patched %q", rel, got)
 		}
 	}
@@ -301,5 +301,32 @@ func TestMemoryIndexLineControlCharacterInvalidUTF8Path(t *testing.T) {
 	}
 	if memoryIndexLineFor(lineA, b) || memoryIndexLineFor(lineA, "bad\n\ufffd.md") {
 		t.Fatalf("%q also belongs to another name", lineA)
+	}
+}
+
+// A page's line links its path as the link text, so a heading change never
+// changes the line, and memoryIndexLineFor still finds it.
+func TestMemoryIndexLineLinksThePath(t *testing.T) {
+	t.Parallel()
+	p := memoryPage{Path: "money/cents.md", Description: "desc", When: "When code handles money", Tags: []string{"money"}, Updated: "2026-10-12"}
+	line := memoryIndexLine(p)
+	if want := "- [money/cents.md](money/cents.md) — When code handles money [money] (updated 2026-10-12)"; line != want {
+		t.Fatalf("got %q, want %q", line, want)
+	}
+	if !memoryIndexLineFor(line, "money/cents.md") {
+		t.Fatalf("memoryIndexLineFor does not find %q", line)
+	}
+	for _, heading := range []string{"# Money is integer cents", "# Cents are the unit"} {
+		page := parseMemoryPage("money/cents.md", []byte("---\nwhen: When code handles money\n---\n\n"+heading+"\n"), time.Time{})
+		if got := memoryIndexLine(page); !strings.HasPrefix(got, "- [money/cents.md](money/cents.md) — When code handles money") {
+			t.Fatalf("heading %q changed the line: %q", heading, got)
+		}
+	}
+	odd := memoryIndexLine(memoryPage{Path: `a]b\c (old).md`, Description: "d"})
+	if want := `- [a\]b\\c (old).md](<a]b\\c (old).md>) — d`; odd != want {
+		t.Fatalf("got %q, want %q", odd, want)
+	}
+	if !memoryIndexLineFor(odd, `a]b\c (old).md`) {
+		t.Fatalf("memoryIndexLineFor does not find %q", odd)
 	}
 }
