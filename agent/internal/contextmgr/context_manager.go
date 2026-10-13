@@ -379,6 +379,10 @@ func (cm *Manager) SetProfile(profile *provider.Profile) {
 	if !sameProfileTarget(cm.profile, profile) {
 		cm.lastInputTokens = 0
 		cm.historyLenAtMeasure = 0
+		// The unknown-window disclosure names the model it assumed for, so
+		// it belongs to the outgoing target: a different model — still
+		// unknown — discloses its own assumption on its first fold.
+		cm.assumedWindowDisclosed = false
 	}
 	cm.profile = profile
 }

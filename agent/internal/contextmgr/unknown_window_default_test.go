@@ -274,3 +274,37 @@ func TestUnknownWindowStrategyTripwireForcesFold(t *testing.T) {
 		t.Fatalf("LastInputTokens after the tripwire fold = %d, want 0 (reset with the fold)", got)
 	}
 }
+
+// TestAssumedWindowDisclosureRefiresOnModelSwitch pins the latch's scope: the
+// disclosure names the model it assumed for, so it belongs to a model, not to
+// the manager — a mid-session switch to a DIFFERENT unknown-window model
+// re-discloses its assumption, while setting the same model again does not.
+func TestAssumedWindowDisclosureRefiresOnModelSwitch(t *testing.T) {
+	t.Parallel()
+	cm := NewManager(unknownGatewayProfile(), nil, cheapmodel.New(nil))
+	history := bulkHistory(10, 10_000)
+	spy := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &history, 0, spy.fn)
+	if n := spy.disclosures(); n != 1 {
+		t.Fatalf("first model's disclosures = %d, want 1", n)
+	}
+
+	other := provider.FromResolved(registry.Resolved{
+		Instance: "gw", ModelID: "glm-5-flash", WireID: "glm-5-flash",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
+	}, nil)
+	cm.SetProfile(other)
+	spy2 := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &history, 0, spy2.fn)
+	if n := spy2.disclosures(); n != 1 {
+		t.Fatalf("second model's disclosures = %d, want 1", n)
+	}
+
+	// Re-setting the same model is not a switch: no re-disclosure.
+	cm.SetProfile(other)
+	spy3 := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &history, 0, spy3.fn)
+	if n := spy3.disclosures(); n != 0 {
+		t.Fatalf("same model re-disclosed %d times, want 0", n)
+	}
+}
