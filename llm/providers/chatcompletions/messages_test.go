@@ -2,7 +2,6 @@ package chatcompletions
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -153,11 +152,12 @@ func TestToChatMessages_ImageDetailHonorsRowCap(t *testing.T) {
 	}
 }
 
-// TestToChatMessages_NeverEmitsOriginalImageDetail pins the #4489 invariant:
-// the cap vocabulary's "original" is not a valid Chat Completions detail, so no
-// combination of row cap and part detail may put the literal "original" on the
-// wire. Strict OpenAI-compatible endpoints reject it with HTTP 400.
-func TestToChatMessages_NeverEmitsOriginalImageDetail(t *testing.T) {
+// TestToChatMessages_NeverEmitsAnInvalidImageDetail pins the #4489 invariant:
+// the chat wire accepts only auto|low|high, so no combination of row cap and
+// part detail may put any other value (notably the cap vocabulary's "original")
+// on the wire. Strict OpenAI-compatible endpoints reject anything else with
+// HTTP 400.
+func TestToChatMessages_NeverEmitsAnInvalidImageDetail(t *testing.T) {
 	capsFor := func(d string) registry.Caps {
 		if d == "" {
 			return registry.Caps{}
@@ -165,7 +165,7 @@ func TestToChatMessages_NeverEmitsOriginalImageDetail(t *testing.T) {
 		return registry.Caps{ImageDetail: &d}
 	}
 	for _, capDetail := range []string{"", "original", "omit", "low", "high"} {
-		for _, partDetail := range []string{"", "original", "low", "high", "auto"} {
+		for _, partDetail := range []string{"", "original", "low", "high", "auto", "medium", "ORIGINAL"} {
 			msg := llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
 				{Kind: llm.ContentText, Text: "look"},
 				{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{1}, MediaType: "image/png", Detail: partDetail}},
@@ -174,12 +174,16 @@ func TestToChatMessages_NeverEmitsOriginalImageDetail(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, err := json.Marshal(out)
-			if err != nil {
-				t.Fatal(err)
+			parts, ok := out[0]["content"].([]map[string]any)
+			if !ok || len(parts) != 2 {
+				t.Fatalf("cap %q part %q: content = %#v", capDetail, partDetail, out[0]["content"])
 			}
-			if strings.Contains(string(raw), `"original"`) {
-				t.Fatalf("cap %q part %q emitted the invalid detail %q", capDetail, partDetail, raw)
+			if d, has := parts[1]["image_url"].(map[string]any)["detail"]; has {
+				switch d {
+				case "auto", "low", "high":
+				default:
+					t.Fatalf("cap %q part %q emitted the invalid detail %v", capDetail, partDetail, d)
+				}
 			}
 		}
 	}

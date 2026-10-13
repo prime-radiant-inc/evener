@@ -467,8 +467,9 @@ Load rules, enforced with errors that name the instance and key:
   validated against their vocabularies (`image_detail` is the wire detail an
   image part carries: both builders send the part's own detail, else the row's
   value — defaulting to `high` on the Responses side — and drop the field
-  outright for `omit`; the Chat Completions builder additionally maps the cap's
-  `original` to `high`, because its wire accepts only `auto|low|high`); `reasoning_controls` entries must be
+  outright for `omit`; the Chat Completions builder additionally maps
+  `original` to `high` and drops any value its wire does not accept, because
+  that wire allows only `auto|low|high`); `reasoning_controls` entries must be
   `effort`/`budget_tokens`/`toggle`; `effort_values` entries must be
   non-empty, and `"off"` is rejected. `default_effort` must be one of the six
   tiers or `none` — the clamp passes an unrankable level straight through, so

@@ -29,8 +29,11 @@ defects:
 ## Scope
 
 - `agent/session_tools.go` — the side-channel's image part.
+- `llm/image_detail.go` — the shared `ChatImageDetail` normalization, called by
+  the builder and the token estimator.
 - `llm/providers/chatcompletions/messages.go` — chat wire image detail.
 - `llm/providers/chatcompletions/models.go` — live `/models` reading.
+- `llm/token_count.go` — the estimator mirror.
 - `docs/llm-providers.md` — the owning documentation.
 
 ## Non-goals
