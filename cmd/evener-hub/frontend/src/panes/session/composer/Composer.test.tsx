@@ -1756,18 +1756,29 @@ test("an addressed quote-insert request reaches the addressed seat's composer", 
   const fakeB = connectFakeClient();
   fakeB.on("thread/read", () => readResponse(ref));
   await threadsStore.getState().ensureThread(ref);
+  const sourceA = createTestComposerSource(ref);
+  const sourceB = createTestComposerSource(ref);
   render(
     <ClientProvider client={fakeA}>
       <Toast />
-      <Composer ref={ref} paneId="pane_a" source={createTestComposerSource(ref)} focused={false} />
+      <Composer ref={ref} paneId="pane_a" source={sourceA} focused={false} />
     </ClientProvider>,
   );
   render(
     <ClientProvider client={fakeB}>
       <Toast />
-      <Composer ref={ref} paneId="pane_b" source={createTestComposerSource(ref)} focused={false} />
+      <Composer ref={ref} paneId="pane_b" source={sourceB} focused={false} />
     </ClientProvider>,
   );
+  // Both seats' draft hydration is real and asynchronous (the composition
+  // database), and the durable draft is shared per ref: a seat still
+  // hydrating would adopt the row the OTHER seat's committed quote just
+  // advanced, by the same-ref convergence the draft model promises. Await
+  // both hydrations before driving the request, so the assertion pins the
+  // request's routing, not a hydration race.
+  await act(async () => {
+    await Promise.all([sourceA.ready(), sourceB.ready()]);
+  });
   await settleActivityDiscovery(ref);
   await flushPendingTurnsProjectionForTests();
   const editors = screen.getAllByRole("textbox", { name: /^message$/i });
