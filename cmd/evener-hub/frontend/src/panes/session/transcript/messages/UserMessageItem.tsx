@@ -68,21 +68,55 @@ export interface ForkFromHereButtonProps {
 function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonProps) {
   const toasts = useToasts();
   const [busy, setBusy] = useState(false);
+  // The child a previous press created on the hub but could not seed locally.
+  // Retained so a later press finishes THAT child's seeding instead of
+  // repeating the fork RPC and creating a duplicate child.
+  const [unseeded, setUnseeded] = useState<{ ref: string; originalInput: string } | null>(null);
 
   async function handleFork() {
     setBusy(true);
+    let ref = unseeded?.ref;
+    let originalInput = unseeded?.originalInput ?? "";
     try {
-      const resp = await threadsStore
-        .getState()
-        .forkFromTurn(sessionRef, { sourceItemKey: transcriptKey, deferInput: true });
-      const seeded = await getBrowserDraftRepository().seedDraft(browserDraftKey(resp.thread.evener.ref), {
-        text: resp.originalInput ?? "",
+      if (!ref) {
+        const resp = await threadsStore
+          .getState()
+          .forkFromTurn(sessionRef, { sourceItemKey: transcriptKey, deferInput: true });
+        ref = resp.thread.evener.ref;
+        originalInput = resp.originalInput ?? "";
+      }
+      const seeded = await getBrowserDraftRepository().seedDraft(browserDraftKey(ref), {
+        text: originalInput,
         skillNames: [],
       });
-      if (seeded.state === "conflict") throw new Error("The forked session already has a draft");
-      if (seeded.state !== "committed") throw new Error("Couldn't save the forked message locally");
-      workspaceStore.getState().openPane("session", { ref: resp.thread.evener.ref });
+      if (seeded.state === "conflict") {
+        // The child already carries a draft another surface seeded; that draft
+        // wins, and a retry would only re-conflict.
+        setUnseeded(null);
+        toasts.push(
+          "error",
+          sessionActionError("Couldn't fork from here", new Error("The forked session already has a draft")),
+        );
+        return;
+      }
+      if (seeded.state !== "committed") {
+        // The child exists on the hub; only its local seeding failed. Retain
+        // it so a later press finishes THIS child without a second fork RPC,
+        // and report what actually happened instead of claiming the fork
+        // failed.
+        setUnseeded({ ref, originalInput });
+        toasts.push(
+          "error",
+          "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
+        );
+        return;
+      }
+      setUnseeded(null);
+      workspaceStore.getState().openPane("session", { ref });
     } catch (err) {
+      // A child the RPC already created must not be discarded by a local
+      // fault: retain it for a seeding-only retry.
+      if (ref) setUnseeded({ ref, originalInput });
       toasts.push("error", sessionActionError("Couldn't fork from here", err));
     } finally {
       setBusy(false);
