@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -100,6 +101,13 @@ func TestUnknownWindowSessionCompactsAndDiscloses(t *testing.T) {
 					},
 				}
 			},
+			// A real fold launches auxiliary calls (session naming rides the
+			// cheap caller) and then the closing round; every remaining step
+			// ends the turn cleanly.
+			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return finalResponse("done") },
+			func(req llm.Request) llm.Response { return finalResponse("done") },
 			func(req llm.Request) llm.Response { return finalResponse("done") },
 		},
 	})
@@ -113,6 +121,17 @@ func TestUnknownWindowSessionCompactsAndDiscloses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	// The fold must be real, not the turn-count no-op a bare tool round
+	// produces under the default six preserved turns (the checkpoint layer
+	// emits either way): seed a short filler prefix and preserve two recent
+	// turns, the way the contextmgr tests size their folds.
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("earlier task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("earlier reply")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("follow-up")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("follow-up reply")),
+	}
+	sess.contextMgr.PreserveRecentTurns = 2
 
 	var evs []events.SessionEvent
 	done := make(chan struct{})
@@ -130,9 +149,13 @@ func TestUnknownWindowSessionCompactsAndDiscloses(t *testing.T) {
 	<-done
 
 	var compactions, disclosures int
+	var firstFold *events.ContextCompactionData
 	for _, ev := range evs {
 		if ev.Kind == events.EventContextCompaction {
 			compactions++
+			if c, ok := ev.Data.(events.ContextCompactionData); ok && firstFold == nil {
+				firstFold = &c
+			}
 		}
 		if ev.Kind == events.EventWarning {
 			if w, ok := ev.Data.(events.WarningData); ok && w.Code == events.WarningCodeContextWindowAssumed {
@@ -142,6 +165,9 @@ func TestUnknownWindowSessionCompactsAndDiscloses(t *testing.T) {
 	}
 	if compactions == 0 {
 		t.Fatal("unknown-window session never compacted under the assumed window")
+	}
+	if firstFold == nil || firstFold.TurnsAfter >= firstFold.TurnsBefore {
+		t.Fatalf("compaction was a no-op fold: %+v", firstFold)
 	}
 	if disclosures != 1 {
 		t.Fatalf("assumption disclosures = %d, want exactly 1", disclosures)
