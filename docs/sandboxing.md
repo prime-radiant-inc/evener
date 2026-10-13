@@ -306,28 +306,37 @@ unsandboxed root's `TMPDIR` is not in the tree.
   - **Only the bare `[core]` section is read**, matching git: a `[core "x"]`
     subsection or the legacy `[core.excludesfile]` header names a different key, and
     a file named there is never opened by git.
-  - **The granted name is fixed, never re-pointable**, and the denylist still wins. A
-    name that resolves through a symlink — or through a `..` the kernel resolves
-    after one — is not granted at all, and neither is a name inside a root the
-    session may write. That rule is load-bearing: bubblewrap binds a read root by its
-    literal name, follows symlinks when it binds, and does so afresh at *every*
-    spawn, so a name the session can re-point would let it read whatever it points at
-    instead. A session can reach that state with ordinary workspace writes: replace
-    the worktree file a config-named link points at with a link to `~/.ssh/id_rsa`,
-    and the next bind materializes the key at the granted name (verified against the
-    live kernel; the live suite drives exactly that retarget between two sandboxed
-    commands). So a **symlinked `core.excludesFile`/`core.attributesFile` is not
-    granted**, which is a deliberate loss: it was equally ungranted before this
-    change, and the *config file* grant keeps its documented symlink support.
-    Residual: a HARD link resolves to no other path, so a config naming a hard link
-    to a masked file is granted and the mask does not catch it. Creating one is a
-    deliberate act by the same user the session runs as, which is why it is recorded
-    rather than closed, and it is tracked in
+  - **The granted name is fixed, never re-pointable**, and the denylist still wins.
+    A file is granted only when **no component of its path is a symlink at all** — so
+    the name *is* what the filesystem resolves it to, and there is nothing anyone
+    could re-point — when **no directory on its path is a root the session may write**
+    (judged by file identity, so a case, an alias or another spelling of one directory
+    cannot slip past), and when it is not inside a masked path by identity. bubblewrap
+    binds a read root by its literal name, follows symlinks when it binds, and does so
+    afresh at *every* spawn, so that same rule is re-applied when the bind is built:
+    a file that becomes a link after the policy was resolved is not bound again. So a
+    **symlinked `core.excludesFile`/`core.attributesFile` is not granted, nor is one
+    reached through a symlinked directory** — a deliberate loss: such a file was
+    equally ungranted before this change, and the *config file* grant keeps its
+    documented symlink support. The rule is deliberately free of spelling comparisons:
+    four review rounds of this grant were all one family — a containment judgement
+    made by comparing path strings — and the fix each time was to ask the filesystem
+    (file identity) or to require the simpler property (no symlink components), which
+    is also what makes the guarantee testable on a case-sensitive Linux host.
+    Residuals: a HARD link resolves to no other path, so a config naming a hard link
+    to a masked file is granted and the mask does not catch it — half closed, since a
+    hard link to a masked *file* is now refused by identity while one to a file inside
+    a masked directory is not; creating one is a deliberate act by the same user the
+    session runs as, tracked in
     [#4473](https://github.com/prime-radiant-inc/evener/issues/4473). The config-FILE
     grant has the same retargeting exposure for a symlinked `~/.gitconfig` whose
     target the session can write, left as-is because a dotfile-managed config is a
     supported shape; tracked in
-    [#4479](https://github.com/prime-radiant-inc/evener/issues/4479).
+    [#4479](https://github.com/prime-radiant-inc/evener/issues/4479). And the
+    case-variant spelling coverage of the identity judgements — a mask reached by a
+    name that differs only in letter case on a case-insensitive volume — can only be
+    exercised there, not on a case-sensitive host; tracked in
+    [#4486](https://github.com/prime-radiant-inc/evener/issues/4486).
   - **Read-only, spawned-layer only**, and it changes no write surface — the same
     anti-hook-planting argument as the config-file grant.
 

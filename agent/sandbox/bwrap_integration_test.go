@@ -649,8 +649,10 @@ func TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames(t *testing.T) {
 
 	// resolveFixtureHome writes config as the fixture's global git config, probes the
 	// fixture home and resolves a restricted policy from it — the session-start step
-	// these subtests need to be able to do ONCE and then spawn from repeatedly.
-	resolveFixtureHome := func(config string) (ResolvedPolicy, HostFacts) {
+	// these subtests need to be able to do ONCE and then spawn from repeatedly. Each
+	// helper takes the SUBTEST's t: a Skip or FailNow through the parent's test object
+	// would land on the parent while a subtest runs.
+	resolveFixtureHome := func(t *testing.T, config string) (ResolvedPolicy, HostFacts) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(config), 0o644); err != nil {
 			t.Fatal(err)
@@ -668,7 +670,7 @@ func TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames(t *testing.T) {
 
 	// runWithPolicy spawns script inside the real sandbox under an already-resolved
 	// policy, exactly as a later tool call in a live session would.
-	runWithPolicy := func(rp ResolvedPolicy, facts HostFacts, script string, args ...string) (string, string) {
+	runWithPolicy := func(t *testing.T, rp ResolvedPolicy, facts HostFacts, script string, args ...string) (string, string) {
 		t.Helper()
 		sessionTmp := t.TempDir()
 		w, err := NewWrapper(rp, facts.BwrapPath, sessionTmp)
@@ -688,10 +690,10 @@ func TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames(t *testing.T) {
 	}
 
 	// runUnderFixtureHome resolves a fresh policy from config and runs script under it.
-	runUnderFixtureHome := func(config, script string, args ...string) (string, string, ResolvedPolicy, HostFacts) {
+	runUnderFixtureHome := func(t *testing.T, config, script string, args ...string) (string, string, ResolvedPolicy, HostFacts) {
 		t.Helper()
-		rp, facts := resolveFixtureHome(config)
-		stdout, stderr := runWithPolicy(rp, facts, script, args...)
+		rp, facts := resolveFixtureHome(t, config)
+		stdout, stderr := runWithPolicy(t, rp, facts, script, args...)
 		return stdout, stderr, rp, facts
 	}
 
@@ -701,7 +703,7 @@ func TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames(t *testing.T) {
 git status --porcelain
 git check-attr --all -- tracked.txt
 printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
-		stdout, stderr, _, _ := runUnderFixtureHome(config, script, sibling)
+		stdout, stderr, _, _ := runUnderFixtureHome(t, config, script, sibling)
 		if got := strings.TrimSpace(stderr); got != "" {
 			t.Errorf("git under restricted mode must stay silent; stderr:\n%s\nstdout:\n%s", got, stdout)
 		}
@@ -726,7 +728,7 @@ printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
 		// literal name (verified on the live kernel), which would expose the masked
 		// key at the granted path.
 		config := "[core]\n\texcludesFile = ~/ignore-link\n"
-		stdout, _, rp, facts := runUnderFixtureHome(config, `cat "$1" 2>/dev/null || echo denied`, secretLink)
+		stdout, _, rp, facts := runUnderFixtureHome(t, config, `cat "$1" 2>/dev/null || echo denied`, secretLink)
 		if !slices.Contains(facts.GitGlobalReferencedPaths, secretLink) {
 			t.Fatalf("the probe must admit a config-named symlink whose target exists, %q; got %v", secretLink, facts.GitGlobalReferencedPaths)
 		}
@@ -753,14 +755,14 @@ printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
 		}
 		defer func() { _ = os.Remove(target) }()
 		config := "[core]\n\texcludesFile = ~/gitignore-alias\n"
-		rp, facts := resolveFixtureHome(config)
+		rp, facts := resolveFixtureHome(t, config)
 		if !slices.Contains(facts.GitGlobalReferencedPaths, alias) {
 			t.Fatalf("the probe must admit a config-named symlink whose target exists, %q; got %v", alias, facts.GitGlobalReferencedPaths)
 		}
 		if slices.Contains(rp.Spawned.ReadRoots, alias) {
 			t.Fatalf("a name the session can retarget must not be granted; read roots: %v", rp.Spawned.ReadRoots)
 		}
-		before, _ := runWithPolicy(rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, alias)
+		before, _ := runWithPolicy(t, rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, alias)
 		if strings.Contains(before, secretText) {
 			t.Fatalf("unexpected secret content before the retarget; stdout:\n%s", before)
 		}
@@ -773,9 +775,35 @@ printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
 		if err := os.Symlink(secret, target); err != nil {
 			t.Fatal(err)
 		}
-		after, _ := runWithPolicy(rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, alias)
+		after, _ := runWithPolicy(t, rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, alias)
 		if strings.Contains(after, secretText) {
 			t.Errorf("a session must not be able to retarget a granted name at a masked secret; stdout:\n%s", after)
+		}
+	})
+
+	t.Run("a named file swapped for a link after resolution is not bound again", func(t *testing.T) {
+		// The granted file is a plain regular file outside every writable root, so the
+		// session cannot re-point it: nothing is a symlink and nothing it can write is
+		// on the path. But the bind follows the literal name afresh at every spawn, so
+		// the argv builder re-walks it — a writer that swaps the file for a link to a
+		// masked secret between two commands must not turn the second command into a
+		// reader of that secret.
+		target := filepath.Join(home, "swappable-ignore")
+		writeFixtureFile(t, target, "inner.txt\n")
+		rp, facts := resolveFixtureHome(t, "[core]\n\texcludesFile = ~/swappable-ignore\n")
+		before, _ := runWithPolicy(t, rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, target)
+		if !strings.Contains(before, "inner.txt") {
+			t.Fatalf("the granted file must be readable at first; stdout:\n%s", before)
+		}
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(secret, target); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := runWithPolicy(t, rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, target)
+		if strings.Contains(after, secretText) {
+			t.Errorf("a file swapped for a link after resolution must not be bound again; stdout:\n%s", after)
 		}
 	})
 }

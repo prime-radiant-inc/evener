@@ -444,30 +444,27 @@ func gitConfigReferencedPath(value, home string) string {
 }
 
 // confinedReferencedFiles drops the files a global git config names that the session
-// could retarget. bwrap binds a read root by its LITERAL name and follows symlinks
-// when it binds, so a granted name is only as good as what it resolves to AT SPAWN
-// TIME: a name that resolves through a symlink, or through a `..` the kernel resolves
-// after one, is a name the session may be able to re-point (a link whose target it
-// can write), and a name that sits inside a root the session may write can be swapped
-// for a link at any time. Either way the bind would materialize a DIFFERENT file at
-// the granted name — the retargeting the #4234 review demonstrated by replacing the
-// worktree file a config-named symlink pointed at.
+// could retarget, so what the grant exposes is fixed rather than re-pointable. bwrap
+// binds a read root by its LITERAL name, follows symlinks when it binds, and does so
+// afresh at every spawn, so the rule has to be about the path itself — and it is
+// deliberately SPELLING-FREE, because every comparison of spellings has a volume, an
+// alias or a letter case that defeats it:
 //
-// A path that resolves to its own cleaned spelling and lies outside every writable
-// root is fixed: the session cannot write the directories on it, so the file the
-// config names is the file the bind exposes.
+//   - a path with NO SYMLINK COMPONENT at all is what the filesystem resolves it to,
+//     so nothing between the name and the file can be re-pointed (a symlinked
+//     excludes file, or one reached through a symlinked directory, is not granted);
+//   - the path's ancestor chain must hold no WRITABLE ROOT by FILE IDENTITY, since a
+//     directory the session may write is one it could turn into a link.
+//
+// A file that passes both is the file the config names, at any spawn.
 func confinedReferencedFiles(candidates, writable []string) []string {
 	if len(candidates) == 0 {
 		return nil
 	}
-	// Writable roots are judged at their literal AND resolved spellings, like
-	// unmaskedContentRoots: an extra writable root the user configured as a symlink
-	// makes the files beneath its TARGET writable through the alias, so a candidate
-	// under the target is as swappable as one under the link. Containment itself is
-	// then decided by FILE IDENTITY, not by comparing the spellings: a
-	// case-insensitive volume (macOS by default) and the data-volume firmlink both
-	// give one directory several spellings, and the session can write the file
-	// through any of them.
+	// The writable roots are judged at their literal AND resolved spellings, like
+	// unmaskedContentRoots: a writable root the user configured as a symlink makes the
+	// files beneath its TARGET writable through the alias. Containment itself is
+	// decided by FILE IDENTITY, which no spelling can defeat.
 	writableAll := make([]string, 0, 2*len(writable))
 	for _, w := range writable {
 		writableAll = append(writableAll, w)
@@ -475,22 +472,34 @@ func confinedReferencedFiles(candidates, writable []string) []string {
 			writableAll = append(writableAll, resolved)
 		}
 	}
+	writableInfos := pathFileInfos(writableAll)
 	out := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		clean := filepath.Clean(c)
-		// Resolved with EvalSymlinks directly rather than resolveExistingPrefix: that
-		// helper cleans first, which would collapse a `..` that follows a symlink before
-		// the kernel ever resolves it — the very confusion this check exists to catch.
-		resolved, err := filepath.EvalSymlinks(c)
-		if err != nil || StripDataVolumeAlias(resolved) != StripDataVolumeAlias(clean) {
-			continue
-		}
-		if slices.ContainsFunc(writableAll, func(w string) bool { return underByIdentity(clean, w) }) {
+		// The symlink walk runs on the SPELLING git hands the kernel (`c`), the
+		// containment walk on the spelling the policy will carry (`clean`).
+		if !symlinkFree(c) || underAnyIdentity(clean, writableInfos) {
 			continue
 		}
 		out = append(out, clean)
 	}
 	return out
+}
+
+// referencedFileGrantable re-applies the referenced-file rule at SPAWN time, for the
+// bwrap argv builder: a bind follows the literal name afresh at every spawn, so a name
+// whose path (or an ancestor) has become a symlink since the policy was resolved, or
+// that has come to sit under a writable root or inside a masked path, must not be
+// bound again. Only a non-session writer can change any of that, which is exactly why
+// the check is repeated rather than trusted.
+func referencedFileGrantable(path string, rp ResolvedPolicy) bool {
+	if !symlinkFree(path) {
+		return false
+	}
+	if underAnyIdentity(path, pathFileInfos(rp.Spawned.WriteRoots)) {
+		return false
+	}
+	return !underAnyIdentity(path, pathFileInfos(rp.MaskedPaths))
 }
 
 // evenerContentRoots returns the plugin store's installed plugin files and the

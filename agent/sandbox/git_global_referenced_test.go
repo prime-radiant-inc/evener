@@ -733,6 +733,41 @@ func TestGlobalGitReferencedFileUnderAWritableRootInAnotherSpelling(t *testing.T
 	}
 }
 
+// TestGlobalGitReferencedFileUnderASymlinkedDirectoryIsRefused proves the redesigned
+// rule on a case-sensitive filesystem: a config-named file reached through a
+// symlinked DIRECTORY is refused, because the rule requires no symlink component
+// anywhere in the path rather than comparing spellings of the resolved one. That is
+// what makes it testable wherever we verify, and what closes the retargeting family by
+// construction — there is no link in a granted name to re-point.
+func TestGlobalGitReferencedFileUnderASymlinkedDirectoryIsRefused(t *testing.T) {
+	t.Parallel()
+	home := clean(t.TempDir())
+	realDir := filepath.Join(home, "real-dotfiles")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	referenced := filepath.Join(realDir, "ignore")
+	writeFixtureFile(t, referenced, "ignored.txt\n")
+	linkDir := filepath.Join(home, "dotfiles")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	throughLink := filepath.Join(linkDir, "ignore")
+
+	host := darwinSeatbeltHost()
+	host.Home = home
+	host.GitGlobalReferencedPaths = []string{throughLink}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, root := range []string{throughLink, referenced} {
+		if slices.Contains(rp.Spawned.ReadRoots, root) {
+			t.Errorf("a file reached through a symlinked directory must not be granted (%q): %v", root, rp.Spawned.ReadRoots)
+		}
+	}
+}
+
 // TestGlobalGitReferencedFileHardlinkedToAMaskedFileIsDropped pins the mask judgement
 // by FILE IDENTITY, which runs on any filesystem: a hard link is another name for one
 // file, so a config naming a hard link to a masked file names that file, and a

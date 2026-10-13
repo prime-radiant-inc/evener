@@ -59,9 +59,18 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		// resolved read roots (worktree + system roots the process needs to run).
 		add("--tmpfs", "/")
 		for _, r := range sp.ReadRoots {
-			if pathExists(r) {
-				add("--ro-bind", r, r)
+			if !pathExists(r) {
+				continue
 			}
+			// A file a global git config NAMES is re-walked here, because this bind
+			// follows the literal name afresh at every spawn: if the path (or an
+			// ancestor) has become a symlink, or now sits under a writable root or
+			// inside a masked path, binding it would expose whatever that name points
+			// at instead of the file the policy admitted.
+			if slices.Contains(rp.GitReferencedFiles, r) && !referencedFileGrantable(r, rp) {
+				continue
+			}
+			add("--ro-bind", r, r)
 		}
 	}
 
