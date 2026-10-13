@@ -751,3 +751,243 @@ func TestAReconnectPreservesThePendingEntryRetry(t *testing.T) {
 		t.Fatalf("the re-read landed tagged %d for %v, want the rebound generation %d for %v", msg.entryRetrySeq, msg.ref, rebound.entryRepairSeq, ref)
 	}
 }
+
+// The automatic completion holds for the displayed session's unsent work,
+// exactly as the cycling switch does: a retry re-read that succeeds while
+// the user is typing in the session still displayed must not switch away
+// and destroy the draft or delete pending attachment files.
+func TestASuccessfulRetryReadHoldsForTheDisplayedSessionsUnsentWork(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session A is displayed with unsent work in its composer when the user
+	// palette-picks B, whose sidecar is being repaired: B's retry arms with
+	// A still displayed (the palette-from-inside-a-session shape).
+	enteredA, _ := m.Update(hubSessionMsg{
+		ref:    refA.String(),
+		detail: hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	shown := enteredA.(hubModel)
+	shown.session.input.SetValue("unsent work for A")
+	updated, cmd := shown.Update(hubSessionMsg{ref: refB.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	armedSeq := armed.entryRepairSeq
+	armed.Update(executeEntryRepairCmd(t, cmd)) // B's re-read in flight
+
+	// B's repair completes and its re-read succeeds — but the user's unsent
+	// work in A outranks the automatic switch: the hold retires the retry,
+	// A keeps its surface and draft, and A's re-pointed subscription (B's
+	// read replaced it) is re-established.
+	late := hubSessionMsg{
+		ref:           refB.String(),
+		detail:        hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	}
+	afterLate, reestablish := armed.Update(late)
+	held := afterLate.(hubModel)
+	if held.mode != hubModeSession || held.detail.Ref != refA.String() {
+		t.Fatalf("the automatic entry switched away from drafted work: mode = %v detail = %v", held.mode, held.detail.Ref)
+	}
+	if got := held.session.input.Value(); got != "unsent work for A" {
+		t.Fatalf("composer draft = %q, want the displayed session's unsent work preserved", got)
+	}
+	if held.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the held entry retry stayed armed after declining the switch")
+	}
+	if reestablish == nil {
+		t.Fatal("the declined read re-pointed the subscription but re-established nothing")
+	}
+	recovery, ok := reestablish().(hubSessionMsg)
+	if !ok || !recovery.liveNavRecovery {
+		t.Fatalf("the re-establish command produced %T, want a recovery-tagged session read", reestablish())
+	}
+	if got := reads.get(); got[len(got)-1] != refA.String() {
+		t.Fatalf("re-establish read %v, want the displayed session re-read", got)
+	}
+}
+
+// Departing to the dashboard before a pick's read answers invalidates the
+// pick: its late rebuilding rejection must not arm a retry that enters the
+// session the user left behind.
+func TestCtrlOBeforeThePicksAnswerInvalidatesIt(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{wireErrorByRef: map[string]appwire.WireError{
+		"local:01A": appwire.WithHistoryReadIdentity(appwire.TranscriptIndexRebuilding(), appwire.DaemonlessBootGeneration, 0),
+	}}
+	m, cleanup := newEntryPickModel(t, reads)
+	defer cleanup()
+
+	// The user picks A, then departs to the dashboard before A's read
+	// answers.
+	m.selected = dashboardRowIndex(m.dashboardRows(), "A")
+	pickedA, cmdA := m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEnter})
+	afterCtrlO, _ := pickedA.(hubModel).updateKey(tea.KeyMsg{Type: tea.KeyCtrlO})
+
+	// A's rebuilding rejection arrives late: the departure invalidated the
+	// pick, so it arms nothing and enters nothing.
+	afterLate, lateCmd := afterCtrlO.Update(cmdA())
+	late := afterLate.(hubModel)
+	if late.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("a pick invalidated by the dashboard departure armed a retry")
+	}
+	if late.mode != hubModeDashboard {
+		t.Fatalf("the late rejection moved the model: mode = %v", late.mode)
+	}
+	if lateCmd != nil {
+		t.Fatal("the invalidated pick's rejection scheduled work")
+	}
+}
+
+// targetDeletedEntryError builds the deletion refusal as the client receives
+// it: the read preflight's permanent answer, stamped with the boot
+// generation, JSON-decoded into the map shape a real client reads.
+func targetDeletedEntryError(t *testing.T) error {
+	t.Helper()
+	original := appwire.WithReadBootGeneration(appwire.WireError{
+		Code:    appwire.CodeConflict,
+		Message: "thread target deleted",
+		Data: appwire.ErrorData{
+			MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+			RetryDisposition: appwire.RetryDispositionNone,
+		},
+	}, appwire.DaemonlessBootGeneration)
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded appwire.WireError
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded.Data.(map[string]any); !ok {
+		t.Fatalf("decoded data = %T, want the map shape a real client receives", decoded.Data)
+	}
+	return decoded
+}
+
+// A permanent answer ends the paced retry: a session deleted during its
+// repair answers targetDeleted, which no retry converges — the retry
+// retires and the error shows, instead of pacing forever behind the status.
+func TestATargetDeletedAnswerEndsTheEntryRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m := newHubModel(nil, "http://hub.test")
+	ref := mustParseRef(t, "local:01EVENER")
+	updated, _ := m.Update(hubSessionMsg{ref: ref.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	if armed.entryRepairRef != ref {
+		t.Fatal("the retry did not arm before the deletion answer")
+	}
+
+	terminal := targetDeletedEntryError(t)
+	afterTerminal, cmd := armed.Update(hubSessionMsg{ref: ref.String(), err: terminal})
+	ended := afterTerminal.(hubModel)
+	if ended.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("a permanent targetDeleted answer left the paced retry armed")
+	}
+	if cmd != nil {
+		t.Fatal("a permanent answer scheduled another read")
+	}
+	if wireMutationOutcome(ended.err) != appwire.MutationOutcomeTargetDeleted {
+		t.Fatalf("model error = %v, want the deletion answer shown", ended.err)
+	}
+	errs := ended.prominentErrors()
+	if len(errs) == 0 || errors.Is(errs[0], errHubEntryRepairing) {
+		t.Fatalf("prominent errors = %v, want the repair status gone and the deletion shown", errs)
+	}
+}
+
+// A retry's successful re-read for the session already displayed converges
+// the entry it was armed for: the owner retires with it (its purpose is
+// done, its status with it) and the watched children re-arm, since the
+// re-read's replacement culled them server-side.
+func TestASameRefRetryReadRetiresItsOwnerAndReArmsChildren(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refB := mustParseRef(t, "local:01B")
+
+	// Session B is displayed with a watched child when its own re-pick
+	// answers rebuilding: the retry arms with B displayed (the re-pick of
+	// the current session).
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refB.String(),
+		detail: hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+	shown.watchedChildRefs = map[string]bool{"local:01CHILD": true}
+	updated, cmd := shown.Update(hubSessionMsg{ref: refB.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	armedSeq := armed.entryRepairSeq
+	armed.Update(executeEntryRepairCmd(t, cmd)) // B's re-read in flight
+
+	// B's repair completes; the re-read succeeds for the displayed session:
+	// a same-ref replacing read — the owner retires, the transcript
+	// refreshes, and the children re-arm after the replacement.
+	late := hubSessionMsg{
+		ref:           refB.String(),
+		detail:        hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	}
+	afterLate, _ := armed.Update(late)
+	converged := afterLate.(hubModel)
+	if converged.mode != hubModeSession || converged.detail.Ref != refB.String() {
+		t.Fatalf("the same-ref read moved the model: mode = %v detail = %v", converged.mode, converged.detail.Ref)
+	}
+	if converged.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the same-ref success left its repair owner armed")
+	}
+	if converged.watchedChildRefs != nil {
+		t.Fatalf("watched children = %v, want the re-arm's cleared set", converged.watchedChildRefs)
+	}
+	if errs := converged.prominentErrors(); len(errs) != 0 {
+		t.Fatalf("prominent errors = %v, want the repair status gone with the retired owner", errs)
+	}
+}
+
+// Opening the spawn form is the same departure: a pick whose read is still
+// in flight when the form opens must land superseded, not arm a retry over
+// the open form.
+func TestOpeningTheSpawnFormInvalidatesAnInFlightPick(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{wireErrorByRef: map[string]appwire.WireError{
+		"local:01A": appwire.WithHistoryReadIdentity(appwire.TranscriptIndexRebuilding(), appwire.DaemonlessBootGeneration, 0),
+	}}
+	m, cleanup := newEntryPickModel(t, reads)
+	defer cleanup()
+
+	// The user picks A, then opens the spawn form before A's read answers.
+	m.selected = dashboardRowIndex(m.dashboardRows(), "A")
+	pickedA, cmdA := m.updateDashboardKey(tea.KeyMsg{Type: tea.KeyEnter})
+	afterSpawn, _ := pickedA.(hubModel).updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+
+	// A's rebuilding rejection arrives late: the departure invalidated the
+	// pick, so it arms nothing over the open form.
+	afterLate, lateCmd := afterSpawn.Update(cmdA())
+	late := afterLate.(hubModel)
+	if late.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("a pick invalidated by the spawn departure armed a retry")
+	}
+	if late.mode != hubModeSpawn {
+		t.Fatalf("the late rejection moved the model: mode = %v", late.mode)
+	}
+	if lateCmd != nil {
+		t.Fatal("the invalidated pick's rejection scheduled work")
+	}
+}

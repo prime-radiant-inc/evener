@@ -84,6 +84,23 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entryRepairRetire()
 				return m.discardSupersededSessionRead()
 			}
+			// The landed re-read's retry is current, but a SUCCESS
+			// completes the pick automatically — the user has not
+			// confirmed the switch since pressing it. The displayed
+			// session's unsent work outranks the completion: the same hold
+			// the cycling switch applies to a draft
+			// (switchToAdjacentLiveSession) holds here. Retire the retry,
+			// restore the displayed session's subscription (this read
+			// re-pointed it at the retry's target), and drop the success —
+			// the different-ref entry below would otherwise clear the draft
+			// and delete its pending attachment files. The user re-picks
+			// when they are ready. A rejected re-read keeps the retry
+			// armed: the ordinary-transient contract below stands.
+			if msg.err == nil && m.mode == hubModeSession && m.detail.Ref != msg.ref &&
+				(m.session.input.Value() != "" || len(m.pendingAttachments) > 0) {
+				m.entryRepairRetire()
+				return m.discardSupersededSessionRead()
+			}
 		}
 		// A refresh read (the /details panel, a clear's re-read, the resync
 		// re-read — tagLiveNavRefresh) targets the session displayed at
@@ -336,11 +353,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// #4343: a session entry whose read answered the hub's typed
 			// rebuilding code arms the paced retry instead of stranding, and
 			// the error line carries the repair status while the retry
-			// stands. A history-failed answer is terminal: the retry
-			// retires and the error shows. An ordinary transient while the
-			// retry stands (mid-repair lock contention with no repair in
-			// flight) keeps it armed: the status stands and the transient
-			// rides after it.
+			// stands. A terminal answer — the budget's history-failed, an
+			// upgrade-required refusal, a target deletion — ends the
+			// paced retry and the error shows. An ordinary transient while
+			// the retry stands (mid-repair lock contention with no repair
+			// in flight) keeps it armed: the status stands and the
+			// transient rides after it.
 			// The plain entry path arms — the tagged pick whose guard above
 			// proved it current, or the retry's own re-read (whose landing
 			// guard did) — and the already-open surfaces above keep their
@@ -366,7 +384,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.err = nil
 					return m, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq)
-				case armedFor && !isHubTranscriptHistoryFailed(msg.err):
+				case armedFor && !isHubTranscriptEntryTerminal(msg.err):
 					m.err = msg.err
 					return m, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq)
 				case armedFor:
@@ -387,6 +405,15 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
+			// A pending entry-repair retry's successful re-read (#4343)
+			// converges the very session it was armed for: its purpose is
+			// done, so the owner retires here with its status — the
+			// different-ref branch's retire below never runs for it. The
+			// re-read is a replacing read all the same: the children re-arm
+			// with it, not skipped as an ordinary same-ref resync.
+			if msg.entryRetrySeq > 0 {
+				m.entryRepairRetire()
+			}
 			m.detail = msg.detail
 			if msg.expectedState == "" {
 				m.replaceSessionTranscript(msg.messages)
@@ -415,14 +442,16 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// refresh read (the /details panel, a clear's re-read) issued
 			// before any navigation carries seq 0 yet culls the children
 			// just the same, so it re-arms identically (roborev PR #1044
-			// round-18 medium). The deferred reconcile from a stale
+			// round-18 medium). An entry-repair retry's re-read carries no
+			// liveNavSeq but replaced the subscriptions too (#4343), so it
+			// re-arms identically. The deferred reconcile from a stale
 			// recovery dropped while this read was pending is also settled
 			// here (round-16 medium 1). When the reconcile issues, the
 			// recovery path owns the re-arm: a batched subscribeNewChildren
 			// would race the replacing read, which can cull the child
 			// subscriptions after they were created (round-12 race
 			// reintroduced; round-17 medium 1).
-			if msg.liveNavSeq > 0 || msg.liveNavRefreshReplace {
+			if msg.liveNavSeq > 0 || msg.liveNavRefreshReplace || msg.entryRetrySeq > 0 {
 				m.watchedChildRefs = nil
 				if m.liveNavNeedsReconcile {
 					m.liveNavNeedsReconcile = false

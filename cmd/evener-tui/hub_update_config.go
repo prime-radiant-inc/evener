@@ -183,6 +183,29 @@ func wireErrorInfo(err error) appwire.ErrorInfo {
 	return ""
 }
 
+// wireMutationOutcome returns the mutation outcome an error's data carries,
+// or "" when it carries none - the same three shapes wireErrorInfo reads: a
+// wire error decoded by the client holds its data as a map, while one built
+// in-process holds the typed struct, plain ErrorData or the read boundary's
+// HistoryReadErrorData stamp.
+func wireMutationOutcome(err error) appwire.MutationOutcome {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return ""
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return data.MutationOutcome
+	case appwire.HistoryReadErrorData:
+		return data.MutationOutcome
+	case map[string]any:
+		if raw, ok := data["mutationOutcome"].(string); ok {
+			return appwire.MutationOutcome(raw)
+		}
+	}
+	return ""
+}
+
 // instanceAppliedErrorInfo returns the provider-instance applied-write
 // discriminator err carries (ErrorInstanceRemoveApplied or
 // ErrorInstanceRenamePersisted), or "" for an ordinary failure.

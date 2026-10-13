@@ -62,10 +62,18 @@ func isHubTranscriptIndexRebuilding(err error) bool {
 	return wireErrorInfo(err) == appwire.ErrorTranscriptIndexRebuilding
 }
 
-// isHubTranscriptHistoryFailed reports whether err is the repair budget's
-// terminal answer: no retry converges it, so the entry shows the error.
-func isHubTranscriptHistoryFailed(err error) bool {
-	return wireErrorInfo(err) == appwire.ErrorTranscriptHistoryFailed
+// isHubTranscriptEntryTerminal reports whether err is an answer no paced
+// entry retry can converge (#4343's terminal set): the repair budget's
+// history-failed answer, an upgrade-required refusal, or a target deletion —
+// the permanent set the web owner reads (historyPaging's rule), with the
+// budget's terminal answer. Both shapes classify: the typed form an
+// in-process error carries and the map the client's JSON decode produces.
+func isHubTranscriptEntryTerminal(err error) bool {
+	switch wireErrorInfo(err) {
+	case appwire.ErrorTranscriptHistoryFailed, appwire.ErrorUpgradeRequired:
+		return true
+	}
+	return wireMutationOutcome(err) == appwire.MutationOutcomeTargetDeleted
 }
 
 // retryHubSessionRead re-issues the entry read for the armed retry,

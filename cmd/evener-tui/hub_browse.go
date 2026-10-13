@@ -76,8 +76,10 @@ func (m *hubModel) returnToDashboard() {
 	m.mode = hubModeDashboard
 	// Departing to the dashboard is the amendment's "opening another pane"
 	// (#4343): the pending entry-repair retry and its status retire with
-	// it — the automatic entry its tick would drive must not follow the
-	// user here.
+	// it, and the navigation generation advances so a pick's read still in
+	// flight lands superseded — its rebuilding rejection must not arm a
+	// retry that enters the session the user left behind.
+	m.liveNavSeq++
 	m.entryRepairRetire()
 	m.clampSelection()
 }
