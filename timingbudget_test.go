@@ -571,16 +571,18 @@ func assertPackagesValueFails(t *testing.T, out string, err error) {
 }
 
 // TestTimingBudgetKeepsThePackagesFallbacks pins the values the #4614 guard
-// must NOT reject: an absent packages key and an empty object keep the
+// must NOT reject: an absent packages key and a present empty map keep the
 // deliberate NO BASELINE warn state (exit 0), and a real map is compared as
-// before. These are the "present but not an object" rule's boundary — the fix
-// closes the malformed values without disarming a budget that legitimately has
-// no packages yet.
+// before. A present empty map `{"packages":{}}` is distinct from an absent key
+// — a regression that rejected the empty map while accepting an absent one
+// would otherwise pass — and these are the "present but not an object" rule's
+// boundary: the fix closes the malformed values without disarming a budget
+// that legitimately has no packages yet.
 func TestTimingBudgetKeepsThePackagesFallbacks(t *testing.T) {
 	cases := map[string]string{
-		"absent key":   `{"perTestCeilingSeconds":3}`,
-		"empty object": `{}`,
-		"real map":     `{"packages":{"pkg":100}}`,
+		"absent key":        `{"perTestCeilingSeconds":3}`,
+		"present empty map": `{"packages":{}}`,
+		"real map":          `{"packages":{"pkg":100}}`,
 	}
 	for name, budget := range cases {
 		t.Run(name, func(t *testing.T) {
