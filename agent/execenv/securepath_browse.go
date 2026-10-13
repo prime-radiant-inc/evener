@@ -367,7 +367,7 @@ func (a *grepAccum) finishNotes() (out string, notes []string) {
 	return out, notes
 }
 
-// feedLargeFile searches the over-cap regular file behind f in windows of
+// feedLargeFile searches the over-cap regular file behind r in windows of
 // grepStreamWindowBytes, applying the feed's rules line by line, so a file
 // named as the search target — a deliberate request the capped read refused
 // (#4574 round 4, MEDIUM) — still yields its matches without any read
@@ -376,24 +376,31 @@ func (a *grepAccum) finishNotes() (out string, notes []string) {
 // whole-file feed treats as binary, with matches from earlier windows
 // standing; a single line longer than grepMaxFileBytes is skipped — its
 // number spent, the scan resuming after it — rather than held whole. A
-// cancelled context or a stalled read ends the scan. stop is the feed's:
-// the results cap cut the output off.
-func (a *grepAccum) feedLargeFile(ctx context.Context, f *os.File) (stop bool, err error) {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
+// cancelled context — checked between windows, because an ordinary regular
+// file takes no read deadline and a growing one can outlast any scan — or
+// a stalled read ends the scan. stop is the feed's: the results cap cut the
+// output off.
+func (a *grepAccum) feedLargeFile(ctx context.Context, r io.ReadSeeker) (stop bool, err error) {
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return false, err
 	}
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	disarm := armStreamDeadline(ctx, f)
-	defer disarm()
+	if f, ok := r.(*os.File); ok {
+		disarm := armStreamDeadline(ctx, f)
+		defer disarm()
+	}
 	// A named target's feed name is "." (see feed); the walk never streams.
 	s := &grepStream{a: a, name: ".", singleFile: true, last: -1, afterEnd: -1}
 	buf := make([]byte, grepStreamWindowBytes)
 	var pending []byte
 	i, skipping, binary := 0, false, false
 	for {
-		n, rerr := f.Read(buf)
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		n, rerr := r.Read(buf)
 		if n > 0 {
 			if bytes.IndexByte(buf[:n], 0) >= 0 {
 				binary = true
@@ -448,9 +455,15 @@ func (a *grepAccum) feedLargeFile(ctx context.Context, f *os.File) (stop bool, e
 		}
 	}
 	if !binary && !skipping && len(pending) > 0 {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if s.line(i, string(pending)) {
 			return true, nil
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
 	return s.eof(), nil
 }

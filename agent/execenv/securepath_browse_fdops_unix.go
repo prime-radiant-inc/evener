@@ -336,7 +336,15 @@ func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globF
 		// over-cap regular behind it in bounded windows. admitReadFD admits
 		// only regular files here, so the target cannot be a device stream.
 		if _, serr := a.feedLargeFile(ctx, f); serr != nil {
+			// A cancellation that landed mid-scan is the search's error, not
+			// an empty success; anything else is the unreadable-file skip.
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
 			return "", nil //nolint:nilerr // best-effort grep: a stalled or failed stream is skipped, like an unreadable file
+		}
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return "", cancelErr
 		}
 		return a.finish(), nil
 	}
