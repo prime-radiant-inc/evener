@@ -28,7 +28,7 @@ Operate on a relative path in the bound personal or project memory wiki. Read a 
 
 Operate on a relative path in the bound personal or project memory wiki. Write one memory page. Evener writes the page's frontmatter from when, followed by body, and replaces the whole page when it already exists.
 
-- `body`: The page's Markdown, without frontmatter: a first heading naming what the page is about, such as "Customer addresses in logs" rather than the rule itself, which becomes the page's title; then one durable fact, led by the fact or rule, a one-line **Why:** (with where the fact came from, when that matters) and a one-line **How to apply:** saying when it bears on work, with absolute dates.
+- `body`: The page's Markdown, without frontmatter: a first heading naming what the page is about, such as "Customer addresses in logs" rather than the rule itself; then one durable fact, led by the fact or rule, a one-line **Why:** (with where the fact came from, when that matters) and a one-line **How to apply:** saying when it bears on work, with absolute dates.
 - `file_path`: Path of the memory file, relative to the scope root, such as topic.md or tools/vitest.md; never an absolute path or a file outside memory.
 - `intent`: What you hope to learn or accomplish from this tool call, using a verb-first gerund. Make your hypothesis and the desired outcome clear; e.g. "Reading config to identify the active profile, so I can log in." or "Searching handlers for request routing, so I can trace the hang."
 - `scope`: Which memory to use: personal or project.
