@@ -180,7 +180,7 @@ func Discover(env execenv.ExecutionEnvironment, opts DiscoverOptions) Catalog {
 				continue
 			}
 			source := filepath.Join(absolute, entry.Name(), "SKILL.md")
-			data, err := os.ReadFile(source)
+			data, err := execenv.ReadFileCapped(source)
 			if err != nil {
 				// A directory without a skill file is not a skill candidate.
 				if !os.IsNotExist(err) {

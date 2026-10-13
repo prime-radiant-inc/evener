@@ -54,3 +54,25 @@ func TestParseSkillFileSkipsAnOversizedSource(t *testing.T) {
 		t.Fatal("parseSkillFile(oversized SKILL.md) = ok, want the skill skipped")
 	}
 }
+
+// TestDiscoverSkipsAnOversizedSource pins the live discovery path (session
+// start, plugin resolution) against an oversized SKILL.md: the source is
+// skipped with an unreadable-source diagnostic instead of being ingested
+// whole (issue #4556).
+func TestDiscoverSkipsAnOversizedSource(t *testing.T) {
+	t.Parallel()
+	extra := t.TempDir()
+	source := portableWriteSkill(t, extra, "probe", "---\nname: probe\ndescription: fixture\n---\nbody\n")
+	stretchOversize(t, source)
+
+	catalog := Discover(execenv.NewLocalExecutionEnvironment(t.TempDir()), DiscoverOptions{ExtraDirs: []string{extra}})
+	if _, ok := catalog.Entries["probe"]; ok {
+		t.Fatalf("Discover admitted an oversized SKILL.md at %s", source)
+	}
+	for _, d := range catalog.Diagnostics {
+		if d.Category == "unreadable_source" && d.Source == source {
+			return
+		}
+	}
+	t.Fatalf("Discover reported no unreadable-source diagnostic for %s: %+v", source, catalog.Diagnostics)
+}
