@@ -347,7 +347,12 @@ ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 # several classes (issue #4601). A name matched by more than one class is a
 # config error, reported as a FAIL: the map is hand-edited, and silently
 # picking the first class would enforce the wrong number.
-ceiling_classes = budget.get("perTestCeilingClasses") or {}
+# The raw field: absent (None) means no classes, which is fine. Any other
+# non-object value (a list, string, number, or bool) is a config error the
+# validation below reports — a plain `or {}` here would silently turn a falsy
+# malformed value such as [] or false into an empty map and disarm every class.
+raw_classes = budget.get("perTestCeilingClasses")
+ceiling_classes = raw_classes if isinstance(raw_classes, dict) else {}
 
 def class_memberships(name):
 	found = []
@@ -376,11 +381,10 @@ def raise_worst(level):
 # `tests` string that iterates as characters and matches nothing — instead of
 # saying what is wrong: it FAILs naming the class and drops the class, leaving
 # its tests on the flat warn-only default below rather than crashing the check.
-if not isinstance(ceiling_classes, dict):
+if raw_classes is not None and not isinstance(raw_classes, dict):
 	lines.append("FAIL  testing-budget.json perTestCeilingClasses must be an object mapping each "
-		"class to {ceilingSeconds, tests} (got a non-object value)")
+		"class to {ceilingSeconds, tests} (got " + type(raw_classes).__name__ + ")")
 	raise_worst("fail")
-	ceiling_classes = {}
 
 valid_classes = {}
 for class_name, spec in ceiling_classes.items():

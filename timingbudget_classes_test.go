@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,20 +13,9 @@ import (
 // classTestFunc matches a top-level Go test definition: "func Name(t *testing.T)".
 var classTestFunc = regexp.MustCompile(`^func (\w+)\(t \*testing\.T\)`)
 
-// TestTimingBudgetClassMapNamesMatchTheTree pins testing-budget.json's
-// perTestCeilingClasses against the tree it classifies (#4601). The map is
-// hand-edited and membership is by bare test name, so two silent failure modes
-// are possible and both are caught here:
-//
-//   - a name that is a typo or a stale rename matches no test, so that test
-//     quietly falls back to the warn-only flat ceiling and its enforcement is
-//     lost with no signal;
-//   - a name defined in more than one package would classify tests in a package
-//     the class never meant, enforcing the wrong number against them.
-//
-// git grep is a real external tool, not a faked one (the copy-only audits read
-// git the same way): it pins each name to the single *_test.go that defines it.
-func TestTimingBudgetClassMapNamesMatchTheTree(t *testing.T) {
+// classMapNames reads testing-budget.json's perTestCeilingClasses member names.
+func classMapNames(t *testing.T) []string {
+	t.Helper()
 	raw, err := os.ReadFile("testing-budget.json")
 	if err != nil {
 		t.Fatalf("read testing-budget.json: %v", err)
@@ -45,14 +35,31 @@ func TestTimingBudgetClassMapNamesMatchTheTree(t *testing.T) {
 	if len(names) == 0 {
 		t.Fatal("testing-budget.json's perTestCeilingClasses names no members to check")
 	}
+	return names
+}
 
+// classDeclarations runs the audit's real git grep over the tracked *_test.go
+// files and returns, per class-member name, the set of files defining it.
+//
+// The audit forces git's output shape on the command line: a developer's
+// grep.column/color/break/heading settings would otherwise turn
+// "<file>:<line>:<content>" into "<file>:<line>:<column>:<content>" and every
+// declaration would look missing. -n pins line numbers on regardless of
+// grep.lineNumber. extraEnv is the test seam that proves that override.
+func classDeclarations(t *testing.T, names, extraEnv []string) map[string]map[string]bool {
+	t.Helper()
 	var alternates []string
 	for _, name := range names {
 		alternates = append(alternates, regexp.QuoteMeta(name))
 	}
 	pattern := `^func (` + strings.Join(alternates, "|") + `)\(t \*testing\.T\)`
-	cmd := exec.Command("git", "grep", "-n", "-E", pattern, "--", "*_test.go")
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd := exec.Command("git",
+		"-c", "color.ui=false",
+		"-c", "grep.column=false",
+		"-c", "grep.break=false",
+		"-c", "grep.heading=false",
+		"grep", "-n", "-E", pattern, "--", "*_test.go")
+	cmd.Env = append([]string{"LC_ALL=C"}, append(os.Environ(), extraEnv...)...)
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("git grep for the class-map test names: %v", err)
@@ -77,7 +84,25 @@ func TestTimingBudgetClassMapNamesMatchTheTree(t *testing.T) {
 		}
 		defined[m[1]][file] = true
 	}
+	return defined
+}
 
+// TestTimingBudgetClassMapNamesMatchTheTree pins testing-budget.json's
+// perTestCeilingClasses against the tree it classifies (#4601). The map is
+// hand-edited and membership is by bare test name, so two silent failure modes
+// are possible and both are caught here:
+//
+//   - a name that is a typo or a stale rename matches no test, so that test
+//     quietly falls back to the warn-only flat ceiling and its enforcement is
+//     lost with no signal;
+//   - a name defined in more than one package would classify tests in a package
+//     the class never meant, enforcing the wrong number against them.
+//
+// git grep is a real external tool, not a faked one (the copy-only audits read
+// git the same way): it pins each name to the single *_test.go that defines it.
+func TestTimingBudgetClassMapNamesMatchTheTree(t *testing.T) {
+	names := classMapNames(t)
+	defined := classDeclarations(t, names, nil)
 	for _, name := range names {
 		files := defined[name]
 		switch {
@@ -92,5 +117,32 @@ func TestTimingBudgetClassMapNamesMatchTheTree(t *testing.T) {
 			t.Errorf("testing-budget.json's perTestCeilingClasses lists %s, defined in %d files (%s); "+
 				"membership is by bare name, so this classifies every package's test of that name", name, len(files), strings.Join(paths, ", "))
 		}
+	}
+}
+
+// TestTimingBudgetClassMapAuditIgnoresGrepColumnConfig pins RoboRev's finding on
+// PR #4610: the audit must not read a developer's grep output formatting. With
+// grep.column=true a plain `git grep -n` prints "<file>:<line>:<column>:<content>",
+// which the file:line:content parser would reject, reporting every class member
+// as missing and reddening a valid checkout. The audit forces those settings off
+// on the command line (higher precedence than a config file), so it finds the
+// same declarations with the setting on as off.
+func TestTimingBudgetClassMapAuditIgnoresGrepColumnConfig(t *testing.T) {
+	names := classMapNames(t)
+	want := classDeclarations(t, names, nil)
+
+	cfg := filepath.Join(t.TempDir(), "gitconfig")
+	writeAuditScriptFixture(t, cfg, "[grep]\n\tcolumn = true\n")
+	got := classDeclarations(t, names, []string{"GIT_CONFIG_GLOBAL=" + cfg, "GIT_CONFIG_NOSYSTEM=1"})
+
+	if len(got) != len(want) {
+		t.Fatalf("with grep.column=true the audit found %d of %d names; it is reading git's column output", len(got), len(want))
+	}
+	first := names[0]
+	if len(want[first]) != 1 {
+		t.Fatalf("fixture check: %s should be defined in exactly one file, got %v", first, want[first])
+	}
+	if len(got[first]) != 1 {
+		t.Fatalf("with grep.column=true, %s resolved to %v, want exactly one file", first, got[first])
 	}
 }

@@ -368,7 +368,10 @@ func TestTimingBudgetComparesASubtestUnderItsParentsClass(t *testing.T) {
 // TestTimingBudgetFailsWhenATestIsListedInTwoClasses pins the exactly-one-class
 // rule. The map is hand-edited, and silently picking the first class would
 // enforce the wrong number, so a name matched by two classes is a config error
-// the check FAILs on.
+// the check FAILs on. The fixture is otherwise valid — the package is well
+// under its budget and 1.00s is under both classes' ceilings — so under the
+// strict policy the exit status is the assertion: only the duplicate can make
+// it nonzero.
 func TestTimingBudgetFailsWhenATestIsListedInTwoClasses(t *testing.T) {
 	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
@@ -376,8 +379,8 @@ func TestTimingBudgetFailsWhenATestIsListedInTwoClasses(t *testing.T) {
 		`"b":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
 		`"packages":{"pkg":100}}`
 	out, err := runTimingBudgetCompare(t, measured, budget)
-	if err == nil || !strings.Contains(out, "more than one ceiling class") {
-		t.Fatalf("a test listed in two classes must be a config FAIL:\n%s", out)
+	if err == nil {
+		t.Fatalf("a test listed in two classes must make an otherwise-valid fixture fail under --strict:\n%s", out)
 	}
 }
 
@@ -456,13 +459,18 @@ func TestTimingBudgetWarnsOnAClassBreachOnALocalRun(t *testing.T) {
 }
 
 // TestTimingBudgetFailsWhenTheClassMapIsNotAnObject pins the outer shape of the
-// map: a perTestCeilingClasses that is not an object (here a list) is a config
-// error naming the field, not a crash.
+// map: a perTestCeilingClasses that is present but not an object is a config
+// error, not a crash and not a silent empty map — including the falsy values
+// (an empty list, false, 0, "") that a plain `or {}` would quietly accept.
 func TestTimingBudgetFailsWhenTheClassMapIsNotAnObject(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
-	budget := `{"perTestCeilingSeconds":3,"perTestCeilingClasses":["nope"],"packages":{"pkg":100}}`
-	out, err := runTimingBudgetCompare(t, measured, budget)
-	if err == nil || !strings.Contains(out, "perTestCeilingClasses") {
-		t.Fatalf("a non-object class map must FAIL naming the field:\n%s", out)
+	for _, value := range []string{`["nope"]`, `[]`, `false`, `0`, `""`, `"a string"`} {
+		t.Run(value, func(t *testing.T) {
+			measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+			budget := `{"perTestCeilingSeconds":3,"perTestCeilingClasses":` + value + `,"packages":{"pkg":100}}`
+			out, err := runTimingBudgetCompare(t, measured, budget)
+			if err == nil {
+				t.Fatalf("a present non-object class map (%s) must fail under --strict, not read as no classes:\n%s", value, out)
+			}
+		})
 	}
 }
