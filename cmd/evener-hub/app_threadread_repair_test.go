@@ -1007,6 +1007,209 @@ func TestARefresherFedRepairHoldsTheLaneToOneAtATime(t *testing.T) {
 	}
 }
 
+// A refresher ask that lands while the lane is busy is retained, not
+// dropped: the lane takes the next retained ask as each repair retires, so
+// an early session that goes stale every cycle cannot monopolize the single
+// lane and leave the sessions behind it unindexed indefinitely (#4497 r10
+// medium). Retention is deduplicated — one ask per path — and the newest
+// ask's refused identity wins.
+func TestARefresherAskWhileTheLaneIsBusyIsRetainedAndServeNext(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, calls := installRepairSeam(t)
+	_, _, pathA := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("a"))),
+	)
+	staleSidecarForTest(t, pathA)
+	cfgB, entryB, pathB := seedIndexedPastSession(t,
+		execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("b"))),
+	)
+	staleSidecarForTest(t, pathB)
+
+	// The lane takes the first ask and holds it: the second path's ask —
+	// asked twice, to pin the dedupe — lands while the lane is busy.
+	heldA := make(chan struct{})
+	releaseA := make(chan struct{})
+	transcriptIndexRepairs.askFromRefresher(pathA, refusedBuildName(t, pathA))
+	feed(func(_, _ string) error {
+		close(heldA)
+		<-releaseA
+		return nil
+	})
+	<-heldA
+	transcriptIndexRepairs.askFromRefresher(pathB, refusedBuildName(t, pathB))
+	transcriptIndexRepairs.askFromRefresher(pathB, refusedBuildName(t, pathB))
+	feed(repairTranscriptIndex) // the retained ask's outcome: the real recipe
+
+	close(releaseA)
+	<-completions // the lane's held repair retires, taking the retained ask
+	waitForRepairCalls(t, calls, 2)
+	<-completions // the retained ask's repair retires
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("repairs = %d, want 2: the twice-asked path served once", got)
+	}
+
+	// The retained ask ran the real recipe, so the later session's read
+	// lands: the starvation the drop left behind is gone.
+	if _, err := readStaleSession(t, cfgB, entryB); err != nil {
+		t.Fatalf("read after the retained repair: %v", err)
+	}
+}
+
+// The registry forgets a deleted session's retained ask with its entry: a
+// repair completing after the deletion must not take — and re-register —
+// the ask the deletion already retired.
+func TestAForgetRetiresTheDeletedSessionsRetainedAsk(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, calls := installRepairSeam(t)
+	_, _, pathA := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("a"))),
+	)
+	staleSidecarForTest(t, pathA)
+	_, _, pathB := seedIndexedPastSession(t,
+		execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("b"))),
+	)
+	staleSidecarForTest(t, pathB)
+
+	heldA := make(chan struct{})
+	releaseA := make(chan struct{})
+	transcriptIndexRepairs.askFromRefresher(pathA, refusedBuildName(t, pathA))
+	feed(func(_, _ string) error {
+		close(heldA)
+		<-releaseA
+		return nil
+	})
+	<-heldA
+	transcriptIndexRepairs.askFromRefresher(pathB, refusedBuildName(t, pathB))
+	transcriptIndexRepairs.forget(pathB)
+
+	close(releaseA)
+	<-completions
+	transcriptIndexRepairs.mu.Lock()
+	queued := len(transcriptIndexRepairs.laneQueue)
+	transcriptIndexRepairs.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("retained asks = %d, want the deleted session's ask retired", queued)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("repairs = %d, want the deleted session's retained ask never taken", got)
+	}
+}
+
+// The take arms a retained ask under the ask-time contract, not around it:
+// a path whose budget exhausted while queued is taken once — the take sets
+// the lane re-arm stamp the interval measures from — and the ask within the
+// interval afterwards skips, exactly as an ask-time re-arm would.
+func TestTheTakeOfARetainedAskHonorsTheExhaustionPacing(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, calls := installRepairSeam(t)
+	_, _, pathA := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("a"))),
+	)
+	staleSidecarForTest(t, pathA)
+	cfgB, entryB, pathB := seedIndexedPastSession(t,
+		execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("b"))),
+	)
+	staleSidecarForTest(t, pathB)
+
+	heldA := make(chan struct{})
+	releaseA := make(chan struct{})
+	transcriptIndexRepairs.askFromRefresher(pathA, refusedBuildName(t, pathA))
+	feed(func(_, _ string) error {
+		close(heldA)
+		<-releaseA
+		return nil
+	})
+	<-heldA
+	// The retained ask sits queued while its path exhausts the repair budget
+	// through its own client-read repairs.
+	transcriptIndexRepairs.askFromRefresher(pathB, refusedBuildName(t, pathB))
+	boom := errors.New("repair failed on purpose")
+	for range 3 {
+		_, err := readStaleSession(t, cfgB, entryB)
+		requireTranscriptIndexRebuilding(t, err)
+		feed(func(_, _ string) error { return boom })
+		<-completions
+	}
+
+	close(releaseA)
+	<-completions // the lane's held repair retires, taking the retained ask
+	feed(func(_, _ string) error { return boom })
+	waitForRepairCalls(t, calls, 5)
+	<-completions // the retained ask's lane repair fails within the budget
+	if got := calls.Load(); got != 5 {
+		t.Fatalf("repairs = %d, want the retained ask taken once (1 lane-held, 3 read-armed, 1 taken)", got)
+	}
+
+	// The take stamped the re-arm: the ask within the interval skips.
+	transcriptIndexRepairs.askFromRefresher(pathB, refusedBuildName(t, pathB))
+	if transcriptIndexRepairs.inFlight(pathB) {
+		t.Fatal("the lane took an exhausted path within the interval, want a skip")
+	}
+	if got := calls.Load(); got != 5 {
+		t.Fatalf("repairs = %d, want the paced ask to skip", got)
+	}
+}
+
+// The take retires a retained ask whose path is already in flight: the
+// path's own repair — a client read's — is serving it, and re-arming the
+// lane would run two repairs for one path at once. The ask is dropped,
+// not re-queued; the next cycle re-asks if the path is still stale.
+func TestTheTakeRetiresARetainedAskWhosePathIsInFlight(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, calls := installRepairSeam(t)
+	_, _, pathA := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("a"))),
+	)
+	staleSidecarForTest(t, pathA)
+	cfgB, entryB, pathB := seedIndexedPastSession(t,
+		execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("b"))),
+	)
+	staleSidecarForTest(t, pathB)
+
+	heldA := make(chan struct{})
+	releaseA := make(chan struct{})
+	transcriptIndexRepairs.askFromRefresher(pathA, refusedBuildName(t, pathA))
+	feed(func(_, _ string) error {
+		close(heldA)
+		<-releaseA
+		return nil
+	})
+	<-heldA
+	// Retained while the lane holds A; then the path's own client read
+	// arms its repair, serving the path without the lane.
+	transcriptIndexRepairs.askFromRefresher(pathB, refusedBuildName(t, pathB))
+	_, err := readStaleSession(t, cfgB, entryB)
+	requireTranscriptIndexRebuilding(t, err)
+
+	close(releaseA)
+	<-completions // A retires; its take finds B in flight and retires the ask
+	feed(func(_, _ string) error { return nil })
+	<-completions // B's own repair retires
+	transcriptIndexRepairs.mu.Lock()
+	queued := len(transcriptIndexRepairs.laneQueue)
+	transcriptIndexRepairs.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("retained asks = %d, want the in-flight path's ask retired un-taken", queued)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("repairs = %d, want 2: the lane must not re-arm a path its own repair is serving", got)
+	}
+}
+
+// waitForRepairCalls bounds a wait for the recipe counter, so a red run
+// fails fast instead of hanging on a completion that never comes.
+func waitForRepairCalls(t *testing.T, calls *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if calls.Load() == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("repairs = %d, want %d within the bounded wait", calls.Load(), want)
+}
+
 // The wiring hub startup installs (main.go): a refresh whose refusing read
 // skips a session registers the shared repair through the wired lane
 // callback — the real registry behind the real MessageSearch, not the

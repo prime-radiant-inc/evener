@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -99,7 +100,6 @@ func repairTranscriptIndex(transcriptPath, refusedBuild string) error {
 		return err
 	}
 	defer index.Close() //nolint:errcheck // the rebuild has committed or not; close is hygiene
-	defer index.Close() //nolint:errcheck // the rebuild has committed or not; close is hygiene
 	// finishDeletion removes the sidecar directory a resurrecting open
 	// recreated after a deletion won the race the recipe's first stat only
 	// narrows, closing the lock file first: on Windows the still-open lock
@@ -169,6 +169,21 @@ type transcriptIndexRepairRegistry struct {
 	// refresher-fed repair runs hub-wide, so a fleet-wide staleness (a
 	// schema-fingerprint change) trickles in rather than bursting.
 	laneBusy bool
+	// laneQueue holds the refresher asks that landed while the lane was
+	// busy, one per path, taken FIFO as each lane repair retires: dropping
+	// them instead would let an early session that goes stale again every
+	// cycle take the lane each time — its successful repairs delete its
+	// entry, so the exhaustion pacing never applies to it — and the
+	// sessions behind it stay unindexed indefinitely.
+	laneQueue []transcriptIndexLaneAsk
+}
+
+// transcriptIndexLaneAsk is one refresher ask retained while the lane was
+// busy: the path asking, and the refused build its refusal named — the
+// identity the armed repair revalidates against.
+type transcriptIndexLaneAsk struct {
+	path    string
+	refused string
 }
 
 var transcriptIndexRepairs = newTranscriptIndexRepairRegistry()
@@ -256,17 +271,23 @@ func (r *transcriptIndexRepairRegistry) inFlight(path string) bool {
 }
 
 // askFromRefresher is the message-search refresher's ask for path's repair,
-// through the single background lane. A lane already busy or a path already
-// in flight just skips, retrying next cycle; client reads start their own
-// path's repair immediately, independent of the lane. A path whose budget is
-// exhausted is paced: the lane skips it until the interval has passed since
-// its last refresher re-arm, without recording a failure. refused names the
-// live build the refresher's own refusal stood on, the identity the armed
-// repair revalidates against.
+// through the single background lane. A lane already busy retains the ask —
+// one per path, the newest refusal's identity — and serves it as the running
+// repair retires; a path already in flight just skips, retrying next cycle;
+// client reads start their own path's repair immediately, independent of the
+// lane. A path whose budget is exhausted is paced: the lane skips it until
+// the interval has passed since its last refresher re-arm, without recording
+// a failure. refused names the live build the refresher's own refusal stood
+// on, the identity the armed repair revalidates against.
 func (r *transcriptIndexRepairRegistry) askFromRefresher(path, refused string) {
 	base := filepath.Base(path)
 	r.mu.Lock()
-	if !r.armedLocked() || r.laneBusy {
+	if !r.armedLocked() {
+		r.mu.Unlock()
+		return
+	}
+	if r.laneBusy {
+		r.retainLaneAskLocked(path, refused)
 		r.mu.Unlock()
 		return
 	}
@@ -286,6 +307,54 @@ func (r *transcriptIndexRepairRegistry) askFromRefresher(path, refused string) {
 		r.mu.Unlock()
 		return
 	}
+	r.armLaneLocked(path)
+	r.mu.Unlock()
+	transcriptIndexRepairLog("transcript index repair started (%s)", base)
+	go r.run(path, true, refused)
+}
+
+// retainLaneAskLocked holds a busy lane's ask for the path — one per path —
+// so the lane serves it as the running repair retires. A re-ask overwrites
+// the retained identity: the newest refusal names the build the next repair
+// must revalidate against. Callers hold r.mu.
+func (r *transcriptIndexRepairRegistry) retainLaneAskLocked(path, refused string) {
+	if e := r.entries[path]; e != nil && e.inFlight {
+		return // its own repair is serving it; the next cycle re-asks
+	}
+	for i := range r.laneQueue {
+		if r.laneQueue[i].path == path {
+			r.laneQueue[i].refused = refused
+			return
+		}
+	}
+	r.laneQueue = append(r.laneQueue, transcriptIndexLaneAsk{path: path, refused: refused})
+}
+
+// takeLaneQueuedLocked pops the next retained ask the lane may serve, under
+// the ask-time contract: an ask whose path is already in flight — its own
+// repair is serving it — and an ask whose budget is exhausted within the
+// re-arm interval retire un-taken, exactly as a fresh ask would skip.
+// Callers hold r.mu.
+func (r *transcriptIndexRepairRegistry) takeLaneQueuedLocked() *transcriptIndexLaneAsk {
+	for len(r.laneQueue) > 0 {
+		ask := r.laneQueue[0]
+		r.laneQueue = r.laneQueue[1:]
+		e := r.entries[ask.path]
+		if e != nil && e.inFlight {
+			continue
+		}
+		if e != nil && transcriptIndexRepairNow().Sub(e.lastLaneRearm) < transcriptRepairLaneExhaustedInterval && r.exhaustedLocked(ask.path, e) {
+			continue
+		}
+		r.armLaneLocked(ask.path)
+		return &ask
+	}
+	return nil
+}
+
+// armLaneLocked arms the lane's next repair for path. Callers hold r.mu.
+func (r *transcriptIndexRepairRegistry) armLaneLocked(path string) {
+	e := r.entries[path]
 	if e == nil {
 		e = &transcriptIndexRepairEntry{}
 		r.entries[path] = e
@@ -295,30 +364,31 @@ func (r *transcriptIndexRepairRegistry) askFromRefresher(path, refused string) {
 	if e.failures >= transcriptRepairBudget && e.stamp != nil {
 		e.lastLaneRearm = transcriptIndexRepairNow()
 	}
-	r.mu.Unlock()
-	transcriptIndexRepairLog("transcript index repair started (%s)", base)
-	go r.run(path, true, refused)
 }
 
 // forget drops path's registry entry — the session is gone. A repair
 // completion landing on the dropped entry records nothing, so a deleted
 // session leaves no registry residue, not even from an in-flight repair
-// finishing after the deletion.
+// finishing after the deletion — and not even the ask a busy lane retained
+// for it, which a later take must not re-register.
 func (r *transcriptIndexRepairRegistry) forget(path string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.entries, path)
+	r.laneQueue = slices.DeleteFunc(r.laneQueue, func(ask transcriptIndexLaneAsk) bool { return ask.path == path })
 }
 
 // run completes one armed repair in its detached goroutine: the recipe, then
 // the outcome recorded into the path's entry only if it still exists.
 // viaLane marks a refresher-fed repair, which holds the lane's single slot
-// until it completes. refused is the live build the registration's refusal
-// stood on, the revalidation key the recipe rebuilds only while the disk
-// still names it.
+// until it completes — and, as it releases the slot, takes the next retained
+// ask the queue holds, under the same pacing a fresh ask would meet.
+// refused is the live build the registration's refusal stood on, the
+// revalidation key the recipe rebuilds only while the disk still names it.
 func (r *transcriptIndexRepairRegistry) run(path string, viaLane bool, refused string) {
 	err := runTranscriptIndexRepair(path, refused)
 	base := filepath.Base(path)
+	var next *transcriptIndexLaneAsk
 	r.mu.Lock()
 	if viaLane {
 		r.laneBusy = false
@@ -345,7 +415,20 @@ func (r *transcriptIndexRepairRegistry) run(path string, viaLane bool, refused s
 			transcriptIndexRepairLog("transcript index repair budget exhausted (%s)", base)
 		}
 	}
+	if viaLane {
+		if r.armedLocked() {
+			next = r.takeLaneQueuedLocked()
+		} else {
+			// The hub's background is done: retention retires with it, so a
+			// later wiring does not serve asks a dead context received.
+			r.laneQueue = nil
+		}
+	}
 	r.mu.Unlock()
+	if next != nil {
+		transcriptIndexRepairLog("transcript index repair started (%s)", filepath.Base(next.path))
+		go r.run(next.path, true, next.refused)
+	}
 	if transcriptIndexRepairRecorded != nil {
 		transcriptIndexRepairRecorded(path)
 	}
