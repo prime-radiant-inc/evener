@@ -194,7 +194,7 @@ func checksBehavior(cond ast.Expr) bool {
 		case *ast.BinaryExpr:
 			switch n.Op {
 			case token.EQL, token.NEQ, token.LSS, token.GTR, token.LEQ, token.GEQ:
-				found = isErrCompare(n, token.EQL) || isNumber(n.X) || isNumber(n.Y)
+				found = found || isErrCompare(n, token.EQL) || isNumber(n.X) || isNumber(n.Y)
 			}
 		case *ast.CallExpr:
 			found = found || isIdent(n.Fun, "len")

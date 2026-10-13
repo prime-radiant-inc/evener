@@ -84,16 +84,21 @@ func (s *scanner) scanTS(path, text string) []Target {
 			continue
 		}
 		isCheck := make([]bool, len(b.lines))
-		for i, line := range b.lines {
+		// A check in a comment or a string is not a check.
+		for i, line := range b.code {
 			isCheck[i] = tsCheck.MatchString(line)
 		}
 		if !slices.Contains(isCheck, true) {
 			continue
 		}
 		var inputs []string
-		// The declaration, name included, supplies nothing.
-		for i, line := range b.lines[b.header:] {
-			if !isCheck[b.header+i] && !tsNotInput.MatchString(line) {
+		for i, line := range b.lines {
+			if i == b.nameLine {
+				// The name supplies nothing; the rest of the declaration,
+				// such as a test.each table, does.
+				line = line[:b.nameLo] + line[b.nameHi:]
+			}
+			if !isCheck[i] && !tsNotInput.MatchString(line) {
 				inputs = append(inputs, line)
 			}
 		}
@@ -171,13 +176,14 @@ func (s *scanner) tsLineHasCopy(line string, imported map[string]bool) bool {
 	return false
 }
 
-// tsBlock is one test(...) call: its name, the line it starts on, its lines,
-// and how many of them hold the declaration up to the end of the name.
+// tsBlock is one test(...) call: its name, the line it starts on, its lines
+// and their sanitized form, and where the name's string literal sits (the
+// index of its line in lines, and its byte range on that line).
 type tsBlock struct {
-	name   string
-	start  int
-	lines  []string
-	header int
+	name                     string
+	start                    int
+	lines, code              []string
+	nameLine, nameLo, nameHi int
 }
 
 // tsTestBlocks finds each test in a file. A declaration may spread over
@@ -233,7 +239,11 @@ func tsTestBlocks(text string) []tsBlock {
 		}
 		name, _ := firstGroup(orig[at:lineEnd], sm, 1, 4)
 		last := lineOf(closeParen(san, open) - 1)
-		blocks = append(blocks, tsBlock{name: name, start: i + 1, lines: lines[i : last+1], header: lineOf(at+sm[1]-1) - i + 1})
+		nameLine := lineOf(at)
+		blocks = append(blocks, tsBlock{
+			name: name, start: i + 1, lines: lines[i : last+1], code: code[i : last+1],
+			nameLine: nameLine - i, nameLo: at - starts[nameLine], nameHi: at - starts[nameLine] + sm[1],
+		})
 		i = last + 1
 	}
 	return blocks

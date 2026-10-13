@@ -516,6 +516,63 @@ func TestHelpShowsUsage(t *testing.T) {
 			want: []string{"TestHelpShowsUsage"},
 		},
 		{
+			name: "ts: a commented-out check is not a check",
+			path: "a.test.tsx",
+			src: `test("shows the hint", () => {
+  expect(screen.getByText("Try again")).toBeTruthy();
+  // expect(fake.calls).toHaveLength(1);
+});
+`,
+			prod: []string{"Try again"},
+			want: []string{"shows the hint"},
+		},
+		{
+			name: "ts: a test.each table spread over lines supplies its rows",
+			path: "a.test.tsx",
+			src: `test.each([
+  ["Retry"],
+])("renders the %s label", () => {
+  expect(screen.getByText("Retry")).toBeTruthy();
+});
+`,
+			prod: []string{"Retry"},
+		},
+		{
+			name: "ts: a one-line test.each table supplies its rows",
+			path: "a.test.tsx",
+			src: `test.each([["Retry"]])("renders the %s label", () => {
+  expect(screen.getByText("Retry")).toBeTruthy();
+});
+`,
+			prod: []string{"Retry"},
+		},
+		{
+			name: "go: a numeric comparison before a text comparison is behavior",
+			path: "a_test.go",
+			src: `package x
+func TestRenderShowsTheLabel(t *testing.T) {
+	n, out := render()
+	if matches(n == 2, out == "Try again") {
+		t.Fatal(out)
+	}
+}
+`,
+			prod: []string{"Try again"},
+		},
+		{
+			name: "go: a numeric comparison after a text comparison is behavior",
+			path: "a_test.go",
+			src: `package x
+func TestRenderShowsTheLabel(t *testing.T) {
+	n, out := render()
+	if matches(out == "Try again", n == 2) {
+		t.Fatal(out)
+	}
+}
+`,
+			prod: []string{"Try again"},
+		},
+		{
 			name: "ts: a multi-line declaration's name is not a fixture input",
 			path: "a.test.tsx",
 			src: `test(
