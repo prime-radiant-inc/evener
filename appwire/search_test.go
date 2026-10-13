@@ -105,13 +105,16 @@ func TestSearchTopLevelRoundTrip(t *testing.T) {
 		ID: "root", Ref: "local:root", Title: "Alpha root",
 		State: "active", Age: "now", AskPending: true, ApprovalPending: true,
 	}
-	done := make(chan SearchResponse, 1)
+	done := make(chan struct {
+		resp SearchResponse
+		err  error
+	}, 1)
 	go func() {
 		resp, err := client.Search(ctx, SearchParams{Query: "delegate"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		done <- resp
+		done <- struct {
+			resp SearchResponse
+			err  error
+		}{resp: resp, err: err}
 	}()
 	var written Message
 	select {
@@ -126,7 +129,11 @@ func TestSearchTopLevelRoundTrip(t *testing.T) {
 		},
 	})
 	select {
-	case resp := <-done:
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("Search: %v", result.err)
+		}
+		resp := result.resp
 		if len(resp.Past) != 2 {
 			t.Fatalf("past=%+v", resp.Past)
 		}

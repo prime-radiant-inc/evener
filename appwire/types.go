@@ -793,12 +793,12 @@ type SearchResult struct {
 // response. The hub owns lineage resolution; clients only group by Ref. ID,
 // Ref, Title and State always carry values; Project and Age may be empty.
 type SearchTopLevel struct {
-	ID              string `json:"id"`
-	Ref             string `json:"ref"`
-	Title           string `json:"title"`
-	Project         string `json:"project,omitempty"`
-	State           string `json:"state"`
-	Age             string `json:"age,omitempty"`
+	ID      string `json:"id"`
+	Ref     string `json:"ref"`
+	Title   string `json:"title"`
+	Project string `json:"project,omitempty"`
+	State   string `json:"state"`
+	Age     string `json:"age,omitempty"`
 	// AskPending and ApprovalPending carry the flags of the anchor's own
 	// navigation row, so a live anchor renders its real marks. Absent from
 	// an older hub and from an ended anchor.
