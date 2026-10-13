@@ -212,8 +212,15 @@ func requireTranscriptHistoryFailedWithoutIdentity(t testing.TB, err error, ordi
 	if info != appwire.ErrorTranscriptHistoryFailed {
 		t.Fatalf("history-failed data = %#v, want transcriptHistoryFailed", wire.Data)
 	}
-	if want := fmt.Sprintf("thread history failed at entry %d", ordinal); wire.Message != want {
-		t.Fatalf("history-failed message = %q, want %q", wire.Message, want)
+	// The ordinal is the machine value the message carries; match it without
+	// pinning the wording around it (Copy Is Not a Test Oracle).
+	i := strings.LastIndex(wire.Message, "entry ")
+	if i < 0 {
+		t.Fatalf("history-failed message = %q, want one naming an entry ordinal", wire.Message)
+	}
+	got, err := strconv.ParseUint(wire.Message[i+len("entry "):], 10, 64)
+	if err != nil || got != ordinal {
+		t.Fatalf("history-failed message = %q, want the refusal's entry %d named", wire.Message, ordinal)
 	}
 }
 
@@ -507,6 +514,68 @@ func TestAHeaderCheckFailureStaysRetriable(t *testing.T) {
 	}
 	if items := flattenTestItems(response.Thread.Turns); len(items) != 1 || items[0].Text != "question" {
 		t.Fatalf("post-repair items = %+v, want the transcript's one", items)
+	}
+}
+
+// TestARepairThatLosesTheTranscriptToDeletionLeavesNoSidecar pins the race
+// the recipe's initial stat cannot close: a deletion can remove the
+// transcript and its sidecar directory between the stat and the open, and
+// the open's MkdirAll then resurrects the directory. A rebuild that failed
+// with the transcript gone must finish deletion's contract instead of
+// leaving the resurrected artifacts behind.
+func TestARepairThatLosesTheTranscriptToDeletionLeavesNoSidecar(t *testing.T) {
+	_, _, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	staleSidecarForTest(t, path)
+	dir := transcriptindex.DirFor(path)
+
+	old := transcriptIndexRepairPreOpen
+	transcriptIndexRepairPreOpen = func(p string) {
+		_ = os.Remove(p)
+		_ = os.RemoveAll(transcriptindex.DirFor(p))
+	}
+	t.Cleanup(func() { transcriptIndexRepairPreOpen = old })
+
+	err := repairTranscriptIndex(path)
+	if err == nil {
+		t.Fatal("the rebuild should fail with the transcript deleted mid-repair")
+	}
+	if _, serr := os.Stat(dir); !os.IsNotExist(serr) {
+		t.Fatalf("sidecar dir %s survived the failed repair, want deletion's contract intact", dir)
+	}
+}
+
+// TestAFailedRepairKeepsTheSidecarWhenTheTranscriptSurvives pins the cleanup's
+// boundary: it exists to finish deletion, so a rebuild that fails while the
+// transcript still exists leaves the sidecar directory exactly as the
+// in-place failure path always has.
+func TestAFailedRepairKeepsTheSidecarWhenTheTranscriptSurvives(t *testing.T) {
+	_, _, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	staleSidecarForTest(t, path)
+	dir := transcriptindex.DirFor(path)
+
+	// A transcript the rebuild cannot read still exists — the cleanup must
+	// leave the sidecar directory to the in-place failure path.
+	old := transcriptIndexRepairPreOpen
+	transcriptIndexRepairPreOpen = func(p string) {
+		if err := os.Chmod(p, 0o000); err != nil {
+			t.Errorf("chmod: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		transcriptIndexRepairPreOpen = old
+		_ = os.Chmod(path, 0o644)
+	})
+
+	err := repairTranscriptIndex(path)
+	if err == nil {
+		t.Fatal("the rebuild should fail with an unreadable transcript")
+	}
+	if _, serr := os.Stat(dir); serr != nil {
+		t.Fatalf("sidecar dir %s was removed, want it kept while the transcript exists", dir)
 	}
 }
 

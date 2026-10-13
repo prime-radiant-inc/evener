@@ -48,13 +48,26 @@ var runTranscriptIndexRepair = repairTranscriptIndex
 // not decided yet.
 var transcriptIndexRepairRecorded func(path string)
 
+// transcriptIndexRepairPreOpen, when set, runs between the recipe's
+// transcript stat and its sidecar open — the window where a concurrent
+// deletion can remove the transcript and its sidecar directory. A package
+// variable so tests can inject that deletion deterministically; nil in
+// production.
+var transcriptIndexRepairPreOpen func(path string)
+
 // repairTranscriptIndex rebuilds path's transcript index sidecar from the
 // transcript — the authority — through the exported Rebuild, under the
 // blocking exclusive lock, in the caller's goroutine. It stats the transcript
-// first and aborts without creating anything when it is gone: the open's
-// MkdirAll and lock-file creation would otherwise resurrect a deleted path's
-// sidecar directory. It opens an ordinary handle without catching up, so
-// this rebuild is the one that runs — an open with a built-in catch-up would
+// first and aborts without creating anything when it is already gone. The
+// stat narrows but cannot close the race with a concurrent deletion: the
+// open's MkdirAll and lock-file creation can still land after a deletion
+// removed the transcript and its sidecar directory, resurrecting them. The
+// failure path closes it instead — a rebuild that fails while the
+// transcript is gone removes the sidecar directory, finishing deletion's
+// contract; with no transcript at the path no live session can own the
+// directory, and a transcript that exists again is a new session's, left
+// entirely to it. It opens an ordinary handle without catching up, so this
+// rebuild is the one that runs — an open with a built-in catch-up would
 // either duplicate the rebuild for identity triggers or no-op for
 // corruption. It must not use the hub's cached handles: they carry the
 // refusing policy, which would refuse this rebuild too.
@@ -63,12 +76,27 @@ func repairTranscriptIndex(transcriptPath string) error {
 	if err != nil {
 		return err
 	}
-	index, err := transcriptindex.OpenWithoutCatchUp(transcriptPath, transcriptindex.DirFor(transcriptPath))
+	if transcriptIndexRepairPreOpen != nil {
+		transcriptIndexRepairPreOpen(transcriptPath)
+	}
+	dir := transcriptindex.DirFor(transcriptPath)
+	index, err := transcriptindex.OpenWithoutCatchUp(transcriptPath, dir)
 	if err != nil {
 		return err
 	}
 	defer index.Close() //nolint:errcheck // the rebuild has committed or not; close is hygiene
-	return index.Rebuild(info.Size())
+	if err := index.Rebuild(info.Size()); err != nil {
+		if _, serr := os.Stat(transcriptPath); os.IsNotExist(serr) {
+			// The transcript is gone: everything the open resurrected after
+			// a deletion won is a deleted path's artifacts, so finish the
+			// deletion the race interrupted. This runs while the handle's
+			// lock fd is still open — the deferred Close runs after — and
+			// an open fd does not keep a directory entry alive.
+			_ = os.RemoveAll(dir)
+		}
+		return err
+	}
+	return nil
 }
 
 // transcriptIndexRepairEntry is the registry's record for one transcript
