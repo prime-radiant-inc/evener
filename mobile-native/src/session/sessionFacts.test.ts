@@ -127,6 +127,7 @@ describe("usage", () => {
 				workMillis: 3 * 3_600_000 + 12 * 60_000,
 				contextUsed: 39_800,
 				contextWindow: 200_000,
+				contextAssumed: false,
 				failedToolCalls: 3,
 			}),
 		).toEqual({
@@ -147,13 +148,37 @@ describe("usage", () => {
 				workMillis: 0,
 				contextUsed: 0,
 				contextWindow: 0,
+				contextAssumed: false,
 				failedToolCalls: undefined,
 			}),
 		).toEqual({});
 		expect(
-			usageFacts({ usage: null, cost: undefined, workMillis: 0, contextUsed: 0, contextWindow: 0, failedToolCalls: 1 })
-				.failedToolCalls,
+			usageFacts({
+				usage: null,
+				cost: undefined,
+				workMillis: 0,
+				contextUsed: 0,
+				contextWindow: 0,
+				contextAssumed: false,
+				failedToolCalls: 1,
+			}).failedToolCalls,
 		).toBe("1 failed tool call");
+	});
+
+	it("marks an assumed window as an estimate, not a stated capacity", () => {
+		expect(
+			usageFacts({
+				usage: null,
+				cost: null,
+				workMillis: 0,
+				contextUsed: 25_600,
+				contextWindow: 128_000,
+				contextAssumed: true,
+				failedToolCalls: undefined,
+			}),
+		).toEqual({
+			context: { text: "25.6K of ~128K", fraction: 0.2 },
+		});
 	});
 });
 
