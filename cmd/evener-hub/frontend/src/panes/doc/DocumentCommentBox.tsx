@@ -15,8 +15,15 @@ import styles from "./documentAnnotations.module.css";
 
 // The status vocabulary the later DocPane integration supplies: "unsaved" for a
 // retained attempt/newer comment, "expiry-pending" for that phase, "saved" only
-// for an applied receipt, or "saved, pending draft" for a saved pending handoff.
-export type DocumentCommentStatus = "unsaved" | "expiry-pending" | "saved" | "saved, pending draft";
+// for an applied receipt, "saved, pending draft" for a saved pending handoff, or
+// "reselect the passage" for a preserved note whose capture a source expiry
+// retired — the note cannot Send until a fresh passage is selected.
+export type DocumentCommentStatus =
+  | "unsaved"
+  | "expiry-pending"
+  | "reselect the passage"
+  | "saved"
+  | "saved, pending draft";
 
 export interface DocumentCommentBoxProps {
   work: AnnotationCommentWork;
@@ -87,9 +94,18 @@ export function DocumentCommentBox({
         <Button type="button" variant="quiet" size="sm" onClick={onCancel}>
           Cancel
         </Button>
-        {/* Send is unavailable while saving, while the note is blank, or while the
-            reader's current raw read has suspended annotation authority. */}
-        <Button type="button" variant="primary" size="sm" onClick={onSend} disabled={saving || blank || suspended}>
+        {/* Send is unavailable while saving, while the note is blank, while the
+            reader's current raw read has suspended annotation authority, or
+            while a preserved note has no capture: source expiry retired the
+            capture and a Send without one would silently return from the save
+            with no indication a fresh passage is required. */}
+        <Button
+          type="button"
+          variant="primary"
+          size="sm"
+          onClick={onSend}
+          disabled={saving || blank || suspended || !work.capture}
+        >
           Send
         </Button>
       </div>
