@@ -568,3 +568,85 @@ func TestSandboxedListDirBudgetNamesTheRequestedPathInRootErrors(t *testing.T) {
 		t.Fatalf("confined missing-root error = %q, want fs.ErrNotExist preserved through the wrap", err)
 	}
 }
+
+// listDirLookaheadFixture builds the reviewer's #2375 scenario: a root holding
+// a.txt and b/, where b holds more files than the per-directory entry budget
+// a test shrinks to. A page whose need is met at b — a.txt collected, b
+// collected as the lookahead entry that proves more exist — still has b's
+// listing ahead of it, so the walkers must stop before opening b rather than
+// let its oversized listing fail a call whose page is already valid.
+func listDirLookaheadFixture(t *testing.T, root string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(root, "b")
+	if err := os.MkdirAll(big, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 10 {
+		if err := os.WriteFile(filepath.Join(big, fmt.Sprintf("f%02d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestListDirBudgetKeepsThePageWhenTheLookaheadDirectoryIsTooBig pins the
+// no-fail-closed half of the budget contract on the unconfined arm: once the
+// page need is met, a subdirectory that would never be shown must not be
+// opened either — an oversized one must not turn a valid page into a
+// globBudgetError.
+func TestListDirBudgetKeepsThePageWhenTheLookaheadDirectoryIsTooBig(t *testing.T) {
+	stubMaxGlobDirEntries(t, 5)
+	root := t.TempDir()
+	listDirLookaheadFixture(t, root)
+	env := NewLocalExecutionEnvironment(root)
+
+	budget := NewDirListBudget(0, 1) // need 2: the page entry plus the lookahead
+	got, err := env.ListDirectoryWithBudget(t.Context(), root, 2, budget)
+	if err != nil {
+		t.Fatalf("a page already collected must not be failed by a lookahead directory: %v", err)
+	}
+	var names []string
+	for _, e := range got {
+		names = append(names, filepath.ToSlash(e.Name))
+	}
+	if want := []string{"a.txt", "b"}; !slices.Equal(names, want) {
+		t.Fatalf("limit=1 page = %v, want %v", names, want)
+	}
+	if budget.TruncatedAt() != 2 {
+		t.Fatalf("lookahead walk reported truncatedAt=%d, want 2", budget.TruncatedAt())
+	}
+	if budget.listings != 1 {
+		t.Fatalf("the walk listed %d directories, want 1 (the root only; a need-met walk must not open the lookahead)", budget.listings)
+	}
+}
+
+// TestSandboxedListDirBudgetKeepsThePageWhenTheLookaheadDirectoryIsTooBig is
+// the same regression for the confined arm: the fd-anchored walk must not
+// openat a subdirectory once the page need is met, so an oversized one cannot
+// fail a call whose page is already in hand.
+func TestSandboxedListDirBudgetKeepsThePageWhenTheLookaheadDirectoryIsTooBig(t *testing.T) {
+	stubMaxGlobDirEntries(t, 5)
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	listDirLookaheadFixture(t, worktree)
+
+	budget := NewDirListBudget(0, 1)
+	got, err := env.ListDirectoryWithBudget(t.Context(), worktree, 2, budget)
+	if err != nil {
+		t.Fatalf("a confined page already collected must not be failed by a lookahead directory: %v", err)
+	}
+	var names []string
+	for _, e := range got {
+		names = append(names, filepath.ToSlash(e.Name))
+	}
+	if want := []string{"a.txt", "b"}; !slices.Equal(names, want) {
+		t.Fatalf("confined limit=1 page = %v, want %v", names, want)
+	}
+	if budget.TruncatedAt() != 2 {
+		t.Fatalf("confined lookahead walk reported truncatedAt=%d, want 2", budget.TruncatedAt())
+	}
+	if budget.listings != 1 {
+		t.Fatalf("the confined walk listed %d directories, want 1 (the root only; a need-met walk must not openat the lookahead)", budget.listings)
+	}
+}

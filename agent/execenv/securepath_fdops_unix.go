@@ -750,10 +750,11 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, v
 // the budgeted list_dir walk (#2375): every listing is charged to the budget
 // and read in cancellation-checked chunks through the shared chunked reader
 // (see secureListDirChunked), the walk stops the moment the page need is met,
-// and ctx is checked between entries. A nil budget is the legacy walk
-// exactly — the whole-directory read through secureReadDirEntries, no
-// charges, no stops — which is the path ListVisibleDirectory and the fd-edge
-// tests pin.
+// and ctx is checked between entries. A subdirectory whose entry fills the
+// need is never opened, so a huge one beyond the page cannot fail a call
+// whose page is already valid. A nil budget is the legacy walk exactly — the
+// whole-directory read through secureReadDirEntries, no charges, no stops —
+// which is the path ListVisibleDirectory and the fd-edge tests pin.
 func (s *sandboxFS) walkDirFdBudgeted(ctx context.Context, dirFd int, relPrefix, baseAbs string, depth int, visibleOnly bool, out *[]DirEntry, budget *DirListBudget) error {
 	defer func() { _ = unix.Close(dirFd) }()
 	var ents []fs.DirEntry
@@ -820,6 +821,10 @@ func (s *sandboxFS) walkDirFdBudgeted(ctx context.Context, dirFd int, relPrefix,
 			budget.collect()
 		}
 		if ent.IsDir() && depth > 1 {
+			if budget != nil && !budget.room() {
+				budget.stopWalk()
+				return nil
+			}
 			// Re-open the subdir beneath dirFd (O_NOFOLLOW): a symlinked dir is
 			// refused, and resolution stays anchored at the checked parent.
 			childFd, cerr := secureOpenat(dirFd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)

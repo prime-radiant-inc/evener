@@ -143,7 +143,9 @@ var listDirBaseFS = func(ctx context.Context, dir string, budget *GlobBudget) fs
 //
 // The walk stops — unwinding without error — the moment the budget's page
 // need is met, which is the fix for #2375's unbounded walk: a small page
-// costs work proportional to the page plus one entry, not the subtree.
+// costs work proportional to the page plus one entry, not the subtree — the
+// subdirectory whose entry fills the need is never opened, so a huge one
+// beyond the page cannot fail a call whose page is already valid.
 // Cancellation outranks the cap, matching glob's convention, and every entry
 // passes the glob budget's per-directory and live-entry bounds on its way in.
 func listDirWalk(ctx context.Context, fsys fs.FS, absRoot, rel, prefix string, depth int, out *[]DirEntry, budget *DirListBudget) error {
@@ -188,6 +190,10 @@ func listDirWalk(ctx context.Context, fsys fs.FS, absRoot, rel, prefix string, d
 		*out = append(*out, de)
 		budget.collect()
 		if ent.IsDir() && depth > 1 {
+			if !budget.room() {
+				budget.stopWalk()
+				return nil
+			}
 			if err := listDirWalk(ctx, fsys, absRoot, path.Join(rel, name), relName, depth-1, out, budget); err != nil {
 				return err
 			}
