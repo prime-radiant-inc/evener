@@ -2,6 +2,7 @@ package copyonly
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -86,6 +87,19 @@ func Merge(reports ...Report) Report {
 	return merged
 }
 
+// printer writes formatted text and keeps the first write error, so a
+// report writer can print line by line and still report a failed write.
+type printer struct {
+	w   io.Writer
+	err error
+}
+
+func (p *printer) printf(format string, args ...any) {
+	if p.err == nil {
+		_, p.err = fmt.Fprintf(p.w, format, args...)
+	}
+}
+
 // blankZero is a table cell's count, left empty for zero.
 func blankZero(n int) string {
 	if n == 0 {
@@ -133,44 +147,48 @@ func rankedGroups(per map[string]map[string]int, rank func(map[string]int) int) 
 // WritePackageTable writes the per-package Markdown table of hit counts by
 // category, largest first, with the fixture literals each package excluded.
 // top > 0 keeps only that many packages; the totals row always covers all.
-func WritePackageTable(w io.Writer, r Report, top int) {
+func WritePackageTable(w io.Writer, r Report, top int) error {
+	out := &printer{w: w}
 	per, totals := tally(r.Hits, func(h Hit) string { return path.Dir(h.File) }, func(h Hit) string { return h.Category })
 	pkgs := rankedGroups(per, sumCounts)
 	shown := pkgs
 	if top > 0 && top < len(shown) {
 		shown = shown[:top]
 	}
-	_, _ = fmt.Fprintf(w, "| package | total | %s | fixture (excluded) |\n", strings.Join(Categories, " | "))
-	_, _ = fmt.Fprintf(w, "|---|---:|%s---:|\n", strings.Repeat("---:|", len(Categories)))
+	out.printf("| package | total | %s | fixture (excluded) |\n", strings.Join(Categories, " | "))
+	out.printf("|---|---:|%s---:|\n", strings.Repeat("---:|", len(Categories)))
 	for _, pkg := range shown {
 		cells := make([]string, len(Categories))
 		for i, c := range Categories {
 			cells[i] = blankZero(per[pkg][c])
 		}
-		_, _ = fmt.Fprintf(w, "| `%s` | %d | %s | %s |\n", pkg, sumCounts(per[pkg]), strings.Join(cells, " | "), blankZero(r.Fixtures[pkg]))
+		out.printf("| `%s` | %d | %s | %s |\n", pkg, sumCounts(per[pkg]), strings.Join(cells, " | "), blankZero(r.Fixtures[pkg]))
 	}
 	cells := make([]string, len(Categories))
 	for i, c := range Categories {
 		cells[i] = fmt.Sprintf("**%d**", totals[c])
 	}
-	_, _ = fmt.Fprintf(w, "| **all (%d packages)** | **%d** | %s | **%d** |\n",
+	out.printf("| **all (%d packages)** | **%d** | %s | **%d** |\n",
 		len(pkgs), len(r.Hits), strings.Join(cells, " | "), sumCounts(r.Fixtures))
+	return out.err
 }
 
 // WriteHitsTSV writes every hit as file, line, category, literal, sorted;
 // a literal's tabs and newlines become spaces and it is cut to 160 runes.
-func WriteHitsTSV(w io.Writer, hits []Hit) {
+func WriteHitsTSV(w io.Writer, hits []Hit) error {
+	out := &printer{w: w}
 	sorted := slices.Clone(hits)
 	slices.SortFunc(sorted, func(a, b Hit) int {
 		return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Line, b.Line),
 			cmp.Compare(a.Category, b.Category), cmp.Compare(a.Literal, b.Literal))
 	})
-	_, _ = fmt.Fprintln(w, "file\tline\tcategory\tliteral")
+	out.printf("file\tline\tcategory\tliteral\n")
 	for _, h := range sorted {
 		lit := []rune(strings.NewReplacer("\t", " ", "\n", " ").Replace(h.Literal))
 		lit = lit[:min(len(lit), 160)]
-		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", h.File, h.Line, h.Category, string(lit))
+		out.printf("%s\t%d\t%s\t%s\n", h.File, h.Line, h.Category, string(lit))
 	}
+	return out.err
 }
 
 // areaOf groups a test file for the copy-only table: the frontend as a
@@ -189,7 +207,8 @@ func areaOf(file string) string {
 // WriteCopyOnly writes the copy-only Markdown table per area to table (the
 // targets, then the incidental behavior tests) and every copy-only test as
 // TSV to tsv: file by file, targets before incidental ones.
-func WriteCopyOnly(table, tsv io.Writer, tests []CopyOnlyTest) {
+func WriteCopyOnly(table, tsv io.Writer, tests []CopyOnlyTest) error {
+	tableOut, tsvOut := &printer{w: table}, &printer{w: tsv}
 	rows := slices.Clone(tests)
 	purposeRank := func(p string) int {
 		if p == PurposeCopy {
@@ -205,15 +224,16 @@ func WriteCopyOnly(table, tsv io.Writer, tests []CopyOnlyTest) {
 	per, totals := tally(rows, func(t CopyOnlyTest) string { return areaOf(t.File) },
 		func(t CopyOnlyTest) string { return t.Purpose })
 	areas := rankedGroups(per, func(counts map[string]int) int { return counts[PurposeCopy] })
-	_, _ = fmt.Fprintln(table, "| area | copy-only (targets) | behavior, copy-only oracle (incidental) |")
-	_, _ = fmt.Fprintln(table, "|---|---:|---:|")
+	tableOut.printf("| area | copy-only (targets) | behavior, copy-only oracle (incidental) |\n")
+	tableOut.printf("|---|---:|---:|\n")
 	for _, area := range areas {
-		_, _ = fmt.Fprintf(table, "| `%s` | %s | %s |\n", area, blankZero(per[area][PurposeCopy]), blankZero(per[area][PurposeBehavior]))
+		tableOut.printf("| `%s` | %s | %s |\n", area, blankZero(per[area][PurposeCopy]), blankZero(per[area][PurposeBehavior]))
 	}
-	_, _ = fmt.Fprintf(table, "| **all** | **%d** | **%d** |\n", totals[PurposeCopy], totals[PurposeBehavior])
+	tableOut.printf("| **all** | **%d** | **%d** |\n", totals[PurposeCopy], totals[PurposeBehavior])
 
-	_, _ = fmt.Fprintln(tsv, "file\tline\ttest\tpurpose")
+	tsvOut.printf("file\tline\ttest\tpurpose\n")
 	for _, t := range rows {
-		_, _ = fmt.Fprintf(tsv, "%s\t%d\t%s\t%s\n", t.File, t.Line, t.Test, t.Purpose)
+		tsvOut.printf("%s\t%d\t%s\t%s\n", t.File, t.Line, t.Test, t.Purpose)
 	}
+	return errors.Join(tableOut.err, tsvOut.err)
 }

@@ -1,45 +1,50 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	devcmd "primeradiant.com/evener/cmd/evener-dev"
 )
 
-const devHelp = `Usage: evener-dev <subcommand> [flags]
+// topLevelSubcommands are the commands dispatch routes directly, beside
+// `dev`'s own registry.
+var topLevelSubcommands = []string{
+	"dev", "module-lint", "agent-shards", "hub-shards", "cli-shards", "list-build-flags",
+	"fuzz-harvest", "fuzzcov", "fuzzregistry", "internalcheck", "tomlcheck", "transcript-v2-upgrade",
+}
 
-Subcommands:
-  dev                        Dev tooling (agent-shards, check-gate-flags, cli-shards, covstmt, hub-shards, list-build-flags, module-lint, root-test-flags, timing-parse, web-browser-guards, web-checks)
-  module-lint              Run golangci-lint across workspace modules in parallel waves
-  agent-shards             Run agent test shards in parallel
-  hub-shards               Run cmd/evener-hub test shards in parallel
-  cli-shards               Run cmd/evener test shards in parallel
-  list-build-flags         Print the go test flags that also belong on the go list that enumerates packages
-  fuzz-harvest             Harvest fuzz seed corpora from recorded traffic
-  fuzzcov                  Static fuzz gap gate
-  fuzzregistry             Audit the fuzz target registry
-  internalcheck            Check public packages don't leak internal types
-  tomlcheck                Enforce TOML wire-format naming conventions
-  transcript-v2-upgrade  Convert legacy transcript v1 files to v2
-`
+// assertUsageNamesEverySubcommand checks that the usage offers every command
+// dispatch routes and every registered `dev` subcommand. It reads the names,
+// which are the command line's contract, not the descriptions.
+func assertUsageNamesEverySubcommand(t *testing.T, usage string) {
+	t.Helper()
+	words := map[string]bool{}
+	for _, w := range strings.FieldsFunc(usage, func(r rune) bool { return r == ' ' || r == '\n' || r == ',' || r == '(' || r == ')' }) {
+		words[w] = true
+	}
+	for _, name := range append(slices.Clone(topLevelSubcommands), devcmd.Subcommands()...) {
+		if !words[name] {
+			t.Errorf("usage does not offer %q:\n%s", name, usage)
+		}
+	}
+}
 
 func TestDispatchUsageOutcomes(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       []string
-		wantCode   int
-		wantStdout string
-		wantStderr string
+		name     string
+		args     []string
+		wantCode int
+		// usageOnStdout is where the usage goes: stdout when it was asked
+		// for, stderr when the arguments were wrong.
+		usageOnStdout bool
 	}{
-		{name: "missing subcommand", wantCode: 2, wantStderr: devHelp},
-		{name: "short help", args: []string{"-h"}, wantCode: 0, wantStdout: devHelp},
-		{name: "long help", args: []string{"--help"}, wantCode: 0, wantStdout: devHelp},
-		{name: "help subcommand", args: []string{"help"}, wantCode: 0, wantStdout: devHelp},
-		{
-			name:       "unknown subcommand",
-			args:       []string{"nonexistent-cmd"},
-			wantCode:   2,
-			wantStderr: "evener-dev: unknown subcommand \"nonexistent-cmd\"\n" + devHelp,
-		},
+		{name: "missing subcommand", wantCode: 2},
+		{name: "short help", args: []string{"-h"}, wantCode: 0, usageOnStdout: true},
+		{name: "long help", args: []string{"--help"}, wantCode: 0, usageOnStdout: true},
+		{name: "help subcommand", args: []string{"help"}, wantCode: 0, usageOnStdout: true},
+		{name: "unknown subcommand", args: []string{"nonexistent-cmd"}, wantCode: 2},
 	}
 
 	for _, tc := range tests {
@@ -49,11 +54,16 @@ func TestDispatchUsageOutcomes(t *testing.T) {
 			if code != tc.wantCode {
 				t.Fatalf("dispatch(%q) code = %d, want %d", tc.args, code, tc.wantCode)
 			}
-			if got := stdout.String(); got != tc.wantStdout {
-				t.Fatalf("dispatch(%q) stdout = %q, want %q", tc.args, got, tc.wantStdout)
+			usage, other := stderr.String(), stdout.String()
+			if tc.usageOnStdout {
+				usage, other = other, usage
 			}
-			if got := stderr.String(); got != tc.wantStderr {
-				t.Fatalf("dispatch(%q) stderr = %q, want %q", tc.args, got, tc.wantStderr)
+			if other != "" {
+				t.Fatalf("dispatch(%q) wrote to the other stream: %q", tc.args, other)
+			}
+			assertUsageNamesEverySubcommand(t, usage)
+			if len(tc.args) > 0 && !tc.usageOnStdout && !strings.Contains(usage, tc.args[0]) {
+				t.Errorf("dispatch(%q) does not name the unknown subcommand: %q", tc.args, usage)
 			}
 		})
 	}

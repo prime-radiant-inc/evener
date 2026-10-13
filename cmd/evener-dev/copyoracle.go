@@ -11,9 +11,11 @@
 package dev
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -101,7 +103,7 @@ func copyOracleRun(args []string, stdout, stderr io.Writer, tsInventory tsInvent
 	merged := copyonly.Merge(reports...)
 
 	if *copyOnly != "" {
-		err := writeFile(*copyOnly, func(w io.Writer) { copyonly.WriteCopyOnly(stdout, w, merged.CopyOnly) })
+		err := writeFile(*copyOnly, func(w io.Writer) error { return copyonly.WriteCopyOnly(stdout, w, merged.CopyOnly) })
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "copy-oracle: %v\n", err)
 			return 1
@@ -109,9 +111,12 @@ func copyOracleRun(args []string, stdout, stderr io.Writer, tsInventory tsInvent
 		_, _ = fmt.Fprintf(stderr, "\n%d tests written to %s\n", len(merged.CopyOnly), *copyOnly)
 		return 0
 	}
-	copyonly.WritePackageTable(stdout, merged, *top)
+	if err := copyonly.WritePackageTable(stdout, merged, *top); err != nil {
+		_, _ = fmt.Fprintf(stderr, "copy-oracle: %v\n", err)
+		return 1
+	}
 	if *hits != "" {
-		if err := writeFile(*hits, func(w io.Writer) { copyonly.WriteHitsTSV(w, merged.Hits) }); err != nil {
+		if err := writeFile(*hits, func(w io.Writer) error { return copyonly.WriteHitsTSV(w, merged.Hits) }); err != nil {
 			_, _ = fmt.Fprintf(stderr, "copy-oracle: %v\n", err)
 			return 1
 		}
@@ -120,14 +125,19 @@ func copyOracleRun(args []string, stdout, stderr io.Writer, tsInventory tsInvent
 	return 0
 }
 
-// writeFile creates path and fills it with write.
-func writeFile(path string, write func(io.Writer)) error {
+// writeFile creates path and fills it with write, reporting a failure to
+// write, flush or close it.
+func writeFile(path string, write func(io.Writer) error) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	write(f)
-	return f.Close()
+	buf := bufio.NewWriter(f)
+	err = write(buf)
+	if err == nil {
+		err = buf.Flush()
+	}
+	return errors.Join(err, f.Close())
 }
 
 // tsInventoryScript is the TypeScript half's entry point, relative to the

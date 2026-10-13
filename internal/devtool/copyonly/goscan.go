@@ -248,7 +248,8 @@ func (s *scanner) isAssetPhrase(lit string) bool {
 
 // checksBehavior reports a condition that checks something besides wording
 // anywhere inside it: an expected error (`err == nil`), a length, a numeric
-// comparison, or any other comparison that doesn't compare text with copy.
+// comparison, any other comparison that doesn't compare text with copy, or
+// text built from copy and a value ("Hello "+name), which checks the value.
 func checksBehavior(cond ast.Expr) bool {
 	found := false
 	ast.Inspect(cond, func(n ast.Node) bool {
@@ -265,6 +266,10 @@ func checksBehavior(cond ast.Expr) bool {
 			}
 		case *ast.CallExpr:
 			found = found || isIdent(n.Fun, "len")
+		}
+		// "copy "+value checks that the value came through.
+		for _, c := range comparisons(n) {
+			found = found || c.partial
 		}
 		return !found
 	})
@@ -322,29 +327,36 @@ func copyLiterals(e ast.Expr) []string {
 }
 
 // comparison is a text check: the literal (trimmed; a regex's literal core)
-// and the value it is checked against.
+// and the value it is checked against. partial marks a literal that is only
+// the front of a concatenation with a non-literal ("copy "+value): the check
+// then also asks whether the value came through, which is behavior.
 type comparison struct {
 	lit     string
 	subject ast.Expr
+	partial bool
 }
 
 // comparisons returns the text checks node n itself makes: strings.Contains
 // and its kin, == and != against a string (on either side), and
 // regexp.MustCompile(...).MatchString.
 func comparisons(n ast.Node) []comparison {
+	check := func(e, subject ast.Expr, core func(string) string) []comparison {
+		lit, complete, ok := stringLit(e)
+		if !ok {
+			return nil
+		}
+		return []comparison{{lit: strings.TrimSpace(core(lit)), subject: subject, partial: !complete}}
+	}
+	same := func(s string) string { return s }
 	switch n := n.(type) {
 	case *ast.CallExpr:
 		if pkg, fn := selector(n.Fun); pkg == "strings" && copyComparers[fn] && len(n.Args) == 2 {
-			if lit, ok := stringLit(n.Args[1]); ok {
-				return []comparison{{strings.TrimSpace(lit), n.Args[0]}}
-			}
+			return check(n.Args[1], n.Args[0], same)
 		}
 		if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MatchString" && len(n.Args) == 1 {
 			if compile, ok := sel.X.(*ast.CallExpr); ok && len(compile.Args) == 1 {
 				if pkg, fn := selector(compile.Fun); pkg == "regexp" && fn == "MustCompile" {
-					if lit, ok := stringLit(compile.Args[0]); ok {
-						return []comparison{{strings.TrimSpace(regexCore(lit)), n.Args[0]}}
-					}
+					return check(compile.Args[0], n.Args[0], regexCore)
 				}
 			}
 		}
@@ -352,29 +364,31 @@ func comparisons(n ast.Node) []comparison {
 		if n.Op != token.EQL && n.Op != token.NEQ {
 			return nil
 		}
-		var found []comparison
-		if lit, ok := stringLit(n.Y); ok {
-			found = append(found, comparison{strings.TrimSpace(lit), n.X})
-		}
-		if lit, ok := stringLit(n.X); ok {
-			found = append(found, comparison{strings.TrimSpace(lit), n.Y})
-		}
-		return found
+		return append(check(n.Y, n.X, same), check(n.X, n.Y, same)...)
 	}
 	return nil
 }
 
-// stringLit is the text a string literal holds; for a concatenation that
-// starts with one ("copy "+value), the literal in front.
-func stringLit(e ast.Expr) (string, bool) {
+// stringLit is the text a string literal holds. A concatenation of literals
+// is one literal; one that also concatenates a value ("copy "+value) gives
+// the literal text in front, with complete false.
+func stringLit(e ast.Expr) (text string, complete, ok bool) {
 	e = ast.Unparen(e)
-	if concat, ok := e.(*ast.BinaryExpr); ok && concat.Op == token.ADD {
-		return stringLit(concat.X)
+	if concat, isConcat := e.(*ast.BinaryExpr); isConcat && concat.Op == token.ADD {
+		front, frontComplete, ok := stringLit(concat.X)
+		if !ok || !frontComplete {
+			return front, false, ok
+		}
+		back, backComplete, backOK := stringLit(concat.Y)
+		if !backOK || !backComplete {
+			return front, false, true
+		}
+		return front + back, true, true
 	}
-	lit, ok := e.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
-		return "", false
+	lit, isLit := e.(*ast.BasicLit)
+	if !isLit || lit.Kind != token.STRING {
+		return "", false, false
 	}
-	s, err := strconv.Unquote(lit.Value)
-	return s, err == nil
+	text, err := strconv.Unquote(lit.Value)
+	return text, err == nil, err == nil
 }

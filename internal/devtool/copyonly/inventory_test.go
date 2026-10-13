@@ -2,6 +2,8 @@ package copyonly
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -112,7 +114,9 @@ func testReport() Report {
 func TestWritePackageTable(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	WritePackageTable(&out, testReport(), 0)
+	if err := WritePackageTable(&out, testReport(), 0); err != nil {
+		t.Fatal(err)
+	}
 	want := "| package | total | ts-assert | ts-locator | ts-constant | go-errstring | go-copy | go-asset | fixture (excluded) |\n" +
 		"|---|---:|---:|---:|---:|---:|---:|---:|---:|\n" +
 		"| `cmd/evener-hub/frontend/src` | 3 | 1 | 1 | 1 |  |  |  | 1 |\n" +
@@ -124,7 +128,9 @@ func TestWritePackageTable(t *testing.T) {
 	}
 
 	out.Reset()
-	WritePackageTable(&out, testReport(), 1)
+	if err := WritePackageTable(&out, testReport(), 1); err != nil {
+		t.Fatal(err)
+	}
 	if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 4 || !strings.Contains(lines[2], "frontend/src") {
 		t.Errorf("--top 1 table:\n%s", out.String())
 	}
@@ -133,7 +139,9 @@ func TestWritePackageTable(t *testing.T) {
 func TestWriteHitsTSV(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	WriteHitsTSV(&out, testReport().Hits)
+	if err := WriteHitsTSV(&out, testReport().Hits); err != nil {
+		t.Fatal(err)
+	}
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
 	want := []string{
 		"file\tline\tcategory\tliteral",
@@ -152,7 +160,9 @@ func TestWriteHitsTSV(t *testing.T) {
 func TestWriteCopyOnly(t *testing.T) {
 	t.Parallel()
 	var table, tsv bytes.Buffer
-	WriteCopyOnly(&table, &tsv, testReport().CopyOnly)
+	if err := WriteCopyOnly(&table, &tsv, testReport().CopyOnly); err != nil {
+		t.Fatal(err)
+	}
 	wantTable := "| area | copy-only (targets) | behavior, copy-only oracle (incidental) |\n" +
 		"|---|---:|---:|\n" +
 		"| `agent` | 1 | 1 |\n" +
@@ -174,6 +184,40 @@ func TestWriteCopyOnly(t *testing.T) {
 	}
 }
 
+// failingWriter accepts room bytes, then fails every write.
+type failingWriter struct{ room int }
+
+var errWriteFailed = errors.New("disk full")
+
+func (w *failingWriter) Write(p []byte) (int, error) {
+	if len(p) > w.room {
+		n := w.room
+		w.room = 0
+		return n, errWriteFailed
+	}
+	w.room -= len(p)
+	return len(p), nil
+}
+
+func TestReportWritersReportAWriteThatFailsPartway(t *testing.T) {
+	t.Parallel()
+	r := testReport()
+	for name, write := range map[string]func(io.Writer) error{
+		"package table": func(w io.Writer) error { return WritePackageTable(w, r, 0) },
+		"hits TSV":      func(w io.Writer) error { return WriteHitsTSV(w, r.Hits) },
+		"copy-only table": func(w io.Writer) error {
+			return WriteCopyOnly(w, io.Discard, r.CopyOnly)
+		},
+		"copy-only TSV": func(w io.Writer) error {
+			return WriteCopyOnly(io.Discard, w, r.CopyOnly)
+		},
+	} {
+		if err := write(&failingWriter{room: 40}); !errors.Is(err, errWriteFailed) {
+			t.Errorf("%s: err = %v, want the write failure", name, err)
+		}
+	}
+}
+
 func TestMergeReports(t *testing.T) {
 	t.Parallel()
 	a := Report{Hits: []Hit{{File: "a", Line: 1}}, Fixtures: map[string]int{"p": 1, "q": 2}, CopyOnly: []CopyOnlyTest{{File: "a"}}}
@@ -185,7 +229,9 @@ func TestMergeReports(t *testing.T) {
 }
 
 // TestGoInventoryReadsAConcatenationsLeadingLiteral pins that a check against
-// "copy "+value compares output with the copy in front.
+// "copy "+value is a hit on the copy in front, while the check itself is
+// behavior: the value flows through. An all-literal concatenation is one
+// literal.
 func TestGoInventoryReadsAConcatenationsLeadingLiteral(t *testing.T) {
 	t.Parallel()
 	src := `package x
@@ -215,11 +261,22 @@ func TestSendsTheToken(t *testing.T) {
 	if !reflect.DeepEqual(got.hits, wantHits) {
 		t.Errorf("hits = %+v\nwant %+v", got.hits, wantHits)
 	}
-	wantCopyOnly := []CopyOnlyTest{
-		{File: "pkg/x_test.go", Line: 3, Test: "TestShowsTheMkdirFailure", Purpose: PurposeCopy},
-		{File: "pkg/x_test.go", Line: 10, Test: "TestSendsTheToken", Purpose: PurposeBehavior},
+	if len(got.copyOnly) != 0 {
+		t.Errorf("copy-only = %+v, want none: each check keeps a value", got.copyOnly)
 	}
-	if !reflect.DeepEqual(got.copyOnly, wantCopyOnly) {
-		t.Errorf("copy-only = %+v\nwant %+v", got.copyOnly, wantCopyOnly)
+
+	all, err := newScanner("launchconfig: mkdir failed", "").scanGo("pkg/y_test.go", `package x
+
+func TestShowsTheTitle(t *testing.T) {
+	if title() != "launchconfig: "+"mkdir failed" {
+		t.Fatal(title())
+	}
+}
+`, true)
+	if err != nil {
+		t.Fatalf("scanGo: %v", err)
+	}
+	if want := []Hit{{File: "pkg/y_test.go", Line: 4, Category: CategoryGoCopy, Literal: "launchconfig: mkdir failed"}}; !reflect.DeepEqual(all.hits, want) {
+		t.Errorf("all-literal hits = %+v\nwant %+v", all.hits, want)
 	}
 }

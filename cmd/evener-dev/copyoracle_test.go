@@ -3,6 +3,7 @@ package dev
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -165,6 +166,54 @@ func TestCopyOracleRefusesBadArguments(t *testing.T) {
 		if code := copyOracleRun(args, &stdout, &stderr, ts.inventory); code != 2 {
 			t.Errorf("%s: exit %d, want 2", name, code)
 		}
+	}
+}
+
+// partwayWriter accepts room bytes, then fails every write.
+type partwayWriter struct{ room int }
+
+func (w *partwayWriter) Write(p []byte) (int, error) {
+	if len(p) > w.room {
+		n := w.room
+		w.room = 0
+		return n, errors.New("disk full")
+	}
+	w.room -= len(p)
+	return len(p), nil
+}
+
+func TestCopyOracleFailsWhenTheReportCannotBeWritten(t *testing.T) {
+	t.Parallel()
+	root := copyOracleRepo(t)
+	for name, args := range map[string][]string{
+		"package table":   {"--root", root},
+		"copy-only table": {"--root", root, "--copy-only", filepath.Join(t.TempDir(), "co.tsv")},
+	} {
+		ts := &fakeTS{report: tsReport()}
+		var stderr bytes.Buffer
+		if code := copyOracleRun(args, &partwayWriter{room: 40}, &stderr, ts.inventory); code != 1 {
+			t.Errorf("%s: exit %d, want 1 when stdout fails partway", name, code)
+		}
+		if !strings.Contains(stderr.String(), "disk full") {
+			t.Errorf("%s: stderr = %q, want the write failure", name, stderr.String())
+		}
+	}
+}
+
+func TestWriteFileReportsAFailedWrite(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "out.tsv")
+	err := writeFile(path, func(w io.Writer) error {
+		if _, err := io.WriteString(w, "header\n"); err != nil {
+			return err
+		}
+		return errors.New("disk full")
+	})
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Errorf("writeFile = %v, want the write failure", err)
+	}
+	if err := writeFile(filepath.Join(path, "not-a-dir", "x.tsv"), func(io.Writer) error { return nil }); err == nil {
+		t.Errorf("writeFile under a file succeeded")
 	}
 }
 

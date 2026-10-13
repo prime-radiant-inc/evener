@@ -309,6 +309,44 @@ func TestHelpShowsUsage(t *testing.T) {
 			want: []string{"TestHelpShowsUsage"},
 		},
 		{
+			name: "go: a concatenation with supplied input checks that the input is kept",
+			path: "a_test.go",
+			src: `package x
+func TestRenderShowsTheGreeting(t *testing.T) {
+	name := "Ada"
+	if render(name) != "Hello "+name {
+		t.Fatal(render(name))
+	}
+}
+`,
+			prod: []string{"Hello %s"},
+		},
+		{
+			name: "go: a concatenation with any non-literal operand is a behavior check",
+			path: "a_test.go",
+			src: `package x
+func TestRenderShowsTheGreeting(t *testing.T) {
+	if !strings.Contains(render(), "Hello "+user()+"!") {
+		t.Fatal(render())
+	}
+}
+`,
+			prod: []string{"Hello %s!"},
+		},
+		{
+			name: "go: an all-literal concatenation is copy",
+			path: "a_test.go",
+			src: `package x
+func TestRenderShowsTheGreeting(t *testing.T) {
+	if render() != "Hello, "+"world" {
+		t.Fatal(render())
+	}
+}
+`,
+			prod: []string{"Hello, world"},
+			want: []string{"TestRenderShowsTheGreeting"},
+		},
+		{
 			name: "go: a literal from a text asset is copy",
 			path: "a_test.go",
 			src: `package x
