@@ -911,7 +911,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		warnings = append(warnings, cw...)
 	}
 
-	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family}, prov)
+	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != ""}, prov)
 
 	if hit.synthesized {
 		warnings = append(warnings, "model not in catalog")
@@ -1003,6 +1003,11 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string)
 		ContextWindow: target.Caps.ContextWindow, MaxInputTokens: target.Caps.MaxInputTokens, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
 		StructuredOutput: target.Caps.StructuredOutput, Sampling: target.Caps.Sampling, Reasoning: target.Caps.Reasoning,
 		ReasoningControls: target.Caps.ReasoningControls, EffortValues: target.Caps.EffortValues,
+		// ThinkingShape is the target's vouched verdict, so carrying it keeps
+		// the alias from re-deriving a shape from controls the target's own
+		// derivation invented (a copied ["effort"] would otherwise look like
+		// catalog evidence).
+		ThinkingShape:   target.Caps.ThinkingShape,
 		DefaultEffort:   target.Caps.DefaultEffort,
 		InputModalities: target.Caps.InputModalities, KnowledgeCutoff: target.Caps.KnowledgeCutoff, Cost: target.Caps.Cost,
 	}

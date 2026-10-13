@@ -213,19 +213,31 @@ func TestProtocolBuildBody_CatalogRowThinkingShape(t *testing.T) {
 }
 
 // Off and empty efforts never reach the wire as a thinking object on either
-// shape, including without a ladder to clamp against.
+// shape, while an enabled effort on the same row does — the guard, not the
+// absent shape, is what omits the object.
 func TestProtocolBuildBody_ThinkingOffAndEmpty(t *testing.T) {
-	shapes := []func(*registry.Caps){
-		nil, // effort-only, no ladder
-		func(c *registry.Caps) { c.ReasoningControls = nil },                       // uncataloged
-		func(c *registry.Caps) { c.ReasoningControls = []string{"budget_tokens"} }, // budget row
+	shapes := map[string]func(*registry.Caps){
+		"level": func(c *registry.Caps) { c.ThinkingShape = new("level") },
+		"budget": func(c *registry.Caps) {
+			c.ReasoningControls = []string{"budget_tokens"}
+			c.ThinkingShape = new("budget")
+		},
 	}
-	for i, mutate := range shapes {
-		for _, effort := range []string{"", "NONE", " none "} {
-			body := protoBuild(t, protoReq(effort), protoRes(mutate))
+	for name, mutate := range shapes {
+		for _, effort := range []string{"", "none", "NONE", " null ", "off"} {
+			req := protoReq("high")
+			// Set the pointer directly: protoReq("") would leave it nil and
+			// never reach the helper's normalization.
+			req.ReasoningEffort = new(effort)
+			body := protoBuild(t, req, protoRes(mutate))
 			if _, has := body["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-				t.Fatalf("shape %d effort %q must not send thinkingConfig: %v", i, effort, body["generationConfig"])
+				t.Fatalf("%s row effort %q must not send thinkingConfig: %v", name, effort, body["generationConfig"])
 			}
+		}
+		// The same row with a real effort emits thinking, proving the cases
+		// above exercised the guard rather than an absent shape.
+		if body := protoBuild(t, protoReq("high"), protoRes(mutate)); body["generationConfig"].(map[string]any)["thinkingConfig"] == nil {
+			t.Fatalf("%s row with a real effort must send thinkingConfig", name)
 		}
 	}
 }

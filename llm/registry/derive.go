@@ -11,6 +11,13 @@ type deriveInput struct {
 	Synthesized     bool
 	ProviderSurface string
 	ProviderFamily  string
+	// Aliased marks a row seeded from an alias target: the target's
+	// derivation already settled the thinking-shape question, so the alias
+	// inherits the verdict through the seeded ThinkingShape and never
+	// re-derives one from the copied controls — a copied effort control the
+	// target's own derivation invented would otherwise read as catalog
+	// evidence.
+	Aliased bool
 }
 
 const provDerived = "derived"
@@ -68,7 +75,7 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 	// the level field — so it, a toggle-only row, and a synthesized or
 	// live-only row all leave the shape unset rather than guess a spelling
 	// the model may reject.
-	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized {
+	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized && !in.Aliased {
 		var shape string
 		switch {
 		case slices.Contains(c.ReasoningControls, "budget_tokens"):

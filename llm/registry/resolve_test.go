@@ -187,6 +187,27 @@ func TestResolve_AliasSeeding(t *testing.T) {
 	}
 }
 
+// An alias of a row whose effort control was derived — not catalog-recorded —
+// must not inherit that control as if it were evidence: the alias derives no
+// google thinking shape, exactly like its target (roborev round 3).
+func TestResolve_AliasOfDerivedEffortRow(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.cu-alias]\nalias_of = \"gemini-2.5-computer-use-preview-10-2025\"\n")
+	target := mustResolve(t, r, "google/gemini-2.5-computer-use-preview-10-2025")
+	if target.Caps.ThinkingShape != nil {
+		t.Fatalf("target row must derive no shape, got %v", *target.Caps.ThinkingShape)
+	}
+	alias := mustResolve(t, r, "google/cu-alias")
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("alias must not derive a shape from the target's derived effort control, got %v", *alias.Caps.ThinkingShape)
+	}
+	// A budget-shaped target's alias carries the budget shape through.
+	r2 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.flash-alias]\nalias_of = \"gemini-2.5-flash\"\n")
+	alias = mustResolve(t, r2, "google/flash-alias")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("budget alias must inherit the shape: %+v", alias.Caps.ThinkingShape)
+	}
+}
+
 // TestResolve_Opus45OneMStillBeta pins Opus 4.5's [1m] rows as beta-gated,
 // unlike Sonnet 4.5's [1m] rows above (TestResolve_AliasSeeding), which
 // became plain GA aliases. Live evidence against api.anthropic.com on
