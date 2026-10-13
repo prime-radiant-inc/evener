@@ -3277,6 +3277,61 @@ it("reuses the original immutable operation after a failed first save and a meta
   expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
 });
 
+// A compatible reread with different prefix coverage is accepted within the
+// same epoch and becomes the head's latest observation. The failed first
+// save's retry must still validate against its own retained accepted
+// observation — the full read the capture came from — not against the
+// prefix that now owns the head's evidence key.
+it("reuses the original immutable operation after a failed first save and a compatible prefix reread", async () => {
+  let fail = false;
+  const f = await fixture("failed-save-prefix-reread", {
+    beforeCommit: (operation) => {
+      if (operation === "save" && fail) throw new Error("first-save fault");
+    },
+  });
+  const ordinaryBefore = await f.drafts.load(f.key);
+  const rowsBefore = await annotationRows(f);
+  const sequenceBefore = rowsBefore.sequences[0]?.lastSequence;
+  if (sequenceBefore === undefined) throw new Error("baseline sequence missing");
+
+  const capture = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-A"));
+  expect(capture.state).toBe("accepted");
+  if (capture.state !== "accepted") throw new Error("capture read not accepted");
+  const operation = preparedAnnotationFromLease(
+    capture.lease,
+    "op-prefix-reread",
+    "Keep this scope.",
+    f.destination,
+    "rev-A",
+  );
+  const operationKey = annotationOperationKey(f.document.namespace, "op-prefix-reread");
+
+  fail = true;
+  await expect(f.repo.saveAnnotation(operation)).rejects.toThrow("first-save fault");
+
+  // The compatible prefix reread: same text's start, truncated coverage,
+  // accepted within the SAME epoch and now the head's latest observation.
+  const reread = await f.repo.acceptRead(
+    await f.repo.beginRead(f.document),
+    docContent(SOURCE.slice(0, 10), "rev-A", true),
+  );
+  expect(reread.state).toBe("accepted");
+  if (reread.state !== "accepted") throw new Error("prefix reread not accepted");
+  expect(reread.lease.epoch).toBe(operation.lease.epoch);
+
+  // No source change was established, so the retry must go through against
+  // the operation's own retained accepted observation.
+  fail = false;
+  const receipt = await f.repo.saveAnnotation(operation);
+  expect(receipt.operationId).toBe(operation.operationId);
+  expect(receipt.sessionSequence).toBe(sequenceBefore + 1);
+  const savedRows = await annotationRows(f);
+  const savedOperations = savedRows.operations.filter((row) => row.operationKey === operationKey);
+  expect(savedOperations).toHaveLength(1);
+  expect(savedOperations[0]?.state).toBe("pending");
+  expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
+});
+
 it("retryPending completes a persisted unfinished expiry receipt from a fresh adapter", async () => {
   const f = await fixture("read-expiry-retry-sweep");
   expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");

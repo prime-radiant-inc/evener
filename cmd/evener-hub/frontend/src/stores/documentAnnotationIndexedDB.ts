@@ -807,10 +807,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         if (!head || head.namespaceIncarnation !== namespaceRow.incarnation || head.epoch !== captured.lease.epoch) {
           throw new Error("accepted lease does not match the durable head");
         }
-        const evidence = await requestResult<AnnotationEvidenceRow | undefined>(
-          transaction.objectStore(ANNOTATION_EVIDENCE_STORE).get(head.evidenceKey),
-        );
-        if (!evidence || !evidenceMatches(evidence.content, captured.capture.evidence)) {
+        // The capture validates against ANY observation the current, unexpired
+        // epoch retains — its own accepted observation included, not just the
+        // head's latest. A compatible reread with different prefix coverage
+        // becomes the head's latest observation without establishing a change,
+        // and holding the retry to that latest row alone would strand the
+        // comment despite its original evidence still being retained. Within an
+        // epoch every retained observation is validated-comparable; a genuine
+        // change fences into a new epoch, which the epoch check above rejects.
+        const epochEvidence = (
+          await requestResult<AnnotationEvidenceRow[]>(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).getAll())
+        ).filter((row) => row.documentKey === documentKey && row.epoch === head.epoch);
+        if (!epochEvidence.some((row) => evidenceMatches(row.content, captured.capture.evidence))) {
           throw new Error("accepted source evidence does not match the durable evidence");
         }
         const sequence = await requestResult<AnnotationSequenceRow | undefined>(
