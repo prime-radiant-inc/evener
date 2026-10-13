@@ -376,6 +376,10 @@ async function main() {
         failures.push(`the mid-pass unmount probe drives waits the harness does not expose: ${missing.join(", ")}`);
       }
       for (const { wait, call, setup } of MID_PASS_UNMOUNT_WAITS) {
+        // A wait the harness no longer exposes was named above; calling it would
+        // throw out of the page's evaluate and lose that failure with everything
+        // collected before it.
+        if (missing.includes(call)) continue;
         await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`, BOOT);
         await waitForFonts(send);
         const unmounted = JSON.parse(await evaluate(send, `(async () => {
