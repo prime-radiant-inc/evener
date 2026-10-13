@@ -59,3 +59,22 @@ func TestMemoryPromptAsksForWhenOnlyWhenSwitchedOn(t *testing.T) {
 		}
 	}
 }
+
+// With the title switch off, a page's line links its path as the link text
+// and keeps the rest of the line; memoryIndexLineFor still finds it.
+func TestMemoryIndexLineWithoutTitles(t *testing.T) {
+	p := memoryPage{Path: "money/cents.md", Title: "Money is integer cents", Description: "desc", When: "When code handles money", Tags: []string{"money"}, Updated: "2026-10-12"}
+	t.Setenv(memoryWhenEnv, "only")
+	t.Setenv(memoryIndexTitleEnv, "off")
+	line := memoryIndexLine(p)
+	if want := "- [money/cents.md](money/cents.md) — When code handles money [money] (updated 2026-10-12)"; line != want {
+		t.Fatalf("got %q, want %q", line, want)
+	}
+	if !memoryIndexLineFor(line, "money/cents.md") {
+		t.Fatalf("memoryIndexLineFor does not find %q", line)
+	}
+	t.Setenv(memoryIndexTitleEnv, "")
+	if got := memoryIndexLine(p); !strings.HasPrefix(got, "- [Money is integer cents](money/cents.md) — ") {
+		t.Fatalf("titles on: %q", got)
+	}
+}

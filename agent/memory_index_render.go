@@ -126,13 +126,26 @@ func memoryIndexText(p memoryPage) string {
 	return p.Description
 }
 
+// Spike: EVENER_MEMORY_INDEX_TITLE=off shows each page's path as its link
+// text instead of its title.
+const memoryIndexTitleEnv = "EVENER_MEMORY_INDEX_TITLE"
+
+// memoryIndexLinkText is the text of a page's index link: its title, or its
+// path when the title switch is off.
+func memoryIndexLinkText(p memoryPage) string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(memoryIndexTitleEnv)), "off") {
+		return p.Path
+	}
+	return p.Title
+}
+
 // memoryIndexLine is one page's index line.
 func memoryIndexLine(p memoryPage) string {
 	if execenv.PathHasControl(p.Path) {
 		return memoryUnlinkedIndexLine(p.Path)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), memoryLinkTarget(p.Path), memoryIndexText(p))
+	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(memoryIndexLinkText(p)), memoryLinkTarget(p.Path), memoryIndexText(p))
 	if p.Unreadable {
 		b.WriteString(" " + memoryFrontmatterUnreadable)
 	}
