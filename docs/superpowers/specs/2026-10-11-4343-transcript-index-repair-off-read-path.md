@@ -70,15 +70,23 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      the ordinal of the last entry the refused build had recorded — its
      committed entry count minus one, matching `TranscriptHistoryFailed`'s
      documented semantic ("naming ordinal, the last entry it had
-     recorded", `appwire/errors.go:665-668`) — read at refusal time from
-     the live build's meta.json, published by atomic rename, so the read
-     is tear-safe and still holds the committed count even when a
-     discarded mid-scan had advanced the in-memory one; 0 when there is
-     no live build. (The identity mismatch itself discards the parsed
+     recorded", `appwire/errors.go:676-686`) — and the refused build's
+     own name, both read at refusal time from
+     the live build's meta.json and CURRENT pointer, published by atomic
+     rename, so the read is tear-safe and still holds the committed
+     count even when a discarded mid-scan had advanced the in-memory
+     one; an empty name is the no-live-build refusal, 0 entries
+     likewise. (The identity mismatch itself discards the parsed
      meta the refusing path never adopts, `index.go:362-364`, so the
      disk is the only source.)
    - New sentinel `ErrLockBusy`: the sidecar's lock is held by another
-     writer and the handle refuses to block on it.
+     writer and the handle refuses to block on it. Contention alone
+     translates to it: the platform's contention errno (`EWOULDBLOCK`,
+     `ERROR_LOCK_VIOLATION`) and nothing else, so a fault on the lock
+     itself — a dead fd, an exhausted lock table — wraps and surfaces
+     as an ordinary error; a masquerading fault would ride the
+     refresher's silent lock-busy skip and the hub's transient
+     classification forever, undiagnosable.
    - `OpenRefusing(path, dir)`: opens a handle that performs no full
      rebuild and never blocks on the sidecar's lock, in any operation —
      catch-up, extension, window reads, repair-builder paths alike. It
@@ -252,20 +260,40 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      the rebuild for identity triggers or no-op for corruption). It
      must not use the cached handles: they carry the refusing policy,
      which would refuse the repair's own rebuild.
-   - Call the exported `Rebuild(length)` exactly once, with the
-     stat's size — the one place a full rebuild legitimately runs, off
-     the request path, under the blocking exclusive lock — and close
-     the handle. Every trigger the repair serves is a full-rebuild
-     trigger: `extend`'s incremental checks cannot see record-level
-     corruption (the covered-prefix branch at `index.go:457` passes a
-     corrupt build's identity, size, and growth shape), so a
-     catch-up-only repair would no-op and record "success" for the
-     corrupt-record trigger forever while every read keeps refusing —
-     the livelock round 4 caught. The leftover-rows trigger's cheaper
-     truncate-and-rescan is traded away for this one uniform repair
-     contract.
+   - Call the revalidating rebuild exactly once —
+     `RebuildIfStillRefused(length, refusedBuild)`, with the stat's size
+     and the refused build the registration's refusal named — the one
+     place a full rebuild legitimately runs, off the request path, under
+     the blocking exclusive lock, the check and the rebuild one step —
+     and close the handle. A registration can land long after its
+     refusing read answered (the refusal path's own header gate reads
+     the transcript in between), and in that window another repair can
+     already have committed: rebuilding the healthy sidecar then would
+     re-pay the full cost and rotate an incarnation readers hold, so
+     the recipe rebuilds only while the named build is still the live
+     one and adopts the committed outcome otherwise. That skip is not
+     the catch-up-only no-op the livelock argument above rules out: it
+     fires when the sidecar's live build is no longer the named one —
+     another repair committed a fresh build, or no build is live at all
+     (a deletion that won the race mid-recipe; the next read re-arms
+     with the empty name and the repair after that rebuilds) — and
+     never while the still-named corrupt or leftover-rows build stands:
+     `extend`'s incremental checks cannot see record-level corruption
+     (the covered-prefix branch at `index.go:457` passes a corrupt
+     build's identity, size, and growth shape), so the livelock
+     argument stands — no revalidation path ever answers a corrupt
+     build with success. The same uniform full-rebuild contract serves
+     every trigger, once per staleness; the leftover-rows trigger's
+     cheaper truncate-and-rescan is traded away for it.
    Hub exit abandons an in-flight repair exactly as a crash would,
-   which Scope 1's commit rule makes harmless. On completion the
+   which Scope 1's commit rule makes harmless. Both of the recipe's
+   outcome paths owe the deletion contract: a rebuild that fails while
+   the transcript is gone removes the sidecar directory, finishing the
+   deletion the open's resurrection interrupted — and so does a
+   revalidation skip, whose resurrecting open left the same artifacts
+   behind. With no transcript at the path no live session can own the
+   directory, and a transcript that exists again is a new session's,
+   left entirely to it. On completion the
    registry records success (clearing the budget) or failure
    (incrementing it) — into the path's entry only if it still exists.
 
@@ -310,6 +338,30 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      code as unresolved (retryable), never permanent — permanent is
      only `upgradeRequired` or `targetDeleted` (`historyPaging.ts:111`),
      so this holds by construction; the test plan pins it anyway.
+   - TUI (`cmd/evener-tui`): session entry reads that fail with the
+     rebuilding code retry under the same paced owner the browser store
+     uses (base 500ms, cap 15s, retry-forever), scoped to the current
+     navigation intent. An entry failure leaves the model on the surface
+     it was on — the dashboard, entering from the session list — so the
+     status shows on the model's error line, the surface that would
+     otherwise carry the entry failure: "Repairing session history"
+     instead of the error, standing while the retry stands. Any other
+     outcome replaces it: a successful read enters the session; a
+     history-failed answer ends the paced retry and shows the error on
+     the same line (the TUI's own rule — its error line is the
+     diagnostic; the budget's terminal answer deserves it); an
+     ordinary transient failure keeps the paced retry armed with the
+     status standing, mirroring the browser owner — mid-repair lock
+     contention with no repair in flight answers an ordinary transient,
+     and the entry must not strand on it. Navigating away — entering
+     another session, opening another pane, leaving the hub surface —
+     retires the pending retry and its status, and a late-landing retry
+     for a departed intent enters nothing. The TUI's already-open
+     surfaces keep their existing re-entry points (the C03-class
+     already-open gap the native section records): the displayed
+     session's /details and clear re-reads and the raw transcript
+     viewer's past-session reads surface their one-shot errors as
+     today, arming no retry and showing no status.
 
 7. Message-search refresher (`hubcore/message_search.go`):
    `readTranscriptItems` opens its own refusing handle (not the hub's
@@ -321,8 +373,15 @@ redundant double catch-up on every cold read: one inside `Open`, one at
    the hub's registry to start the shared repair through one background
    lane: at most one refresher-triggered repair runs hub-wide at a
    time, so a fleet-wide staleness (a schema-fingerprint change) trickles
-   in rather than bursting; a lane already busy or a path already in
-   flight just skips, retrying next cycle. Client reads trigger their
+   in rather than bursting; a lane already busy retains the ask — one
+   per path, the newest refusal's identity — and serves it as the
+   running repair retires, so an early session that goes stale again
+   every cycle cannot take the lane each time and leave the sessions
+   behind it unindexed (its successful repairs delete its entry, so
+   the exhaustion pacing never applies to it); a path already in
+   flight just skips, retrying next cycle, and a path whose budget is
+   exhausted paces at the take exactly as at the ask. Client reads
+   trigger their
    own path's repair immediately, independent of the lane, so no user
    waits behind the fleet. The lane and its single slot live in
    package hub; the refresher's registry ask crosses hubcore→hub
@@ -381,7 +440,10 @@ redundant double catch-up on every cold read: one inside `Open`, one at
   instead of waited on.
 - Exactly one repair per transcript path runs at a time, off the
   request path under the exclusive lock, and always rebuilds from the
-  transcript — the authority — through the exported `Rebuild`. Reads
+  transcript — the authority — through the revalidating rebuild:
+  full and unconditional while the sidecar's live build is still the
+  one the registration's refusal named, and a skip that adopts the
+  committed outcome only when another repair already replaced it. Reads
   that arrive during the repair answer the typed rebuilding error, from
   the refusal or from the busy branch's registry lookup alike, so the
   status stays truthful for the repair's whole duration. After the
@@ -415,8 +477,12 @@ redundant double catch-up on every cold read: one inside `Open`, one at
   protocol-compatible daemon is out of scope — issue #4368 tracks that
   the protocol-based fence cannot see a schema-only mismatch at all.
 - The "Repairing session history" status follows the operable rule in
-  Scope 6: shown while the latest read of the ref failed with the
-  rebuilding code, cleared by the next read that does not.
+  Scope 6 on the browser: shown while the latest read of the ref failed
+  with the rebuilding code, cleared by the next read that does not. The
+  TUI's status follows its own owner's lifetime instead — shown while
+  the navigation-scoped entry retry stands, replaced by any other
+  outcome — because the TUI has no per-ref store flag; the retry's
+  lifetime is the flag.
 - A first read of a never-indexed session (no sidecar at all) answers
   the rebuilding state for one retry interval while its repair builds —
   the same uniform path, at the cost of one extra retry round trip
@@ -564,19 +630,36 @@ being repaired.
    budget-exhausted `transcriptHistoryFailed` transition; the older-page
    demand owner keeps the code unresolved (retryable), and a later read
    completes the page.
-6. Message-search tests: a stale-sidecar session is skipped for a cycle
+6. TUI tests (`cmd/evener-tui`): a session entry read rejected with the
+   rebuilding code arms the paced retry and shows "Repairing session
+   history" on the model's error line — the surface the entry failure
+   itself occupies — in place of the error; a later successful read
+   enters the session. The pacing shape is asserted against an
+   injected delay schedule, not lived waits: the owner takes a
+   test-injectable delay function (the suite has no fake clock for
+   tea.Tick), asserted as 500ms, 1s, 2s, 4s, 8s, 15s, 15s. The
+   history-failed answer ends the retry and shows the error on the
+   same line; an ordinary transient failure keeps the retry armed with
+   the status standing; a navigation away retires the pending retry,
+   and a late-landing retry for a departed intent enters nothing; the
+   already-open deferral is pinned — an errored /details or clear
+   re-read of the displayed session, and the raw transcript viewer's
+   past-session read, arm no retry and show no status.
+7. Message-search tests: a stale-sidecar session is skipped for a cycle
    (no failure recorded, no rebuild, no lock-hold) and indexes on the
    next cycle after the repair commits; the refresher's refusal
    registers a repair through the lane (via the injected callback), and
    the lane runs at most one refresher-triggered repair at a time
    across two stale paths while a client read's own repair starts
-   immediately.
-7. Whole-journey check across the real hub stack: open a daemonless
+   immediately — and a busy lane retains a later session's ask and
+   serves it as the running repair retires, so an early session that
+   re-stales every cycle cannot starve the sessions behind it.
+8. Whole-journey check across the real hub stack: open a daemonless
    session with a stale sidecar, confirm the first paint waits through
    the typed-error/retry cycle showing "Repairing session history",
    completes after the repair with correct content and paging, and a
    message composed during the window is unaffected by the read path
    (its delivery is the outbox's existing contract).
-8. Existing suites stay green: `internal/transcriptindex`, hubcore
+9. Existing suites stay green: `internal/transcriptindex`, hubcore
    past-path and message-search tests, `app_threadread*`, and the
    frontend gates (`make test-web`; typecheck included).
