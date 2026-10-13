@@ -406,6 +406,39 @@ func TestNewWrapperDropsACacheRootItCannotCreate(t *testing.T) {
 	}
 }
 
+// One cache root on a filesystem the overlay cannot mount no longer fails the
+// spawn: it is not overlaid, and a cache variable naming it goes to the session
+// scratch — the session-private redirect, cold but working (#4220). The unset
+// case matters most: it is the default under the spawn's own HOME that names the
+// degraded root, so no environment setting points at it.
+func TestEnvFloorRedirectsNpmAndCargoCachesUnderADegradedRoot(t *testing.T) {
+	home := servedHome(t)
+	tmp := "/tmp/evener-session-xyz"
+	roots := []string{home + "/.cache", home + "/.npm", home + "/.cargo", home + "/go/pkg"}
+	policy := ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: roots,
+		OverlayDegradedRoots: []string{home + "/.npm", home + "/.cargo"},
+		Spawned:              AccessScope{Read: ReadAnywhere},
+		resolveHost:          HostFacts{OS: "linux", Home: home, GoEnvFile: filepath.Join(home, ".config", "go", "env")},
+	}
+	out := ApplyEnvFloor([]string{"HOME=" + home}, policy, tmp)
+	for name, want := range map[string]string{"npm_config_cache": tmp + "/npm", "CARGO_HOME": tmp + "/cargo"} {
+		if v, _ := envValue(out, name); v != want {
+			t.Errorf("a %s under a degraded root must go to the session scratch %q, got %q", name, want, v)
+		}
+	}
+
+	// Control: with every root overlaid, the defaults are left alone.
+	healthy := policy
+	healthy.OverlayDegradedRoots = nil
+	out = ApplyEnvFloor([]string{"HOME=" + home}, healthy, tmp)
+	for _, name := range []string{"npm_config_cache", "CARGO_HOME"} {
+		if v, ok := envValue(out, name); ok {
+			t.Errorf("a %s the overlay serves must be left alone, got %q", name, v)
+		}
+	}
+}
+
 // A Go cache that cannot be a directory (an existing file, or one below a
 // file) is not served by an overlaid ancestor: go would fail on it, so it
 // goes to the scratch instead.

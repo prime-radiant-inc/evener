@@ -146,6 +146,17 @@ type HostFacts struct {
 	NpmConfigCache string
 	CargoHome      string
 
+	// OverlayLowerOK reports whether bwrap can mount an unprivileged overlay
+	// with a given directory as its lower on this host. Whether overlay is
+	// supported at all is host-wide (OverlaySupported), but whether one mounts
+	// depends on each lower directory's filesystem: a lower on an overlayfs
+	// root, or a network mount, is refused with EINVAL, which would abort the
+	// whole sandbox at every spawn (#4220). The probe runs a trivial namespaced
+	// overlay mount per root, once per session. nil means "every root can be
+	// overlaid": the host has no overlay support, or nothing supplied a probe
+	// (tests, a hand-built HostFacts).
+	OverlayLowerOK func(root string) bool
+
 	// GoEnvFile is the go env file the probe read GoPath from ("" when none).
 	// The env floor reads it again at each spawn whose go reads the same file,
 	// since go reads it at every run.
@@ -316,6 +327,9 @@ func probeHost(system probeSystem) HostFacts {
 		facts.BwrapPath = path
 		facts.BwrapCapable = bwrapUsernsWorks(system, path)
 		facts.OverlaySupported = bwrapSupportsOverlay(system, path)
+		if facts.OverlaySupported {
+			facts.OverlayLowerOK = func(root string) bool { return bwrapOverlayLowerWorks(system, path, root) }
+		}
 	}
 
 	if facts.OS == "darwin" {
@@ -631,6 +645,33 @@ func bwrapSupportsOverlay(system probeSystem, path string) bool {
 		return false
 	}
 	return strings.Contains(string(out), "--overlay-src")
+}
+
+// bwrapOverlayLowerWorks reports whether bwrap can mount an unprivileged overlay
+// whose lower is root on THIS host, by running a trivial namespaced sandbox with
+// the exact flag pair buildBwrapArgv emits and reporting success only if it exits
+// 0. The lower's filesystem, not the bwrap build, decides: an unprivileged
+// overlay over a lower on an overlayfs root (the reported container case) or a
+// network mount fails EINVAL. Fail-closed: any error is "cannot overlay", so the
+// root degrades rather than aborting every spawn.
+func bwrapOverlayLowerWorks(system probeSystem, path, root string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
+	defer cancel()
+	args := bwrapOverlayProbeArgs(path, root)
+	return system.run(ctx, args[0], args[1:]...) == nil
+}
+
+// bwrapOverlayProbeArgs is the argv the per-root overlay probe runs: the same
+// namespaced base as the capability probe (bwrapProbeArgs — --unshare-user, a
+// --ro-bind / / that makes the mount target exist, --proc, --dev, …), plus the
+// overlay flag pair buildBwrapArgv emits, placed immediately before the "--".
+func bwrapOverlayProbeArgs(path, root string) []string {
+	args := bwrapProbeArgs(path)
+	i := slices.Index(args, "--")
+	if i < 0 {
+		i = len(args)
+	}
+	return slices.Insert(args, i, "--overlay-src", root, "--tmp-overlay", root)
 }
 
 // probeKernelVersion returns `uname -r` best-effort, or "" if unavailable.

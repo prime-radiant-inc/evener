@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"context"
+	"errors"
 	"os"
 	"reflect"
 	"slices"
@@ -21,6 +23,44 @@ func TestBwrapProbeExercisesWrapFlags(t *testing.T) {
 		}
 	}
 }
+
+// The per-root overlay probe runs the same namespaced base as the capability
+// probe, plus the exact overlay flag pair buildBwrapArgv emits for the root, so
+// its verdict is whether that root can be an unprivileged overlay lower (#4220).
+func TestBwrapOverlayProbeArgsUseTheEmittedOverlayFlags(t *testing.T) {
+	t.Parallel()
+	args := bwrapOverlayProbeArgs("/usr/bin/bwrap", "/cache/root")
+	base := bwrapProbeArgs("/usr/bin/bwrap")
+	for _, want := range []string{"--unshare-user", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("overlay probe argv must keep the base flag %q, got %v", want, args)
+		}
+	}
+	if !hasSeq(args, "--overlay-src", "/cache/root", "--tmp-overlay", "/cache/root") {
+		t.Errorf("overlay probe argv must emit the overlay pair for the root: %v (base %v)", args, base)
+	}
+}
+
+// The probe reports a root the trivial overlay mount cannot be made on as
+// un-overlayable, and a root it can as fine (#4220).
+func TestBwrapOverlayLowerWorksReportsTheProbeResult(t *testing.T) {
+	t.Parallel()
+	if bwrapOverlayLowerWorks(probeSystemWithRunErr{err: errors.New("EINVAL")}, "/usr/bin/bwrap", "/cache/root") {
+		t.Error("a failing trivial overlay mount must report the root un-overlayable")
+	}
+	if !bwrapOverlayLowerWorks(probeSystemWithRunErr{}, "/usr/bin/bwrap", "/cache/root") {
+		t.Error("a succeeding trivial overlay mount must report the root overlaid")
+	}
+}
+
+// probeSystemWithRunErr is stubProbeSystem with a settable command result, the
+// one thing the overlay-lower probe asks of the host.
+type probeSystemWithRunErr struct {
+	stubProbeSystem
+	err error
+}
+
+func (s probeSystemWithRunErr) run(context.Context, string, ...string) error { return s.err }
 
 // TestFakeProberRepresentsFloorRows proves every host tier of the spec's
 // fail-closed floor matrix is representable as HostFacts and that the derived

@@ -67,15 +67,37 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 }
 
 // prepareCacheRoots creates, empty, each overlaid cache root that does not exist
-// yet. Such a root has no lower to overlay and a mount target bwrap cannot create
-// in the read-only tree, so it would stay read-only while GOCACHE or GOMODCACHE
-// still point at it; the go command would create the same empty directory on its
-// first unsandboxed run. An empty directory cannot poison a cache. A root that
-// cannot be served yet stays in the policy: each spawn judges it again
-// (liveCacheRoots), so one that becomes available is served.
+// yet, then records the ones this host cannot overlay. Such a root has no lower
+// to overlay and a mount target bwrap cannot create in the read-only tree, so it
+// would stay read-only while GOCACHE or GOMODCACHE still point at it; the go
+// command would create the same empty directory on its first unsandboxed run. An
+// empty directory cannot poison a cache. A root that cannot be served yet stays
+// in the policy: each spawn judges it again (liveCacheRoots), so one that becomes
+// available is served.
 func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 	if rp.CacheStrategy == CacheOverlay {
 		recreateMissingCacheRoots(rp)
+		rp = dropUnoverlayableCacheRoots(rp)
+	}
+	return rp
+}
+
+// dropUnoverlayableCacheRoots records, in OverlayDegradedRoots, each cache root
+// this host's filesystem refuses to be an unprivileged overlay lower for
+// (HostFacts.OverlayLowerOK). A host-wide overlay capability is not enough: one
+// such root in the argv aborts the whole sandbox with EINVAL, failing every
+// spawn, so it is left to the session-private redirect instead. The verdict is
+// per session: the filesystem a root sits on does not change mid-session. A root
+// not yet a directory is left to the per-spawn judgment (servableCacheRoot), so
+// one that becomes available is still served.
+func dropUnoverlayableCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
+	if rp.resolveHost.OverlayLowerOK == nil {
+		return rp
+	}
+	for _, c := range rp.CacheRoots {
+		if servableCacheRoot(rp, c) && !rp.resolveHost.OverlayLowerOK(c) {
+			rp.OverlayDegradedRoots = append(rp.OverlayDegradedRoots, c)
+		}
 	}
 	return rp
 }
@@ -100,11 +122,18 @@ func recreateMissingCacheRoots(rp ResolvedPolicy) {
 // would otherwise move the overlay, and its discarded upper layer, into the
 // workspace.
 //
+// A root recorded in OverlayDegradedRoots is never servable: this host's
+// filesystem refuses its overlay lower, and emitting it would abort every spawn
+// (#4220).
+//
 // The session scratch is checked once, when the wrapper is built (NewWrapper):
 // a cache link retargeted onto the scratch mid-session would at worst send the
 // session's own scratch writes into the discarded layer, which the threat
 // model leaves to the session (docs/sandboxing.md#threat-model).
 func servableCacheRoot(rp ResolvedPolicy, c string) bool {
+	if slices.Contains(rp.OverlayDegradedRoots, c) {
+		return false
+	}
 	fi, err := os.Stat(c)
 	if err != nil || !fi.IsDir() || landsInPersistentRoot(rp, c) || linksThroughPrivateMount(c) ||
 		len(dropCacheRootsSharingWriteRoots([]string{c}, bwrapWriteRoots(rp))) == 0 {
