@@ -297,12 +297,19 @@ export function submitWithPendingTracking(
     const source = opts.source;
     let settlement: DraftSettlement = { cleared: false, draftUnchanged: false, persistence: "pending" };
     let accepted = false;
-    const submitted: SubmittedDraft = await source.submissionDraft({
-      text: opts.text,
-      skillNames,
-      ...(opts.commandNames === undefined ? {} : { commandNames: [...opts.commandNames] }),
-      ...(opts.mentions === undefined ? {} : { mentions: opts.mentions.map((mention) => ({ ...mention })) }),
-    });
+    // An ordinary send proceeds from its captured payload when the durable
+    // draft's own preparation fails (#4194) - the failing storage refuses the
+    // settlement, never the send. A recovery resend rewrites a durable pending
+    // turn, so it keeps strict preparation: its failures dispatch nothing.
+    const submitted: SubmittedDraft = await source.submissionDraft(
+      {
+        text: opts.text,
+        skillNames,
+        ...(opts.commandNames === undefined ? {} : { commandNames: [...opts.commandNames] }),
+        ...(opts.mentions === undefined ? {} : { mentions: opts.mentions.map((mention) => ({ ...mention })) }),
+      },
+      opts.recoveryId === undefined ? { tolerateStorageFault: true } : undefined,
+    );
     return runSubmission(
       {
         ...submitted,
