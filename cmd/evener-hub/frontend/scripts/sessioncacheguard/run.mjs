@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Real tabs, real BroadcastChannel, real IndexedDB. Only AppWire is scripted.
 import path from "node:path";
-import { setTimeout as poll } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -14,35 +13,32 @@ import {
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
+import { pollInPage, waitDeadline } from "./inPageWait.mjs";
+import { SOURCE_DISCOVERED, SUPPRESSED } from "./predicates.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const CHANNEL = "evener.session-cache.v1";
-const WAIT_MS = 5000;
 
 function check(condition, message, observed) {
   if (!condition) throw new Error(`${message}; observed ${JSON.stringify(observed)}`);
 }
 
-async function waitFor(message, read, accepts) {
-  const deadline = performance.now() + WAIT_MS;
-  let observed;
-  do {
-    observed = await read();
-    if (accepts(observed)) return observed;
-    await poll(20); // condition polling, never a sleep used as delivery evidence
-  } while (performance.now() < deadline);
-  throw new Error(`${message} (${WAIT_MS}ms deadline); observed ${JSON.stringify(observed)}`);
-}
+// The snapshot read every wait issues in the page.
+const snapshotExpr = (ref) => `window.sessionCacheGuard.snapshot(${JSON.stringify(ref)})`;
 
 function tabAPI(page, label) {
   const call = (method, ...args) =>
     evaluate(page.send, `window.sessionCacheGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+  const checkSnapshot = (state) => {
+    check(state.errors.length === 0, `tab ${label} page errors`, state);
+    return state;
+  };
   return {
+    send: page.send,
     call,
+    checkSnapshot,
     async snapshot(ref) {
-      const state = await call("snapshot", ref);
-      check(state.errors.length === 0, `tab ${label} page errors`, state);
-      return state;
+      return checkSnapshot(await call("snapshot", ref));
     },
   };
 }
@@ -70,11 +66,11 @@ async function siblingDeletion(a, b) {
   const idle = await b.snapshot(ref);
   check(idle.lifetime === null, "B must start without an open lease", idle);
   await a.call("delete", ref); // action-owned fence, never markCacheSessionsDeleted directly
-  const healed = await waitFor(
-    "sibling deletion heal: B never gained suppression-only state",
-    () => b.snapshot(ref),
-    (state) => state.lifetime?.suppressed === true,
-  );
+  const healPoll = await pollInPage(b.send, snapshotExpr(ref), SUPPRESSED);
+  const healed = b.checkSnapshot(healPoll.observed);
+  if (!healPoll.ok) {
+    throw waitDeadline("sibling deletion heal: B never gained suppression-only state", healed);
+  }
   check(
     isDeepStrictEqual(healed.lifetime, { suppressed: true }) && !healed.deletedRefs.includes(ref),
     "B must suppress without joining the deleting tab's deletedRefs",
@@ -112,11 +108,11 @@ async function clearEpoch(a, b) {
   check(cleared.committed, "A clear must commit", cleared);
   // NO B cache read/write here. The held read has not published a model, so
   // no debounce can accidentally observe the new durable epoch and heal B.
-  const suppressed = await waitFor(
-    "clear-epoch suppression: B never suppressed before storage I/O",
-    () => b.snapshot(ref),
-    (state) => state.lifetime?.suppressed === true,
-  );
+  const suppressedPoll = await pollInPage(b.send, snapshotExpr(ref), SUPPRESSED);
+  const suppressed = b.checkSnapshot(suppressedPoll.observed);
+  if (!suppressedPoll.ok) {
+    throw waitDeadline("clear-epoch suppression: B never suppressed before storage I/O", suppressed);
+  }
   check(
     suppressed.lifetime.leaseEpoch === before.lifetime.leaseEpoch,
     "clear must suppress, not rebind B's lease",
@@ -140,15 +136,15 @@ async function driverRealm(page) {
     frameId: frame.result.frameTree.frame.id,
     worldName: "sessioncacheguard-driver",
   });
-  const run = (expression) =>
-    evaluate(
-      (method, params) => page.send(method, { ...params, contextId: world.result.executionContextId }),
-      expression,
-    );
+  const realmSend = (method, params) => page.send(method, { ...params, contextId: world.result.executionContextId });
+  const run = (expression) => evaluate(realmSend, expression);
   await run(`globalThis.received = []; globalThis.observer = new BroadcastChannel(${JSON.stringify(CHANNEL)});
     observer.onmessage = event => { if (event.data.guardProbe) received.push(event.data.guardProbe); };`);
   return {
-    seen: (tag) => run(`received.includes(${JSON.stringify(tag)})`),
+    // The delivery barrier as one bounded in-page evaluation: the same
+    // received.includes predicate at the same 20ms cadence on the same 5s
+    // deadline, rather than one CDP round trip per Node tick.
+    waitSeen: (tag) => pollInPage(realmSend, `received.includes(${JSON.stringify(tag)})`, `(seen) => seen === true`),
     post: (envelope) =>
       run(`(() => { const sender = new BroadcastChannel(${JSON.stringify(CHANNEL)});
       sender.postMessage(${JSON.stringify(envelope)}); sender.close(); })()`),
@@ -161,18 +157,14 @@ async function channelFiltering(a, b, tabs) {
   // Learn each real sourceId from an actual action's native outgoing envelope.
   await a.call("delete", "local:sessioncacheguard-source-a");
   await b.call("delete", "local:sessioncacheguard-source-b");
-  const sources = await waitFor(
-    "channel filtering: source discovery never arrived",
-    async () => [
-      await a.snapshot("local:sessioncacheguard-source-b"),
-      await b.snapshot("local:sessioncacheguard-source-a"),
-    ],
-    (states) =>
-      states.every(
-        (state) =>
-          typeof state.sourceId === "string" && state.sourceId.length > 0 && state.lifetime?.suppressed === true,
-      ),
-  );
+  const [aSourcePoll, bSourcePoll] = await Promise.all([
+    pollInPage(a.send, snapshotExpr("local:sessioncacheguard-source-b"), SOURCE_DISCOVERED),
+    pollInPage(b.send, snapshotExpr("local:sessioncacheguard-source-a"), SOURCE_DISCOVERED),
+  ]);
+  const sources = [a.checkSnapshot(aSourcePoll.observed), b.checkSnapshot(bSourcePoll.observed)];
+  if (!(aSourcePoll.ok && bSourcePoll.ok)) {
+    throw waitDeadline("channel filtering: source discovery never arrived", sources);
+  }
   check(sources[0].sourceId !== sources[1].sourceId, "real tabs must own distinct source IDs", sources);
   await resetTabs(a, b);
   const drivers = [];
@@ -193,32 +185,40 @@ async function channelFiltering(a, b, tabs) {
       guardProbe: "wrong-version",
     };
     await drivers[0].post(wrong);
-    await waitFor(
-      "channel filtering: wrong-version probe never reached both tabs",
-      async () => {
-        const delivered = await Promise.all(drivers.map((driver) => driver.seen(wrong.guardProbe)));
-        const states = (await snapshotBoth(ref)).map(stateOnly);
-        check(isDeepStrictEqual(states, baseline), "channel filtering: wrong-version envelope changed a tab", states);
-        return delivered;
-      },
-      (seen) => seen.every(Boolean),
+    const wrongPolls = await Promise.all(drivers.map((driver) => driver.waitSeen(wrong.guardProbe)));
+    // The old accept tick read BOTH tabs after the delivery it accepted on, so
+    // the invariant is sampled here, at that same point: the delivery barrier
+    // is the accept, and this read is what proves the probe changed neither tab.
+    const wrongStates = (await snapshotBoth(ref)).map(stateOnly);
+    check(
+      isDeepStrictEqual(wrongStates, baseline),
+      "channel filtering: wrong-version envelope changed a tab",
+      wrongStates,
     );
+    if (!wrongPolls.every((poll) => poll.ok)) {
+      throw waitDeadline(
+        "channel filtering: wrong-version probe never reached both tabs",
+        wrongPolls.map((poll) => poll.observed),
+      );
+    }
     // One post: A must ignore its OWN ID, B must accept that very same ID.
     await drivers[0].post({ ...wrong, version: 1, sourceId: sources[0].sourceId, guardProbe: "own-source" });
-    const accepted = await waitFor(
-      "channel filtering: B did not accept A's sourceId",
-      async () => {
-        const delivered = await Promise.all(drivers.map((driver) => driver.seen("own-source")));
-        const states = await snapshotBoth(ref);
-        check(
-          isDeepStrictEqual(stateOnly(states[0]), baseline[0]),
-          "channel filtering: A accepted its own sourceId",
-          states[0],
-        );
-        return { states, delivered };
-      },
-      (observed) => observed.delivered.every(Boolean) && observed.states[1].lifetime?.suppressed === true,
+    const [aSeenPoll, bSeenPoll, bStatePoll] = await Promise.all([
+      drivers[0].waitSeen("own-source"),
+      drivers[1].waitSeen("own-source"),
+      pollInPage(b.send, snapshotExpr(ref), SUPPRESSED),
+    ]);
+    const delivered = [aSeenPoll.observed, bSeenPoll.observed];
+    const acceptedStateA = await a.snapshot(ref);
+    check(
+      isDeepStrictEqual(stateOnly(acceptedStateA), baseline[0]),
+      "channel filtering: A accepted its own sourceId",
+      acceptedStateA,
     );
+    const accepted = { states: [acceptedStateA, b.checkSnapshot(bStatePoll.observed)], delivered };
+    if (!(aSeenPoll.ok && bSeenPoll.ok && bStatePoll.ok)) {
+      throw waitDeadline("channel filtering: B did not accept A's sourceId", accepted);
+    }
     check(!accepted.states[1].deletedRefs.includes(ref), "B sibling acceptance must not set deletedRefs", accepted);
   } finally {
     await Promise.all(drivers.map((driver) => driver.close()));
