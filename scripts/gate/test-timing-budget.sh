@@ -33,8 +33,8 @@
 #         a ceiling, so enforcing the flat 3s would red the gate on tests that
 #         were always over it. Give the test a class to enforce it.
 #     bounded-wait unit has no class yet by ruling, so its members stay on the
-#     flat ceiling; the web repo-audit test is a class of one and is split or
-#     sped up rather than blessed.
+#     flat ceiling; the web repo-audit test was a class of one and #4608 split it
+#     into one case per slice rather than blessing it.
 #
 # A package the budget file does not mention is a WARN, not silently skipped —
 # see kata b6rv's stop condition. When the budget file is missing or its
@@ -45,7 +45,12 @@
 # deliberate warn state. An unparseable file is a broken config, not an absent
 # one, so it fails in every mode naming the file and the parse error — otherwise
 # a stray comma would read as no baseline and silently disarm every ratio and
-# every perTestCeilingClasses ceiling (issue #4609).
+# every perTestCeilingClasses ceiling (issue #4609). A `packages` value that is
+# present but not an object is the same broken config reached a different way: a
+# hand-edit `"packages": []` would otherwise read as no baseline and disarm the
+# whole ratchet with a green gate, and `"packages": "x"` would crash with a
+# traceback. It fails in every mode through the same path, naming the file
+# (issue #4614).
 #
 # The one thing that fails in EVERY mode, --check or not, is a broken
 # measurement: `go list` or `go test` exiting nonzero, or a package go list
@@ -356,7 +361,18 @@ except FileNotFoundError:
 except ValueError as exc:
 	fail_malformed("could not be parsed: " + str(exc))
 
-packages = budget.get("packages") or {}
+# A `packages` value present but not an object is a broken config, not an empty
+# map: `packages or {}` swallowed the falsy mistakes ([], 0, false, "") into the
+# NO BASELINE warn state (exit 0, nothing enforced) and crashed on the truthy
+# ones (issue #4614). Test the KEY, not the value — `budget.get` cannot tell an
+# absent key from an explicit `null`, and `{"packages": null}` disarms the same
+# way — and route it through the malformed-config path above (#4609), which fails
+# in every mode naming the file. `isinstance(budget, dict)` keeps a non-object
+# TOP-level budget on its existing path (a traceback), which #4609 left alone.
+if isinstance(budget, dict) and "packages" in budget and not isinstance(budget["packages"], dict):
+	fail_malformed("packages must be an object mapping each package to its budget seconds (got "
+		+ type(budget["packages"]).__name__ + ")")
+packages = budget.get("packages", {})
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 
 # The per-class ceilings (#4601, ruling 2026-10-13). A test whose name is listed
