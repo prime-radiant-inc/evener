@@ -185,16 +185,25 @@ func listDirListingName(relPrefix string) string {
 }
 
 // listDirReadOS lists one directory in charged, cancellation-checked chunks
-// through the shared chunked reader, over the raw descriptor os.Open hands
-// back. The walk reads OS paths instead of going through an fs.FS because a
-// directory name that is not valid UTF-8 is a legal Linux filename that io/fs
-// path validation rejects — a recursive listing over such a tree must
-// traverse it the way the legacy walk's raw paths did, not error on the name
-// and discard the page. dir names the listing for the budget's accounting
-// (see listDirListingName); the descriptor's own name is the absolute path,
-// so its entries' Info resolves against real paths.
+// through the shared chunked reader, over the raw descriptor the root open
+// hands back. The walk reads OS paths instead of going through an fs.FS
+// because a directory name that is not valid UTF-8 is a legal Linux filename
+// that io/fs path validation rejects — a recursive listing over such a tree
+// must traverse it the way the legacy walk's raw paths did, not error on the
+// name and discard the page. dir names the listing for the budget's
+// accounting (see listDirListingName); the descriptor's own name is the
+// absolute path, so its entries' Info resolves against real paths.
+//
+// The context is checked before the open because a listing that never starts
+// has no chunk for the reader's own checks to land in, and the open itself is
+// where an unfenced one hangs: a readerless FIFO at the requested path blocks
+// the open until a writer appears. The open is directory-fenced
+// (listDirOpenDir), so a FIFO fails ENOTDIR promptly instead.
 func listDirReadOS(ctx context.Context, absPath, dir string, budget *GlobBudget) ([]fs.DirEntry, error) {
-	f, err := os.Open(absPath)
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, cerr
+	}
+	f, err := listDirOpenDir(absPath)
 	if err != nil {
 		return nil, err
 	}
