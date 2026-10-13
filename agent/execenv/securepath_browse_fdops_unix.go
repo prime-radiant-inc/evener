@@ -57,9 +57,10 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	// A regular file whose resolved path sits inside a pseudo root is a
 	// stream (it stats regular; its read can block), so it keeps the flag,
 	// and the grepCtxFile wrapper lets the capped read arm its deadline.
-	// openBeneathRoot refuses symlinks, so the spelled path is the resolved
-	// one.
-	file, err := admitReadFD(fd, name, true, isPseudoFsPath(filepath.Join(f.basePath, name)))
+	// openBeneathRoot refuses symlinks beneath the root, but the anchored
+	// root itself may have been reached through an alias, so fdStreamed also
+	// asks the descriptor's mount.
+	file, err := admitReadFD(fd, name, true, fdStreamed(fd, isPseudoFsPath(filepath.Join(f.basePath, name))))
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 	}
@@ -102,6 +103,18 @@ func toFsErr(err error) error {
 	default:
 		return err
 	}
+}
+
+// fdStreamed classifies an admitted regular file for the streamed read path,
+// from the descriptor the open actually produced: the base a browse anchors
+// on may be reached through an alias the open policy tolerated, leaving the
+// spelled path looking non-pseudo while the descriptor itself sits on a
+// pseudo mount — admitting that as an ordinary file clears O_NONBLOCK, and
+// a blocked read on it sits past both the deadline and cancellation. The
+// spelled check stays alongside the mount magic so a masked (stub-backed)
+// test root keeps its authority where the descriptor's mount cannot be faked.
+func fdStreamed(fd int, spelled bool) bool {
+	return spelled || fdOnPseudoMount(fd)
 }
 
 // glob resolves matches for pattern beneath a policy-checked base directory,
@@ -315,7 +328,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 // out, non-regular files, and binary files (grepAccum.feed) are skipped. Its
 // output path is ".", the unsandboxed walk's name for a named file.
 func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globFilters []string, skip func(rel string) bool) (string, error) {
-	f, err := admitReadFD(fd, path, false, isPseudoFsPath(path))
+	f, err := admitReadFD(fd, path, false, fdStreamed(fd, isPseudoFsPath(path)))
 	if err != nil {
 		return "", nil //nolint:nilerr // best-effort grep: a non-regular file is skipped, as in the walk
 	}
