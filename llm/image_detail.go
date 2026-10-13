@@ -38,7 +38,7 @@ func ChatImageDetail(partDetail, capDetail string) string {
 // the row's value, else the wire's "high" default. The part's and the row's
 // values ride verbatim; this builder does not map them to a vocabulary.
 func ResponsesImageDetail(partDetail, capDetail string) string {
-	if strings.EqualFold(capDetail, "omit") {
+	if capDetail == "omit" {
 		return ""
 	}
 	if partDetail != "" {

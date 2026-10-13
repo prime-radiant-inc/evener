@@ -66,9 +66,9 @@ Wire detail, by protocol:
 | anthropic / google | any | any | no detail field |
 
 Normalization: the chat branch trims and lowercases both values and admits only
-`auto|low|high` (mapping `original` to `high`). The Responses branch compares the
-row's value to `omit` case-insensitively and otherwise carries the part's and the
-row's values verbatim.
+`auto|low|high` (mapping `original` to `high`). The Responses branch drops the
+field when the row's value is exactly `omit`, and otherwise carries the part's
+and the row's values verbatim, with no trimming.
 
 The estimator resolves through the same function: `chat` and `responses` get
 their branch, and any other protocol carries the part's own value and nothing
@@ -84,6 +84,10 @@ Every wire outcome is unchanged. One estimate moves:
   detail (the vision side-channel stopped pinning one in #4489), so this is
   reachable only from tests — and it is the divergence the shared rule exists to
   remove.
+- A Responses part whose detail is whitespace only no longer falls through to
+  the row's cap: the builder always sent that whitespace value, and the
+  estimator now reads it too, so a `low` cap alongside a whitespace part detail
+  bills the full-detail formula instead of 85. Also test-only.
 - A Responses row with no cap and no part detail resolved to `""` and now
   resolves to `high`; `estimateOpenAIImageTokens` treats every value but `low`
   identically, so no count moves.

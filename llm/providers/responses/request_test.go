@@ -235,6 +235,9 @@ func TestBuildBody_ToolResultImageDetail(t *testing.T) {
 	if d := detailOf(build(t, req, resolved(nil))); d != "high" {
 		t.Fatalf("baseline tool-result detail = %v", d)
 	}
+	if d := detailOf(build(t, req, resolved(func(c *registry.Caps) { c.ImageDetail = new("low") }))); d != "low" {
+		t.Fatalf("row detail on a tool-result image = %v, want low", d)
+	}
 	if d := detailOf(build(t, req, resolved(func(c *registry.Caps) { c.ImageDetail = new("omit") }))); d != nil {
 		t.Fatalf("omit must drop the tool-result detail, got %v", d)
 	}
