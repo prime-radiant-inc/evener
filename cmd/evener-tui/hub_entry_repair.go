@@ -51,15 +51,22 @@ func hubEntryRepairRetryCmd(delay time.Duration, ref appwire.Ref, seq int) tea.C
 	}
 }
 
-// isHubTranscriptIndexRebuilding reports whether err is the hub's typed
-// answer for a daemonless read whose sidecar is being repaired in the
-// background: retrying is the right response, and the read that follows
-// the repair's commit succeeds. wireErrorInfo reads both data shapes —
-// the typed struct an in-process error carries and the map the client's
-// JSON decode produces — so a real wire error matches, not just a
-// constructed one.
-func isHubTranscriptIndexRebuilding(err error) bool {
-	return wireErrorInfo(err) == appwire.ErrorTranscriptIndexRebuilding
+// isHubTranscriptEntryRetryable reports whether err is a typed answer a
+// paced entry retry converges: the hub's rebuilding answer (a repair the
+// hub owns in the background, whose commit the next read follows) or its
+// lock-contention answer (an ordinary writer mid-extension or a foreign
+// rebuild, with nothing registered — the TUI has no ordinary-error retry,
+// so the typed answer is what keeps a first entry from stranding on it).
+// Both carry the automatic retry disposition, and the status stands while
+// the retry does. wireErrorInfo reads both data shapes — the typed struct
+// an in-process error carries and the map the client's JSON decode
+// produces — so a real wire error matches, not just a constructed one.
+func isHubTranscriptEntryRetryable(err error) bool {
+	switch wireErrorInfo(err) {
+	case appwire.ErrorTranscriptIndexRebuilding, appwire.ErrorTranscriptIndexLocked:
+		return true
+	}
+	return false
 }
 
 // isHubTranscriptEntryTerminal reports whether err is an answer no paced

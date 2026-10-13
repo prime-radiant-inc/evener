@@ -81,7 +81,14 @@ func assertStatusLine(t *testing.T, m hubModel, raw error) {
 // wire.
 func jsonDecodedRebuildingError(t *testing.T) error {
 	t.Helper()
-	original := appwire.WithHistoryReadIdentity(appwire.TranscriptIndexRebuilding(), appwire.DaemonlessBootGeneration, 0)
+	return jsonDecodedWireError(t, appwire.WithHistoryReadIdentity(appwire.TranscriptIndexRebuilding(), appwire.DaemonlessBootGeneration, 0))
+}
+
+// jsonDecodedWireError round-trips a wire error through the JSON the client
+// actually receives, so a matcher is proven against the map shape
+// encoding/json produces, never the typed struct the hub built.
+func jsonDecodedWireError(t *testing.T, original appwire.WireError) error {
+	t.Helper()
 	data, err := json.Marshal(original)
 	if err != nil {
 		t.Fatal(err)
@@ -105,6 +112,25 @@ func TestAJSONDecodedRebuildingErrorArmsTheRetry(t *testing.T) {
 	next := updated.(hubModel)
 	if next.entryRepairRef != ref {
 		t.Fatal("a wire-decoded rebuilding error did not arm the retry: the matcher never sees the client's map shape")
+	}
+	assertStatusLine(t, next, nil)
+	executeEntryRepairCmd(t, cmd)
+}
+
+// The typed lock-contention answer arms the paced entry retry too: the TUI
+// has no ordinary-error retry, so a bare contention error would strand the
+// entry — the typed answer is what the hub's no-repair contention branch
+// sends, in the wire-decoded map shape a real client receives.
+func TestAJSONDecodedLockedErrorArmsTheRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m := newHubModel(nil, "http://hub.test")
+	ref := mustParseRef(t, "local:01EVENER")
+
+	locked := jsonDecodedWireError(t, appwire.WithHistoryReadIdentity(appwire.TranscriptIndexLocked(), appwire.DaemonlessBootGeneration, 0))
+	updated, cmd := m.Update(hubSessionMsg{ref: ref.String(), err: locked})
+	next := updated.(hubModel)
+	if next.entryRepairRef != ref {
+		t.Fatal("a wire-decoded lock-contention error did not arm the retry: the entry would strand on it")
 	}
 	assertStatusLine(t, next, nil)
 	executeEntryRepairCmd(t, cmd)
@@ -1680,5 +1706,152 @@ func TestAnOlderRetryResponseDefersWhileTheNewerRetryReadRuns(t *testing.T) {
 	}
 	if !settled {
 		t.Fatal("the landing issued no tagged reconcile for the entered session")
+	}
+}
+
+// A navigation that ends in a terminal error must not strand the
+// reconciliation obligation an earlier superseded read recorded while this
+// read was pending: the displayed session's subscription is repaired now,
+// with the terminal error still surfacing.
+func TestATerminalNavigationErrorSettlesTheDeferredReconciliation(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session C is displayed when the user picks A, then B before either
+	// answers.
+	enteredC, _ := m.Update(hubSessionMsg{
+		ref:    "local:01C",
+		detail: hubSessionDetail{Ref: "local:01C", SessionID: "sess_c", State: appwire.ThreadStatusIdle},
+	})
+	watching := enteredC.(hubModel)
+	pickA := watching.issuePickedSessionRead(refA)
+	watching.issuePickedSessionRead(refB)
+
+	// A's superseded response lands first: discarded, its reconciliation
+	// deferred on B's pending flight.
+	afterA, _ := watching.Update(pickA().(hubSessionMsg))
+	deferred := afterA.(hubModel)
+	if !deferred.liveNavNeedsReconcile {
+		t.Fatal("setup: the superseded pick's discard recorded no obligation")
+	}
+
+	// B's answer is terminal — the session was deleted while its repair
+	// ran: the navigation ends, and the recorded obligation settles NOW
+	// (no landing is left to settle it), with the deletion still shown.
+	// The delivery carries B's own pick tags: a tracked flight's conclusion
+	// is the only shape that can carry a deferred obligation.
+	terminal := targetDeletedEntryError(t)
+	afterB, settle := deferred.Update(hubSessionMsg{
+		ref:          refB.String(),
+		err:          terminal,
+		liveNavSeq:   deferred.liveNavSeq,
+		liveNavEntry: true,
+	})
+	ended := afterB.(hubModel)
+	if ended.liveNavNeedsReconcile {
+		t.Fatal("the terminal navigation stranded the deferred reconciliation")
+	}
+	if ended.mode != hubModeSession || ended.detail.Ref != "local:01C" {
+		t.Fatalf("the terminal answer moved the model: mode = %v detail = %v", ended.mode, ended.detail.Ref)
+	}
+	if settle == nil {
+		t.Fatal("the terminal navigation settled no reconciliation for the displayed session")
+	}
+	recovery, ok := settle().(hubSessionMsg)
+	if !ok || !recovery.liveNavRecovery || recovery.ref != "local:01C" {
+		t.Fatalf("the settlement produced %T, want the displayed session's recovery read", settle())
+	}
+	if wireMutationOutcome(ended.err) != appwire.MutationOutcomeTargetDeleted {
+		t.Fatalf("model error = %v, want the deletion answer still shown", ended.err)
+	}
+	if got := reads.get(); got[len(got)-1] != "local:01C" {
+		t.Fatalf("recovery read %v, want the displayed session re-read", got)
+	}
+}
+
+// The retry's own re-read is a tracked flight too: an obligation deferred
+// onto it (a stale cycle landing while the re-read ran) must settle when the
+// re-read's answer is terminal, or it outlives every flight — the re-read arm
+// of the round-18 medium's settlement.
+func TestATerminalRetryRereadSettlesTheDeferredReconciliation(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m, _, cleanup := newLiveCycleModel(t, "local:01C", liveCycleTree())
+	defer cleanup()
+	refA := mustParseRef(t, "local:01A")
+
+	// A cycling press is in flight when the user picks A: the pick
+	// supersedes the cycle and puts A's read in flight.
+	afterPress, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	pressed := afterPress.(hubModel)
+	cycleSeq := pressed.liveNavSeq
+	cycleTarget := pressed.liveNavPendingRef
+	pressed.issuePickedSessionRead(refA)
+
+	// The stale cycling response lands: discarded, its reconciliation
+	// deferred on the pending pick.
+	afterStale, staleCmd := pressed.Update(hubSessionMsg{
+		ref:        cycleTarget,
+		detail:     hubSessionDetail{Ref: cycleTarget, SessionID: "sess_cycle", State: appwire.ThreadStatusIdle},
+		liveNavSeq: cycleSeq,
+	})
+	stale := afterStale.(hubModel)
+	if staleCmd != nil {
+		t.Fatal("the stale cycling response issued a recovery read that races the pending pick")
+	}
+	if !stale.liveNavNeedsReconcile {
+		t.Fatal("setup: the stale cycling response recorded no obligation")
+	}
+
+	// A's response is the rebuilding rejection: the retry arms, and the
+	// obligation rides on — the armed re-read is now the flight whose
+	// landing settles it.
+	afterArm, _ := stale.Update(hubSessionMsg{
+		ref:          refA.String(),
+		err:          rebuildingEntryError(t),
+		liveNavSeq:   stale.liveNavSeq,
+		liveNavEntry: true,
+	})
+	armed := afterArm.(hubModel)
+	if armed.entryRepairRef != refA {
+		t.Fatal("setup: the rebuilding answer did not arm the retry")
+	}
+	if !armed.liveNavNeedsReconcile {
+		t.Fatal("setup: the arming dropped the recorded obligation")
+	}
+
+	// The re-read's answer is terminal — A was deleted while its repair
+	// ran: the retry ends, and the obligation settles NOW, with the
+	// deletion still shown and C still displayed.
+	afterEnd, settle := armed.Update(hubSessionMsg{
+		ref:           refA.String(),
+		err:           targetDeletedEntryError(t),
+		entryRetrySeq: armed.entryRepairSeq,
+	})
+	ended := afterEnd.(hubModel)
+	if ended.liveNavNeedsReconcile {
+		t.Fatal("the terminal re-read stranded the deferred reconciliation")
+	}
+	if ended.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the terminal re-read left the retry armed")
+	}
+	if ended.mode != hubModeSession || ended.detail.Ref != "local:01C" {
+		t.Fatalf("the terminal re-read moved the model: mode = %v detail = %v", ended.mode, ended.detail.Ref)
+	}
+	recovery, ok := settle().(hubSessionMsg)
+	if !ok || !recovery.liveNavRecovery || recovery.ref != "local:01C" {
+		t.Fatalf("the settlement produced %T, want the displayed session's recovery read", settle())
+	}
+	if wireMutationOutcome(ended.err) != appwire.MutationOutcomeTargetDeleted {
+		t.Fatalf("model error = %v, want the deletion answer still shown", ended.err)
 	}
 }

@@ -365,15 +365,17 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.liveNavEntry {
 				m.liveNavEntryPendingSeq = 0
 			}
-			// #4343: a session entry whose read answered the hub's typed
-			// rebuilding code arms the paced retry instead of stranding, and
-			// the error line carries the repair status while the retry
-			// stands. A terminal answer — the budget's history-failed, an
-			// upgrade-required refusal, a target deletion — ends the
-			// paced retry and the error shows. An ordinary transient while
-			// the retry stands (mid-repair lock contention with no repair
-			// in flight) keeps it armed: the status stands and the
-			// transient rides after it.
+			// #4343: a session entry whose read answered one of the hub's
+			// typed retryable codes — the rebuilding answer (a registered
+			// repair) or the lock-contention answer (ordinary contention,
+			// nothing registered) — arms the paced retry instead of
+			// stranding, and the error line carries the repair status
+			// while the retry stands. A terminal answer — the budget's
+			// history-failed, an upgrade-required refusal, a target
+			// deletion — ends the paced retry and the error shows. An
+			// ordinary transient while the retry stands (mid-repair lock
+			// contention with no repair in flight) keeps it armed: the
+			// status stands and the transient rides after it.
 			// The plain entry path arms — the tagged pick whose guard above
 			// proved it current, or the retry's own re-read (whose landing
 			// guard did) — and the already-open surfaces above keep their
@@ -382,7 +384,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ref, refErr := appwire.ParseRef(msg.ref)
 				armedFor := refErr == nil && m.entryRepairRef == ref
 				switch {
-				case refErr == nil && isHubTranscriptIndexRebuilding(msg.err):
+				case refErr == nil && isHubTranscriptEntryRetryable(msg.err):
 					if m.entryRepairRef != ref {
 						// The failed entry is a navigation event exactly
 						// as its success would have been (the plain-entry
@@ -404,6 +406,27 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq)
 				case armedFor:
 					m.entryRepairRetire()
+				}
+				// A navigation error that concludes the newest tracked
+				// flight is the error-side twin of the success landing's
+				// settle point: the superseded read that deferred onto this
+				// flight left the displayed session's server-side
+				// subscription where its ThreadRead pointed it, and no later
+				// landing exists to settle the obligation — consume it here
+				// and reconcile, with the error still surfacing (roborev PR
+				// #1044 round-18 medium 1). The obligation only ever rides
+				// a tracked flight (the discard helper defers onto tracked
+				// pending reads), so only a tracked conclusion can carry
+				// one: a pick's landing (liveNavEntry) or the retry's own
+				// re-read (entryRetrySeq). The arming cases above keep
+				// theirs: a flight they just armed or kept armed settles
+				// it at that flight's landing.
+				if (msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile && m.mode == hubModeSession {
+					m.liveNavNeedsReconcile = false
+					retried, reconcile := m.reestablishDisplayedSubscription()
+					retried.liveNavNeedsReconcile = false
+					retried.err = msg.err
+					return retried, reconcile
 				}
 			}
 			m.err = msg.err
