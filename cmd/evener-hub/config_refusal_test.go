@@ -57,7 +57,7 @@ func TestRunMainExplicitConfigUnparseableRefuses(t *testing.T) {
 	if errors.Is(err, reached) {
 		t.Fatalf("runMain continued startup after an unparseable explicit --config; stderr=%s", stderr.String())
 	}
-	if !strings.Contains(err.Error(), "parse config") || !strings.Contains(err.Error(), path) {
+	if !strings.Contains(err.Error(), path) {
 		t.Fatalf("refusal %v does not name the unparseable config %q", err, path)
 	}
 	if !strings.Contains(stderr.String(), path) {

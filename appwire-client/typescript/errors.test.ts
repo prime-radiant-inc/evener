@@ -21,6 +21,7 @@ import {
   hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
+  isMethodNotFound,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
   refusedBeforeRunning,
@@ -240,8 +241,10 @@ test("friendlyErrorMessage keeps a WireError's own message untouched", () => {
   );
 });
 
-test("friendlyErrorMessage falls back to a generic sentence for a WireError with no message text", () => {
-  expect(friendlyErrorMessage(new WireError("", -32013))).toBe("Something went wrong.");
+test("friendlyErrorMessage falls back to the generic sentence for a WireError with no message text", () => {
+  const generic = friendlyErrorMessage(new TypeError("boom"));
+  expect(friendlyErrorMessage(new WireError("", -32013))).toBe(generic);
+  expect(friendlyErrorMessage(new WireError("  ", -32013))).toBe(generic);
 });
 
 // committedMutationRow (hostMutations.ts) throws a HostMutationOutcomeError for
@@ -305,9 +308,10 @@ test("friendlyErrorMessage never leaks a class name or method name for an unrela
 });
 
 test("friendlyErrorMessage gives every other unknown rejection the same generic sentence", () => {
-  expect(friendlyErrorMessage("plain string failure")).toBe("Something went wrong.");
-  expect(friendlyErrorMessage(404)).toBe("Something went wrong.");
-  expect(friendlyErrorMessage(undefined)).toBe("Something went wrong.");
+  const generic = friendlyErrorMessage(new TypeError("boom"));
+  for (const rejection of ["plain string failure", 404, undefined]) {
+    expect(friendlyErrorMessage(rejection), String(rejection)).toBe(generic);
+  }
 });
 
 // errorKind is the classification spawn/model-picker call sites use to tell
@@ -433,16 +437,18 @@ test("friendlyLaunchErrorMessage keeps every other WireError's own message untou
 });
 
 test("friendlyLaunchErrorMessage gives an unknown rejection the same generic sentence friendlyErrorMessage would", () => {
-  expect(friendlyLaunchErrorMessage(new Error("switch boom"))).toBe("Something went wrong.");
+  const unknown = new Error("switch boom");
+  expect(friendlyLaunchErrorMessage(unknown)).toBe(friendlyErrorMessage(unknown));
 });
 
+// The codes are Go ints, which goConstantValue (strings only) doesn't read.
+function code(name: string): number {
+  const value = appwireErrorsGo.match(new RegExp(`\\n\\s*${name}\\s*=\\s*(-?\\d+)`))?.[1];
+  if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
+  return Number(value);
+}
+
 describe("a refusal before running is bound to appwire/errors.go's codes", () => {
-  // The codes are Go ints, which goConstantValue (strings only) doesn't read.
-  const code = (name: string) => {
-    const value = appwireErrorsGo.match(new RegExp(`\\n\\s*${name}\\s*=\\s*(-?\\d+)`))?.[1];
-    if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
-    return Number(value);
-  };
   test("a validation refusal or a malformed request ran nothing", () => {
     expect(refusedBeforeRunning(new WireError("cwd is required", code("CodeInvalidParams")))).toBe(true);
     expect(refusedBeforeRunning(new WireError("bad request", code("CodeInvalidRequest")))).toBe(true);
@@ -451,5 +457,17 @@ describe("a refusal before running is bound to appwire/errors.go's codes", () =>
     expect(refusedBeforeRunning(new WireError("internal", code("CodeInternalError")))).toBe(false);
     expect(refusedBeforeRunning(new WireError("unavailable", code("CodeUnavailable")))).toBe(false);
     expect(refusedBeforeRunning(new Error("socket closed"))).toBe(false);
+  });
+});
+
+describe("method-not-found is bound to appwire/errors.go", () => {
+  test("an older hub's refusal of a method it lacks, by code or by discriminator", () => {
+    expect(isMethodNotFound(new WireError("method not found", code("CodeMethodNotFound")))).toBe(true);
+    const info = goErrorInfo("ErrorMethodNotFound");
+    expect(isMethodNotFound(new WireError("method not found", -32000, { evenerErrorInfo: info }))).toBe(true);
+  });
+  test("any other failure is not", () => {
+    expect(isMethodNotFound(new WireError("internal", code("CodeInternalError")))).toBe(false);
+    expect(isMethodNotFound(new Error("socket closed"))).toBe(false);
   });
 });

@@ -1,9 +1,11 @@
 import { type ReactElement, useState } from "react";
 import { ACTIVITY_TABS, activityTabSpec } from "../../shell/activitybar/activityTabs";
+import { SIGNAL_STATES } from "../../shell/sessionStatus";
 import type { ActivityScope, ActivityTab } from "../../shell/statusbar/statusScope";
-import { IconButton, Popover } from "../../widgets";
+import { CloseIcon, IconButton, Popover, StatusDot } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { cadenceStateForStatus } from "../session/liveness";
 import { enterAgentCascade } from "./actions";
 import styles from "./zoom.module.css";
 
@@ -15,6 +17,8 @@ const CLASS = {
   activityChip: requireClass(styles.activityChip, "zoom.module.css", "activityChip"),
   activityLabel: requireClass(styles.activityLabel, "zoom.module.css", "activityLabel"),
   state: requireClass(styles.state, "zoom.module.css", "state"),
+  stateIndicator: requireClass(styles.stateIndicator, "zoom.module.css", "stateIndicator"),
+  stateLabel: requireClass(styles.stateLabel, "zoom.module.css", "stateLabel"),
 };
 
 export function ActivityPeek({
@@ -41,7 +45,7 @@ export function ActivityPeek({
           <strong>
             {spec.label} · {scope.leaf.title}
           </strong>
-          <IconButton label="Close activity peek" icon="×" variant="quiet" size="sm" onClick={onClose} />
+          <IconButton label="Close activity peek" icon={<CloseIcon />} variant="quiet" size="sm" onClick={onClose} />
         </header>
         <div className={CLASS.peekBody}>
           <DisclosurePersistenceContext.Provider value={JSON.stringify(["cascade-peek", paneId, scope.leaf.ref, tab])}>
@@ -62,7 +66,7 @@ export function ActivityPeek({
 export function ScopeActivityControls({ paneId, scope }: { paneId: string; scope: ActivityScope }) {
   const [tab, setTab] = useState<ActivityTab | null>(null);
   return (
-    <div className={CLASS.activityControls}>
+    <div className={CLASS.activityControls} data-testid="cascade-activity-controls">
       {ACTIVITY_TABS.filter((spec) => spec.id !== "about").map((spec) => (
         <ActivityPeek
           key={spec.id}
@@ -91,11 +95,23 @@ export function ScopeActivityControls({ paneId, scope }: { paneId: string; scope
   );
 }
 
-export function ScopeRuntimeState({ scope }: { scope: ActivityScope }) {
+export function ScopeRuntimeState({ scope, compact = false }: { scope: ActivityScope; compact?: boolean }) {
   const state = scope.activity?.runtime?.status.type;
+  const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : "State unknown";
+  if (compact) {
+    const signal = cadenceStateForStatus(state ?? "");
+    return (
+      <span className={CLASS.stateIndicator} data-runtime-state={state ?? "unknown"} title={label}>
+        {SIGNAL_STATES.has(signal) && <StatusDot state={signal} />}
+        <span className={CLASS.stateLabel} data-runtime-label>
+          {label}
+        </span>
+      </span>
+    );
+  }
   return (
     <span className={CLASS.state} data-runtime-state={state ?? "unknown"}>
-      {state ? state.charAt(0).toUpperCase() + state.slice(1) : "State unknown"}
+      {label}
     </span>
   );
 }

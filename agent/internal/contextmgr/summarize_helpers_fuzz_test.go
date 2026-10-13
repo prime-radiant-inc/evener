@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // FuzzSummarizeToolResult drives summarizeToolResult — the per-tool one-line
 // result summarizer used by the masking strategies — together with the pure
 // string/JSON helpers it fans out to (parseExitCode, extractJSONField,
-// countJSONArrayElements, countLines, countNonEmptyLines) and the sibling
+// countJSONArrayElements, countLines, searchresult.EntryCount) and the sibling
 // parseCommunicateArgs. Input is an arbitrary tool name, an arbitrary content
 // string, and arbitrary tool-call argument bytes, none of which the summarizer
 // is allowed to trust.
@@ -24,7 +26,7 @@ import (
 //   - parseExitCode returns either "?" or a non-empty run of ASCII digits.
 //   - countJSONArrayElements equals an independent json array decode's length.
 //   - extractJSONField returns "" for any non-object input, and is deterministic.
-//   - countLines("")==0 and countNonEmptyLines never exceeds the line count.
+//   - countLines("")==0 and searchresult.EntryCount never exceeds countLines.
 func FuzzSummarizeToolResult(f *testing.F) {
 	f.Add("shell", "exit_code=0\nhello\n", `{"command":"ls -la"}`)
 	f.Add("read_file", "a\nb\nc", `{"file_path":"/x/y.go"}`)
@@ -36,6 +38,7 @@ func FuzzSummarizeToolResult(f *testing.F) {
 	f.Add("web_fetch", "body", `{"url":"http://x"}`)
 	f.Add("unknown_tool", "whatever", `not json`)
 	f.Add("shell", "garbage exit nope", ``)
+	f.Add("0", "0", `{"end_Turn":true}`) // a key in another case still names end_turn
 
 	f.Fuzz(func(t *testing.T, toolName, content, argsStr string) {
 		args := json.RawMessage(argsStr)
@@ -95,8 +98,8 @@ func FuzzSummarizeToolResult(f *testing.F) {
 		if countLines("") != 0 {
 			t.Fatalf("countLines(\"\") != 0")
 		}
-		if n := countNonEmptyLines(content); n > len(strings.Split(content, "\n")) {
-			t.Fatalf("countNonEmptyLines=%d exceeds line count", n)
+		if n := searchresult.EntryCount(content); n > countLines(content) {
+			t.Fatalf("searchresult.EntryCount=%d exceeds countLines=%d", n, countLines(content))
 		}
 	})
 }
@@ -109,8 +112,14 @@ func hasEndTurnField(args json.RawMessage) bool {
 	if len(args) == 0 || json.Unmarshal(args, &m) != nil {
 		return false
 	}
-	_, ok := m["end_turn"]
-	return ok
+	// encoding/json matches a struct field's key case-insensitively, so
+	// parseCommunicateArgs reads "end_Turn" as end_turn.
+	for key := range m {
+		if strings.EqualFold(key, "end_turn") {
+			return true
+		}
+	}
+	return false
 }
 
 func allASCIIDigits(s string) bool {

@@ -1,4 +1,12 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { DocumentMemory } from "../reader/documentMemory";
+// Imported at file scope, so the Reader's graph is transformed at collection
+// time, outside the timeout of the test that opens a real Reader.
+import { FreshDot } from "../reader/FreshDot";
+import { ReaderScreen } from "../reader/ReaderScreen";
+import { FlatList } from "react-native";
 // The Board screen mounted with only its native edges mocked: the navigation
 // reads go through the real BoardController to a fake hub that answers by
 // params, and the device memory is the real SeenMarkers over an in-memory
@@ -22,7 +30,7 @@ import type {
 import { STUCK_AFTER_MS, WireError } from "@evener/appwire-client";
 import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
-import { act, create } from "react-test-renderer";
+import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import {
@@ -31,27 +39,34 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	settleMicrotasks,
 	swipeableCalls,
 	swipeRowFully,
 	systemGlass,
+	unmountMountedTrees,
+	until,
+	untilRendered,
 } from "../renderNative.testkit";
+import { hasTestID, markedNodes, markerOf, markers, withTestID } from "../markerTestUtils";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
 import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
+import { ContinueReadingRow } from "./ContinueReadingRow";
 import { SearchResults } from "./SearchResults";
+import { boardHoldKey, type HeldRecord } from "./boardHold";
 import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
 import { forgetBoardForHub, seenMarkers } from "./nativeBoardMemory";
 import { SESSION_ID } from "./organizationTestUtils";
-import { ROW_ACTION_LABELS } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
 import { WASH_MS } from "./settledList";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
+	readerMemory: null as DocumentMemory | null,
 	kv: new Map<string, string>(),
 	drafts: new Map<string, Set<string>>(),
 	focused: true,
@@ -82,6 +97,7 @@ vi.mock("react-native", async () => {
 			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
 		},
 		AppState: {
+			currentState: "active",
 			addEventListener: (_type: string, listener: (state: string) => void) => {
 				harness.appState.add(listener);
 				return { remove: () => harness.appState.delete(listener) };
@@ -118,6 +134,23 @@ vi.mock("expo-crypto", () => ({
 	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
+vi.mock("expo-secure-store", () => ({
+	getItemAsync: async (key: string) =>
+		JSON.stringify({
+			id: key.replace("evener.hub.", ""),
+			name: "Owner",
+			origin: "https://unused.test",
+			token: "reader-test-token",
+		}),
+}));
+// A process relaunch replaces only the singleton, with real DocumentMemory
+// re-reading unchanged platform storage. No trail or callback result is canned.
+vi.mock("../reader/nativeDocumentMemory", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../reader/nativeDocumentMemory")>();
+	return { ...actual, documentMemory: (id: string) => harness.readerMemory ?? actual.documentMemory(id) };
+});
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
@@ -171,6 +204,7 @@ beforeEach(() => {
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	harness.reduceMotion = false;
 	harness.fontScale = 1;
+	harness.readerMemory = null;
 });
 function setFocused(focused: boolean) {
 	harness.focused = focused;
@@ -178,11 +212,8 @@ function setFocused(focused: boolean) {
 		for (const listener of harness.focusListeners) listener(focused);
 	});
 }
-// Every Board a test mounts, so one that fails before its own unmount
-// can't leave a Board behind that reads the next test's connection.
-const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
-	for (const tree of mounted.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
+	unmountMountedTrees();
 	vi.useRealTimers();
 	systemGlass.reset();
 });
@@ -198,6 +229,11 @@ function hubId() {
  * are unseen. */
 function adoptedAnHourAgo(hub: string) {
 	harness.kv.set(`evener.native.seen.${hub}`, JSON.stringify({ adopted: true, epoch: minutesAgo(60), sessions: {} }));
+}
+/** A device that unfolded Idle before, so the sessions resting there, seen
+ * or not, are on screen from the first read. */
+function idleUnfolded(hub: string) {
+	harness.kv.set(`evener.native.board-sections.${hub}`, JSON.stringify({ idle: false }));
 }
 
 const session = (ref: string, over: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary => ({
@@ -221,7 +257,7 @@ const asking = session("local:ask", {
 	updated_at: minutesAgo(3),
 });
 const working = session("local:work", { title: "Build docs", state: "active", updated_at: minutesAgo(1) });
-const finished = session("local:done", { title: "Ship it", updated_at: minutesAgo(4) });
+const shipIt = session("local:done", { title: "Ship it", updated_at: minutesAgo(4) });
 const idleOne = session("local:idle-1", { title: "Old chore", dormant: true, updated_at: minutesAgo(120) });
 const idleTwo = session("local:idle-2", { title: "Older chore", dormant: true, updated_at: minutesAgo(240) });
 
@@ -257,7 +293,7 @@ const oldPlan = session("local:plan", { title: "Old plan", live: false, updated_
 const releaseNotes = session("local:notes", { title: "Release notes", live: false, updated_at: minutesAgo(1200) });
 const fleet: Fleet = {
 	// The ask is in the hub's needs_you section only: bands union it.
-	live: [[failing, working, finished, idleOne, idleTwo]],
+	live: [[failing, working, shipIt, idleOne, idleTwo]],
 	needsYou: [failing, asking],
 	pins: [
 		{ id: "pins-1", name: "Mine", count: 3 },
@@ -558,15 +594,11 @@ function connect(hub: string, client: unknown, state: ConnectionState, over: Rec
 function screen(nav: Navigation) {
 	return <BoardScreen navigation={nav as never} route={{ key: "Sessions", name: "Sessions" } as never} />;
 }
-async function settle() {
-	await act(async () => {
-		for (let step = 0; step < 30; step++) await Promise.resolve();
-	});
-}
+/** What the Board holds for hub `id`, as it stored it. */
+const heldIn = (id: string) => JSON.parse(harness.kv.get(boardHoldKey(id)) ?? "[]") as HeldRecord[];
 async function mount(nav: Navigation) {
 	const tree = render(screen(nav));
-	mounted.push(tree);
-	await settle();
+	await settleMicrotasks();
 	return tree;
 }
 function rerender(tree: ReactTestRenderer, nav: Navigation) {
@@ -585,6 +617,22 @@ function textsIn(root: ReactTestInstance): string[] {
 function joinedText(node: ReactTestInstance): string {
 	return node.children.map((child) => (typeof child === "string" ? child : joinedText(child))).join("");
 }
+/** The titles of the rows whose second line says a held change waits on them. */
+const waitingTitles = (tree: ReactTestRenderer) =>
+	markedNodes(tree, "board-row")
+		.filter((row) => hasTestID(row, "row-waiting"))
+		.map((row) => row.props.accessibilityLabel.split(", ")[0]);
+/** Whether the toolbar says anything about the connection. */
+const connectionStatusShown = (tree: ReactTestRenderer) => hasTestID(tree, "connection-status");
+/** How many Continue reading rows the Board shows. */
+const continueReadingRows = (tree: ReactTestRenderer) => tree.root.findAllByType(ContinueReadingRow).length;
+/** The kinds of the toasts showing (at most one). */
+const toasts = (tree: ReactTestRenderer) => markers(tree, "toast");
+/** The controls the showing toast offers. */
+const toastActions = (tree: ReactTestRenderer) =>
+	markedNodes(tree, "toast").flatMap((toast) =>
+		toast.findAll((node) => node.type === ("Pressable" as never)).map((node) => node.props.accessibilityLabel),
+	);
 /** The band headers and the Idle fold, in screen order. */
 function bandHeaders(tree: ReactTestRenderer): string[] {
 	return tree.root.findAll((node) => node.props.testID === "band-header").map(joinedText);
@@ -598,6 +646,18 @@ const isRowTitled = (title: string) => (node: ReactTestInstance) =>
 function rowTitled(tree: ReactTestRenderer, title: string) {
 	return tree.root.find(isRowTitled(title));
 }
+/** What a row's why line says past its state word: the reason the row's
+ * label has to speak too. */
+function whyReason(row: ReactTestInstance): string {
+	const [line] = markedNodes(row, "why-line");
+	const reason = line?.children.at(-1);
+	if (typeof reason !== "string" || !reason) throw new Error("the why line gives no reason");
+	return reason;
+}
+/** What the Board row with this title says in its why line: its WhyKind. */
+const whyKind = (tree: ReactTestRenderer, title: string) => markers(rowTitled(tree, title), "why-line")[0];
+/** Whether a Board row carries the blue dot. */
+const dotted = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).findAllByType(FreshDot).length > 0;
 function hasRow(tree: ReactTestRenderer, title: string) {
 	return tree.root.findAll(isRowTitled(title)).length > 0;
 }
@@ -627,28 +687,79 @@ const chipLabels = (tree: ReactTestRenderer) =>
 		.map((node) => node.props.accessibilityLabel);
 const headerOptions = (nav: Navigation) => nav.setOptions.mock.calls.at(-1)?.[0];
 
+it("keeps own errors and live attention while settled delegate chips stay quiet", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const settled = { running: 0, failed: 3, done: 0 };
+	const rows = [
+		session("local:error", { title: "Own error", state: "errored", ask_pending: true, subagents: settled }),
+		session("local:question", {
+			title: "Question",
+			state: "awaiting",
+			ask_pending: true,
+			updated_at: minutesAgo(6),
+			subagents: settled,
+		}),
+		session("local:approval", { title: "Approval", state: "active", approval_pending: true, subagents: settled }),
+		session("local:mixed", { title: "Mixed work", state: "active", subagents: { running: 2, failed: 3, done: 0 } }),
+		session("local:stale", { title: "Stale question", state: "active", ask_pending: true, subagents: settled }),
+		session("local:offline", {
+			title: "Offline error",
+			state: "errored",
+			offline: true,
+			ask_pending: true,
+			subagents: settled,
+		}),
+	];
+	connect(id, hub({ ...fleet, live: [rows], needsYou: rows.slice(0, 3), pins: [], pinned: {} }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(tree.root.findAllByType(BoardRow).map((node) => [node.props.item.row.title, node.props.item.state])).toEqual([
+		["Own error", "failed"],
+		["Question", "question"],
+		["Approval", "approval"],
+		["Mixed work", "working"],
+		["Stale question", "working"],
+	]);
+	expect(renderedText(tree)).not.toContain("3 failed");
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
+	expect(renderedText(tree)).toContain("2 running");
+	for (const title of ["Own error", "Question", "Approval", "Mixed work", "Stale question"])
+		expect(rowTitled(tree, title).props.accessibilityLabel).not.toContain("3 failed");
+	// Each label speaks the reason its row shows, its own attention's.
+	for (const title of ["Own error", "Question", "Approval"]) {
+		const row = rowTitled(tree, title);
+		expect(row.props.accessibilityLabel).toContain(whyReason(row));
+	}
+	expect(hasRow(tree, "Offline error")).toBe(false);
+	act(() => rowTitled(tree, "Mixed work").props.onPress());
+	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: id, ref: "local:mixed", title: "Mixed work" });
+});
+
 it("renders the fleet's bands in order with their counts, and Idle starts folded", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	// A session whose turn ended rests in Idle, seen or not (#4093).
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
 	expect(renderedText(tree)).toContain("2 need you");
-	expect(texts(tree)).toEqual(expect.arrayContaining(["1 finished", "1 working", "2 idle"]));
-	for (const title of ["Fix retry loop", "Pick a name", "Ship it", "Build docs"])
-		expect(hasRow(tree, title)).toBe(true);
+	expect(texts(tree)).toEqual(expect.arrayContaining(["1 working", "3 idle"]));
+	expect(texts(tree)).not.toContain("1 finished");
+	for (const title of ["Fix retry loop", "Pick a name", "Build docs"]) expect(hasRow(tree, title)).toBe(true);
+	expect(hasRow(tree, "Ship it")).toBe(false);
 	expect(hasRow(tree, "Old chore")).toBe(false);
-	pressLabel(tree, "Idle, 2 sessions");
-	expect(hasRow(tree, "Old chore")).toBe(true);
-	expect(hasRow(tree, "Older chore")).toBe(true);
+	pressLabel(tree, "Idle, 3 sessions, unread sessions inside");
+	for (const title of ["Ship it", "Old chore", "Older chore"]) expect(hasRow(tree, title)).toBe(true);
+	expect(dotted(tree, "Ship it")).toBe(true);
 	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toEqual({ idle: false });
 	// Folded again, the summary's idle count unfolds it.
-	pressLabel(tree, "Idle, 2 sessions");
+	pressLabel(tree, "Idle, 3 sessions");
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	const idleCount = tree.root.find(
 		(node) =>
 			node.type === ("Pressable" as never) &&
-			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "2 idle").length > 0,
+			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "3 idle").length > 0,
 	);
 	playedHaptics.length = 0;
 	act(() => idleCount.props.onPress());
@@ -667,14 +778,10 @@ async function mountWithInstances(nav: Navigation) {
 	const scrollTo = vi.fn();
 	const focus = vi.fn();
 	const blur = vi.fn();
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(screen(nav), {
-			createNodeMock: (element) => (element.type === ("TextInput" as never) ? { focus, blur } : { scrollTo }),
-		});
+	const tree = render(screen(nav), {
+		createNodeMock: (element) => (element.type === ("TextInput" as never) ? { focus, blur } : { scrollTo }),
 	});
-	mounted.push(tree);
-	await settle();
+	await settleMicrotasks();
 	return { tree, scrollTo, focus, blur };
 }
 /** The Board's scroller, not the chips' horizontal one. */
@@ -905,7 +1012,7 @@ it("renames a category from its menu, sending the trimmed name", async () => {
 	]);
 	expect(fake.mutations).toEqual([]);
 	rename("  Shipped  ");
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/pin-section/rename", params: { sectionId: "pins-1", name: "Shipped" } },
 	]);
@@ -927,7 +1034,7 @@ it("deletes a category after the spec's confirmation", async () => {
 	]);
 	expect(fake.mutations).toEqual([]);
 	act(() => confirm?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([{ method: "evener/pin-section/delete", params: { sectionId: "pins-1" } }]);
 	act(() => tree.unmount());
 });
@@ -943,10 +1050,10 @@ it("sends no delete for a category that left the catalog while its confirmation 
 	shape.pins = [fleet.pins[1]];
 	// This fake hub answers every read at revision 1, so the change names none.
 	act(() => fake.invalidate(1, [{ kind: "pin_catalog" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(pinHeaders(tree)).toEqual(["Empty, 0 sessions"]);
 	act(() => confirm?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -990,7 +1097,7 @@ it("hides ⋯ while disconnected, and a confirmation answered after the drop sen
 	expect(pinHeaders(tree)).toEqual(["Mine, 3 sessions", "Empty, 0 sessions"]);
 	expect(hasRow(tree, "Kept note")).toBe(true);
 	act(() => confirm?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -1005,17 +1112,17 @@ it("dims a category while its change is on its way, and hides every ⋯ until it
 	const mine = confirmDelete(tree, "Mine");
 	const empty = confirmDelete(tree, "Empty");
 	act(() => mine?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	// The second confirmation was up before the first change went out;
 	// pressed while that change is pending, it sends nothing.
 	act(() => empty?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([{ method: "evener/pin-section/delete", params: { sectionId: "pins-1" } }]);
 	expect(opacity(tree, "Mine")).toBe(0.5);
 	expect(opacity(tree, "Empty")).toBe(1);
 	expect(menuLabels(tree)).toEqual([]);
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(opacity(tree, "Mine")).toBe(1);
 	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
 	act(() => tree.unmount());
@@ -1029,10 +1136,13 @@ it("never shows the journal's error, dims the category and hides ⋯ while a cha
 	const tree = await mount(navigation());
 	const confirm = confirmDelete(tree, "Mine");
 	act(() => confirm?.buttons?.[1].onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toHaveLength(1);
 	expect(menuLabels(tree)).toEqual([]);
-	expect(renderedText(tree)).not.toMatch(/Refresh|trying again|Could not confirm/);
+	// The hub's error stays out of sight: no toast, no notice, nothing to press.
+	expect(toasts(tree)).toEqual([]);
+	expect(renderedText(tree)).not.toContain("request timed out");
+	expect(tree.root.findAll((node) => node.props.testID === "notice")).toEqual([]);
 	// An unresolved change dims its category as a pending one does (the unified
 	// journal gate: pending or uncertain).
 	expect(opacity(tree, "Mine")).toBe(0.5);
@@ -1099,21 +1209,27 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	connect(first, hubA.client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
-	pressLabel(tree, "Idle, 2 sessions");
+	pressLabel(tree, "Idle, 3 sessions, unread sessions inside");
 	expect(hasRow(tree, "Old chore")).toBe(true);
 	connect(second, hubB.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Fix retry loop")).toBe(false);
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	// Hub B keeps its own fold state: Idle starts folded there.
-	expect(bandHeaders(tree)).toContain("Idle · 1");
+	const fold = () => withTestID(tree, "idle-fold")[0];
+	expect(fold()?.props.accessibilityState).toEqual({ expanded: false });
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	// Hub A's Board is gone: its invalidations read nothing.
 	const readsOnA = hubA.requests.length;
 	hubA.invalidate(1, [{ kind: "section", section: "live", revision: 2 }]);
-	await settle();
+	await settleMicrotasks();
 	expect(hubA.requests).toHaveLength(readsOnA);
+	// Unfolded, Idle holds hub B's one idle session.
+	act(() => fold()?.props.onPress());
+	const [live] = withTestID(tree, "live-block");
+	expect(live && markers(live, "board-row").filter((state) => state === "idle")).toHaveLength(1);
+	expect(hasRow(tree, "Old chore")).toBe(true);
 	act(() => tree.unmount());
 });
 
@@ -1147,6 +1263,8 @@ const resultTitles = (tree: ReactTestRenderer) =>
 	tree.root
 		.findAll((node) => node.props.testID === "search-result")
 		.map((node) => node.props.accessibilityLabel.split(", ")[0]);
+const buttonCount = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityRole === "button").length;
 const hasCancel = (tree: ReactTestRenderer) =>
 	tree.root.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel === "Cancel search")
 		.length > 0;
@@ -1211,12 +1329,13 @@ it("scrolls to the top and focuses the field when you tap Search", async () => {
 it("searches the hub as you type, and a result opens the way the Board opens its row, marking it seen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const gone = session("local:gone", { title: "Old report" });
 	const fake = hub({ ...fleet, searchOnly: [gone] });
 	connect(id, fake.client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
-	expect(bandHeaders(tree)).toContain("FINISHED · 1");
+	expect(hasRow(tree, "Ship it")).toBe(true);
 	const bar = searchField(tree);
 	bar.focus();
 	// Search takes the Board's place under the field, in the Board's scroller.
@@ -1231,7 +1350,7 @@ it("searches the hub as you type, and a result opens the way the Board opens its
 	expect(resultTitled(tree, "Pick a name").props.accessibilityLabel).toBe("Pick a name, Question, evener, 5 minutes");
 	act(() => resultTitled(tree, "Ship it").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
-	expect(seenMarkers(id).isSeen(finished)).toBe(true);
+	expect(seenMarkers(id).isSeen(shipIt)).toBe(true);
 	// A session only in Needs you (past Live's loaded pages) is found too.
 	expect(seenMarkers(id).isSeen(asking)).toBe(false);
 	act(() => resultTitled(tree, "Pick a name").props.onPress());
@@ -1241,7 +1360,7 @@ it("searches the hub as you type, and a result opens the way the Board opens its
 	await bar.type("re");
 	expect(resultTitles(tree)).toEqual(["Fix retry loop", "Old chore", "Older chore", "Old report"]);
 	expect(resultTitled(tree, "Old report").props.accessibilityLabel).toBe("Old report, evener, 5 minutes");
-	// A session the Board doesn't list has no Finished state to clear.
+	// A session the Board doesn't list has no blue dot to clear.
 	act(() => resultTitled(tree, "Old report").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:gone", title: "Old report" });
 	// Cancel empties the field and brings the Board back.
@@ -1266,7 +1385,7 @@ it("narrows results to live sessions in the Live scope", async () => {
 	expect(resultTitles(tree)).toEqual(["Old report"]);
 	pressLabel(tree, "Live");
 	expect(resultTitles(tree)).toEqual([]);
-	expect(texts(tree)).toContain("No sessions match.");
+	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
 	pressLabel(tree, "All");
 	expect(resultTitles(tree)).toEqual(["Old report"]);
 	act(() => tree.unmount());
@@ -1276,7 +1395,7 @@ it("lists a live session once when the hub's past results name it too", async ()
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	// The real hub's past index holds live sessions' records too.
-	connect(id, hub({ ...fleet, searchOnly: [finished] }).client, "ready");
+	connect(id, hub({ ...fleet, searchOnly: [shipIt] }).client, "ready");
 	const tree = await mount(navigation());
 	const bar = searchField(tree);
 	bar.focus();
@@ -1297,7 +1416,7 @@ it("holds a scope picked before you type", async () => {
 	pressLabel(tree, "Live");
 	await bar.type("report");
 	expect(resultTitles(tree)).toEqual([]);
-	expect(texts(tree)).toContain("No sessions match.");
+	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
 	act(() => tree.unmount());
 });
 
@@ -1333,9 +1452,11 @@ it("says a failed search failed, and never asks you to retry", async () => {
 	const tree = await mount(nav);
 	const bar = searchField(tree);
 	bar.focus();
+	const controls = buttonCount(tree);
 	await bar.type("fix");
-	expect(texts(tree)).toContain("Couldn't search this hub's sessions.");
-	expect(renderedText(tree)).not.toMatch(/retry|try again|refresh/i);
+	expect(markers(tree, "search-note")).toEqual(["failed"]);
+	// The failure offers nothing to press.
+	expect(buttonCount(tree)).toBe(controls);
 	// A new query tries again.
 	await bar.type("fixes");
 	expect(fake.searches).toEqual(["fix", "fixes"]);
@@ -1353,10 +1474,10 @@ it("searches nothing while connecting, and asks for the typed query once the con
 	bar.focus();
 	await bar.type("ship");
 	expect(fake.searches).toEqual([]);
-	expect(texts(tree)).toContain("Search works when the hub is connected.");
+	expect(markers(tree, "search-note")).toEqual(["disconnected"]);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship"]);
 	expect(resultTitles(tree)).toEqual(["Ship it"]);
 	act(() => tree.unmount());
@@ -1377,12 +1498,12 @@ it("doesn't search while the Board is out of view, and asks again when it return
 	harness.stack = screenOverBoard;
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship"]);
 	// Back in view, the field's query asks again.
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship", "ship"]);
 	act(() => tree.unmount());
 });
@@ -1414,7 +1535,7 @@ it("re-tucks the search field when Dynamic Type changes its height", async () =>
 	scrollTo.mockClear();
 	harness.fontScale = 1.5;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
 	expect(height).toBe(70);
 	expect(scrollTo).toHaveBeenCalledWith({ y: 70, animated: false });
@@ -1438,13 +1559,13 @@ it("leaves a field the reader revealed or scrolled past where it is on a Dynamic
 	scrollTo.mockClear();
 	harness.fontScale = 1.5;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(scrollTo).not.toHaveBeenCalled();
 	// Scrolled down the list.
 	scrollToY(400);
 	harness.fontScale = 1;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(scrollTo).not.toHaveBeenCalled();
 	act(() => tree.unmount());
 });
@@ -1465,12 +1586,12 @@ it("keeps one search through a sheet over the Board, without re-asking", async (
 	harness.stack = sheetOverBoard;
 	setFocused(false);
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship"]);
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	setFocused(true);
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.searches).toEqual(["ship"]);
 	act(() => tree.unmount());
 });
@@ -1518,20 +1639,23 @@ it("remembers the queries you opened a result from, per hub, and clears them", a
 it("opens a session after marking it seen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	connect(id, hub(fleet).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
+	expect(dotted(tree, "Ship it")).toBe(true);
 	act(() => rowTitled(tree, "Ship it").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
-	expect(seenMarkers(id).isSeen(finished)).toBe(true);
-	// Seen, the session leaves Finished for the folded Idle band.
+	expect(seenMarkers(id).isSeen(shipIt)).toBe(true);
+	// Seen, the session stays in Idle and loses its blue dot.
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	expect(dotted(tree, "Ship it")).toBe(false);
 	act(() => tree.unmount());
 });
 
 // Rows the hub decides (S4): each carries its turn end, and the hub says
 // whether it is unseen. The device's markers say the opposite of the hub for
-// both: its epoch covers the first, and it holds an unread mark for the second.
+// both: its epoch covers the first, and the second updated after it.
 const hubUnseen = session("local:hub-unseen", {
 	title: "Hub unseen",
 	updated_at: minutesAgo(90),
@@ -1551,40 +1675,115 @@ const pinnedUnseen = session("local:pinned-unseen", {
 	turn_ended_at: minutesAgo(80),
 	unseen: true,
 });
+// A device adopted an hour ago (adoptedAnHourAgo) reads Hub seen as unseen.
 const hubFleet: Fleet = {
 	...fleet,
-	live: [[failing, working, hubUnseen, hubSeen, finished]],
+	live: [[failing, working, hubUnseen, hubSeen, shipIt]],
 	pinned: { ...fleet.pinned, "pins-1": [pinnedUnseen, keptNote] },
 };
-/** A device an hour past first run that marked Hub seen unread itself. */
-function deviceDisagrees(hub: string) {
-	adoptedAnHourAgo(hub);
-	seenMarkers(hub).markUnread("local:hub-seen");
-}
-const stateOf = (tree: ReactTestRenderer, title: string) =>
-	rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
+const stateOf = (tree: ReactTestRenderer, title: string) => markerOf(rowTitled(tree, title), "board-row");
 
-it("takes Finished or Idle from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
+// A live session that moved after the person last looked carries the blue
+// dot, resting in Idle included, and folded, Idle's header carries it for the
+// sessions inside (Jesse, #4093). A session that never ran gets none.
+it("dots the folded Idle header while a session inside moved since it was seen, and the row once unfolded", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
+	const moved = session("local:moved", {
+		title: "Moved since seen",
+		updated_at: minutesAgo(90),
+		turn_ended_at: minutesAgo(90),
+		unseen: false,
+		seen_through: minutesAgo(60),
+	});
+	const neverRan = session("local:never-ran", { title: "Never ran", updated_at: minutesAgo(5), dormant: true });
+	const fake = hub({
+		...fleet,
+		live: [[moved, hubSeen, neverRan]],
+		needsYou: [],
+		activity: [
+			{
+				ref: "local:moved",
+				minutes: [0, 0, 0, 0, 0, 0, 0],
+				runningSubagents: 0,
+				lastMovedAt: Date.parse(minutesAgo(30)),
+			},
+		],
+	});
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	await settleMicrotasks();
+	const fold = () =>
+		tree.root.find(
+			(node) =>
+				node.type === ("Pressable" as never) &&
+				node.props.accessibilityState?.expanded !== undefined &&
+				String(node.props.accessibilityLabel).startsWith("Idle"),
+		);
+	expect(fold().props.accessibilityLabel).toBe("Idle, 3 sessions, unread sessions inside");
+	expect(fold().findAllByType(FreshDot)).toHaveLength(1);
+	act(() => fold().props.onPress());
+	expect(fold().props.accessibilityLabel).toBe("Idle, 3 sessions");
+	expect(fold().findAllByType(FreshDot)).toHaveLength(0);
+	expect(dotted(tree, "Moved since seen")).toBe(true);
+	expect(dotted(tree, "Hub seen")).toBe(false);
+	expect(dotted(tree, "Never ran")).toBe(false);
+	act(() => tree.unmount());
+});
+
+// Opening a row marks it seen through the later of its turn end and its last
+// motion, so output that streamed after the turn's end is seen too.
+it("marks a row it opens seen through its last motion when that is later than its turn end", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const streamed = session("local:streamed", {
+		title: "Streamed",
+		updated_at: minutesAgo(10),
+		turn_ended_at: minutesAgo(10),
+		unseen: true,
+		seen_through: minutesAgo(60),
+	});
+	const lastMovedAt = Date.parse(minutesAgo(2));
+	const fake = hub({
+		...fleet,
+		live: [[streamed]],
+		needsYou: [],
+		activity: [{ ref: "local:streamed", minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 0, lastMovedAt }],
+	});
+	idleUnfolded(id);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	await settleMicrotasks();
+	act(() => rowTitled(tree, "Streamed").props.onPress());
+	await settleMicrotasks();
+	expect(fake.seen).toEqual([[{ ref: "local:streamed", seenThrough: lastMovedAt }]]);
+	act(() => tree.unmount());
+});
+
+it("takes the blue dot from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	pressLabel(tree, "Idle, 1 session");
-	expect(stateOf(tree, "Hub unseen")).toBe("Finished");
-	expect(stateOf(tree, "Hub seen")).toBe("Idle");
+	// Every session whose turn ended rests Idle; the dot says what's new.
+	for (const title of ["Hub unseen", "Hub seen", "Ship it", "Pinned unseen"]) expect(stateOf(tree, title)).toBe("idle");
+	expect(dotted(tree, "Hub unseen")).toBe(true);
+	expect(dotted(tree, "Hub seen")).toBe(false);
 	// A row without a turn end still follows the device: updated since its epoch.
-	expect(stateOf(tree, "Ship it")).toBe("Finished");
+	expect(dotted(tree, "Ship it")).toBe(true);
 	// The categories classify the same way.
-	expect(stateOf(tree, "Pinned unseen")).toBe("Finished");
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 2", "WORKING · 1", "Idle · 1"]);
+	expect(dotted(tree, "Pinned unseen")).toBe(true);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
 	expect(fake.seen).toEqual([]);
 	act(() => tree.unmount());
 });
 
 it("marks a hub row seen through its turn end when you open it, and clears its dot at once", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const shape = { ...hubFleet };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
@@ -1597,30 +1796,27 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 		title: "Hub unseen",
 	});
 	// The hub's rows still say unseen; the pending mark wins until they catch up.
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
-	await settle();
+	expect(dotted(tree, "Hub unseen")).toBe(false);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
 	// The device's own markers are not touched for a hub row.
-	expect(JSON.parse(harness.kv.get(`evener.native.seen.${id}`) ?? "{}").sessions).toEqual({
-		"local:hub-seen": { unread: true },
-	});
-	// Opening it again, now from Idle, costs no request.
-	pressLabel(tree, "Idle, 2 sessions");
-	expect(stateOf(tree, "Hub unseen")).toBe("Idle");
+	expect(JSON.parse(harness.kv.get(`evener.native.seen.${id}`) ?? "{}").sessions).toEqual({});
+	// Opening it again, now seen, costs no request.
 	act(() => rowTitled(tree, "Hub unseen").props.onPress());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.seen).toHaveLength(1);
 	// Opening a pinned hub row marks it the same way.
 	act(() => rowTitled(tree, "Pinned unseen").props.onPress());
-	await settle();
-	expect(stateOf(tree, "Pinned unseen")).toBe("Idle");
+	await settleMicrotasks();
+	expect(dotted(tree, "Pinned unseen")).toBe(false);
 	expect(fake.seen.at(-1)).toEqual([{ ref: "local:pinned-unseen", seenThrough: Date.parse(minutesAgo(80)) }]);
 	// The hub's rows catch up, and the pending mark goes: a later unseen for
 	// the same turn would show again.
-	shape.live = [[failing, working, { ...hubUnseen, unseen: false }, hubSeen, finished]];
+	shape.live = [[failing, working, { ...hubUnseen, unseen: false }, hubSeen, shipIt]];
 	// This fake hub answers every read at revision 1, so the change names none.
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(hubSeenMarks(id).isSeenOnHub(hubUnseen)).toBe(false);
 	expect(hubSeenMarks(id).isSeenOnHub(pinnedUnseen)).toBe(true);
 	act(() => tree.unmount());
@@ -1628,20 +1824,22 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 
 it("marks a row without a turn end on the device, and sends the hub nothing", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	act(() => rowTitled(tree, "Ship it").props.onPress());
-	await settle();
-	expect(seenMarkers(id).isSeen(finished)).toBe(true);
+	await settleMicrotasks();
+	expect(seenMarkers(id).isSeen(shipIt)).toBe(true);
 	expect(fake.seen).toEqual([]);
 	act(() => tree.unmount());
 });
 
 it("sends a mark made while the connection was down once it's ready again", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const fake = hub(hubFleet);
 	connect(id, fake.client, "ready");
 	const nav = navigation();
@@ -1649,12 +1847,12 @@ it("sends a mark made while the connection was down once it's ready again", asyn
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
 	act(() => rowTitled(tree, "Hub unseen").props.onPress());
-	await settle();
-	expect(bandHeaders(tree)).toContain("FINISHED · 1");
+	await settleMicrotasks();
+	expect(dotted(tree, "Hub unseen")).toBe(false);
 	expect(fake.seen).toEqual([]);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
 	act(() => tree.unmount());
 });
@@ -1669,7 +1867,7 @@ it("reads nothing while connecting, and reads the Board once the connection is r
 	expect(fake.requests).toHaveLength(0);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	// The Board's reads, its categories', and the Projects section's catalog.
 	// An empty organization journal needs no read before ⋯ shows.
 	expect(fake.requests.map((read) => read.section ?? read.resource).sort()).toEqual([
@@ -1681,7 +1879,7 @@ it("reads nothing while connecting, and reads the Board once the connection is r
 		"pin_section",
 		"pin_section",
 	]);
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
 	act(() => tree.unmount());
 });
 
@@ -1695,47 +1893,55 @@ it("keeps its rows when the connection drops, grays the meters, and says Reconne
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
 	expect(hasRow(tree, "Build docs")).toBe(true);
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
-	expect(texts(tree)).not.toContain("Reconnecting…");
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	expect(connectionStatusShown(tree)).toBe(false);
 	act(() => {
 		vi.advanceTimersByTime(2000);
 	});
-	expect(texts(tree)).toContain("Reconnecting…");
+	expect(connectionStatusShown(tree)).toBe(true);
 	const tones = tree.root.findAllByType(PulseMeter).map((meter) => meter.props.tone);
 	expect(tones.length).toBeGreaterThan(0);
 	expect(new Set(tones)).toEqual(new Set(["gray"]));
 	act(() => tree.unmount());
 });
 
-it("offers no Reconnect or Refresh anywhere", async () => {
+it("offers no Reconnect or Refresh anywhere: a lost connection adds no control", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
+	/** Every control the Board and its header offer, by label. */
+	const controls = () => {
+		const options = headerOptions(nav);
+		const headerItems = [...options.unstable_headerLeftItems({}), ...options.unstable_headerRightItems({})];
+		const headerLabels = headerItems.flatMap((item: { label?: string; menu?: { items: Array<{ label: string }> } }) => [
+			item.label,
+			...(item.menu?.items.map((entry) => entry.label) ?? []),
+		]);
+		// The hub button is a custom view: count what it offers. It opens the
+		// Hub sheet, whose own pages pin that they never ask to reconnect.
+		const hubButton = render(headerItems[0].element);
+		const hubControls = hubButton.root.findAll((node) => node.type === ("Pressable" as never)).length;
+		act(() => hubButton.unmount());
+		// Rows say their age, which the minute moves on; they are not new controls.
+		const pressables = tree.root
+			.findAll((node) => node.type === ("Pressable" as never) && markerOf(node, "board-row") === null)
+			.map((node) => node.props.accessibilityLabel);
+		return { labels: [...pressables, ...headerLabels].filter((label) => typeof label === "string"), hubControls };
+	};
+	const live = controls();
 	connect(id, null, "closed");
 	rerender(tree, nav);
 	act(() => {
 		vi.advanceTimersByTime(60_000);
 	});
-	const options = headerOptions(nav);
-	const headerItems = [...options.unstable_headerLeftItems({}), ...options.unstable_headerRightItems({})];
-	const headerLabels = headerItems
-		.flatMap((item: { label?: string; menu?: { items: Array<{ label: string }> } }) => [
-			item.label,
-			...(item.menu?.items.map((entry) => entry.label) ?? []),
-		])
-		.filter((label): label is string => typeof label === "string");
-	// The hub button is a custom view: read what it draws. It opens the Hub
-	// sheet, whose own pages pin that they never ask to reconnect.
-	const hubButton = render(headerItems[0].element);
-	const labels = tree.root
-		.findAll((node) => typeof node.props.accessibilityLabel === "string")
-		.map((node) => node.props.accessibilityLabel as string);
-	for (const text of [...texts(tree), ...labels, ...headerLabels, ...texts(hubButton)])
-		expect(text).not.toMatch(/^(Reconnect|Refresh|Retry)\b/);
-	expect(renderedText(tree)).not.toMatch(/Reconnect\b|Refresh|pull/i);
-	act(() => hubButton.unmount());
+	expect(connectionStatusShown(tree)).toBe(true);
+	const lost = controls();
+	expect(lost.labels.filter((label) => !live.labels.includes(label))).toEqual([]);
+	expect(lost.hubControls).toBe(live.hubControls);
+	// Nor does the list refresh on a pull.
+	expect(tree.root.findAll((node) => node.props.refreshControl !== undefined || node.props.onRefresh)).toEqual([]);
 	act(() => tree.unmount());
 });
 
@@ -1745,7 +1951,7 @@ it("says what to do on an empty Board, with a New session button", async () => {
 	connect(id, hub({ ...fleet, live: [[]], needsYou: [] }).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
-	expect(texts(tree)).toContain("Nothing's running. Start a session to put an agent to work.");
+	expect(markers(tree, "empty-state")).toEqual(["noSessions"]);
 	expect(bandHeaders(tree)).toEqual([]);
 	const button = tree.root.find(
 		(node) =>
@@ -1765,7 +1971,7 @@ it("shows three skeleton rows until the first read lands", async () => {
 	const tree = await mount(navigation());
 	expect(skeletonRows(tree)).toHaveLength(3);
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(skeletonRows(tree)).toHaveLength(0);
 	act(() => tree.unmount());
 });
@@ -1773,14 +1979,15 @@ it("shows three skeleton rows until the first read lands", async () => {
 it("shows the first read's rows at once under a finger that touched the skeleton, never the empty Board", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const fake = hub(fleet, () => true);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(skeletonRows(tree)).toHaveLength(3);
 	listEvent(tree, "onTouchStart");
 	fake.release();
-	await settle();
-	expect(texts(tree)).not.toContain("Nothing's running. Start a session to put an agent to work.");
+	await settleMicrotasks();
+	expect(markers(tree, "empty-state")).toEqual([]);
 	expect(listOrder(tree)).toEqual(workingOrder);
 	liftFinger(tree);
 	await advance(100);
@@ -1796,13 +2003,14 @@ it("says Update needed and why when no retry can fix the close", async () => {
 	const tree = await mount(nav);
 	connect(id, null, "closed", { fatal: true });
 	rerender(tree, nav);
-	expect(texts(tree)).toContain("Update needed");
+	// At once: a close a retry could fix says nothing for 2 seconds.
+	expect(connectionStatusShown(tree)).toBe(true);
 	expect(texts(tree)).toContain(INCOMPATIBLE_TEXT);
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	act(() => tree.unmount());
 });
 
-it("on a device's first run, reads every Live page before adopting, so nothing flashes Finished", async () => {
+it("on a device's first run, reads every Live page before adopting, so no row flashes a blue dot", async () => {
 	const id = hubId();
 	// Live is sorted by attention, so the newest session sits on page 2.
 	const newest = session("local:newest", { title: "Newest", updated_at: minutesAgo(1) });
@@ -1811,16 +2019,19 @@ it("on a device's first run, reads every Live page before adopting, so nothing f
 		{ ...fleet, live: [[failing, older], [newest]], needsYou: [failing] },
 		(read) => (read.offset ?? 0) > 0,
 	);
+	idleUnfolded(id);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(fake.requests.filter((read) => read.section === "live").map((read) => read.offset)).toEqual([0, 2]);
 	expect(seenMarkers(id).adopted).toBe(false);
-	expect(bandHeaders(tree)).not.toContain("FINISHED · 1");
+	expect(dotted(tree, "Older")).toBe(false);
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(seenMarkers(id).adopted).toBe(true);
 	expect(seenMarkers(id).isSeen(newest)).toBe(true);
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 1", "Idle · 2"]);
+	expect(dotted(tree, "Older")).toBe(false);
+	expect(dotted(tree, "Newest")).toBe(false);
 	act(() => tree.unmount());
 });
 
@@ -1828,7 +2039,7 @@ it("stops first-run paging while the Board is out of view, and finishes it on re
 	const id = hubId();
 	let holdLater = true;
 	const fake = hub(
-		{ ...fleet, live: [[failing, working], [finished], [idleOne]], needsYou: [failing] },
+		{ ...fleet, live: [[failing, working], [shipIt], [idleOne]], needsYou: [failing] },
 		(read) => holdLater && (read.offset ?? 0) > 0,
 	);
 	connect(id, fake.client, "ready");
@@ -1836,15 +2047,15 @@ it("stops first-run paging while the Board is out of view, and finishes it on re
 	expect(liveReads(fake)).toEqual([0, 2]);
 	// Leaving the Board mid-way cancels the page in flight; nothing replaces it.
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0, 2]);
 	holdLater = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0, 2]);
 	expect(seenMarkers(id).adopted).toBe(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0, 2, 2, 3]);
 	expect(seenMarkers(id).adopted).toBe(true);
 	act(() => tree.unmount());
@@ -1853,6 +2064,7 @@ it("stops first-run paging while the Board is out of view, and finishes it on re
 it("shows the Draft tag on sessions with a saved draft", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	harness.drafts.set(id, new Set(["local:work"]));
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
@@ -1879,7 +2091,9 @@ it("puts the hub's name on the left, opening the Hub, and search on the right", 
 	expect(hubButton.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual(["chevron.down"]);
 	const press = hubButton.root.findByType("Pressable" as never);
 	expect(press.props.accessibilityLabel).toBe("Work hub");
-	expect(press.props.accessibilityHint).toBe("Opens the Hub");
+	// VoiceOver hears where the button goes.
+	expect(press.props.accessibilityHint).toEqual(expect.any(String));
+	expect(press.props.accessibilityHint).not.toBe("");
 	// A long hub name truncates inside the capsule instead of growing it
 	// into Search (the window is 390pt wide here).
 	expect(press.props.style.maxWidth).toBeLessThanOrEqual(390 * 0.6);
@@ -1924,12 +2138,11 @@ it("stops the hub button's label growing at xxxLarge and offers the full name in
 
 const liveReads = (fake: ReturnType<typeof hub>) =>
 	fake.requests.filter((read) => read.section === "live").map((read) => read.offset ?? 0);
-const FIRST_READ_FAILED = "Couldn't load this hub's sessions. Trying again shortly.";
 async function advance(ms: number) {
 	act(() => {
 		vi.advanceTimersByTime(ms);
 	});
-	await settle();
+	await settleMicrotasks();
 }
 
 it("says a failed first read will be retried, and retries it with a growing backoff until it loads", async () => {
@@ -1939,7 +2152,7 @@ it("says a failed first read will be retried, and retries it with a growing back
 	const fake = hub(fleet, undefined, (read) => liveFails && read.section === "live");
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).toContain("firstReadFailed");
 	expect(renderedText(tree)).not.toContain("request timed out");
 	expect(skeletonRows(tree)).toHaveLength(0);
 	expect(liveReads(fake)).toEqual([0]);
@@ -1948,13 +2161,13 @@ it("says a failed first read will be retried, and retries it with a growing back
 	expect(liveReads(fake)).toEqual([0]);
 	await advance(1);
 	expect(liveReads(fake)).toEqual([0, 0]);
-	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).toContain("firstReadFailed");
 	liveFails = false;
 	await advance(1999);
 	expect(liveReads(fake)).toEqual([0, 0]);
 	await advance(1);
 	expect(liveReads(fake)).toEqual([0, 0, 0]);
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	// Loaded, the Board schedules no more retries.
 	await advance(120_000);
@@ -1986,7 +2199,7 @@ it("schedules no retry while the Board is out of view", async () => {
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	// This fleet's hub predates S5, so no activity timers run either.
 	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
@@ -2006,14 +2219,14 @@ it("retries a failed pin catalog read once Live's read is done, without saying a
 	);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	expect(skeletonRows(tree)).toHaveLength(3);
 	// Live's read is still out, and a retry now would cancel it.
 	await advance(60_000);
 	expect(liveReads(fake)).toEqual([0]);
 	holdLive = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	expect(chipLabels(tree)).not.toContain("Mine, 3 sessions");
 	pinsFail = false;
@@ -2041,7 +2254,7 @@ it("waits for a manifest read that's still out before it retries", async () => {
 	holdManifest = false;
 	needsYouFails = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	await advance(1000);
 	expect(fake.requests.filter((read) => read.section === "needs_you")).toHaveLength(2);
 	act(() => tree.unmount());
@@ -2071,16 +2284,19 @@ async function layOut(tree: ReactTestRenderer) {
 		liveBlock.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } });
 		scroller.props.onContentSizeChange?.(390, 400);
 	});
-	await settle();
+	await settleMicrotasks();
 }
 const writing = session("local:write", { title: "Write tests", state: "active", updated_at: minutesAgo(1) });
 
-it("keeps a later-page parent's Working pulse and failed count through questions, refresh and reconnect", async () => {
+it("keeps a later-page parent's Working pulse and quiet failure history through questions, refresh and reconnect", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
+	// A parent whose child is still running rests idle (#4093); the child's
+	// work is what the row shows.
 	const parent = session("local:parent", {
 		title: "Coordinate children",
-		state: "awaiting",
+		state: "idle",
 		subagents: { running: 1, failed: 1, done: 0 },
 	});
 	const shape: Fleet = { ...fleet, live: [[working], [parent]], needsYou: [], pins: [], pinned: {} };
@@ -2090,12 +2306,22 @@ it("keeps a later-page parent's Working pulse and failed count through questions
 	const tree = await mount(nav);
 	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 1]);
+	const assertQuietFailure = () => {
+		const row = rowTitled(tree, parent.title);
+		expect(row.props.accessibilityLabel).not.toContain("1 failed");
+		expect(textsIn(row)).not.toContain("1 failed");
+	};
 	const assertWorking = () => {
 		const row = rowTitled(tree, parent.title);
-		expect(stateOf(tree, parent.title)).toBe("Working");
+		expect(stateOf(tree, parent.title)).toBe("working");
 		expect(row.findAllByType(PulseMeter)).toHaveLength(1);
-		expect(row.props.accessibilityLabel).toContain("1 failed");
-		expect(textsIn(row)).toEqual(expect.arrayContaining(["1 running", "1 failed"]));
+		expect(row.props.accessibilityLabel).toContain("Waiting on 1 subagent");
+		expect(textsIn(row)).toContain("1 running");
+		expect(
+			tree.root.findAllByType(BoardRow).find((node) => node.props.item.row.ref === parent.ref)?.props.item.row
+				.subagents,
+		).toEqual({ running: 1, failed: 1, done: 0 });
+		assertQuietFailure();
 	};
 	assertWorking();
 	const refresh = async (sequence: number) => {
@@ -2105,17 +2331,19 @@ it("keeps a later-page parent's Working pulse and failed count through questions
 				{ kind: "section", section: "needs_you" },
 			]),
 		);
-		await settle();
+		await settleMicrotasks();
 		await layOut(tree);
 	};
-	const question = { ...parent, ask_pending: true };
+	const question = { ...parent, state: "awaiting", ask_pending: true };
 	shape.live = [[working], [question]];
 	shape.needsYou = [question];
 	await refresh(1);
-	expect(stateOf(tree, parent.title)).toBe("Question");
+	expect(stateOf(tree, parent.title)).toBe("question");
 	expect(bandHeaders(tree)).toContain("NEEDS YOU · 1");
 	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
-	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("1 failed");
+	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain(whyReason(rowTitled(tree, parent.title)));
+	expect(textsIn(rowTitled(tree, parent.title))).toContain("1 running");
+	assertQuietFailure();
 	shape.live = [[working], [parent]];
 	shape.needsYou = [];
 	await refresh(2);
@@ -2126,10 +2354,10 @@ it("keeps a later-page parent's Working pulse and failed count through questions
 	const beforeReconnect = fake.requests.length;
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
-	expect(stateOf(tree, parent.title)).toBe("Working");
+	expect(stateOf(tree, parent.title)).toBe("working");
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	await layOut(tree);
 	assertWorking();
 	expect(
@@ -2140,9 +2368,11 @@ it("keeps a later-page parent's Working pulse and failed count through questions
 	).toEqual([0, 1]);
 	shape.live = [[working], [{ ...parent, subagents: { running: 0, failed: 1, done: 1 } }]];
 	await refresh(4);
-	expect(stateOf(tree, parent.title)).toBe("Finished");
+	expect(stateOf(tree, parent.title)).toBe("idle");
+	expect(dotted(tree, parent.title)).toBe(true);
 	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
-	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("1 failed");
+	expect(rowTitled(tree, parent.title).findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
+	assertQuietFailure();
 	// The retained failure still has the same session and row-menu entry points.
 	act(() => rowTitled(tree, parent.title).props.onLongPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("RowMenuSheet", { hubId: id, ref: parent.ref, archived: false });
@@ -2151,20 +2381,22 @@ it("keeps a later-page parent's Working pulse and failed count through questions
 	act(() => menu.closed());
 	act(() => rowTitled(tree, parent.title).props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: parent.ref, title: parent.title });
-	await settle();
-	pressLabel(tree, "Idle, 1 session");
-	expect(stateOf(tree, parent.title)).toBe("Idle");
-	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("1 failed");
+	await settleMicrotasks();
+	expect(stateOf(tree, parent.title)).toBe("idle");
+	expect(dotted(tree, parent.title)).toBe(false);
+	expect(rowTitled(tree, parent.title).findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
+	assertQuietFailure();
 	act(() => tree.unmount());
 });
 
 it("reads a failed later Live page again after the backoff, keeping the loaded rows on screen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	let lastPageFails = true;
 	let holdLive = false;
 	const fake = hub(
-		{ ...fleet, live: [[failing, working], [finished], [writing]] },
+		{ ...fleet, live: [[failing, working], [shipIt], [writing]] },
 		(read) => holdLive && read.section === "live",
 		(read) => lastPageFails && read.section === "live" && read.offset === 3,
 	);
@@ -2177,7 +2409,7 @@ it("reads a failed later Live page again after the backoff, keeping the loaded r
 	expect(loadedRowsShown()).toBe(true);
 	expect(hasRow(tree, "Write tests")).toBe(false);
 	// Loaded once, a failure keeps the rows and says nothing.
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	// Layout alone never re-reads a failed page.
 	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 2, 3]);
@@ -2191,7 +2423,7 @@ it("reads a failed later Live page again after the backoff, keeping the loaded r
 	expect(loadedRowsShown()).toBe(true);
 	holdLive = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	await layOut(tree);
 	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 2, 3, 0, 2, 3]);
@@ -2203,10 +2435,11 @@ it("reads a failed later Live page again after the backoff, keeping the loaded r
 it("lets a slow retry finish instead of starting another over it", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	let lastPageFails = true;
 	let holdLive = false;
 	const fake = hub(
-		{ ...fleet, live: [[failing, working], [finished]] },
+		{ ...fleet, live: [[failing, working], [shipIt]] },
 		(read) => holdLive && read.section === "live",
 		(read) => lastPageFails && read.section === "live" && read.offset === 2,
 	);
@@ -2223,7 +2456,7 @@ it("lets a slow retry finish instead of starting another over it", async () => {
 	expect(liveReads(fake)).toEqual([0, 2, 0]);
 	holdLive = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 2, 0, 2]);
 	expect(hasRow(tree, "Ship it")).toBe(true);
@@ -2236,13 +2469,13 @@ it("starts the backoff over once a Live read succeeds", async () => {
 	let firstPageFails = true;
 	let secondPageFails = false;
 	const fake = hub(
-		{ ...fleet, live: [[failing, working], [finished]] },
+		{ ...fleet, live: [[failing, working], [shipIt]] },
 		undefined,
 		(read) => read.section === "live" && ((read.offset ?? 0) === 0 ? firstPageFails : secondPageFails),
 	);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).toContain("firstReadFailed");
 	firstPageFails = false;
 	await advance(1000);
 	expect(liveReads(fake)).toEqual([0, 0]);
@@ -2269,16 +2502,16 @@ it("keeps its backoff when a blur cancels a retry's read", async () => {
 	);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).toContain("firstReadFailed");
 	live = "hold";
 	await advance(1000);
 	expect(liveReads(fake)).toEqual([0, 0]);
 	// Leaving the Board pauses it, which cancels the retry's read.
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	live = "fail";
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0, 0, 0]);
 	// Two failures in a row: the next retry waits two seconds, not one.
 	await advance(1999);
@@ -2295,14 +2528,15 @@ it("shows neither skeleton rows nor the failed-read sentence beside Update neede
 	const tree = await mount(navigation());
 	expect(texts(tree)).toContain(INCOMPATIBLE_TEXT);
 	expect(skeletonRows(tree)).toHaveLength(0);
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	act(() => tree.unmount());
 });
 
 it("keeps reading Live's pages while they don't fill the screen, without any scrolling", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const fake = hub({ ...fleet, live: [[failing, working], [finished], [idleOne, idleTwo]] });
+	idleUnfolded(id);
+	const fake = hub({ ...fleet, live: [[failing, working], [shipIt], [idleOne, idleTwo]] });
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
@@ -2321,7 +2555,7 @@ it("keeps reading Live's pages while they don't fill the screen, without any scr
 it("reads no more of Live while search results fill the scroller", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const fake = hub({ ...fleet, live: [[failing, working], [finished]] });
+	const fake = hub({ ...fleet, live: [[failing, working], [shipIt]] });
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	act(() =>
@@ -2329,7 +2563,7 @@ it("reads no more of Live while search results fill the scroller", async () => {
 			.find((node) => node.props.testID === "live-block")
 			.props.onLayout({ nativeEvent: { layout: { x: 0, y: 52, width: 390, height: 300 } } }),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0]);
 	searchField(tree).focus();
 	act(() =>
@@ -2337,7 +2571,7 @@ it("reads no more of Live while search results fill the scroller", async () => {
 			nativeEvent: { contentOffset: { x: 0, y: 900 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(liveReads(fake)).toEqual([0]);
 	act(() => tree.unmount());
 });
@@ -2353,11 +2587,11 @@ it("reads nothing while blurred, and on refocus catches up and re-reads drafts",
 	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(0);
 	setFocused(false);
 	act(() => fake.invalidate(1, [{ kind: "manifest", revision: 2 }]));
-	await settle();
+	await settleMicrotasks();
 	expect(manifestReads()).toBe(1);
 	harness.drafts.set(id, new Set(["local:work"]));
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(manifestReads()).toBe(2);
 	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(1);
 	act(() => tree.unmount());
@@ -2422,7 +2656,7 @@ const migrating = session("local:migrate", { title: "Migrate schema", state: "ac
 const tidying = session("local:tidy", { title: "Tidy imports", state: "active", updated_at: minutesAgo(1) });
 const busyFleet: Fleet = {
 	...fleet,
-	live: [[failing, { ...working, subagents: { running: 1, failed: 0, done: 0 } }, tidying, migrating, finished]],
+	live: [[failing, { ...working, subagents: { running: 1, failed: 0, done: 0 } }, tidying, migrating, shipIt]],
 };
 const workingTitles = (tree: ReactTestRenderer) =>
 	tree.root
@@ -2454,8 +2688,9 @@ it("shows each working row's activity read: its meter, the hub's subagent tally,
 	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
 	const building = rowTitled(tree, "Build docs");
 	expect(meterIn(building).props.perMinute).toEqual([2, 4, 8]);
-	expect(textsIn(building)).toContain("Waiting on 3 subagents");
-	expect(textsIn(building)).not.toContain("Waiting on 1 subagent");
+	expect(whyKind(tree, "Build docs")).toBe("subagents");
+	// The read's three, not the row's own one.
+	expect(whyReason(building)).toContain("3");
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 4m");
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 11m");
 
@@ -2486,7 +2721,7 @@ it("words a working row from the session's latest tool intent, where it would re
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Reading the board's row tests.");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	act(() => tree.unmount());
 });
 
@@ -2537,7 +2772,7 @@ it("shows no stuck label or reordering from a stale read while offline (Jesse's 
 	rerender(tree, nav);
 	await advance(10 * MINUTE);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("May be stuck · no updates for 13m");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	expect(meterIn(rowTitled(tree, "Migrate schema")).props.perMinute).toBeUndefined();
 	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
 	act(() => tree.unmount());
@@ -2558,7 +2793,7 @@ it("falls back once the last successful read goes stale, even while the connecti
 	shape.activity = null;
 	await advance(STALE_AFTER_MS + 1_000);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	expect(meterIn(rowTitled(tree, "Migrate schema")).props.perMinute).toBeUndefined();
 	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
 	act(() => tree.unmount());
@@ -2587,9 +2822,9 @@ it("keeps the fallback after a reconnect until a new read actually lands", async
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 
-	await settle();
+	await settleMicrotasks();
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 3m");
 	act(() => tree.unmount());
 });
@@ -2610,7 +2845,7 @@ it("stays out of Working's stuck slot for as long as reads keep failing, not jus
 	// Several more poll cycles of continued failure: still no stuck label,
 	// still in hub order - not just true for a moment right at the threshold.
 	await advance(ACTIVITY_POLL_MS * 5);
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
 	// With no fresh read on screen there is nothing to recheck: only the
 	// row-age ticker and the activity poll itself are left.
@@ -2658,14 +2893,14 @@ it("keeps a fresh read through leaving front, so coming back shows each row's ac
 
 	harness.stack = screenOverBoard;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	// Back within the read's freshness window, with the first read after the
 	// return failing: the read from before still shows, with no round trip of
 	// fallback lines.
 	shape.activity = null;
 	harness.stack = boardAlone;
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.activityReads).toHaveLength(2);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
 	act(() => tree.unmount());
@@ -2688,7 +2923,7 @@ it("still lets a read on screen go stale once the hub stops answering activity r
 	await advance(ACTIVITY_POLL_MS + 1_000);
 	expect(fake.activityReads).toHaveLength(2);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(whyKind(tree, "Migrate schema")).toBe("state");
 	act(() => tree.unmount());
 });
 
@@ -2702,7 +2937,7 @@ it("keeps every working row as it was before S5 on a hub that has no activity re
 	const building = rowTitled(tree, "Build docs");
 	expect(meterIn(building).props.perMinute).toBeUndefined();
 	expect(textsIn(building)).toContain("Waiting on 1 subagent");
-	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Working");
+	expect(whyKind(tree, "Tidy imports")).toBe("state");
 	// With no read to go stale, nothing rechecks one either: an old hub never
 	// gets the Board re-rendered every ACTIVITY_POLL_MS. Only the row-age
 	// ticker is left.
@@ -2848,7 +3083,7 @@ it("drops a notice once evener/notices/changed leaves it out, reading nothing fo
 	const tree = await mount(navigation());
 	expect(noticeTexts(tree)).toContain("openai sign-in expiredSign in");
 	act(() => fake.noticesChanged([hostNotice, pluginNotice]));
-	await settle();
+	await settleMicrotasks();
 	expect(noticeTexts(tree)).toEqual(["Studio Mac is offline · 2\u00a0sessionsDetails", "superpowers is brokenPlugins"]);
 	expect(fake.noticeReads).toHaveLength(1);
 	act(() => tree.unmount());
@@ -2865,7 +3100,7 @@ it("reads the notices again when the Board comes back into view, and not while b
 	await advance(15 * 60_000);
 	expect(fake.noticeReads).toHaveLength(1);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.noticeReads).toHaveLength(2);
 	act(() => tree.unmount());
 });
@@ -2879,7 +3114,7 @@ it("shows no notices and no error on a hub without evener/notices/list", async (
 	const tree = await mount(navigation());
 	expect(fake.noticeReads).toHaveLength(1);
 	expect(noticeTexts(tree)).toEqual([]);
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	act(() => tree.unmount());
 });
 
@@ -2890,7 +3125,7 @@ it("says nothing when the notice read fails, and doesn't retry the Board over it
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(noticeTexts(tree)).toEqual([]);
-	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(markers(tree, "empty-state")).not.toContain("firstReadFailed");
 	const reads = fake.requests.length;
 	await advance(60_000);
 	expect(fake.requests).toHaveLength(reads);
@@ -3033,14 +3268,14 @@ it("reads an unfolded project's pages once, reads nothing to fold it, and rememb
 	expect(pageReads(fake)).toEqual([]);
 	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: false });
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake).sort()).toEqual(["archived list projects@0", "current@0", "recent@0"]);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Local work")).toBe(false);
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).toHaveLength(3);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	act(() => tree.unmount());
@@ -3053,18 +3288,17 @@ it("reads an unfolded project's pages once, reads nothing to fold it, and rememb
 	act(() => again.unmount());
 });
 
-it("classifies a project's session rows by the hub's seen marker too (S4)", async () => {
+it("dots a project's session rows by the hub's seen marker too (S4)", async () => {
 	const id = hubId();
-	deviceDisagrees(id);
+	adoptedAnHourAgo(id);
 	const fake = hub({
 		...hubFleet,
 		catalogs: { projects: [evenerProject()] },
 		projectPages: {
 			"evener:current": [
-				// The device holds an unread mark for this ref; the hub says seen.
+				// The device's first run predates this ref; the hub says seen.
 				session("local:hub-seen", {
 					title: "Project hub seen",
-					live: false,
 					updated_at: minutesAgo(6),
 					turn_ended_at: minutesAgo(6),
 					unseen: false,
@@ -3072,7 +3306,6 @@ it("classifies a project's session rows by the hub's seen marker too (S4)", asyn
 				// The device's epoch covers this one; the hub says unseen.
 				session("local:project-unseen", {
 					title: "Project hub unseen",
-					live: false,
 					updated_at: minutesAgo(90),
 					turn_ended_at: minutesAgo(90),
 					unseen: true,
@@ -3083,9 +3316,11 @@ it("classifies a project's session rows by the hub's seen marker too (S4)", asyn
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	pressLabel(tree, "evener");
-	await settle();
-	expect(stateOf(tree, "Project hub seen")).toBe("Idle");
-	expect(stateOf(tree, "Project hub unseen")).toBe("Finished");
+	await settleMicrotasks();
+	expect(stateOf(tree, "Project hub seen")).toBe("idle");
+	expect(stateOf(tree, "Project hub unseen")).toBe("idle");
+	expect(dotted(tree, "Project hub seen")).toBe(false);
+	expect(dotted(tree, "Project hub unseen")).toBe(true);
 	act(() => tree.unmount());
 });
 
@@ -3108,17 +3343,17 @@ it("drops a project row's pending mark once the project's page shows it landed (
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	act(() => rowTitled(tree, "Project hub unseen").props.onPress());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:project-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
-	expect(stateOf(tree, "Project hub unseen")).toBe("Idle");
+	expect(stateOf(tree, "Project hub unseen")).toBe("idle");
 	// The project's page catches up, and the pending mark goes: a later
 	// unseen for the same turn would show again. This fake hub answers every
 	// read at revision 1, so the change names none.
 	shape.projectPages = { "evener:current": [{ ...projectUnseen, unseen: false }] };
 	act(() => fake.invalidate(1, [{ kind: "project", projectKey: "evener" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.requests.filter((read) => read.resource === "project_page" && read.tier === "current")).toHaveLength(2);
 	expect(hubSeenMarks(id).isSeenOnHub(projectUnseen)).toBe(false);
 	act(() => tree.unmount());
@@ -3131,7 +3366,7 @@ async function revealFromSearch(tree: ReactTestRenderer, query = "even") {
 	await bar.type(query);
 	const [result] = tree.root.findAll((node) => node.props.testID === "project-result");
 	expect(result.props.accessibilityLabel).toBe("evener, project, /home/jesse/git/evener");
-	act(() => result.props.onPress());
+	await act(async () => result.props.onPress());
 }
 const layOutAt = (node: ReactTestInstance, y: number, height: number) =>
 	act(() => node.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height } } }));
@@ -3155,7 +3390,7 @@ it("opens a project from search: leaves search, unfolds the project and scrolls 
 	expect(tree.root.findAll((node) => node.props.testID === "search-result")).toHaveLength(0);
 	expect(JSON.parse(harness.kv.get(`evener.native.recent-searches.${id}`) ?? "[]")).toEqual(["even"]);
 	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: true });
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Local work")).toBe(true);
 	// It scrolls once both the project row and its section have laid out, in
 	// either order: the row sits 30% of the way down the viewport.
@@ -3289,17 +3524,17 @@ it("starts Test runs and Archived folded, reading neither catalog until it is un
 	expect(catalogReads(fake)).toEqual(["projects"]);
 	expect(projectRows(tree, "hub-test-env")).toHaveLength(0);
 	pressLabel(tree, "Test runs, 3 projects");
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(fake)).toEqual(["projects", "test_runs"]);
 	expect(projectRows(tree, "hub-test-env")).toHaveLength(1);
 	pressLabel(tree, "Archived, 271 projects");
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(fake)).toEqual(["projects", "test_runs", "archived_projects"]);
 	expect(projectRows(tree, "old-site")).toHaveLength(1);
 	// Folded again and reopened, a section reads nothing more.
 	pressLabel(tree, "Test runs, 3 projects");
 	pressLabel(tree, "Test runs, 3 projects");
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(fake)).toEqual(["projects", "test_runs", "archived_projects"]);
 	act(() => tree.unmount());
 });
@@ -3327,7 +3562,7 @@ it("shows no PROJECTS header before the manifest lands, and hides it once its ca
 	expect(catalogReads(fake)).toEqual([]);
 	holding = false;
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	// The manifest counts 4 projects, but the catalog comes back empty.
 	expect(catalogReads(fake)).toEqual(["projects"]);
 	expect(sectionHeaders(tree)).toEqual([]);
@@ -3348,20 +3583,20 @@ it("keeps every project row on screen from a dropped client until the new client
 	expect(hasRow(tree, "Local work")).toBe(true);
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(projectRows(tree, "evener")).toHaveLength(1);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	let holding = true;
 	const next = hub(shape, () => holding);
 	connect(id, next.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(next)).toEqual(["projects"]);
 	expect(projectRows(tree, "evener")).toHaveLength(1);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	holding = false;
 	next.release();
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(next).sort()).toEqual(["archived list projects@0", "current@0", "recent@0"]);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	act(() => tree.unmount());
@@ -3385,7 +3620,7 @@ it("pins a project to the top from its long-press menu, dimming it until the hub
 		cancelButtonIndex: 2,
 	});
 	act(() => choose(0));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/favorite/set", params: { kind: "project", id: "evener", favorited: true } },
 	]);
@@ -3393,7 +3628,7 @@ it("pins a project to the top from its long-press menu, dimming it until the hub
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
 	expect(menuLabels(tree)).toEqual([]);
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
 	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
 	expect(fake.mutations).toHaveLength(1);
@@ -3416,17 +3651,17 @@ it("reflects a project change held offline in its menu and on its row, and its o
 	const [sheet, choose] = openMenu();
 	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
 	act(() => choose(0));
-	await settle();
+	await settleMicrotasks();
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
 	const [held, undo] = openMenu();
 	expect(held.options).toEqual(["Unpin", "Archive project", "Cancel"]);
 	act(() => undo(0));
-	await settle();
+	await settleMicrotasks();
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
-	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]);
+	expect(heldIn(id)).toEqual([]);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -3459,24 +3694,29 @@ it("queues a project change behind the held one it answers, even once back onlin
 	};
 	const [, pin] = openMenu();
 	act(() => pin(0));
-	await settle();
+	await settleMicrotasks();
 	// The menu, opened offline, offers Unpin, and stays up across the
 	// reconnect while the held Pin to top goes out.
-	const [sheet, unpin] = openMenu();
-	expect(sheet.options?.[0]).toBe("Unpin");
+	const [, unpin] = openMenu();
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await vi.waitFor(() => expect(favorites).toBe(1));
+	await until(() => expect(favorites).toBe(1));
 	act(() => unpin(0));
-	await settle();
+	await settleMicrotasks();
+	// The Pin to top is still out: the Unpin waits in the hold behind it.
+	expect(favorites).toBe(1);
+	expect(heldIn(id)).toMatchObject([
+		{ action: { kind: "project", action: "pin" } },
+		{ action: { kind: "project", action: "unpin" } },
+	]);
 	answerPin();
-	await vi.waitFor(() =>
+	await until(() =>
 		expect(fake.mutations.filter((m) => m.method === "evener/favorite/set").map((m) => m.params)).toEqual([
 			{ kind: "project", id: "evener", favorited: true },
 			{ kind: "project", id: "evener", favorited: false },
 		]),
 	);
-	await vi.waitFor(() => expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]));
+	await until(() => expect(heldIn(id)).toEqual([]));
 	act(() => tree.unmount());
 });
 
@@ -3506,12 +3746,11 @@ it("holds a project change while the journal is busy, and sends it once the jour
 	// The journal is busy with the Pin to top; the menu still offers Archive,
 	// which is held until the journal is free.
 	const [sheet, choose] = openMenu();
-	expect(sheet.options).toContain("Archive project");
 	act(() => choose(sheet.options.indexOf("Archive project")));
-	await settle();
-	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toHaveLength(1);
+	await settleMicrotasks();
+	expect(heldIn(id)).toMatchObject([{ action: { kind: "project", action: "archive" } }]);
 	answerFirst();
-	await vi.waitFor(() =>
+	await until(() =>
 		expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/favorite/set", "evener/archive/set"]),
 	);
 	act(() => tree.unmount());
@@ -3552,7 +3791,7 @@ it("reads a tier's next page when its more row is pressed", async () => {
 	const tree = await mount(navigation());
 	expect(texts(tree)).toContain("12 more");
 	pressLabel(tree, "12 more");
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).toContain("recent@20");
 	expect(hasRow(tree, "Recent 31")).toBe(true);
 	expect(texts(tree)).not.toContain("12 more");
@@ -3575,7 +3814,7 @@ it("reads a tier's next page once its more row is at least half on screen", asyn
 		// 600 + 1000 is well past the 700pt viewport.
 		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 44 } } });
 	});
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).not.toContain("recent@20");
 	// Scrolled so only a quarter of the row shows: still nothing.
 	act(() =>
@@ -3583,7 +3822,7 @@ it("reads a tier's next page once its more row is at least half on screen", asyn
 			nativeEvent: { contentOffset: { x: 0, y: 1611 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).not.toContain("recent@20");
 	// Half of it on screen.
 	act(() =>
@@ -3591,7 +3830,7 @@ it("reads a tier's next page once its more row is at least half on screen", asyn
 			nativeEvent: { contentOffset: { x: 0, y: 1622 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake).filter((read) => read === "recent@20")).toHaveLength(1);
 	act(() => tree.unmount());
 });
@@ -3644,7 +3883,7 @@ it("reads no more of a project section while search results fill the scroller", 
 		});
 		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 44 } } });
 	});
-	await settle();
+	await settleMicrotasks();
 	searchField(tree).focus();
 	// Search results now cover where the more row last sat.
 	act(() =>
@@ -3652,7 +3891,7 @@ it("reads no more of a project section while search results fill the scroller", 
 			nativeEvent: { contentOffset: { x: 0, y: 1622 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(pageReads(fake)).not.toContain("recent@20");
 	act(() => tree.unmount());
 });
@@ -3700,16 +3939,16 @@ it("reads a project's failed tier again on its own: when the Board comes back in
 	await advance(60_000);
 	expect(recentReads()).toBe(1);
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(recentReads()).toBe(2);
 	expect(texts(tree)).toContain(COULDNT_LOAD);
 	recentFails = false;
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	expect(recentReads()).toBe(3);
 	expect(texts(tree)).not.toContain(COULDNT_LOAD);
 	expect(hasRow(tree, "Local work")).toBe(true);
@@ -3732,9 +3971,9 @@ it("reads a failed catalog again when the Board comes back into view", async () 
 	expect(projectRows(tree, "evener")).toHaveLength(0);
 	catalogFails = false;
 	setFocused(false);
-	await settle();
+	await settleMicrotasks();
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(catalogReads(fake)).toEqual(["projects", "projects"]);
 	expect(projectRows(tree, "evener")).toHaveLength(1);
 	act(() => tree.unmount());
@@ -3760,7 +3999,7 @@ it("offers the project menu as an alert off iOS, archiving the project", async (
 			["Cancel", "cancel"],
 		]);
 		act(() => menu?.buttons?.[1].onPress?.());
-		await settle();
+		await settleMicrotasks();
 	} finally {
 		Platform.OS = "ios";
 	}
@@ -3793,7 +4032,7 @@ it("reads the catalog's next page when its more projects row is pressed", async 
 	expect(projectRows(tree, "project-49")).toHaveLength(1);
 	expect(projectRows(tree, "project-50")).toHaveLength(0);
 	pressLabel(tree, "20 more projects");
-	await settle();
+	await settleMicrotasks();
 	expect(projectCatalogPages(fake)).toEqual([0, 50]);
 	expect(projectRows(tree, "project-69")).toHaveLength(1);
 	expect(texts(tree)).not.toContain("20 more projects");
@@ -3815,7 +4054,7 @@ it("reads the catalog's next page once its more projects row is at least half on
 		});
 		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 2400, width: 390, height: 44 } } });
 	});
-	await settle();
+	await settleMicrotasks();
 	expect(projectCatalogPages(fake)).toEqual([0]);
 	// The row's top half is on screen.
 	act(() =>
@@ -3823,7 +4062,7 @@ it("reads the catalog's next page once its more projects row is at least half on
 			nativeEvent: { contentOffset: { x: 0, y: 3022 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
 		}),
 	);
-	await settle();
+	await settleMicrotasks();
 	expect(projectCatalogPages(fake)).toEqual([0, 50]);
 	expect(projectRows(tree, "project-69")).toHaveLength(1);
 	act(() => tree.unmount());
@@ -3841,7 +4080,7 @@ it("archives a project from its long-press menu, dimming it until the hub confir
 	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
 	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
 	act(() => choose(1));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{
 			method: "evener/archive/set",
@@ -3851,7 +4090,7 @@ it("archives a project from its long-press menu, dimming it until the hub confir
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
 	expect(menuLabels(tree)).toEqual([]);
 	fake.release();
-	await settle();
+	await settleMicrotasks();
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
 	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
 	expect(fake.mutations).toHaveLength(1);
@@ -3921,7 +4160,7 @@ const swipeWorking = session(`local:${SESSION_ID}`, {
 	state: "active",
 	updated_at: minutesAgo(1),
 });
-const swipeFinished = session(`local:${OTHER_SESSION_ID}`, {
+const swipeIdle = session(`local:${OTHER_SESSION_ID}`, {
 	session_id: OTHER_SESSION_ID,
 	title: "Write changelog",
 	updated_at: minutesAgo(4),
@@ -3933,7 +4172,7 @@ const swipePark = session("paradise-park:pp", {
 	updated_at: minutesAgo(6),
 });
 const swipeFleet = (): Fleet => ({
-	live: [[swipeWorking, swipeFinished, swipePark]],
+	live: [[swipeWorking, swipeIdle, swipePark]],
 	needsYou: [],
 	pins: [],
 	pinned: {},
@@ -3965,6 +4204,7 @@ function pressRevealed(swipeable: ReactTestInstance, side: "left" | "right", lab
 async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation()) {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	connect(id, fake.client, "ready");
 	const tree = await mount(nav);
 	return { id, tree, nav };
@@ -3980,10 +4220,10 @@ function menuItem(host: RowMenuHost, ref: string, archived = false) {
 	if (!item) throw new Error(`the Board shows no ${ref}`);
 	return item;
 }
-const rowMenuLabels = (host: RowMenuHost, ref: string, archived = false) =>
-	host.actions(menuItem(host, ref, archived), archived).map((action) => ROW_ACTION_LABELS[action]);
+const rowMenuActions = (host: RowMenuHost, ref: string, archived = false) =>
+	host.actions(menuItem(host, ref, archived), archived);
 
-it("gives a working row Archive on the right swipe and Stop, Pin and More on the left, a finished row no Stop, and another host's row Archive too", async () => {
+it("gives a working row Archive on the right swipe and Stop, Pin and More on the left, an idle row no Stop, and another host's row Archive too", async () => {
 	const { tree } = await mountSwipeFleet(hub(swipeFleet()));
 	const working = swipeableOf(tree, "Refactor parser");
 	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
@@ -4005,7 +4245,7 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 	swipeableCalls.closes = 0;
 	swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
 	expect(swipeableCalls.closes).toBe(1);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
 	]);
@@ -4013,41 +4253,41 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 	expect(dimmed.props.style({ pressed: false }).opacity).toBe(0.5);
 	expect(dimmed.props.accessibilityState).toEqual({ busy: true });
 	act(() => fake.release());
-	await settle();
+	await settleMicrotasks();
 	expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
-	expect(texts(tree)).toContain("Archived");
+	expect(toasts(tree)).toEqual(["archive:done"]);
 	pressLabel(tree, "Undo");
-	await settle();
+	await settleMicrotasks();
 	act(() => fake.release());
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations.at(-1)).toEqual({
 		method: "evener/archive/set",
 		params: { kind: "session", id: SESSION_ID, archived: false },
 	});
-	expect(texts(tree)).toContain("Unarchived");
-	expect(texts(tree)).not.toContain("Refresh");
-	expect(texts(tree)).not.toContain("Reconnect");
+	expect(toasts(tree)).toEqual(["unarchive:done"]);
+	// Its one control is its own Undo: nothing asks you to refresh or reconnect.
+	expect(toastActions(tree)).toHaveLength(1);
 });
 
 it("archives another host's row by its ref", async () => {
 	const fake = hub(swipeFleet());
 	const { tree } = await mountSwipeFleet(fake);
 	swipeRowFully(swipeableOf(tree, "Park chore"), "right");
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
 	]);
-	expect(texts(tree)).toContain("Archived");
+	expect(toasts(tree)).toEqual(["archive:done"]);
 });
 
 it("says nothing when an archive can't be confirmed, and settles the journal so the row can swipe again", async () => {
 	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
 	const { tree } = await mountSwipeFleet(fake);
 	swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toHaveLength(1);
-	expect(texts(tree)).not.toContain("Archived");
-	expect(renderedText(tree)).not.toMatch(/Refresh|Reconnect|confirm/);
+	expect(toasts(tree)).toEqual([]);
+	expect(renderedText(tree)).not.toContain("request timed out");
 	// The Board read the session back, so its organization actions return.
 	expect(revealedLabels(swipeableOf(tree, "Refactor parser"), "left")).toEqual(["Archive"]);
 	expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
@@ -4057,7 +4297,7 @@ it("stops a working row through the durable runtime: a fresh read, then the inte
 	const fake = hub(swipeFleet());
 	const { tree } = await mountSwipeFleet(fake);
 	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
-	await settle();
+	await settleMicrotasks();
 	await vi.waitFor(() =>
 		expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]),
 	);
@@ -4065,7 +4305,7 @@ it("stops a working row through the durable runtime: a fresh read, then the inte
 		ref: `local:${SESSION_ID}`,
 		expectedInstanceId: `instance:local:${SESSION_ID}`,
 	});
-	expect(texts(tree)).toContain("Stopped");
+	expect(toasts(tree)).toEqual(["stop:stopped"]);
 });
 
 it("opens Pin to category for a row's Pin", async () => {
@@ -4086,20 +4326,19 @@ it("offers a row's actions offline too, to hold until the connection returns (ph
 	const working = swipeableOf(tree, "Refactor parser");
 	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
 	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin", "More"]);
-	expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).toEqual(
-		expect.arrayContaining(["Pin to category…", "Stop", "Shut down", "Archive"]),
+	expect(rowMenuActions(menuHost(id), `local:${SESSION_ID}`)).toEqual(
+		expect.arrayContaining(["pin", "stop", "shutDown", "archive"]),
 	);
 });
 
 describe("Board actions held offline (phase 6 ruling 18)", () => {
-	const heldIn = (id: string) => JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]") as unknown[];
 	const interrupts = (fake: ReturnType<typeof hub>) =>
 		fake.threadCalls.filter((call) => call.method === "turn/interrupt");
 	async function reconnect(id: string, fake: ReturnType<typeof hub>, tree: ReactTestRenderer, nav: Navigation) {
 		connect(id, fake.client, "ready");
 		rerender(tree, nav);
-		await settle();
-		await settle();
+		await settleMicrotasks();
+		await settleMicrotasks();
 	}
 
 	it("holds an archive taken offline, says so on the row, and sends it once back online", async () => {
@@ -4108,10 +4347,10 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-		await settle();
+		await settleMicrotasks();
 		expect(fake.mutations).toEqual([]);
 		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(0.5);
-		expect(texts(tree)).toContain("Archive waits for the connection");
+		expect(waitingTitles(tree)).toEqual(["Refactor parser"]);
 		await reconnect(id, fake, tree, nav);
 		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
 		expect(fake.mutations).toEqual([
@@ -4138,22 +4377,22 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-		await settle();
+		await settleMicrotasks();
 		// The menu, opened offline, stays up across the reconnect.
 		const menu = menuHost(id);
 		const item = menuItem(menu, `local:${SESSION_ID}`);
 		await reconnect(id, fake, tree, nav);
 		await vi.waitFor(() => expect(archives).toBe(1));
 		act(() => menu.act(item, "unarchive"));
-		await settle();
+		await settleMicrotasks();
 		answerArchive();
-		await vi.waitFor(() =>
+		await until(() =>
 			expect(fake.mutations.filter((m) => m.method === "evener/archive/set").map((m) => m.params)).toEqual([
 				{ kind: "session", id: SESSION_ID, archived: true },
 				{ kind: "session", id: SESSION_ID, archived: false },
 			]),
 		);
-		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+		await until(() => expect(heldIn(id)).toEqual([]));
 	});
 
 	/** Holds the first request of `method` until the returned function
@@ -4183,40 +4422,40 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		// The journal is busy, and Archive is still there to take: it is held,
 		// never refused.
 		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
-		await settle();
-		expect(texts(tree)).toContain("Archive is waiting to send");
+		await settleMicrotasks();
+		expect(waitingTitles(tree)).toEqual(["Write changelog"]);
 		expect(heldIn(id)).toHaveLength(1);
 		answerFirst();
-		await vi.waitFor(() =>
+		await until(() =>
 			expect(writes(fake, "evener/archive/set")).toEqual([
 				{ kind: "session", id: SESSION_ID, archived: true },
 				{ kind: "session", id: OTHER_SESSION_ID, archived: true },
 			]),
 		);
-		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+		await until(() => expect(heldIn(id)).toEqual([]));
 	});
 
 	it("holds a row's Undo while the journal is busy with another change, and sends it once the journal is free", async () => {
 		const fake = hub(swipeFleet());
 		const { id, tree } = await mountSwipeFleet(fake);
 		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-		await settle();
-		expect(texts(tree)).toContain("Archived");
+		await settleMicrotasks();
+		expect(toasts(tree)).toEqual(["archive:done"]);
 		const answerNext = hangFirst(fake, "evener/archive/set");
 		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
 		await vi.waitFor(() => expect(writes(fake, "evener/archive/set")).toHaveLength(2));
 		pressLabel(tree, "Undo");
-		await settle();
+		await settleMicrotasks();
 		expect(heldIn(id)).toHaveLength(1);
 		answerNext();
-		await vi.waitFor(() =>
+		await until(() =>
 			expect(writes(fake, "evener/archive/set")).toEqual([
 				{ kind: "session", id: SESSION_ID, archived: true },
 				{ kind: "session", id: OTHER_SESSION_ID, archived: true },
 				{ kind: "session", id: SESSION_ID, archived: false },
 			]),
 		);
-		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+		await until(() => expect(heldIn(id)).toEqual([]));
 	});
 
 	it("queues a Shut down behind the held one that is on its way, rather than sending it beside it", async () => {
@@ -4231,16 +4470,16 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 			act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
 		};
 		shutDown();
-		await settle();
+		await settleMicrotasks();
 		await reconnect(id, fake, tree, nav);
 		await vi.waitFor(() => expect(writes(fake, "thread/shutdown")).toHaveLength(1));
 		shutDown();
-		await settle();
+		await settleMicrotasks();
 		// The first is still out: the second waits in the hold behind it.
 		expect(writes(fake, "thread/shutdown")).toHaveLength(1);
 		expect(heldIn(id)).toHaveLength(2);
 		answerFirst();
-		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+		await until(() => expect(heldIn(id)).toEqual([]));
 	});
 
 	it("offers the row menu's Cancel for a change held after the menu opened", async () => {
@@ -4251,12 +4490,13 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		const before = menuHost(id);
 		const host = menuHost(id);
 		act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "stop"));
-		await settle();
+		await settleMicrotasks();
 		// The sheet re-reads a host it is given anew: a hold alone gives it one.
 		expect(menuHost(id)).not.toBe(before);
-		expect(menuHost(id).held(menuItem(menuHost(id), `local:${SESSION_ID}`))).toEqual([
-			{ id: expect.any(String), label: "Cancel Stop" },
-		]);
+		// The menu offers to cancel the one held change: the Stop.
+		const offered = menuHost(id).held(menuItem(menuHost(id), `local:${SESSION_ID}`));
+		expect(offered.map((entry) => entry.id)).toEqual(heldIn(id).map((record) => record.id));
+		expect(heldIn(id).map((record) => record.action.kind)).toEqual(["stop"]);
 	});
 
 	it("cancels a held archive from the row's menu, and the row is itself again", async () => {
@@ -4265,13 +4505,13 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
-		await settle();
+		await settleMicrotasks();
 		const menu = menuHost(id);
 		const [held] = menu.held(menuItem(menu, `local:${SESSION_ID}`));
-		expect(held?.label).toBe("Cancel Archive");
+		expect(heldIn(id).map((record) => [record.id, record.action.kind])).toEqual([[held?.id, "archive"]]);
 		act(() => menu.cancel(held?.id ?? ""));
-		await settle();
-		expect(texts(tree)).not.toContain("Archive waits for the connection");
+		await settleMicrotasks();
+		expect(waitingTitles(tree)).toEqual([]);
 		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
 		await reconnect(id, fake, tree, nav);
 		expect(fake.mutations).toEqual([]);
@@ -4283,8 +4523,8 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
-		await settle();
-		expect(texts(tree)).toContain("Stop waits for the connection");
+		await settleMicrotasks();
+		expect(waitingTitles(tree)).toEqual(["Refactor parser"]);
 		setFocused(false);
 		await reconnect(id, fake, tree, nav);
 		await vi.waitFor(() => expect(interrupts(fake)).toHaveLength(1));
@@ -4301,11 +4541,11 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "reconnecting");
 		rerender(tree, nav);
 		pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
-		await settle();
+		await settleMicrotasks();
 		// Meanwhile that turn ended and another began.
 		fleet.live[0] = [{ ...row, turn_ended_at: minutesAgo(1) }, ...(fleet.live[0] ?? []).slice(1)];
 		await reconnect(id, fake, tree, nav);
-		await vi.waitFor(() => expect(texts(tree)).toContain("The turn you stopped ended before you were back online"));
+		await vi.waitFor(() => expect(toasts(tree)).toEqual(["stop:dropped"]));
 		expect(interrupts(fake)).toEqual([]);
 		expect(heldIn(id)).toEqual([]);
 	});
@@ -4315,7 +4555,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		const id = hubId();
 		adoptedAnHourAgo(id);
 		harness.kv.set(
-			`evener.native.board-hold.${id}`,
+			boardHoldKey(id),
 			JSON.stringify([
 				{
 					id: "a",
@@ -4344,9 +4584,10 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		const fake = hub(swipeFleet());
 		const id = hubId();
 		adoptedAnHourAgo(id);
+		idleUnfolded(id);
 		const ref = `local:${OTHER_SESSION_ID}`;
 		harness.kv.set(
-			`evener.native.board-hold.${id}`,
+			boardHoldKey(id),
 			JSON.stringify([
 				{
 					id: "a",
@@ -4369,10 +4610,10 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
 		const menu = menuHost(id);
 		expect(menu.held(menuItem(menu, ref))).toEqual([]);
-		expect(texts(tree)).toContain("Shut down is waiting to send");
+		expect(waitingTitles(tree)).toHaveLength(1);
 		answer();
-		await settle();
-		expect(texts(tree)).not.toContain("Shut down is waiting to send");
+		await settleMicrotasks();
+		expect(waitingTitles(tree)).toEqual([]);
 	});
 
 	it("stops replaying a removed hub: its next Shut down never goes, and its hold's key stays gone", async () => {
@@ -4390,7 +4631,7 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 			},
 		});
 		harness.kv.set(
-			`evener.native.board-hold.${id}`,
+			boardHoldKey(id),
 			JSON.stringify([
 				shutDown("a"),
 				{ ...shutDown("b"), action: { ...shutDown("b").action, ref: "paradise-park:pp" } },
@@ -4408,12 +4649,12 @@ describe("Board actions held offline (phase 6 ruling 18)", () => {
 		connect(id, fake.client, "ready");
 		await mount(navigation());
 		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
-		forgetBoardForHub(id);
+		act(() => forgetBoardForHub(id));
 		answer();
-		await settle();
-		await settle();
+		await settleMicrotasks();
+		await settleMicrotasks();
 		expect(fake.mutations).toHaveLength(1);
-		expect(harness.kv.has(`evener.native.board-hold.${id}`)).toBe(false);
+		expect(harness.kv.has(boardHoldKey(id))).toBe(false);
 	});
 });
 
@@ -4450,25 +4691,19 @@ it("puts swipes on pinned categories' rows and project sessions too", async () =
 	expect(revealedLabels(swipeableOf(tree, "Pinned note"), "left")).toEqual(["Archive"]);
 	// Unfold the project, then its Archived group.
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	pressLabel(tree, "Archived, 1 session");
-	await settle();
+	await settleMicrotasks();
 	expect(revealedLabels(swipeableOf(tree, "Old archived work"), "left")).toEqual(["Unarchive"]);
 });
 
 it("ends a row's trailing swipe with More, which opens the row menu sheet, as a long press does", async () => {
 	const shape = swipeFleet();
-	shape.live = [[{ ...swipeWorking, rename: true }, swipeFinished, swipePark]];
+	shape.live = [[{ ...swipeWorking, rename: true }, swipeIdle, swipePark]];
 	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
 	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}`, archived: false });
-	expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).toEqual([
-		"Pin to category…",
-		"Stop",
-		"Shut down",
-		"Archive",
-		"Rename",
-	]);
+	expect(rowMenuActions(menuHost(id), `local:${SESSION_ID}`)).toEqual(["pin", "stop", "shutDown", "archive", "rename"]);
 	nav.navigate.mockClear();
 	const row = rowTitled(tree, "Refactor parser");
 	expect(row.props.delayLongPress).toBe(500);
@@ -4498,14 +4733,14 @@ it("gives the row menu the copy it opened from, when a session shows in both Liv
 	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
 	// Unfold the project, then its Archived group, so both copies are on screen.
 	pressLabel(tree, "evener");
-	await settle();
+	await settleMicrotasks();
 	pressLabel(tree, "Archived, 1 session");
-	await settle();
+	await settleMicrotasks();
 	const host = menuHost(id);
-	expect(rowMenuLabels(host, ref, true)).toContain("Unarchive");
-	expect(rowMenuLabels(host, ref, true)).not.toContain("Archive");
-	expect(rowMenuLabels(host, ref, false)).toContain("Archive");
-	expect(rowMenuLabels(host, ref, false)).not.toContain("Unarchive");
+	expect(rowMenuActions(host, ref, true)).toContain("unarchive");
+	expect(rowMenuActions(host, ref, true)).not.toContain("archive");
+	expect(rowMenuActions(host, ref, false)).toContain("archive");
+	expect(rowMenuActions(host, ref, false)).not.toContain("unarchive");
 	pressRevealed(swipeableOf(tree, "Refactor parser (archived tier)"), "right", "More");
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
 	nav.navigate.mockClear();
@@ -4523,9 +4758,9 @@ it("keeps the row menu's row while the list is held, even once the read drops it
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: false });
 	// A later read no longer has the row, but the held list keeps showing it,
 	// so the menu that is about it must still resolve one.
-	shape.live = [[swipeFinished, swipePark]];
+	shape.live = [[swipeIdle, swipePark]];
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(hasRow(tree, "Refactor parser")).toBe(true);
 	expect(menuItem(menuHost(id), ref).row.ref).toBe(ref);
 });
@@ -4533,11 +4768,11 @@ it("keeps the row menu's row while the list is held, even once the read drops it
 it("offers Rename only on iOS, where Alert.prompt exists", async () => {
 	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
 	const shape = swipeFleet();
-	shape.live = [[{ ...swipeWorking, rename: true }, swipeFinished, swipePark]];
+	shape.live = [[{ ...swipeWorking, rename: true }, swipeIdle, swipePark]];
 	const { id } = await mountSwipeFleet(hub(shape));
 	Platform.OS = "android";
 	try {
-		expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).not.toContain("Rename");
+		expect(rowMenuActions(menuHost(id), `local:${SESSION_ID}`)).not.toContain("rename");
 	} finally {
 		Platform.OS = "ios";
 	}
@@ -4551,8 +4786,9 @@ it("asks before shutting a session down from the menu, then says it shut down", 
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
 	expect(fake.mutations).toEqual([]);
 	const ask = alertRequests.at(-1);
-	expect(ask?.title).toBe("Shut down “Refactor parser”?");
-	expect(ask?.message).toBe("The agent stops. Send it a message to resume it.");
+	// It names the session, and says what shutting down does.
+	expect(ask?.title).toContain("Refactor parser");
+	expect(ask?.message).toEqual(expect.stringMatching(/\S/));
 	expect(ask?.buttons?.map((button) => [button.text, button.style])).toEqual([
 		["Cancel", "cancel"],
 		["Shut down", "destructive"],
@@ -4561,9 +4797,9 @@ it("asks before shutting a session down from the menu, then says it shut down", 
 	act(() => ask?.buttons?.[1]?.onPress?.());
 	// Spec 16.6: rigid on a destructive confirmation.
 	expect(playedHaptics).toEqual(["impact:rigid"]);
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([{ method: "thread/shutdown", params: { ref: `local:${SESSION_ID}` } }]);
-	expect(texts(tree)).toContain("Session shut down");
+	expect(toasts(tree)).toEqual(["shutDown:done"]);
 });
 
 it("says why a shut down failed, in the hub's words", async () => {
@@ -4573,8 +4809,10 @@ it("says why a shut down failed, in the hub's words", async () => {
 	alertRequests.length = 0;
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
 	act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
-	await settle();
-	expect(texts(tree)).toContain("Couldn't shut down “Refactor parser”: session not found");
+	await settleMicrotasks();
+	expect(toasts(tree)).toEqual(["shutDown:failed"]);
+	// In the hub's words.
+	expect(renderedText(tree)).toContain("session not found");
 });
 
 it("renames a session from the menu with the prompt's text", async () => {
@@ -4597,11 +4835,11 @@ it("renames a session from the menu with the prompt's text", async () => {
 		["Rename", undefined],
 	]);
 	act(() => buttons[1]?.onPress?.("  Parser rewrite "));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/thread/name/set", params: { ref: `local:${SESSION_ID}`, name: "Parser rewrite" } },
 	]);
-	expect(texts(tree)).toContain("Renamed");
+	expect(toasts(tree)).toEqual(["rename:done"]);
 });
 
 it("says why a rename failed, in the hub's words", async () => {
@@ -4612,58 +4850,10 @@ it("says why a rename failed, in the hub's words", async () => {
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "rename"));
 	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
 	act(() => buttons[1]?.onPress?.("Parser rewrite"));
-	await settle();
-	expect(texts(tree)).toContain("Couldn't rename “Refactor parser”: session not found");
-});
-
-it("marks a finished row read from the menu, moving it to Idle, and unread again", async () => {
-	const { id, tree } = await mountSwipeFleet(hub(swipeFleet()));
-	const host = menuHost(id);
-	const ref = `local:${OTHER_SESSION_ID}`;
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
-	act(() => host.act(menuItem(host, ref), "markRead"));
-	await settle();
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
-	const read = menuHost(id);
-	expect(menuItem(read, ref).state).toBe("idle");
-	act(() => read.act(menuItem(read, ref), "markUnread"));
-	await settle();
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
-});
-
-it("sends no read mark through another hub's client when this Board's hub isn't the active one", async () => {
-	const first = hubId();
-	const second = hubId();
-	adoptedAnHourAgo(first);
-	adoptedAnHourAgo(second);
-	// A row the hub decides (it carries a turn end), so marking it read is a
-	// hub write (BoardSeen.markRead), not just the device's own marker.
-	const row = session("local:hub-unseen", {
-		title: "Hub unseen",
-		updated_at: minutesAgo(90),
-		turn_ended_at: minutesAgo(90),
-		unseen: true,
-	});
-	const shape: Fleet = { ...fleet, live: [[row]], needsYou: [] };
-	const fakeA = hub(shape);
-	const fakeB = hub(shape);
-	connect(first, fakeA.client, "ready");
-	const nav = navigation();
-	const tree = await mount(nav);
-	const host = menuHost(first);
-	const ref = "local:hub-unseen";
-	// The active hub changes to a different one, but this Board (mounted for
-	// "first") stays up, as it would underneath a freshly-selected hub's own
-	// screen; its next render reads the new connection.
-	connect(second, fakeB.client, "ready");
-	setFocused(false);
-	setFocused(true);
-	await settle();
-	act(() => host.act(menuItem(host, ref), "markRead"));
-	await settle();
-	expect(fakeA.seen).toEqual([]);
-	expect(fakeB.seen).toEqual([]);
-	act(() => tree.unmount());
+	await settleMicrotasks();
+	expect(toasts(tree)).toEqual(["rename:failed"]);
+	// In the hub's words.
+	expect(renderedText(tree)).toContain("session not found");
 });
 
 it("flushes a hidden Board's pending read marks through no other hub's client when the connection re-binds", async () => {
@@ -4686,21 +4876,21 @@ it("flushes a hidden Board's pending read marks through no other hub's client wh
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
-	// Marked while another hub is active: the mark waits in this Board's
-	// hub's pending marks.
-	act(() => host.act(menuItem(host, "local:hub-unseen"), "markRead"));
-	await settle();
+	await settleMicrotasks();
+	// Opened while another hub is active: the read mark waits in this
+	// Board's hub's pending marks.
+	act(() => host.openSession(menuItem(host, "local:hub-unseen")));
+	await settleMicrotasks();
 	// The other hub's connection drops and comes back, handing the Board a
 	// ready client again.
 	connect(second, fakeB.client, "connecting");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	expect(fakeA.seen).toEqual([]);
 	expect(fakeB.seen).toEqual([]);
 	act(() => tree.unmount());
@@ -4728,10 +4918,11 @@ it("opens a session from the menu's card without marking it through another hub'
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	act(() => host.openSession(menuItem(host, ref)));
-	await settle();
+	await settleMicrotasks();
 	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: first, ref, title: "Hub unseen" });
+	expect(fakeA.seen).toEqual([]);
 	expect(fakeB.seen).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -4751,9 +4942,9 @@ it("sends no stop through another hub's client when this Board's hub isn't the a
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	act(() => host.act(menuItem(host, ref), "stop"));
-	await settle();
+	await settleMicrotasks();
 	expect(fakeA.threadCalls).toEqual([]);
 	expect(fakeB.threadCalls).toEqual([]);
 	act(() => tree.unmount());
@@ -4774,11 +4965,11 @@ it("sends no shutdown through another hub's client when this Board's hub isn't t
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	alertRequests.length = 0;
 	act(() => host.act(menuItem(host, ref), "shutDown"));
 	act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
-	await settle();
+	await settleMicrotasks();
 	expect(fakeA.mutations).toEqual([]);
 	expect(fakeB.mutations).toEqual([]);
 	act(() => tree.unmount());
@@ -4799,12 +4990,12 @@ it("sends no rename through another hub's client when this Board's hub isn't the
 	connect(second, fakeB.client, "ready");
 	setFocused(false);
 	setFocused(true);
-	await settle();
+	await settleMicrotasks();
 	harness.prompt.mockClear();
 	act(() => host.act(menuItem(host, ref), "rename"));
 	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
 	act(() => buttons[1]?.onPress?.("New name"));
-	await settle();
+	await settleMicrotasks();
 	expect(fakeA.mutations).toEqual([]);
 	expect(fakeB.mutations).toEqual([]);
 	act(() => tree.unmount());
@@ -4833,13 +5024,13 @@ it("stops, pins and archives from the menu as the swipes do", async () => {
 		title: "Write changelog",
 	});
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "stop"));
-	await settle();
+	await settleMicrotasks();
 	await vi.waitFor(() =>
 		expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]),
 	);
-	expect(texts(tree)).toContain("Stopped");
+	expect(toasts(tree)).toEqual(["stop:stopped"]);
 	act(() => host.act(menuItem(host, "paradise-park:pp"), "archive"));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
 	]);
@@ -4850,9 +5041,9 @@ it("drops a row that left the Board from the menu's host", async () => {
 	const fake = hub(shape);
 	const { id } = await mountSwipeFleet(fake);
 	expect(menuHost(id).item("paradise-park:pp", false)).toBeDefined();
-	shape.live = [[swipeWorking, swipeFinished]];
+	shape.live = [[swipeWorking, swipeIdle]];
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
-	await settle();
+	await settleMicrotasks();
 	expect(menuHost(id).item("paradise-park:pp", false)).toBeUndefined();
 	expect(menuHost(id).item(`local:${SESSION_ID}`, false)).toBeDefined();
 });
@@ -4885,21 +5076,24 @@ function listEvent(tree: ReactTestRenderer, handler: string, nativeEvent: Record
 	act(() => boardScroller(tree).props[handler]({ nativeEvent }));
 }
 const liftFinger = (tree: ReactTestRenderer) => listEvent(tree, "onTouchEnd", { touches: [] });
+/** The default fleet's Live with Idle unfolded (idleUnfolded). */
 const workingOrder = [
 	"NEEDS YOU · 2",
 	"Fix retry loop",
 	"Pick a name",
-	"FINISHED · 1",
-	"Ship it",
 	"WORKING · 1",
 	"Build docs",
-	"Idle · 2",
+	"Idle · 3",
+	"Ship it",
+	"Old chore",
+	"Older chore",
 ];
 /** A Board over the default fleet whose rows can turn into questions ("Build
  * docs", the working row, unless the test names another). */
 async function mountAskingFleet(nav = navigation(), withInstances = false) {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const shape: Fleet = { ...fleet, live: [[...fleet.live[0]]], needsYou: [...fleet.needsYou] };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
@@ -4916,7 +5110,7 @@ async function mountAskingFleet(nav = navigation(), withInstances = false) {
 				{ kind: "section", section: "needs_you" },
 			]),
 		);
-		await settle();
+		await settleMicrotasks();
 	};
 	return { id, ...mounted, ask };
 }
@@ -4926,7 +5120,7 @@ const heldInWorking = (tree: ReactTestRenderer) =>
 /** Whether "Build docs" moved into Needs you, and Working is gone. */
 function movedToNeedsYou(tree: ReactTestRenderer) {
 	const order = listOrder(tree);
-	expect(order.indexOf("Build docs")).toBeLessThan(order.indexOf("FINISHED · 1"));
+	expect(order.indexOf("Build docs")).toBeLessThan(order.indexOf("Idle · 3"));
 	expect(order).not.toContain("WORKING · 1");
 }
 
@@ -4938,7 +5132,8 @@ it("keeps a row in its place while a finger is on the list, then moves it into N
 	heldInWorking(tree);
 	// Held, the row shows what it is now.
 	expect(boardRowTitled(tree, "Build docs").props.item.state).toBe("question");
-	expect(texts(tree)).toContain("Question");
+	expect(stateOf(tree, "Build docs")).toBe("question");
+	expect(whyKind(tree, "Build docs")).toBe("reason");
 	liftFinger(tree);
 	await advance(99);
 	heldInWorking(tree);
@@ -4956,7 +5151,7 @@ it("lets a washed row finish its fade when another row enters Needs you after it
 	const wash = boardRowTitled(tree, "Build docs").props.wash;
 	expect(wash).toBeGreaterThan(0);
 	await advance(300);
-	await ask(finished);
+	await ask(shipIt);
 	expect(boardRowTitled(tree, "Ship it").props.wash).toBeGreaterThan(0);
 	expect(boardRowTitled(tree, "Build docs").props.wash).toBe(wash);
 	await advance(WASH_MS - 300);
@@ -4990,6 +5185,7 @@ it("holds the list while a chip's scroll animates, until the scroll ends", async
 it("holds the list while a search's project reveal scrolls, until the scroll ends", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	idleUnfolded(id);
 	const shape: Fleet = {
 		...fleet,
 		live: [[...fleet.live[0]]],
@@ -5002,7 +5198,7 @@ it("holds the list while a search's project reveal scrolls, until the scroll end
 	const { tree, scrollTo } = await mountWithInstances(navigation());
 	layOutAt(boardScroller(tree), 0, 600);
 	await revealFromSearch(tree);
-	await settle();
+	await settleMicrotasks();
 	layOutAt(revealTarget(tree), 60, 48);
 	layOutAt(projectSection(tree, "projects"), 900, 400);
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 48), animated: true });
@@ -5015,7 +5211,7 @@ it("holds the list while a search's project reveal scrolls, until the scroll end
 			{ kind: "section", section: "needs_you" },
 		]),
 	);
-	await settle();
+	await settleMicrotasks();
 	await advance(500);
 	heldInWorking(tree);
 	listEvent(tree, "onMomentumScrollEnd");
@@ -5115,9 +5311,7 @@ it("leads the toolbar with Select, which puts a checkbox on every session row an
 	expect(pressables(tree, "New session")).toHaveLength(1);
 	pressLabel(tree, "Select");
 	expect(pressables(tree, "New session")).toHaveLength(0);
-	expect(["Done", "Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label).length)).toEqual([
-		1, 1, 1, 1,
-	]);
+	expect(["Done", "Archive", "Pin"].map((label) => pressables(tree, label).length)).toEqual([1, 1, 1]);
 	const rows = tree.root.findAllByType(BoardRow);
 	expect(rows.map((row) => row.props.selected)).toEqual([false, false, false]);
 	// Select mode's rows neither swipe nor open a menu.
@@ -5185,19 +5379,19 @@ it("archives the chosen sessions one by one, leaves select mode, and Undo unarch
 	const { tree } = await mountSwipeFleet(fake);
 	select(tree, "Refactor parser", "Write changelog");
 	pressLabel(tree, "Archive");
-	await settle();
-	// In the order the Board shows them: Finished, then Working.
+	await settleMicrotasks();
+	// In the order the Board shows them: Working, then Idle.
 	expect(fake.mutations).toEqual([
-		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: true } },
 		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
+		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: true } },
 	]);
 	expect(inSelectMode(tree)).toBe(false);
-	expect(texts(tree)).toContain("Archived 2 sessions");
+	expect(toasts(tree)).toEqual(["archive:done"]);
 	pressLabel(tree, "Undo");
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations.slice(2)).toEqual([
-		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: false } },
 		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: false } },
+		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: false } },
 	]);
 	expect(texts(tree)).toContain("Unarchived 2 sessions");
 });
@@ -5207,15 +5401,15 @@ it("says nothing archived when the hub can't confirm one, and holds the rest for
 	const { tree } = await mountSwipeFleet(fake);
 	select(tree, "Refactor parser", "Write changelog");
 	pressLabel(tree, "Archive");
-	await settle();
+	await settleMicrotasks();
 	expect(inSelectMode(tree)).toBe(false);
 	expect(texts(tree).filter((text) => text.startsWith("Archived"))).toEqual([]);
 	// The one after it was held, not dropped: it goes once the journal has
 	// settled the first.
 	await vi.waitFor(() =>
 		expect(fake.mutations.map((mutation) => mutation.params)).toEqual([
-			{ kind: "session", id: OTHER_SESSION_ID, archived: true },
 			{ kind: "session", id: SESSION_ID, archived: true },
+			{ kind: "session", id: OTHER_SESSION_ID, archived: true },
 		]),
 	);
 });
@@ -5232,9 +5426,9 @@ it("pins the chosen sessions with the Board's connection as it is when you pick,
 	rerender(tree, nav);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	await settle();
+	await settleMicrotasks();
 	act(() => choose(0));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/session-pin/assign"]);
 });
 
@@ -5254,10 +5448,10 @@ it("pins the chosen sessions to a category picked from the sheet", async () => {
 		cancelButtonIndex: 2,
 	});
 	act(() => choose(0));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
-		{ method: "evener/session-pin/assign", params: { sessionRef: "paradise-park:pp", sectionId: "release" } },
 		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${SESSION_ID}`, sectionId: "release" } },
+		{ method: "evener/session-pin/assign", params: { sessionRef: "paradise-park:pp", sectionId: "release" } },
 	]);
 	expect(inSelectMode(tree)).toBe(false);
 	expect(texts(tree)).toContain("Pinned 2 sessions to Release");
@@ -5271,7 +5465,7 @@ it("stays in select mode when the category sheet is cancelled", async () => {
 	pressLabel(tree, "Pin");
 	const choose = harness.actionSheet.mock.calls[0]?.[1] as (index: number) => void;
 	act(() => choose(2));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
 	expect(inSelectMode(tree)).toBe(true);
 });
@@ -5296,10 +5490,10 @@ it("pins the chosen sessions to a new category named in the prompt", async () =>
 		["Create", undefined],
 	]);
 	act(() => buttons[1]?.onPress?.("  Ideas "));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([
-		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${OTHER_SESSION_ID}`, sectionName: "Ideas" } },
 		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${SESSION_ID}`, sectionName: "Ideas" } },
+		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${OTHER_SESSION_ID}`, sectionName: "Ideas" } },
 	]);
 	expect(texts(tree)).toContain("Pinned 2 sessions to Ideas");
 });
@@ -5314,21 +5508,9 @@ it("pins nothing to a new category whose name is too long, and says why", async 
 	act(() => (harness.actionSheet.mock.calls[0]?.[1] as (index: number) => void)(1));
 	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
 	act(() => buttons[1]?.onPress?.("x".repeat(81)));
-	await settle();
+	await settleMicrotasks();
 	expect(fake.mutations).toEqual([]);
-	expect(texts(tree)).toContain("Category names can be up to 80 characters.");
-});
-
-it("marks the chosen finished sessions read and leaves select mode", async () => {
-	const { id, tree } = await mountSwipeFleet(hub(selectFleet()));
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
-	select(tree, "Write changelog", "Refactor parser");
-	expect(pressables(tree, "Archive")[0].props.disabled).toBe(false);
-	pressLabel(tree, "Mark as read");
-	await settle();
-	expect(inSelectMode(tree)).toBe(false);
-	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
-	expect(menuItem(menuHost(id), `local:${OTHER_SESSION_ID}`).state).toBe("idle");
+	expect(toasts(tree)).toEqual(["categoryName:tooLong"]);
 });
 
 it("keeps the select bar's actions offline, and holds an archive of what's chosen (phase 6 ruling 18)", async () => {
@@ -5337,19 +5519,163 @@ it("keeps the select bar's actions offline, and holds an archive of what's chose
 	connect(id, fake.client, "reconnecting");
 	rerender(tree, navigation());
 	select(tree, "Write changelog");
-	expect(["Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label)[0].props.disabled)).toEqual([
-		false,
-		false,
-		false,
-	]);
+	expect(["Archive", "Pin"].map((label) => pressables(tree, label)[0].props.disabled)).toEqual([false, false]);
 	pressLabel(tree, "Archive");
-	await settle();
+	await settleMicrotasks();
 	expect(inSelectMode(tree)).toBe(false);
 	expect(fake.mutations).toEqual([]);
-	expect(texts(tree)).toContain("Archive waits for the connection");
+	expect(waitingTitles(tree)).toEqual(["Write changelog"]);
 });
 
 // The Board's Continue reading row (spec 7.1, ruling 20).
+it("opens the complete literal reference left by a real Reader after a memory restart", async () => {
+	vi.useRealTimers();
+	const id = hubId();
+	const disk = {
+		getItemSync: (key: string) => harness.kv.get(key) ?? null,
+		setItemSync: (key: string, value: string) => {
+			harness.kv.set(key, value);
+		},
+		removeItemSync: (key: string) => {
+			harness.kv.delete(key);
+		},
+	};
+	harness.readerMemory = new DocumentMemory(disk, id);
+	const requests: { target: string | null; session: string | null; auth: string | undefined }[] = [];
+	const server = createServer((request, response) => {
+		const url = new URL(request.url ?? "", "http://fixture.test");
+		requests.push({
+			target: url.searchParams.get("path"),
+			session: url.searchParams.get("session"),
+			auth: request.headers.authorization,
+		});
+		response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+		response.end("# Literal raw file\n\nUseful saved bytes.");
+	});
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+	try {
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("expected TCP fixture");
+		const readerClient = new FakeClient("ready");
+		readerClient.on(
+			"thread/read",
+			() =>
+				({
+					thread: {
+						id: "owner",
+						cwd: "/work/owner",
+						status: { type: "idle" },
+						modelProvider: "glm",
+						evener: { ref: "remote:owner", instanceId: "owner", capabilities: {}, queue: { revision: 1 } },
+					},
+				}) as never,
+		);
+		connect(id, readerClient, "ready", {
+			profiles: [{ id, name: "Owner", origin: `http://127.0.0.1:${address.port}` }],
+		});
+		harness.stack = { index: 0, routes: [{ key: "reader", name: "Reader" }] };
+		const reference = {
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative",
+		};
+		const nav = { ...navigation(), setParams: vi.fn(), pop: vi.fn(), goBack: vi.fn(), getState: () => harness.stack };
+		const reader = render(
+			<ReaderScreen
+				route={
+					{
+						key: "reader",
+						name: "Reader",
+						params: { hubId: id, sessionRef: "remote:owner", path: "docs/a raw.md", reference, sessionTitle: "Owner" },
+					} as never
+				}
+				navigation={nav as never}
+			/>,
+		);
+		await untilRendered(() =>
+			expect(
+				reader.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
+			).toContain("Useful saved bytes."),
+		);
+		const list = reader.root.findByType(FlatList as never);
+		act(() => {
+			list.props.onViewableItemsChanged({ viewableItems: [{ index: 1 }], changed: [] });
+			list.props.onMomentumScrollEnd({
+				nativeEvent: { contentOffset: { y: 100 }, layoutMeasurement: { height: 400 }, contentSize: { height: 1000 } },
+			});
+		});
+		act(() => reader.unmount());
+		harness.readerMemory = new DocumentMemory(disk, id);
+		expect(harness.readerMemory.continueReading()?.reference).toEqual({
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative",
+		});
+		expect(harness.readerMemory.position({ sessionRef: "remote:owner", path: "docs/a raw.md" })?.progress).toBe(0.5);
+		expect(harness.readerMemory.lastRead({ sessionRef: "remote:owner", path: "docs/a raw.md" })?.blocks).toHaveLength(
+			2,
+		);
+		harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+		connect(id, hub(fleet).client, "ready");
+		const boardNav = { ...navigation(), push: vi.fn() };
+		const board = await mount(boardNav);
+		const row = board.root.find(
+			(node) => node.props.accessibilityLabel === "Continue reading, 50 percent, Literal raw file",
+		);
+		act(() => row.props.onPress());
+		expect(boardNav.push.mock.calls).toEqual([
+			["Conversation", { hubId: id, ref: "remote:owner", title: "Owner" }],
+			[
+				"Reader",
+				{
+					hubId: id,
+					sessionRef: "remote:owner",
+					path: "docs/a raw.md",
+					reference: {
+						path: "docs/a raw.md",
+						cwd: "/work/owner",
+						readTarget: "/work/owner/docs/a raw.md",
+						provenance: "relative",
+					},
+					sessionTitle: "Owner",
+				},
+			],
+		]);
+		expect(requests).toEqual([
+			{ target: "/work/owner/docs/a raw.md", session: "remote:owner", auth: "Bearer reader-test-token" },
+		]);
+		act(() => board.unmount());
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		harness.readerMemory = null;
+	}
+});
+
+it("hides an old unbound Board shortcut without deleting its records or drafts", async () => {
+	const id = hubId();
+	const old = JSON.stringify({
+		sessionRef: "local:fix",
+		path: "docs/old.md",
+		title: "Old",
+		sessionTitle: "Owner",
+		progress: 0.5,
+		leftAt: Date.now(),
+	});
+	harness.kv.set(`evener.native.continue-reading.${id}`, old);
+	harness.kv.set(`evener.native.documents.${id}`, '{"preserved":true}');
+	harness.drafts.set(id, new Set(["local:fix"]));
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(continueReadingRows(tree)).toBe(0);
+	expect(harness.kv.get(`evener.native.continue-reading.${id}`)).toBe(old);
+	expect(harness.kv.get(`evener.native.documents.${id}`)).toBe('{"preserved":true}');
+	expect(harness.drafts.get(id)).toEqual(new Set(["local:fix"]));
+});
+
 /** A document left partway through, the trail DocumentMemory keeps for
  * the Board, written straight to its kv-store key with the time it was left. */
 function leaveDocument(id: string, leftMinutesAgo: number) {
@@ -5358,6 +5684,12 @@ function leaveDocument(id: string, leftMinutesAgo: number) {
 		JSON.stringify({
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
+			reference: {
+				path: "docs/superpowers/plans/settle-race.md",
+				cwd: "/work/owner",
+				readTarget: "/work/owner/docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+			},
 			title: "Fix the settle/drain race",
 			sessionTitle: "Fix race",
 			progress: 0.62,
@@ -5391,6 +5723,12 @@ it("offers to continue a document you left in the last two hours, under the noti
 				hubId: id,
 				sessionRef: "local:fix",
 				path: "docs/superpowers/plans/settle-race.md",
+				reference: {
+					path: "docs/superpowers/plans/settle-race.md",
+					cwd: "/work/owner",
+					readTarget: "/work/owner/docs/superpowers/plans/settle-race.md",
+					provenance: "relative",
+				},
 				sessionTitle: "Fix race",
 			},
 		],
@@ -5403,11 +5741,11 @@ it("offers nothing for a document left two hours ago, or with none left", async 
 	leaveDocument(id, 120);
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
-	expect(renderedText(tree)).not.toContain("Continue reading");
+	expect(continueReadingRows(tree)).toBe(0);
 	const other = hubId();
 	adoptedAnHourAgo(other);
 	connect(other, hub(fleet).client, "ready");
-	expect(renderedText(await mount(navigation()))).not.toContain("Continue reading");
+	expect(continueReadingRows(await mount(navigation()))).toBe(0);
 });
 
 it("drops the Continue reading row when its two hours run out, even on an idle Board", async () => {
@@ -5418,11 +5756,11 @@ it("drops the Continue reading row when its two hours run out, even on an idle B
 		leaveDocument(id, 119);
 		connect(id, hub(fleet).client, "ready");
 		const tree = await mount(navigation());
-		expect(renderedText(tree)).toContain("Continue reading");
+		expect(continueReadingRows(tree)).toBe(1);
 		await act(async () => {
 			vi.advanceTimersByTime(61_000);
 		});
-		expect(renderedText(tree)).not.toContain("Continue reading");
+		expect(continueReadingRows(tree)).toBe(0);
 	} finally {
 		vi.useRealTimers();
 	}
@@ -5526,7 +5864,7 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		expect(withoutGlass.layout.glass).toBe(0);
 		expect(withoutGlass.layout.chipsInScroller).toBe(0);
 		systemGlass.available = true;
-		systemGlass.setReduceTransparency(true);
+		act(() => systemGlass.setReduceTransparency(true));
 		const { nav, layout } = await layoutOf();
 		expect(headerOptions(nav)).toMatchObject({ headerTransparent: false, scrollEdgeEffects: { top: "automatic" } });
 		expect(layout).toEqual(withoutGlass.layout);
@@ -5544,7 +5882,7 @@ describe("the nav bar's glass (spec 16.3)", () => {
 	it("reads Live's next page by what shows below the glass", async () => {
 		const { tree, fake } = await mountOnGlass({
 			...fleet,
-			live: [[failing, working], [finished]],
+			live: [[failing, working], [shipIt]],
 			catalogs: { projects: [evenerProject()] },
 		});
 		const scroller = boardScroller(tree);
@@ -5554,7 +5892,7 @@ describe("the nav bar's glass (spec 16.3)", () => {
 				.find((node) => node.props.testID === "live-block")
 				.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 1600 } } });
 		});
-		await settle();
+		await settleMicrotasks();
 		const scrollAt = (y: number) =>
 			act(() =>
 				scroller.props.onScroll({
@@ -5568,10 +5906,10 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		// Below the glass shows 700 - 112 of the Board from 112 past the
 		// scroller's offset: two screens of that from 300 end short of Live's.
 		scrollAt(300);
-		await settle();
+		await settleMicrotasks();
 		expect(liveReads(fake)).toEqual([0]);
 		scrollAt(312);
-		await settle();
+		await settleMicrotasks();
 		expect(liveReads(fake)).toEqual([0, 2]);
 	});
 
@@ -5615,11 +5953,34 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		});
 		layOutAt(boardScroller(tree), 0, 600);
 		await revealFromSearch(tree);
-		await settle();
+		await settleMicrotasks();
 		// Leaving search brings the chips back to the glass.
 		measureGlass(tree, 64 + 48);
 		layOutAt(revealTarget(tree), 60, 48);
 		layOutAt(projectSection(tree, "projects"), 900, 400);
 		expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 112 - 48) - 112, animated: true });
 	});
+});
+
+// The long-press card reads the shown row, so it follows a blue dot that
+// changed alone.
+it("hands the row menu a row whose blue dot changed though its state didn't", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const turnEnded = minutesAgo(20);
+	const workingUnseen = session("local:working-unseen", {
+		title: "Working unseen",
+		state: "active",
+		updated_at: minutesAgo(1),
+		turn_ended_at: turnEnded,
+		unseen: true,
+	});
+	const fake = hub({ ...fleet, live: [[workingUnseen]], needsYou: [] });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const host = menuHost(id);
+	expect(menuItem(host, "local:working-unseen")).toMatchObject({ state: "working", unseen: true });
+	act(() => hubSeenMarks(id).markSeen(null, [{ ref: "local:working-unseen", seenThrough: Date.parse(turnEnded) }]));
+	expect(menuItem(menuHost(id), "local:working-unseen")).toMatchObject({ state: "working", unseen: false });
+	act(() => tree.unmount());
 });

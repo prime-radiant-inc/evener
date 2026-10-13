@@ -33,7 +33,14 @@ const tree: ActivityTree = {
 const rows = flattenSubagents(tree);
 const coordinator = { ref: "local:coord", title: "Get PR 2138 Test Clean" };
 // The view each test starts from, naming only what it changes.
-const view = { filter: "all" as const, query: "", doneOpen: false, missing: [] as string[], coordinator };
+const view = {
+	filter: "all" as const,
+	query: "",
+	doneOpen: false,
+	completedJobsOpen: false,
+	missing: [] as string[],
+	coordinator,
+};
 const shape = (items: ReturnType<typeof activityListItems>) =>
 	items.map((item) =>
 		item.kind === "row"
@@ -42,43 +49,45 @@ const shape = (items: ReturnType<typeof activityListItems>) =>
 				? `${item.state}:${item.count}`
 				: item.kind === "doneFold"
 					? `fold:${item.count}:${item.open}`
-					: `missing:${item.title}`,
+					: item.kind === "completedJobsFold"
+						? `jobs-fold:${item.count}:${item.open}`
+						: `missing:${item.title}`,
 	);
 
 describe("the list's items", () => {
-	it("lists failed, then running, with done folded under All", () => {
+	it("keeps live work above collapsed terminal delegate history", () => {
 		expect(shape(activityListItems(rows, view))).toEqual([
-			"failed:1",
-			"Fix race in tree settle",
 			"running:2",
 			"Check drain ordering",
 			"Run linux -race",
-			"fold:1:false",
+			"fold:2:false",
 		]);
 	});
 
-	it("opens done in place, and shows a filtered state as its own section", () => {
-		expect(shape(activityListItems(rows, { ...view, doneOpen: true })).slice(-2)).toEqual([
-			"fold:1:true",
+	it("opens every terminal outcome in place, and Done reveals history without another disclosure", () => {
+		expect(shape(activityListItems(rows, { ...view, doneOpen: true })).slice(-3)).toEqual([
+			"fold:2:true",
+			"Fix race in tree settle",
 			"Tests pass",
 		]);
-		expect(shape(activityListItems(rows, { ...view, filter: "done" }))).toEqual(["done:1", "Tests pass"]);
+		expect(shape(activityListItems(rows, { ...view, filter: "done" }))).toEqual([
+			"done:2",
+			"Fix race in tree settle",
+			"Tests pass",
+		]);
 	});
 
 	it("counts what the search matches, drops empty sections, and ends with what couldn't be listed", () => {
 		expect(shape(activityListItems(rows, { ...view, query: "RACE", missing: ["local:coord"] }))).toEqual([
-			"failed:1",
-			"Fix race in tree settle",
 			"running:1",
 			"Run linux -race",
+			"fold:1:false",
 			"missing:Get PR 2138 Test Clean",
 		]);
 	});
 
 	it("keys each item stably", () => {
 		expect(activityListItems(rows, { ...view, missing: ["local:coord"] }).map(activityListKey)).toEqual([
-			"section:failed",
-			activityNodeID({ kind: "delegate", delegate: d("Fix race in tree settle") }),
 			"section:running",
 			activityNodeID({ kind: "delegate", delegate: d("Check drain ordering") }),
 			activityNodeID({ kind: "delegate", delegate: d("Run linux -race") }),
@@ -170,5 +179,106 @@ describe("shell jobs in the list", () => {
 		const jobEntry = withJobs.root.entries.find((entry) => entry.kind === "shell");
 		if (!jobEntry) throw new Error("missing shell fixture");
 		expect(keys).toContain(activityNodeID(jobEntry));
+	});
+
+	const base = withJobs.root.entries.find((entry) => entry.kind === "shell");
+	if (!base || base.kind !== "shell") throw new Error("missing shell fixture");
+	const mixed = flattenActivity(
+		{
+			...withJobs,
+			root: {
+				...withJobs.root,
+				entries: [
+					...withJobs.root.entries,
+					{
+						kind: "shell",
+						job: {
+							...base.job,
+							jobId: "Fix race in tree settle",
+							description: "Failed command",
+							terminal: true,
+							status: "command_exited_nonzero",
+							outcome: "failure",
+							endedAt: "2026-10-03T12:02:00Z",
+						},
+					},
+					{
+						kind: "shell",
+						job: {
+							...base.job,
+							jobId: "success",
+							description: "Finished command",
+							terminal: true,
+							status: "completed",
+							outcome: "success",
+							endedAt: "2026-10-03T12:03:00Z",
+						},
+					},
+					{
+						kind: "shell",
+						job: {
+							...base.job,
+							jobId: "stopped",
+							description: "Stopped command",
+							terminal: true,
+							status: "cancelled",
+							endedAt: "2026-10-03T12:02:00Z",
+						},
+					},
+				],
+			},
+		},
+		coordinator.title,
+	);
+
+	it.each([
+		[false, false, []],
+		[true, false, ["Fix race in tree settle", "Tests pass"]],
+		[false, true, ["Finished command", "Failed command", "Stopped command"]],
+		[true, true, ["Fix race in tree settle", "Tests pass", "Finished command", "Failed command", "Stopped command"]],
+	])("opens delegate=%s and job=%s histories independently", (doneOpen, completedJobsOpen, titles) => {
+		const items = activityListItems(mixed, { ...view, doneOpen, completedJobsOpen });
+		expect(items.filter((item) => item.kind === "doneFold" || item.kind === "completedJobsFold")).toEqual([
+			{ kind: "doneFold", count: 2, open: doneOpen },
+			{ kind: "completedJobsFold", count: 3, open: completedJobsOpen },
+		]);
+		expect(
+			items.flatMap((item) => (item.kind === "row" && item.row.state !== "running" ? [item.row.title] : [])),
+		).toEqual(titles);
+	});
+
+	it("Done reveals both terminal histories with true outcomes and stable distinct keys", () => {
+		const items = activityListItems(mixed, { ...view, filter: "done" });
+		expect(shape(items)).toEqual([
+			"done:2",
+			"Fix race in tree settle",
+			"Tests pass",
+			"completed:3",
+			"Finished command",
+			"Failed command",
+			"Stopped command",
+		]);
+		const visible = items.filter((item) => item.kind === "row");
+		expect(visible.map((item) => item.row.state)).toEqual(["failed", "done", "done", "failed", "done"]);
+		const keys = items.map(activityListKey);
+		expect(new Set(keys).size).toBe(keys.length);
+		expect(
+			activityListItems(mixed, { ...view, doneOpen: true, completedJobsOpen: true }).map(activityListKey),
+		).toContain("completed-jobs-fold");
+	});
+
+	it("search narrows each loaded history independently and keeps Running live-only", () => {
+		expect(shape(activityListItems(mixed, { ...view, query: "command" }))).toEqual(["jobs-fold:3:false"]);
+		expect(shape(activityListItems(mixed, { ...view, query: "command", filter: "done" }))).toEqual([
+			"completed:3",
+			"Finished command",
+			"Failed command",
+			"Stopped command",
+		]);
+		expect(
+			activityListItems(mixed, { ...view, filter: "running" }).every(
+				(item) => item.kind === "section" || (item.kind === "row" && item.row.state === "running"),
+			),
+		).toBe(true);
 	});
 });

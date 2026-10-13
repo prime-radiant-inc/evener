@@ -513,6 +513,12 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 		{"fabricated last-assistant position", func(t *testing.T, dir string) {
 			rewriteMetaField(t, dir, "last_assistant_pos", `{"offset":0,"ordinal":0,"length":4294967295}`)
 		}},
+		{"projection before memory removals were dropped", func(t *testing.T, dir string) {
+			// A memory-context message recorded with removal lines projects
+			// as one fallback item now, not one item per section, so a
+			// sidecar built before that must rebuild.
+			rewriteMetaField(t, dir, "projection", `"transcript-read-model-v6"`)
+		}},
 		{"other schema identity", func(t *testing.T, dir string) {
 			// A sidecar built by a binary whose schema.Turn/llm.Message shape
 			// differs must not be adopted: window.go's readEntry re-decodes

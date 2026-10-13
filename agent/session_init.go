@@ -408,7 +408,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		return nil, fmt.Errorf("reserved child session ID: %w", err)
 	}
 	if cfg.spawn.parentSessionID == "" {
-		nameRootScratch(env, sessionID)
+		nameRootScratch(env, sessionID, sessionID)
 	}
 	jobClock := cfg.spawn.jobActivityClock
 	if cfg.spawn.parentSessionID == "" && jobClock == nil {
@@ -766,9 +766,9 @@ type RestoreSessionConfig struct {
 	LifetimeContext context.Context
 	MemoryStateRoot string
 	DisableMemory   bool
-	// A nil ceiling preserves root-session identity. A live parent's empty ID
-	// revokes project access, including after the authoritative metadata reload.
-	memoryProjectCeiling    *string
+	// parentMemoryProjectID is a delegate's binding (spawn names its parent):
+	// the live parent's, replacing whatever the delegate saved.
+	parentMemoryProjectID   string
 	StateDir                string
 	Project                 identifier.Project
 	ResolveProfile          func(ref string) (*provider.Profile, error)
@@ -868,7 +868,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// A delegate's own environment was named when it was prepared, and a shared
 	// delegate is handed its parent's, so only a root restore names env.
 	if restoreCfg.spawn.parentSessionID == "" {
-		nameRootScratch(env, meta.ID)
+		nameRootScratch(env, restoredScratchTreeRoot(meta), meta.ID)
 	}
 
 	restoreComplete := false
@@ -906,8 +906,18 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg := configFromSnapshot(meta.Config)
 	cfg.MemoryStateRoot = restoreCfg.MemoryStateRoot
 	cfg.DisableMemory = cfg.DisableMemory || restoreCfg.DisableMemory
-	if ceiling := restoreCfg.memoryProjectCeiling; ceiling != nil && cfg.MemoryProjectID != *ceiling {
-		cfg.MemoryProjectID = ""
+	if restoreCfg.spawn.parentSessionID != "" {
+		cfg.MemoryProjectID = restoreCfg.parentMemoryProjectID
+	} else if cfg.MemoryProjectID == "" && cfg.MemoryStateRoot != "" && !cfg.DisableMemory && !meta.IsSubagent {
+		// A delegate's binding comes from its parent, so only a root session
+		// binds from its home; an unbound delegate resumed on its own stays so.
+		//
+		// This binds before provisionRestoredSandbox below, the order fresh
+		// launch uses too (it binds before provisioning). Resolving the id is
+		// host code reading .git metadata, and memory files keep their own
+		// confined roots, so the workspace policy provisioned later does not
+		// govern it.
+		cfg.MemoryProjectID = homeMemoryProjectID(env, meta)
 	}
 	// A pre-normalization meta.json may carry a mixed-case level or disable
 	// alias; canonicalize so the loop detector's and request builder's
@@ -1041,10 +1051,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
 	var repairInsertions []int
+	// Where each reopened turn's latest attempt begins in resumeHistory: the
+	// restored state reads an end reason from that attempt alone.
+	var attemptStarts map[string]int
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
 		resumeHistory, repairInsertions = resumeHistoryIndexed(transcriptEntries)
+		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1322,6 +1336,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// The spawn parent travels with the flag: Meta() rewrites both on every
 	// autosave, and the hub reads them as a pair.
 	s.restoredMetaParentSessionID = meta.ParentSessionID
+	// A delegate resumed on its own keeps its scratch in its root's tree, and
+	// Meta() keeps recording that root for the next resume.
+	if restoreCfg.spawn.parentSessionID == "" {
+		if root := restoredScratchTreeRoot(meta); root != meta.ID {
+			s.restoredScratchTreeRoot = root
+		}
+	}
 
 	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
 	// the session is rooted in it before the environment snapshot, system
@@ -1539,20 +1560,19 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 
 	// Re-derive the at-rest state from the restored history's tail: an
-	// unanswered ask_user call, or more generally any turn the agent moved
-	// last in with nothing else pending, rests awaiting (spec §6, generalized
-	// by attention-status-model v5's resume rule; deriveRestoredState's own
-	// doc comment has the full walk). NewSession never runs this scan — a
-	// fresh session always starts idle. steeringOrigins() gives the boundary
-	// its durable steering provenance, so a kindless legacy human-note turn
-	// is still read as a note rather than an answering steer.
+	// unanswered ask_user call, or a last input that ended on needs_response,
+	// rests awaiting (deriveRestoredState's own doc comment has the full
+	// walk). NewSession never runs this scan — a fresh session always starts
+	// idle. steeringOrigins() gives the boundary its durable steering
+	// provenance, so a kindless legacy human-note turn is still read as a
+	// note rather than an answering steer.
 	// divergenceTurn (computed above for escapeHistoryWithSessionProvenance,
 	// and still in the same units s.history uses since escaping never
 	// changes its length) scopes the provenance to this session's own turns
 	// alone, so a forked child's inherited prefix is never decided by a
 	// reused client mutation id in the child's OWN journal.
 	steeringProvenance := s.clientMutations.steeringOrigins()
-	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance)
+	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance, attemptStarts)
 	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
 	// spec §2): deriveRestoredState alone only re-derives that the session
 	// rests awaiting, but every hold keyed on askPending itself — the entry
@@ -1573,6 +1593,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// maintains the invariant, restore included.
 	s.setAskPendingLocked(restoredAskPending)
 	s.mu.Unlock()
+	// Settle before the session start announces the state.
+	if !restoreCfg.deferRestoreSideEffects {
+		s.recomputeRestoredState(divergenceTurn, attemptStarts)
+	}
 
 	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
@@ -1589,12 +1613,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// entry (e.g. a durable steering reminder) was ever appended.
 		TranscriptEntries: len(transcriptEntries),
 	}, promptSources)
-	// Recompute the settle decision now that history, goal restore, and (unless
-	// deferred for nested delegate reconstruction) notification/watch-send side
-	// effects are all in place: an agent-last transcript with no autonomy in
-	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
 	if !restoreCfg.deferRestoreSideEffects {
-		s.recomputeRestoredState(divergenceTurn)
 		// Re-lock this session's own undisposed isolation lanes (spec §P3 resume
 		// re-lock). A clean close unlocked its KEPT lanes; leaving them unlocked
 		// would expose them to another session's P3 residue sweep. This is a
@@ -1679,7 +1698,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	s.pluginAgents = builtins
 
-	if s.cfg.SystemPromptFile != "" && s.depth == 0 {
+	if s.cfg.SystemPromptFile != "" && !s.isSubagentSession() {
 		b, err := os.ReadFile(s.cfg.SystemPromptFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading system prompt override %s: %w", s.cfg.SystemPromptFile, err)
@@ -1695,7 +1714,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// project, and explicitly added skills, not the operator's own (#3227).
 	if envvars.EVENERNoUserSkills.Getenv() != "1" {
 		home, _ = os.UserHomeDir()
-		userSkillsDir = userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills")
+		userSkillsDir = userdirs.UserSkills(userdirs.DefaultConfigRoot())
 		sources, diagnostics = plugin.SkillSources(s.cfg.PluginDirs)
 	}
 	s.skills = skill.Discover(s.currentEnv(), skill.DiscoverOptions{
@@ -2500,7 +2519,7 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 
 func skillDiagnosticWarningCode(category string) string {
 	switch category {
-	case "allowed_tools_not_enforced", "unsupported_control":
+	case "allowed_tools_not_enforced", "unsupported_control", "missing_frontmatter_delimiter":
 		return events.WarningCodePluginCompatibility
 	default:
 		return ""
@@ -2604,15 +2623,31 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 // unless its launcher already did, so the scratch the environment mints is that
 // session's directory in its own tree: kept across the session's ends, reopened
 // on resume, and removed when the hub archives or deletes the session. A
-// scratch the environment already minted is unaffected.
-func nameRootScratch(env execenv.ExecutionEnvironment, sessionID string) {
+// scratch the environment already minted is unaffected. rootID is the tree the
+// scratch lives in: the session's own ID, except for a delegate resumed as a
+// top-level session (restoredScratchTreeRoot).
+func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return
 	}
 	if root, _ := local.ScratchIdentity(); root == "" {
-		local.SetScratchIdentity(sessionID, sessionID)
+		local.SetScratchIdentity(rootID, sessionID)
 	}
+}
+
+// restoredScratchTreeRoot is the root whose scratch tree a restored top-level
+// session's scratch lives in. A delegate resumed on its own (`serve --resume
+// <delegate>`) keeps its directory in the tree of the root that spawned it,
+// which its meta records, so it reopens what it had and goes when that root is
+// archived.
+func restoredScratchTreeRoot(meta schema.SessionMeta) string {
+	for _, root := range []string{meta.ScratchTreeRootID, meta.JobTreeRootSessionID} {
+		if root = strings.TrimSpace(root); meta.IsSubagent && schema.ValidateSessionID(root) == nil {
+			return root
+		}
+	}
+	return meta.ID
 }
 
 // PickFreshSessionID picks the ID a new top-level session will take, unless cfg
@@ -2626,6 +2661,6 @@ func PickFreshSessionID(env execenv.ExecutionEnvironment, cfg *SessionConfig) er
 		}
 		cfg.SessionID = id
 	}
-	nameRootScratch(env, cfg.SessionID)
+	nameRootScratch(env, cfg.SessionID, cfg.SessionID)
 	return nil
 }

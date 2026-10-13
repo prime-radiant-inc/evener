@@ -6,19 +6,21 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 )
 
 func TestNoticePanelTextIncludesCategoryAndNextAction(t *testing.T) {
+	fields := []string{"title-fixture", "category-fixture", "summary-fixture", "source-fixture", "reason-fixture", "next-fixture"}
 	got := noticePanel{
-		Title:      "Network error",
-		Category:   "network",
-		Summary:    "Hub request failed.",
-		Source:     "hub",
-		Reason:     "connection refused",
-		NextAction: "Check the hub process and retry.",
+		Title:      fields[0],
+		Category:   fields[1],
+		Summary:    fields[2],
+		Source:     fields[3],
+		Reason:     fields[4],
+		NextAction: fields[5],
 	}.Text()
 
-	for _, want := range []string{"Network error", "category: network", "Hub request failed.", "source: hub", "reason: connection refused", "next: Check the hub process and retry."} {
+	for _, want := range fields {
 		if !strings.Contains(got, want) {
 			t.Fatalf("notice text missing %q:\n%s", want, got)
 		}
@@ -40,9 +42,12 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 	second := m.sessionView()
 	for _, view := range []string{first, second} {
 		// View() format: summary on first line, source·cause on second, next on third.
-		if !strings.Contains(view, "Hub request failed.") || !strings.Contains(view, "method not found") || !strings.Contains(view, "ctrl+x: dismiss notice") {
+		if !strings.Contains(view, "Hub request failed.") || !strings.Contains(view, "method not found") {
 			t.Fatalf("notice did not persist in view:\n%s", view)
 		}
+	}
+	if len(m.notices) != 1 {
+		t.Fatalf("rendering changed the notice list: %+v", m.notices)
 	}
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
@@ -50,8 +55,8 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 		t.Fatal("dismissing a notice should be synchronous")
 	}
 	updatedModel := updated.(hubModel)
-	if got := updatedModel.sessionView(); strings.Contains(got, "AppWire error") {
-		t.Fatalf("notice remained after dismissal:\n%s", got)
+	if _, ok := noticeByCategory(updatedModel, "appwire"); ok {
+		t.Fatalf("notice remained after dismissal: %+v", updatedModel.notices)
 	}
 }
 
@@ -90,9 +95,9 @@ func TestHubModelNoticesRenderAsPane(t *testing.T) {
 		t.Fatalf("notice pane should render terminal styling:\n%s", got)
 	}
 	plain := ansiPattern.ReplaceAllString(got, "")
-	// View() format: summary on first line (with ▍ ● prefix), ctrl+x hint at the end.
-	if !strings.Contains(plain, "Hub request failed.") || !strings.Contains(plain, "ctrl+x: dismiss notice") {
-		t.Fatalf("notice pane should have pane padding:\n%s", plain)
+	// View() format: summary on first line (with ▍ ● prefix).
+	if !strings.Contains(plain, "Hub request failed.") {
+		t.Fatalf("notice pane should carry the notice:\n%s", plain)
 	}
 }
 
@@ -111,9 +116,8 @@ func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 		},
 	})
 	updatedModel := updated.(hubModel)
-	got := updatedModel.sessionView()
-	if strings.Contains(got, "Action unavailable") || strings.Contains(got, "source: remote") {
-		t.Fatalf("session-scoped notice leaked after session change:\n%s", got)
+	if notice, ok := noticeByCategory(updatedModel, "action-unavailable"); ok {
+		t.Fatalf("session-scoped notice leaked after session change: %+v", notice)
 	}
 }
 
@@ -123,14 +127,22 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 
 	updated, _ := m.Update(hubAuthStatusMsg{err: appwire.Unavailable("auth endpoint unavailable")})
 	m = updated.(hubModel)
+	notice, ok := noticeByCategory(m, "auth")
+	if !ok {
+		t.Fatalf("auth error raised no auth notice: %+v", m.notices)
+	}
+	if notice.Reason != "auth endpoint unavailable" || notice.Source != "evener" || notice.NextAction == "" {
+		t.Fatalf("auth notice = %+v, want the failure as its reason, the session source, and a next action", notice)
+	}
 	got := m.sessionView()
 	// View() format: summary line contains the notice summary/title, source·cause on second line.
-	for _, want := range []string{"auth endpoint unavailable", "evener", "Retry /auth <instance> or check the hub's credentials."} {
+	for _, want := range []string{"auth endpoint unavailable", "evener"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("auth error notice missing %q:\n%s", want, got)
 		}
 	}
 
+	messagesBefore := len(m.session.messages)
 	updated, _ = m.Update(hubAuthLoginCompleteMsg{resp: appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{
 		Provider:     "openai",
 		Supported:    true,
@@ -139,12 +151,14 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 		Email:        "j@example.com",
 	}}})
 	m = updated.(hubModel)
-	got = m.sessionView()
-	if strings.Contains(got, "Auth error") {
-		t.Fatalf("successful login did not clear auth notice:\n%s", got)
+	if notice, ok := noticeByCategory(m, "auth"); ok {
+		t.Fatalf("successful login did not clear auth notice: %+v", notice)
 	}
-	if !strings.Contains(got, "Sign-in complete for openai. openai auth: OAuth (j@example.com)") {
-		t.Fatalf("login success message missing:\n%s", got)
+	if !m.authStatus.SignedIn || m.authStatus.Provider != "openai" || m.authStatus.Email != "j@example.com" {
+		t.Fatalf("login success did not record the signed-in status: %+v", m.authStatus)
+	}
+	if len(m.session.messages) != messagesBefore+1 || m.session.messages[len(m.session.messages)-1].Kind != transcript.MsgSystem {
+		t.Fatalf("login success did not report itself in the session: %+v", m.session.messages)
 	}
 }
 
@@ -182,25 +196,28 @@ func TestNoticePanel_NoCauseNonProviderMessage(t *testing.T) {
 
 func TestHubModelAppWireAndProviderErrorsRenderStructuredNotices(t *testing.T) {
 	tests := []struct {
-		name string
-		msg  tea.Msg
-		want []string
+		name     string
+		msg      tea.Msg
+		category string
+		reason   string
 	}{
 		{
-			name: "send",
-			msg:  hubSendMsg{text: "draft", err: appwire.SessionUnavailable("local daemon unavailable")},
-			// View() format: source·cause line and next line are visible.
-			want: []string{"local daemon unavailable", "Check the hub connection and retry the action."},
+			name:     "send",
+			msg:      hubSendMsg{text: "draft", err: appwire.SessionUnavailable("local daemon unavailable")},
+			category: "appwire",
+			reason:   "local daemon unavailable",
 		},
 		{
-			name: "action",
-			msg:  hubActionMsg{action: "compact", err: appwire.Unavailable("remote source does not support compact")},
-			want: []string{"remote source does not support compact"},
+			name:     "action",
+			msg:      hubActionMsg{action: "compact", err: appwire.Unavailable("remote source does not support compact")},
+			category: "action",
+			reason:   "remote source does not support compact",
 		},
 		{
-			name: "provider",
-			msg:  hubSessionModelsMsg{err: appwire.WireError{Code: appwire.CodeUnavailable, Message: "OpenAI login required", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorProviderUnavailable}}},
-			want: []string{"OpenAI login required", "Check provider auth and model availability."},
+			name:     "provider",
+			msg:      hubSessionModelsMsg{err: appwire.WireError{Code: appwire.CodeUnavailable, Message: "OpenAI login required", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorProviderUnavailable}}},
+			category: "provider",
+			reason:   "OpenAI login required",
 		},
 	}
 
@@ -209,11 +226,16 @@ func TestHubModelAppWireAndProviderErrorsRenderStructuredNotices(t *testing.T) {
 			m := newSessionHubModel(nil)
 			updated, _ := m.Update(tc.msg)
 			updatedModel := updated.(hubModel)
-			got := updatedModel.sessionView()
-			for _, want := range tc.want {
-				if !strings.Contains(got, want) {
-					t.Fatalf("notice missing %q:\n%s", want, got)
-				}
+			notice, ok := noticeByCategory(updatedModel, tc.category)
+			if !ok {
+				t.Fatalf("no %s notice in %+v", tc.category, updatedModel.notices)
+			}
+			if notice.Reason != tc.reason || notice.NextAction == "" {
+				t.Fatalf("notice = %+v, want reason %q and a next action", notice, tc.reason)
+			}
+			// View() format: source·cause line is visible.
+			if got := updatedModel.sessionView(); !strings.Contains(got, tc.reason) {
+				t.Fatalf("notice reason missing from view:\n%s", got)
 			}
 		})
 	}

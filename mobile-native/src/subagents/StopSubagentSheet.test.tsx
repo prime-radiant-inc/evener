@@ -4,11 +4,20 @@ import { installActivityFixture } from "./sessionActivityTestUtils";
 // real one, on the in-memory SQLite double; the tests assert on the wire.
 import type { ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { markers } from "../markerTestUtils";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
-import { alertRequests, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import {
+	alertRequests,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	settle,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { StopSubagentSheet } from "./StopSubagentSheet";
@@ -85,7 +94,6 @@ let client: FakeClient;
 let runtime: NativeMutationRuntime;
 let status = "active";
 let failed = false;
-const trees: ReactTestRenderer[] = [];
 
 const read = (): ThreadReadResponse => ({
 	thread: wireThread(COORDINATOR.ref, {
@@ -199,17 +207,10 @@ beforeEach(async () => {
 	harness.runtime = runtime;
 });
 afterEach(async () => {
-	for (const mounted of trees.splice(0)) act(() => mounted.unmount());
+	unmountMountedTrees();
 	await runtime.stop();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 async function mount() {
 	const mounted = render(
@@ -218,7 +219,6 @@ async function mount() {
 			navigation={sheetNavigation as never}
 		/>,
 	);
-	trees.push(mounted);
 	await settle();
 	return mounted;
 }
@@ -240,9 +240,8 @@ it("lets a drag of the sheet put the keyboard away", async () => {
 
 it("prefills the message for a running subagent, and says when it arrives", async () => {
 	const mounted = await mount();
-	expect(renderedText(mounted)).toContain("Stop subagent");
 	expect(field(mounted).props.value).toBe("Stop subagent “Fix race in tree settle”: it's no longer needed.");
-	expect(renderedText(mounted)).toContain("Arrives at the coordinator's next step");
+	expect(markers(mounted, "stop-delivery")).toEqual(["next-step"]);
 });
 
 it("prefills the message for a failed subagent", async () => {
@@ -291,8 +290,10 @@ it("asks before losing an edited message, and not for the prefill", async () => 
 	expect(sheetNavigation.prevented.at(-1)).toBe(false);
 	act(() => field(mounted).props.onChangeText("Stop it please."));
 	expect(sheetNavigation.prevented.at(-1)).toBe(true);
+	const asked = alertRequests.length;
 	act(() => sheetNavigation.onPrevent?.({ data: { action: { type: "GO_BACK" } } }));
-	expect(alertRequests.at(-1)?.title).toBe("Discard this message?");
+	expect(alertRequests).toHaveLength(asked + 1);
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 });
 
 it("waits for words, and for a coordinator that can take a message", async () => {
@@ -302,7 +303,7 @@ it("waits for words, and for a coordinator that can take a message", async () =>
 	status = "restartRequired";
 	const other = await mount();
 	expect(sendDisabled(other)).toBe(true);
-	expect(renderedText(other)).toContain("The coordinator can't take a message right now.");
+	expect(markers(other, "stop-delivery")).toEqual(["unavailable"]);
 });
 
 it("keeps the sheet and the words when the send fails, and says why", async () => {
@@ -399,15 +400,7 @@ it("keeps an edited message open when the subagent leaves the tree, rather than 
 	const mounted = await mount();
 	act(() => field(mounted).props.onChangeText("Stop it please."));
 	installActivityFixture(client, () => ({ ...tree(), revision: 2, root: { ...tree().root, entries: [] } }));
-	client.emitNotification({
-		method: "evener/thread/activity/changed",
-		params: {
-			threadId: COORDINATOR.threadId,
-			sessionId: COORDINATOR.threadId,
-			ref: COORDINATOR.ref,
-			resources: ["summary", "delegates", "jobs"],
-		},
-	} as never);
+	act(() => client.emitNotification(activityChangedNotification(COORDINATOR)));
 	await settle();
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 });
@@ -415,6 +408,5 @@ it("keeps an edited message open when the subagent leaves the tree, rather than 
 it("says it waits for the connection while offline, not that the message will arrive", async () => {
 	harness.connection = screenConnection(client, "reconnecting");
 	const mounted = await mount();
-	expect(renderedText(mounted)).toContain("Send when you're back online.");
-	expect(renderedText(mounted)).not.toContain("Arrives at the coordinator's next step");
+	expect(markers(mounted, "stop-delivery")).toEqual(["offline"]);
 });

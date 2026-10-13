@@ -47,42 +47,6 @@ func TestSteer_AuthorizeMutationFailure(t *testing.T) {
 	}
 }
 
-// TestSteerCaller_EmptyMessage covers the empty-message path in SteerCaller
-// (lines 78-79).
-func TestSteerCaller_EmptyMessage(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	_, err := c.SteerCaller(context.Background(), rootDelegateActor("root-session"), "", nil)
-	if err == nil {
-		t.Fatal("expected error for empty message in SteerCaller")
-	}
-}
-
-// TestSteerCaller_CancelledContext covers the ctx.Err path in SteerCaller
-// (lines 75-76).
-func TestSteerCaller_CancelledContext(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := c.SteerCaller(ctx, rootDelegateActor("root-session"), "hello", nil)
-	if err == nil {
-		t.Fatal("expected error for cancelled context in SteerCaller")
-	}
-}
-
-// TestSteerCaller_NoLease covers the no-lease path in beginCallerSteerPersistence
-// (lines 111-112).
-func TestSteerCaller_NoLease(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	actor := rootDelegateActor("root-session")
-	_, err := c.SteerCaller(context.Background(), actor, "hello", nil)
-	if err == nil {
-		t.Fatal("expected error for caller without lease")
-	}
-}
-
 // TestBeginSteerPersistence_NoLiveBinding covers the no-live-binding path
 // (lines 133-135).
 func TestBeginSteerPersistence_NoLiveBinding(t *testing.T) {

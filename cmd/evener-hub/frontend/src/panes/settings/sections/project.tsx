@@ -27,7 +27,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
-import { Button } from "../../../widgets";
+import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import type { LaunchFormPaths } from "./launchShared/fields";
@@ -38,7 +38,6 @@ import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect"
 const CLASS = {
   root: requireClass(styles.root, "project.module.css", "root"),
   help: requireClass(styles.help, "project.module.css", "help"),
-  error: requireClass(styles.error, "project.module.css", "error"),
 };
 
 function readQueryCwd(): string {
@@ -176,7 +175,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
     return (
       <div className={CLASS.root}>
         <h2>Project launch settings</h2>
-        <p className={CLASS.help}>
+        <p className={CLASS.help} data-reason="no-project">
           No project selected. Open this page via the gear icon next to a project in the sidebar, or navigate here with
           a <code>?cwd=</code> query parameter.
         </p>
@@ -191,24 +190,35 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       <p className={CLASS.help}>
         Layered on top of the global Evener launch settings. Only fields set here override the global defaults.
       </p>
-      {load.phase === "loading" && <p className={CLASS.help}>Loading project launch settings…</p>}
+      {load.phase === "loading" && <Loader label="Loading project launch settings" />}
       {load.phase === "error" && (
-        <p className={CLASS.error}>
-          Failed to load project launch settings. {load.message}{" "}
-          <Button type="button" onClick={() => retryLoad()}>
-            Retry
-          </Button>
-        </p>
+        <InlineNotice
+          tone="danger"
+          data-reason="load-failed"
+          action={
+            <Button type="button" onClick={() => retryLoad()}>
+              Retry
+            </Button>
+          }
+        >
+          Failed to load project launch settings. {load.message}
+        </InlineNotice>
       )}
       {load.phase === "ready" && (
         <>
           {refreshError !== null && (
-            <p className={CLASS.error} role="status">
-              Could not re-read this host's project settings. {refreshError}{" "}
-              <Button type="button" onClick={() => reload()}>
-                Retry
-              </Button>
-            </p>
+            <InlineNotice
+              tone="danger"
+              live="status"
+              data-reason="refresh-failed"
+              action={
+                <Button type="button" onClick={() => reload()}>
+                  Retry
+                </Button>
+              }
+            >
+              Could not re-read this host's project settings. {refreshError}
+            </InlineNotice>
           )}
           <LaunchConfigForm
             options={load.options}

@@ -34,8 +34,9 @@ import {
 	readOrganizationNavigation,
 } from "./organizationNavigation";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { sessionSubagentChip, sessionSubagentChipLabel } from "./board/BoardRow";
+import { Button } from "./sheet/Grouped";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
@@ -65,18 +66,26 @@ function FilterTab({ label, selected, onPress }: { label: string; selected: bool
 
 const UNCONFIRMED = "The current navigation could not be confirmed.";
 
+/** Why an organize change can't be confirmed against the page read after it,
+ * in the person's terms. */
+const UNCONFIRMED_REASONS = {
+	unread: UNCONFIRMED,
+	restarted: "The hub restarted during the check.",
+};
+
 /** Why the page read after an organize change can't confirm it, or null when
- * it does: the read must have landed cleanly, and a navigation page must come
- * from the generation the change was observed in. An archived list has no
- * navigation version, so only its read is checked. */
+ * it does: the read must have landed cleanly ("unread" otherwise), and a
+ * navigation page must come from the generation the change was observed in
+ * ("restarted" otherwise). An archived list has no navigation version, so
+ * only its read is checked. */
 export function unconfirmedReason(
 	pages: PageSource<unknown>,
 	observation: Pick<OrganizationObservation, "generationId"> | null,
-): string | null {
+): keyof typeof UNCONFIRMED_REASONS | null {
 	const page = pages.getSnapshot();
-	if (!page.loaded || page.loading || page.stale || page.error) return UNCONFIRMED;
+	if (!page.loaded || page.loading || page.stale || page.error) return "unread";
 	if (observation && pages.navigationVersioned && pages.getResourceVersion()?.generationId !== observation.generationId)
-		return "The hub restarted during the check.";
+		return "restarted";
 	return null;
 }
 
@@ -149,7 +158,7 @@ export function PageList<T>({
 			const page = pages.getSnapshot();
 			if (!isCurrent()) throw Error(UNCONFIRMED);
 			const unconfirmed = unconfirmedReason(pages, observation);
-			if (unconfirmed) throw Error(unconfirmed);
+			if (unconfirmed) throw Error(UNCONFIRMED_REASONS[unconfirmed]);
 			const same = previous !== null && JSON.stringify(previous) === JSON.stringify({ checkpoint, observation });
 			previous = checkpoint && observation ? { checkpoint, observation } : null;
 			setReview(checkpoint && observation ? { owner: binding, checkpoint, observation } : null);
@@ -262,9 +271,7 @@ export function PageList<T>({
 			{revealError ? (
 				<View style={{ paddingHorizontal: 16, gap: 8 }}>
 					<ErrorMessage message={revealError} />
-					<Action disabled={!ready || state.loading} onPress={refreshList}>
-						Locate again
-					</Action>
+					<Button text label="Locate again" disabled={!ready || state.loading} onPress={refreshList} />
 				</View>
 			) : null}
 			{updating(state) ? (
@@ -275,14 +282,7 @@ export function PageList<T>({
 			{state.error ? (
 				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
 					<ErrorMessage message={state.error} />
-					<Action
-						disabled={!ready || state.loading}
-						onPress={() => {
-							refreshList();
-						}}
-					>
-						Try again
-					</Action>
+					<Button text label="Try again" disabled={!ready || state.loading} onPress={refreshList} />
 				</View>
 			) : null}
 			<FlatList
@@ -333,9 +333,12 @@ export function PageList<T>({
 								<Copy muted>Loading more…</Copy>
 							</View>
 						) : state.remaining > 0 ? (
-							<Action disabled={!ready || !focused || state.loading} onPress={state.error ? retryMore : loadMore}>
-								{state.error ? "Retry loading more" : `Load more · ${state.remaining} remaining`}
-							</Action>
+							<Button
+								text
+								label={state.error ? "Retry loading more" : `Load more · ${state.remaining} remaining`}
+								disabled={!ready || !focused || state.loading}
+								onPress={state.error ? retryMore : loadMore}
+							/>
 						) : null}
 					</View>
 				}
@@ -367,9 +370,11 @@ export function PageList<T>({
 							<Copy muted>{detail(item)}</Copy>
 						</Pressable>
 						{actions && organization(item) ? (
-							<Action
-								tone="quiet"
-								label={`More actions for ${title(item)}`}
+							<Button
+								text
+								quiet
+								label="···"
+								accessibilityLabel={`More actions for ${title(item)}`}
 								disabled={
 									!ready ||
 									state.loading ||
@@ -410,9 +415,7 @@ export function PageList<T>({
 										],
 									);
 								}}
-							>
-								···
-							</Action>
+							/>
 						) : null}
 					</View>
 				)}
@@ -462,27 +465,27 @@ function OrganizationStatus({
 			) : null}
 			{state.uncertain ? (
 				<>
-					<Action
+					<Button
+						text
+						label="Check again"
 						disabled={state.pending}
 						onPress={() => {
 							void actions.reconcile();
 						}}
-					>
-						Check again
-					</Action>
+					/>
 					{observation && !observation.settled && review ? (
 						<>
 							<Copy muted>
 								The current state is shown above. Continue to keep it without sending the previous request again.
 							</Copy>
-							<Action
+							<Button
+								text
+								label="Continue with current state"
 								disabled={state.pending}
 								onPress={() => {
 									void actions.keepOrganizationState(review.checkpoint);
 								}}
-							>
-								Continue with current state
-							</Action>
+							/>
 						</>
 					) : null}
 				</>
@@ -493,7 +496,7 @@ function OrganizationStatus({
 const projectKey = (row: NavigationProjectSummary) => row.key;
 const sessionRef = (row: NavigationSessionSummary) => row.ref;
 // Navigation serves a project's archived tier empty, so its sessions come from
-// the project's archived list. With no catalog (a session's location names
+// the project's archived list. With no catalog (an older hub's location names
 // none), the hub reads the one holding the project now.
 function sessionPages(
 	client: ConversationClientLike,
@@ -649,7 +652,10 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 	const belongs = activeProfile?.id === route.params.hubId;
 	const { location } = route.params;
 	const pages = useMemo(
-		() => (client && belongs ? sessionPages(client, location.params) : null),
+		() =>
+			client && belongs
+				? sessionPages(client, location.params, location.params.catalog as ArchivedListCatalog | undefined)
+				: null,
 		[client, belongs, location],
 	);
 	return (
@@ -660,7 +666,9 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 					{location.params.tier ? ` · ${location.params.tier}` : ""}
 				</Copy>
 				{(location.revealRef ?? location.ref) !== location.ref ? (
-					<Copy muted>Showing the row that owns this session</Copy>
+					<View testID="location-owner-row">
+						<Copy muted>Showing the row that owns this session</Copy>
+					</View>
 				) : null}
 			</View>
 			{pages ? (

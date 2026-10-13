@@ -555,7 +555,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 		respFn: func(req llm.Request) (llm.Response, error) {
 			return llm.Response{
 				Model:   "gpt-4.1-mini",
-				Message: llm.Assistant("Summary of the conversation so far."),
+				Message: llm.Assistant("## Progress\nSummary of the conversation so far."),
 			}, nil
 		},
 	}

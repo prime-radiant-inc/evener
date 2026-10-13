@@ -70,7 +70,7 @@ function readableText(fileName: string, code: string): string[] {
 const asks = (fileName: string, code: string) => readableText(fileName, code).filter((text) => FORBIDDEN.test(text));
 
 it("reads the text a person sees, and nothing else", () => {
-	expect(asks("a.tsx", `const a = <Action onPress={retry}>Reconnect</Action>;`)).toEqual(["Reconnect"]);
+	expect(asks("a.tsx", `const a = <Pressable onPress={retry}>Reconnect</Pressable>;`)).toEqual(["Reconnect"]);
 	expect(asks("b.ts", "const b = `Could not load ${name}. Refresh to try again.`;")).toEqual([
 		". Refresh to try again.",
 	]);

@@ -140,9 +140,20 @@ func TestHostTombstoneTreeMergeAndManifest(t *testing.T) {
 			t.Fatalf("tombstone row was projected live: %+v", entry)
 		}
 	}
-	caps := web.apiSessionCapabilities("web-side:web-side-t001", false)
-	if caps.Send || caps.Steer || caps.Interrupt || caps.Compact || caps.Clear || caps.Shutdown || caps.ChangeModel {
-		t.Fatalf("tombstone row capabilities = %+v, want all disabled", caps)
+	// The retained row is metadata only: AppWire serves neither a read nor an
+	// action for it, so no capability can be offered for a removed host's row.
+	tombstoneRef := "web-side:web-side-t001"
+	var read appwire.ThreadReadResponse
+	err := client.Request(context.Background(), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: tombstoneRef}, &read)
+	if err == nil || read.Thread.ID != "" {
+		t.Fatalf("thread/read of the tombstone row = %+v, %v; want no thread served", read.Thread, err)
+	}
+	var steered appwire.TurnSteerResponse
+	err = client.Request(context.Background(), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref: tombstoneRef, ClientMutationID: newTestMutationID(), ExpectedInstanceID: "instance", Input: []appwire.InputItem{{Type: "text", Text: "hi"}},
+	}, &steered)
+	if err == nil {
+		t.Fatalf("turn/steer on the tombstone row = %+v, want it refused", steered)
 	}
 
 	// The manifest's sources array drops the removed host: it is the

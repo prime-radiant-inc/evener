@@ -35,7 +35,7 @@
 <body data-font-size="m">
 <!-- Reproduces RailRow.tsx's SessionRow and ProjectRow anatomy against the
      REAL classes from RailRow.module.css, widgets/menu/menu.module.css
-     (Menu's trigger, quiet variant), widgets/button + widgets/iconbutton
+     (Menu's icon-only trigger, quiet variant), widgets/button + widgets/iconbutton
      (ProjectRow's "+" IconButton), and widgets/badge (the rollup Badge) -
      and the real Chevron widget's SVG markup (widgets/chevron/index.tsx,
      size=12, viewBox 0 0 16 16), not a text-glyph stand-in: this case's
@@ -68,7 +68,7 @@ function chevronHtml(id) {
 }
 
 function kebabHtml(id, label) {
-  return `<div class="root"><button type="button" class="trigger triggerQuiet" id="kebab-${id}" aria-haspopup="menu" aria-expanded="false" tabindex="-1"><span aria-hidden="true">&#8943;</span><span class="srOnly">Actions for ${label}</span></button></div>`;
+  return `<div class="root"><button type="button" class="trigger triggerQuiet triggerIcon" id="kebab-${id}" aria-label="Actions for ${label}" aria-haspopup="menu" aria-expanded="false" tabindex="-1"><span class="triggerGlyph" aria-hidden="true">&#8943;</span></button></div>`;
 }
 
 // SessionRow anatomy (RailRow.tsx): textCol(titleLine(label, chevron)), then
@@ -106,7 +106,7 @@ function sessionRowHtml(id, occupant) {
 // than a session row's (two buttons instead of one), so it's the wider
 // danger zone for the shared cell.
 function projectRowHtml(id, withBadge) {
-  const badge = withBadge ? `<span class="badge attention" id="occ-${id}">3</span>` : "";
+  const badge = withBadge ? `<span class="badge badgeAttention" id="occ-${id}">3</span>` : "";
   return `
     <span class="railRow" id="row-${id}">
       <span class="textCol">
@@ -118,7 +118,7 @@ function projectRowHtml(id, withBadge) {
       <span class="rightSlot" id="slot-${id}">
         ${badge}
         <span class="actions" id="actions-${id}">
-          <button type="button" class="button quiet sm" id="plus-${id}" aria-label="New session in ${TITLE}">
+          <button type="button" class="button quiet squareSm" id="plus-${id}" aria-label="New session in ${TITLE}">
             <span class="icon" aria-hidden="true">+</span>
           </button>
           ${kebabHtml(id, TITLE)}

@@ -19,7 +19,7 @@ import { versionDriftTag } from "../hosts/hostStatus";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { Group, GroupedPage, GroupFooter, Row, RowValue } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { appVersionText, hubStatusLine } from "./hubHeader";
+import { appVersionText, hubConnectionState, hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useInstalledPluginCount } from "./useInstalledPluginCount";
 
@@ -30,7 +30,8 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 	const { appearance } = useDisplayChoices();
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const line = hubStatusLine(ready, useConnectionStatusText(), update.check);
+	const connectionLine = useConnectionStatusText();
+	const line = hubStatusLine(ready, connectionLine, update.check);
 	const check = update.check;
 	const updateWaiting = !!check?.applicable && check.updateAvailable && !update.restarting;
 	const confirmUpdate = () =>
@@ -72,6 +73,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 		<GroupedPage>
 			<Text
 				allowFontScaling={allowFontScaling}
+				testID={`hub-connection-${hubConnectionState(ready, connectionLine)}`}
 				style={{
 					color: palette.inkMid,
 					...scaledType(uiType.statusLine, scale),
@@ -168,10 +170,10 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				) : null}
 			</Group>
 			{update.restarting ? (
-				<GroupFooter>{`Restarting into ${check?.latestTag ?? "the new release"}…`}</GroupFooter>
+				<GroupFooter testID="hub-update-restarting">{`Restarting into ${check?.latestTag ?? "the new release"}…`}</GroupFooter>
 			) : null}
 			{update.restartTimedOut ? (
-				<GroupFooter tone="danger">
+				<GroupFooter tone="danger" testID={check ? "hub-update-not-taken" : "hub-update-unconfirmed"}>
 					{/* With no answer since the restart, the app can't say which version the hub runs. */}
 					{check
 						? "The hub restarted without the update. Check its logs."

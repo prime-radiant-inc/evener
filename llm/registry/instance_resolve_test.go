@@ -50,7 +50,7 @@ func TestResolveInstanceCarriesTransportCredentialAndProviderCaps(t *testing.T) 
 func TestResolveInstanceUnknownNamesAvailableInstances(t *testing.T) {
 	r := cutoverRegistry(t, map[string]string{"GROQ_API_KEY": "gk"}, nil)
 	_, err := r.ResolveInstance("nope")
-	if err == nil || !strings.Contains(err.Error(), `unknown instance "nope"`) || !strings.Contains(err.Error(), "groq") {
+	if !errors.Is(err, ErrUnknownInstance) || !strings.Contains(err.Error(), "groq") {
 		t.Fatalf("want unknown-instance error naming groq, got %v", err)
 	}
 }

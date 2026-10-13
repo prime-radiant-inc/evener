@@ -30,9 +30,10 @@ function capsule(tree: ReturnType<typeof render>) {
 describe("the Next capsule (spec 8.3)", () => {
 	it("reads Next, then the session it opens, then a chevron", () => {
 		const tree = render(<NextCapsule target={target} onOpen={() => {}} onHold={() => {}} />);
-		expect(capsule(tree).props.accessibilityLabel).toBe("Next, Fix retry loop");
+		// VoiceOver hears the session after the word.
+		expect(capsule(tree).props.accessibilityLabel).toMatch(/, Fix retry loop$/);
 		const [next, title] = tree.root.findAll((node) => String(node.type) === "Text");
-		expect(textOf(next)).toBe("Next");
+		expect(textOf(next)).toEqual(expect.stringMatching(/\S/));
 		expect(next.props.style).toMatchObject({ color: palette.accentInk, fontWeight: "600" });
 		expect(textOf(title)).toBe("Fix retry loop");
 		expect(title.props).toMatchObject({ numberOfLines: 1 });

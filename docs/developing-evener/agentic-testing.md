@@ -491,7 +491,7 @@ the response's `skipped` array.
 
 **The old `/s/<id>/<action>` form-POST shim is gone** — commit
 `660376f78` deleted it along with the vanilla-JS frontend, and
-`web_workspace.go:16-22` says so in a comment: `/s/<id>` now serves only
+`handleSession` (`web_workspace.go`) routes it: `/s/<id>` now serves only
 the SPA shell and `/s/<id>/images/<sha>`, and every other sub-path
 returns 404.
 
@@ -710,7 +710,7 @@ else and `AppShell` renders `NotFound` — the words "Page not found" and
 That is deliberate (commit `8cea30ca6`, "no back-compat"): the rail
 opens sessions as `local:<id>`, so a bare-id deep link used to open the
 same session a second time in a second pane. The Go side is not the
-gate — `/s/` serves the SPA shell for any id (`web_workspace.go:38-39`) —
+gate — `/s/` serves the SPA shell for any id (`handleSession` in `web_workspace.go`) —
 so the 404 you see is client-side, and `curl`ing `/s/<bare-id>` still
 returns 200 with the shell. Assert the rendered text, not the status code.
 
@@ -756,10 +756,9 @@ deleted — <text>` with `Copy` (`:349-374`).
 **Rail** (`shell/rail/RailRow.tsx`, `Rail.tsx`): a session row is
 `[data-session-ref="local:<SID>"]` — note
 `data-session-ref`, not the legacy `data-ref`, and there is no `.sb-row`
-class anywhere. The row is one line. Its status signal is either
-`[data-testid="rail-status-spinner"][aria-label="Running"]` or
-`[data-testid="rail-status-dot"]`, whose `data-status` is `needs-you` or
-`failed` and whose accessible label is `Needs you` or `Broken`. Quiet rows
+class anywhere. The row is one line. Its status signal is the StatusDot
+`[data-testid="rail-row-signal"] [role="img"]`, whose accessible label is
+`Working`, `Needs you`, or `Failed`. Quiet rows
 have no signal. Hover `[data-testid="rail-row-title"]` to expose the rich
 `[role="tooltip"]` context card, whose header carries the detailed status
 word (`Question waiting`, `Restart required`, and so on); on a touch-only
@@ -876,7 +875,7 @@ JSON.stringify({
   steerRendered: !!document.querySelector('[data-testid="composer-steer"]'),
   stopRendered: !!document.querySelector('[data-testid="composer-stop"]'),
   turns: document.querySelectorAll('[data-testid="turn-block"]').length,
-  indicator: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-status-spinner"], [data-session-ref="local:<SID>"] [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
+  indicator: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-row-signal"] [role="img"]')?.getAttribute("aria-label"),
   queueHeading: document.querySelector("h3")?.textContent,   // "Queued messages (N)"
 })
 ```

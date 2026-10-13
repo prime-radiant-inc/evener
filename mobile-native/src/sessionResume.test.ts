@@ -1,3 +1,4 @@
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { AnyNotification, Thread, WebSocketLike } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
@@ -43,7 +44,7 @@ const thread: Thread = {
 
 const initialize = {
 	serverInfo: { name: "scripted", version: "1" },
-	protocolVersion: "evener-appwire-v6" as const,
+	protocolVersion: APPWIRE_PROTOCOL_VERSION,
 	sourceId: "local",
 	features: Object.fromEntries(
 		[

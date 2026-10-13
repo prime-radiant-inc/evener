@@ -214,7 +214,7 @@ func TestMemoryLaunchBindingFailure(t *testing.T) {
 	if !constructed {
 		t.Fatal("ordinary session not constructed")
 	}
-	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(cmdutil.DefaultStateRoot(), "memory", "personal", "topic.txt"): "opaque-personal-58"} {
+	for path, want := range map[string]string{filepath.Join(dir, "ordinary.txt"): "opaque-ordinary-46", filepath.Join(cmdutil.DefaultStateRoot(), "memory", "topic.txt"): "opaque-personal-58"} {
 		bytes, err := os.ReadFile(path)
 		if err != nil || string(bytes) != want {
 			t.Fatalf("path=%s bytes=%q err=%v", path, bytes, err)

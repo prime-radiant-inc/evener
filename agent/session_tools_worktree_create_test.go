@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
@@ -805,6 +806,37 @@ func TestWorktreeCreate_SwapsEnvIntoWorktree(t *testing.T) {
 	// The main checkout never saw the worktree-only file.
 	if _, statErr := os.Stat(filepath.Join(r.mainRoot, "only-in-worktree.txt")); !os.IsNotExist(statErr) {
 		t.Errorf("worktree-only file leaked into the main checkout")
+	}
+}
+
+// REAL git: the published path is the linked checkout git actually created and
+// the session installed, not a requested argument or a synthetic fixture path.
+func TestWorktreeCreate_PublishesInstalledCWD(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	ctx := t.Context()
+	changed := make(chan string, 8)
+	r.s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.EnvironmentChangedData); ok {
+			changed <- data.WorkingDir
+		}
+	}, func() {})
+
+	result, err := r.create(t, map[string]any{"name": "document-lane"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := result["path"].(string)
+	select {
+	case got := <-changed:
+		if got != want {
+			t.Fatalf("published cwd = %q, want %q", got, want)
+		}
+		if installed := r.s.currentEnv().WorkingDirectory(); installed != got {
+			t.Fatalf("published %q before installation %q", got, installed)
+		}
+	case <-ctx.Done():
+		t.Fatal("installed cwd was not published")
 	}
 }
 

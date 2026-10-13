@@ -19,7 +19,7 @@ import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { ProvidersScreenSlotProvider, usePublishProviderDetail } from "../hub/hubScreenSlot";
 import { ProviderDetailPage } from "../hub/ProviderDetailPage";
-import { createTestStack } from "../navigationTestStack.testkit";
+import { BlankPage, createTestStack } from "../navigationTestStack.testkit";
 import { render } from "../renderNative.testkit";
 import { openNotice, openProviders } from "./BoardNotices";
 
@@ -71,9 +71,9 @@ function HubSheet() {
 	return (
 		<ProvidersScreenSlotProvider>
 			<Hub.Navigator initialRouteName="HubHome">
-				<Hub.Screen name="HubHome" component={() => null} />
-				<Hub.Screen name="Hosts" component={() => null} />
-				<Hub.Screen name="HostDetail" component={() => null} />
+				<Hub.Screen name="HubHome" component={BlankPage} />
+				<Hub.Screen name="Hosts" component={BlankPage} />
+				<Hub.Screen name="HostDetail" component={BlankPage} />
 				<Hub.Screen name="HostEdit" component={GuardedHostEdit} />
 				<Hub.Screen name="Providers" component={Providers as never} />
 				<Hub.Screen name="ProviderDetail" component={ProviderDetailPage as never} />
@@ -90,7 +90,7 @@ async function hubOpenAt(pages: Page[]) {
 	render(
 		<BaseNavigationContainer ref={navigation}>
 			<Root.Navigator initialRouteName="Board">
-				<Root.Screen name="Board" component={() => null} />
+				<Root.Screen name="Board" component={BlankPage} />
 				<Root.Screen name="Hub" component={HubSheet} />
 			</Root.Navigator>
 		</BaseNavigationContainer>,

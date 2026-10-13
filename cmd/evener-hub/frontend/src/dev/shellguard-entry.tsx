@@ -1,3 +1,4 @@
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 // Browser-verification harness for the desktop shell's page height.
 //
 // The bug it exists to find: the rail (sidebar) tree's FULL expanded height
@@ -419,9 +420,8 @@ async function boot(): Promise<void> {
   });
   fake.on("thread/unsubscribe", () => ({}));
   fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
+    ...activitySummary(ref, scope),
     context: overviewActivityContext(ref),
-    scope: scope ?? "session",
     delegates: { ...CROWDED_ACTIVITY_COUNTS },
     jobs: { ...CROWDED_ACTIVITY_COUNTS },
     watches: { ...CROWDED_ACTIVITY_COUNTS },
@@ -447,20 +447,32 @@ async function boot(): Promise<void> {
     watches: [],
     page: { complete: true, issues: [] },
   }));
+  // Overview's Tasks tab gets a list far taller than any viewport the guard
+  // sweeps (40 rows, every fourth already done so the settled fold renders
+  // too): the guard's page-height contract must hold with the tab body's own
+  // scroll container owning a list this tall, not the document. The padding
+  // fixture keeps its one-row list - it measures a single row's box.
+  const tallTasksFixture = Array.from({ length: 40 }, (_, i) => ({
+    id: i + 1,
+    type: "verify",
+    description: `Overview task ${i + 1}: keep the page frame from scrolling when the task list is taller than the viewport`,
+    prompt: "",
+    status: i % 4 === 3 ? "done" : "open",
+  }));
   fake.on("evener/tasks/list", ({ ref }) => ({
     data:
       ref === ROW_PADDING_REF
         ? [{ id: 1, type: "verify", description: "Measure task row", prompt: "", status: "open" }]
-        : [],
+        : tallTasksFixture,
   }));
   fake.on("evener/git/head", () => ({
     head: "this-is-a-long-feature-branch",
     originUrl: "https://github.com/prime-radiant-inc/evener.git",
   }));
   shellClient = fake;
-  fake.scriptConnect(() => ({
+  fake.scriptHandshake({
     serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {
       threadList: true,
@@ -477,7 +489,7 @@ async function boot(): Promise<void> {
       auth: true,
     },
     navigation: { version: 1, readVersions: [3], generationId: "shellguard-generation", sequence: 0 },
-  }));
+  });
   createRoot(root).render(
     <RailRenderObserver value={(id) => renderCounts.set(id, (renderCounts.get(id) ?? 0) + 1)}>
       <AppShell client={fake} />

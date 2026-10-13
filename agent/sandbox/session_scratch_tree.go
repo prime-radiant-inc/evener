@@ -21,13 +21,14 @@ const sessionScratchTreePrefix = "evener-scratch-"
 const (
 	goCacheDirName    = "gocache"
 	goModCacheDirName = "gomodcache"
+	goPathDirName     = "gopath"
 	npmCacheDirName   = "npm"
 	cargoHomeDirName  = "cargo"
 )
 
 // SessionCacheDirNames are those cache directories. They are regenerable, so a
 // session end prunes them while the rest of the scratch stays.
-var SessionCacheDirNames = []string{goCacheDirName, goModCacheDirName, npmCacheDirName, cargoHomeDirName}
+var SessionCacheDirNames = []string{goCacheDirName, goModCacheDirName, goPathDirName, npmCacheDirName, cargoHomeDirName}
 
 // OpenSessionScratch creates, or reopens, sessionID's scratch in rootID's tree
 // in the first usable scratch base, and holds its lease until Retain or
@@ -67,8 +68,34 @@ func OpenSessionScratch(base, workspaceRoot, rootID, sessionID string) (*Session
 // Named reports whether this scratch lives in a session's tree
 // (OpenSessionScratch) rather than being a disposable one (NewSessionScratch).
 // A named scratch outlives its session's end; a disposable one does not.
+//
+// The answer is fixed at allocation: s.Dir is set once by the allocator and
+// never re-read from disk, and scratchTreeOf is purely lexical, so renaming the
+// directory on disk cannot change it.
 func (s *SessionScratch) Named() bool {
-	return s != nil && strings.HasPrefix(filepath.Base(s.base), sessionScratchTreePrefix)
+	return s != nil && scratchTreeOf(s.Dir) != ""
+}
+
+// isSessionScratchTree reports whether dir is named as a root session's scratch
+// tree.
+func isSessionScratchTree(dir string) bool {
+	return strings.HasPrefix(filepath.Base(dir), sessionScratchTreePrefix)
+}
+
+// scratchTreeOf returns the root session's scratch tree that holds scratchDir
+// (<base>/evener-scratch-<root>/<session>), or "" for a disposable scratch that
+// belongs to no tree. A disposable scratch is recognized by the name its
+// allocator gives it, so one created under a temp base that merely carries the
+// tree prefix still belongs to no tree.
+func scratchTreeOf(scratchDir string) string {
+	if strings.HasPrefix(filepath.Base(scratchDir), sessionScratchPrefix) {
+		return ""
+	}
+	tree := filepath.Dir(scratchDir)
+	if !isSessionScratchTree(tree) {
+		return ""
+	}
+	return tree
 }
 
 // PruneCaches removes the regenerable cache directories (SessionCacheDirNames)
@@ -97,13 +124,14 @@ func (s *SessionScratch) End() error {
 // RemoveSessionScratchTree removes rootID's whole scratch tree — the root's and
 // every child's scratch — from every scratch base a session may have used. An
 // absent tree is not an error; one that is a symlink or owned by another user is
-// left alone.
-func RemoveSessionScratchTree(rootID string) error {
+// left alone. extraBases are further bases to look in: the temp dir a session's
+// daemon recorded, when it may differ from this process's.
+func RemoveSessionScratchTree(rootID string, extraBases ...string) error {
 	if !safeScratchName(rootID) {
 		return fmt.Errorf("sandbox: unsafe session scratch identity %q", rootID)
 	}
 	var errs []error
-	for _, base := range sessionScratchTreeBases() {
+	for _, base := range sessionScratchTreeBases(extraBases...) {
 		tree := filepath.Join(base, sessionScratchTreePrefix+rootID)
 		info, err := os.Lstat(tree)
 		if os.IsNotExist(err) {
@@ -125,10 +153,10 @@ func RemoveSessionScratchTree(rootID string) error {
 }
 
 // SessionScratchTreeRootIDs lists the root sessions whose scratch trees exist
-// in any base a session may have used, each once.
-func SessionScratchTreeRootIDs() []string {
+// in any base a session may have used, or in extraBases, each once.
+func SessionScratchTreeRootIDs(extraBases ...string) []string {
 	var ids []string
-	for _, base := range sessionScratchTreeBases() {
+	for _, base := range sessionScratchTreeBases(extraBases...) {
 		entries, err := os.ReadDir(base)
 		if err != nil {
 			continue
@@ -200,16 +228,42 @@ func removeEmptySessionScratchTree(tree string) {
 	}
 }
 
+// ProcessScratchTempDir is this process's temp dir as an absolute path, where
+// its sessions' scratch trees live. os.TempDir returns a relative TMPDIR as
+// given; it is resolved against the working directory, so another process
+// (the hub) can find it. Empty when there is none to resolve.
+func ProcessScratchTempDir() string {
+	dir := sessionScratchTempDir()
+	if dir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
 // sessionScratchTreeBases are the bases a tree may live in: the temp dir and
-// the user cache dir, the two OpenSessionScratch chooses between.
-func sessionScratchTreeBases() []string {
+// the user cache dir, the two OpenSessionScratch chooses between, then extra.
+func sessionScratchTreeBases(extra ...string) []string {
+	// A recorded extra base names another process's dir, so a relative one
+	// has no meaning here and is skipped.
+	var candidates []string
+	if dir := ProcessScratchTempDir(); dir != "" {
+		candidates = append(candidates, dir)
+	}
+	if dir, err := sessionScratchUserCacheDir(); err == nil {
+		candidates = append(candidates, dir)
+	}
+	for _, dir := range extra {
+		if filepath.IsAbs(dir) {
+			candidates = append(candidates, dir)
+		}
+	}
 	var bases []string
-	for _, candidate := range []func() (string, error){
-		func() (string, error) { return sessionScratchTempDir(), nil },
-		sessionScratchUserCacheDir,
-	} {
-		dir, err := candidate()
-		if err != nil || dir == "" {
+	for _, dir := range candidates {
+		if dir == "" {
 			continue
 		}
 		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
@@ -241,9 +295,11 @@ func ensureOwnedScratchDir(dir string) error {
 	return nil
 }
 
-// safeScratchName reports whether id can name one path component.
+// safeScratchName reports whether id can name one path component. An id
+// carrying the disposable-scratch prefix is refused too, so a named session's
+// scratch can never be taken for a disposable one (see scratchTreeOf).
 func safeScratchName(id string) bool {
-	if id == "" || id == "." || id == ".." {
+	if id == "" || id == "." || id == ".." || strings.HasPrefix(id, sessionScratchPrefix) {
 		return false
 	}
 	return !strings.ContainsAny(id, `/\`) && !strings.ContainsRune(id, 0)

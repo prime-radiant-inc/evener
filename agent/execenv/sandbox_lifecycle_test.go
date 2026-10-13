@@ -641,7 +641,7 @@ func readConfinedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironment
 		WriteBlocked: true,
 		FileTool:     sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{worktree}},
 	}
-	tmp, err := env.newSessionScratch()
+	tmp, err := env.newSessionScratch(env.ScratchIdentity())
 	if err != nil {
 		t.Fatalf("newSessionScratch: %v", err)
 	}

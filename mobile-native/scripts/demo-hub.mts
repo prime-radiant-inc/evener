@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { WireError } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION, WireError } from "@evener/appwire-client";
 import type {
 	InitializeResponse,
 	InputItem,
@@ -234,7 +234,7 @@ export async function createDemoHub(
 	let sessionNumber = 0;
 	const handshake: InitializeResponse = {
 		serverInfo: { name: "Native UI demonstration", version: "1" },
-		protocolVersion: modes.protocolVersion ?? "evener-appwire-v6",
+		protocolVersion: modes.protocolVersion ?? APPWIRE_PROTOCOL_VERSION,
 		sourceId: "demo",
 		features: {
 			threadList: true,

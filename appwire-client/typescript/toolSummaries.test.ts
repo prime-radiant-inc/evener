@@ -3,7 +3,16 @@
 import { expect, test } from "vitest";
 import { housekeepingAction } from "./housekeepingSteps";
 import { type ToolWireCall, toolWireCwd, toolWireStep } from "./testing/toolWireFixtures";
-import { mcpToolParts, type ToolStep, toolFamily, toolStepProgress, toolStepSummary, words } from "./toolSummaries";
+import {
+  mcpToolParts,
+  type ToolStep,
+  taskListChanges,
+  toolFamily,
+  toolStepProgress,
+  toolStepSummary,
+  toolStepWords,
+  words,
+} from "./toolSummaries";
 
 // Every case reads a settled step the daemon actually sends
 // (agent/testdata/toolwire), merged as a client holds it. The core tools'
@@ -13,7 +22,10 @@ test.each<[ToolWireCall, string]>([
   ["call_read_file", "Read agent/tree.go · lines 1-4"],
   ["call_read_file_range", "Read agent/tree.go · lines 2-3"],
   ["call_grep", 'Searched "func settle" in agent (*.go) · 2 hits'],
+  // A note after the hits, past a blank line, is not one of them.
+  ["call_grep_capped", 'Searched "package|func" in agent/tree.go · 1 hits'],
   ["call_glob", "Matched agent/**/*_test.go · 2 matches"],
+  ["call_glob_excluded", "Matched **/plan.md · 0 matches"],
   // The count list_dir states on its last line, not its line count.
   ["call_list_dir", "Listed agent · 3 entries"],
   ["call_list_dir_empty", "Listed empty · 0 entries"],
@@ -61,6 +73,74 @@ test.each<[ToolWireCall, string]>([
   expect(toolStepSummary(toolWireStep(call), { cwd: toolWireCwd() })).toBe(summary);
 });
 
+test("routes memory tool words, summaries, progress and family through the shared table", () => {
+  const cases: [
+    string,
+    Record<string, unknown>,
+    string | undefined,
+    string,
+    string,
+    ReturnType<typeof toolStepWords>,
+  ][] = [
+    [
+      "memory_write",
+      { scope: "personal", file_path: "implementation-delegation.md" },
+      undefined,
+      "Wrote memory personal/implementation-delegation.md",
+      "Writing memory personal/implementation-delegation.md",
+      { verb: "Wrote memory", target: "personal/implementation-delegation.md" },
+    ],
+    [
+      "memory_edit",
+      { scope: "project", file_path: "MEMORY.md", old_string: "old", new_string: "new" },
+      undefined,
+      "Edited memory project/MEMORY.md · +1 -1",
+      "Editing memory project/MEMORY.md",
+      { verb: "Edited memory", target: "project/MEMORY.md", detail: "+1 -1" },
+    ],
+    [
+      "memory_read",
+      // A legacy scope: transcripts from earlier builds still record "session".
+      { scope: "session", file_path: "notes.md", offset: 1, limit: 40 },
+      "line 1\nline 2",
+      "Read memory session/notes.md · lines 1-40",
+      "Reading memory session/notes.md",
+      { verb: "Read memory", target: "session/notes.md", detail: "lines 1-40" },
+    ],
+    [
+      "memory_search",
+      { scope: "personal", pattern: "pattern", path: "guides" },
+      "one\ntwo\nthree\n",
+      'Searched memory for "pattern" in personal/guides · 3 hits',
+      'Searching memory for "pattern" in personal/guides',
+      { verb: "Searched memory for", target: '"pattern"', after: "in personal/guides", detail: "3 hits" },
+    ],
+    [
+      "memory_delete",
+      { scope: "project", file_path: "old.md" },
+      undefined,
+      "Removed memory project/old.md",
+      "Removing memory project/old.md",
+      { verb: "Removed memory", target: "project/old.md" },
+    ],
+  ];
+  for (const [toolName, args, output, settled, progress, structuredWords] of cases) {
+    const step = { toolName, argumentsJSON: JSON.stringify(args), output };
+    expect(toolFamily(toolName)).toBe("memory");
+    expect(toolStepWords(step)).toEqual(structuredWords);
+    expect(toolStepSummary(step)).toBe(settled);
+    expect(toolStepProgress(step)).toBe(progress);
+  }
+  expect(toolFamily("memory_write")).toBe("memory");
+  expect(
+    toolStepWords({
+      toolName: "memory_search",
+      argumentsJSON: JSON.stringify({ scope: "personal", pattern: "pattern", path: "." }),
+      output: "one\ntwo\nthree\n",
+    }),
+  ).toEqual({ verb: "Searched memory for", target: '"pattern"', after: "in personal", detail: "3 hits" });
+});
+
 // A tool no summary covers, an MCP tool among them, never shows its raw name.
 test.each<[ToolWireCall, string]>([
   ["call_mcp", "Used github: create issue"],
@@ -77,18 +157,26 @@ test("says a task_list update that changed no status as updating the list", () =
     toolName: "task_list",
     argumentsJSON: JSON.stringify({ update: [{ id: 1, notes: "Still flaky." }] }),
   };
-  expect(toolStepSummary(noted)).toBe("Updated the task list");
+  expect(taskListChanges(noted)).toBe(true);
+  expect(toolStepSummary(noted)).not.toBe(toolStepSummary({ toolName: "task_list", argumentsJSON: "{}" }));
 });
 
 // The historical action form: "append" with tasks, "update" with updates.
 test("says a historical task_list action changed the list only when it carried a change", () => {
-  const called = (args: Record<string, unknown>) =>
-    toolStepSummary({ toolName: "task_list", argumentsJSON: JSON.stringify(args) });
-  expect(called({ action: "append", tasks: [] })).toBe("Checked the task list");
-  expect(called({ action: "update", updates: [] })).toBe("Checked the task list");
-  expect(called({ action: "view" })).toBe("Checked the task list");
-  expect(called({ action: "rename" })).toBe("Checked the task list");
-  expect(called({ action: "update", updates: [{ id: 1, notes: "Still flaky." }] })).toBe("Updated the task list");
+  const call = (args: Record<string, unknown>) => ({ toolName: "task_list", argumentsJSON: JSON.stringify(args) });
+  const checked = toolStepSummary(call({}));
+  for (const args of [
+    { action: "append", tasks: [] },
+    { action: "update", updates: [] },
+    { action: "view" },
+    { action: "rename" },
+  ]) {
+    expect(taskListChanges(call(args)), args.action).toBe(false);
+    expect(toolStepSummary(call(args)), args.action).toBe(checked);
+  }
+  const changed = call({ action: "update", updates: [{ id: 1, notes: "Still flaky." }] });
+  expect(taskListChanges(changed)).toBe(true);
+  expect(toolStepSummary(changed)).not.toBe(checked);
 });
 
 test("counts a transcript's turns and a search's finds in their own number", () => {
@@ -545,8 +633,13 @@ test("phrases a housekeeping call as its step line does", () => {
 // A call whose arguments the hub didn't send can't say it only clears a
 // note, so it says what the tool usually does, running and done alike.
 test("says notes_agent_set's usual lines when its arguments are missing", () => {
-  expect(toolStepProgress({ toolName: "notes_agent_set" })).toBe("Updating its note");
-  expect(toolStepSummary({ toolName: "notes_agent_set" })).toBe("Updated its note");
+  const missing = { toolName: "notes_agent_set" };
+  const set = housekeeping("notes_agent_set", { note: "Drain first." });
+  const cleared = toolWireStep("call_notes_agent_set");
+  expect(toolStepProgress(missing)).toBe(toolStepProgress(set));
+  expect(toolStepSummary(missing)).toBe(toolStepSummary(set));
+  expect(toolStepProgress(missing)).not.toBe(toolStepProgress(cleared));
+  expect(toolStepSummary(missing)).not.toBe(toolStepSummary(cleared));
 });
 
 test("says compact_context's usual lines when its arguments are missing", () => {

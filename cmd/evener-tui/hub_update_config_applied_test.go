@@ -49,7 +49,7 @@ func panelCursorOn(p *launchconfig.CredentialsPanel, name string) bool {
 func instanceWarningNotice(t *testing.T, m hubModel) noticePanel {
 	t.Helper()
 	for _, notice := range m.notices {
-		if notice.State == "warning" && strings.HasPrefix(notice.Title, "Instance") {
+		if notice.State == "warning" && notice.Category == "instance" {
 			return notice
 		}
 	}

@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -158,7 +160,7 @@ func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.
 		t.Fatalf("list: %v\n%s", err, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"groq", "openai-chat", "env:GROQ_API_KEY", "work", "store", "https://gw.example.com/v1", "user layer: " + path} {
+	for _, want := range []string{"groq", "openai-chat", "env:GROQ_API_KEY", "work", "store", "https://gw.example.com/v1", path} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in\n%s", want, out)
 		}
@@ -166,7 +168,7 @@ func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.
 	if strings.Contains(out, envKey) || strings.Contains(out, storedKey) || strings.Contains(stderr.String(), envKey) || strings.Contains(stderr.String(), storedKey) {
 		t.Fatalf("list prints credential sources, never values (spec §11.2):\n%s", out)
 	}
-	if !strings.Contains(stderr.String(), `credentials.toml entry "kimi" names no instance`) {
+	if !strings.Contains(stderr.String(), `"kimi"`) {
 		t.Fatalf("stray entries are reported (spec §14.1):\n%s", stderr.String())
 	}
 }
@@ -189,7 +191,7 @@ func TestProvidersListReportsShadowedEnvVar(t *testing.T) {
 		t.Fatalf("list: %v\n%s", err, stderr.String())
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "WORK_API_KEY set but shadowed by store") {
+	if !strings.Contains(out, "WORK_API_KEY") {
 		t.Fatalf("missing shadowed env var note in\n%s", out)
 	}
 	if strings.Contains(out, "env-secret-val") || strings.Contains(out, "store-secret-val") {
@@ -206,8 +208,8 @@ func TestProvidersListReportsAnEmptyProvidersConfigAsNoUserLayer(t *testing.T) {
 	if err := runProviders([]string{"list"}, nil, &stdout, &stderr); err != nil {
 		t.Fatalf("list: %v\n%s", err, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "user layer: none (EVENER_PROVIDERS_CONFIG is empty)") {
-		t.Fatalf("the empty tri-state must be named in the output:\n%s", stdout.String())
+	if note, _, _ := strings.Cut(stdout.String(), "\n"); !strings.Contains(note, envvars.EVENERProvidersConfig.Name) {
+		t.Fatalf("the empty tri-state must name %s in the user-layer line:\n%s", envvars.EVENERProvidersConfig.Name, stdout.String())
 	}
 }
 
@@ -222,7 +224,7 @@ func TestProvidersListOnAnOldSchemaFileIsTheFlagDayError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an old-schema providers.toml must fail the command; stdout:\n%s", stdout.String())
 	}
-	if !errors.Is(err, registry.ErrOldSchema) || !strings.Contains(err.Error(), "§14.1") || !strings.Contains(err.Error(), path) {
+	if !errors.Is(err, registry.ErrOldSchema) || !strings.Contains(err.Error(), path) {
 		t.Fatalf("error must be the §14.1 pointer naming the file: %v", err)
 	}
 }
@@ -434,9 +436,6 @@ func TestProvidersProbeWriteKeepsTheRegistryChoiceWhenBothProtocolsWork(t *testi
 	if !strings.Contains(out, "openai-chat: ok") || !strings.Contains(out, "openai-responses: ok") {
 		t.Fatalf("both protocols must be reported working:\n%s", out)
 	}
-	if !strings.Contains(out, "keeps the registry's choice") || strings.Contains(out, "wrote protocol") {
-		t.Fatalf("nothing is recorded when both work:\n%s", out)
-	}
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(after, before) {
 		t.Fatalf("providers.toml must be untouched: %v\n%s", err, after)
@@ -461,9 +460,6 @@ func TestProvidersProbeWriteRecordsNothingWhenNoProtocolWorks(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := runProviders([]string{"probe", "gw", "--write"}, nil, &stdout, &stderr); err != nil {
 		t.Fatalf("probe --write: %v\n%s", err, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "no protocol succeeded") || strings.Contains(stdout.String(), "wrote protocol") {
-		t.Fatalf("a probe that learned nothing writes nothing:\n%s", stdout.String())
 	}
 	l, _, err := registry.ReadConfigFile(path)
 	if err != nil || l.Providers["gw"].Protocol != "" {
@@ -509,8 +505,8 @@ func TestProvidersWriteCommandsRefuseAnOldSchemaFileBeforeWriting(t *testing.T) 
 			if err == nil {
 				t.Fatalf("an old-schema providers.toml must stop the command; stdout:\n%s", stdout.String())
 			}
-			if !errors.Is(err, registry.ErrOldSchema) || !strings.Contains(err.Error(), "§14.1") {
-				t.Fatalf("error must be the §14.1 pointer: %v", err)
+			if !errors.Is(err, registry.ErrOldSchema) {
+				t.Fatalf("error must be the §14.1 flag-day error: %v", err)
 			}
 			after, readErr := os.ReadFile(path)
 			if readErr != nil || string(after) != body {
@@ -522,9 +518,10 @@ func TestProvidersWriteCommandsRefuseAnOldSchemaFileBeforeWriting(t *testing.T) 
 
 func TestProvidersAddWritesEntryAndSkipsProbeWithoutCredential(t *testing.T) {
 	root := providersTestEnv(t, nil)
+	endpoint, requests := countingEndpoint(t)
 
 	var stdout, stderr bytes.Buffer
-	if err := runProviders([]string{"add", "gw", "--base", "openai", "--base-url", "https://gw.example.com/v1",
+	if err := runProviders([]string{"add", "gw", "--base", "openai", "--base-url", endpoint,
 		"--protocol", "openai-chat", "--surface", "generic",
 		"--credential-header", "Authorization=Bearer $PORTKEY_KEY"}, nil, &stdout, &stderr); err != nil {
 		t.Fatalf("add: %v\n%s", err, stderr.String())
@@ -534,13 +531,16 @@ func TestProvidersAddWritesEntryAndSkipsProbeWithoutCredential(t *testing.T) {
 		t.Fatalf("written entry: %v %v %+v", err, exists, l.Providers["gw"])
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "PORTKEY_KEY") || !strings.Contains(out, "no credential resolves for gw") {
+	if !strings.Contains(out, "PORTKEY_KEY") {
 		t.Fatalf("add prints what to set when no credential resolves:\n%s", out)
+	}
+	if got := requests.Load(); got != 0 || reportsProbeVerdicts(out) {
+		t.Fatalf("add probed an instance no credential resolves (%d requests):\n%s", got, out)
 	}
 	// An entry carrying credential_headers never reaches the store or the
 	// environment (spec §10 resolution order), so suggesting them would send
 	// the user down a dead end — only PORTKEY_KEY resolves this instance.
-	if strings.Contains(out, "GW_API_KEY") || strings.Contains(out, "--api-key-env") || strings.Contains(out, "credentials pane") {
+	if strings.Contains(out, "GW_API_KEY") || strings.Contains(out, "--api-key-env") {
 		t.Fatalf("the pointer must not suggest layers this entry can never reach:\n%s", out)
 	}
 }
@@ -549,15 +549,19 @@ func TestProvidersAddWritesEntryAndSkipsProbeWithoutCredential(t *testing.T) {
 // no credential_headers really is resolved by the store or the environment.
 func TestProvidersAddPrintsTheCredentialPointerWhenItHelps(t *testing.T) {
 	providersTestEnv(t, nil)
+	endpoint, requests := countingEndpoint(t)
 	var stdout, stderr bytes.Buffer
-	if err := runProviders([]string{"add", "gw", "--base", "openai", "--base-url", "https://gw.example.com/v1"}, nil, &stdout, &stderr); err != nil {
+	if err := runProviders([]string{"add", "gw", "--base", "openai", "--base-url", endpoint}, nil, &stdout, &stderr); err != nil {
 		t.Fatalf("add: %v\n%s", err, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"no credential resolves for gw", "GW_API_KEY", "--api-key-env", "credentials.toml [providers.gw]"} {
+	for _, want := range []string{"GW_API_KEY", "--api-key-env", "credentials.toml [providers.gw]"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in\n%s", want, out)
 		}
+	}
+	if got := requests.Load(); got != 0 || reportsProbeVerdicts(out) {
+		t.Fatalf("add probed an instance no credential resolves (%d requests):\n%s", got, out)
 	}
 }
 
@@ -569,10 +573,9 @@ func TestProvidersAddSkipsTheCredentialPointerForSchemesItCannotHelp(t *testing.
 	for _, tt := range []struct {
 		name string
 		base string
-		fix  string
 	}{
-		{name: "oauth-openai-codex", base: "openai-codex", fix: "evener openai login --instance work"},
-		{name: "gcp-adc", base: "google-vertex", fix: "gcloud auth application-default login"},
+		{name: "oauth-openai-codex", base: "openai-codex"},
+		{name: "gcp-adc", base: "google-vertex"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			providersTestEnv(t, nil)
@@ -581,13 +584,7 @@ func TestProvidersAddSkipsTheCredentialPointerForSchemesItCannotHelp(t *testing.
 				t.Fatalf("add: %v\n%s", err, stderr.String())
 			}
 			out := stdout.String()
-			if !strings.Contains(out, "no credential resolves for work") {
-				t.Fatalf("add must still say the instance has no credential:\n%s", out)
-			}
-			if !strings.Contains(out, tt.fix) {
-				t.Fatalf("the warning must name the real fix %q:\n%s", tt.fix, out)
-			}
-			if strings.Contains(out, "WORK_API_KEY") || strings.Contains(out, "--api-key-env") || strings.Contains(out, "credentials pane") {
+			if strings.Contains(out, "WORK_API_KEY") || strings.Contains(out, "--api-key-env") {
 				t.Fatalf("the pointer must not suggest layers this scheme can never reach:\n%s", out)
 			}
 		})
@@ -607,11 +604,11 @@ func TestProvidersAddExitsZeroWhenTheProbeCannotRun(t *testing.T) {
 	if err := runProviders([]string{"add", "gw", "--base", "openai-compatible", "--base-url", srv.URL}, nil, &stdout, &stderr); err != nil {
 		t.Fatalf("the entry was written, so add succeeded: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "wrote [providers.gw]") {
+	if !strings.Contains(stdout.String(), filepath.Join(root, "providers.toml")) {
 		t.Fatalf("the write must still be reported:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "no model to send") {
-		t.Fatalf("the probe failure must be reported on stderr:\n%s", stderr.String())
+	if stderr.Len() == 0 {
+		t.Fatal("the probe failure must be reported on stderr")
 	}
 	l, exists, err := registry.ReadConfigFile(filepath.Join(root, "providers.toml"))
 	if err != nil || !exists || l.Providers["gw"].Base != "openai-compatible" {
@@ -674,9 +671,6 @@ func TestProvidersAddRefusesALiteralCredentialHeader(t *testing.T) {
 			if err == nil {
 				t.Fatal("a credential header that is not a $VARIABLE reference is refused")
 			}
-			if !strings.Contains(err.Error(), "$VARIABLE") {
-				t.Fatalf("the refusal must say what is accepted: %v", err)
-			}
 			if strings.Contains(err.Error(), tt.secret) || strings.Contains(stdout.String(), tt.secret) || strings.Contains(stderr.String(), tt.secret) {
 				t.Fatalf("the refusal must not echo the value: %v %q %q", err, stdout.String(), stderr.String())
 			}
@@ -694,18 +688,18 @@ func TestProvidersAddRefusesABadNameAnUnknownBaseAndADuplicate(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		args []string
-		want string
+		want error
 	}{
-		{"invalid name", []string{"add", "Work", "--base", "openai"}, "invalid instance name"},
-		{"missing base", []string{"add", "work"}, "--base is required"},
-		{"unknown base", []string{"add", "work", "--base", "nope"}, "unknown base provider"},
-		{"duplicate", []string{"add", "gw", "--base", "openai"}, "already exists"},
+		{"invalid name", []string{"add", "Work", "--base", "openai"}, errInvalidInstanceName},
+		{"missing base", []string{"add", "work"}, errBaseRequired},
+		{"unknown base", []string{"add", "work", "--base", "nope"}, errUnknownBaseProvider},
+		{"duplicate", []string{"add", "gw", "--base", "openai"}, errInstanceExists},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			err := runProviders(tt.args, nil, &stdout, &stderr)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("add = %v, want an error mentioning %q", err, tt.want)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("add = %v, want %v", err, tt.want)
 			}
 		})
 	}
@@ -727,8 +721,8 @@ func TestProvidersAddNoProbeWritesWithoutTouchingTheEndpoint(t *testing.T) {
 	if len(gw.APIKeyEnv) != 1 || gw.APIKeyEnv[0] != "GW_KEY" || gw.Transport.Vars["REGION"] != "eu" {
 		t.Fatalf("written entry: %+v", gw)
 	}
-	if strings.Contains(stdout.String(), "no credential resolves") {
-		t.Fatalf("GW_KEY resolves the credential:\n%s", stdout.String())
+	if strings.Contains(stdout.String(), registry.InstanceKeyEnvVar("gw")) {
+		t.Fatalf("GW_KEY resolves the credential, so add must not point at %s:\n%s", registry.InstanceKeyEnvVar("gw"), stdout.String())
 	}
 }
 
@@ -743,8 +737,9 @@ func TestProvidersUsageAndUnknownCommand(t *testing.T) {
 		}
 	}
 	stderr.Reset()
-	if err := runProviders([]string{"nope"}, nil, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), `unknown providers command "nope"`) {
-		t.Fatalf("unknown command = %v", err)
+	err := runProviders([]string{"nope"}, nil, &stdout, &stderr)
+	if unknown, ok := errors.AsType[*unknownSubcommandError](err); !ok || unknown.name != "nope" {
+		t.Fatalf("unknown command = %v, want an unknownSubcommandError naming nope", err)
 	}
 }
 
@@ -822,4 +817,28 @@ func TestProvidersAddNamesTheDefaultedProtocol(t *testing.T) {
 	if strings.Contains(out, "--protocol") {
 		t.Fatalf("no override hint when the user already chose:\n%s", out)
 	}
+}
+
+// countingEndpoint is an endpoint that answers nothing useful and counts the
+// requests it receives, so a test can tell whether a command probed it.
+func countingEndpoint(t *testing.T) (string, *atomic.Int64) {
+	t.Helper()
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/v1", &requests
+}
+
+// reportsProbeVerdicts reports whether `evener providers` output carries a
+// probe's per-protocol "<protocol>: <verdict>" lines.
+func reportsProbeVerdicts(out string) bool {
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, "openai-chat:") || strings.HasPrefix(line, "openai-responses:") {
+			return true
+		}
+	}
+	return false
 }

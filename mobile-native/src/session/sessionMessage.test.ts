@@ -34,6 +34,7 @@ const capabilities = (over: Partial<ThreadCapabilities> = {}): ThreadCapabilitie
 });
 const session = (status: string, over: Partial<ThreadCapabilities> = {}): SessionState => ({
 	threadId: "thread-1",
+	cwd: "/work/owner",
 	instanceId: "instance-1",
 	status,
 	capabilities: capabilities(over),
@@ -248,6 +249,64 @@ describe("submitting a message to a session", () => {
 });
 
 describe("following a session from a screen above it", () => {
+	it("publishes the initial owning cwd through the followed lease", async () => {
+		const client = new FakeClient("ready");
+		client.on("thread/read", () => ({ thread: wireThread("local:coord", { cwd: "/work/a" }) }));
+		const link = new SessionLink(client, "local:coord");
+		try {
+			await link.read({ follow: true });
+			expect(link.getSnapshot()).toMatchObject({ cwd: "/work/a" });
+		} finally {
+			link.dispose();
+		}
+	});
+
+	it("refreshes only its owning resync on the same lease and retires late publication", async () => {
+		const client = new FakeClient("ready");
+		let cwd = "/work/a";
+		let release: ((value: ThreadReadResponse) => void) | undefined;
+		let deferred = false;
+		client.on("thread/read", () =>
+			deferred
+				? new Promise<ThreadReadResponse>((resolve) => {
+						release = resolve;
+					})
+				: { thread: wireThread("local:coord", { cwd }) },
+		);
+		const link = new SessionLink(client, "local:coord");
+		const changed = vi.fn();
+		link.subscribe(changed);
+		try {
+			await link.read({ follow: true });
+			client.emitNotification({ method: "evener/thread/resync", params: { ref: "local:other", threadId: "other" } });
+			expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+			cwd = "/work/b";
+			client.emitNotification({
+				method: "evener/thread/resync",
+				params: { ref: "local:coord", threadId: link.getSnapshot()!.threadId },
+			});
+			await vi.waitFor(() => expect(link.getSnapshot()).toMatchObject({ cwd: "/work/b" }));
+			expect(client.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).toEqual([
+				{ ref: "local:coord", includeTurns: false, subscribe: true, replaceSubscription: false },
+				{ ref: "local:coord", includeTurns: false, subscribe: false, replaceSubscription: false },
+			]);
+			deferred = true;
+			client.emitNotification({
+				method: "evener/thread/resync",
+				params: { ref: "local:coord", threadId: link.getSnapshot()!.threadId },
+			});
+			await vi.waitFor(() => expect(release).toBeDefined());
+			link.dispose();
+			const count = changed.mock.calls.length;
+			release?.({ thread: wireThread("local:coord", { cwd: "/work/retired" }) });
+			await Promise.resolve();
+			expect(changed).toHaveBeenCalledTimes(count);
+			expect(link.getSnapshot()).toMatchObject({ cwd: "/work/b" });
+		} finally {
+			link.dispose();
+		}
+	});
+
 	const read = (status: string, depth?: number): ThreadReadResponse =>
 		({
 			thread: {

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -144,9 +145,13 @@ type ToolResultSummary struct {
 	IsError        bool   `json:"is_error,omitempty"`
 }
 
-// TurnSummary is the structural view of one transcript turn.
+// TurnSummary is the structural view of one transcript entry.
 type TurnSummary struct {
-	Index       int                 `json:"index"` // 1-based position in the conversation
+	// Turn is the entry's turn number in read_transcript's coordinates, so a
+	// number read here selects the same turn there. Absent on entries
+	// read_transcript omits (attention resolutions and transcript-only kinds),
+	// which render after the turn they follow.
+	Turn        *int                `json:"turn,omitempty"`
 	Kind        string              `json:"kind"`
 	Role        string              `json:"role,omitempty"`
 	ToolCalls   []ToolCallSummary   `json:"tool_calls,omitempty"`
@@ -158,20 +163,26 @@ type TurnSummary struct {
 }
 
 // TranscriptResult is the rendered transcript with an honest elision footer:
-// turns_rendered + elided == turns_total always holds.
+// turns_rendered + elided == turns_total always holds. The counts are of
+// numbered turns; Turns also holds the unnumbered entries inside the window.
 type TranscriptResult struct {
-	SessionID     string        `json:"session_id"`
-	ResultTool    string        `json:"result_tool"`
-	TurnsTotal    int           `json:"turns_total"`
-	TurnsRendered int           `json:"turns_rendered"`
-	Elided        int           `json:"elided"`
-	Turns         []TurnSummary `json:"turns"`
+	SessionID     string `json:"session_id"`
+	ResultTool    string `json:"result_tool"`
+	TurnsTotal    int    `json:"turns_total"`
+	TurnsRendered int    `json:"turns_rendered"`
+	// RangeWarning says a malformed range was replaced by the whole
+	// transcript, mirroring read_transcript's range_warning.
+	RangeWarning string        `json:"range_warning,omitempty"`
+	Elided       int           `json:"elided"`
+	Turns        []TurnSummary `json:"turns"`
 }
 
 // TranscriptOpts narrows a transcript render.
 type TranscriptOpts struct {
 	Format string // "outline" | "markdown" (default markdown)
-	Range  string // "last:N" | "start:N" | "A-B"
+	// Range is a window of read_transcript turn numbers: "last:N" |
+	// "start:N" | "N-M". Empty renders the whole transcript.
+	Range string
 	// TextMax is the byte cap on each turn's rendered text and on each
 	// tool-result preview. Zero or less selects DefaultTextMax; TextMaxFull
 	// renders in full.
@@ -205,28 +216,66 @@ func Transcript(stateBase, selector string, opts TranscriptOpts) (TranscriptResu
 	}
 	resultTool := resolveResultTool(paths)
 
-	total := len(doc.Entries)
-	lo, hi := applyRange(opts.Range, total)
+	// turnOf[i] is entry i's read_transcript turn number, or -1 for an entry
+	// read_transcript omits; turnStarts[n] is the entry index of Turn n.
+	turnOf := make([]int, len(doc.Entries))
+	var turnStarts []int
+	for i, e := range doc.Entries {
+		turnOf[i] = -1
+		if e.Turn.Kind.PublicTranscript() {
+			turnOf[i] = len(turnStarts)
+			turnStarts = append(turnStarts, i)
+		}
+	}
+	total := len(turnStarts)
+	lo, hi, rendered := 0, len(doc.Entries), total
+	var rangeWarning string
+	// Surrounding whitespace is ignored, as read_transcript ignores it.
+	if spec := strings.TrimSpace(opts.Range); spec != "" {
+		first, last, err := turnwindow.Parse(spec, total)
+		switch {
+		case err != nil:
+			rangeWarning = fmt.Sprintf("invalid range %q; rendered the whole transcript instead. Accepted: %s", opts.Range, turnwindow.Grammar)
+		case last < first:
+			lo, hi, rendered = 0, 0, 0
+		default:
+			// The entry window runs from the first selected turn to just
+			// before the turn after the last, so unnumbered entries ride with
+			// the turn they follow. Entries before Turn 0 belong to a window
+			// that starts there.
+			rendered = last - first + 1
+			if first > 0 {
+				lo = turnStarts[first]
+			}
+			if last+1 < total {
+				hi = turnStarts[last+1]
+			}
+		}
+	}
 	res := TranscriptResult{
 		SessionID:     paths.SessionID,
 		ResultTool:    resultTool,
 		TurnsTotal:    total,
-		TurnsRendered: hi - lo,
-		Elided:        total - (hi - lo),
+		TurnsRendered: rendered,
+		RangeWarning:  rangeWarning,
+		Elided:        total - rendered,
 	}
 	textMax := opts.TextMax
 	if textMax <= 0 {
 		textMax = DefaultTextMax
 	}
 	for i := lo; i < hi; i++ {
-		res.Turns = append(res.Turns, summarizeTurn(i+1, doc.Entries[i], resultTool, textMax))
+		ts := summarizeTurn(doc.Entries[i], resultTool, textMax)
+		if turnOf[i] >= 0 {
+			ts.Turn = &turnOf[i]
+		}
+		res.Turns = append(res.Turns, ts)
 	}
 	return res, nil
 }
 
-func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int) TurnSummary {
+func summarizeTurn(e transcript.Entry, resultTool string, textMax int) TurnSummary {
 	ts := TurnSummary{
-		Index:          index,
 		Kind:           string(e.Turn.Kind),
 		Role:           string(e.Turn.Message.Role),
 		SteeringSource: e.Turn.SteeringSource,
@@ -328,7 +377,7 @@ func RenderTranscript(r TranscriptResult, format string) string {
 	var b strings.Builder
 	for _, t := range r.Turns {
 		if format == "outline" {
-			fmt.Fprintf(&b, "[%d] %s", t.Index, t.Kind)
+			fmt.Fprintf(&b, "[%s] %s", optionalIntString(t.Turn), t.Kind)
 			if names := toolCallNames(t.ToolCalls); names != "" {
 				fmt.Fprintf(&b, "  tools: %s", names)
 			}
@@ -342,7 +391,7 @@ func RenderTranscript(r TranscriptResult, format string) string {
 			continue
 		}
 		// markdown
-		fmt.Fprintf(&b, "### [%d] %s\n", t.Index, t.Kind)
+		fmt.Fprintf(&b, "### [%s] %s\n", optionalIntString(t.Turn), t.Kind)
 		if t.Text != "" {
 			fmt.Fprintf(&b, "%s\n", t.Text)
 		}
@@ -364,6 +413,9 @@ func RenderTranscript(r TranscriptResult, format string) string {
 			fmt.Fprintf(&b, "%s `%s`\n", label, oneLine(tr.ContentPreview))
 		}
 		b.WriteString("\n")
+	}
+	if r.RangeWarning != "" {
+		fmt.Fprintf(&b, "range warning: %s\n", r.RangeWarning)
 	}
 	fmt.Fprintf(&b, "— turns_total=%d turns_rendered=%d elided=%d (session %s, result_tool=%s)\n",
 		r.TurnsTotal, r.TurnsRendered, r.Elided, r.SessionID, r.ResultTool)
@@ -397,50 +449,6 @@ func toolResultNames(trs []ToolResultSummary) string {
 		names[i] = name
 	}
 	return strings.Join(names, ", ")
-}
-
-// applyRange resolves a range expression to a [lo, hi) window over total turns.
-// An empty or unrecognized range yields the whole transcript.
-func applyRange(rangeArg string, total int) (lo, hi int) {
-	lo, hi = 0, total
-	rangeArg = strings.TrimSpace(rangeArg)
-	switch {
-	case rangeArg == "":
-		return 0, total
-	case strings.HasPrefix(rangeArg, "last:"):
-		if n := atoi(strings.TrimPrefix(rangeArg, "last:")); n > 0 && n < total {
-			lo = total - n
-		}
-	case strings.HasPrefix(rangeArg, "start:"):
-		if n := atoi(strings.TrimPrefix(rangeArg, "start:")); n > 1 {
-			lo = min(n-1, total)
-		}
-	case strings.Contains(rangeArg, "-"):
-		a, b, ok := strings.Cut(rangeArg, "-")
-		if ok {
-			if x := atoi(a); x > 1 {
-				lo = min(x-1, total)
-			}
-			if y := atoi(b); y > 0 && y < total {
-				hi = y
-			}
-		}
-	}
-	if lo > hi {
-		lo = hi
-	}
-	return lo, hi
-}
-
-func atoi(s string) int {
-	n := 0
-	for _, r := range strings.TrimSpace(s) {
-		if r < '0' || r > '9' {
-			return 0
-		}
-		n = n*10 + int(r-'0')
-	}
-	return n
 }
 
 // Truncate caps s at maxLen bytes plus an ellipsis. The cap is a byte budget,

@@ -4,7 +4,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption } from "@evener/appwire-client";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { addEnvironmentVariable, assertEnvironmentCurrent, collectEnvironment } from "./launchEnvironment";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function LaunchEnvironmentEditor({
 	option,
@@ -40,8 +41,8 @@ export function LaunchEnvironmentEditor({
 		<HoldingModal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
-					<Action onPress={close}>Cancel</Action>
-					<Action onPress={done}>Done</Action>
+					<Button text label="Cancel" onPress={close} />
+					<Button text label="Done" onPress={done} />
 				</View>
 				<KeyboardAvoidingView
 					style={styles.fill}
@@ -85,16 +86,16 @@ export function LaunchEnvironmentEditor({
 									<Copy>{key}</Copy>
 									<Copy muted>{val || "Empty value"}</Copy>
 								</View>
-								<Action
-									label={`Remove variable ${key}`}
+								<Button
+									text
+									label="Remove"
+									accessibilityLabel={`Remove variable ${key}`}
 									onPress={() => {
 										const next = { ...draft };
 										delete next[key];
 										setDraft(next);
 									}}
-								>
-									Remove
-								</Action>
+								/>
 							</View>
 						))}
 						<Copy muted>Adding an existing name replaces its value. Removing every entry restores inheritance.</Copy>
@@ -118,7 +119,9 @@ export function LaunchEnvironmentEditor({
 							onChangeText={setText}
 							style={inputStyle}
 						/>
-						<Action
+						<Button
+							text
+							label="Add variable"
 							disabled={!name.trim()}
 							onPress={() => {
 								try {
@@ -130,9 +133,7 @@ export function LaunchEnvironmentEditor({
 									setError(err instanceof Error ? err.message : "Unable to add variable.");
 								}
 							}}
-						>
-							Add variable
-						</Action>
+						/>
 					</ScrollView>
 				</KeyboardAvoidingView>
 			</SafeAreaView>

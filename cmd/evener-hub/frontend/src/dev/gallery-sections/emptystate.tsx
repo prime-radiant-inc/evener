@@ -23,7 +23,36 @@ export default function EmptyStateGallerySection() {
             />
           </div>
           <div className={styles.sample}>
+            <EmptyState
+              title="Couldn't load the workspace"
+              hint="Several actions: a fragment in the action slot."
+              action={
+                <>
+                  <Button size="sm">Retry</Button>
+                  <Button size="sm" variant="quiet">
+                    Reload page
+                  </Button>
+                </>
+              }
+            />
+          </div>
+          <div className={styles.sample}>
             <EmptyState title="No session open" hint="size=display: the welcome hero" size="display" />
+          </div>
+          <div className={styles.sample}>
+            <EmptyState size="compact" title="No plugins installed yet. Install one from Browse." />
+          </div>
+          <div className={styles.sample}>
+            <EmptyState
+              size="compact"
+              title="No matches"
+              hint="Nothing in live, past, or this session."
+              action={
+                <Button variant="quiet" size="sm">
+                  Clear filter
+                </Button>
+              }
+            />
           </div>
         </div>
       </ThemeFlip>

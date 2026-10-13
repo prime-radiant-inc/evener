@@ -366,6 +366,17 @@ type Server struct {
 	// published if the execution is abandoned, and discarded when its
 	// EXECUTION_STARTED arrives.
 	appDeferredTerminalNotifications []pendingAppNotification
+	// appHeldSettledEffect is the status effect of a resting state the session
+	// settled outside any turn (EventStatusSettled) while an input was being
+	// taken. It is applied when processing ends, unless a turn is published
+	// first (SetProcessingTurn; the turn's own end restates the state), the
+	// input ends on a SESSION_END, or the root is replaced.
+	appHeldSettledEffect func(*Server)
+	// appTurnEndStated records that the published turn's interrupted
+	// SESSION_END already stated the resting state while processing stays set
+	// for the turn to unwind, so the end of processing publishes that state
+	// rather than its idle placeholder.
+	appTurnEndStated bool
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
 	// and its turns. Reads copy it; nothing on a read path reaches the session.
@@ -401,10 +412,6 @@ type Server struct {
 	appSubagentTallyFunc func() (appwire.SubagentTally, bool)
 	retrySafeTurns       RetrySafeTurnFunctions
 	cancelFunc           context.CancelFunc
-	steerFunc            func(string) error
-	steerWithImagesFunc  func(string, []ImageAttachment) error
-	queueFunc            func(string) error
-	queueWithImagesFunc  func(string, []ImageAttachment) error
 	goalFunc             func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
 	// callback returns the full atomic acceptance result, including its receipt.
@@ -415,9 +422,6 @@ type Server struct {
 	// outer mutation (success replays after the entry is gone; a reused ID
 	// with a different entry id conflicts without mutating).
 	urlsRemoveFunc           func(outerID, id string) (bool, error)
-	drainSteerFunc           func() error
-	drainSteerInputFunc      func(string, []ImageAttachment) error
-	cancelQueuedFunc         func(int, string) (string, int, error)
 	compactFunc              func(context.Context) error
 	clearFunc                func(context.Context, appwire.ThreadClearParams) error
 	clearJournalPath         string
@@ -431,7 +435,7 @@ type Server struct {
 	appSessionActivity       sessionActivityHooks
 	tasksFn                  func() []appwire.Task
 	jobsFn                   func(appwire.JobsListParams) (any, error)
-	jobOutputFn              func(jobID string, beforeBytes, maxBytes int64) (data appwire.JobOutputTail, found bool, err error)
+	jobOutputFn              func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)
 	jobGetFn                 func(jobID string) (data appwire.JobActivityJob, found bool, err error)
 	shutdownFunc             func()
 	daemonStatusFunc         func() appwire.DaemonLifecycle
@@ -668,31 +672,6 @@ func (s *Server) SetDelegateStopFunc(fn func(delegateID string) (appwire.Delegat
 	s.mu.Unlock()
 }
 
-// SetSteerFunc sets the function called by turn/steer. It is invoked
-// regardless of whether the session is currently processing.
-func (s *Server) SetSteerFunc(fn func(string) error) {
-	s.mu.Lock()
-	s.steerFunc = fn
-	s.mu.Unlock()
-}
-
-// SetSteerWithImagesFunc sets the function called by AppWire turn/steer when
-// the input carries image attachments.
-func (s *Server) SetSteerWithImagesFunc(fn func(string, []ImageAttachment) error) {
-	s.mu.Lock()
-	s.steerWithImagesFunc = fn
-	s.mu.Unlock()
-}
-
-// SetQueueFunc sets the function called by turn/queue (kata 111a). The
-// callback should append the message to the underlying session's input
-// queue. Returns an error when the session refuses the message.
-func (s *Server) SetQueueFunc(fn func(string) error) {
-	s.mu.Lock()
-	s.queueFunc = fn
-	s.mu.Unlock()
-}
-
 // SetGoalFunc sets the function called by the appwire goal/set method. The
 // callback sets (or, for an empty objective, clears) the session's /goal and
 // returns whether the goal loop started immediately.
@@ -720,49 +699,6 @@ func (s *Server) SetNotesHumanSetFunc(fn func(outerID, note string) (appwire.Not
 func (s *Server) SetUrlsRemoveFunc(fn func(outerID, id string) (bool, error)) {
 	s.mu.Lock()
 	s.urlsRemoveFunc = fn
-	s.mu.Unlock()
-}
-
-// SetQueueWithImagesFunc sets the function called when the appwire
-// turn/queue request carries image attachments (kata t5j6). The callback
-// should append a queued entry that pairs the text with the attached
-// images. When unset, image-bearing queue requests fall back to the
-// text-only queueFunc (text portion only — image bytes are dropped). Wire
-// callers must therefore set this function whenever they accept
-// image-bearing queue requests.
-func (s *Server) SetQueueWithImagesFunc(fn func(string, []ImageAttachment) error) {
-	s.mu.Lock()
-	s.queueWithImagesFunc = fn
-	s.mu.Unlock()
-}
-
-// SetDrainAsSteerFunc sets the function called by turn/drainAsSteer
-// (kata 0bq1). The callback should pop every queued message and inject
-// them as a single STEERING message to the in-flight turn.
-func (s *Server) SetDrainAsSteerFunc(fn func() error) {
-	s.mu.Lock()
-	s.drainSteerFunc = fn
-	s.mu.Unlock()
-}
-
-// SetDrainAsSteerWithInputFunc sets the function called when drain-as-steer
-// carries a composer payload. The callback must append and drain atomically.
-func (s *Server) SetDrainAsSteerWithInputFunc(fn func(string, []ImageAttachment) error) {
-	s.mu.Lock()
-	s.drainSteerInputFunc = fn
-	s.mu.Unlock()
-}
-
-// SetCancelQueuedFunc sets the function called by appwire
-// turn/cancelQueued (issue #23). The callback should remove the queued
-// message at the given FIFO index so it is never consumed, returning the
-// removed entry's full text and image count. A non-empty expectedID must
-// match the queue-entry id minted at enqueue time so a queue that shifted
-// under the client's snapshot is rejected rather than removing the wrong
-// message (review F1). Like promote, no active turn is required.
-func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) {
-	s.mu.Lock()
-	s.cancelQueuedFunc = fn
 	s.mu.Unlock()
 }
 
@@ -872,7 +808,7 @@ func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
 // SetJobOutputFunc sets the function backing evener/jobs/output. found=false
 // maps to an invalid-params wire error (the caller guessed a job id).
 // beforeBytes > 0 pages backwards through the job's output log.
-func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes int64) (data appwire.JobOutputTail, found bool, err error)) {
+func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)) {
 	s.mu.Lock()
 	s.jobOutputFn = fn
 	s.mu.Unlock()
@@ -890,7 +826,7 @@ func (s *Server) SetJobGetFunc(fn func(jobID string) (data appwire.JobActivityJo
 // publishes nothing when processing starts: the running execution's TurnID is
 // published by SetProcessingTurn, which the session calls before recording the
 // execution's first entry. When processing ends, finishProcessing publishes the
-// thread idle.
+// state the session's events stored (finishProcessing).
 func (s *Server) SetProcessing(processing bool) {
 	if !processing {
 		s.finishProcessing()
@@ -910,6 +846,12 @@ func (s *Server) SetProcessingTurn(turnID string) {
 		s.mu.Lock()
 		s.processing = true
 		s.appActiveTurnID = turnID
+		// A new turn's end has not been stated yet, whatever the turn before
+		// it stated.
+		s.appTurnEndStated = false
+		// A rest held while the input was being taken settled before this
+		// turn started (Session.restMu), and the turn's end restates it.
+		s.appHeldSettledEffect = nil
 		// Until the execution's own EXECUTION_STARTED is projected, a
 		// terminal status still queued from the input before it must not be
 		// published over this one (RecordAppEvent defers it).
@@ -932,6 +874,7 @@ func (s *Server) endProcessingLocked() {
 	s.processing = false
 	s.appActiveTurnID = ""
 	s.appPendingStableTurnID = ""
+	s.appTurnEndStated = false
 }
 
 // InputCh returns the channel that receives user input messages.

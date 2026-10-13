@@ -186,12 +186,10 @@ type JobRecord struct {
 	// purpose the caller stated. Both may be present, and either may be
 	// empty when the model omitted it.
 	Intent string `json:"intent,omitempty"`
-	// Background reports that a shell job is running in the background rather
-	// than being waited on inline: stamped at launch for mode:"background", and
-	// at promotion when a foreground command outlives its block timeout. No
-	// event carries it, so it lives only on the in-memory record: a record
-	// folded from the store always reads false, whatever the job did.
-	// Live-only, like LastActivity.
+	// Background records that a shell job was launched or promoted into
+	// background execution. The start event carries this evidence, so it
+	// survives terminal outcomes and journal reconstruction. An unmarked
+	// start does not prove background execution. JobRecord JSON stays unchanged.
 	Background bool `json:"-"`
 	// WorkingDir is the launch-time working directory of a background shell
 	// job, recorded so manage_worktree remove/prune's live-work guard

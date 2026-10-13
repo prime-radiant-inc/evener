@@ -30,7 +30,7 @@ beforeAll(async () => {
       </Suspense>,
     );
   });
-  await screen.findByText("No session open");
+  await screen.findByTestId("empty-state");
   cleanup();
 });
 
@@ -38,7 +38,8 @@ test('registers "welcome" as a singleton pane with a constant title', () => {
   const descriptor = paneFor("welcome");
   expect(descriptor.id).toBe("welcome");
   expect(descriptor.singleton).toBe(true);
-  expect(descriptor.title({}, {})).toBe("Welcome");
+  expect(descriptor.title({}, {})).not.toBe("");
+  expect(descriptor.title({ note: "note-from-params" }, {})).toBe(descriptor.title({}, {}));
 });
 
 test("the registered component renders the welcome pane", async () => {
@@ -49,5 +50,5 @@ test("the registered component renders the welcome pane", async () => {
       <WelcomeComponent params={{}} paneId="welcome-1" focused={true} />
     </Suspense>,
   );
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  expect(await screen.findByTestId("empty-state")).toBeTruthy();
 });

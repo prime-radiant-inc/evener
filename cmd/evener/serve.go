@@ -107,16 +107,9 @@ type serveServer interface {
 	SetSandboxEscalationResolveFunc(func(string, bool) error)
 	SetDelegateStopFunc(func(string) (appwire.DelegateStopOutcome, error))
 	SetCompactFunc(func(context.Context) error)
-	SetSteerFunc(func(string) error)
-	SetSteerWithImagesFunc(func(string, []server.ImageAttachment) error)
-	SetQueueFunc(func(string) error)
-	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetGoalFunc(func(string) (bool, error))
 	SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error))
 	SetUrlsRemoveFunc(func(outerID, id string) (bool, error))
-	SetDrainAsSteerFunc(func() error)
-	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
-	SetCancelQueuedFunc(func(int, string) (string, int, error))
 	// SetThreadEnvelopeSource replaces sixteen read-time session callbacks with
 	// one seam the daemon samples at change time. See server/thread_envelope.go.
 	SetThreadEnvelopeSource(server.ThreadEnvelopeSource)
@@ -137,7 +130,7 @@ type serveServer interface {
 	SetThreadJobsListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error))
 	SetThreadWatchesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error))
 
-	SetJobOutputFunc(func(string, int64, int64) (appwire.JobOutputTail, bool, error))
+	SetJobOutputFunc(func(string, *int64, int64) (appwire.JobOutputPage, bool, error))
 	SetJobGetFunc(func(string) (appwire.JobActivityJob, bool, error))
 	SetClearFunc(func(context.Context, appwire.ThreadClearParams) error)
 	SetWorkingDir(string)
@@ -356,12 +349,34 @@ func runServe(args []string) error {
 // happily with a cancelled context — so the interrupt is only noticed where
 // the context is read, and a startup that was interrupted has to say so and
 // fail rather than bind, shut itself down and exit 0 in silence.
-func startupInterrupted(ctx context.Context, step string) error {
+func startupInterrupted(ctx context.Context, step startupStep) error {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("interrupted while %s: %w", step, err)
+		return &startupInterruptedError{step: step, err: err}
 	}
 	return nil
 }
+
+// startupStep names a startup step that cannot read the context itself.
+type startupStep string
+
+const (
+	stepSeedingMarketplaces   startupStep = "seeding default marketplaces"
+	stepProbingLoginShellPath startupStep = "probing the login shell PATH"
+	stepProvisioningSandbox   startupStep = "provisioning the sandbox"
+	stepCreatingSession       startupStep = "creating the session"
+)
+
+// startupInterruptedError reports the startup step an interrupt ended.
+type startupInterruptedError struct {
+	step startupStep
+	err  error
+}
+
+func (e *startupInterruptedError) Error() string {
+	return fmt.Sprintf("interrupted while %s: %v", e.step, e.err)
+}
+
+func (e *startupInterruptedError) Unwrap() error { return e.err }
 
 // armInterruptRunner arms the mutation runner and the server's cancel func in
 // the one order an accepted interrupt needs: the runner first.
@@ -535,7 +550,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := seedMarketplaces(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
 	}
-	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
 	}
 
@@ -627,7 +642,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
-	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+	if err := startupInterrupted(ctx, stepProbingLoginShellPath); err != nil {
 		return err
 	}
 	memoryProjectID := ""
@@ -699,7 +714,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// until a session owns this environment and its Close does. Every way
 		// out between here and that hand-off has to dispose of them, or an
 		// interrupted startup leaks a directory and a lease per attempt.
-		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+		if err := startupInterrupted(ctx, stepProvisioningSandbox); err != nil {
 			_ = env.DisposeSessionScratch()
 			return err
 		}
@@ -750,7 +765,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session — nothing to announce.
 	printServeSandboxLine(os.Stderr, sandboxEnforcementLine(env))
 
-	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+	if err := startupInterrupted(ctx, stepCreatingSession); err != nil {
 		sess.Close()
 		return err
 	}
@@ -1000,8 +1015,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// identity-fenced daemon control RPCs: the current rendezvous entry must
 	// exist and the caller's generation fingerprint must match it, where an
 	// unrendered (empty) generation never compares equal. The retire path runs
-	// it again between TryClaim and the claim's prepare so a thread/clear that
-	// swapped ownership under an uncommitted claim cannot be retired by its
+	// it again between TryManualClaim and the claim's prepare so a thread/clear
+	// that swapped ownership under an uncommitted claim cannot be retired by its
 	// predecessor's stale row.
 	requireExactOwnership := func(generation string) error {
 		entry, ok := rvRegistration.Entry()
@@ -1023,18 +1038,21 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		// claim_attempted marks the instant between the pre-claim identity check
 		// and the admission fence: the caller's generation has been accepted but
-		// TryClaim has not run. It is an observability beat outside every lock
-		// (retirementObserve is nil in production) so a test can interleave a
-		// thread/clear into exactly the window this closure must still defend.
+		// TryManualClaim has not run. It is an observability beat outside every
+		// lock (retirementObserve is nil in production) so a test can interleave
+		// a thread/clear into exactly the window this closure must still defend.
+		// TryManualClaim widens that window: it first waits, up to the namer's
+		// timeout, for a session namer to settle (#3921). The ownership re-check
+		// after the claim covers the wider window the same way.
 		retirementObserve("claim_attempted", getSession().ID())
-		claim, snap, err := retirement.TryClaim(true)
+		claim, snap, err := retirement.TryManualClaim(ctx)
 		if err != nil {
 			return appwire.DaemonRetireResponse{}, err
 		}
 		if claim == nil {
 			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
 		}
-		// The pre-claim check above and TryClaim are not atomic: a thread/clear
+		// The pre-claim check above and TryManualClaim are not atomic: a thread/clear
 		// can run to completion between them. It holds its own admission lease
 		// (so TryClaim declines while it is in flight), rewrites rendezvous
 		// ownership to the replacement, swaps the session and re-roots the
@@ -1438,17 +1456,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return getSession().StopDelegateRun(delegateID)
 	})
 	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
-	// The steer RPC carries human-sent steering, so it takes the user-sourced
-	// entry points: UIs render it as a user message, not a system steering
-	// divider (issue #24).
-	srv.SetSteerFunc(func(text string) error { return getSession().SteerFromUser(text) })
-	srv.SetSteerWithImagesFunc(func(text string, images []server.ImageAttachment) error {
-		return getSession().SteerFromUserWithImages(text, images)
-	})
-	srv.SetQueueFunc(func(text string) error { return getSession().Enqueue(ctx, text) })
-	srv.SetQueueWithImagesFunc(func(text string, images []server.ImageAttachment) error {
-		return getSession().EnqueueWithImages(ctx, text, images)
-	})
 	srv.SetGoalFunc(func(objective string) (bool, error) {
 		if strings.TrimSpace(objective) == "" {
 			return false, getSession().ClearGoal()
@@ -1460,13 +1467,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) {
 		return getSession().RemoveSessionURL(outerID, id)
-	})
-	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
-	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
-		return getSession().DrainAsSteerWithInput(ctx, text, images)
-	})
-	srv.SetCancelQueuedFunc(func(index int, expectedID string) (string, int, error) {
-		return getSession().CancelQueued(ctx, index, expectedID)
 	})
 	srv.SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions{
 		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -1571,8 +1571,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return sess.JobActivityTree(params)
 	})
-	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (appwire.JobOutputTail, bool, error) {
-		return getSession().JobOutputTail(jobID, beforeBytes, maxBytes)
+	srv.SetJobOutputFunc(func(jobID string, beforeBytes *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
+		return getSession().JobOutputPage(jobID, beforeBytes, maxBytes)
 	})
 	srv.SetJobGetFunc(func(jobID string) (appwire.JobActivityJob, bool, error) {
 		return getSession().JobGet(jobID)
@@ -1767,7 +1767,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				srv.SetCancelFunc(cancelDrain)
 				setMutationRunner(cancelDrain, runnerDone)
 				srv.SetProcessing(true)
-				srv.SetState(string(agent.SessionProcessing))
 				return drainCtx, cancelDrain
 			}
 			turnCtx, cancelTurn := context.WithCancel(ctx)
@@ -1787,7 +1786,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				)
 				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
 					srv.SetProcessing(true)
-					srv.SetState(string(agent.SessionProcessing))
 				}
 			}
 			var result string
@@ -1812,7 +1810,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// through SetProcessingTurn (WireTranscriptHistory) before
 					// its first entry is recorded.
 					if phase == agent.ClientMutationStartClaimed {
-						srv.SetState(string(agent.SessionProcessing))
+						srv.SetProcessing(true)
 					}
 				})
 				if !processed {
@@ -1834,7 +1832,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
 				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
-					srv.SetState(string(agent.SessionProcessing))
+					srv.SetProcessing(true)
 				})
 				if !processed {
 					// The claim refused: nothing is running, so drop the runner
@@ -1846,9 +1844,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			} else {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 			}
+			// The stored state changes only through the session's own events
+			// (SESSION_START, SESSION_END, STATUS_SETTLED): ending processing
+			// publishes what they stated.
 			srv.SetProcessing(false)
 			srv.SetCancelFunc(nil)
-			srv.SetState(sess.WireState())
 			currentCancel()
 			close(runnerDone)
 			clearMutationRunner(runnerDone)
@@ -1924,7 +1924,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retirement.Run(ctx, consumeRetirementClaim)
+			_ = retirement.Run(ctx, consumeRetirementClaim, func(attempt agent.RetirementAttempt) {
+				serveLogf(os.Stderr, getSession().ID(), "%s", retirementAttemptSummary(attempt))
+			})
 		}()
 	}
 
@@ -2047,17 +2049,17 @@ func printServeSandboxLine(w io.Writer, line string) {
 }
 
 // holdServeStateForAwaitingWake reports whether the input loop should skip
-// its Processing shadow-write for this message: the session-level entry gate
+// marking processing for this message: the session-level entry gate
 // (agent/session_lifecycle.go's processInputKindWithProvenance, spec §5.3)
 // refuses autonomous wakes while a question is pending, before any state
-// transition — so the AppWire status shadow must not flip to active around a wake
+// transition — so the AppWire status must not flip to active around a wake
 // the session will refuse (the flicker's active→awaiting edge would re-fire
 // the OS notification, notifications.js Task 11). Mirrors the gate's
-// predicate exactly — hasPendingAsk, not raw state (attention-status-model
-// v5 reconciliation: SessionAwaiting alone no longer implies a pending
-// question, so a general inbox-semantics re-arm with no ask pending must NOT
-// be held; async wakes re-arm by design there). EntryUserInput is always let
-// through since it is how the reply resolves a pending ask (spec §5.2).
+// predicate exactly — hasPendingAsk, not raw state (SessionAwaiting alone
+// does not imply a pending question: a needs_response rest with no ask
+// pending must NOT be held; async wakes may move it on). EntryUserInput is
+// always let through since it is how the reply resolves a pending ask (spec
+// §5.2).
 func holdServeStateForAwaitingWake(kind agent.EntryKind, hasPendingAsk bool) bool {
 	return kind != agent.EntryUserInput && hasPendingAsk
 }
@@ -2103,6 +2105,10 @@ func buildInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef, outputSc
 	return provider.WithAllowedDecisions(p, allowedDecisions), nil
 }
 
+// errFastCheapProviderUnavailable identifies a --fast-cheap-model provider the
+// client cannot route a side call to.
+var errFastCheapProviderUnavailable = errors.New("is not configured or has no credential")
+
 // applyFastCheapModel sets the auxiliary cheap model for side calls. The ref is
 // "provider/model" to route side calls to a different provider instance than the
 // active model, or a bare "model" to keep the active provider. A cross-provider
@@ -2116,8 +2122,8 @@ func applyFastCheapModel(profile *provider.Profile, raw string, client *llm.Clie
 	raw = strings.TrimSpace(raw)
 	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
 		if !client.HasProvider(cheapProvider) {
-			return nil, fmt.Errorf("--fast-cheap-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
-				cheapProvider, profile.ID(), strings.Join(client.ProviderNames(), ", "))
+			return nil, fmt.Errorf("--fast-cheap-model provider %q %w (active provider %q); available providers: %s",
+				cheapProvider, errFastCheapProviderUnavailable, profile.ID(), strings.Join(client.ProviderNames(), ", "))
 		}
 	}
 	return provider.WithCheapModel(profile, raw), nil

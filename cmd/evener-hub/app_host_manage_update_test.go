@@ -337,7 +337,7 @@ func TestHostManageUpdateRefusalPrecedence(t *testing.T) {
 	// field error. It must not be what these calls are told.
 	invalid := appwire.HostEntry{Address: ""}
 
-	assertTargetRefusal := func(name string, err error, want string) {
+	assertTargetRefusal := func(name string, err error, wantCode int) {
 		t.Helper()
 		if err == nil {
 			t.Fatalf("Update(%s, invalid entry) committed, want a refusal", name)
@@ -349,14 +349,14 @@ func TestHostManageUpdateRefusalPrecedence(t *testing.T) {
 		if _, isField := wire.Data.(appwire.HostFieldErrorData); isField {
 			t.Fatalf("refusal data for %s = %#v, want the target refusal, not a field blame", name, wire.Data)
 		}
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("refusal for %s = %v, want it to contain %q", name, err, want)
+		if wire.Code != wantCode {
+			t.Fatalf("refusal for %s = %v (code %d), want code %d", name, err, wire.Code, wantCode)
 		}
 	}
 
 	// Unknown name: not found, not the field refusal.
 	_, err := f.m.Update(context.Background(), updateRequestFor("nope", 1, "no-such-incarnation", invalid))
-	assertTargetRefusal("nope", err, "unknown host")
+	assertTargetRefusal("nope", err, appwire.CodeInvalidParams)
 
 	// A live host with a mutation in flight: the conflict, not the field
 	// refusal. Take the mark the update path takes, in the same commit-phase hold.
@@ -364,11 +364,7 @@ func TestHostManageUpdateRefusalPrecedence(t *testing.T) {
 	f.m.markMutating("side")
 	f.m.cfg.mu.Unlock()
 	_, err = f.m.Update(context.Background(), updateRequest(t, f.m, "side", invalid))
-	assertTargetRefusal("side", err, "a mutation is already in progress")
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("in-flight refusal = %v, want the conflict code", err)
-	}
+	assertTargetRefusal("side", err, appwire.CodeConflict)
 	f.m.cfg.mu.Lock()
 	f.m.unmarkMutating("side")
 	f.m.cfg.mu.Unlock()
@@ -1140,7 +1136,7 @@ func (*attachedUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader) 
 	case strings.HasSuffix(joined, "id -u"):
 		return []byte("1000\n"), nil
 	case strings.Contains(joined, "launch-check"):
-		return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`), nil
+		return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
 	case strings.Contains(joined, "api/health"):
 		return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	default:

@@ -16,7 +16,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -90,7 +89,7 @@ func TestAuth_LoginCompleteRefusesARecordForAnEndpointThatMoved(t *testing.T) {
 		FlowID:      start.FlowID,
 		RedirectURL: loginCallbackURL(t, start.URL, authorizeURL.Query().Get("state")),
 	})
-	if err == nil || !strings.Contains(err.Error(), "endpoint") {
+	if !errors.Is(err, errEndpointMoved) {
 		t.Fatalf("LoginComplete = %v, want the refusal for the endpoint the flow was not started on", err)
 	}
 	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
@@ -168,7 +167,7 @@ func TestAuth_DeviceFlowBindsTheEndpointItStartedOn(t *testing.T) {
 		t.Fatalf("DeviceStart: %v", err)
 	}
 	_, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: start.FlowID})
-	if err == nil || !strings.Contains(err.Error(), "endpoint") {
+	if !errors.Is(err, errEndpointMoved) {
 		t.Fatalf("DevicePoll = %v, want the refusal for the endpoint the flow was started on", err)
 	}
 	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
@@ -203,11 +202,11 @@ func TestAuth_EndpointAssertionsTheHubCannotResolveAreRefused(t *testing.T) {
 	}
 
 	err := ctrl.verifyEndpointFingerprint("work", "asserted-by-a-form")
-	if err == nil || !strings.Contains(err.Error(), "cannot be checked against the endpoint") {
+	if !errors.Is(err, errEndpointUnresolvable) {
 		t.Fatalf("verifyEndpointFingerprint = %v, want the refusal for an assertion the hub cannot resolve", err)
 	}
 	err = ctrl.verifyFlowEndpoint("work", "captured-when-the-flow-started")
-	if err == nil || !strings.Contains(err.Error(), "cannot be checked against the endpoint") {
+	if !errors.Is(err, errEndpointUnresolvable) {
 		t.Fatalf("verifyFlowEndpoint = %v, want the refusal for a flow the hub cannot place", err)
 	}
 }
@@ -236,7 +235,7 @@ func TestAuth_DevicePollRefusesARecordForAnEndpointThatMoved(t *testing.T) {
 		t.Fatalf("DeviceStart: %v", err)
 	}
 	_, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: start.FlowID})
-	if err == nil || !strings.Contains(err.Error(), "endpoint") {
+	if !errors.Is(err, errEndpointMoved) {
 		t.Fatalf("DevicePoll = %v, want the refusal for the endpoint the flow was not started on", err)
 	}
 	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
@@ -263,8 +262,8 @@ func assertFlowEndpointRefusal(t *testing.T, err error) {
 	// client keys on the discriminant - so asserting the code here would let a
 	// guard regress to a plain Conflict with the whole suite still green.
 	assertEndpointConflict(t, err)
-	if msg := err.Error(); !strings.Contains(msg, "endpoint") || !strings.Contains(msg, "fingerprint") {
-		t.Fatalf("err = %q, want it to name the endpoint/fingerprint refusal", msg)
+	if !errors.Is(err, errEndpointUnkeyable) {
+		t.Fatalf("err = %v, want the refusal for a destination the hub cannot key", err)
 	}
 }
 

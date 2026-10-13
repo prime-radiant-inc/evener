@@ -49,7 +49,7 @@ import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacem
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
-import { type OpenPaneRecord, workspaceStore } from "./workspace";
+import { documentPaneState, type OpenPaneRecord, sourcePaneSessionRef, workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -94,7 +94,8 @@ export interface AppShellProps {
   // connects the one real AppwireClient itself (below). Tests inject a
   // FakeClient (whose connect() is a separately-scripted promise, see
   // protocol/testing/fakeClient.ts) so the rest of AppShell's wiring -
-  // including the serverInfo-population duty - runs with no real sockets.
+  // including the shared connection binding's metadata publication - runs
+  // with no real sockets.
   // AppShell calls .connect() on whatever `client` is, injected or not; the
   // `owned` half of ClientSlot below exists to gate the ONE thing that
   // still differs between them - never opening a real socket under a test
@@ -176,6 +177,8 @@ function routePlacementIsApplied(
   locationTerminal = false,
   locationGone = false,
   allowFocusedCompanion = false,
+  allowRestoredInspection = false,
+  allowInitialCascade = false,
 ): boolean {
   const route = urlToPane(pathname);
   if (route === null || route.type === "welcome") return true;
@@ -183,10 +186,14 @@ function routePlacementIsApplied(
   const workspace = workspaceStore.getState();
   const mainRecord = workspace.mainPane();
   if (mainRecord === null) return false;
-  // Contextual drill keeps the URL's original conversation role. A new
-  // pathname must still place its ordinary session, regardless of saved intent.
+  // Startup restoration and contextual drill retain the source's route role.
+  // Later pathname changes must still place their ordinary session.
   const routeRole = (pane: OpenPaneRecord): OpenPaneRecord => {
-    const source = allowFocusedCompanion && pane.type === "sessionZoom" ? parseZoomParams(pane.params)?.source : null;
+    const params =
+      (allowFocusedCompanion || allowInitialCascade) && pane.type === "sessionZoom"
+        ? parseZoomParams(pane.params)
+        : null;
+    const source = params && !params.inspection ? params.source : null;
     return source ? { ...pane, ...source } : pane;
   };
   const main = routeRole(mainRecord);
@@ -219,6 +226,12 @@ function routePlacementIsApplied(
       (ancestorRef !== ref && params.ref === ref && params.parentRef === ancestorRef)
     );
   };
+  const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
+  const focusedIntent = rawFocused?.type === "sessionZoom" ? parseZoomParams(rawFocused.params) : null;
+  const focusedSeparatedInspection =
+    (allowFocusedCompanion || allowRestoredInspection) &&
+    rawFocused?.slot === "secondary" &&
+    !!focusedIntent?.inspection;
   const conversationRef = focusedPane?.type === "session" ? sessionRefOf(focusedPane) : null;
   const focusedCascadeConversation =
     allowFocusedCompanion &&
@@ -228,18 +241,39 @@ function routePlacementIsApplied(
       const params = parseZoomParams(pane.params);
       if (!params) return false;
       const role = routeRole(pane);
-      if (!((role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role))) return false;
+      const coversSource =
+        !!params.inspection || (role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role);
+      if (!coversSource) return false;
       const client = connectionStore.getState().client;
       const context = client ? (sessionActivitySnapshot(client, params.ref, "session")?.context ?? null) : null;
       return deriveCascadePath(params, context).scopes.some((scope) => scope.requestedRef === conversationRef);
     });
+  const documentState = focusedPane?.type === "doc" ? documentPaneState(focusedPane) : undefined;
+  if (
+    allowFocusedCompanion &&
+    documentState?.origin === main &&
+    (main.type === "session" || main.type === "transcript")
+  ) {
+    const sourceSession = sourcePaneSessionRef(main);
+    const docParams = focusedPane?.params as { session?: unknown; path?: unknown };
+    // Filename opens promote their exact source before selecting the document.
+    // That living binding, not the old URL's placement, owns this settled view.
+    // New/pending routes and generic or stale document bindings still reconcile.
+    if (
+      typeof sourceSession === "string" &&
+      docParams.session === sourceSession &&
+      docParams.path === documentState.reference.path
+    ) {
+      return true;
+    }
+  }
   const focusedCompanion =
     focusedPane?.type === "sessionTasks" ||
     focusedPane?.type === "sessionDetails" ||
     transcriptMatchesRoute(focusedPane) ||
     focusedCascadeConversation;
   const focusIsApplied = (paneId: string): boolean =>
-    workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion);
+    workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion) || focusedSeparatedInspection;
 
   if (ancestorRef === null || ancestorRef === ref) {
     return (
@@ -356,22 +390,15 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // default, no-prop production wiring - with no injected client, so a
     // REAL client's connect() must never run under vitest. An injected
     // client (AppShellProps.client - always a FakeClient in tests) has no
-    // socket to open, so it's fine - and necessary, to exercise the
-    // serverInfo-population duty below - for its connect() to run even
+    // socket to open, so it's fine to exercise its handshake under test by
+    // allowing connect() to run even
     // under MODE==="test" (mirrors dev/DevHarness.tsx's identical
     // guard/rationale, narrowed to only the client AppShell itself dialed).
     if (!(owned && import.meta.env.MODE === "test")) {
-      void client.connect().then(
-        (info) => {
-          if (connectionStore.getState().client !== client || client.state === "closed") return;
-          connectionStore.setState({ serverInfo: info.serverInfo, features: info.features });
-        },
-        () => {
-          // Failure is already reflected via the client's own onStateChange
-          // -> connectionStore.state transition (to "closed"); nothing
-          // further to do with the rejection itself.
-        },
-      );
+      void client.connect().catch(() => {
+        // State and negotiated metadata are published by the shared binding;
+        // a failure is already reflected through its state listener.
+      });
     }
     // Tear down the client we constructed ourselves on unmount (HMR
     // remount, navigating away, etc.) - the one-client-per-window invariant
@@ -892,6 +919,8 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const routePlacementInProgressRef = useRef(false);
   const routePlacementPathnameRef = useRef<string | null>(null);
   const placedPathnameRef = useRef<string | null>(null);
+  const deferredDocumentRef = useRef<OpenPaneRecord | null>(null);
+  const initialPathnameRef = useRef(pathname);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
@@ -926,7 +955,41 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         pendingSessionRef.current === null &&
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
-      if (routePlacementIsApplied(pathname, location, locationTerminal, locationGone, allowFocusedCompanion)) {
+      const workspace = workspaceStore.getState();
+      const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
+      if (
+        route.type === "session" &&
+        location !== null &&
+        allowFocusedCompanion &&
+        focusedPane?.type === "doc" &&
+        documentPaneState(focusedPane)?.origin === undefined &&
+        deferredDocumentRef.current !== focusedPane
+      ) {
+        // A native filename click can commit openPane's publication before
+        // openDocBeside publishes its exact owner later in the same stack,
+        // even when document hydration has already published a reference.
+        // Recheck once after that stack, generic docs still yield to the route.
+        deferredDocumentRef.current = focusedPane;
+        queueMicrotask(bumpWorkspacePanesVersion);
+        return;
+      }
+      const allowRestoredInspection =
+        route.type === "session" &&
+        openedForPathnameRef.current === pathname &&
+        (placedPathnameRef.current === null ||
+          (placedPathnameRef.current === pathname && pendingSessionRef.current === refParam(route.params)));
+      const allowInitialCascade = placedPathnameRef.current === null && initialPathnameRef.current === pathname;
+      if (
+        routePlacementIsApplied(
+          pathname,
+          location,
+          locationTerminal,
+          locationGone,
+          allowFocusedCompanion,
+          allowRestoredInspection,
+          allowInitialCascade,
+        )
+      ) {
         pendingSessionRef.current = null;
         placedPathnameRef.current = pathname;
         return;
@@ -981,7 +1044,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             {route === null ? (
               <NotFound />
             ) : isMobile ? (
-              <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
+              <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} singlePane={singlePane} />
             ) : (
               // The workspace column carries the dock host's row flex share by
               // class, not by :last-child: the activity sidebar mounts as a

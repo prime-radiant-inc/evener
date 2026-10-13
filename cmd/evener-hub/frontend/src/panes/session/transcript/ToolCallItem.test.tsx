@@ -15,7 +15,6 @@ import {
 } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { SUMMARY_ENTITY_JOB, summaryEntityView } from "./entityView.testFixture";
-import galleryStyles from "./flow/imagegallery.module.css";
 import { ToolCallItem } from "./ToolCallItem";
 import itemStyles from "./toolcallitem.module.css";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
@@ -25,7 +24,7 @@ import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + g
 import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
 import "./tools/jobWatch"; // registers the real "job_watch" (hasBody predicate)
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
-import * as paneActions from "../../../shell/paneActions";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { seedCurrentDelegate } from "./tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests } from "./tools/subagentModuleStore";
@@ -39,6 +38,7 @@ afterEach(() => {
   resetDisclosureStoreForTests();
   resetSubagentModuleStoreForTests();
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
 });
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
@@ -74,10 +74,31 @@ test.each(["memory_read", "memory_search"])(
     const body = screen.getByTestId("tool-call-body");
     expect(body.textContent).toContain("opaque-delivery-040-");
     expect(body.textContent).toContain(ref);
-    fireEvent.click(within(body).getByRole("button", { name: /Show \d+ earlier lines/ }));
+    // At the 100-line fold window this 24-line output renders unfolded: the
+    // earlier marker is visible with no fold control on the body at all.
+    expect(within(body).queryByRole("button", { name: /earlier lines/ })).toBeNull();
     expect(body.textContent).toContain("opaque-delivery-001-");
   },
 );
+
+test("a generic body over the fold window folds in the expanded row and reveals its head", () => {
+  // 101 lines at a 100-line window: exactly one earlier line, worded in the
+  // singular - the boundary the CodeBlock unit suite pins, proven here
+  // through a real tool row's expanded body, the journey the recorded memory
+  // fixture's test above no longer exercises once its output stops folding.
+  const lines = Array.from({ length: 101 }, (_, i) => (i === 0 ? "FIRST LINE MARKER" : `output line ${i}`));
+  const generic = item({ toolName: "some_unregistered_tool", output: lines.join("\n"), status: "completed" });
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+    "test:fold",
+    <ToolCallItem item={generic} turn={turn} live={false} />,
+  );
+  const body = screen.getByTestId("tool-call-body");
+  expect(within(body).queryByText("FIRST LINE MARKER")).toBeNull();
+  fireEvent.click(within(body).getByRole("button", { name: "Show 1 earlier line" }));
+  expect(within(body).getByText("FIRST LINE MARKER")).toBeTruthy();
+  expect(within(body).getByRole("button", { name: "Show fewer lines" })).toBeTruthy();
+});
 
 test.each(["running", "completed"])(
   "a historical %s receipt is not current lifecycle without an owner projection",
@@ -107,7 +128,7 @@ test.each(["running", "completed"])(
     // Expanded at settle, the card's merged status line carries the word; the
     // standalone lifecycle div is suppressed while the card is mounted.
     expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
-    expect(screen.getByTestId("subagent-stats").textContent).toContain("Status unavailable");
+    expect(screen.getByTestId("subagent-stats").dataset.kind).toBe("unknown");
     expect(screen.getByTestId("subagent-row").dataset.kind).toBe("unknown");
     expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
     expect(screen.getByRole("button", { name: "Open transcript" }).closest("button[aria-expanded]")).toBeNull();
@@ -117,7 +138,7 @@ test.each(["running", "completed"])(
     const body = screen.getByTestId("tool-call-body");
     fireEvent.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${body.id}"]`)!);
     expect(screen.queryByTestId("tool-call-body")).toBeNull();
-    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+    expect(screen.getByTestId("delegate-lifecycle").dataset.kind).toBe("unknown");
     expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
   },
 );
@@ -193,23 +214,39 @@ const intentConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "inten
 
 // One provider wrapper for the verbosity-level renders below; the two named
 // renderers keep each test reading in the level it is about.
-function renderAtLevel(config: TranscriptDisplayConfigV1, disclosureScope: string, node: ReactElement) {
+interface SourceFixture {
+  thread: ThreadModel;
+  sourcePaneId: string;
+}
+
+function renderAtLevel(
+  config: TranscriptDisplayConfigV1,
+  disclosureScope: string,
+  node: ReactElement,
+  source?: SourceFixture,
+) {
   return render(
-    <TranscriptRenderProvider config={config} surface="readOnly" disclosureScope={disclosureScope}>
+    <TranscriptRenderProvider
+      config={config}
+      surface="readOnly"
+      disclosureScope={disclosureScope}
+      thread={source?.thread}
+      sourcePaneId={source?.sourcePaneId}
+    >
       {node}
     </TranscriptRenderProvider>,
   );
 }
 
-function renderTools(node: ReactElement) {
-  return renderAtLevel(toolsConfig, "test:tools", node);
+function renderTools(node: ReactElement, source?: SourceFixture) {
+  return renderAtLevel(toolsConfig, "test:tools", node, source);
 }
 
 // Intent level (toolCalls=false) collapses every intent-bearing row's summary
 // line, leaving only the stated rationale - the view in which an open
 // affordance must NOT appear, because there is no tool-call line to ride.
-function renderIntentLevel(node: ReactElement) {
-  return renderAtLevel(intentConfig, "test:intent", node);
+function renderIntentLevel(node: ReactElement, source?: SourceFixture) {
+  return renderAtLevel(intentConfig, "test:intent", node, source);
 }
 
 // The disclosure trigger is a real button[aria-expanded] (see ToolRow.tsx),
@@ -584,8 +621,9 @@ test("a read_file image read renders its output image at the large (up-to-600px)
   );
   // An image read auto-expands (the picture is the call's whole output), so
   // the gallery is already mounted - no expandRow() toggle needed.
-  const thumb = screen.getByTestId("image-gallery-thumb");
-  expect(thumb.className.split(/\s+/)).toContain(galleryStyles.thumbLarge);
+  // The large variant reserves no fixed 96px box (ImageGallery.test.tsx).
+  const img = screen.getByTestId("image-gallery-thumb").querySelector("img")!;
+  expect(img.hasAttribute("width")).toBe(false);
 });
 
 test("other tools' outputImages keep the default 96px thumbnail size", () => {
@@ -598,8 +636,8 @@ test("other tools' outputImages keep the default 96px thumbnail size", () => {
     />,
   );
   // At activity level the body auto-expands (expandByDefault=true).
-  const thumb = screen.getByTestId("image-gallery-thumb");
-  expect(thumb.className.split(/\s+/)).not.toContain(galleryStyles.thumbLarge);
+  const img = screen.getByTestId("image-gallery-thumb").querySelector("img")!;
+  expect(img.getAttribute("width")).toBe("96");
 });
 
 test("an empty outputImages array renders no gallery thumbnails", () => {
@@ -696,6 +734,14 @@ test("a body-less errored row is still an expandable disclosure, collapsed until
   expect(screen.getByText("denied")).toBeTruthy();
 });
 
+// An open shell row's summary is a placeholder: still there, but no longer
+// repeating the command the body shows.
+function expectPlaceholderSummary(command: string): void {
+  const summary = screen.getByTestId("tool-row-summary").textContent ?? "";
+  expect(summary).not.toBe("");
+  expect(summary).not.toContain(command);
+}
+
 test("an expanded shell row swaps the one-line command for a placeholder - the body's block stays the single copy", () => {
   // At activity level the body opens through the config default, so an open
   // shell row swaps its summary for the placeholder.
@@ -714,7 +760,7 @@ test("an expanded shell row swaps the one-line command for a placeholder - the b
   expect(rowIsOpen(details)).toBe(true);
   // The summary line stays (it is the line the disclosure chevron rides), but
   // its text no longer duplicates the body's pretty-printed command.
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  expectPlaceholderSummary("echo hi");
   // The command still appears exactly once: the body's pretty-printed block.
   expect(screen.getByTestId("tool-call-body").textContent).toContain("echo hi");
   // The row stays toggleable: the chevron rides the summary line.
@@ -737,7 +783,7 @@ test("a collapsed shell row keeps the one-line command summary; opening the row 
   );
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
   expandRow();
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  expectPlaceholderSummary("echo hi");
   // Collapsing the body again restores the real summary - the swap is a
   // display state, not a one-way replacement.
   expandRow();
@@ -1124,86 +1170,161 @@ test("live -> settled transition applies autoExpand exactly once", () => {
 // openDocBeside with the cwd-relativized path. Non-file tools (grep/ls/glob)
 // opt out; out-of-cwd paths and a missing ref get no control. -------------
 
-function seedThreadCwd(ref: string, cwd: string): void {
-  threadsStore.setState({ threads: new Map([[ref, { ref, cwd, turns: [] } as unknown as ThreadModel]]) });
+function seedThreadCwd(ref: string, cwd: string): ThreadModel {
+  const thread = { ref, cwd, turns: [] } as unknown as ThreadModel;
+  threadsStore.setState({ threads: new Map([[ref, thread]]) });
+  return thread;
+}
+
+function seedSourceThread(ref: string, cwd: string): SourceFixture {
+  const thread = seedThreadCwd(ref, cwd);
+  const sourcePaneId = workspaceStore.getState().openPane("transcript", { ref });
+  return { thread, sourcePaneId };
+}
+
+function expectOpenedDocument(
+  sourcePaneId: string,
+  params: { session: string; path: string; kind: "file" | "image" },
+  reference: { path: string; cwd: string; readTarget: string; provenance: "absolute" },
+): void {
+  const panes = workspaceStore.getState().panes;
+  const source = panes.find((pane) => pane.id === sourcePaneId);
+  const documents = panes.filter((pane) => pane.type === "doc");
+  expect(documents).toHaveLength(1);
+  const document = documents[0];
+  if (!source || !document) throw new Error("actual opening action did not create source and document panes");
+  expect(document.params).toEqual(params);
+  expect(documentPaneState(document)?.origin).toBe(source);
+  expect(documentPaneState(document)?.reference).toEqual(reference);
 }
 
 test("a read_file card in the session cwd shows an Open beside control that opens the doc pane", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-file",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/src/a.ts" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
-  expect(spy).toHaveBeenCalledWith({ type: "doc", params: { session: "ref_a", path: "src/a.ts", kind: "file" } });
-  spy.mockRestore();
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "src/a.ts", kind: "file" },
+    {
+      path: "src/a.ts",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/src/a.ts",
+      provenance: "absolute",
+    },
+  );
 });
 
 test("a read_file card OUTSIDE the session cwd shows no Open beside control", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-outside",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/etc/passwd" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
 test("a read_file card outside the session cwd renders no trailing-anchor wrapper", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-outside-wrapper",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/etc/passwd" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.queryByTestId("tool-row-trailing")).toBe(null);
 });
 
 test("a read_file card with no session ref shows no Open beside control", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
+  const source = seedSourceThread("ref_a", "/home/proj");
+  const context = createTranscriptRenderContext({
+    config: makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    surface: "readOnly",
+    thread: source.thread,
+    sourcePaneId: source.sourcePaneId,
+  });
   render(
-    <ToolCallItem
-      item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
-      turn={turn}
-      live={false}
-    />,
+    <TranscriptRenderProvider value={context}>
+      <ToolCallItem
+        item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
+        turn={turn}
+        live={false}
+        thread={source.thread}
+        renderContext={context}
+      />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
+});
+
+test("a read_file card with no owning source pane shows no Open beside control", () => {
+  resetThreadsStoreForTests();
+  const thread = seedThreadCwd("ref_a", "/home/proj");
+  const context = createTranscriptRenderContext({
+    config: makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    surface: "readOnly",
+    thread,
+  });
+  render(
+    <TranscriptRenderProvider value={context}>
+      <ToolCallItem
+        item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
+        turn={turn}
+        live={false}
+        sessionRef="ref_a"
+        thread={thread}
+        renderContext={context}
+      />
+    </TranscriptRenderProvider>,
   );
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
 test("a grep card (a directory/pattern tool, not a single file) shows no Open beside control", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-grep",
     <ToolCallItem
       item={item({ toolName: "grep", argumentsJSON: JSON.stringify({ pattern: "foo", path: "/home/proj/src" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
 test("clicking Open beside does not toggle the row open (the summary's own toggle is not fired)", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
+  const source = seedSourceThread("ref_a", "/home/proj");
   // At activity level the body auto-expands; use tools level to verify the
   // row starts collapsed and Open beside does not toggle it.
   renderTools(
@@ -1217,32 +1338,44 @@ test("clicking Open beside does not toggle the row open (the summary's own toggl
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
   expect(rowIsOpen(details)).toBe(false); // still collapsed - the open-beside click did not toggle it
-  vi.restoreAllMocks();
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "a.ts", kind: "file" },
+    { path: "a.ts", cwd: "/home/proj", readTarget: "/home/proj/a.ts", provenance: "absolute" },
+  );
 });
 
 test("a read_file card on an image file opens beside as an image (DECISION C: kind:image)", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-image",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/assets/logo.png" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
-  expect(spy).toHaveBeenCalledWith({
-    type: "doc",
-    params: { session: "ref_a", path: "assets/logo.png", kind: "image" },
-  });
-  spy.mockRestore();
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "assets/logo.png", kind: "image" },
+    {
+      path: "assets/logo.png",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/assets/logo.png",
+      provenance: "absolute",
+    },
+  );
 });
 
 // read_file's openBesideInline: the summary quotes the path verbatim between
@@ -1250,7 +1383,7 @@ test("a read_file card on an image file opens beside as an image (DECISION C: ki
 // name and the range it opens - not off at the end of the line.
 test("a read_file card's Open beside control rides inline between the file name and the line range", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
+  const source = seedSourceThread("ref_a", "/home/proj");
   // At activity level the body auto-expands (no head/tail split); use tools
   // level to test the collapsed summary's trailingAfter placement.
   renderTools(
@@ -1265,6 +1398,7 @@ test("a read_file card's Open beside control rides inline between the file name 
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   const button = screen.getByRole("button", { name: /open beside/i });
   const meta = screen.getByTestId("tool-row-summary-meta");
@@ -1277,6 +1411,17 @@ test("a read_file card's Open beside control rides inline between the file name 
   // is head+tail together - and the control sits right after it.
   expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe("Read /home/proj/src/widgets/sheet/sheet.test.tsx");
   expect(tail.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(button);
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "src/widgets/sheet/sheet.test.tsx", kind: "file" },
+    {
+      path: "src/widgets/sheet/sheet.test.tsx",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/src/widgets/sheet/sheet.test.tsx",
+      provenance: "absolute",
+    },
+  );
 });
 
 // The open affordance belongs to the tool-call summary line. When the row
@@ -1292,8 +1437,8 @@ const intentReadFileRow = item({
 
 test("an intent-bearing read_file row at intent level withholds Open beside", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  renderIntentLevel(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderIntentLevel(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />, source);
   // Only the intent line survives at this level: no summary, no affordance.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Reading writeAndReload restore path");
   expect(screen.queryByTestId("tool-row-summary")).toBe(null);
@@ -1305,11 +1450,23 @@ test("an intent-bearing read_file row at intent level withholds Open beside", ()
 // its summary line, so the affordance rides it as before.
 test("the same read_file row at tools level still shows Open beside on its summary line", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  renderTools(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderTools(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />, source);
   expect(screen.getByTestId("tool-row-summary").textContent).toContain("Read /home/proj/src/a.ts");
   const trailing = screen.getByTestId("tool-row-trailing");
-  expect(trailing.contains(screen.getByRole("button", { name: /open beside/i }))).toBe(true);
+  const button = screen.getByRole("button", { name: /open beside/i });
+  expect(trailing.contains(button)).toBe(true);
+  fireEvent.click(button);
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "src/a.ts", kind: "file" },
+    {
+      path: "src/a.ts",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/src/a.ts",
+      provenance: "absolute",
+    },
+  );
 });
 
 // --- The intent-only density hook (toolcallitem.module.css's
@@ -1410,7 +1567,7 @@ test("a delegate card at intent level keeps its Open transcript control", () => 
 // even with the summary line collapsed: the Open beside control stays.
 test("an auto-expanded image read at intent level keeps Open beside", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
+  const source = seedSourceThread("ref_a", "/home/proj");
   renderIntentLevel(
     <ToolCallItem
       item={item({
@@ -1423,9 +1580,20 @@ test("an auto-expanded image read at intent level keeps Open beside", () => {
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.getByTestId("tool-call-body")).toBeTruthy();
-  expect(screen.getByRole("button", { name: /open beside/i })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "assets/logo.png", kind: "image" },
+    {
+      path: "assets/logo.png",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/assets/logo.png",
+      provenance: "absolute",
+    },
+  );
 });
 
 // A delegate_send row's Open transcript control rides INLINE between the
@@ -1445,15 +1613,15 @@ test("a delegate_send card's Open transcript control rides inline between the de
   const trailing = screen.getByTestId("tool-row-trailing");
   expect(trailing.contains(screen.getByRole("button", { name: "Open transcript" }))).toBe(true);
   const [before, after] = textAround(trailing);
-  expect(before).toBe("Sent a message to delegate dlg_abc123");
-  expect(after).toBe(" · running");
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Sent a message to delegate dlg_abc123 · running");
+  expect(before).toContain("dlg_abc123");
+  expect(after).toContain("running");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe(`${before}${after}`);
   cleanup();
   render(<ToolCallItem item={delegateSendItem} turn={turn} live={false} sessionRef="ref_a" />);
   const openTrailing = screen.getByTestId("tool-row-trailing");
   const [openBefore, openAfter] = textAround(openTrailing);
-  expect(openBefore).toBe("Sent a message to delegate dlg_abc123");
-  expect(openAfter).toBe(" · running");
+  expect(openBefore).toBe(before);
+  expect(openAfter).toBe(after);
 });
 
 // --- summarySuffix (kata h70z): a descriptor may append text to the
@@ -1753,7 +1921,7 @@ test("a shell row swaps the summary for the placeholder when the body opens (too
   // intent line.
   const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
   fireEvent.click(bodyTrigger);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  expectPlaceholderSummary("echo hi");
   // The intent line stays.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running a command");
   // data-body-trigger-intent marks the intent-line chevron placement; the
@@ -2118,7 +2286,8 @@ test("a collapsed two-level row keeps distinct accessible names for its intent a
   expect(intentTrigger.getAttribute("aria-label")).toBeNull();
   expect(screen.getAllByRole("button", { name: "Running the test suite" })).toHaveLength(1);
   // The body trigger keeps the bare fallback rather than duplicating it.
-  expect(bodyTrigger.getAttribute("aria-label")).toBe("Tool call");
+  expect(bodyTrigger.getAttribute("aria-label")).not.toBeNull();
+  expect(bodyTrigger.getAttribute("aria-label")).not.toBe("Running the test suite");
 });
 
 // --- entity cards on ids in non-content summary fields ---------------------

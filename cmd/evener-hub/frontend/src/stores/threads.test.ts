@@ -17,6 +17,7 @@ import type {
   TurnStartResponse,
 } from "@evener/appwire-client";
 import {
+  AppwireClient,
   acquireThreadSubscription,
   applyNotification,
   notificationTargetsThread,
@@ -25,6 +26,7 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import { JobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { cleanup, waitFor } from "@testing-library/react";
@@ -1348,7 +1350,7 @@ describe("reconnect resubscribe", () => {
 });
 
 test.each([false, true])(
-  "a failed enqueue preserves only durable pins (existing mutation: %s)",
+  "a non-storage enqueue failure preserves only durable pins (existing mutation: %s)",
   async (existingMutation) => {
     const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);
@@ -1358,9 +1360,9 @@ test.each([false, true])(
     if (existingMutation) await threadsStore.getState().send("ref_a", "already saved");
     const unsubscribed = existingMutation ? undefined : nextHandledRequest(fake, "thread/unsubscribe", () => ({}));
     vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
-      throw new DOMException("storage full", "QuotaExceededError");
+      throw new Error("enqueue fault");
     });
-    await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("storage full");
+    await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("enqueue fault");
     expect(await storage.listOutbox()).toHaveLength(existingMutation ? 1 : 0);
     threadsStore.getState().releaseThread("ref_a");
     await flushUntil(() => threadsStore.getState().threads.has("ref_a") === existingMutation);
@@ -1991,7 +1993,7 @@ describe("retry-safe mutation outbox integration", () => {
       const fake = connectFakeClient("connecting");
       const response = deferred<TurnQueueResponse>();
       fake.on("thread/read", () => readResponse(ref));
-      fake.on("evener/thread/activity/read", () => activitySummary(ref));
+      fake.on("evener/thread/activity/read", ({ scope }) => activitySummary(ref, scope));
       fake.on("thread/unsubscribe", () => ({}));
       fake.on("turn/queue", () => response.promise);
       const activity = acquireSessionActivity(fake, ref);
@@ -2856,4 +2858,31 @@ test("a throwing beforePublish cancels a refreshThread publication", async () =>
   expect(after.threads.get("ref_a")).toBe(publishedModel);
   expect(after.mutationAuthorityRefs.has("ref_a")).toBe(true);
   expect(after.hydrations.get("ref_a")).toBe(hydrations);
+});
+
+test.each(["output", "metadata"] as const)("fences obsolete job %s after readiness returns", async (kind) => {
+  const peer = new JobOutputPeer();
+  const client = new AppwireClient({ url: "ws://job-output.test/rpc", socketFactory: () => peer });
+  connectionStore.getState().connect(client);
+  const connecting = client.connect();
+  let current = true;
+  const pending =
+    kind === "output"
+      ? threadsStore.getState().jobOutput("local:session_output", "job_output", 0, 1, () => current)
+      : threadsStore.getState().jobGet("local:session_output", "job_output", () => current);
+  const method = kind === "output" ? "evener/jobs/output" : "evener/jobs/get";
+  // A wrongly dispatched read gets a real wire response, so RED is a fulfilled
+  // obsolete call rather than a fixture timeout.
+  void peer.request(method).then((request) => peer.reply(request, {}));
+  current = false;
+  try {
+    const result = expect(pending).rejects.toThrow("job read is no longer current");
+    peer.open();
+    await connecting;
+    await result;
+    expect(peer.requests(method)).toEqual([]);
+  } finally {
+    client.close();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
 });

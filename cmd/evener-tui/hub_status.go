@@ -126,14 +126,12 @@ func formatTokens(n int) string {
 }
 
 // formatWorkMillis renders a session's accumulated work time compactly
-// ("45s"/"3m"/"1h 4m"), mirroring cmd/evener-hub's helper of the same name so
-// the TUI's work-time cluster reads the same way as the web status row.
+// ("45s"/"3m"/"1h 4m") for the TUI's work-time cluster.
 func formatWorkMillis(millis int64) string {
 	return compactDuration(time.Duration(millis) * time.Millisecond)
 }
 
-// compactDuration mirrors cmd/evener-hub's compactDuration so the TUI's
-// duration formatting matches the web UI's conventions.
+// compactDuration formats elapsed time in seconds, minutes, or hours.
 func compactDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0

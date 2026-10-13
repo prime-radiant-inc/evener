@@ -15,6 +15,8 @@ import (
 // mutation state: a client cannot safely release uncertain sends from a peer
 // that does not supply that evidence.
 //
+// v7 serves job output as lossless byte pages, with explicit retention bounds
+// and an optional exclusive end selector that preserves zero.
 // v6 serves history only as history/updated from recorded entries and live
 // unrecorded state only as overlay/* notifications: turn/started,
 // turn/completed, item/* and evener/steering/injected are gone, and a client
@@ -27,64 +29,69 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v6"
+const ProtocolVersion = "evener-appwire-v7"
 
 // ThreadStatusRestartRequired identifies a live daemon that cannot serve this
 // hub's protocol. Its current activity is unavailable until explicitly restarted.
 const ThreadStatusRestartRequired = "restartRequired"
 
 const (
-	MethodInitialize                     = "initialize"
-	MethodInitialized                    = "initialized"
-	MethodPing                           = "ping"
-	MethodThreadList                     = "thread/list"
-	MethodThreadRead                     = "thread/read"
-	MethodThreadUnsubscribe              = "thread/unsubscribe"
-	MethodThreadTurnsList                = "thread/turns/list"
-	MethodThreadTurnItemsList            = "thread/turns/items/list"
-	MethodThreadStart                    = "thread/start"
-	MethodThreadResume                   = "thread/resume"
-	MethodThreadFork                     = "thread/fork"
-	MethodThreadClear                    = "thread/clear"
-	MethodThreadModelSet                 = "thread/model/set"
-	MethodThreadReasoningEffortSet       = "thread/reasoning-effort/set"
-	MethodThreadVisionModelSet           = "thread/vision-model/set"
-	MethodThreadCompactStart             = "thread/compact/start"
-	MethodThreadShutdown                 = "thread/shutdown"
-	MethodEvenerThreadForceStop          = "evener/thread/forceStop"
-	MethodTurnStart                      = "turn/start"
-	MethodTurnSteer                      = "turn/steer"
-	MethodTurnInterrupt                  = "turn/interrupt"
-	MethodTurnQueue                      = "turn/queue"
-	MethodTurnDrainAsSteer               = "turn/drainAsSteer"
-	MethodTurnPromoteQueuedAsSteer       = "turn/promoteQueuedAsSteer"
-	MethodTurnCancelQueued               = "turn/cancelQueued"
-	MethodGoalSet                        = "goal/set"
-	MethodNotesHumanSet                  = "notes/human/set"
-	MethodNotesAgentSet                  = "notes/agent/set"
-	MethodUrlsAdd                        = "urls/add"
-	MethodUrlsRemove                     = "urls/remove"
-	MethodEvenerTasksList                = "evener/tasks/list"
-	MethodEvenerJobsList                 = "evener/jobs/list"
-	MethodEvenerJobsOutput               = "evener/jobs/output"
-	MethodEvenerJobsGet                  = "evener/jobs/get"
-	MethodEvenerDaemonList               = "evener/daemon/list"
-	MethodEvenerDaemonRetire             = "evener/daemon/retire"
-	MethodEvenerDaemonStatus             = "evener/daemon/status"
-	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
-	MethodEvenerThreadNameSet            = "evener/thread/name/set"
-	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
-	MethodEvenerThreadActivityRead       = "evener/thread/activity/read"
-	MethodEvenerThreadDelegatesList      = "evener/thread/delegates/list"
-	MethodEvenerThreadJobsList           = "evener/thread/jobs/list"
-	MethodEvenerThreadWatchesList        = "evener/thread/watches/list"
-	MethodEvenerSubagentPreview          = "evener/subagentPreview"
-	MethodEvenerPathsComplete            = "evener/paths/complete"
-	MethodEvenerDirsCreate               = "evener/dirs/create"
-	MethodEvenerProjectsRecent           = "evener/projects/recent"
-	MethodEvenerPathValidate             = "evener/path/validate"
-	MethodEvenerGitHead                  = "evener/git/head"
-	MethodEvenerMobilePairing            = "evener/mobile/pairing"
+	MethodInitialize                  = "initialize"
+	MethodInitialized                 = "initialized"
+	MethodPing                        = "ping"
+	MethodThreadList                  = "thread/list"
+	MethodThreadRead                  = "thread/read"
+	MethodThreadUnsubscribe           = "thread/unsubscribe"
+	MethodThreadTurnsList             = "thread/turns/list"
+	MethodThreadTurnItemsList         = "thread/turns/items/list"
+	MethodThreadStart                 = "thread/start"
+	MethodThreadResume                = "thread/resume"
+	MethodThreadFork                  = "thread/fork"
+	MethodThreadClear                 = "thread/clear"
+	MethodThreadModelSet              = "thread/model/set"
+	MethodThreadReasoningEffortSet    = "thread/reasoning-effort/set"
+	MethodThreadVisionModelSet        = "thread/vision-model/set"
+	MethodThreadCompactStart          = "thread/compact/start"
+	MethodThreadShutdown              = "thread/shutdown"
+	MethodEvenerThreadForceStop       = "evener/thread/forceStop"
+	MethodTurnStart                   = "turn/start"
+	MethodTurnSteer                   = "turn/steer"
+	MethodTurnInterrupt               = "turn/interrupt"
+	MethodTurnQueue                   = "turn/queue"
+	MethodTurnDrainAsSteer            = "turn/drainAsSteer"
+	MethodTurnPromoteQueuedAsSteer    = "turn/promoteQueuedAsSteer"
+	MethodTurnCancelQueued            = "turn/cancelQueued"
+	MethodGoalSet                     = "goal/set"
+	MethodNotesHumanSet               = "notes/human/set"
+	MethodNotesAgentSet               = "notes/agent/set"
+	MethodUrlsAdd                     = "urls/add"
+	MethodUrlsRemove                  = "urls/remove"
+	MethodEvenerTasksList             = "evener/tasks/list"
+	MethodEvenerJobsList              = "evener/jobs/list"
+	MethodEvenerJobsOutput            = "evener/jobs/output"
+	MethodEvenerJobsGet               = "evener/jobs/get"
+	MethodEvenerDaemonList            = "evener/daemon/list"
+	MethodEvenerDaemonRetire          = "evener/daemon/retire"
+	MethodEvenerDaemonStatus          = "evener/daemon/status"
+	MethodEvenerDaemonIdleTimeoutSet  = "evener/daemon/idle-timeout/set"
+	MethodEvenerThreadNameSet         = "evener/thread/name/set"
+	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
+	MethodEvenerThreadActivityRead    = "evener/thread/activity/read"
+	MethodEvenerThreadDelegatesList   = "evener/thread/delegates/list"
+	MethodEvenerThreadJobsList        = "evener/thread/jobs/list"
+	MethodEvenerThreadWatchesList     = "evener/thread/watches/list"
+	MethodEvenerSubagentPreview       = "evener/subagentPreview"
+	MethodEvenerPathsComplete         = "evener/paths/complete"
+	MethodEvenerDirsCreate            = "evener/dirs/create"
+	MethodEvenerProjectsRecent        = "evener/projects/recent"
+	MethodEvenerPathValidate          = "evener/path/validate"
+	MethodEvenerGitHead               = "evener/git/head"
+	MethodEvenerMobilePairing         = "evener/mobile/pairing"
+	MethodEvenerDevicePairingCreate   = "evener/devicePairing/create"
+	MethodEvenerDevicePairingRead     = "evener/devicePairing/read"
+	MethodEvenerDevicePairingApprove  = "evener/devicePairing/approve"
+	MethodEvenerDevicePairingCancel   = "evener/devicePairing/cancel"
+
 	MethodEvenerNavigationRead           = "evener/navigation/read"
 	MethodEvenerFavoriteSet              = "evener/favorite/set"
 	MethodEvenerArchiveSet               = "evener/archive/set"
@@ -143,6 +150,7 @@ const (
 	MethodEvenerPluginEnable             = "evener/plugin/enable"
 	MethodEvenerPluginDisable            = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade     = "evener/plugin/setAutoUpgrade"
+	MethodEvenerPluginCheckUpdates       = "evener/plugin/checkUpdates"
 	MethodEvenerCommandList              = "evener/command/list"
 	MethodEvenerSpawnSlashCatalog        = "evener/spawn/slashCatalog"
 
@@ -374,17 +382,21 @@ type NavigationCapability struct {
 // and Limit are pointers so an explicit zero remains distinguishable from an
 // omitted page parameter on the wire.
 type NavigationReadParams struct {
-	RepresentationVersion uint8               `json:"representationVersion"`
-	Resource              string              `json:"resource"`
-	Section               string              `json:"section,omitempty"`
-	SectionID             string              `json:"sectionId,omitempty"`
-	Catalog               string              `json:"catalog,omitempty"`
-	ProjectKey            string              `json:"projectKey,omitempty"`
-	Tier                  string              `json:"tier,omitempty"`
-	Ref                   string              `json:"ref,omitempty"`
-	Offset                *uint32             `json:"offset,omitempty"`
-	Limit                 *uint32             `json:"limit,omitempty"`
-	Base                  *NavigationReadBase `json:"base,omitempty"`
+	RepresentationVersion uint8  `json:"representationVersion"`
+	Resource              string `json:"resource"`
+	Section               string `json:"section,omitempty"`
+	SectionID             string `json:"sectionId,omitempty"`
+	// Catalog names a catalog read's catalog. On a project or project_page
+	// read it narrows the read to that catalog's project, as a location's
+	// catalog names it; an older hub refuses it there, and sends no location
+	// catalog to take it from.
+	Catalog    string              `json:"catalog,omitempty"`
+	ProjectKey string              `json:"projectKey,omitempty"`
+	Tier       string              `json:"tier,omitempty"`
+	Ref        string              `json:"ref,omitempty"`
+	Offset     *uint32             `json:"offset,omitempty"`
+	Limit      *uint32             `json:"limit,omitempty"`
+	Base       *NavigationReadBase `json:"base,omitempty"`
 }
 
 func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
@@ -549,6 +561,9 @@ type ProjectDeleteParams struct {
 type ProjectDeleteSkip struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
+	// Kind classifies the skip structurally: SkipKindLive, or empty for any
+	// other reason, which Reason then explains.
+	Kind string `json:"kind,omitempty"`
 }
 
 // ProjectDeleteResponse reports exactly which project sessions were removed or
@@ -577,7 +592,15 @@ type SessionDeleteParams struct {
 type DeletionSkip struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
+	// Kind classifies the skip structurally: SkipKindLive, or empty for any
+	// other reason, which Reason then explains.
+	Kind string `json:"kind,omitempty"`
 }
+
+// SkipKindLive is the Kind of a ProjectDeleteSkip or DeletionSkip whose
+// session a live daemon owns, or whose API log another process holds: the
+// session was left in place and its owner keeps running.
+const SkipKindLive = "live"
 
 // SessionDeleteResponse reports the committed single-session deletion outcome
 // and the navigation mutation clients must converge before clearing overlays.
@@ -657,9 +680,11 @@ type SessionSeenSetParams struct {
 }
 
 // SessionSeenMark is one session's mark, addressed by the ref its row carries.
-// It sets exactly one of SeenThrough and Unread. SeenThrough is the row's own
-// turn_ended_at in Unix milliseconds, the turn the client showed, never a
-// client clock; the hub keeps the newest it has been sent. Unread is "Mark as
+// It sets exactly one of SeenThrough and Unread. SeenThrough is a hub or
+// daemon timestamp the client showed, in Unix milliseconds: the row's
+// turn_ended_at, or the session's lastMovedAt from an activity read taken
+// while the session was on screen; never a client clock. The hub keeps the
+// newest it has been sent. Unread is "Mark as
 // unread", which lasts until the next SeenThrough mark.
 type SessionSeenMark struct {
 	Ref         string `json:"ref"`
@@ -690,6 +715,10 @@ type ArchivedListParams struct {
 	ProjectKey string `json:"projectKey"`
 	Cursor     string `json:"cursor,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
+	// Revision is the revision of the list the caller holds (a response's
+	// Revision). When it is still the list's, the response says Unchanged and
+	// carries no rows. An older hub ignores it and answers the page.
+	Revision string `json:"revision,omitempty"`
 }
 
 // ArchivedListResponse is one page of a project's archived sessions, newest
@@ -704,6 +733,15 @@ type ArchivedListResponse struct {
 	NextCursor string          `json:"nextCursor,omitempty"`
 	Total      int             `json:"total"`
 	Catalog    string          `json:"catalog,omitempty"`
+	// Revision fingerprints the whole list read, the same on every page of it;
+	// it changes when any row a page could show changes. An older hub sends
+	// none. It vouches for the rows a client holds only when every page it
+	// holds carried this same revision; a client whose pages carried
+	// different revisions holds none, and reads again.
+	Revision string `json:"revision,omitempty"`
+	// Unchanged is true when the request's Revision is still the list's: the
+	// response then carries no rows, and Total, Catalog and Revision stand.
+	Unchanged bool `json:"unchanged,omitempty"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command
@@ -812,7 +850,7 @@ type SessionActivity struct {
 	// transcript items that finished and the tool output events in each.
 	Minutes []int `json:"minutes"`
 	// RunningSubagents counts the session's subagents, at every depth, whose
-	// own turn is running.
+	// run is open: SubagentTally.Running, the count its Live row shows.
 	RunningSubagents int `json:"runningSubagents"`
 	// QuietForMS is how long the session's whole tree has gone without
 	// transcript motion, as of this read. It is present only while the session
@@ -826,6 +864,12 @@ type SessionActivity struct {
 	// stated none, which is most of a session's life before its first tool
 	// call, and when the daemon predates the field.
 	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is the Unix-millisecond time of the tree's newest transcript
+	// motion (ThreadActivity.LastMovedAt). A client compares it with the
+	// session's seen_through to tell whether anything moved since the person
+	// last looked, mid-turn included. Absent until the tree has moved since
+	// its daemon began serving it, and from an older hub or daemon.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
 }
 
 // The kinds of hub notice (S11, spec 7.1).
@@ -1007,13 +1051,13 @@ type EvenerThread struct {
 	// bespoke transport — like Queue, it is structured per-session state read
 	// from the already-fetched thread snapshot.
 	Goal *GoalState `json:"goal,omitempty"`
-	// HumanNote carries the human's one-paragraph session whiteboard when set,
-	// else empty. It powers the shared-notes display without a bespoke
+	// HumanNote carries the human's session whiteboard, line breaks kept, when
+	// set, else empty. It powers the shared-notes display without a bespoke
 	// transport — like Goal, it is structured per-session state read from the
 	// already-fetched thread snapshot.
 	HumanNote string `json:"humanNote,omitempty"`
-	// AgentNote carries the agent's one-paragraph session whiteboard when set,
-	// else empty. It is read from the already-fetched thread snapshot like
+	// AgentNote carries the agent's session whiteboard, line breaks kept, when
+	// set, else empty. It is read from the already-fetched thread snapshot like
 	// HumanNote.
 	AgentNote string `json:"agentNote,omitempty"`
 	// SessionURLs carries the session's shared-notes URL list when set, else
@@ -1170,6 +1214,10 @@ type ThreadActivity struct {
 	// first tool call that stated one, cleared when a turn begins, and absent
 	// from a daemon that predates it.
 	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is LastActivityAt counting only real motion: absent until
+	// the tree has moved since the daemon began serving the session, so a
+	// daemon restart is not news to a client comparing it with a seen mark.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
 }
 
 // SubagentTally counts a live root session's subagents, at every depth, by how
@@ -1665,39 +1713,56 @@ type EvenerWatchInfo struct {
 // and no call-scoped wait result.
 type EvenerDelegateInfo struct {
 	// RunGeneration identifies the current activation; zero means no run has started.
-	RunGeneration       uint64               `json:"runGeneration"`
-	DelegateID          string               `json:"delegateId"`
-	OwnerSessionID      string               `json:"ownerSessionId"`
-	RootSessionID       string               `json:"rootSessionId"`
-	ChildSessionID      string               `json:"childSessionId"`
-	TranscriptRef       string               `json:"transcriptRef"`
-	ParentDelegateID    string               `json:"parentDelegateId,omitempty"`
-	Type                string               `json:"type"`
-	Lifecycle           string               `json:"lifecycle"`
-	Phase               string               `json:"phase"`
-	Status              string               `json:"status"`
-	Outcome             string               `json:"outcome,omitempty"`
-	Reason              string               `json:"reason,omitempty"`
-	Error               string               `json:"error,omitempty"`
-	Terminal            bool                 `json:"terminal,omitempty"`
-	Resumable           bool                 `json:"resumable"`
-	NeedsAttention      bool                 `json:"needsAttention"`
-	NotResumableReason  string               `json:"notResumableReason,omitempty"`
-	ProjectionRevision  uint64               `json:"projectionRevision"`
-	Task                string               `json:"task,omitempty"`
-	Description         string               `json:"description,omitempty"`
-	AgentType           string               `json:"agentType,omitempty"`
-	RequestedModel      string               `json:"requestedModel,omitempty"`
-	ResolvedProfileID   string               `json:"resolvedProfileId,omitempty"`
-	ResolvedModel       string               `json:"resolvedModel,omitempty"`
-	Model               string               `json:"model,omitempty"`
-	ReasoningEffort     string               `json:"reasoningEffort,omitempty"`
-	OriginTurnID        string               `json:"originTurnId,omitempty"`
-	OriginToolCallID    string               `json:"originToolCallId,omitempty"`
-	OriginItemID        string               `json:"originItemId,omitempty"`
-	RunStartedAt        string               `json:"runStartedAt,omitempty"`
-	RunEndedAt          string               `json:"runEndedAt,omitempty"`
-	LatestActivityAt    string               `json:"latestActivityAt,omitempty"`
+	RunGeneration  uint64 `json:"runGeneration"`
+	DelegateID     string `json:"delegateId"`
+	OwnerSessionID string `json:"ownerSessionId"`
+	// LogicalOwnerSessionID is the session whose activity rows scope this
+	// delegate: the nearest ancestor session (AncestorSessionIDs[0]) when there
+	// is one, else OwnerSessionID. OwnerSessionID is always the physical root, so
+	// a session-scoped client buckets its own children from a descendant's by
+	// this field.
+	LogicalOwnerSessionID string `json:"logicalOwnerSessionId,omitempty"`
+	RootSessionID         string `json:"rootSessionId"`
+	ChildSessionID        string `json:"childSessionId"`
+	TranscriptRef         string `json:"transcriptRef"`
+	ParentDelegateID      string `json:"parentDelegateId,omitempty"`
+	Type                  string `json:"type"`
+	Lifecycle             string `json:"lifecycle"`
+	Phase                 string `json:"phase"`
+	Status                string `json:"status"`
+	Outcome               string `json:"outcome,omitempty"`
+	Reason                string `json:"reason,omitempty"`
+	Error                 string `json:"error,omitempty"`
+	Terminal              bool   `json:"terminal,omitempty"`
+	Resumable             bool   `json:"resumable"`
+	NeedsAttention        bool   `json:"needsAttention"`
+	NotResumableReason    string `json:"notResumableReason,omitempty"`
+	ProjectionRevision    uint64 `json:"projectionRevision"`
+	// ReportPreview is the settled current run's reported text, capped at 4096
+	// Unicode code points including an ellipsis when truncated. Absent while the
+	// run is open, for an error-only or unreported outcome, and for a prior
+	// generation once a new run has started.
+	ReportPreview          string `json:"reportPreview,omitempty"`
+	ReportPreviewTruncated bool   `json:"reportPreviewTruncated,omitempty"`
+	Task                   string `json:"task,omitempty"`
+	Description            string `json:"description,omitempty"`
+	AgentType              string `json:"agentType,omitempty"`
+	RequestedModel         string `json:"requestedModel,omitempty"`
+	ResolvedProfileID      string `json:"resolvedProfileId,omitempty"`
+	ResolvedModel          string `json:"resolvedModel,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	ReasoningEffort        string `json:"reasoningEffort,omitempty"`
+	OriginTurnID           string `json:"originTurnId,omitempty"`
+	OriginToolCallID       string `json:"originToolCallId,omitempty"`
+	OriginItemID           string `json:"originItemId,omitempty"`
+	RunStartedAt           string `json:"runStartedAt,omitempty"`
+	RunEndedAt             string `json:"runEndedAt,omitempty"`
+	LatestActivityAt       string `json:"latestActivityAt,omitempty"`
+	// LatestIntent is the open generation's newest stated tool-call intent
+	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+	// the row's display line, the same Excerpt-bounded value the read
+	// projects. Empty whenever no run is open, and absent from older daemons.
+	LatestIntent        string               `json:"latestIntent,omitempty"`
 	RunningForMS        *int64               `json:"runningForMs,omitempty"`
 	QuietForMS          *int64               `json:"quietForMs,omitempty"`
 	DurationMS          *int64               `json:"durationMs,omitempty"`
@@ -1883,6 +1948,20 @@ const (
 	// round collapses into when it ended with streamed content or running
 	// tools that were never recorded.
 	ThreadItemEventKindInterrupted ThreadItemEventKind = "interrupted"
+	// ThreadItemEventKindApprovalDecision marks the systemMessage item a
+	// human's Allow or Deny on a sandbox escalation leaves in history (S16).
+	// apptranscript.ApprovalDecisionAnnouncement documents its Raw.
+	ThreadItemEventKindApprovalDecision ThreadItemEventKind = "approval_decision"
+	// ThreadItemEventKindMemoryContext marks each systemMessage item a
+	// schema.TurnMemoryContext turn projects: one per section of the
+	// boundary's memory notification (a scope's index, its index changes, or
+	// a notice of read pages another session changed). apptranscript owns the
+	// split, each item's exact recorded section text, and the Raw
+	// ({"memoryContext": {...}}) that only index sections carry; change and
+	// page sections, and a message that does not decode, carry no Raw and
+	// clients show their text. The web and native renderers own presenting
+	// each as a collapsed steering-style notification.
+	ThreadItemEventKindMemoryContext ThreadItemEventKind = "memory-context"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -1907,6 +1986,8 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindNotesContext),
 	string(ThreadItemEventKindWarning),
 	string(ThreadItemEventKindInterrupted),
+	string(ThreadItemEventKindApprovalDecision),
+	string(ThreadItemEventKindMemoryContext),
 }
 
 type ThreadItem struct {
@@ -2290,9 +2371,10 @@ type ThreadTurnItemsListResponse struct {
 //
 //   - SHA addresses the replayed-input form /s/<session>/images/<sha>, whose
 //     bytes are re-scanned out of the session transcript;
-//   - Path is a session-relative file path for the file-backed form
-//     /doc/image?session=<session>&path=<rel>, resolved inside the session's
-//     working directory.
+//   - Path is a relative or current-root absolute file path for the file-backed
+//     form /doc/image?session=<session>&path=<path>, resolved inside the
+//     session's current working directory. Absolute paths outside that root are
+//     refused.
 //
 // Both set, or neither, is InvalidParams. SessionID names the session in the
 // recipient hub's own namespace; it is never a routing field for another source.
@@ -2895,32 +2977,30 @@ var AllJobActivityTypes = []any{
 	JobActivityBranchState{},
 }
 
-// JobOutputTail is the evener/jobs/output payload: one window of a job's
-// durable output plus the bookkeeping a client needs to say "showing last N
-// of M bytes" and to page backwards through the log.
-type JobOutputTail struct {
-	Tail          string `json:"tail"`
-	TotalBytes    int64  `json:"totalBytes"`
-	RetainedStart int64  `json:"retainedStart"`
-	Truncated     bool   `json:"truncated"`
-	// HasEarlier is true when retained output exists before the window: a
-	// follow-up read with beforeBytes=RetainedStart returns the previous page.
-	HasEarlier bool `json:"hasEarlier,omitempty"`
+// JobOutputPage describes exact lifetime bytes [OffsetBytes,
+// OffsetBytes+BytesReturned). Data is lossless utf8 or standard base64.
+type JobOutputPage struct {
+	OffsetBytes        int64  `json:"offsetBytes"`
+	BytesReturned      int64  `json:"bytesReturned"`
+	TotalBytes         int64  `json:"totalBytes"`
+	RetainedStartBytes int64  `json:"retainedStartBytes"`
+	Encoding           string `json:"encoding"`
+	Data               string `json:"data"`
 }
 
-// JobsOutputParams reads a byte window of one job's durable output. MaxBytes
-// defaults server-side (4 KiB) and is capped (64 KiB). BeforeBytes > 0 pages
-// backwards: the window ends at that lifetime output offset (exclusive)
-// instead of at the end of the log.
+// JobsOutputParams reads up to MaxBytes ending at BeforeBytes, exclusively.
+// An omitted BeforeBytes selects the latest page. Explicit zero selects the
+// empty page at zero when zero is retained. MaxBytes defaults to 4 KiB and is
+// capped at 64 KiB; a calculated page start is clipped to the retention floor.
 type JobsOutputParams struct {
 	Ref         string `json:"ref,omitempty"`
 	JobID       string `json:"jobId"`
 	MaxBytes    int64  `json:"maxBytes,omitempty"`
-	BeforeBytes int64  `json:"beforeBytes,omitempty"`
+	BeforeBytes *int64 `json:"beforeBytes,omitempty"`
 }
 
 type JobsOutputResponse struct {
-	Data JobOutputTail `json:"data"`
+	Data JobOutputPage `json:"data"`
 }
 
 // JobsGetParams reads ONE job's metadata (the activity-tree job shape),
@@ -4421,6 +4501,14 @@ type PluginEntry struct {
 	GitCommitSha string `json:"gitCommitSha,omitempty"`
 	InstalledAt  int64  `json:"installedAt"`
 	LastUpdated  int64  `json:"lastUpdated"`
+	// UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+	// newer version: a newer remote commit for a git-backed plugin, or new
+	// contents in its marketplace, which the check refreshes first, for one
+	// stored in its marketplace's own repo. Absent means no known update: no check has run,
+	// the check found the plugin current or could not read its source, or the
+	// plugin is used in place from a directory. Clients offer Upgrade only when
+	// it is true.
+	UpdateAvailable bool `json:"updateAvailable,omitempty"`
 }
 
 // PluginListResponse is the result of evener/plugin/list. Every plugin

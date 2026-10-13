@@ -22,7 +22,7 @@ function runtime(): NativeMutationRuntime {
 	return new NativeMutationRuntime(opened.port, { createMutationId: () => `mutation-${++next}` });
 }
 
-const message = (over: Partial<NativeMutationRequest> = {}): NativeMutationRequest => ({
+const message = (over: Partial<Exclude<NativeMutationRequest, { kind: "promote" }>> = {}): NativeMutationRequest => ({
 	kind: "send",
 	hubId: "hub-1",
 	targetRef: "ref-1",

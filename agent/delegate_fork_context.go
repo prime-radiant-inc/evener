@@ -31,7 +31,7 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 		case schema.TurnHookCompleted, schema.TurnModelSwitch, schema.TurnFailure:
 			continue
 		}
-		if !publicTranscriptKind(t.Kind) {
+		if !t.Kind.PublicTranscript() {
 			continue // never conversation
 		}
 		// Copy conversation and content provenance, without adopting the

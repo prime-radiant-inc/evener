@@ -1,7 +1,7 @@
 # status-vocabulary-roundtrip: attainable status states map across sidebar and TUI
 
 **What this covers**: Track A §1 (status vocabulary & icons) and §2
-(ask-tiering). The live steps verify that attainable your-move and
+(ask-tiering). The live steps verify that attainable needs-you and
 question-waiting states map to the web rail's `Needs you` category while the
 title HoverCard preserves the detailed state and the TUI keeps its dashboard
 and session-header wording. A deterministic gate pins the complete
@@ -13,7 +13,7 @@ selector map there is the single place these hooks are maintained. This card
 used to query `[data-ref="local:<id>"]`, `.status-icon` and `data-ask`, all
 of which died with the vanilla frontend (`660376f78`). The rail row is now
 `[data-session-ref="local:<SID>"]`; its compact signal exposes the category
-through `rail-status-spinner` / `rail-status-dot` and an accessible label,
+through `rail-row-signal` and an accessible label,
 while hovering `[data-testid="rail-row-title"]` exposes the detailed status
 in the context card.
 
@@ -32,9 +32,11 @@ in the context card.
 ## Steps
 
 1. **[browser-free]** Spawn a session and let it settle to a generic
-   `awaiting` (your-move) state — a prompt with no `ask_user` call, e.g.
-   "Say hello and stop." Wait for `state=="awaiting"` via
-   `GET /api/sessions/local:<id>`.
+   `awaiting` state with no pending question — a prompt with no `ask_user`
+   call that ends on `needs_response`, e.g. "Ask me in one sentence which
+   color I prefer, then end your turn with end_reason needs_response. Do not
+   use ask_user." (A plain reply such as "Say hello and stop." rests `idle`.)
+   Wait for `state=="awaiting"` via `GET /api/sessions/local:<id>`.
 
 2. **[browser-free] Every row for this session must agree — assert it on the
    wire.** A live session is listed **twice** in the rail: once in the
@@ -64,7 +66,7 @@ in the context card.
        port: location.port,                       // page-identity check, always
        count: rows.length,
        indicators: rows.map((r) => {
-         const signal = r.querySelector('[data-testid="rail-status-spinner"], [data-testid="rail-status-dot"]');
+         const signal = r.querySelector('[data-testid="rail-row-signal"] [role="img"]');
          return signal?.getAttribute("aria-label") ?? null;
        }),
      };
@@ -98,7 +100,7 @@ in the context card.
 ## Expected
 
 - **Step 2 (exact, browser-free)**: every object sharing the session's `ref`
-  reports the **same** `state` and the same `ask_pending`. For the your-move
+  reports the **same** `state` and the same `ask_pending`. For the needs-you
   state that is `state:"awaiting"`, `ask_pending:false` on all copies.
   Falsification: two rows for one session disagree on either field — that is
   the reader being unable to tell which listing is stale.
@@ -106,13 +108,13 @@ in the context card.
   (2 for a live session in a project), and every entry in `indicators` is
   `Needs you`. Falsification: the two rendered rows carry different status
   categories, or a row's category contradicts step 2's wire value.
-- **Step 4**: the `EVENER / SESSION` header's badge line reads `● YOUR MOVE`.
+- **Step 4**: the `EVENER / SESSION` header's badge line reads `● NEEDS YOU`.
 - **Step 5 (ask-pending)**: step 2's wire rows all flip to
   `ask_pending:true`; every rail row retains the `Needs you` indicator, the
   hovered context card reads `Question waiting`, the TUI header badge reads
   `● QUESTION WAITING`, and the TUI dashboard row for this session carries the `◆` marker
   (`cmd/evener-tui/hub_dashboard_view.go:325-328`). Falsification: any surface
-  still reads "your move" while another says "question waiting".
+  still reads "needs you" while another says "question waiting".
 - **Step 6**: the deterministic mapping includes
   `StateWord("errored", false) == "Error"` (`hubapi/attention.go:58-79`).
   This pins vocabulary only; it does not claim this scenario produced a live
@@ -123,7 +125,7 @@ in the context card.
   registered at `scenarios_fuzz_test.go:32-33`).
 - **Falsification (whole card)**: if a rail row's category contradicts the
   TUI's detailed word for the same underlying state (for example, the rail
-  says `Running` while the TUI says `AWAITING`), if the HoverCard loses the
+  says `Working` while the TUI says `AWAITING`), if the HoverCard loses the
   ask-specific detail, or if two rows for the *same* session disagree with
   each other, one surface or row bypassed the shared state.
 
@@ -157,9 +159,9 @@ in the context card.
   A row's own Cadence dot carries attention now. `tree.needs_you` is still on
   the wire and still feeds the rail-host badge — do not read its presence as
   evidence of a rendered section.
-- **A quiet row has no indicator.** `rail-status-spinner` / `rail-status-dot`
+- **A quiet row has no indicator.** `rail-row-signal`
   renders only for `working`, `needs-you`, and `failed`; an idle session has
-  neither. Hover `rail-row-title` and read its context card when a scenario
+  none. Hover `rail-row-title` and read its context card when a scenario
   needs the quiet row's detailed status.
 - **The TUI session header lives in the scrollable transcript body, not the
   fixed chrome** (`hub_session_view.go`'s session-header lines, rendered
@@ -170,7 +172,7 @@ in the context card.
   history. Use a tall window (`-y 300`+).
 - **The TUI and rail have different display depths.** The TUI's `StatusBadge`
   uppercases the detailed `hubapi.StateWord` value. The compact web rail maps
-  that state to `Running`, `Needs you`, or `Broken`; its HoverCard restores
+  that state to `Working`, `Needs you`, or `Failed`; its HoverCard restores
   details such as `Question waiting` and `Restart required`.
 - **Historical result: forcing `errored` live could not be verified in the
   original pass.** A bad model name was rejected at spawn time before a

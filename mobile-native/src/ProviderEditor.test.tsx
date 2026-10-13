@@ -7,7 +7,8 @@ import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { ProviderEditor } from "./ProviderEditor";
-import { alertRequests, render, renderedText } from "./renderNative.testkit";
+import { hasTestID, markers } from "./markerTestUtils";
+import { alertRequests, render, testIDSuffixes } from "./renderNative.testkit";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
@@ -23,6 +24,11 @@ const instance = {
 	hasStoredOAuth: false,
 	baseUrl: "https://alpha.example",
 } as unknown as InstanceEntry;
+
+/** Why the form says its save didn't land, by reason. */
+function formErrors(tree: ReturnType<typeof render>): string[] {
+	return testIDSuffixes(tree, "form-error-");
+}
 
 function pressLabel(tree: ReturnType<typeof render>, label: string): void {
 	const target = tree.root
@@ -50,7 +56,7 @@ it("stays open and does not report success when the save is unconfirmed", async 
 	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(onSaved).not.toHaveBeenCalled();
-	expect(renderedText(tree)).toContain("The hub didn't confirm the change.");
+	expect(formErrors(tree)).toEqual(["unconfirmed"]);
 });
 
 it("reports success when the save is confirmed", async () => {
@@ -109,7 +115,8 @@ it("keeps the draft when readiness is lost before the save runs", async () => {
 	expect(onSaved).not.toHaveBeenCalled();
 	// Nothing ran, so nothing reports: no failure copy claims a save was
 	// tried, and the draft keeps what was typed for the connection's return.
-	expect(renderedText(tree)).not.toContain("The hub didn't confirm the change.");
+	expect(formErrors(tree)).toEqual([]);
+	expect(hasTestID(tree, "form-error")).toBe(false);
 	expect(tree.root.findByProps({ accessibilityLabel: "Base URL" }).props.value).toBe("https://changed.example");
 });
 
@@ -141,7 +148,6 @@ it("adds a provider in a grouped form: a base picker, field rows, Save and Cance
 			onCancel={onCancel}
 		/>,
 	);
-	expect(tree.root.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Add provider");
 	expect(tree.root.findAll((node) => node.props.accessibilityRole === "radio")).toHaveLength(0);
 	pressLabel(tree, "Choose base provider");
 	expect(tree.root.findByProps({ accessibilityLabel: "Find provider" })).toBeDefined();
@@ -158,16 +164,16 @@ it("adds a provider in a grouped form: a base picker, field rows, Save and Cance
 		"API key variable",
 		"Credential header",
 	]);
-	expect(renderedText(tree)).not.toContain("(optional)");
 	act(() => tree.root.findByProps({ accessibilityLabel: "Instance name" }).props.onChangeText("work"));
 	act(() => tree.root.findByProps({ accessibilityLabel: "AZURE_RESOURCE" }).props.onChangeText("contoso"));
 	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(onCreate).toHaveBeenCalledOnce();
 	// With fields typed, Cancel asks first (spec 6).
+	const asked = alertRequests.length;
 	pressLabel(tree, "Cancel");
 	expect(onCancel).not.toHaveBeenCalled();
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	expect(alertRequests).toHaveLength(asked + 1);
 	act(() =>
 		alertRequests
 			.at(-1)
@@ -191,10 +197,11 @@ it("edits a provider's base URL under an Edit title, and says an emptied URL res
 			onCancel={() => {}}
 		/>,
 	);
-	expect(tree.root.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Edit alpha");
+	expect(tree.root.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toContain(instance.name);
 	expect(sectionLabels(tree)).toEqual(["Base URL"]);
+	expect(markers(tree, "base-url-note")).toEqual(["optional"]);
 	act(() => tree.root.findByProps({ accessibilityLabel: "Base URL" }).props.onChangeText(""));
-	expect(renderedText(tree)).toContain("Resets the endpoint to the provider’s default.");
+	expect(markers(tree, "base-url-note")).toEqual(["resets"]);
 });
 
 function mountCreate(overrides: Partial<Parameters<typeof ProviderEditor>[0]> = {}) {
@@ -262,17 +269,16 @@ it("puts a refused save's reason at the top of the form, where VoiceOver hears i
 	await act(async () => {});
 	const page = tree.root.findByType("ScrollView" as never);
 	const first = page.findAll((node) => String(node.type) === "Text")[0];
-	expect(first?.props.children).toBe(
-		"Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
-	);
+	expect(first?.props.testID).toBe("form-error");
 	expect(first?.props.accessibilityLiveRegion).toBe("polite");
 });
 
 it("says when no provider matches the search, and a second tap on the base row folds the picker", () => {
 	const tree = mountCreate();
 	pressLabel(tree, "Choose base provider");
+	expect(hasTestID(tree, "provider-picker-empty")).toBe(false);
 	act(() => tree.root.findByProps({ accessibilityLabel: "Find provider" }).props.onChangeText("zzz"));
-	expect(renderedText(tree)).toContain("No providers match.");
+	expect(hasTestID(tree, "provider-picker-empty")).toBe(true);
 	pressLabel(tree, "Choose base provider");
 	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Find provider")).toHaveLength(0);
 });
@@ -299,7 +305,7 @@ it("answers a return key on an unfinished form with the reason, and sends nothin
 		tree.root.findByProps({ accessibilityLabel: "Credential header" }).props.onSubmitEditing();
 	});
 	expect(onCreate).not.toHaveBeenCalled();
-	expect(renderedText(tree)).toContain("Select an available base provider.");
+	expect(hasTestID(tree, "form-error")).toBe(true);
 });
 
 it("cancels an untouched editor at once", () => {

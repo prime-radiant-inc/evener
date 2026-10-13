@@ -91,9 +91,12 @@ export function Group({
 	children,
 	label,
 	machineLabel = false,
+	section,
 }: {
 	children: ReactNode;
 	label?: string;
+	/** Which group this is, as a stable token: its `group:<section>` testID. */
+	section?: string;
 	/** The label is a marketplace or similar machine name (see GroupLabel). */
 	machineLabel?: boolean;
 }) {
@@ -101,6 +104,7 @@ export function Group({
 	const rows = Children.toArray(children);
 	const group = (
 		<View
+			testID={section ? `group:${section}` : undefined}
 			style={{
 				marginHorizontal: space.margin,
 				marginTop: label ? 0 : space.groupGap,
@@ -175,6 +179,8 @@ export interface RowProps {
 	onPress?: () => void;
 	/** VoiceOver's reading when the visible text isn't enough. */
 	accessibilityLabel?: string;
+	/** Names the state the row reports, so a test can read it without its words. */
+	testID?: string;
 	/** A control of its own at the row's end, such as a mini button
 	 * ("Install"): outside what a press on the row opens, so each is its own
 	 * target and its own VoiceOver element. */
@@ -278,6 +284,7 @@ export function Row({
 	disabled = false,
 	onPress,
 	accessibilityLabel,
+	testID,
 	accessory,
 }: RowProps) {
 	const { palette } = useColors();
@@ -324,7 +331,7 @@ export function Row({
 	// width and the control sits beside it, inset like the row's text.
 	const own = accessory ? [style, { flex: 1, paddingRight: 0 }] : style;
 	const row = !onPress ? (
-		<View accessible accessibilityLabel={reading} accessibilityState={state} style={own}>
+		<View accessible accessibilityLabel={reading} accessibilityState={state} testID={testID} style={own}>
 			{body}
 		</View>
 	) : (
@@ -332,6 +339,7 @@ export function Row({
 			accessibilityRole="button"
 			accessibilityLabel={reading}
 			accessibilityState={state}
+			testID={testID}
 			disabled={disabled}
 			onPress={onPress}
 			style={({ pressed }) => [own, pressed ? { backgroundColor: palette.pressed } : null]}
@@ -511,6 +519,10 @@ export function TextFieldRow({
 	);
 }
 
+/** The platform's minimum touch target, read at render so it follows
+ * Platform.OS. */
+const minimumTarget = () => (Platform.OS === "android" ? 48 : 44);
+
 /** Each Button kind, from the prototype's .btn.primary.big, .btn and
  * .mini-btn. `reach` is how far the touch extends: a primary or plain button
  * reaches the platform's minimum target, and a mini button, which sits inside
@@ -564,31 +576,82 @@ const BUTTON_KINDS = {
  *   dimming when pressed.
  * - `mini`, a row's own control such as Install (.mini-btn): 13pt accent text
  *   with no fill, shaded when pressed.
- * A plain button's touch reaches the 44pt minimum (48 on Android, as Action's
- * does); a mini button's reaches its 44pt row's edges. Its label follows
- * Dynamic Type, so the height is a minimum.
+ * - `text`, an inline action: 16pt accent text with no fill, drawn at the
+ *   platform's minimum target; with `quiet`, the same in the secondary ink at
+ *   regular weight, for an action that steps back.
+ * - `primary` with `compact`: the call to action sized to its label, a 16pt
+ *   accent pill at the platform's minimum target, for one that sits beside
+ *   other controls rather than across the page.
+ * A plain, text or compact primary button's touch reaches the 44pt minimum (48 on Android); a
+ * mini button's reaches its 44pt row's edges. Its label follows Dynamic Type,
+ * so the height is a minimum. `expanded` tells VoiceOver whether the section
+ * a disclosure button opens is open.
  * Most actions are rows; a page's one call to action is `primary`. */
 export function Button({
 	label,
 	onPress,
 	primary = false,
 	mini = false,
+	text = false,
+	quiet = false,
+	compact = false,
 	disabled = false,
+	expanded,
 	accessibilityLabel,
 }: {
 	label: string;
 	onPress(): void;
 	primary?: boolean;
 	mini?: boolean;
+	text?: boolean;
+	/** With `text`: the secondary ink at regular weight. */
+	quiet?: boolean;
+	/** With `primary`: a pill sized to its label instead of full width. */
+	compact?: boolean;
 	disabled?: boolean;
+	expanded?: boolean;
 	/** VoiceOver's name when the label alone doesn't say what it acts on, as
 	 * for a row's "Install" ("Install tool from acme"). */
 	accessibilityLabel?: string;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	if (text || (primary && compact)) {
+		const target = minimumTarget();
+		const compactPrimary = !text;
+		return (
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel={accessibilityLabel ?? label}
+				accessibilityState={{ disabled, expanded }}
+				disabled={disabled}
+				onPress={onPress}
+				style={({ pressed }) => ({
+					minWidth: target,
+					minHeight: target,
+					justifyContent: "center",
+					paddingHorizontal: compactPrimary ? 18 : 8,
+					paddingVertical: 8,
+					...(compactPrimary ? { backgroundColor: palette.accentFill, borderRadius: 24 } : null),
+					opacity: disabled ? 0.4 : pressed ? 0.65 : 1,
+				})}
+			>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						color: compactPrimary ? palette.onFill : quiet ? palette.inkMid : palette.accentInk,
+						fontSize: 16 * scale,
+						fontWeight: quiet && !compactPrimary ? "400" : "600",
+						flexShrink: 1,
+					}}
+				>
+					{label}
+				</Text>
+			</Pressable>
+		);
+	}
 	const kind = BUTTON_KINDS[primary ? "primary" : mini ? "mini" : "plain"];
-	const target = kind.reach === "row" ? 44 : Platform.OS === "android" ? 48 : 44;
+	const target = kind.reach === "row" ? 44 : minimumTarget();
 	const reach = (target - kind.drawn) / 2;
 	const fill = kind.fill && palette[kind.fill];
 	const outline = "borderWidth" in kind.shape ? { borderColor: palette.edgeStrong } : null;
@@ -596,7 +659,7 @@ export function Button({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={accessibilityLabel}
-			accessibilityState={{ disabled }}
+			accessibilityState={{ disabled, expanded }}
 			disabled={disabled}
 			onPress={onPress}
 			hitSlop={reach > 0 ? { top: reach, bottom: reach } : undefined}
@@ -629,7 +692,7 @@ export function FormError({ error }: { error: FormErrorReport | null }) {
 		if (error && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(error.message);
 	}, [error]);
 	return error ? (
-		<GroupFooter tone="danger" live>
+		<GroupFooter tone="danger" live testID={error.reason ? `form-error-${error.reason}` : "form-error"}>
 			{error.message}
 		</GroupFooter>
 	) : null;
@@ -639,13 +702,18 @@ export function FormError({ error }: { error: FormErrorReport | null }) {
  * that repeats the last one's words still scrolls and speaks again. */
 export interface FormErrorReport {
 	message: string;
+	/** Why the save was refused, when the form tells refusals apart, such as "write-busy". */
+	reason?: string;
 }
 
 /** A form's error state: set a message (or null to clear it) as with
  * useState, and each message becomes its own FormErrorReport. */
-export function useFormError(): [FormErrorReport | null, (message: string | null) => void] {
+export function useFormError(): [FormErrorReport | null, (message: string | null, reason?: string) => void] {
 	const [error, setError] = useState<FormErrorReport | null>(null);
-	const report = useCallback((message: string | null) => setError(message === null ? null : { message }), []);
+	const report = useCallback(
+		(message: string | null, reason?: string) => setError(message === null ? null : { message, reason }),
+		[],
+	);
 	return [error, report];
 }
 
@@ -667,6 +735,7 @@ export function GroupFooter({
 	tone = "normal",
 	machine = false,
 	live = false,
+	testID,
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
@@ -674,6 +743,8 @@ export function GroupFooter({
 	live?: boolean;
 	/** Text the machine wrote, such as an error the hub reported: Menlo. */
 	machine?: boolean;
+	/** Names what the footer reports, so a test can tell one report from another. */
+	testID?: string;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -682,6 +753,7 @@ export function GroupFooter({
 		<Text
 			allowFontScaling={allowFontScaling}
 			accessibilityLiveRegion={live ? "polite" : undefined}
+			testID={testID}
 			style={[
 				{
 					color,

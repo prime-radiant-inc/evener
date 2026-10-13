@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -126,7 +127,7 @@ func TestPackShardsTiesKeepInputOrder(t *testing.T) {
 
 func TestPackShardsRefusesEmptyTestSet(t *testing.T) {
 	_, _, err := packShards(nil, 4, "AGENT")
-	if err == nil || !strings.Contains(err.Error(), "found no tests to shard") {
+	if !errors.Is(err, errNoTestsToShard) {
 		t.Fatalf("packShards(nil) err = %v, want found-no-tests refusal", err)
 	}
 }
@@ -134,16 +135,23 @@ func TestPackShardsRefusesEmptyTestSet(t *testing.T) {
 func TestPackShardsRefusesEmptyBins(t *testing.T) {
 	costs := []testCost{{"a", 1}, {"b", 1}, {"c", 1}}
 	_, _, err := packShards(costs, 5, "AGENT")
-	want := "asked for 5 shards but only 3 are non-empty; lower AGENT_SHARD_COUNT"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("packShards err = %v, want %q", err, want)
+	var empty *emptyShardsError
+	if !errors.As(err, &empty) {
+		t.Fatalf("packShards err = %v, want an emptyShardsError", err)
+	}
+	if empty.asked != 5 || empty.nonEmpty != 3 {
+		t.Fatalf("emptyShardsError = %+v, want 5 asked and 3 non-empty", empty)
+	}
+	// The refusal names the knob that fixes it.
+	if !strings.Contains(err.Error(), "AGENT_SHARD_COUNT") {
+		t.Fatalf("packShards err = %v does not name AGENT_SHARD_COUNT", err)
 	}
 }
 
 func TestPackShardsProvesBijection(t *testing.T) {
 	costs := []testCost{{"dup", 1}, {"dup", 2}}
 	_, _, err := packShards(costs, 1, "AGENT")
-	if err == nil || !strings.Contains(err.Error(), "partition is not a bijection over the test set") {
+	if !errors.Is(err, errNotBijection) {
 		t.Fatalf("packShards with duplicate names err = %v, want bijection refusal", err)
 	}
 }

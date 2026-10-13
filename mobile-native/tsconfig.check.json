@@ -10,6 +10,7 @@
     "paths": {
       "@evener/appwire-client": ["../appwire-client/typescript/index.ts"],
       "@evener/appwire-client/docContent": ["../appwire-client/typescript/docContent.ts"],
+      "@evener/appwire-client/pairing": ["../appwire-client/typescript/pairing.ts"],
       "@evener/appwire-client/state/navigation": ["../appwire-client/typescript/state/navigation/index.ts"],
       "@evener/appwire-client/state/credentials": ["../appwire-client/typescript/state/credentials/index.ts"],
       "@evener/appwire-client/state/extensions": ["../appwire-client/typescript/state/extensions/index.ts"],
@@ -19,6 +20,7 @@
       "anser": ["./node_modules/anser"],
       "react": ["./node_modules/@types/react"],
       "tinykeys": ["./node_modules/tinykeys"],
+      "tweetnacl": ["./node_modules/tweetnacl"],
       "vitest": ["./node_modules/vitest"],
       "zustand": ["./node_modules/zustand"],
       "zustand/*": ["./node_modules/zustand/*"]

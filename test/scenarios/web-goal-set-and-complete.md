@@ -118,8 +118,7 @@ done
    ```
    **Expected:** `state` is `idle`. Note: the `Goal` capability lives on the
    **appwire** `ThreadCapabilities` (which the hub gate reads), NOT on the
-   REST `/api/sessions` shape — `hubCapabilitiesFromAppwire`
-   (`cmd/evener-hub/web_api_tree.go#hubCapabilitiesFromAppwire`) deliberately omits it, so
+   REST `/api/sessions` shape, which carries no goal capability, so
    `capabilities.goal` over REST is always absent. A6 is proven
    positively by step 2 (the `goal/set` call succeeds because the gate read
    `appCapabilities.Goal == true`) and negatively by the unit test

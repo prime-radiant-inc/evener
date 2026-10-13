@@ -34,8 +34,8 @@ test("summary-only hooks share qualified runtime and lose status trust on discon
   client.on("thread/read", () => ({
     thread: { ...activityThread().thread, id: "wire-root", sessionId: "root-session" },
   }));
-  client.on("evener/thread/activity/read", () => ({
-    ...activitySummary(),
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...activitySummary(undefined, scope),
     context: { ...activitySummary().context, sessionId: "root-session" },
   }));
   connectionStore.getState().connect(client);

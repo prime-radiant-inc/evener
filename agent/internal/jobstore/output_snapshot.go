@@ -27,7 +27,7 @@ type OutputSnapshot struct {
 	Truncated            bool
 }
 
-// OutputWindowSnapshot is a stable raw forward window over retained job
+// OutputWindowSnapshot is a stable raw range over retained job
 // output. Start, End, TotalBytes, and RetainedStart all use lifetime offsets.
 type OutputWindowSnapshot struct {
 	Content              []byte
@@ -104,6 +104,26 @@ func readOutputWindowSnapshotFs(fs afero.Fs, path string, offset int64, maxBytes
 	})
 }
 
+// ReadOutputPageSnapshot selects and reads a stable raw latest or backward
+// page. A concurrent append or retention prune is retried once immediately.
+func ReadOutputPageSnapshot(path string, beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return readOutputPageSnapshotFs(afero.NewOsFs(), path, beforeBytes, maxBytes)
+}
+
+func readOutputPageSnapshotFs(fs afero.Fs, path string, beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return readOutputWindowSnapshotWithRetry(func() (OutputWindowSnapshot, error) {
+		return readOutputPageSnapshotOnce(fs, path, beforeBytes, maxBytes)
+	})
+}
+
+type outputRangeSelector func(totalBytes, retainedStart int64) (start, end int64, err error)
+
+func readOutputPageSnapshotOnce(fs afero.Fs, path string, beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return readOutputRangeSnapshotOnce(fs, path, func(totalBytes, retainedStart int64) (int64, int64, error) {
+		return outputPageBounds(beforeBytes, maxBytes, totalBytes, retainedStart)
+	})
+}
+
 func readOutputWindowSnapshotWithRetry(read func() (OutputWindowSnapshot, error)) (OutputWindowSnapshot, error) {
 	snapshot, err := read()
 	if !errors.Is(err, errOutputChanged) {
@@ -122,6 +142,12 @@ func readOutputWindowSnapshotWithRetry(read func() (OutputWindowSnapshot, error)
 // additionally fence path/file generations and give observation errors
 // precedence over a partially observed change.
 func readOutputWindowSnapshotOnce(fs afero.Fs, path string, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
+	return readOutputRangeSnapshotOnce(fs, path, func(totalBytes, retainedStart int64) (int64, int64, error) {
+		return outputWindowBounds(offset, maxBytes, totalBytes, retainedStart)
+	})
+}
+
+func readOutputRangeSnapshotOnce(fs afero.Fs, path string, selectRange outputRangeSelector) (OutputWindowSnapshot, error) {
 	before, err := observeOutputSnapshot(fs, path)
 	if err != nil {
 		return OutputWindowSnapshot{}, err
@@ -130,7 +156,7 @@ func readOutputWindowSnapshotOnce(fs afero.Fs, path string, offset int64, maxByt
 		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: stat output window snapshot %s: %w", path, os.ErrNotExist)
 	}
 
-	snapshot, readErr := readOutputWindowSnapshotAttempt(fs, path, before.retainedBytes, offset, maxBytes)
+	snapshot, readErr := readOutputRangeSnapshotAttempt(fs, path, before.retainedBytes, selectRange)
 	after, observeErr := observeOutputSnapshot(fs, path)
 	if errors.Is(readErr, errOutputChanged) {
 		return OutputWindowSnapshot{}, errOutputChanged
@@ -147,54 +173,79 @@ func readOutputWindowSnapshotOnce(fs afero.Fs, path string, offset int64, maxByt
 	return snapshot, nil
 }
 
-func readOutputMetaForSnapshot(fs afero.Fs, path string, outputPath string, retained int64) (total int64, retainedStart int64, retainedStartPartial bool, err error) {
-	total, retainedStart, retainedStartPartial, err = readOutputMetaForFile(fs, path, outputPath, retained)
+func readOutputMetaForSnapshot(fs afero.Fs, path string, outputPath string, retained int64) (outputView, error) {
+	view, err := readOutputViewForFile(fs, path, outputPath, retained)
 	if errors.Is(err, errOutputPendingHandoff) {
 		err = errOutputChanged
 	}
-	return total, retainedStart, retainedStartPartial, err
+	return view, err
 }
 
-func readOutputWindowSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
-	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, retainedBytes)
+// outputSnapshotWindow places a head or tail snapshot of at most maxBytes over
+// the visible bytes [visibleAt, retainedBytes) of the file.
+func outputSnapshotWindow(retainedBytes, visibleAt int64, maxBytes int, fromHead bool) (start, size int64) {
+	// A visible start the file does not reach yet (metadata moved on between a
+	// reader's stat and its metadata read) leaves an empty window; the reader's
+	// after-read check then sees the change.
+	visibleAt = min(max(visibleAt, 0), retainedBytes)
+	size = min(retainedBytes-visibleAt, int64(maxBytes))
+	start = visibleAt
+	if !fromHead {
+		start = retainedBytes - size
+	}
+	return start, size
+}
+
+// trimOutputSnapshotWindow realigns only the window's own cuts: a head cut
+// short of the end can end mid-rune, and a tail cut past the visible start can
+// begin mid-rune. The output's own first and last bytes are kept as they are.
+func trimOutputSnapshotWindow(content []byte, retainedBytes, visibleAt, start int64, fromHead bool) []byte {
+	if fromHead && start+int64(len(content)) < retainedBytes {
+		return runetrim.TrimTrailingPartial(content)
+	}
+	if !fromHead && start > visibleAt {
+		return runetrim.TrimLeadingPartial(content)
+	}
+	return content
+}
+
+func readOutputRangeSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, selectRange outputRangeSelector) (OutputWindowSnapshot, error) {
+	view, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
+	offset, end, rangeErr := selectRange(view.total, view.visibleStart)
 	snapshot := OutputWindowSnapshot{
 		Start:                offset,
-		End:                  offset,
-		TotalBytes:           totalBytes,
-		RetainedStart:        retainedStart,
-		RetainedStartPartial: retainedStartPartial,
+		End:                  end,
+		TotalBytes:           view.total,
+		RetainedStart:        view.visibleStart,
+		RetainedStartPartial: view.visiblePartial,
 	}
-	if offset < retainedStart {
-		return snapshot, fmt.Errorf("%w: offset=%d first_available=%d", ErrOutputPruned, offset, retainedStart)
+	if rangeErr != nil {
+		return snapshot, rangeErr
 	}
-	if offset > totalBytes {
-		return snapshot, fmt.Errorf("%w: offset=%d total=%d", ErrInvalidOffset, offset, totalBytes)
-	}
-	if totalBytes-retainedStart != retainedBytes {
+	if view.total-view.fileStart != retainedBytes {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
 
-	end := addWindowLimit(offset, maxBytes, totalBytes)
-	content, err := readOutputRawSnapshotWindow(fs, path, offset-retainedStart, end-offset)
+	content, err := readOutputRawSnapshotWindow(fs, path, offset-view.fileStart, end-offset)
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
 	snapshot.Content = content
 	snapshot.End = end
-	snapshot.Truncated = retainedStart > 0 || offset > retainedStart || end < totalBytes
+	snapshot.Truncated = view.visibleStart > 0 || offset > view.visibleStart || end < view.total
 
 	afterInfo, err := fs.Stat(path)
 	if err != nil {
 		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: stat output window snapshot: %w", err)
 	}
-	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, afterInfo.Size())
+	after, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, afterInfo.Size())
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
-	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart || afterRetainedStartPartial != retainedStartPartial {
+	if afterInfo.Size() != retainedBytes || after != view {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
 	return snapshot, nil
@@ -254,12 +305,11 @@ func readOutputSnapshotOnce(fs afero.Fs, path string, maxBytes int, fromHead boo
 }
 
 func readOutputSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, maxBytes int, fromHead bool) (OutputSnapshot, error) {
-	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, retainedBytes)
+	view, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
-
-	content, err := readOutputSnapshotWindow(fs, path, retainedBytes, maxBytes, fromHead)
+	content, err := readOutputSnapshotWindow(fs, path, retainedBytes, view.visibleOffset(), maxBytes, fromHead)
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
@@ -268,19 +318,19 @@ func readOutputSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, ma
 	if err != nil {
 		return OutputSnapshot{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
 	}
-	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, afterInfo.Size())
+	after, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, afterInfo.Size())
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
-	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart || afterRetainedStartPartial != retainedStartPartial {
+	if afterInfo.Size() != retainedBytes || after != view {
 		return OutputSnapshot{}, errOutputChanged
 	}
 	return OutputSnapshot{
 		Content:              content,
-		TotalBytes:           totalBytes,
-		RetainedStart:        retainedStart,
-		RetainedStartPartial: retainedStartPartial,
-		Truncated:            retainedStart > 0 || int64(maxBytes) < retainedBytes,
+		TotalBytes:           view.total,
+		RetainedStart:        view.visibleStart,
+		RetainedStartPartial: view.visiblePartial,
+		Truncated:            view.visibleStart > 0 || int64(maxBytes) < retainedBytes-view.visibleOffset(),
 	}, nil
 }
 
@@ -350,12 +400,8 @@ func readOutputSnapshotMetadata(fs afero.Fs, path string) (string, bool, error) 
 	return string(b), true, nil
 }
 
-func readOutputSnapshotWindow(fs afero.Fs, path string, retainedBytes int64, maxBytes int, fromHead bool) (content []byte, err error) {
-	windowBytes := min(retainedBytes, int64(maxBytes))
-	start := int64(0)
-	if !fromHead {
-		start = retainedBytes - windowBytes
-	}
+func readOutputSnapshotWindow(fs afero.Fs, path string, retainedBytes, visibleAt int64, maxBytes int, fromHead bool) (content []byte, err error) {
+	start, windowBytes := outputSnapshotWindow(retainedBytes, visibleAt, maxBytes, fromHead)
 
 	f, err := fs.Open(path)
 	if err != nil {
@@ -377,11 +423,5 @@ func readOutputSnapshotWindow(fs afero.Fs, path string, retainedBytes int64, max
 			return nil, fmt.Errorf("jobstore: read output snapshot: %w", err)
 		}
 	}
-	if fromHead && windowBytes < retainedBytes {
-		content = runetrim.TrimTrailingPartial(content)
-	}
-	if !fromHead && start > 0 {
-		content = runetrim.TrimLeadingPartial(content)
-	}
-	return content, nil
+	return trimOutputSnapshotWindow(content, retainedBytes, visibleAt, start, fromHead), nil
 }

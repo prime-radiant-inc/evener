@@ -933,7 +933,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 	sess.Close()
 
 	for ev := range sess.Events() {
-		if d, ok := ev.Data.(events.WarningData); ok && strings.Contains(d.Message, "of context window") {
+		if d, ok := ev.Data.(events.WarningData); ok && d.Code == events.WarningCodeContextBudget {
 			t.Fatalf("did not expect context-window warning: %q", d.Message)
 		}
 	}
@@ -1179,10 +1179,9 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 	if !strings.Contains(out, "hello after interrupt") {
 		t.Fatalf("turn 2 output: %q (want it to contain follow-up reply)", out)
 	}
-	// Turn 2 completes cleanly with output and no autonomy in flight, so it
-	// settles to AWAITING (attention-status-model v5), not idle.
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after turn 2: got %q want %q", got, SessionAwaiting)
+	// Turn 2 completes cleanly on a plain reply, so it rests idle.
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after turn 2: got %q want %q", got, SessionIdle)
 	}
 }
 

@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import type { ItemModel } from "@evener/appwire-client";
+import { fallbackToolSummary } from "@evener/appwire-client";
 import { expect, test } from "vitest";
 import { RawToolOutput } from "./RawToolOutput";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
@@ -28,20 +29,30 @@ test("an unregistered tool name falls back to the default descriptor (raw output
 // (@evener/appwire-client's fallbackToolSummary, which the phone uses too).
 test("the default descriptor's summary says the tool in words", () => {
   const d = toolRendererFor("tt_unregistered_tool_2");
-  expect(d.summary(item({ toolName: "tt_unregistered_tool_2" }))).toBe("Used tt unregistered tool 2");
-  expect(d.summary(item({ toolName: "github__create_issue" }))).toBe("Used github: create issue");
+  const plain = d.summary(item({ toolName: "tt_unregistered_tool_2" }));
+  expect(plain).not.toContain("tt_unregistered_tool_2");
+  expect(plain).toContain("tt unregistered tool 2");
+  // An MCP tool keeps its server and tool apart, each in words.
+  const mcp = d.summary(item({ toolName: "github__create_issue" }));
+  expect(mcp).not.toContain("__");
+  expect(mcp).toContain("github");
+  expect(mcp).toContain("create issue");
+  expect(mcp.indexOf("github")).toBeLessThan(mcp.indexOf("create issue"));
 });
 
 // A tool the package has words for, with no descriptor of its own, reads in
 // those words, as it does on the phone.
 test("the default descriptor's summary says a housekeeping tool in its own words", () => {
   const d = toolRendererFor("notes_agent_set");
-  expect(
-    d.summary(item({ toolName: "notes_agent_set", argumentsJSON: JSON.stringify({ note: "Drain first." }) })),
-  ).toBe("Updated its note");
-  expect(d.summary(item({ toolName: "communicate", argumentsJSON: JSON.stringify({ end_turn: true }) }))).toBe(
-    "Reported to its parent · done",
-  );
+  // Its own words: neither the raw name nor the generic in-words fallback.
+  for (const housekeeping of [
+    item({ toolName: "notes_agent_set", argumentsJSON: JSON.stringify({ note: "Drain first." }) }),
+    item({ toolName: "communicate", argumentsJSON: JSON.stringify({ end_turn: true }) }),
+  ]) {
+    const summary = d.summary(housekeeping);
+    expect(summary).not.toContain(housekeeping.toolName as string);
+    expect(summary).not.toBe(fallbackToolSummary(housekeeping));
+  }
 });
 
 test("the default descriptor's summary falls back to a literal label when toolName is (unusually) absent", () => {
@@ -107,4 +118,29 @@ test("autoExpand, when provided, is reachable off the resolved descriptor", () =
 test("body is optional on a registered descriptor (no expand affordance) - only the default guarantees one", () => {
   registerToolRenderer({ match: "tt_no_body", summary: () => "s" });
   expect(toolRendererFor("tt_no_body").body).toBeUndefined();
+});
+
+// summary is optional the way body is: a descriptor that wants exactly the
+// default row words omits it and inherits DEFAULT_DESCRIPTOR's own, rather than
+// copying the lambda and drifting from it. "Wants the default" becomes
+// expressible, and the default's plumbing (e.g. ctx threading) lives in one
+// place. The test proves the inheritance and the rendering, never the copy: a
+// wording change in the shared default cannot fail it.
+test("a descriptor that omits summary inherits the DEFAULT descriptor's own summary", () => {
+  registerToolRenderer({ match: "tt_omits_summary", icon: "file" });
+  const omitted = toolRendererFor("tt_omits_summary");
+  const fallback = toolRendererFor("tt_never_registered");
+  const call = item({ toolName: "tt_omits_summary" });
+  // Inherited by reference, so it renders the default's own words...
+  expect(omitted.summary).toBe(fallback.summary);
+  expect(omitted.summary(call)).toBe(fallback.summary(call));
+  // ...while the fields the descriptor did supply survive registration.
+  expect(omitted.icon).toBe("file");
+});
+
+// A descriptor that supplies its own summary keeps it - the default fills an
+// omission, it never clobbers a real summary.
+test("a descriptor that supplies its own summary keeps it", () => {
+  registerToolRenderer({ match: "tt_keeps_summary", summary: () => "chose these words" });
+  expect(toolRendererFor("tt_keeps_summary").summary(item({ toolName: "tt_keeps_summary" }))).toBe("chose these words");
 });

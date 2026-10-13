@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useLayoutEffect, useMemo, useRef } from "react";
 import { type AccessibilityActionEvent, type AccessibilityActionInfo, Alert, Linking } from "react-native";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { copyText } from "./clipboard";
@@ -7,6 +7,7 @@ import { externalMarkdownLink } from "./markdownLinks";
 import { splitNativeSegments } from "./markdownSegments";
 import { type MarkdownRoles, markdownStyle } from "./markdownStyle";
 import { MermaidDiagram } from "./MermaidDiagram";
+import { type NativeFileOpenContext, renderMarkdownFileReferences } from "./reader/markdownFileReferences";
 import { useColors } from "./ui";
 
 // Agent prose in the phone's reading font (the serif unless Display says
@@ -74,11 +75,13 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	selectable = true,
 	accessibilityActions,
 	onAccessibilityAction,
+	fileContext,
 }: {
 	markdown: string;
 	selectable?: boolean;
 	accessibilityActions?: AccessibilityActionInfo[];
 	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
+	fileContext?: NativeFileOpenContext;
 }) {
 	const colors = useColors();
 	// useColors returns a new object each render, but every color in it comes
@@ -90,9 +93,30 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 		[colors.palette, reading],
 	);
 	const segments = useMemo(() => splitNativeSegments(markdown), [markdown]);
+	const rendered = useMemo(
+		() =>
+			segments.map((segment) =>
+				segment.kind === "mermaid"
+					? segment
+					: {
+							...segment,
+							fileRender: fileContext ? renderMarkdownFileReferences(segment.source, fileContext.cwd) : undefined,
+						},
+			),
+		[segments, fileContext],
+	);
+	// Only committed renders may act. Cleanup also retires menus that are still
+	// visible after a stream frame, cwd/source replacement or unmount.
+	const current = useRef<typeof rendered | null>(null);
+	useLayoutEffect(() => {
+		current.current = rendered;
+		return () => {
+			current.current = null;
+		};
+	}, [rendered]);
 	return (
 		<>
-			{segments.map((segment, index) =>
+			{rendered.map((segment, index) =>
 				segment.kind === "mermaid" ? (
 					<MermaidDiagram
 						key={index}
@@ -103,7 +127,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 				) : (
 					<EnrichedMarkdownText
 						key={index}
-						markdown={segment.source}
+						markdown={segment.fileRender?.markdown ?? segment.source}
 						markdownStyle={style}
 						flavor="github"
 						selectable={selectable}
@@ -112,9 +136,39 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 						streamingAnimation={false}
 						spoilerOverlay="solid"
 						onLinkPress={({ url }) => {
+							if (current.current !== rendered) return;
+							const reference = segment.fileRender?.references.get(url);
+							if (reference && fileContext) {
+								fileContext.openFile(reference);
+								return;
+							}
+							if (url.toLowerCase().startsWith("evener-file:")) return;
 							void openLink(url);
 						}}
-						onLinkLongPress={({ url }) => showLink(url)}
+						onLinkLongPress={({ url }) => {
+							if (current.current !== rendered) return;
+							const reference = segment.fileRender?.references.get(url);
+							if (reference && fileContext) {
+								Alert.alert("File", reference.path, [
+									{
+										text: "Open file",
+										onPress: () => {
+											if (current.current === rendered) fileContext.openFile(reference);
+										},
+									},
+									{
+										text: "Copy path",
+										onPress: () => {
+											if (current.current === rendered) void copyText(reference.path);
+										},
+									},
+									{ text: "Cancel", style: "cancel" },
+								]);
+								return;
+							}
+							if (url.toLowerCase().startsWith("evener-file:")) return;
+							showLink(url);
+						}}
 						contextMenuItems={
 							selectable
 								? [

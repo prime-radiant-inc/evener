@@ -181,7 +181,7 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
    `user-message-item`: that shape is for steers the human typed themselves
    (see `web-steer-live-turn.md`'s Sharp edges; selecting on
    `user-message-item` here finds nothing and reads as a regression). Its
-   summary reads `System steered: Human note` (`:118-122` with
+   summary reads `System steered: Human note` (`:51-55` with
    `steeringLabel("human-note")`, `steeringLabels.ts:44`).
    ```javascript
    (() => {

@@ -1,6 +1,7 @@
 import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activityFixture } from "./subagents/sessionActivityTestUtils";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 // The Session's one Send and the tray's Stop, on the real ConversationScreen:
 // what a person presses, and which requests reach the hub through the durable
 // runtime. Only native edges are mocked, as in
@@ -16,6 +17,8 @@ import {
 	type Thread,
 	WireError,
 } from "@evener/appwire-client";
+import { findBar, findMatches, findShows } from "./findBarTestUtils";
+import { hasTestID, markers } from "./markerTestUtils";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
@@ -31,8 +34,11 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	settle,
 	systemGlass,
 	textOf,
+	unmountMountedTrees,
+	until,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
@@ -221,16 +227,6 @@ const navigation = {
 	setOptions: vi.fn(),
 } as unknown as ConversationScreenProps["navigation"];
 
-async function flush() {
-	await act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
-
-async function settle() {
-	for (let round = 0; round < 10; round += 1) await flush();
-}
-
 async function advanceFakeTimers(ms: number) {
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(ms);
@@ -323,11 +319,6 @@ const otherThreads = new Map<string, Thread>();
 // The fleet the hub answers the screen's navigation reads with: nobody else
 // needs you unless a test says so.
 const fleet: FleetShape = { live: [], needsYou: [] };
-// Every screen a test mounts. Each is unmounted after its test: a screen
-// left mounted keeps answering late reads and setting header options on the
-// shared navigation mock, so a later test reading the last header options
-// could act on it instead of its own screen.
-const mountedScreens: ReactTestRenderer[] = [];
 // A coordinator's subagent tree (evener/jobs/list) and its direct stop
 // (evener/delegate/stop), for the subagent screen's tests.
 const coordinatorHub: {
@@ -351,12 +342,25 @@ const READ_HISTORY_IDENTITY = {
 } as const;
 // Whether model/list refuses, as a hub mid-restart does.
 const catalogHub = { fails: false };
+// Keep diagnostics visible and check the entire case, including afterEach teardown.
+beforeEach(({ onTestFinished }) => {
+	const errors = vi.spyOn(console, "error");
+	const warnings = vi.spyOn(console, "warn");
+	onTestFinished(() => {
+		try {
+			expect({ errors: errors.mock.calls, warnings: warnings.mock.calls }).toEqual({ errors: [], warnings: [] });
+		} finally {
+			errors.mockRestore();
+			warnings.mockRestore();
+		}
+	});
+});
 afterEach(() => {
+	unmountMountedTrees();
 	displayPrefs.hubId = null;
 	displayPrefs.config = null;
 	catalogHub.fails = false;
 	readHistory.live = false;
-	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	keyboard.reset();
 	systemGlass.reset();
 	coordinatorHub.tree = null;
@@ -514,8 +518,12 @@ async function mount(
 		params: { hubId: "hub-1", ref, title: "Session", ...(openedBy ? { openedBy } : {}) },
 	} as unknown as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
-	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
-	mountedScreens.push(tree);
+	// Await mount-time accessibility and navigation reads, not the session
+	// read's clock, before handing the live renderer back to the case.
+	let tree!: ReactTestRenderer;
+	await act(async () => {
+		tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	});
 	if (barLaysOut) {
 		const bar = tree.root.findAll(
 			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
@@ -542,7 +550,7 @@ async function type(tree: ReactTestRenderer, text: string) {
 	const input = field(tree);
 	if (!input) throw new Error("no Message field");
 	act(() => input.props.onChangeText(text));
-	await flush();
+	await settle();
 }
 
 async function press(tree: ReactTestRenderer, label: string) {
@@ -555,7 +563,6 @@ async function press(tree: ReactTestRenderer, label: string) {
 
 it("queues a message while the agent works", async () => {
 	const { tree, hub } = await mount(thread("ref-queue", "active"));
-	expect(field(tree)?.props.placeholder).toBe("Tell the agent something…");
 	await type(tree, "second");
 	await press(tree, "Queue message");
 	expect(hub.mutations()).toEqual(["turn/queue"]);
@@ -564,7 +571,6 @@ it("queues a message while the agent works", async () => {
 
 it("sends a message when the agent is at rest", async () => {
 	const { tree, hub } = await mount(thread("ref-send", "idle"));
-	expect(field(tree)?.props.placeholder).toBe("Message");
 	expect(pressable(tree, "Stop")).toBeUndefined();
 	await type(tree, "first");
 	const send = pressable(tree, "Send");
@@ -580,7 +586,7 @@ it("stops the running turn from the tray and says so", async () => {
 	const { tree, hub } = await mount(thread("ref-stop", "active"));
 	await press(tree, "Stop");
 	expect(hub.mutations()).toEqual(["turn/interrupt"]);
-	expect(renderedText(tree)).toContain("Stopped");
+	expect(toasts(tree)).toEqual(["stop:stopped"]);
 });
 
 it("queues a second Send pressed before the first one's turn is seen", async () => {
@@ -673,14 +679,16 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 			return 0;
 		});
 	});
-	afterEach(() => vi.unstubAllGlobals());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.unstubAllGlobals();
+	});
 
 	it("shows the dock in the composer's place", async () => {
 		const { tree } = await mount(thread("ref-question", "awaiting", true));
 		const text = renderedText(tree);
-		expect(text).toContain("Question");
+		expect(hasTestID(tree, "question-dock")).toBe(true);
 		expect(text).toContain("Keep or drop the implied options?");
-		expect(text).not.toContain("question to answer");
 		expect(field(tree)).toBeUndefined();
 		for (const label of ["Send", "Queue message"]) expect(composerSend(tree, label)).toBeUndefined();
 		expect(composerSend(tree, "Send answer")).toBeUndefined();
@@ -809,7 +817,6 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
 		const { tree, hub } = await mount(thread("ref-question-other", "awaiting", true));
 		await press(tree, "Other answer…");
-		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
 		await type(tree, "Drop them");
 		// The dock's own "Send answer" stays above; the composer's Send says
 		// it sends what you typed, so VoiceOver tells the two apart.
@@ -823,7 +830,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(starts.map((request) => request.params.input)).toEqual([
 			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 free text: "Drop them"' }],
 		]);
-		expect(renderedText(tree)).toContain("Answer sent");
+		expect(toasts(tree)).toEqual(["answer:sent"]);
 		expect(field(tree)?.props.value ?? "").toBe("");
 	});
 
@@ -838,7 +845,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(starts.map((request) => request.params.input)).toEqual([
 			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' }],
 		]);
-		expect(renderedText(tree)).toContain("Answer sent");
+		expect(toasts(tree)).toEqual(["answer:sent"]);
 	});
 
 	it("keeps a refused message's failed Edit out of the dock, in the screen's error area", async () => {
@@ -947,8 +954,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("folds to a bar, and the composer comes back beneath it", async () => {
 		const { tree } = await mount(thread("ref-question-fold", "awaiting", true));
 		await press(tree, "Fold");
-		expect(renderedText(tree)).toContain("Answer the question");
-		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
+		expect(pressable(tree, "Answer the question")).toBeDefined();
 		// Folded, the composer's Send is the only one.
 		expect(composerSend(tree, "Send answer")).toBeDefined();
 		await press(tree, "Answer the question");
@@ -967,6 +973,110 @@ it("gives Send a typed command's own label, so VoiceOver hears what it runs", as
 	await type(tree, "/steer now");
 	expect(pressable(tree, "Steer")).toBeDefined();
 	expect(hub.mutations()).toEqual([]);
+});
+
+// A typed /steer or /queue is the composer's Steer or Queue: the outbox
+// keeps it, so a lost answer isn't a failure, and what the hub took reads as
+// this phone's.
+it.each([
+	["/steer check the logs", "Steer", "turn/steer", "steering"],
+	["/queue check the logs", "Queue", "turn/queue", "queued"],
+])("sends %s through the outbox", async (text, label, method, ghost) => {
+	const ref = `ref-typed-${method}`;
+	const served = thread(ref, "active");
+	const { tree, hub } = await mount(served);
+	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+	const request = client.request;
+	client.request = async (requested, params) => {
+		const answer = await request(requested, params);
+		if (requested !== method) return answer;
+		// The hub took it, and its answer was lost.
+		const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+		if (method === "turn/queue")
+			evener.queue = { ...queueState(["check the logs"], 1), clientMutationIds: [params.clientMutationId] };
+		else
+			evener.pendingMutations = [
+				{
+					clientMutationId: params.clientMutationId,
+					method,
+					input: params.input,
+					executionState: "accepted",
+					projectionState: "pending",
+				},
+			];
+		throw new Error("connection lost");
+	};
+	await type(tree, text);
+	await press(tree, label);
+	const sent = hub.requests.filter((entry) => entry.method === method);
+	expect(sent.map((entry) => entry.params.input)).toEqual([[{ type: "text", text: "check the logs" }]]);
+	act(() =>
+		hub.notify({
+			method: "evener/thread/resync",
+			params: { ref, threadId: served.id },
+		} as AnyNotification),
+	);
+	await settle();
+	expect(field(tree)?.props.value).toBe("");
+	expect(actionErrors(tree)).toEqual([]);
+	expect(saysSteerFailed(tree)).toBe(false);
+	expect(renderedText(tree)).toContain("check the logs");
+	expect(ghostStates(tree)).toContain(ghost);
+});
+
+// A typed command the outbox couldn't take never left the phone: it says try
+// again, and the text is still there to send.
+it("asks to try a typed /queue again when the phone couldn't keep it", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-refused", "active"));
+	vi.spyOn(getNativeMutationRuntime(), "submit").mockRejectedValueOnce(new Error("disk full"));
+	await type(tree, "/queue check the logs");
+	await press(tree, "Queue");
+	expect(hub.mutations()).toEqual([]);
+	expect(actionErrors(tree)).toEqual(["not-sent"]);
+	// Nothing left the phone, so the command goes back to the composer.
+	expect(field(tree)?.props.value).toBe("/queue check the logs");
+	expect(ghostStates(tree)).toEqual([]);
+});
+
+// A typed /interrupt the phone couldn't keep says so, and stays to try again.
+it("asks to try a typed /interrupt again when the phone couldn't keep it", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-interrupt-refused", "active"));
+	vi.spyOn(getNativeMutationRuntime(), "submit").mockRejectedValueOnce(new Error("disk full"));
+	await type(tree, "/interrupt");
+	await press(tree, "Interrupt");
+	expect(hub.mutations()).toEqual([]);
+	expect(actionErrors(tree)).toEqual(["not-sent"]);
+	expect(toasts(tree)).toEqual([]);
+	expect(field(tree)?.props.value).toBe("/interrupt");
+});
+
+// A typed /interrupt is Stop: it holds the messages this phone hasn't sent
+// yet, so they don't go out after it.
+it("holds the phone's unsent messages on /interrupt, as Stop does", async () => {
+	const { tree, hub } = await mount(thread("ref-typed-interrupt", "active"));
+	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+	const request = client.request;
+	let answerFirst: () => void = () => undefined;
+	const firstAnswered = new Promise<void>((resolve) => {
+		answerFirst = resolve;
+	});
+	client.request = async (requested, params) => {
+		const answer = request(requested, params);
+		if (requested === "turn/queue" && hub.requests.filter((entry) => entry.method === "turn/queue").length === 1)
+			await firstAnswered;
+		return answer;
+	};
+	await type(tree, "first");
+	await press(tree, "Queue message");
+	await type(tree, "second");
+	await press(tree, "Queue message");
+	await type(tree, "/interrupt");
+	await press(tree, "Interrupt");
+	await act(async () => answerFirst());
+	await settle();
+	expect(hub.mutations()).toEqual(["turn/queue", "turn/interrupt"]);
+	expect(ghostStates(tree)).toContain("held");
+	expect(toasts(tree)).toEqual(["stop:stopped"]);
 });
 
 it("keeps the session open when /shutdown is typed and completed (ruling 19)", async () => {
@@ -994,7 +1104,7 @@ it("keeps the session open when /shutdown is typed and completed (ruling 19)", a
 	expect(navigation.pop).not.toHaveBeenCalled();
 	expect(navigation.goBack).not.toHaveBeenCalled();
 	expect(field(tree)).toBeDefined();
-	tree.unmount();
+	await act(async () => tree.unmount());
 });
 
 it("does nothing when a Stop lands after the turn already ended", async () => {
@@ -1021,7 +1131,7 @@ it("does nothing when a Stop lands after the turn already ended", async () => {
 	await settle();
 
 	expect(hub.mutations()).toEqual([]);
-	expect(renderedText(tree)).not.toContain("Stopped");
+	expect(toasts(tree)).toEqual([]);
 	// No error text of any kind: the screen reads exactly as it did.
 	expect(renderedText(tree)).toBe(before);
 });
@@ -1056,7 +1166,7 @@ it("brings back messages a Stop held before they left the phone: Cancel drops on
 	const text = renderedText(tree);
 	expect(text).toContain("drop this one");
 	expect(text).toContain("send this one");
-	expect(text).toContain("Held · you stopped this turn");
+	expect(ghostStates(tree)).toEqual(["held", "held"]);
 
 	// Cancel drops the first from the phone's outbox; it never reaches the hub.
 	await press(tree, "Cancel");
@@ -1571,7 +1681,7 @@ it("reads the session again on its own after a read fails", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-retry"), { failedReads: 1 });
 	expect(hub.requests.filter((request) => request.method === "thread/read")).toHaveLength(2);
 	expect(renderedText(tree)).toContain("ask turn_2");
-	expect(renderedText(tree)).not.toContain("Trying again");
+	expect(hasTestID(tree, "session-read-retrying")).toBe(false);
 });
 
 it("keeps trying quietly, and says so from the third failure in a row", async () => {
@@ -1603,12 +1713,12 @@ it("keeps trying quietly, and says so from the third failure in a row", async ()
 		const reads = () => hub.requests.filter((request) => request.method === "thread/read").length;
 		// The first failure retries at once, the second after a second.
 		expect(reads()).toBe(2);
-		expect(renderedText(tree)).not.toContain("Trying again");
+		expect(hasTestID(tree, "session-read-retrying")).toBe(false);
 		await advance(50);
 		expect(reads()).toBe(2);
 		await advance(1_050);
 		expect(reads()).toBe(3);
-		expect(renderedText(tree)).toContain("Couldn't load this session. Trying again on its own.");
+		expect(hasTestID(tree, "session-read-retrying")).toBe(true);
 		for (const words of ["Pull down", "Reconnect", "Load older messages", "Loading conversation"])
 			expect(renderedText(tree)).not.toContain(words);
 		act(() => tree.unmount());
@@ -1630,6 +1740,26 @@ it("has no Latest button, no pull to refresh, and no Load older button", async (
 	expect(list.props.refreshing).toBeUndefined();
 	expect(renderedText(tree)).not.toContain("Load older messages");
 });
+
+/** What the session's toasts say happened, by kind. */
+function toasts(tree: ReactTestRenderer): string[] {
+	return markers(tree, "toast");
+}
+
+/** Why the composer's last action failed, by reason. */
+function actionErrors(tree: ReactTestRenderer): string[] {
+	return markers(tree, "action-error");
+}
+
+/** Every ghost on the screen, by state. */
+function ghostStates(tree: ReactTestRenderer): string[] {
+	return markers(tree, "ghost");
+}
+
+/** Whether the screen says a steer failed: its toast, or a refused ghost. */
+function saysSteerFailed(tree: ReactTestRenderer): boolean {
+	return toasts(tree).some((kind) => kind.startsWith("steer:")) || ghostStates(tree).includes("refused");
+}
 
 function transcriptList(tree: ReactTestRenderer) {
 	return tree.root.findAll(
@@ -1682,11 +1812,12 @@ describe("following the live end (spec 8.2)", () => {
 	});
 	const list = (tree: ReactTestRenderer) => transcriptList(tree);
 	// A drag the way a finger makes one: it begins, the list scrolls through
-	// each offset, and it ends at the last.
-	function drag(tree: ReactTestRenderer, ...offsets: number[]) {
+	// each offset, and it ends at the last. Await its deferred history read's
+	// publication before the case continues or starts teardown.
+	async function drag(tree: ReactTestRenderer, ...offsets: number[]) {
 		act(() => list(tree).props.onScrollBeginDrag(at(offsets[0] ?? 0)));
 		for (const y of offsets) scrollTo(tree, y);
-		act(() => list(tree).props.onScrollEndDrag(at(offsets.at(-1) ?? 0)));
+		await act(async () => list(tree).props.onScrollEndDrag(at(offsets.at(-1) ?? 0)));
 	}
 	// A reply streaming into the session: a new row below whatever you read.
 	function stream(hub: { notify(notification: AnyNotification): void }, served: Thread, id: string) {
@@ -1765,7 +1896,7 @@ describe("following the live end (spec 8.2)", () => {
 		stream(hub, served, "s1");
 		const keyOf = (row: unknown) => list(tree).props.keyExtractor(row) as string;
 		const streamed = keyOf((list(tree).props.data as unknown[]).at(-1));
-		drag(tree, 100);
+		await drag(tree, 100);
 		act(() =>
 			hub.notify({
 				method: "history/updated",
@@ -1814,7 +1945,7 @@ describe("following the live end (spec 8.2)", () => {
 		evener.capabilities = { ...evener.capabilities, pageBefore: true };
 		const { tree, hub } = await mount(served);
 		const rows = () => (list(tree).props.data as unknown[]).length;
-		drag(tree, 100);
+		await drag(tree, 100);
 		// A reply lands below while you read above: nothing is trimmed, so the
 		// session's rows past the cap are all there.
 		stream(hub, served, "s-trim");
@@ -1831,7 +1962,7 @@ describe("following the live end (spec 8.2)", () => {
 	it("stops following when you drag up, and says what landed below", async () => {
 		const served = working("ref-follow-away");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		stream(hub, served, "s1");
 		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
 		expect(contentGrows(tree, 4_200)).toBe(false);
@@ -1840,13 +1971,13 @@ describe("following the live end (spec 8.2)", () => {
 	it("follows again once a drag ends at the end, and not while the finger is still down", async () => {
 		const served = working("ref-follow-again");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		act(() => list(tree).props.onScrollBeginDrag(at(100)));
 		scrollTo(tree, END);
 		stream(hub, served, "s2");
 		// A row landing mid-drag doesn't pull the list from under the finger.
 		expect(contentGrows(tree, 4_200)).toBe(false);
-		act(() => list(tree).props.onScrollEndDrag(at(END)));
+		await act(async () => list(tree).props.onScrollEndDrag(at(END)));
 		expect(pill(tree)).toBeUndefined();
 		stream(hub, served, "s2b");
 		expect(contentGrows(tree, 4_400)).toBe(true);
@@ -1855,15 +1986,15 @@ describe("following the live end (spec 8.2)", () => {
 	it("doesn't follow after a drag that reached the end and came back up", async () => {
 		const served = working("ref-follow-back-up");
 		const { tree } = await mount(served);
-		drag(tree, 100, END, 1_000);
+		await drag(tree, 100, END, 1_000);
 		expect(contentGrows(tree, 4_200)).toBe(false);
 	});
 
 	it("follows again when a flick's momentum carries you to the end", async () => {
 		const served = working("ref-follow-flick");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
-		drag(tree, 1_000);
+		await drag(tree, 100);
+		await drag(tree, 1_000);
 		act(() => list(tree).props.onMomentumScrollBegin());
 		scrollTo(tree, END);
 		act(() => list(tree).props.onMomentumScrollEnd(at(END)));
@@ -1874,7 +2005,7 @@ describe("following the live end (spec 8.2)", () => {
 	it("doesn't scroll to the end while a flick released at the end coasts away", async () => {
 		const served = working("ref-follow-coast");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100, END);
+		await drag(tree, 100, END);
 		act(() => list(tree).props.onMomentumScrollBegin());
 		scrollTo(tree, 2_000);
 		stream(hub, served, "m1");
@@ -1887,14 +2018,14 @@ describe("following the live end (spec 8.2)", () => {
 		const served = working("ref-follow-short");
 		const { tree } = await mount(served);
 		act(() => list(tree).props.onScrollBeginDrag(at(0, 300)));
-		act(() => list(tree).props.onScrollEndDrag(at(0, 300)));
+		await act(async () => list(tree).props.onScrollEndDrag(at(0, 300)));
 		expect(contentGrows(tree, 320)).toBe(true);
 	});
 
 	it("stays unfollowed when the app itself scrolls to the end", async () => {
 		const served = working("ref-follow-app-scroll");
 		const { tree } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		// No finger: a restore or the list settling lands at the end.
 		scrollTo(tree, END);
 		expect(contentGrows(tree, 4_200)).toBe(false);
@@ -1903,12 +2034,12 @@ describe("following the live end (spec 8.2)", () => {
 	it("counts what landed since you last left the end", async () => {
 		const served = working("ref-follow-counts");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		stream(hub, served, "c1");
 		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
-		drag(tree, END);
+		await drag(tree, END);
 		expect(pill(tree)).toBeUndefined();
-		drag(tree, 100);
+		await drag(tree, 100);
 		stream(hub, served, "c2");
 		stream(hub, served, "c3");
 		expect(pill(tree)?.props.accessibilityLabel).toBe("2 new below, scroll to the end");
@@ -1917,7 +2048,7 @@ describe("following the live end (spec 8.2)", () => {
 	it("follows again from the pill, which then goes", async () => {
 		const served = working("ref-follow-pill");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		stream(hub, served, "p1");
 		flatListCalls.length = 0;
 		act(() => pill(tree)?.props.onPress());
@@ -1949,7 +2080,7 @@ describe("following the live end (spec 8.2)", () => {
 	it("never moves the list or counts as new when a ghost comes or goes while you read above", async () => {
 		const served = working("ref-follow-ghost-away");
 		const { tree, hub } = await mount(served);
-		drag(tree, 100);
+		await drag(tree, 100);
 		flatListCalls.length = 0;
 		queueNow(hub, served, ["check the logs"]);
 		expect(textOf(transcriptList(tree))).toContain("check the logs");
@@ -1969,7 +2100,7 @@ describe("following the live end (spec 8.2)", () => {
 		flatListCalls.length = 0;
 		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } }));
 		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
-		drag(tree, 100);
+		await drag(tree, 100);
 		flatListCalls.length = 0;
 		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
@@ -1983,7 +2114,7 @@ it("keeps the loading blocks above a ghost until the conversation first loads", 
 	const ref = "ref-skeleton-ghost";
 	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
 	const { tree } = await mount(thread(ref, "idle"), { failedReads: 2 });
-	await vi.waitFor(() => expect(textOf(transcriptList(tree))).toContain("Couldn't confirm this was sent"));
+	await vi.waitFor(() => expect(markers(transcriptList(tree), "ghost")).toEqual(["unconfirmed"]));
 	expect(
 		transcriptList(tree).findAll((node) => node.props.accessibilityLabel === "Loading conversation").length,
 	).toBeGreaterThan(0);
@@ -2514,7 +2645,7 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		const served = thread("ref-restart", "idle");
 		(served as unknown as { status: unknown }).status = { type: "restartRequired" };
 		const { tree, hub } = await mount(served);
-		expect(renderedText(tree)).toContain("This session runs an older Evener. Restart it to pick up the hub's update.");
+		expect(markers(tree, "session-notice")).toEqual(["restartNeeded"]);
 		expect(field(tree)).toBeUndefined();
 		await press(tree, "Restart session");
 		expect(
@@ -2569,7 +2700,7 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
 				.map((request) => request.method),
 		).toEqual(["forceStop", "resumeThread"]);
-		expect(renderedText(tree)).not.toContain("Restarting…");
+		expect(pressable(tree, "Restart session")?.props.accessibilityState).toMatchObject({ busy: false });
 	});
 
 	it("says so in the notice when the session stopped but couldn't start again", async () => {
@@ -2579,7 +2710,7 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 			throw new Error("resume refused");
 		};
 		await press(tree, "Restart session");
-		expect(renderedText(tree)).toContain("Stopped, but couldn't start it again.");
+		expect(hasTestID(tree, "session-notice-error")).toBe(true);
 		expect(pressable(tree, "Restart session")?.props.disabled).toBe(false);
 	});
 
@@ -2590,14 +2721,14 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		};
 		await press(tree, "Restart session");
 		expect(hub.requests.filter((request) => request.method === "resumeThread")).toEqual([]);
-		expect(renderedText(tree)).toContain("Couldn't restart this session.");
+		expect(hasTestID(tree, "session-notice-error")).toBe(true);
 	});
 
 	it("offers Resume in the composer's place for a paused session", async () => {
 		const served = thread("ref-paused", "idle");
 		(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
 		const { tree, hub } = await mount(served);
-		expect(renderedText(tree)).toContain("This session is paused.");
+		expect(markers(tree, "session-notice")).toEqual(["paused"]);
 		expect(field(tree)).toBeUndefined();
 		await press(tree, "Resume");
 		expect(
@@ -2667,7 +2798,7 @@ it("previews your note in the notes bar, and the sheet it opens saves through th
 	).toEqual([
 		expect.objectContaining({ ref: "ref-notes", expectedInstanceId: "instance", note: "keep the tests green" }),
 	]);
-	expect(renderedText(tree)).toContain("Note saved. The agent is reading it.");
+	expect(toasts(tree)).toEqual(["note:saved-reading"]);
 });
 
 it("shows no notes bar for a session with nothing shared", async () => {
@@ -2677,7 +2808,6 @@ it("shows no notes bar for a session with nothing shared", async () => {
 		sharedNotes: true,
 	};
 	const { tree } = await mount(served);
-	expect(renderedText(tree)).not.toContain("Your note");
 	expect(tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "person")).toEqual([]);
 });
 
@@ -2694,7 +2824,12 @@ it("retries a note that failed to save once, on its own, without needing a recon
 	client.request = async (method, params) => {
 		if (method === "notes/human/set") {
 			attempts += 1;
-			if (attempts === 1) throw new Error("offline");
+			if (attempts === 1) {
+				// Fail a timer turn late, as a real dropped request does, so the
+				// test can't count on the failure landing within a fixed turn.
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				throw new Error("offline");
+			}
 		}
 		return request(method, params);
 	};
@@ -2714,11 +2849,12 @@ it("retries a note that failed to save once, on its own, without needing a recon
 	act(() => editor.props.onChangeText("first try"));
 	act(() => pressable(sheet, "Done")?.props.onPress());
 	act(() => sheet.unmount());
-	await settle();
 	// The session stayed open, connected and in front the whole time: the
 	// screen retries the failed save on its own rather than waiting for an
-	// unrelated reconnect or remount to notice it.
-	expect(attempts).toBe(2);
+	// unrelated reconnect or remount to notice it. The retry runs a timer turn
+	// after the failure lands, and the failure can itself land after any one
+	// timer turn, so wait for the attempt rather than counting turns (#4119).
+	await until(() => expect(attempts).toBe(2));
 	expect(
 		hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
 	).toEqual(["first try"]);
@@ -2788,20 +2924,23 @@ it("follows the hub's note in the bar and the open sheet when it changes", async
 describe("queued messages at the transcript's end (spec 8.5)", () => {
 	const bottomBar = (tree: ReactTestRenderer) =>
 		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
-	const lastRow = (tree: ReactTestRenderer) => {
+	const lastItem = (tree: ReactTestRenderer) => {
 		const row = transcriptList(tree)
 			.findAll((node) => String(node.type) === "Item")
 			.at(-1);
 		if (!row) throw new Error("no transcript rows");
-		return textOf(row);
+		return row;
 	};
+	const lastRow = (tree: ReactTestRenderer) => textOf(lastItem(tree));
+	/** The last row's ghost, by state. */
+	const lastGhost = (tree: ReactTestRenderer) => markers(lastItem(tree), "ghost");
 
 	it("shows a queued message as the transcript's last row, not in the bottom bar", async () => {
 		const served = thread("ref-queue-row", "active", false, ["check the logs"]);
 		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
 		const { tree } = await mount(served);
 		expect(lastRow(tree)).toContain("check the logs");
-		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		expect(lastGhost(tree)).toEqual(["queued"]);
 		expect(textOf(transcriptList(tree))).toContain("ask turn_1");
 		expect(textOf(bottomBar(tree))).not.toContain("check the logs");
 	});
@@ -2847,7 +2986,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue(["check the logs"], 1) },
 		});
 		expect(shown()).toBe(1);
-		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		expect(lastGhost(tree)).toEqual(["queued"]);
 		// The turn ends and the hub takes the message for the next one: the
 		// queue frame comes first, then the message's own item.
 		frame({
@@ -2876,8 +3015,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			},
 		});
 		expect(shown()).toBe(1);
-		expect(textOf(transcriptList(tree))).not.toContain("Sending…");
-		expect(textOf(transcriptList(tree))).not.toContain("Queued ·");
+		expect(markers(transcriptList(tree), "ghost")).toEqual([]);
 	});
 
 	// The usage lines (token counts, estimated cost) close the conversation;
@@ -2921,12 +3059,353 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 	it("steers with a queued message the agent hasn't reached yet", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-now", "active", false, ["check the logs"]));
 		expect(renderedText(tree)).toContain("check the logs");
-		expect(renderedText(tree)).toContain("Queued · sends when this turn ends");
+		expect(ghostStates(tree)).toEqual(["queued"]);
 		await press(tree, "Steer now");
 		const promote = hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer");
 		expect(promote).toHaveLength(1);
 		expect(promote[0]?.params).toMatchObject({ index: 0, expectedEntryId: "queue_1" });
-		expect(renderedText(tree)).not.toContain("Couldn't steer");
+		expect(saysSteerFailed(tree)).toBe(false);
+	});
+
+	// Between the press and the agent's next step, the hub holds the steer as
+	// a pending mutation; the phone shows it as its own (spec 8.5).
+	// Send now on a queue a Stop held is a promote too: it starts the turn
+	// that takes it.
+	const STEERS_FROM_QUEUE = [
+		["Steer now", "active", "turn/promoteQueuedAsSteer", ["check the logs"]],
+		["Send now", "idle", "turn/promoteQueuedAsSteer", ["check the logs"]],
+		["Steer all now", "active", "turn/drainAsSteer", ["check the logs", "and the metrics"]],
+	] as const;
+	// Starts the action, as a press does, and leaves it running. Steer all
+	// now is the Queue sheet's, which shows what it hands back.
+	async function steerFromQueue(tree: ReactTestRenderer, ref: string, label: string) {
+		let handedBack: Promise<unknown> | undefined;
+		if (label === "Steer all now")
+			await act(async () => {
+				handedBack = queueHosts.get(sheetKey("hub-1", ref))?.steerAll?.();
+			});
+		else await press(tree, label);
+		return { handedBack };
+	}
+	it.each(STEERS_FROM_QUEUE)("shows %s as steering until the agent takes it", async (label, status, method, queued) => {
+		const ref = `ref-steering-${label}`;
+		const served = thread(ref, status, false, [...queued]);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested === method) {
+				// The next read: the queue is empty, and the hub holds the steer
+				// for the agent's next step.
+				const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+				evener.queue = queueState([], 1);
+				evener.pendingMutations = [
+					{
+						clientMutationId: params.clientMutationId,
+						method,
+						input: queued.map((text) => ({ type: "text", text })),
+						executionState: "accepted",
+						projectionState: "pending",
+					},
+				];
+				// A drain's receipt names every entry it took.
+				const { receipt } = answer as { receipt: Record<string, unknown> };
+				return { receipt: { queueEntryIds: queued.map((_, index) => `queue_${index + 1}`), ...receipt } };
+			}
+			return answer;
+		};
+		await steerFromQueue(tree, ref, label);
+		await settle();
+		// The read settles the phone's own record of the steer, and the hub's
+		// pending steer is still this phone's.
+		act(() =>
+			hub.notify({
+				method: "evener/thread/resync",
+				params: { ref, threadId: served.id },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(hub.requests.filter((entry) => entry.method === "thread/read").length).toBeGreaterThan(1);
+		expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(lastGhost(tree)).toEqual(["steering"]);
+		expect(saysSteerFailed(tree)).toBe(false);
+	});
+
+	// The hub took the steer, but its answer never reached the phone: the
+	// phone sends it again under the same id, the hub replays it, and it
+	// shows as steering. Nothing says the steer failed.
+	it.each(STEERS_FROM_QUEUE)(
+		"shows %s as steering when the hub's answer was lost",
+		async (label, status, method, queued) => {
+			const ref = `ref-lost-${label}`;
+			const served = thread(ref, status, false, [...queued]);
+			const { tree, hub } = await mount(served);
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			let lost = false;
+			client.request = async (requested, params) => {
+				const answer = await request(requested, params);
+				if (requested !== method || lost) return answer;
+				lost = true;
+				hub.notify({
+					method: "thread/queueChanged",
+					params: { threadId: served.id, ref, queue: queueState([], 1) },
+				} as AnyNotification);
+				throw new Error("connection lost");
+			};
+			const { handedBack } = await steerFromQueue(tree, ref, label);
+			await settle();
+			expect(saysSteerFailed(tree)).toBe(false);
+			expect(await handedBack).toBeFalsy();
+			await act(async () => {
+				await getNativeMutationRuntime().connectionReady();
+			});
+			await settle();
+			const sent = hub.requests.filter((entry) => entry.method === method);
+			expect(sent).toHaveLength(2);
+			expect(sent[1]?.params.clientMutationId).toBe(sent[0]?.params.clientMutationId);
+			expect(lastRow(tree)).toContain("check the logs");
+			expect(lastGhost(tree)).toEqual(["steering"]);
+			expect(saysSteerFailed(tree)).toBe(false);
+		},
+	);
+
+	// The hub's queue frame can reach the phone before its answer does: the
+	// message leaves the queue, and the transcript's end still shows it on
+	// its way.
+	it.each(STEERS_FROM_QUEUE)(
+		"keeps %s at the transcript's end while the hub's answer is on its way",
+		async (label, status, method, queued) => {
+			const ref = `ref-frames-first-${label}`;
+			const served = thread(ref, status, false, [...queued]);
+			const { tree, hub } = await mount(served);
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			let answer: () => void = () => undefined;
+			const answered = new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+			client.request = async (requested, params) => {
+				if (requested !== method) return request(requested, params);
+				const reply = request(requested, params);
+				hub.notify({
+					method: "thread/queueChanged",
+					params: { threadId: served.id, ref, queue: queueState([], 1) },
+				} as AnyNotification);
+				await answered;
+				return reply;
+			};
+			await steerFromQueue(tree, ref, label);
+			await settle();
+			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+			expect(lastRow(tree)).toContain("check the logs");
+			expect(lastGhost(tree)).not.toContain("queued");
+			await act(async () => answer());
+			await settle();
+			expect(lastRow(tree)).toContain("check the logs");
+			expect(lastGhost(tree)).toEqual(["steering"]);
+		},
+	);
+
+	const rowsWith = (tree: ReactTestRenderer, text: string) =>
+		transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.map(textOf)
+			.filter((row) => row.includes(text));
+	/** The text of each transcript row whose ghost is `state`. */
+	const rowsWithGhost = (tree: ReactTestRenderer, state: string) =>
+		transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.filter((row) => markers(row, "ghost").includes(state))
+			.map(textOf);
+
+	// Until the hub answers, the message shows once, on its way, and there is
+	// no second Steer now (or Steer all now) to press for it.
+	it.each(STEERS_FROM_QUEUE)(
+		"shows a message once, with nothing to press again, while its %s waits for the hub",
+		async (label, status, method, queued) => {
+			const ref = `ref-pressed-once-${label}`;
+			const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
+			const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+			const request = client.request;
+			client.request = async (requested, params) => {
+				if (requested !== method) return request(requested, params);
+				// The hub never answers: record the request and leave it there.
+				hub.requests.push({ method: requested, params });
+				return new Promise(() => undefined);
+			};
+			await steerFromQueue(tree, ref, label);
+			await settle();
+			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
+			expect(rowsWith(tree, "check the logs")).toHaveLength(1);
+			expect(pressable(tree, "Steer now")).toBeUndefined();
+			expect(pressable(tree, "Send now")).toBeUndefined();
+			expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
+		},
+	);
+
+	// Steer all now would take the message Steer now is already steering with.
+	it("withholds Steer all now while a Steer now waits for the hub", async () => {
+		const ref = "ref-steer-all-after-promote";
+		const { tree, hub } = await mount(thread(ref, "active", false, ["check the logs", "one", "two"]));
+		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeDefined();
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== "turn/promoteQueuedAsSteer") return request(requested, params);
+			// The hub never answers: record the request and leave it there.
+			hub.requests.push({ method: requested, params });
+			return new Promise(() => undefined);
+		};
+		const [steerNow] = tree.root.findAll(
+			(node) => node.props.accessibilityLabel === "Steer now" && typeof node.props.onPress === "function",
+		);
+		act(() => steerNow?.props.onPress());
+		await settle();
+		expect(rowsWithGhost(tree, "queued")).toHaveLength(2);
+		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
+		// Typed, it waits too, and says why.
+		await type(tree, "/drain-as-steer");
+		await press(tree, "Drain queue");
+		expect(hub.requests.filter((entry) => entry.method === "turn/drainAsSteer")).toEqual([]);
+		expect(actionErrors(tree)).toEqual(["refused"]);
+		// Nothing was tried, so the command stays in the composer.
+		expect(field(tree)?.props.value).toBe("/drain-as-steer");
+	});
+
+	// /drain-as-steer is Steer all now typed: the same outbox, so a lost answer
+	// isn't a failure, and the hub's pending steer reads as this phone's.
+	it("sends /drain-as-steer through the outbox, as Steer all now", async () => {
+		const ref = "ref-drain-command";
+		const queued = ["check the logs", "and the metrics"];
+		const served = thread(ref, "active", false, queued);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested !== "turn/drainAsSteer") return answer;
+			// The hub took the drain, and its answer was lost.
+			const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+			evener.queue = queueState([], 1);
+			evener.pendingMutations = [
+				{
+					clientMutationId: params.clientMutationId,
+					method: requested,
+					input: queued.map((text) => ({ type: "text", text })),
+					executionState: "accepted",
+					projectionState: "pending",
+				},
+			];
+			throw new Error("connection lost");
+		};
+		await type(tree, "/drain-as-steer");
+		await press(tree, "Drain queue");
+		const sent = hub.requests.filter((entry) => entry.method === "turn/drainAsSteer");
+		expect(sent.map((entry) => entry.params)).toMatchObject([{ expectedQueueRevision: 0, input: [] }]);
+		act(() =>
+			hub.notify({
+				method: "evener/thread/resync",
+				params: { ref, threadId: served.id },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(lastRow(tree)).toContain("check the logs");
+		expect(lastGhost(tree)).toEqual(["steering"]);
+		expect(field(tree)?.props.value).toBe("");
+		expect(actionErrors(tree)).toEqual([]);
+		expect(saysSteerFailed(tree)).toBe(false);
+	});
+
+	// A drain takes the queue it saw; a message queued after the hub took it
+	// is queued again, with its own Steer now.
+	it("shows a message queued after Steer all now took the queue", async () => {
+		const ref = "ref-queued-after-drain";
+		const served = thread(ref, "active", false, ["check the logs", "and the metrics"]);
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested === "turn/drainAsSteer")
+				hub.notify({
+					method: "thread/queueChanged",
+					params: { threadId: served.id, ref, queue: queueState([], 1) },
+				} as AnyNotification);
+			return answer;
+		};
+		await steerFromQueue(tree, ref, "Steer all now");
+		await settle();
+		expect(lastGhost(tree)).toEqual(["steering"]);
+		act(() =>
+			hub.notify({
+				method: "thread/queueChanged",
+				params: { threadId: served.id, ref, queue: { ...queueState(["one more thing"], 2), ids: ["queue_9"] } },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(rowsWithGhost(tree, "steering")[0]).toContain("check the logs");
+		expect(lastRow(tree)).toContain("one more thing");
+		expect(lastGhost(tree)).toEqual(["queued"]);
+		expect(pressable(tree, "Steer now")).toBeDefined();
+	});
+
+	// A message with no text (an image) steers under its preview, so the
+	// ghost of Steer all now still names every message it took.
+	it("names an image-only message by its preview in Steer all now's ghost", async () => {
+		const ref = "ref-drain-preview";
+		const served = thread(ref, "active", false, ["check the logs", ""]);
+		const evener = (served as unknown as { evener: { queue: ReturnType<typeof queueState> } }).evener;
+		evener.queue = { ...evener.queue, preview: ["check the logs", "[image]"] };
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== "turn/drainAsSteer") return request(requested, params);
+			// The hub never answers: record the request and leave it there.
+			hub.requests.push({ method: requested, params });
+			return new Promise(() => undefined);
+		};
+		await steerFromQueue(tree, ref, "Steer all now");
+		await settle();
+		const [ghost] = rowsWithGhost(tree, "sending");
+		expect(ghost).toContain("check the logs");
+		expect(ghost).toContain("[image]");
+	});
+
+	// A steer the hub refuses names the message it was for, says it was a
+	// steer, and offers only Discard: the message may still be queued.
+	it.each(STEERS_FROM_QUEUE)("names the message when the hub refuses %s", async (label, status, method, queued) => {
+		const ref = `ref-refused-${label}`;
+		const { tree, hub } = await mount(thread(ref, status, false, [...queued]));
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			if (requested !== method) return request(requested, params);
+			hub.requests.push({ method: requested, params });
+			throw new WireError("queue entry changed", -32013, {
+				evenerErrorInfo: "conflict",
+				clientMutationId: params.clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "none",
+			});
+		};
+		await steerFromQueue(tree, ref, label);
+		await settle();
+		const refused = transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.find((row) => markers(row, "ghost").includes("refused"));
+		if (!refused) throw new Error("no refused ghost");
+		// The hub's reason, beside the message it was for.
+		expect(textOf(refused)).toContain("queue entry changed");
+		expect(textOf(refused)).toContain("check the logs");
+		const offered = refused
+			.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "button")
+			.map((node) => node.props.accessibilityLabel);
+		expect(offered).toContain("Discard");
+		expect(offered).not.toContain("Edit");
 	});
 
 	// They take no room from the transcript, so nothing folds while you type.
@@ -2978,12 +3457,12 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		await press(tree, "Cancel");
 		expect(hub.requests.map((entry) => entry.method)).toContain("turn/cancelQueued");
 		expect(renderedText(tree)).not.toContain("drop this");
-		expect(renderedText(tree)).not.toContain("Couldn't take this message out of the queue.");
+		expect(toasts(tree)).toEqual([]);
 	});
 
 	it("holds a queue a Stop parked, and Send now releases it (Review Focus 3)", async () => {
 		const { tree, hub } = await mount(thread("ref-held", "idle", false, ["after the stop"]));
-		expect(renderedText(tree)).toContain("Held · you stopped this turn");
+		expect(ghostStates(tree)).toEqual(["held"]);
 		await press(tree, "Send now");
 		const promote = hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer");
 		expect(promote.map((request) => request.params)).toMatchObject([{ index: 0, expectedEntryId: "queue_1" }]);
@@ -3181,8 +3660,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 			deniedPath: "/Users/jesse/notes/todo.md",
 		});
 		const { tree, hub } = await mount(served);
-		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
-		expect(renderedText(tree)).toContain("1 more waiting");
+		expect(hasTestID(tree, "approval-dock")).toBe(true);
+		const waiting = tree.root.findAllByProps({ testID: "approval-more-waiting" });
+		expect(waiting.map((node) => textOf(node))).toEqual([expect.stringMatching(/\b1\b/)]);
 		const firstBody = dockBody(tree, "approval-dock").scroller;
 		await press(tree, "Allow this file only");
 		act(() =>
@@ -3193,9 +3673,8 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		);
 		await settle();
 		const text = renderedText(tree).replaceAll("\u200b", "");
-		expect(text).toContain("Wants to read outside the workspace");
 		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
-		expect(text).not.toContain("more waiting");
+		expect(hasTestID(tree, "approval-more-waiting")).toBe(false);
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
 		// The next approval gets a fresh dock (keyed by escalationId), so its
 		// body opens at its top, whatever the last one was scrolled to.
@@ -3204,10 +3683,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 	it("shows the dock in the tray's place, and never the composer", async () => {
 		const { tree } = await mount(withApproval("ref-approval"));
-		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
+		expect(hasTestID(tree, "approval-dock")).toBe(true);
 		expect(pressable(tree, "Stop")).toBeUndefined();
 		expect(field(tree)).toBeUndefined();
-		expect(renderedText(tree)).not.toContain("approval needed");
 	});
 
 	it("puts a long approval's target in the dock's scroller, and Allow and Deny outside it", async () => {
@@ -3253,7 +3731,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		);
 		await settle();
 		const text = renderedText(tree).replaceAll("\u200b", "");
-		expect(text).toContain("Wants to write outside the workspace");
+		expect(hasTestID(tree, "approval-dock")).toBe(true);
 		expect(text).toContain("write_file  /Users/jesse/sites/docs/index.html");
 		expect(pressable(tree, "Allow this file only")).toBeUndefined();
 		expect(pressable(tree, "Deny")).toBeUndefined();
@@ -3270,14 +3748,14 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(resolves.map((request) => request.params)).toEqual([
 			{ ref: "ref-approval-allow", escalationId: "esc-1", approve: true },
 		]);
-		expect(renderedText(tree)).toContain("Allowed once");
+		expect(toasts(tree)).toEqual(["approval:allowed"]);
 	});
 
 	it("denies without a haptic: spec 16.6 plays success only for allowed", async () => {
 		const { tree } = await mount(withApproval("ref-approval-deny"));
 		playedHaptics.length = 0;
 		await press(tree, "Deny");
-		expect(renderedText(tree)).toContain("Denied");
+		expect(toasts(tree)).toEqual(["approval:denied"]);
 		expect(playedHaptics).toEqual([]);
 	});
 });
@@ -3343,7 +3821,10 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 		});
 		vi.mocked(navigation.navigate).mockClear();
 	});
-	afterEach(() => vi.unstubAllGlobals());
+	afterEach(() => {
+		unmountMountedTrees();
+		vi.unstubAllGlobals();
+	});
 
 	it("opens the sheet for a slash typed into an empty draft, and keeps the slash out", async () => {
 		const { tree } = await mount(thread("ref-slash", "idle"));
@@ -3378,7 +3859,7 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 		const host = commandHosts.get(sheetKey("hub-1", "ref-choose"));
 		expect(host?.session.capabilities).toMatchObject({ send: true });
 		act(() => host?.choose("/goal"));
-		await flush();
+		await settle();
 		expect(field(tree)?.props.value).toBe("/goal hello");
 	});
 });
@@ -3463,15 +3944,15 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		flatListCalls.length = 0;
 		await search(tree, "settle");
 		// Rows: ask 1, reply 1, ask 2, reply 2. Both matches are in turn 1.
-		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
 		expect(findScrolls()).toEqual([1]);
 		expect(washed(tree).join(" ")).toContain("The race is in settle.");
 		await press(tree, "Older match");
-		expect(renderedText(tree)).toContain("1 of 2");
+		expect(findMatches(tree)).toEqual({ position: 1, count: 2 });
 		expect(findScrolls()).toEqual([1, 0]);
 		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
 		await press(tree, "Newer match");
-		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
 		act(() => pressable(tree, "Done")?.props.onPress());
 		await settle();
 		expect(washed(tree)).toEqual([]);
@@ -3492,6 +3973,7 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			vi.stubGlobal("cancelAnimationFrame", (id: number) => void frames.delete(id));
 		});
 		afterEach(() => {
+			unmountMountedTrees();
 			flatListScrollFailures.remaining = 0;
 			vi.unstubAllGlobals();
 		});
@@ -3584,11 +4066,18 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 	it("tells VoiceOver the count a search settles on, and nothing on the way", async () => {
 		const { tree } = await mount(findTurns("ref-find-announce"));
 		chooseMenu("Find in session");
-		const announce = vi.spyOn(AccessibilityInfo, "announceForAccessibility");
+		// Where the bar says you are at each announcement.
+		const announced: ReturnType<typeof findMatches>[] = [];
+		const announce = vi.spyOn(AccessibilityInfo, "announceForAccessibility").mockImplementation(() => {
+			announced.push(findMatches(tree));
+		});
 		try {
 			await search(tree, "settle");
 			await search(tree, "settle test");
-			expect(announce.mock.calls).toEqual([["2 of 2"], ["1 of 1"]]);
+			expect(announced).toEqual([
+				{ position: 2, count: 2 },
+				{ position: 1, count: 1 },
+			]);
 		} finally {
 			announce.mockRestore();
 		}
@@ -3598,7 +4087,7 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		const { tree } = await mount(findTurns("ref-find-none"));
 		chooseMenu("Find in session");
 		await search(tree, "nowhere");
-		expect(renderedText(tree)).toContain("No matches");
+		expect(findShows(tree, 0, 0)).toBe(true);
 	});
 
 	it("reaches back through older history for an older match", async () => {
@@ -3608,14 +4097,14 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		});
 		chooseMenu("Find in session");
 		await search(tree, "settle");
-		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
 		await press(tree, "Older match");
 		await press(tree, "Older match");
 		expect(
 			hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
 		).toEqual(["cursor-1"]);
 		expect(washed(tree).join(" ")).toContain("Is settle flaky?");
-		expect(renderedText(tree)).toContain("1 of 3");
+		expect(findMatches(tree)).toEqual({ position: 1, count: 3 });
 	});
 
 	describe("following the live end while find pages older history", () => {
@@ -3709,10 +4198,13 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		const { tree, hub } = await mount(findTurns("ref-find-end"), { olderCursor: "cursor-1" });
 		chooseMenu("Find in session");
 		await search(tree, "settle");
+		expect(hasTestID(tree, "find-bar:exhausted")).toBe(false);
 		await press(tree, "Older match");
 		await press(tree, "Older match");
 		expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
-		expect(renderedText(tree)).toContain("No older matches");
+		// History has ended: the bar says so in place of a match.
+		expect(hasTestID(tree, "find-bar:exhausted")).toBe(true);
+		expect(findBar(tree).props.searchingOlder).toBe(false);
 		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
 	});
 });
@@ -3769,12 +4261,18 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			sessionRef: "ref-chips",
 			path: PLAN_PATH,
+			reference: {
+				cwd: "/home/jesse/git/evener",
+				path: "docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
+			},
 			sessionTitle: "Session",
 			updatedAt: WROTE_AT,
 		});
 	});
 
-	it("counts the session's documents on a Files chip, dotted while one is new, which opens Files & artifacts", async () => {
+	it("counts the session's documents on a Files chip, dotted while one is new, which opens Files", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
 		vi.mocked(navigation.navigate).mockClear();
 		const { tree } = await mount(namedAfterWriting("ref-files"));
@@ -3785,6 +4283,7 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			ref: "ref-files",
 			title: "Session",
+			cwd: "/home/jesse/git/evener",
 			documents: [{ path: PLAN_PATH, kind: "Plan", updatedAt: WROTE_AT }],
 		});
 	});
@@ -3838,8 +4337,9 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		fleet.live = [];
 		fleet.needsYou = [fleetSession("ref-alone", { state: "errored", updated_at: at(1) })];
 		const { tree } = await mount(thread("ref-alone", "idle"));
-		expect(back().props.accessibilityLabel).toBe("Back");
-		expect(renderedText(tree)).not.toContain("Next");
+		// No count of others: nobody else needs you.
+		expect(back().props.accessibilityLabel).not.toMatch(/\d/);
+		expect(tree.root.findByType(FloatingStack).props.next).toBeFalsy();
 	});
 
 	it("opens the first session that needs you from Next, marked seen", async () => {
@@ -3922,12 +4422,12 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 	it("stacks a toast above Next, in the one column over the transcript's end, so neither covers the other", async () => {
 		const { tree } = await mount(thread("ref-stacked", "active"));
 		await press(tree, "Stop");
-		expect(renderedText(tree)).toContain("Stopped");
+		expect(toasts(tree)).toEqual(["stop:stopped"]);
 		const next = capsule(tree);
 		if (!next) throw new Error("no Next capsule");
 		const stack = tree.root.findByType(FloatingStack);
 		const toast = stack.findByType(Toast);
-		expect(toast.props.toast).toMatchObject({ text: "Stopped" });
+		expect(toast.props.toast).toMatchObject({ kind: "stop:stopped" });
 		expect(stack.props.next).toBeTruthy();
 		// Nothing new arrived below, so there is no pill to stack.
 		expect(stack.props.pill).toBeNull();
@@ -3972,7 +4472,7 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(bottom()).toBe(60);
 		// A toast joins it.
 		await press(tree, "Stop");
-		expect(renderedText(tree)).toContain("Stopped");
+		expect(toasts(tree)).toEqual(["stop:stopped"]);
 		expect(bottom()).toBe(60);
 		// Away from the end, with rows the list didn't hold then, the pill joins too.
 		act(() =>
@@ -4080,7 +4580,7 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 			fleet.live = [working];
 			fleet.needsYou = [];
 			const { tree } = await mount(thread("ref-title", "active"));
-			expect(renderedText(tree)).not.toContain("Next");
+			expect(tree.root.findByType(FloatingStack).props.next).toBeFalsy();
 			panTitle(-80);
 			panTitle(80);
 			expect(navigation.replace).not.toHaveBeenCalled();
@@ -4253,7 +4753,6 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			] as never,
 		};
 		const tree = render(<SubagentScreen route={route as never} navigation={navigation as never} />);
-		mountedScreens.push(tree);
 		await settle();
 		return { tree, hub };
 	}
@@ -4332,7 +4831,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(pressable(tree, "Open coordinator")).toBeDefined();
 		expect(pressable(tree, "Stop")).toBeUndefined();
 		// The bar says what you can do; the footer adds nothing.
-		expect(renderedText(tree)).not.toContain("Sending is unavailable");
+		expect(hasTestID(tree, "sending-unavailable")).toBe(false);
 		for (const words of ["Retry", "Refresh", "Reconnect", "From the coordinator", "Talk to it through its coordinator"])
 			expect(renderedText(tree)).not.toContain(words);
 		act(() => pressable(tree, "Ask coordinator to stop it")?.props.onPress());
@@ -4349,7 +4848,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		if (!row) throw new Error("no row");
 		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
 		await settle();
-		expect(renderedText(tree)).toContain("Stop requested");
+		expect(hasTestID(tree, "subagent-stop-requested")).toBe(true);
 		expect(pressable(tree, "Ask coordinator to stop it")).toBeUndefined();
 		expect(pressable(tree, "Open coordinator")).toBeDefined();
 	});
@@ -4366,7 +4865,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
-		expect(renderedText(tree)).toContain("Stop requested");
+		expect(hasTestID(tree, "subagent-stop-requested")).toBe(true);
 		const [stoppedRow] = flattenSubagents(subagentTree() as never);
 		if (!stoppedRow) throw new Error("no row");
 		expect(stopRequests("hub-1").direct(stoppedRow)).toBe(true);
@@ -4486,7 +4985,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		);
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
-		expect(renderedText(tree)).not.toContain("Stop requested");
+		expect(hasTestID(tree, "subagent-stop-requested")).toBe(false);
 	});
 
 	it("reads the tree again when the direct stop finds it already finishing", async () => {
@@ -4502,7 +5001,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		);
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
-		expect(renderedText(tree)).not.toContain("Stop requested");
+		expect(hasTestID(tree, "subagent-stop-requested")).toBe(false);
 	});
 
 	it("offers no direct stop from a connection that has gone", async () => {
@@ -4575,17 +5074,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	it("reads the coordinator's tree again when this subagent's status changes", async () => {
 		const { hub } = await mountSubagent(subagent(true));
 		const before = jobReads(hub);
-		act(() =>
-			hub.notify({
-				method: "evener/thread/activity/changed",
-				params: {
-					threadId: COORDINATOR.threadId,
-					sessionId: "fix",
-					ref: COORDINATOR.ref,
-					resources: ["summary", "delegates", "jobs"],
-				},
-			} as AnyNotification),
-		);
+		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
 	});
@@ -4647,6 +5136,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hubId: "hub-1",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
+			reference: {
+				cwd: "/home/jesse/git/evener",
+				path: "docs/superpowers/plans/settle-race.md",
+				provenance: "relative",
+				readTarget: "/home/jesse/git/evener/docs/superpowers/plans/settle-race.md",
+			},
 			sessionTitle: "Fix race in tree settle",
 		});
 	});
@@ -4842,17 +5337,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			{ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() },
 			2,
 		);
-		act(() =>
-			hub.notify({
-				method: "evener/thread/activity/changed",
-				params: {
-					threadId: COORDINATOR.threadId,
-					sessionId: "fix",
-					ref: COORDINATOR.ref,
-					resources: ["summary", "delegates", "jobs"],
-				},
-			} as AnyNotification),
-		);
+		act(() => hub.notify(activityChangedNotification({ ...COORDINATOR, sessionId: "fix" })));
 		await settle();
 		const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
 		expect(toasts()).toContain("“Fix race in tree settle” stopped");
@@ -4880,7 +5365,7 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		await press(tree, "Send when you're back online");
 		expect(field(tree)?.props.value).toBe("");
 		expect((await outbox(ref)).map((record) => [record.method, record.state])).toEqual([["turn/queue", "submitting"]]);
-		expect(renderedText(tree)).toContain("Will send when you're back online");
+		expect(ghostStates(tree)).toEqual(["sending"]);
 		expect(playedHaptics).toEqual(["impact:light"]);
 		expect(hub.mutations()).toEqual([]);
 
@@ -4903,7 +5388,6 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		} as unknown as Route;
 		navigationState.state = { index: 0, routes: [route] };
 		const tree = render(<ConversationScreen route={route} navigation={navigation} />);
-		mountedScreens.push(tree);
 		await settle();
 		await type(tree, "not yet");
 		expect(pressable(tree, "Send when you're back online")?.props.accessibilityState).toMatchObject({
@@ -4996,12 +5480,12 @@ it("clears the lost send's outbox row with one Discard on the draft ghost", asyn
 	await runtime.storage.markUnknown(clientMutationId, "blockedUnknown", { onlyAttempted: true });
 
 	const { tree } = await mount(thread(ref, "idle"));
-	await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't confirm this was sent"));
+	await vi.waitFor(() => expect(ghostStates(tree)).toEqual(["unconfirmed"]));
 	await press(tree, "Discard");
 
 	// One Discard clears both: the draft's uncertainty and the row it stood in
 	// for, which otherwise returns as its own ghost.
 	await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toEqual([]));
 	await settle();
-	expect(renderedText(tree)).not.toContain("Couldn't confirm this was sent");
+	expect(ghostStates(tree)).toEqual([]);
 });

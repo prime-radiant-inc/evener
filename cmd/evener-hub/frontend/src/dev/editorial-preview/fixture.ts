@@ -7,6 +7,7 @@ import type {
   Turn,
   TurnStartParams,
 } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
@@ -41,9 +42,9 @@ export function createEditorialClient(): EditorialClient {
     if (!result) throw new Error(`Unknown fixture thread: ${ref}`);
     return structuredClone(result);
   };
-  client.scriptConnect(() => ({
+  client.scriptHandshake({
     serverInfo: { name: "Editorial fixture — no live hub", version: "fixture" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fixture",
     features: {
       threadList: true,
@@ -60,7 +61,7 @@ export function createEditorialClient(): EditorialClient {
       auth: true,
     },
     navigation: { version: 1, readVersions: [3], generationId: "generation_test", sequence: 0 },
-  }));
+  });
   client.on("evener/navigation/read", (params) => {
     const wrap = (data: unknown) => wireSnapshot(params, data, `"editorial-${revision}"`, revision);
     switch (params.resource) {

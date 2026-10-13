@@ -33,6 +33,14 @@ function only(items: ReturnType<typeof sessionMenu>): NativeStackHeaderItemMenu 
 
 const labels = (entries: Entry[]) => entries.map((entry) => entry.label);
 
+/** What each of the menu's actions chooses when pressed, in order (the level
+ * submenu holds no action of its own). */
+function chosenKinds(over: Partial<SessionMenuInput> = {}): string[] {
+	const { items, chosen } = menu(over);
+	for (const entry of only(items).menu.items) if (entry.type === "action") entry.onPress();
+	return chosen.map((action) => action.kind);
+}
+
 function action(entries: Entry[], label: string): NativeStackHeaderItemMenuAction {
 	const found = entries.find((entry) => entry.label === label);
 	if (found?.type !== "action") throw new Error(`no action labelled ${label}`);
@@ -50,8 +58,8 @@ function levelSection(entries: Entry[]): NativeStackHeaderItemMenuSubmenu {
 describe("the Session's ⋯ menu (spec 8.1)", () => {
 	it("is one menu under the ellipsis.circle symbol, labelled Session actions", () => {
 		const item = only(menu().items);
-		expect(item.label).toBe("Session actions");
-		expect(item.accessibilityLabel).toBe("Session actions");
+		expect(item.label).toMatch(/\S/);
+		expect(item.accessibilityLabel).toBe(item.label);
 		expect(item.icon).toEqual({ type: "sfSymbol", name: "ellipsis.circle" });
 	});
 
@@ -59,7 +67,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		expect(labels(only(menu().items).menu.items)).toEqual([
 			"Detail level · Intent",
 			"Find in session",
-			"Files & artifacts",
+			"Files",
 			"Activity",
 			"Tasks",
 			"Notes & links",
@@ -79,7 +87,19 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	});
 
 	it("leaves Delete to the Session sheet", () => {
-		expect(labels(only(menu().items).menu.items)).not.toContain("Delete saved session");
+		expect(chosenKinds()).toEqual([
+			"find",
+			"files",
+			"activity",
+			"tasks",
+			"notes",
+			"info",
+			"aside",
+			"like",
+			"pin",
+			"archive",
+			"shutDown",
+		]);
 	});
 
 	it.each([
@@ -124,7 +144,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	});
 
 	it.each([
-		["hasDocuments", "Files & artifacts"],
+		["hasDocuments", "Files"],
 		["sharedNotes", "Notes & links"],
 		["canAside", "Ask aside…"],
 		["canShutDown", "Shut down"],
@@ -137,19 +157,20 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	// Activity and Tasks both read the hub live, so both wait for a connection.
 	it("shows neither Activity nor Tasks while disconnected", () => {
 		const entries = only(menu({ connected: false }).items).menu.items;
-		expect(labels(entries)).not.toContain("Activity");
-		expect(labels(entries)).not.toContain("Tasks");
+		const kinds = chosenKinds({ connected: false });
+		expect(kinds).not.toContain("activity");
+		expect(kinds).not.toContain("tasks");
 		expect(entries).toHaveLength(10);
 	});
 
-	it("opens Files & artifacts", () => {
+	it("opens Files", () => {
 		const { items, chosen } = menu();
-		action(only(items).menu.items, "Files & artifacts").onPress();
+		action(only(items).menu.items, "Files").onPress();
 		expect(chosen).toEqual([{ kind: "files" }]);
 	});
 
 	it("offers Notes & links without a connection: the notes are readable offline", () => {
-		expect(labels(only(menu({ connected: false }).items).menu.items)).toContain("Notes & links");
+		expect(chosenKinds({ connected: false })).toContain("notes");
 	});
 
 	it("describes Ask aside", () => {

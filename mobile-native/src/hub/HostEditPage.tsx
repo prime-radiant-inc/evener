@@ -88,7 +88,10 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 	const sheet = useSheet({ dirty, busy: saving });
 	// Two taps land before the header re-renders disabled; one update goes.
 	const inFlight = useRef(false);
-	const [error, setError] = useState<{ field: EditableHostField | null; message: string } | null>(null);
+	// `changed` marks the refusal for a host someone else changed since the page opened.
+	const [error, setError] = useState<{ field: EditableHostField | null; message: string; changed: boolean } | null>(
+		null,
+	);
 	// Save sits in the header, so the person may be anywhere on the page when a
 	// refusal lands: the page scrolls to the field it names, or to the top for
 	// one above the fields, so Save never looks like it did nothing.
@@ -112,9 +115,11 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 				if (listed && navigation.isFocused()) sheet.finish();
 			} catch (refusal) {
 				const field = hostFieldError(refusal);
+				const changed = hostChangedSinceOpened(refusal);
 				setError({
 					field: HOST_ENTRY_FIELD_ORDER.find((candidate) => candidate === field) ?? null,
-					message: hostChangedSinceOpened(refusal) ? HOST_CHANGED_MESSAGE : friendlyErrorMessage(refusal),
+					message: changed ? HOST_CHANGED_MESSAGE : friendlyErrorMessage(refusal),
+					changed,
 				});
 			} finally {
 				inFlight.current = false;
@@ -131,7 +136,11 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 	return (
 		<GroupedPage scrollRef={page}>
 			<SheetStatus />
-			{error && error.field === null ? <GroupFooter tone="danger">{error.message}</GroupFooter> : null}
+			{error && error.field === null ? (
+				<GroupFooter tone="danger" testID={error.changed ? "host-error-changed" : "host-error-refused"}>
+					{error.message}
+				</GroupFooter>
+			) : null}
 			{HOST_ENTRY_FIELD_ORDER.map((field) => (
 				<View
 					key={field}
@@ -183,8 +192,12 @@ function Field({
 					placeholder={whenEmpty}
 				/>
 			</Group>
-			{whenEmpty ? null : <GroupFooter>{help}</GroupFooter>}
-			{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
+			{whenEmpty ? null : <GroupFooter testID="host-help">{help}</GroupFooter>}
+			{error ? (
+				<GroupFooter tone="danger" testID="host-error-field">
+					{error}
+				</GroupFooter>
+			) : null}
 		</>
 	);
 }

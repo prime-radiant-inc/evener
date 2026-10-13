@@ -35,16 +35,36 @@ export function heldSteerEntries(entries: readonly PendingTurnEntry[]): PendingT
 // while the run continues (#1330). The count is elapsed time from createdAt
 // through the package's formatElapsed, and is omitted entirely when
 // createdAt is unknown - never NaN, never a false 0s.
+export interface HeldCaptionParts {
+  // When the steer delivers: with the next turn, when the running step
+  // finishes, or by joining the turn already in flight.
+  stage: "next-turn" | "step-finishes" | "joining";
+  // Whether the count reads as time held (an accepted steer waiting).
+  held: boolean;
+  // How long since createdAt; undefined when createdAt is unknown.
+  elapsedMs?: number;
+}
+
+const HELD_STAGE_LABELS: Record<HeldCaptionParts["stage"], string> = {
+  "next-turn": "Delivers with the next turn",
+  "step-finishes": "Delivers when this step finishes",
+  joining: "Joining this turn",
+};
+
+export function heldCaptionParts(entry: PendingTurnEntry, turnActive: boolean, now: number): HeldCaptionParts {
+  const held = entry.state === "accepted";
+  // An accepted steer waits out the running step; a submitting one joins the
+  // turn already in flight.
+  const stage = !turnActive ? "next-turn" : held ? "step-finishes" : "joining";
+  return entry.createdAt === undefined ? { stage, held } : { stage, held, elapsedMs: now - entry.createdAt };
+}
+
 export function heldCaption(entry: PendingTurnEntry, turnActive: boolean, now: number): string {
-  let label = "Delivers with the next turn";
-  if (turnActive) {
-    // An accepted steer waits out the running step; a submitting one
-    // joins the turn already in flight.
-    label = entry.state === "accepted" ? "Delivers when this step finishes" : "Joining this turn";
-  }
-  if (entry.createdAt === undefined) return label;
-  const elapsed = formatElapsed(now - entry.createdAt);
-  return entry.state === "accepted" ? `${label} · held ${elapsed}` : `${label} · ${elapsed}`;
+  const { stage, held, elapsedMs } = heldCaptionParts(entry, turnActive, now);
+  const label = HELD_STAGE_LABELS[stage];
+  if (elapsedMs === undefined) return label;
+  const elapsed = formatElapsed(elapsedMs);
+  return held ? `${label} · held ${elapsed}` : `${label} · ${elapsed}`;
 }
 
 // The held set's arrival counter, mirroring askDockStore's activationEpoch

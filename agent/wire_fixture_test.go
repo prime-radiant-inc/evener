@@ -12,13 +12,13 @@ package agent
 //	go test ./agent -run 'WireFixtures$' -update-wire
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
-	"os"
-	"path/filepath"
+	"fmt"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 var updateWireFixtures = flag.Bool("update-wire", false,
@@ -38,22 +38,6 @@ func checkWireFixture(t *testing.T, path string, value any, readers string) {
 	if err != nil {
 		t.Fatalf("encode %s: %v", path, err)
 	}
-	encoded = append(encoded, '\n')
-	if *updateWireFixtures {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("create %s: %v", filepath.Dir(path), err)
-		}
-		if err := os.WriteFile(path, encoded, 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v (regenerate with -update-wire)", path, err)
-	}
-	if !bytes.Equal(want, encoded) {
-		t.Fatalf("the wire drifted from %s.\n got: %s\nwant: %s\nRegenerate with `go test ./agent -run 'WireFixtures$' -update-wire`, then re-run %s.",
-			path, encoded, want, readers)
-	}
+	agenttest.CheckGolden(t, path, append(encoded, '\n'), *updateWireFixtures,
+		fmt.Sprintf("Regenerate with `go test ./agent -run 'WireFixtures$' -update-wire`, then re-run %s.", readers))
 }

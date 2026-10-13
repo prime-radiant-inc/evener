@@ -285,7 +285,6 @@ func TestSteeringKindConstants(t *testing.T) {
 		"no-tool-calls":       SteeringKindNoToolCalls,
 		"loop-detected":       SteeringKindLoopDetected,
 		"tasks-done":          SteeringKindTasksDone,
-		"task-nudge":          SteeringKindTaskNudge,
 		"task-inactive":       SteeringKindTaskInactive,
 		"note-handoff":        SteeringKindNoteHandoff,
 		"goal-objective":      SteeringKindGoalObjective,

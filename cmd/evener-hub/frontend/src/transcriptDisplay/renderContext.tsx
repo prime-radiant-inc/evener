@@ -30,6 +30,7 @@ export interface TranscriptRenderContextValue {
   readonly fullBaselineGeneration: number;
   /** Snapshot supplied by the owning transcript; never read from threadsStore. */
   readonly thread?: ThreadModel;
+  readonly sourcePaneId?: string;
 }
 
 export interface TranscriptRenderContextInput {
@@ -43,6 +44,7 @@ export interface TranscriptRenderContextInput {
   eligibleDisclosureIds?: readonly string[];
   fullBaselineGeneration?: number;
   thread?: ThreadModel;
+  sourcePaneId?: string;
 }
 
 export function expandDetailsByDefault(config: TranscriptDisplayConfigV1): boolean {
@@ -84,6 +86,7 @@ const DEFAULT_CONTEXT: TranscriptRenderContextValue = {
   eligibleDisclosureIds: [],
   fullBaselineGeneration: 0,
   thread: undefined,
+  sourcePaneId: undefined,
 };
 
 const TranscriptRenderContext = createContext<TranscriptRenderContextValue | null>(null);
@@ -125,6 +128,7 @@ export function createTranscriptRenderContext(input: TranscriptRenderContextInpu
     eligibleDisclosureIds,
     fullBaselineGeneration: input.fullBaselineGeneration ?? 0,
     thread: input.thread,
+    sourcePaneId: input.sourcePaneId,
   };
 }
 
@@ -161,6 +165,7 @@ export function TranscriptRenderProvider({
   eligibleDisclosureIds,
   fullBaselineGeneration,
   thread,
+  sourcePaneId,
   entities,
 }: TranscriptRenderProviderProps) {
   const semanticConfig = normalizeConfig(config ?? DEFAULT_CONFIG);
@@ -176,6 +181,7 @@ export function TranscriptRenderProvider({
     semanticSurface,
     semanticScope,
     semanticGeneration,
+    sourcePaneId,
   ].join("\0");
   const semanticContextRef = useRef<
     | {
@@ -198,10 +204,11 @@ export function TranscriptRenderProvider({
       disclosureScope: semanticScope,
       fullBaselineGeneration: semanticGeneration,
       thread,
+      sourcePaneId,
     });
     semanticContextRef.current = { key: semanticKey, thread, context: next };
     return next;
-  }, [semanticKey, thread, value]);
+  }, [semanticKey, sourcePaneId, thread, value]);
   const full = isFullConfig(context.config);
   const previous = useRef<{ scope: string; full: boolean; generation: number; eligible: string } | undefined>(
     undefined,

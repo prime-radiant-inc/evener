@@ -302,12 +302,6 @@ func TestCovLaunchSettingsCWD(t *testing.T) {
 
 // --- renderRepoView ---
 
-func TestCovRenderRepoViewNil(t *testing.T) {
-	if got := renderRepoView(nil); got != "no in-repo file" {
-		t.Fatalf("nil repo view = %q", got)
-	}
-}
-
 func TestCovRenderRepoViewWithPreview(t *testing.T) {
 	r := &appwire.RepoLaunchConfigStatus{
 		Path:    "/path/to/config",
@@ -324,27 +318,22 @@ func TestCovRenderRepoViewWithPreview(t *testing.T) {
 	}
 }
 
-func TestCovRenderRepoViewUntrusted(t *testing.T) {
-	r := &appwire.RepoLaunchConfigStatus{
-		Path:  "/path",
-		Trust: "untrusted",
-		Hash:  "abc",
+// An in-repo file the user has not trusted, or whose contents changed since
+// they trusted it, is offered for trust: Enter on the repo tab sends the trust
+// request for its hash.
+func TestCovRepoAwaitingTrustOffersTrust(t *testing.T) {
+	for _, trust := range []string{"untrusted", "changed"} {
+		r := &appwire.RepoLaunchConfigStatus{Path: "/path", Trust: trust, Hash: "abc"}
+		if !repoAwaitingTrust(r) {
+			t.Fatalf("%s repo should await trust", trust)
+		}
+		p := LaunchSettingsPanel{tab: launchTabRepo, resolved: appwire.LaunchConfigResolved{Repo: r}}
+		if _, cmd := p.editCurrent(); cmd == nil {
+			t.Fatalf("Enter on %s repo should send the trust request", trust)
+		}
 	}
-	v := renderRepoView(r)
-	if !strings.Contains(v, "[T] trust this file") {
-		t.Fatalf("untrusted repo should show trust prompt: %q", v)
-	}
-}
-
-func TestCovRenderRepoViewChanged(t *testing.T) {
-	r := &appwire.RepoLaunchConfigStatus{
-		Path:  "/path",
-		Trust: "changed",
-		Hash:  "abc",
-	}
-	v := renderRepoView(r)
-	if !strings.Contains(v, "[T] trust this file") {
-		t.Fatalf("changed repo should show trust prompt: %q", v)
+	if repoAwaitingTrust(&appwire.RepoLaunchConfigStatus{Trust: "trusted", Hash: "abc"}) {
+		t.Fatal("trusted repo should not await trust")
 	}
 }
 

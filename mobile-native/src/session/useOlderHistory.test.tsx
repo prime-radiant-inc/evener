@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createConversationService } from "../../../mobile/src/services/conversation";
 import { createActivityStore } from "../../../mobile/src/state/activity";
 import { createConversationStore } from "../../../mobile/src/state/conversation";
-import { render, renderHook } from "../renderNative.testkit";
+import { render, renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { type FindState, newFind } from "./findInSession";
 import { attachHistory, forgetHistoryForHub, historyForSession } from "./historyMemory";
 import { useOlderHistory } from "./useOlderHistory";
@@ -14,6 +14,7 @@ import { useOlderHistory } from "./useOlderHistory";
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 beforeEach(() => forgetHistoryForHub("hub"));
 afterEach(() => {
+	unmountMountedTrees();
 	forgetHistoryForHub("hub");
 	vi.useRealTimers();
 });

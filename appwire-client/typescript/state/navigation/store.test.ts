@@ -1,3 +1,4 @@
+import { APPWIRE_PROTOCOL_VERSION } from "../../client";
 // The navigation store's contract suite, run against createNavigationStore
 // directly: boot and manifest fan-out, reconnect and generation reset,
 // invalidation fencing and sequence gaps, gone tombstones, project recovery,
@@ -87,7 +88,7 @@ const init = async (script: NavigationScript) => {
 };
 const initialize = (navigation: NavigationCapability): InitializeResponse => ({
   serverInfo: { name: "fake", version: "1" },
-  protocolVersion: "evener-appwire-v6",
+  protocolVersion: APPWIRE_PROTOCOL_VERSION,
   sourceId: "fake",
   features: {
     threadList: false,
@@ -963,7 +964,7 @@ test("same-generation reconnect during manifest load continues booting resources
   });
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {} as never,
     navigation: capability(),
@@ -1125,7 +1126,7 @@ test("sequence gaps revalidate demanded locations", async () => {
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v6",
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fake",
     features: {} as never,
     navigation: capability(),

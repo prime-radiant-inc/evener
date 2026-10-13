@@ -46,7 +46,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 // far beyond any real restore, but finite, so the pane recovers without a
 // reload.
 export const RESUME_REQUEST_TIMEOUT_MS = 10 * 60_000;
-export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v6";
+export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v7";
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
 
@@ -313,6 +313,13 @@ export class AppwireClient {
 
   get terminalReason(): TerminalReason {
     return this.terminalReasonValue;
+  }
+
+  // The most recent successful handshake, cached before ready subscribers
+  // run. Reading it never dials; callers use state to decide whether that
+  // negotiated generation is currently ready.
+  get initializeResult(): InitializeResponse | null {
+    return this.latestInitialize;
   }
 
   // connect is idempotent: concurrent/repeated calls share the single

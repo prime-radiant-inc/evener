@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
@@ -794,6 +795,32 @@ func retirementAwait(t *testing.T, ready <-chan struct{}) {
 	}
 }
 
+// retirementCreateBarrierTripwire bounds the two waits in
+// retirementCreateListingBarrier: the create reaching the model-list barrier, and
+// the create finishing after the barrier is released. Neither is the fixture's
+// rendezvous — `entered` is, since it closes while the create is parked inside its
+// first model listing. Reaching that listing runs the create's selection and, in
+// the after-reservation case, the committed reservation's durable writes and the
+// child Session's construction up to its own startup listing; after the release
+// the create still finishes that construction, installs and adopts the child
+// Session, preseedes the transcript, completes the committed start durably, and
+// launches. No channel this fixture controls gates any of that, and no production
+// deadline bounds it either (the committed start's context is
+// context.WithCancel(context.Background()), #4133), so both ceilings are hang
+// guards, never speed assertions, and must sit far above what the work costs at
+// rest.
+//
+// 30s matches this package's standing whole-operation tripwire for in-process
+// work (stallHandshakeTimeout, awaitSignal, waitForCondition); a correct create
+// reaches and leaves the barrier in tens of milliseconds at rest, so nothing but
+// a genuine hang reaches this. The previous 10s was sized as if both waits were
+// the rendezvous they follow, and #4133's evidence shows it was not: a controlled
+// 12s pause on one legitimate post-barrier step
+// (testOnly.delegateInitialInputAppend inside preseedInput) made the 10s guard
+// fire with the create healthy, and in the field sighting the post-release fatal
+// came after the reach wait had already spent ~8.9s of the test's 18.86s.
+const retirementCreateBarrierTripwire = 30 * time.Second
+
 func TestRetirementDelegateCreateBeforeReservation(t *testing.T) {
 	t.Parallel()
 	retirementCreateListingBarrier(t, true)
@@ -833,7 +860,13 @@ func retirementCreateListingBarrier(t *testing.T, beforeReservation bool) {
 	go func() {
 		result <- root.createDelegate(context.Background(), delegateArgs{Task: "before-reservation-sentinel", AgentType: "retirement-list"})
 	}()
-	retirementAwait(t, entered)
+	// Not the rendezvous: in the after-reservation case this spans the committed
+	// reservation's durable writes (see retirementCreateBarrierTripwire).
+	select {
+	case <-entered:
+	case <-time.After(retirementCreateBarrierTripwire):
+		t.Fatal("external dependency barrier was not reached")
+	}
 	tree.mu.Lock()
 	unpublished := len(tree.durable) == 0 && len(tree.reservations) == 0
 	committedWithoutRuntime := len(tree.durable) == 1
@@ -855,7 +888,9 @@ func retirementCreateListingBarrier(t *testing.T, beforeReservation bool) {
 	var d delegateResult
 	select {
 	case d = <-result:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	// Awaits the create's own result; the bound is only a hang guard over the
+	// rest of the create (see retirementCreateBarrierTripwire).
+	case <-time.After(retirementCreateBarrierTripwire):
 		t.Fatal("create did not leave model-list barrier")
 	}
 	if d.Err != nil {
@@ -1158,6 +1193,72 @@ func TestRetirementDelegateCloseResumabilityReturnedOwner(t *testing.T) {
 		t.Fatalf("applied closure blocks retirement: %+v %v", state, err)
 	}
 	c.Abort(claim, "")
+}
+
+// closedRetirementDelegateWithAttention appends and opens one attention item
+// on an idle delegate, resolves it first when resolve is set, and closes the
+// delegate's resumability. It returns the tree, the retirement controller and
+// the delegate; the root closes with the test.
+func closedRetirementDelegateWithAttention(t *testing.T, attentionID string, resolve bool) (*delegateTreeController, *RetirementController, delegateResult) {
+	t.Helper()
+	root, tree, c := newRetirementDelegateController(t)
+	t.Cleanup(func() { root.Close() })
+	d := retirementIdleDelegate(t, root)
+	sub := root.subagents.get(d.ChildSessionID)
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, attentionID+"-content"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+		t.Fatal(err)
+	}
+	if resolve {
+		if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plans, err := tree.CloseResumability(rootDelegateActor(root.ID()), d.DelegateID, "closure-sentinel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
+	return tree, c, d
+}
+
+// A closed delegate can never act on a noted wake, so a wake whose item the
+// transcript already resolved (and whose clear failed before the closure)
+// must not hold the tree's retirement.
+func TestRetirementDelegateResolvedWakeOfClosedDelegateDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	const attentionID = "attention-resolved-before-closure"
+	tree, c, d := closedRetirementDelegateWithAttention(t, attentionID, true)
+	tree.mu.Lock()
+	_, wakeKept := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
+	tree.mu.Unlock()
+	if !wakeKept {
+		t.Fatal("the resolved wake did not outlive the closure; the scenario is not the one under test")
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("a closed delegate's resolved wake blocks retirement: %+v %v", state, err)
+	}
+	c.Abort(claim, "")
+}
+
+// The other direction of the closed-delegate rule: ignoring a closed
+// delegate's wakes never lets unresolved attention in its transcript through,
+// whether its runtime is resident or not.
+func TestRetirementDelegateUnresolvedAttentionOfClosedDelegateBlocks(t *testing.T) {
+	t.Parallel()
+	_, c, _ := closedRetirementDelegateWithAttention(t, "attention-unresolved-at-closure", false)
+	claim, state, err := c.TryClaim(true)
+	if claim != nil {
+		c.Abort(claim, "")
+	}
+	if claim != nil || err != nil {
+		t.Fatalf("unresolved attention of a closed delegate escaped: %+v %v", state, err)
+	}
 }
 
 // Pause an actual read of fixture-owned persisted bytes. The original inode is
@@ -1508,27 +1609,14 @@ func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 	c.Abort(claim, "")
 }
 
-func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
+// A daemon steer the root has queued but not consumed is retained input: it
+// blocks retirement as root-owned input, retirement leaves the persisted queue
+// bytes alone, and consuming it lets retirement claim.
+func TestRetirementRetainedRootSteeringBlocksUntilConsumed(t *testing.T) {
 	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
-	d := retirementIdleDelegate(t, root)
-	adapter := &retirementModelBarrier{name: "openai", sessionID: d.ChildSessionID, entered: make(chan struct{}), resume: make(chan struct{})}
-	var release sync.Once
-	defer release.Do(func() { close(adapter.resume) })
-	root.client.Register(adapter)
-	if result := (delegateRuntime{owner: root}).send(context.Background(), d.DelegateID, "caller-source-sentinel", 0).result; result.Err != nil {
-		t.Fatal(result.Err)
-	}
-	retirementAwait(t, adapter.entered)
-	tree.mu.Lock()
-	lease := tree.live[d.DelegateID].binding.lease
-	tree.mu.Unlock()
-	plans, err := tree.SteerCaller(context.Background(), delegateActor{lease: &lease}, "caller-root-sentinel", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
+	if err := root.SteerKind("retained-root-sentinel", events.SteeringKindAgentMessage); err != nil {
 		t.Fatal(err)
 	}
 	original, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))
@@ -1536,51 +1624,27 @@ func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	steering, _, err := loadQueues(root.stateDir, root.ID())
-	if err != nil || len(steering) != 1 || steering[0].Text != "caller-root-sentinel" {
-		t.Fatalf("original root queue missing: %#v %v", steering, err)
+	if err != nil || len(steering) != 1 || steering[0].Text != "retained-root-sentinel" {
+		t.Fatalf("persisted root queue missing: %#v %v", steering, err)
 	}
-	claim, state, err := c.TryClaim(true)
+	claim, state, err := retirementClaimAfterFirstTurn(root, c)
 	if err != nil || claim != nil {
-		t.Fatalf("running caller handoff admitted retirement: %+v %v", state, err)
+		t.Fatalf("retained root input admitted retirement: %+v %v", state, err)
 	}
-	sub := root.subagents.get(d.ChildSessionID)
-	sub.mu.Lock()
-	done := sub.done
-	sub.mu.Unlock()
-	release.Do(func() { close(adapter.resume) })
-	retirementAwait(t, done)
-	// Do not consume root input while settling the caller: establish that the
-	// root's retained input, independently of the completed tree, still blocks.
 	blockers, _, err := tree.retirementEvidence()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The whole-tree collector now includes the root's own evidence by design
-	// (task-4 brief: resident/root narrow projections replaced with
-	// Session-local retirementEvidence). "Settled independently" means no
-	// delegate-category blocker remains for the settled caller; the retained
-	// root input must still surface, root-owned, in the same pass.
-	if slices.ContainsFunc(blockers, func(b RetirementBlocker) bool {
-		return b.Category == "delegate" || b.DelegateID != ""
-	}) {
-		t.Fatalf("caller did not settle independently: %+v", blockers)
-	}
 	if !slices.ContainsFunc(blockers, func(b RetirementBlocker) bool {
 		return b.Category == "input" && b.SessionID == root.ID() && b.DelegateID == ""
 	}) || len(root.retirementInputBlockers()) == 0 {
-		t.Fatalf("original root input lost handoff ownership: %+v", blockers)
-	}
-	claim, state, err = c.TryClaim(true)
-	if err != nil || claim != nil {
-		t.Fatalf("retained root input admitted retirement: %+v %v", state, err)
+		t.Fatalf("retained root input not reported as root-owned: %+v", blockers)
 	}
 	preserved, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))
 	if err != nil || !bytes.Equal(original, preserved) {
-		t.Fatalf("retirement changed original persisted root input: %v", err)
+		t.Fatalf("retirement changed persisted root input: %v", err)
 	}
-	if _, err := root.ProcessInput(context.Background(), "consume-caller-root-sentinel", nil); err != nil {
-		t.Fatal(err)
-	}
+	root.injectDrainedSteering()
 	claim, state, err = retirementClaimAfterFirstTurn(root, c)
 	if err != nil || claim == nil {
 		t.Fatalf("consumed root input blocks: %+v %v", state, err)

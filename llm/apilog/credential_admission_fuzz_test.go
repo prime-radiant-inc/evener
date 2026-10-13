@@ -3,6 +3,7 @@
 package apilog
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -85,7 +86,7 @@ func FuzzAPILogCredentialAdmission(f *testing.F) {
 		if err == nil {
 			t.Fatalf("MarshalRecord wrote a record with the forbidden value %q in its %s", secret, where)
 		}
-		if !strings.Contains(err.Error(), "credential admission") {
+		if !errors.Is(err, ErrCredentialAdmission) {
 			t.Fatalf("MarshalRecord refused %q in %s for the wrong reason: %v", secret, where, err)
 		}
 	})

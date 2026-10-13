@@ -25,8 +25,10 @@ import { describe, expect, it, vi } from "vitest";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import { palettes } from "./design/tokens";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
-import { render, renderedText } from "./renderNative.testkit";
+import { withTestID } from "./markerTestUtils";
+import { offersButton, render, renderedText, textOf } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { errorAction } from "./session/errorAction";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
@@ -108,6 +110,19 @@ function press(tree: ReactTestRenderer) {
 	act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress());
 }
 
+/** What an opened labelled event says beneath its label; undefined while it
+ * is closed. */
+function eventBody(tree: ReactTestRenderer): string | undefined {
+	const [body] = withTestID(tree, "system-event-body");
+	return body ? textOf(body) : undefined;
+}
+
+/** The event's own line, as its button reads it. */
+function eventLabel(tree: ReactTestRenderer): string {
+	const [button] = tree.root.findAll((node) => node.props.accessibilityRole === "button");
+	return button?.props.accessibilityLabel ?? "";
+}
+
 function inked(tree: ReactTestRenderer, color: string): boolean {
 	return (
 		tree.root.findAll(
@@ -159,16 +174,17 @@ describe("system events (G7, G9)", () => {
 		if (row?.kind !== "notice") throw new Error("no tool repair notice");
 		expect(isCriticalNotice(row)).toBe(false);
 		const tree = show("tool-repair", "full");
-		expect(renderedText(tree)).toContain('Fixed the shell call: removed the unrecognized "timeout" field.');
+		expect(renderedText(tree)).toContain(systemEventWireItem("tool-repair").text);
 		expect(inked(tree, DANGER_INK)).toBe(false);
-		expect(renderedText(tree)).not.toMatch(/Retry|Resume|Sign in/);
+		expect(offersButton(tree, /Retry|Resume|Sign in/)).toBe(false);
 	});
 
 	it.each(["compaction-summary", "compaction-checkpoint"] as const)(
 		"collapses a %s to Context summary, which opens to the summary as markdown",
 		(name) => {
 			const tree = show(name);
-			expect(renderedText(tree)).toBe("Context summary");
+			expect(eventBody(tree)).toBeUndefined();
+			expect(renderedText(tree)).not.toContain(systemEventWireItem(name).text);
 			expect(tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
 			press(tree);
 			const markdown = tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText");
@@ -178,14 +194,118 @@ describe("system events (G7, G9)", () => {
 	);
 
 	it("names a loaded plugin, or says a plugin loaded, with no counts", () => {
-		expect(renderedText(show("plugin-loaded"))).toBe("Plugin superpowers loaded");
-		expect(renderedText(show("plugin-loaded-unnamed"))).toBe("Plugin loaded");
+		const named = renderedText(show("plugin-loaded"));
+		const unnamed = renderedText(show("plugin-loaded-unnamed"));
+		expect(named).toContain("superpowers");
+		expect(unnamed).not.toBe("");
+		expect(unnamed).not.toBe(named);
+		// The recorded description counts skills, agents and servers.
+		for (const line of [named, unnamed]) expect(line).not.toMatch(/\d/);
 	});
 
 	it("says how far a compaction brought the context: tokens, else turns, else just that it ran", () => {
-		expect(renderedText(show("context-compaction"))).toBe("Context compacted · 412K → 38K tokens");
-		expect(renderedText(show("context-compaction-turns"))).toBe("Context compacted · 40 → 5 turns");
-		expect(renderedText(show("context-compaction-bare"))).toBe("Context compacted");
+		const tokens = renderedText(show("context-compaction"));
+		const turns = renderedText(show("context-compaction-turns"));
+		const bare = renderedText(show("context-compaction-bare"));
+		// The recorded estimate (412000 -> 38000 tokens), compacted; the turns
+		// (40 -> 5) only when it has no token estimate.
+		expect(tokens).toMatch(/412K\D+38K/);
+		expect(tokens).not.toMatch(/\b40\b/);
+		expect(turns).toMatch(/\b40\D+5\b/);
+		expect(bare).not.toMatch(/\d/);
+	});
+});
+
+describe("approval history (spec 8.2)", () => {
+	// The fixture's decisions were made at the daemon's fixture instant.
+	const decidedAt = () => systemEventWireItem("approval-allowed").startedAt ?? 0;
+
+	// A human's Allow or Deny is a decision they made, like a question's
+	// answer: it shows at every level, system events off.
+	it.each(LEVELS)("shows an Allow and a Deny with their words and when, at %s", (level) => {
+		const items = [systemEventWireItem("approval-allowed"), systemEventWireItem("approval-denied")];
+		const { rows } = rowsAt(level, [completedTurn(items)], false);
+		const approvals = rows.filter((row) => row.kind === "notice" && row.family === "approval");
+		expect(approvals).toEqual([
+			expect.objectContaining({ text: "Allowed: write /Users/j/sites/docs/index.md", decidedAtMs: decidedAt() }),
+			expect.objectContaining({ text: "Denied: read /etc/hosts", decidedAtMs: decidedAt() }),
+		]);
+		for (const approval of approvals) {
+			if (approval.kind !== "notice") throw new Error("not a notice row");
+			expect(isCriticalNotice(approval)).toBe(false);
+		}
+	});
+
+	// Each render subscribes to the shared minute clock; unmounting releases
+	// it, so the next test's fake time starts a fresh clock.
+	function atTime(
+		nowMs: number,
+		name: "approval-allowed" | "approval-denied",
+		check: (tree: ReactTestRenderer) => void,
+	) {
+		vi.useFakeTimers();
+		vi.setSystemTime(nowMs);
+		const tree = show(name, "chat");
+		try {
+			check(tree);
+		} finally {
+			act(() => tree.unmount());
+			vi.useRealTimers();
+		}
+	}
+
+	function spoken(tree: ReactTestRenderer): string | undefined {
+		return tree.root.findAll((node) => typeof node.props.accessibilityLabel === "string")[0]?.props.accessibilityLabel;
+	}
+
+	// Spec 8.2: "Allowed: write …" or "Denied: …" in ink-mid with the
+	// approval mark. Amber is for an approval still waiting on you (the dock).
+	it.each([
+		["approval-allowed", "Allowed: write /Users/j/sites/docs/index.md"],
+		["approval-denied", "Denied: read /etc/hosts"],
+	] as const)("reads %s in ink-mid with the approval mark and how long ago", (name, words) => {
+		atTime(decidedAt() + 5 * 60_000, name, (tree) => {
+			expect(renderedText(tree).replaceAll("\u200b", "")).toBe(`${words} · 5m ago`);
+			expect(spoken(tree)).toBe(`${words}, 5 minutes ago`);
+			const mark = tree.root.findAll((node) => String(node.type) === "SymbolView");
+			expect(mark.map((node) => [node.props.name, node.props.tintColor])).toEqual([
+				["hand.raised.circle.fill", palettes.light.inkMid],
+			]);
+			expect(inked(tree, palettes.light.inkMid)).toBe(true);
+			expect(inked(tree, palettes.light.attention)).toBe(false);
+			expect(inked(tree, DANGER_INK)).toBe(false);
+		});
+	});
+
+	// The minute clock can lag the decision by up to a minute, or a skewed
+	// clock put it ahead: either reads as just now, never "0s ago".
+	it.each([
+		["a moment ago", 20_000],
+		["ahead of the phone's clock", -30_000],
+	])("says just now for a decision made %s", (_, offsetMs) => {
+		atTime(decidedAt() + offsetMs, "approval-allowed", (tree) => {
+			expect(renderedText(tree).replaceAll("\u200b", "")).toBe(
+				"Allowed: write /Users/j/sites/docs/index.md · just now",
+			);
+			expect(spoken(tree)).toBe("Allowed: write /Users/j/sites/docs/index.md, just now");
+		});
+	});
+
+	it("leaves the time out when the decision has none", () => {
+		const item = { ...systemEventWireItem("approval-denied"), startedAt: undefined };
+		const row = rowsAt("chat", [completedTurn([item])], false).rows.find((candidate) => candidate.id === item.id);
+		if (!row) throw new Error("no approval row");
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="approval-untimed" />);
+		expect(renderedText(tree).replaceAll("\u200b", "")).toBe("Denied: read /etc/hosts");
+		expect(spoken(tree)).toBe("Denied: read /etc/hosts");
+		act(() => tree.unmount());
+	});
+
+	// A long path breaks only at its slashes when it wraps, as the dock's does.
+	it("lets the path wrap at its slashes", () => {
+		atTime(decidedAt() + 5 * 60_000, "approval-allowed", (tree) => {
+			expect(renderedText(tree)).toContain("/\u200bUsers/\u200bj/\u200bsites/\u200bdocs/\u200bindex.md");
+		});
 	});
 });
 
@@ -209,9 +329,9 @@ describe("shared-notes snapshots", () => {
 			const tree = render(
 				<TimelineItem item={row} hubId="hub" sessionRef={`notes-${level}`} expandByDefault={expandByDefault} />,
 			);
-			expect(renderedText(tree)).toBe("Shared notes updated");
+			expect(eventBody(tree)).toBeUndefined();
 			press(tree);
-			expect(renderedText(tree)).toBe(`Shared notes updated ${text}`);
+			expect(eventBody(tree)).toBe(text);
 			expect(tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
 		},
 	);
@@ -240,9 +360,9 @@ describe("shared-notes snapshots", () => {
 			const tree = render(
 				<TimelineItem item={row} hubId="hub" sessionRef={`notes-lookup-${missing}`} sourceTurns={sourceTurns} />,
 			);
-			expect(renderedText(tree)).toBe("Shared notes updated");
+			expect(eventBody(tree)).toBeUndefined();
 			press(tree);
-			expect(renderedText(tree)).toBe(`Shared notes updated ${text}`);
+			expect(eventBody(tree)).toBe(text);
 			act(() => tree.unmount());
 		},
 	);
@@ -298,29 +418,23 @@ describe("shared-notes snapshots", () => {
 					/>,
 				);
 			const first = mount("notes-large-persist");
-			expect(renderedText(first)).toBe("Shared notes updated");
+			expect(eventBody(first)).toBeUndefined();
 			press(first);
-			expect(
-				renderedText(first) === `Shared notes updated ${snapshot}`,
-				"expanded snapshot preserves all source text",
-			).toBe(true);
-			expect(renderedText(first).includes("<shared-notes>\nHuman: **opaque**  \n\nAgent: <tags> & data\n")).toBe(true);
-			expect(renderedText(first).endsWith(`${linkLines[49]}\n</shared-notes>`)).toBe(true);
+			expect(eventBody(first) === snapshot, "expanded snapshot preserves all source text").toBe(true);
+			expect(eventBody(first)?.includes("<shared-notes>\nHuman: **opaque**  \n\nAgent: <tags> & data\n")).toBe(true);
+			expect(eventBody(first)?.endsWith(`${linkLines[49]}\n</shared-notes>`)).toBe(true);
 			expect(first.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")).toHaveLength(0);
 			expect(new TextEncoder().encode(row.text).length).toBe(MAX_ITEM_BYTES);
 			act(() => first.unmount());
 			const remounted = mount("notes-large-persist");
-			expect(
-				renderedText(remounted) === `Shared notes updated ${snapshot}`,
-				"remounted snapshot preserves all source text",
-			).toBe(true);
-			expect(renderedText(remounted).endsWith(`${linkLines[49]}\n</shared-notes>`)).toBe(true);
+			expect(eventBody(remounted) === snapshot, "remounted snapshot preserves all source text").toBe(true);
+			expect(eventBody(remounted)?.endsWith(`${linkLines[49]}\n</shared-notes>`)).toBe(true);
 			const otherSession = mount("notes-large-other");
-			expect(renderedText(otherSession)).toBe("Shared notes updated");
+			expect(eventBody(otherSession)).toBeUndefined();
 			const otherRow = rows.find((entry) => entry.id === notes.id);
 			if (!otherRow) throw new Error("no other notes row");
 			const otherItem = mount("notes-large-persist", otherRow);
-			expect(renderedText(otherItem)).toBe("Shared notes updated");
+			expect(eventBody(otherItem)).toBeUndefined();
 			act(() => {
 				remounted.unmount();
 				otherSession.unmount();
@@ -339,35 +453,59 @@ describe("shared-notes snapshots", () => {
 		const first = render(<TimelineItem item={row} hubId="hub" sessionRef="notes-persist" />);
 		press(first);
 		act(() => first.unmount());
-		expect(renderedText(render(<TimelineItem item={row} hubId="hub" sessionRef="notes-persist" />))).toBe(
-			`Shared notes updated ${text}`,
-		);
-		expect(renderedText(render(<TimelineItem item={row} hubId="hub" sessionRef="notes-other" />))).toBe(
-			"Shared notes updated",
-		);
+		expect(eventBody(render(<TimelineItem item={row} hubId="hub" sessionRef="notes-persist" />))).toBe(text);
+		expect(eventBody(render(<TimelineItem item={row} hubId="hub" sessionRef="notes-other" />))).toBeUndefined();
 	});
 });
 
 // Each steer says it is the system's, then what it did: the engineering
 // labels in plain words (spec 5), the rest in the web's.
-const STEER_LABELS: Array<[SystemEventWireCase, string]> = [
-	["steer-hook-context", "System steered: Hook context"],
-	["steer-precompact-hook", "System steered: Hook context before compacting"],
-	["steer-compact-nudge", "System steered: Running low on context"],
-	["steer-no-tool-calls", "System steered: Reminded to keep working"],
-	["steer-loop-detected", "System steered: Loop detected"],
-	["steer-provider-failure", "System steered: Provider failed"],
-	["steer-transcript-pointer", "System steered: Where to find the full transcript"],
-	["steer-task-nudge", "System steered: Task reminder"],
-	["steer-note-handoff", "System steered: Note to self"],
+const STEERS: SystemEventWireCase[] = [
+	"steer-hook-context",
+	"steer-precompact-hook",
+	"steer-compact-nudge",
+	"steer-no-tool-calls",
+	"steer-loop-detected",
+	"steer-provider-failure",
+	"steer-transcript-pointer",
+	"steer-note-handoff",
+	"steer-from-parent",
 ];
 
 describe("the daemon's steers (G8)", () => {
-	it.each(STEER_LABELS)("collapses %s to its label, which opens to what it said", (name, label) => {
+	it.each(STEERS)("collapses %s to its label, which opens to what it said", (name) => {
 		const tree = show(name);
-		expect(renderedText(tree)).toBe(label);
+		expect(eventBody(tree)).toBeUndefined();
+		expect(eventLabel(tree)).not.toBe("");
 		press(tree);
-		expect(renderedText(tree)).toBe(`${label} ${stripSystemReminder(systemEventWireItem(name).text ?? "")}`);
+		expect(eventBody(tree)).toBe(stripSystemReminder(systemEventWireItem(name).text ?? ""));
+	});
+
+	it("labels each steer by what it did", () => {
+		const labels = STEERS.map((name) => eventLabel(show(name)));
+		expect(new Set(labels).size).toBe(STEERS.length);
+	});
+
+	it.each(LEVELS)("keeps a parent's steer, which is conversation, at every level (%s)", (level) => {
+		expect(rowFor("steer-from-parent", level)).toBeDefined();
+	});
+
+	// A parent's message is conversation, not the daemon's markup: it shows
+	// whole under "From parent" even when it quotes notification tags.
+	it.each([
+		"Inspect how <job-notification> is rendered",
+		`See <delegate-notification delegate_id="dlg_42" event="completed" status="completed" reason="" transcript_ref="local:sess_child">
+Delegate dlg_42 completed.
+</delegate-notification> for the format`,
+	])("shows a parent's message that quotes notification markup whole: %s", (text) => {
+		const item = { ...systemEventWireItem("steer-from-parent"), text };
+		const row = rowsAt("intent", [completedTurn([item])]).rows.find((r) => r.id === item.id);
+		if (!row) throw new Error("no row for the parent's message");
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="system-parent-markup" />);
+		// A short message opens folded and a longer one starts open; either
+		// way pressing opens it, and it reads whole.
+		if (eventBody(tree) === undefined) press(tree);
+		expect(eventBody(tree)).toBe(text);
 	});
 
 	it.each(["steer-loop-detected", "steer-provider-failure"] as const)(

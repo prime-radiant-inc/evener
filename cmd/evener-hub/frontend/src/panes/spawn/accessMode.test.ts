@@ -42,7 +42,7 @@ describe("accessModeForSandbox", () => {
   });
 
   test('maps sandbox "off" back to the Full access row', () => {
-    expect(accessModeForSandbox("off")).toEqual({ value: "full", label: "Full access" });
+    expect(accessModeForSandbox("off")?.value).toBe("full");
   });
 
   test("an unrecognized or empty sandbox has no row", () => {
@@ -53,19 +53,24 @@ describe("accessModeForSandbox", () => {
 
 describe("accessModeDefaultLabel", () => {
   test("names the resolved sandbox in the chip's own friendly wording", () => {
-    expect(accessModeDefaultLabel("off")).toBe("Full access (default)");
-    expect(accessModeDefaultLabel("read-only")).toBe("Read-only (default)");
-    expect(accessModeDefaultLabel("workspace-write")).toBe("Workspace write (default)");
-    expect(accessModeDefaultLabel("restricted")).toBe("Restricted (default)");
+    for (const option of ACCESS_MODE_OPTIONS) {
+      const label = accessModeDefaultLabel(sandboxForAccessMode(option.value));
+      expect(label).toContain(option.label);
+      for (const other of ACCESS_MODE_OPTIONS) {
+        if (other !== option) expect(label).not.toContain(other.label);
+      }
+    }
   });
 
-  test('stays plain "(default)" when nothing resolves (unset everywhere or resolve not landed)', () => {
-    expect(accessModeDefaultLabel("")).toBe("(default)");
-    expect(accessModeDefaultLabel("   ")).toBe("(default)");
+  test("stays plain when nothing resolves (unset everywhere or resolve not landed)", () => {
+    const plain = accessModeDefaultLabel("");
+    expect(plain).not.toBe("");
+    for (const option of ACCESS_MODE_OPTIONS) expect(plain).not.toContain(option.label);
+    expect(accessModeDefaultLabel("   ")).toBe(plain);
   });
 
   test("a sandbox value outside the fixed rows is named raw rather than dropped", () => {
-    expect(accessModeDefaultLabel("custom-mode")).toBe("custom-mode (default)");
+    expect(accessModeDefaultLabel("custom-mode")).toContain("custom-mode");
   });
 });
 

@@ -3,14 +3,15 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { type ConnectionState, createHubOverviewStore, friendlyErrorMessage } from "@evener/appwire-client";
+import { type ConnectionState, createHubOverviewStore } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
 import type { HubRoutes } from "./hub/hubSheetContext";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
+import { Button } from "./sheet/Grouped";
 
 type Props = NativeStackScreenProps<HubRoutes, "HubSettings">;
 // A mounted screen re-keyed to another hub is a fresh screen: the
@@ -61,16 +62,14 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 	const colors = useColors();
 	return (
 		<View style={{ borderTopWidth: 0.5, borderColor: colors.border }}>
-			<Action expanded={open} onPress={() => setOpen(!open)}>
-				{title}
-			</Action>
+			<Button text label={title} expanded={open} onPress={() => setOpen(!open)} />
 			{open && <View style={{ paddingBottom: 14, gap: 8 }}>{children}</View>}
 		</View>
 	);
 }
-// The hub overview store keeps the failed request's own text in `error`;
-// this screen shows the same copy for every failure, as the web's sections
-// translate theirs at render.
+// The hub overview store keeps the failed request's friendly text in `error`,
+// which the web's sections render as-is; this screen shows the same copy for
+// every failure instead.
 const HUB_OVERVIEW_REFRESH_FAILED = "Could not load hub information.";
 
 /** The hub's runtime, storage, agents and MCP servers (ruling 12). Its
@@ -176,16 +175,19 @@ function HubSettings({
 			<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
 				<Copy>{hubName}</Copy>
 				{state.loading && !data && <Spinner label="Loading hub information" />}
-				<ErrorMessage message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED} />
+				<ErrorMessage
+					message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED}
+					testID="hub-overview-failed"
+				/>
 				{state.error && (
-					<Action
+					<Button
+						text
+						label="Retry hub information"
 						disabled={state.loading || !ready}
 						onPress={whenReady(canUseConnection, () => {
 							void state.refresh();
 						})}
-					>
-						Retry hub information
-					</Action>
+					/>
 				)}
 				{data && (
 					<>
@@ -228,15 +230,15 @@ function HubSettings({
 								<Copy muted>MCP discovery unavailable.</Copy>
 							) : (
 								<>
-									<ErrorMessage
-										message={data.mcpDiscovered.error ? friendlyErrorMessage(data.mcpDiscovered.error) : null}
-									/>
+									{/* The hub composes these diagnostics and sends them as data, not
+									    as a rejection, so they are shown as the hub wrote them. */}
+									<ErrorMessage message={data.mcpDiscovered.error || null} />
 									{data.mcpDiscovered.servers?.map((server) => (
 										<View key={server.name} style={{ gap: 3 }}>
 											<Copy>{server.name}</Copy>
 											<Detail label="Transport" value={server.transport} />
 											<Detail label="Status" value={server.status} />
-											<ErrorMessage message={server.error ? friendlyErrorMessage(server.error) : null} />
+											<ErrorMessage message={server.error || null} />
 										</View>
 									))}
 									{!data.mcpDiscovered.error && data.mcpDiscovered.servers?.length === 0 && (

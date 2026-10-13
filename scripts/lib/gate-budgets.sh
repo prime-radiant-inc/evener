@@ -122,9 +122,13 @@ gate_module_flags() {
 # than two: the suite runs on vitest's vmThreads pool, and with one worker
 # vitest batches every file into a single shared VM context, so module
 # singletons, jsdom windows and prototype stubs leak from file to file. The
-# caller expands this unquoted, so it must stay free of glob characters.
+# runner config loader imports vite.config.ts directly: Vite's default bundle
+# loader writes the bundled config under node_modules/.vite-temp, which fails
+# in a read-only checkout and otherwise lands in the install fleet worktrees
+# share. The caller expands this unquoted, so it must stay free of glob
+# characters.
 vitest_run_args() {
 	_vra_workers=$(gate_budget 4 4)
 	[ "$_vra_workers" -ge 2 ] || _vra_workers=2
-	printf '%s' "--maxWorkers=$_vra_workers"
+	printf '%s' "--maxWorkers=$_vra_workers --configLoader runner"
 }

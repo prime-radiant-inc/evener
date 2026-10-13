@@ -5,6 +5,10 @@ import styles from "./select.module.css";
 export interface SelectOption {
   value: string;
   label: string;
+  /** Listed but not pickable - a choice that exists but is unavailable right
+   * now (an offline host). Say why in the label, since a native option has no
+   * room for anything else. */
+  disabled?: boolean;
 }
 
 export interface SelectProps {
@@ -28,7 +32,7 @@ export function Select({ value, onChange, options, disabled = false, id, name }:
   return (
     <select id={id} name={name} className={BASE_CLASS.select} value={value} onChange={onChange} disabled={disabled}>
       {options.map((option) => (
-        <option key={option.value} value={option.value}>
+        <option key={option.value} value={option.value} disabled={option.disabled}>
           {option.label}
         </option>
       ))}

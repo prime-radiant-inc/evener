@@ -1,14 +1,17 @@
 import { Text } from "react-native";
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { composerFocusedAs, keyboard, render, renderedText } from "../renderNative.testkit";
+import { composerFocusedAs, keyboard, render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { FloatingStack, transcriptEndRoomAt } from "./FloatingStack";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 
-afterEach(() => keyboard.reset());
+afterEach(() => {
+	unmountMountedTrees();
+	keyboard.reset();
+});
 
 function column(tree: ReturnType<typeof render>) {
 	return tree.root.findAll((node) => String(node.type) === "View")[0];

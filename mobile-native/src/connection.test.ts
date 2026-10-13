@@ -1,3 +1,4 @@
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { WebSocketLike } from "@evener/appwire-client";
 import { connectionTarget, createHubClient, HubProfiles, parsePairingURL } from "./connection";
@@ -219,7 +220,7 @@ describe("hub connections", () => {
 								id: frame.id,
 								result: {
 									serverInfo: { name: "test", version: "1" },
-									protocolVersion: "evener-appwire-v6",
+									protocolVersion: APPWIRE_PROTOCOL_VERSION,
 									sourceId: "local",
 									features: Object.fromEntries(
 										[

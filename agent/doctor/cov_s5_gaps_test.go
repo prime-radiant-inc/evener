@@ -24,40 +24,55 @@ func TestResolveStateBase_DefaultFallback(t *testing.T) {
 	}
 }
 
-// applyRange start:N and A-B windows, plus the lo>hi clamp.
-func TestApplyRange_StartAndSpan(t *testing.T) {
-	base, sid := countFixture(t) // 3 turns
-	// start:2 → skip the first turn, render 2 & 3.
-	r, err := Transcript(base, sid, TranscriptOpts{Range: "start:2"})
-	if err != nil {
-		t.Fatal(err)
+// firstTurn is the turn number of a result's first row, or -1 when it has
+// none or that row is unnumbered.
+func firstTurn(r TranscriptResult) int {
+	if len(r.Turns) == 0 || r.Turns[0].Turn == nil {
+		return -1
 	}
-	if r.TurnsRendered != 2 || r.Turns[0].Index != 2 {
-		t.Errorf("start:2 rendered=%d first=%d, want 2 starting at index 2", r.TurnsRendered, r.Turns[0].Index)
-	}
-	// A-B span "2-3" → turns 2 and 3.
-	r, err = Transcript(base, sid, TranscriptOpts{Range: "2-3"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.TurnsRendered != 2 || r.Turns[0].Index != 2 {
-		t.Errorf("2-3 rendered=%d first=%d, want 2 starting at index 2", r.TurnsRendered, r.Turns[0].Index)
+	return *r.Turns[0].Turn
+}
+
+// The range selects read_transcript turn numbers with read_transcript's
+// grammar: start:N is the first N turns, N-M is inclusive and clamped.
+func TestTranscriptRange_StartAndSpan(t *testing.T) {
+	base, sid := countFixture(t) // turns 0, 1, 2
+	for _, tc := range []struct {
+		spec           string
+		rendered, from int
+	}{
+		{"start:2", 2, 0},
+		{"1-2", 2, 1},
+		{"1-99", 2, 1},
+		{"last:1", 1, 2},
+		{" 1-2 ", 2, 1},  // surrounding whitespace is ignored, as in read_transcript
+		{"2-1", 0, -1},   // N > M selects nothing
+		{"99-98", 0, -1}, // even past the end
+	} {
+		r, err := Transcript(base, sid, TranscriptOpts{Range: tc.spec})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.TurnsRendered != tc.rendered || len(r.Turns) != tc.rendered || firstTurn(r) != tc.from {
+			t.Errorf("%s rendered=%d rows=%d first=%d, want %d rows from turn %d", tc.spec, r.TurnsRendered, len(r.Turns), firstTurn(r), tc.rendered, tc.from)
+		}
 	}
 }
 
-func TestApplyRange_Directly(t *testing.T) {
-	// start with lo>hi possibility: start:100 clamps lo to total, hi=total → empty.
-	lo, hi := applyRange("start:100", 3)
-	if lo != hi {
-		t.Errorf("start past end should clamp to empty window, got [%d,%d)", lo, hi)
+// A malformed range recovers the way read_transcript's does: the whole
+// transcript renders, and the result says why.
+func TestTranscriptRange_MalformedSpecFallsBackWithWarning(t *testing.T) {
+	base, sid := countFixture(t)
+	r, err := Transcript(base, sid, TranscriptOpts{Range: "garbage"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A-B with an out-of-range hi keeps total.
-	if lo, hi := applyRange("2-99", 3); lo != 1 || hi != 3 {
-		t.Errorf("2-99 = [%d,%d), want [1,3)", lo, hi)
+	const want = `invalid range "garbage"; rendered the whole transcript instead. Accepted: N-M | last:N | start:N`
+	if r.RangeWarning != want || r.TurnsRendered != 3 || len(r.Turns) != 3 {
+		t.Fatalf("garbage range = warning %q, %d rows; want %q over all 3 turns", r.RangeWarning, len(r.Turns), want)
 	}
-	// Unrecognized token → whole transcript.
-	if lo, hi := applyRange("garbage", 3); lo != 0 || hi != 3 {
-		t.Errorf("garbage range = [%d,%d), want [0,3)", lo, hi)
+	if out := RenderTranscript(r, "outline"); !strings.Contains(out, "range warning: "+want) {
+		t.Fatalf("rendered transcript does not surface the warning:\n%s", out)
 	}
 }
 
@@ -112,7 +127,7 @@ func TestSummarizeTurn_SkipsNilParts(t *testing.T) {
 			{Kind: llm.ContentText, Text: "hi"},
 		},
 	})}
-	ts := summarizeTurn(1, e, "communicate", DefaultTextMax)
+	ts := summarizeTurn(e, "communicate", DefaultTextMax)
 	if len(ts.ToolCalls) != 0 || len(ts.ToolResults) != 0 {
 		t.Errorf("nil parts should be skipped: %+v", ts)
 	}
@@ -262,7 +277,7 @@ func TestTree_DelegateChildTranscriptMissing(t *testing.T) {
 	}
 }
 
-func TestTruncateAndAtoi(t *testing.T) {
+func TestTruncate(t *testing.T) {
 	if got := Truncate("short", 80); got != "short" {
 		t.Errorf("short string unchanged, got %q", got)
 	}
@@ -270,12 +285,6 @@ func TestTruncateAndAtoi(t *testing.T) {
 	got := Truncate(long, 10)
 	if len([]rune(got)) != 11 || !strings.HasSuffix(got, "…") {
 		t.Errorf("Truncate should cut to 10 + ellipsis, got %q", got)
-	}
-	if atoi("12x3") != 0 {
-		t.Error("atoi with a non-digit should return 0")
-	}
-	if atoi("042") != 42 {
-		t.Error("atoi should parse digits")
 	}
 }
 

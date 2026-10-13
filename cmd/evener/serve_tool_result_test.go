@@ -51,11 +51,11 @@ type serveShellNotificationSignals struct {
 	started       chan struct{}
 	completed     chan struct{}
 	turnComplete  chan struct{}
-	awaiting      chan struct{}
+	rested        chan struct{}
 	startedOnce   sync.Once
 	completedOnce sync.Once
 	turnOnce      sync.Once
-	awaitingOnce  sync.Once
+	restedOnce    sync.Once
 }
 
 func watchServeShellNotifications(client *appwire.Client, callID string) *serveShellNotificationSignals {
@@ -63,7 +63,7 @@ func watchServeShellNotifications(client *appwire.Client, callID string) *serveS
 		started:      make(chan struct{}),
 		completed:    make(chan struct{}),
 		turnComplete: make(chan struct{}),
-		awaiting:     make(chan struct{}),
+		rested:       make(chan struct{}),
 	}
 	go func() {
 		for notification := range client.Notifications() {
@@ -93,8 +93,8 @@ func watchServeShellNotifications(client *appwire.Client, callID string) *serveS
 				}
 			case appwire.NotifyThreadStatusChanged:
 				var params appwire.ThreadStatusChangedParams
-				if json.Unmarshal(notification.Params, &params) == nil && params.Status.Type == appwire.ThreadStatusAwaiting {
-					signals.awaitingOnce.Do(func() { close(signals.awaiting) })
+				if json.Unmarshal(notification.Params, &params) == nil && params.Status.Type == appwire.ThreadStatusIdle {
+					signals.restedOnce.Do(func() { close(signals.rested) })
 				}
 			}
 		}
@@ -293,9 +293,9 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		t.Fatalf("foreground shell turn never completed: %v", ctx.Err())
 	}
 	select {
-	case <-signals.awaiting:
+	case <-signals.rested:
 	case <-ctx.Done():
-		t.Fatalf("foreground shell turn never settled to awaiting: %v", ctx.Err())
+		t.Fatalf("foreground shell turn never settled idle: %v", ctx.Err())
 	}
 
 	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {

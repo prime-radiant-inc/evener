@@ -9,7 +9,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
-import { Button, FormRow, Loader, PathField } from "../../../widgets";
+import { Button, CodeBlock, FormRow, InlineNotice, Loader, PathField } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./inrepo.module.css";
@@ -21,8 +21,6 @@ const CLASS = {
   status: requireClass(styles.status, "inrepo.module.css", "status"),
   note: requireClass(styles.note, "inrepo.module.css", "note"),
   hash: requireClass(styles.hash, "inrepo.module.css", "hash"),
-  preview: requireClass(styles.preview, "inrepo.module.css", "preview"),
-  error: requireClass(styles.error, "inrepo.module.css", "error"),
 };
 
 type Status =
@@ -133,14 +131,27 @@ export function InRepoSection({ host = LOCAL_HOST }: InRepoSectionProps) {
           placeholder="Choose a directory"
         />
       </FormRow>
-      <div className={CLASS.status} aria-live="polite">
+      <div
+        className={CLASS.status}
+        aria-live="polite"
+        data-testid="inrepo-status"
+        data-state={status.phase === "resolved" ? (status.repo?.trust ?? "absent") : status.phase}
+      >
         {status.phase === "empty" && <p className={CLASS.note}>Enter a working directory.</p>}
         {status.phase === "loading" && <Loader label="Loading" />}
-        {status.phase === "error" && <p className={CLASS.error}>Failed to load: {status.message}</p>}
+        {status.phase === "error" && (
+          <InlineNotice tone="danger" live="off">
+            Failed to load: {status.message}
+          </InlineNotice>
+        )}
         {status.phase === "resolved" && (
           <ResolvedStatus cwd={cwd.trim()} repo={status.repo} trusting={trusting} onTrust={handleTrust} />
         )}
-        {trustError && <p className={CLASS.error}>{trustError}</p>}
+        {trustError && (
+          <InlineNotice tone="danger" live="off" data-reason="trust-failed">
+            {trustError}
+          </InlineNotice>
+        )}
       </div>
     </div>
   );
@@ -174,7 +185,7 @@ function ResolvedStatus({
       ) : (
         <p className={CLASS.note}>{TRUST_NOTE[repo.trust] ?? repo.trust}</p>
       )}
-      {repo.preview && <pre className={CLASS.preview}>{repo.preview}</pre>}
+      {repo.preview && <CodeBlock text={repo.preview} />}
       {repo.trust !== "trusted" && (
         <Button type="button" disabled={trusting} onClick={() => repo.hash && onTrust(repo.hash)}>
           Trust this file

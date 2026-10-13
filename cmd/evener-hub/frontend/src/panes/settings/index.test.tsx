@@ -2,6 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { Suspense } from "react";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { paneFor } from "../../shell/paneRegistry";
+import { settingsSectionLabel } from "./sections";
 
 // Await the modules ONCE up front so React.lazy resolves from a warm module
 // cache (mirrors panes/session/index.test.tsx's own beforeAll pattern - see
@@ -59,9 +60,9 @@ test('registers "settings" as a singleton pane', () => {
 
 test("the title reflects the focused section, defaulting to General when none is given", () => {
   const descriptor = paneFor("settings");
-  expect(descriptor.title({}, {})).toBe("General");
-  expect(descriptor.title({ section: "hub" }, {})).toBe("Hub");
-  expect(descriptor.title({ section: "credentials" }, {})).toBe("Providers & credentials");
+  expect(descriptor.title({}, {})).toBe(settingsSectionLabel("general"));
+  expect(descriptor.title({ section: "hub" }, {})).toBe(settingsSectionLabel("hub"));
+  expect(descriptor.title({ section: "credentials" }, {})).toBe(settingsSectionLabel("credentials"));
 });
 
 test("the registered component renders the settings pane", async () => {

@@ -2,7 +2,7 @@ import type { NativeStackNavigationOptions } from "@react-navigation/native-stac
 import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
-import { render } from "../renderNative.testkit";
+import { render, unmountMountedTrees } from "../renderNative.testkit";
 import { useSheetStackOptions } from "./sheetStack";
 
 // The text size the phone is set to: 1 is the default (Large).
@@ -13,6 +13,7 @@ vi.mock("react-native", async () => ({
 }));
 
 afterEach(() => {
+	unmountMountedTrees();
 	text.fontScale = 1;
 });
 

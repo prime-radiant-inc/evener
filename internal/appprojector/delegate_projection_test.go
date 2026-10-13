@@ -4,12 +4,178 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/activitybound"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
+
+// A settled reported packet carries the bounded preview, and the logical owner
+// is the nearest ancestor session when the frame names one, else the owner.
+func TestDelegateProjection_ReportPreviewAndLogicalOwner(t *testing.T) {
+	p := NewAppEventProjector("root", "local:root")
+	direct := delegateProjectionFixture()
+	direct.OwnerSessionID = "root"
+	direct.PacketKind = string(activitybound.PacketReported)
+	direct.Terminal = true
+	direct.Message = json.RawMessage(`"the short report"`)
+	params := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", direct)))
+	if params.Delegate.LogicalOwnerSessionID != "root" {
+		t.Fatalf("direct child logical owner = %q, want root", params.Delegate.LogicalOwnerSessionID)
+	}
+	if params.Delegate.ReportPreview != "the short report" || params.Delegate.ReportPreviewTruncated {
+		t.Fatalf("direct child preview = %q truncated=%v", params.Delegate.ReportPreview, params.Delegate.ReportPreviewTruncated)
+	}
+	if params.Delegate.ProjectionRevision != direct.ProjectionRevision {
+		t.Fatalf("projection revision = %d, want %d", params.Delegate.ProjectionRevision, direct.ProjectionRevision)
+	}
+
+	// A deeper descendant's nearest ancestor session is AncestorSessionIDs[0].
+	p2 := NewAppEventProjector("root", "local:root")
+	deep := delegateProjectionFixture()
+	deep.DelegateID = "dlg_deep"
+	deep.OwnerSessionID = "root"
+	deep.AncestorSessionIDs = []string{"mid"}
+	deep.ProjectionRevision = 8
+	params2 := requireDelegateProjection(t, p2.Project(delegateProjectionEvent("root", deep)))
+	if params2.Delegate.LogicalOwnerSessionID != "mid" {
+		t.Fatalf("descendant logical owner = %q, want mid", params2.Delegate.LogicalOwnerSessionID)
+	}
+}
+
+// The preview is bounded and truncated with the shared helper, and the frame's
+// prose fields are capped exactly as the read caps them.
+func TestDelegateProjection_BoundsPreviewAndProseWithSharedHelper(t *testing.T) {
+	p := NewAppEventProjector("root", "local:root")
+	data := delegateProjectionFixture()
+	data.OwnerSessionID = "root"
+	data.PacketKind = string(activitybound.PacketReported)
+	data.Terminal = true
+	data.Message = json.RawMessage(`"` + strings.Repeat("界", activitybound.MaxDelegateProseRunes*2) + `"`)
+	data.Task = strings.Repeat("t", activitybound.MaxDelegateProseRunes+50)
+	data.Description = strings.Repeat("d", activitybound.MaxDelegateProseRunes+50)
+	data.Model = strings.Repeat("m", activitybound.MaxLabelRunes+50)
+	data.Worktree = &events.DelegateWorktreeData{
+		Path:    strings.Repeat("p", activitybound.MaxDelegateProseRunes+50),
+		Branch:  strings.Repeat("b", activitybound.MaxLabelRunes+50),
+		HeadSHA: strings.Repeat("h", activitybound.MaxLabelRunes+50),
+	}
+	got := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", data))).Delegate
+
+	wantPreview, wantTruncated := activitybound.ReportPreview(data.Message)
+	if got.ReportPreview != wantPreview || got.ReportPreviewTruncated != wantTruncated {
+		t.Fatalf("preview drift from the shared helper: got %q/%v want %q/%v", got.ReportPreview, got.ReportPreviewTruncated, wantPreview, wantTruncated)
+	}
+	if got.ReportPreview != strings.Repeat("界", activitybound.MaxDelegateProseRunes-1)+"…" || !got.ReportPreviewTruncated {
+		t.Fatalf("preview not truncated to the prose cap: runes=%d truncated=%v", len([]rune(got.ReportPreview)), got.ReportPreviewTruncated)
+	}
+	for name, field := range map[string]string{"task": got.Task, "description": got.Description, "model": got.Model} {
+		limit := activitybound.MaxDelegateProseRunes
+		if name == "model" {
+			limit = activitybound.MaxLabelRunes
+		}
+		if len([]rune(field)) != limit {
+			t.Fatalf("%s = %d runes, want %d", name, len([]rune(field)), limit)
+		}
+	}
+	if got.Worktree == nil || len([]rune(got.Worktree.Path)) != activitybound.MaxDelegateProseRunes || len([]rune(got.Worktree.Branch)) != activitybound.MaxLabelRunes || len([]rune(got.Worktree.HeadSHA)) != activitybound.MaxLabelRunes {
+		t.Fatalf("worktree strings not bounded: %+v", got.Worktree)
+	}
+}
+
+// The frame's latest intent is bounded with the same Excerpt the activity read
+// applies, over the exact values that flatten differently under lesser rules:
+// newline- and tab- and multi-space-laden text must project to one single-line
+// excerpt, identical to what the read projects for the same intent.
+func TestDelegateProjection_BoundsLatestIntentLikeTheRead(t *testing.T) {
+	p := NewAppEventProjector("root", "local:root")
+	data := delegateProjectionFixture()
+	data.OwnerSessionID = "root"
+	data.LatestIntent = "Reading  the\tvery\nmessy   board's row tests " + strings.Repeat("and more words ", 60)
+	got := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", data))).Delegate
+	want := appwire.Excerpt(data.LatestIntent, appwire.MaxIntentRunes)
+	if got.LatestIntent != want {
+		t.Fatalf("projected intent = %q, want the read's exact excerpt %q", got.LatestIntent, want)
+	}
+	if strings.ContainsAny(got.LatestIntent, "\n\t") {
+		t.Fatalf("projected intent keeps flattened whitespace: %q", got.LatestIntent)
+	}
+	if runes := len([]rune(got.LatestIntent)); runes > appwire.MaxIntentRunes {
+		t.Fatalf("projected intent is %d runes, want at most %d", runes, appwire.MaxIntentRunes)
+	}
+}
+
+// An older daemon's frame carries no latest_intent key at all. It must decode
+// and project with an empty field, the same fallback every other omitted
+// optional takes, and never drop the row.
+func TestDelegateProjection_OlderFrameWithoutLatestIntentStillProjects(t *testing.T) {
+	raw := []byte(`{
+		"run_generation": 2, "delegate_id": "dlg_projection", "owner_session_id": "root",
+		"root_session_id": "root", "child_session_id": "child", "transcript_ref": "local:child",
+		"type": "delegate", "lifecycle": "idle", "phase": "idle", "status": "idle",
+		"resumable": true, "needs_attention": false, "projection_revision": 7
+	}`)
+	var data events.DelegateUpdatedData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatalf("decode an older frame: %v", err)
+	}
+	p := NewAppEventProjector("root", "local:root")
+	got := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", data))).Delegate
+	if got.LatestIntent != "" {
+		t.Fatalf("older frame projected a latest intent %q, want empty", got.LatestIntent)
+	}
+	if got.DelegateID != "dlg_projection" {
+		t.Fatalf("older frame's row degraded: %+v", got)
+	}
+}
+
+// An open run still owns its predecessor's packet, so it carries no preview.
+func TestDelegateProjection_OpenRunHasNoPreview(t *testing.T) {
+	p := NewAppEventProjector("root", "local:root")
+	data := delegateProjectionFixture()
+	data.OwnerSessionID = "root"
+	data.PacketKind = string(activitybound.PacketReported)
+	data.Message = json.RawMessage(`"stale report"`)
+	data.Terminal = false
+	got := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", data))).Delegate
+	if got.ReportPreview != "" || got.ReportPreviewTruncated {
+		t.Fatalf("open run carried a preview: %q/%v", got.ReportPreview, got.ReportPreviewTruncated)
+	}
+}
+
+// The new fields merge as ordinary revision-ordered fields: a stale frame never
+// rewrites them, and a newer frame replaces them.
+func TestMergeAppwireDelegateInfo_NewFieldsFollowRevision(t *testing.T) {
+	current := appwire.EvenerDelegateInfo{
+		DelegateID: "dlg", ProjectionRevision: 9, LogicalOwnerSessionID: "mid",
+		ReportPreview: "newer", ReportPreviewTruncated: true, LatestActivityAt: "2026-08-15T01:00:00Z",
+	}
+	stale := appwire.EvenerDelegateInfo{
+		DelegateID: "dlg", ProjectionRevision: 8, LogicalOwnerSessionID: "other",
+		ReportPreview: "older", LatestActivityAt: "2026-08-15T02:00:00Z",
+	}
+	merged, changed := mergeAppwireDelegateInfo(current, stale)
+	if !changed {
+		t.Fatal("a later activity time should still publish")
+	}
+	if merged.ReportPreview != "newer" || merged.LogicalOwnerSessionID != "mid" || !merged.ReportPreviewTruncated {
+		t.Fatalf("stale frame rewrote the new fields: %+v", merged)
+	}
+	if merged.LatestActivityAt != stale.LatestActivityAt {
+		t.Fatalf("latest activity = %q, want max %q", merged.LatestActivityAt, stale.LatestActivityAt)
+	}
+
+	newer := stale
+	newer.ProjectionRevision = 10
+	newer.ReportPreview = "newest"
+	merged, changed = mergeAppwireDelegateInfo(current, newer)
+	if !changed || merged.ReportPreview != "newest" || merged.LogicalOwnerSessionID != "other" {
+		t.Fatalf("newer frame did not replace the fields: %+v changed=%v", merged, changed)
+	}
+}
 
 func TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport(t *testing.T) {
 	p := NewAppEventProjector("child", "local:child")
@@ -45,6 +211,27 @@ func TestDelegateProjection_OwnerRootFencesForeignUpdates(t *testing.T) {
 	owned.OwnerSessionID = "owner"
 	if out := p.Project(delegateProjectionEvent("owner", owned)); len(out) != 1 {
 		t.Fatalf("owner stable update notifications = %+v, want one", out)
+	}
+}
+
+// A subagent's thread lists its subtree, so it takes an update for a delegate
+// below it, which still names the tree's root as owner. A row outside its
+// subtree stays fenced.
+func TestDelegateProjection_AncestorSubagentThreadReceivesSubtreeUpdates(t *testing.T) {
+	p := NewAppEventProjector("middle", "local:middle")
+	below := delegateProjectionFixture()
+	below.OwnerSessionID = "root"
+	below.AncestorSessionIDs = []string{"middle"}
+	params := requireDelegateProjection(t, p.Project(delegateProjectionEvent("middle", below)))
+	if params.ThreadID != "middle" || params.Ref != "local:middle" || params.Delegate.OwnerSessionID != "root" || params.Delegate.DelegateID != below.DelegateID {
+		t.Fatalf("subtree update on the middle thread = %+v", params)
+	}
+	elsewhere := delegateProjectionFixture()
+	elsewhere.DelegateID = "dlg_elsewhere"
+	elsewhere.OwnerSessionID = "root"
+	elsewhere.AncestorSessionIDs = []string{"sibling"}
+	if out := p.Project(delegateProjectionEvent("middle", elsewhere)); len(out) != 0 {
+		t.Fatalf("a row outside the middle subtree crossed the fence: %+v", out)
 	}
 }
 

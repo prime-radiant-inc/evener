@@ -1,0 +1,27 @@
+.frame {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+  max-width: 480px;
+}
+
+.picture {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.tile {
+  width: 96px;
+  overflow: hidden;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+}
+
+.caption {
+  display: block;
+  padding: var(--space-1);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}

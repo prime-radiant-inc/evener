@@ -43,10 +43,16 @@ import { destructiveButton } from "./haptics";
 
 // The stores keep each failed request's own text; this screen shows the same
 // copy for every failure, as the web's section translates its at render.
-const MARKETPLACES_FAILED = "Could not load marketplaces.";
 const CATALOG_FAILED = "Could not load this catalog.";
 export const INSTALLED_PLUGINS_FAILED = "Could not load installed plugins.";
-const WRITE_FAILED = "Could not confirm the change. Check its status before trying again.";
+/** Why a marketplace view leads with an error, and what it says. */
+const PROBLEMS = {
+	"list-failed": "Could not load marketplaces.",
+	"write-failed": "Could not confirm the change. Check its status before trying again.",
+	"write-busy": HUB_WRITE_BUSY,
+} as const;
+type MarketplaceProblem = keyof typeof PROBLEMS;
+type WriteProblem = Exclude<MarketplaceProblem, "list-failed">;
 
 /** What the Plugins page hands its marketplace views: the list and add flow
  * take the list's half, and a marketplace's own page the writes' half. */
@@ -165,7 +171,7 @@ export function MarketplaceBrowser({
 	useEffect(() => {
 		void marketplaces.getState().fetchMarketplaces();
 	}, [marketplaces]);
-	const listError = state.marketplacesError === null ? null : MARKETPLACES_FAILED;
+	const listError = state.marketplacesError === null ? null : "list-failed";
 	// A failed read keeps the last list in the store; rows a failed read
 	// cannot vouch for stay hidden until a fresh read lands, and the error copy
 	// and Retry speak instead. The empty-state copy claims only what the
@@ -186,7 +192,7 @@ export function MarketplaceBrowser({
 			{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
 			{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
 				// Add marketplace is on the Marketplaces segment only.
-				<GroupFooter>
+				<GroupFooter testID={`marketplaces-empty-${segment}`}>
 					{segment === "marketplaces"
 						? "No marketplaces on this hub. Add one to browse its plugins."
 						: "No marketplaces on this hub. Add one on Marketplaces to browse its plugins."}
@@ -320,7 +326,7 @@ export function MarketplaceDetail({
 	const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
 	const [query, setQuery] = useState("");
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useState<WriteProblem | null>(null);
 	const revision = useRef(0);
 	// The removal confirmation is native and outlives the renders around it:
 	// the screen's guard can fence or retire a name while its dialog is open,
@@ -371,8 +377,8 @@ export function MarketplaceDetail({
 		if (revision.current !== version) return;
 		if (outcome === "not-ready") return;
 		setError(null);
-		if (outcome === "refused") setError(HUB_WRITE_BUSY);
-		else if (outcome === "failed") setError(WRITE_FAILED);
+		if (outcome === "refused") setError("write-busy");
+		else if (outcome === "failed") setError("write-failed");
 	}
 	function install(target: PluginRefParams) {
 		void act(() => plugins.installPlugin(target.plugin, target.marketplace));
@@ -430,7 +436,7 @@ export function MarketplaceDetail({
 					setError(null);
 					if (outcome === "refused") {
 						if (revision.current !== version) return;
-						setError(HUB_WRITE_BUSY);
+						setError("write-busy");
 						return;
 					}
 					if (outcome === "ran") {
@@ -464,7 +470,7 @@ export function MarketplaceDetail({
 						return;
 					}
 					if (revision.current !== version) return;
-					setError(WRITE_FAILED);
+					setError("write-failed");
 				})();
 			}),
 		]);
@@ -473,7 +479,7 @@ export function MarketplaceDetail({
 	const catalogPlugins = (loaded?.plugins ?? []).filter((item) =>
 		`${item.name} ${item.description ?? ""}`.toLowerCase().includes(needle),
 	);
-	const listError = state.marketplacesError === null ? null : MARKETPLACES_FAILED;
+	const listError = state.marketplacesError === null ? null : "list-failed";
 	const catalogError = catalog?.status === "error" ? CATALOG_FAILED : null;
 	const installedError = plugins.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
 	const browsing = catalog?.status === "loading";
@@ -507,7 +513,14 @@ export function MarketplaceDetail({
 					<View style={{ marginHorizontal: space.margin, marginTop: space.groupGap }}>
 						<SearchField label="Filter this catalog" value={query} onChangeText={setQuery} />
 					</View>
-					{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}
+					{catalogProblem ? (
+						<GroupFooter
+							tone="danger"
+							testID={catalogError ? "catalog-problem-catalog-failed" : "catalog-problem-installed-failed"}
+						>
+							{catalogProblem}
+						</GroupFooter>
+					) : null}
 					{catalogProblem ? (
 						<Group>
 							{catalogError ? (
@@ -534,7 +547,9 @@ export function MarketplaceDetail({
 					) : null}
 					{browsing ? <Spinner label="Loading marketplace catalog" /> : null}
 					{!browsing && loaded && catalogPlugins.length === 0 ? (
-						<GroupFooter>{needle ? "No matching plugins." : "No plugins in this catalog."}</GroupFooter>
+						<GroupFooter testID={needle ? "catalog-empty-filtered" : "catalog-empty-none"}>
+							{needle ? "No matching plugins." : "No plugins in this catalog."}
+						</GroupFooter>
 					) : null}
 					{catalogPlugins.length > 0 ? (
 						<Group>
@@ -582,8 +597,8 @@ function MarketplaceProblems({
 	canUseConnection,
 	retry,
 }: {
-	problem: string | null;
-	listError: string | null;
+	problem: MarketplaceProblem | null;
+	listError: "list-failed" | null;
 	busy: boolean;
 	ready: boolean;
 	canUseConnection: LiveReadiness;
@@ -591,7 +606,11 @@ function MarketplaceProblems({
 }) {
 	return (
 		<>
-			{problem ? <GroupFooter tone="danger">{problem}</GroupFooter> : null}
+			{problem ? (
+				<GroupFooter tone="danger" testID={`marketplace-problem-${problem}`}>
+					{PROBLEMS[problem]}
+				</GroupFooter>
+			) : null}
 			{listError ? (
 				<Group>
 					<Row
@@ -688,11 +707,14 @@ export function AddMarketplace({
 			return;
 		}
 		if (outcome === "refused") {
-			setError(HUB_WRITE_BUSY);
+			setError(HUB_WRITE_BUSY, "write-busy");
 			return;
 		}
 		if (outcome === "failed")
-			setError("Could not confirm the marketplace was added. Check the list and source before trying again.");
+			setError(
+				"Could not confirm the marketplace was added. Check the list and source before trying again.",
+				"write-failed",
+			);
 		else onClose();
 	}
 	// Cancel and a swipe down wait out an add in flight, and ask before a

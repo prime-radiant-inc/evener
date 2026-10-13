@@ -12,6 +12,11 @@ const sourceFrontend = fileURLToPath(new URL("../", import.meta.url));
 const fixture = await createPrivateEditorialPreviewFixture(sourceFrontend);
 after(fixture.cleanup);
 const frontend = `${fixture.frontend}${path.sep}`;
+// Every config load here uses the runner loader. Vite's default bundle loader
+// writes a bundled copy under node_modules/.vite-temp, which a read-only
+// checkout denies (issue #4193); these loads run against the fixture's private
+// copy, and the wrapper test below asserts none is created there.
+const fixtureViteTemp = path.join(frontend, "node_modules", ".vite-temp");
 const appwirePackage = `${fixture.appwirePackage}${path.sep}`;
 const { configFile } = fixture;
 const fixtureRequire = createRequire(path.join(frontend, "package.json"));
@@ -90,13 +95,13 @@ test("private editorial fixture owns lock-matching source, packages, and fonts",
 
 test("production editorial config still refuses a shared writable install", async () => {
   await assert.rejects(
-    resolveConfig({ root: fixture.sharedFrontend, configFile: fixture.sharedConfigFile, logLevel: "silent" }, "serve"),
+    resolveConfig({ root: fixture.sharedFrontend, configFile: fixture.sharedConfigFile, configLoader: "runner", logLevel: "silent" }, "serve"),
     { message: "Editorial preview requires its own npm ci, not a shared writable install" },
   );
 });
 
 test("editorial preview removes RESOLVED inherited proxy and restricts filesystem", async () => {
-  const config = await resolveConfig({ root: frontend, configFile }, "serve");
+  const config = await resolveConfig({ root: frontend, configFile, configLoader: "runner" }, "serve");
   assert.equal(config.server.proxy, undefined);
   assert.equal(config.server.host, "0.0.0.0");
   assert(Array.isArray(config.server.allowedHosts));
@@ -128,6 +133,7 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
   const server = await createServer({
     root: frontend,
     configFile,
+    configLoader: "runner",
     cacheDir: path.join(scratch, "vite-cache"),
     plugins: [{
       name: "editorial-http-routing-only",
@@ -193,6 +199,9 @@ test("browserguard wrapper serves a passed fixture config on its announced port"
   // the Node wrapper rather than a `vite` binary, so the fixture config must
   // reach the wrapper as an argument (the runner's old spawn-argument rewrite
   // matched a command ending in /vite and never fired - roborev finding).
+  // The fixture starts clean: a bundled config from the default loader is what
+  // the assertion after the child exits looks for (issue #4193).
+  await rm(fixtureViteTemp, { recursive: true, force: true });
   const child = spawn(
     process.execPath,
     ["scripts/browserguard-vite.mjs", "scripts/editorial-preview.vite.config.mjs"],
@@ -245,6 +254,11 @@ test("browserguard wrapper serves a passed fixture config on its announced port"
     clearTimeout(timeoutID);
   }
   assert(child.exitCode !== null || child.signalCode !== null, "browserguard wrapper child did not exit");
+  await assert.rejects(
+    stat(fixtureViteTemp),
+    { code: "ENOENT" },
+    "the guard wrapper wrote a bundled config under the fixture's node_modules/.vite-temp",
+  );
   const cacheDir = await realpath(path.join(frontend, ".vite-cache"));
   const relativeCache = path.relative(fixture.root, cacheDir);
   assert(!relativeCache.startsWith(`..${path.sep}`) && relativeCache !== ".." && !path.isAbsolute(relativeCache), cacheDir);

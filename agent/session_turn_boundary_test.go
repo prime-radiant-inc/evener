@@ -361,8 +361,8 @@ func TestStandDownConsumesNoWakeState(t *testing.T) {
 // TestStandDownSettlesTheProcessingTransition covers the state flip the
 // stand-down inherits. processOneInput sets SessionProcessing at :1000, well
 // before the stand-down decision, so returning early without settling leaves
-// the session reporting itself busy with nothing running -- and the serve
-// loop's SetState(sess.WireState()) then publishes that. Every other refusal
+// the session reporting itself busy with nothing running, which its wire
+// state and restore then report. Every other refusal
 // on this path settles through finishNotificationNoop; this one must too.
 func TestStandDownSettlesTheProcessingTransition(t *testing.T) {
 	t.Parallel()

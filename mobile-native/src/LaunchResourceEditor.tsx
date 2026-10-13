@@ -9,7 +9,8 @@ import { LaunchResourceRow } from "./LaunchResourceRow";
 import { assertLaunchListCurrent } from "./launchLists";
 import { addLaunchMcp, resourceKey } from "./launchMcp";
 import { addLaunchPath } from "./launchPaths";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function LaunchResourceEditor({
 	option,
@@ -83,15 +84,15 @@ export function LaunchResourceEditor({
 		<HoldingModal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
-					<Action onPress={close}>Cancel</Action>
-					<Action
+					<Button text label="Cancel" onPress={close} />
+					<Button
+						text
+						label="Done"
 						disabled={busy}
 						onPress={() => {
 							void submit(true);
 						}}
-					>
-						Done
-					</Action>
+					/>
 				</View>
 				<KeyboardAvoidingView
 					style={styles.fill}
@@ -116,10 +117,12 @@ export function LaunchResourceEditor({
 								setError(null);
 							}}
 						/>
-						<Action
+						<Button
+							text
+							label={`Effective values (${effective?.length ?? 0})`}
 							expanded={showEffective}
 							onPress={() => setShowEffective(!showEffective)}
-						>{`Effective values (${effective?.length ?? 0})`}</Action>
+						/>
 						{showEffective && (
 							<View>
 								{effective?.length ? (
@@ -164,14 +167,14 @@ export function LaunchResourceEditor({
 								style={[styles.input, { color: colors.text, borderColor: colors.border }]}
 							/>
 						)}
-						<Action
+						<Button
+							text
+							label={isMcp ? "Add server" : "Add path"}
 							disabled={busy || !raw.trim() || !client}
 							onPress={() => {
 								void submit(false);
 							}}
-						>
-							{isMcp ? "Add server" : "Add path"}
-						</Action>
+						/>
 						{busy && <ActivityIndicator accessibilityLabel="Validating entry" />}
 						{!client && (
 							<Copy muted>You can browse and check entries once the hub is back. Your draft is kept here.</Copy>

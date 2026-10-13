@@ -7,8 +7,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
@@ -177,6 +179,109 @@ func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 	restoreAfter := r.s.worktreeRestoreEnv
 	if restoreAfter == nil || restoreAfter.WorkingDirectory() != r.mainRoot {
 		t.Fatalf("saved restore env after switch = %v, want unchanged at %s", restoreAfter, r.mainRoot)
+	}
+}
+
+// REAL git: the carrier must name the registered linked checkout that switch
+// installed, and it must be observable only after currentEnv agrees with it.
+func TestWorktreeSwitch_PublishesInstalledCWD(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	ctx := t.Context()
+	changed := make(chan string, 8)
+	r.s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.EnvironmentChangedData); ok {
+			changed <- data.WorkingDir
+		}
+	}, func() {})
+	nextCWD := func(stage string) string {
+		t.Helper()
+		select {
+		case got := <-changed:
+			return got
+		case <-ctx.Done():
+			t.Fatalf("%s cwd was not published", stage)
+			return ""
+		}
+	}
+
+	resultA, err := r.create(t, map[string]any{"name": "A"})
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	want := resultA["path"].(string)
+	if got := nextCWD("create A"); got != want {
+		t.Fatalf("create A published cwd = %q, want %q", got, want)
+	}
+	resultB, err := r.create(t, map[string]any{"name": "B"})
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+	if got, wantB := nextCWD("create B"), resultB["path"].(string); got != wantB {
+		t.Fatalf("create B published cwd = %q, want %q", got, wantB)
+	}
+
+	if _, err := r.switchOp(t, map[string]any{"name": "A"}); err != nil {
+		t.Fatalf("switch to A: %v", err)
+	}
+	got := nextCWD("switch")
+	if got != want {
+		t.Fatalf("published cwd = %q, want %q", got, want)
+	}
+	if installed := r.s.currentEnv().WorkingDirectory(); installed != got {
+		t.Fatalf("published %q before installation %q", got, installed)
+	}
+}
+
+func TestWorktreeSwitch_FailedSwitchKeepsCWD(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	ctx := t.Context()
+	changed := make(chan string, 8)
+	drained := make(chan struct{})
+	const sentinelRevision = ^uint64(0)
+	var once sync.Once
+	r.s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.EnvironmentChangedData); ok {
+			changed <- data.WorkingDir
+		}
+		if data, ok := ev.Data.(events.QueueChangedData); ok && data.Revision == sentinelRevision {
+			once.Do(func() { close(drained) })
+		}
+	}, func() {})
+
+	result, err := r.create(t, map[string]any{"name": "A"})
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	want := result["path"].(string)
+	select {
+	case got := <-changed:
+		if got != want {
+			t.Fatalf("create A published cwd = %q, want %q", got, want)
+		}
+	case <-ctx.Done():
+		t.Fatal("create A cwd was not published")
+	}
+
+	if _, err := r.switchOp(t, map[string]any{"name": "never-created"}); err == nil {
+		t.Fatal("expected switch to a non-existent managed worktree to fail")
+	}
+	// sendEvent is ordered and lossless. Once this sentinel is consumed, every
+	// event the failed operation emitted has already passed the same callback.
+	r.s.emit(events.EventQueueChanged, events.QueueChangedData{Revision: sentinelRevision})
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		t.Fatal("event consumer did not reach the failed-switch sentinel")
+	}
+	select {
+	case got := <-changed:
+		t.Fatalf("failed switch published replacement cwd %q", got)
+	default:
+	}
+	if installed := r.s.currentEnv().WorkingDirectory(); installed != want {
+		t.Fatalf("failed switch installed cwd = %q, want unchanged %q", installed, want)
 	}
 }
 
@@ -722,6 +827,47 @@ func TestWorktreeExit_RestoresEnvClearsSavedEnvUnlocks(t *testing.T) {
 	// Unlocked.
 	if r.porcelainEntry(t, pathLane).Locked {
 		t.Error("lane still locked after exit")
+	}
+}
+
+// REAL git: exit publishes the original checkout only after restoring the
+// session environment from the linked checkout git created.
+func TestWorktreeExit_PublishesInstalledCWD(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	ctx := t.Context()
+	changed := make(chan string, 8)
+	r.s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.EnvironmentChangedData); ok {
+			changed <- data.WorkingDir
+		}
+	}, func() {})
+	result, err := r.create(t, map[string]any{"name": "document-lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	select {
+	case got := <-changed:
+		if want := result["path"].(string); got != want {
+			t.Fatalf("create published cwd = %q, want %q", got, want)
+		}
+	case <-ctx.Done():
+		t.Fatal("create cwd was not published")
+	}
+
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	select {
+	case got := <-changed:
+		if got != r.mainRoot {
+			t.Fatalf("published cwd = %q, want %q", got, r.mainRoot)
+		}
+		if installed := r.s.currentEnv().WorkingDirectory(); installed != got {
+			t.Fatalf("published %q before installation %q", got, installed)
+		}
+	case <-ctx.Done():
+		t.Fatal("installed cwd was not published")
 	}
 }
 

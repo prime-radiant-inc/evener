@@ -599,7 +599,7 @@ a bug — report it.
 | delegate revival (`delegate_send` on a kept lane) | lock (`evener:dlg:`) | adopt | refuse revival |
 | disposal, unchanged lane | unlock (vacuous) → remove | unlock → remove | — (the dlg lock is the disposer's) |
 | disposal, changed lane | keep | unlock, keep | — |
-| `prune` candidate | eligible (other conditions apply) | skip | skip |
+| `prune` candidate | eligible (other conditions apply) | skip when the session occupies the lane; the marker does not block when it does not (crash residue), and is released only where the lane is actually collected | skip |
 | hard crash | — | lock stays (stale, diagnosable) | — |
 
 ### `list`
@@ -719,7 +719,24 @@ sweeps, all through the control env:
      sessions, and live delegates without any creator comparison; a *dead*
      session's worktree is normally unlocked and therefore collectible,
      fixing rev-5's starvation finding where creator-mismatch skips made
-     prior-session leftovers uncollectable forever);
+     prior-session leftovers uncollectable forever). A lane carrying **this
+     session's own** marker while the session does not occupy it is crash
+     residue, not occupancy: `remove` and `switch` already treat it as
+     unlocked-for-us, so the marker does not block a `prune` candidate's
+     eligibility and a stranded own lane is collectible rather than skipped.
+     The release happens only on the path that actually collects the lane
+     (immediately before the remove), never during evaluation, so a lane this
+     pass skips — dirty, unmerged, in-grace, under live work, or not a delegate
+     lane — keeps its lock and stays exactly as protected as it was. The
+     release claims the lane's lock file with one atomic rename and reads the
+     claimed marker, so a marker that was released and replaced by another
+     session since the pass's listing is never unlocked (a foreign lock is put
+     back), and the lock is re-taken if the
+     removal then fails with the lane still present. Only the session's own
+     marker is released; another session's or a live delegate's marker stays the
+     skip it was. Only the model-facing `prune` reclaims such a lane; the
+     automatic residue sweep leaves it alone, since it can run between a switch
+     taking the marker and recording the lane as current;
    - no live work under it per this session's `liveWorkUnder` (belt and
      braces alongside the lock);
    - clean per `git -C <path> status --porcelain=v1 --untracked-files=all`;

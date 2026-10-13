@@ -15,7 +15,6 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 	f.Add(uint8(1))
 	f.Fuzz(func(t *testing.T, variant uint8) {
 		web := NewWebServer(hubcore.WebConfig{})
-		_ = formatTokenCount(12)
 		web.lockForSession("a")
 		web.lockForSession("a")
 		next := false

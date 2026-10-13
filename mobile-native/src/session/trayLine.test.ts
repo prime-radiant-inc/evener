@@ -8,7 +8,7 @@ import type {
 } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import { whyLine } from "../board/attention";
-import { subagentTally } from "./sessionState";
+import { runningSubagentCount } from "../subagents/subagentModel";
 import { FrameCounter, type TraySource, trayLine } from "./trayLine";
 
 const NOW = Date.UTC(2026, 8, 26, 14, 0, 0);
@@ -22,6 +22,17 @@ const item = (over: Partial<ItemModel>): ItemModel => ({
 	...over,
 });
 const turn = (items: ItemModel[], status = "inProgress"): TurnModel => ({ id: "turn_1", status, items });
+/** The line a session says when this in-progress item, in its own running
+ * turn, is all there is: what reading only the live turn gives. */
+const currentOnly = (current: ItemModel) =>
+	trayLine(
+		session({
+			turns: [{ id: current.turnId, status: "inProgress", items: [current] }],
+			activeTurnId: current.turnId,
+			runningTurnId: current.turnId,
+		}),
+		NOW,
+	)?.text;
 const delegate = (status: string, n: number): EvenerDelegateInfo => ({
 	runGeneration: 1,
 	delegateId: `d-${n}`,
@@ -92,6 +103,9 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(text(step("compact_context", { note_to_self: "Next: run the race detector." }))).toBe(
 			"Asking for a context compaction · 5s",
 		);
+		expect(text(step("memory_write", { scope: "session", file_path: "notes.md", content: "page" }))).toBe(
+			"Writing memory session/notes.md · 5s",
+		);
 		expect(text(step("shell", {}))).toBe("Running a command · 5s");
 	});
 
@@ -144,7 +158,12 @@ describe("the tray's line (spec 8.3)", () => {
 
 	it("says Writing while the reply streams", () => {
 		const reply = item({ type: "agentMessage", status: "inProgress" });
-		expect(trayLine(session({ turns: [turn([reply])] }), NOW)?.text).toBe("Writing…");
+		const writing = trayLine(session({ turns: [turn([reply])] }), NOW)?.text;
+		// Its own line: neither the bare working line nor a reasoning step's.
+		expect(writing).toMatch(/\S/);
+		expect(writing).not.toBe(trayLine(session(), NOW)?.text);
+		const reasoning = item({ type: "reasoning", status: "inProgress" });
+		expect(writing).not.toBe(trayLine(session({ turns: [turn([reasoning])] }), NOW)?.text);
 	});
 
 	// Without a hub read, the tray counts what the Subagents list, its chip and
@@ -157,7 +176,7 @@ describe("the tray's line (spec 8.3)", () => {
 		const stopped = { ...delegate("stopped", 3), terminal: true, outcome: "stopped" };
 		const failed = { ...delegate("failed", 4), terminal: true, outcome: "failed" };
 		const delegates = [delegate("running", 1), idle, stopped, failed];
-		expect(subagentTally(delegates).running).toBe(2);
+		expect(runningSubagentCount(delegates)).toBe(2);
 		expect(trayLine(session({ delegates }), NOW)?.text).toBe("Waiting on 2 subagents");
 	});
 
@@ -292,7 +311,7 @@ describe("the tray's line (spec 8.3)", () => {
 			runningTurnId: "turn_2",
 		});
 
-		expect(trayLine(liveSession, NOW)?.text).toBe("Thinking…");
+		expect(trayLine(liveSession, NOW)?.text).toBe(currentOnly(current));
 	});
 
 	it("ignores a completed turn still named by the live running turn id", () => {
@@ -305,7 +324,7 @@ describe("the tray's line (spec 8.3)", () => {
 			runningTurnId: "turn_1",
 		});
 
-		expect(trayLine(betweenFrames, NOW)?.text).toBe("Thinking…");
+		expect(trayLine(betweenFrames, NOW)?.text).toBe(currentOnly(current));
 	});
 
 	it("falls back to snapshot progress until the live running turn arrives", () => {
@@ -360,7 +379,10 @@ describe("the tray's line (spec 8.3)", () => {
 	});
 
 	it("goes Quiet after twenty seconds without a frame", () => {
-		expect(trayLine(session({ lastFrameAt: NOW - 19_000 }), NOW)?.text).toBe("Working");
+		// Under twenty seconds it reads as a session that just spoke.
+		expect(trayLine(session({ lastFrameAt: NOW - 19_000 }), NOW)?.text).toBe(
+			trayLine(session({ lastFrameAt: NOW }), NOW)?.text,
+		);
 		expect(trayLine(session({ lastFrameAt: NOW - 40_000 }), NOW)?.text).toBe("Quiet 40s");
 	});
 
@@ -391,7 +413,10 @@ describe("the tray's line (spec 8.3)", () => {
 		};
 		const reply = item({ type: "agentMessage", status: "inProgress" });
 		const withRetry = (lastFrameAt: number) => session({ modelRetry: retry, turns: [turn([reply])], lastFrameAt });
-		expect(trayLine(withRetry(NOW - 5_000), NOW)?.text).toBe("Writing…");
+		// A fresh retry stays out of sight: the line reads as it would without one.
+		expect(trayLine(withRetry(NOW - 5_000), NOW)?.text).toBe(
+			trayLine(session({ turns: [turn([reply])], lastFrameAt: NOW - 5_000 }), NOW)?.text,
+		);
 		expect(trayLine(withRetry(NOW - 25_000), NOW)?.text).toBe("Retrying · rate limited · attempt 1 of 4");
 	});
 

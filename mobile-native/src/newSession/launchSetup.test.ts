@@ -102,9 +102,15 @@ describe("labels", () => {
 	});
 
 	it("names the access a setup runs with", () => {
-		expect(accessOf("read-only", "off").label).toBe("Read-only");
-		expect(accessOf(undefined, "workspace-write").label).toBe("Workspace write");
-		expect(accessOf(undefined, undefined).label).toBe("Full access");
+		const levels = [
+			accessOf("read-only", "off"),
+			accessOf(undefined, "workspace-write"),
+			accessOf(undefined, undefined),
+		];
+		expect(levels.map((level) => level.mode)).toEqual(["read-only", "workspace-write", "off"]);
+		// A known level is named in words, not by its token.
+		for (const level of levels) expect(level.label).not.toBe(level.mode);
+		expect(new Set(levels.map((level) => level.label)).size).toBe(3);
 		expect(accessOf("sealed", undefined)).toEqual({ mode: "sealed", label: "sealed", detail: "" });
 	});
 
@@ -168,9 +174,9 @@ describe("from the form and from a session", () => {
 
 describe("the access a form can name", () => {
 	it("is the person's own choice, or the hub's default once the hub has said it", () => {
-		expect(knownAccess("restricted", null)?.label).toBe("Restricted");
-		expect(knownAccess(undefined, { sandbox: "workspace-write" })?.label).toBe("Workspace write");
-		expect(knownAccess(undefined, {})?.label).toBe("Full access");
+		expect(knownAccess("restricted", null)?.mode).toBe("restricted");
+		expect(knownAccess(undefined, { sandbox: "workspace-write" })?.mode).toBe("workspace-write");
+		expect(knownAccess(undefined, {})?.mode).toBe("off");
 	});
 
 	it("is nothing while the hub's default is unknown, never the least safe level", () => {

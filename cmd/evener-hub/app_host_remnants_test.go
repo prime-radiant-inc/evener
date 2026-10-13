@@ -355,7 +355,7 @@ func TestHostTeardownRecoverRequiresTheAttestation(t *testing.T) {
 		RemnantID:   remnantID,
 		Attestation: appwire.HostTeardownAttestation{Operator: "op", Statement: hostRecoveryStatement, ObservedAt: "2026-09-27T12:00:00Z"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "authenticated identity") {
+	if !errors.Is(err, errOperatorNotSessionIdentity) {
 		t.Fatalf("recover(operator mismatch) = %v, want the identity refusal", err)
 	}
 

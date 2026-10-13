@@ -57,13 +57,20 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 	it.each([
 		[session("active", { activeTurnStartedAt: ago(38 * 60_000) }), "working", "Working · 38m"],
 		[session("active"), "working", "Working"],
-		[session("idle", { turns: [done(ago(3_600_000))] }), "idle", "Finished · 1h ago"],
-		[session("awaiting", { turns: [done(ago(120_000))] }), "idle", "Finished · 2m ago"],
-		[session("idle"), "idle", "Finished"],
+		[session("idle", { turns: [done(ago(3_600_000))] }), "idle", "Idle · 1h ago"],
+		// Awaiting without a question: the turn ended on needs_response (#4093).
+		[session("awaiting", { turns: [done(ago(120_000))] }), "needsYou", "Needs you"],
+		[session("idle", { turns: [done(ago(10_000))] }), "idle", "Idle · just now"],
+		// A hub clock ahead of the phone's puts the finish in the future.
+		[session("idle", { turns: [done(ago(-5_000))] }), "idle", "Idle · just now"],
+		[session("idle"), "idle", "Idle"],
 		[session("awaiting", { askPending: true }), "question", "Asks a question"],
 		[session("active", { pendingEscalations: [escalation] }), "approval", "Asks for approval"],
+		[session("awaiting", { pendingEscalations: [escalation] }), "approval", "Asks for approval"],
 		[session("awaiting", { askPending: true, pendingEscalations: [escalation] }), "question", "Asks a question"],
 		[session("systemError"), "failed", "Failed"],
+		[session("systemError", { askPending: true, pendingEscalations: [escalation] }), "failed", "Failed"],
+		[session("active", { askPending: true }), "working", "Working"],
 		[session("restartRequired"), "restartNeeded", "Restart needed"],
 		[session("warning"), "warning", "Warning"],
 		[session("notLoaded"), "shutDown", "Shut down"],
@@ -86,10 +93,7 @@ describe("the context chips (spec 8.1)", () => {
 		expect(contextChips({ delegates: [], tasks: null, goal: null, queue: null }, true, noFiles, counts())).toEqual([]);
 	});
 
-	it("count subagents the way the Subagents list does, with failures in their own part", () => {
-		// A stopped or cancelled delegate finished, not failed; a delegate still
-		// retrying after exhaustion (not terminal) is running. The list says so
-		// (subagentState), and the chip must show the same numbers (issue #2684).
+	it("uses the authoritative total without a failure suffix", () => {
 		const [chip] = contextChips(
 			{
 				delegates: [delegate("running", 1), delegate("idle", 2, "failed")],
@@ -99,18 +103,17 @@ describe("the context chips (spec 8.1)", () => {
 			},
 			true,
 			noFiles,
-			counts(2, 1),
+			counts(5, 3),
 		);
 		expect(chip).toEqual({
 			kind: "subagents",
-			label: "Subagents 2",
-			failed: "1 failed",
+			label: "Subagents 5",
 			attention: false,
-			accessibilityLabel: "Subagents, 2, 1 failed",
+			accessibilityLabel: "Subagents, 5",
 		});
 	});
 
-	it("show tasks done of total, the goal (amber when blocked), and the queue", () => {
+	it("show tasks settled of total, the goal (amber when blocked), and the queue", () => {
 		const chips = contextChips(
 			{
 				delegates: undefined,
@@ -128,9 +131,31 @@ describe("the context chips (spec 8.1)", () => {
 			["queue", "Queue 1", false],
 		]);
 		expect(chips.map((chip) => chip.accessibilityLabel)).toEqual([
-			"Tasks, 3 of 7 done",
+			"Tasks, 3 of 7 settled",
 			"Goal, blocked",
 			"1 queued message",
+		]);
+	});
+
+	it("counts cancelled tasks toward the Tasks chip's settled count", () => {
+		const chips = contextChips(
+			{
+				delegates: undefined,
+				tasks: { total: 7, done: 3, cancelled: 1 },
+				goal: null,
+				queue: null,
+			},
+			true,
+			noFiles,
+			counts(),
+		);
+		expect(chips).toEqual([
+			{
+				kind: "tasks",
+				label: "Tasks 4/7",
+				attention: false,
+				accessibilityLabel: "Tasks, 4 of 7 settled",
+			},
 		]);
 	});
 
@@ -181,8 +206,8 @@ describe("the Subagents chip", () => {
 	it("counts from the whole-subtree summary, not the transcript's roster", () => {
 		expect(subagentsChip(withSubagents, counts(501, 20))).toMatchObject({
 			label: "Subagents 501",
-			failed: "20 failed",
-			accessibilityLabel: "Subagents, 501, 20 failed",
+			attention: false,
+			accessibilityLabel: "Subagents, 501",
 		});
 		expect(subagentsChip(withSubagents, counts(3))).toEqual({
 			kind: "subagents",

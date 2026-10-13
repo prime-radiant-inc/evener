@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -138,7 +138,8 @@ func TestServeResumeForeignHeaderEntryListFailsStartup(t *testing.T) {
 	if probe.prepared {
 		t.Fatal("identity preparation ran over a foreign-header transcript; restore should have failed first")
 	}
-	if !strings.Contains(serveErr.Error(), "restore session") {
+	mismatch, ok := errors.AsType[*transcript.SessionIDMismatchError](serveErr)
+	if !ok || mismatch.HeaderSessionID != foreignSessionID || mismatch.RequestedSessionID != sessionID {
 		t.Fatalf("serve error = %v, want the restore-stage failure naming the mismatch", serveErr)
 	}
 }

@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, testIDSuffixes } from "../renderNative.testkit";
 import { CredentialPasteSheet } from "./CredentialPasteSheet";
 
 const clipboard = vi.hoisted(() => ({ getStringAsync: vi.fn(async () => "") }));
@@ -88,7 +88,7 @@ it("says the clipboard held no credential JSON rather than doing nothing", async
 	if (!paste) throw new Error("no paste control");
 	act(() => paste.props.onPress());
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("held no credential JSON");
+	expect(testIDSuffixes(tree, "form-error")).toHaveLength(1);
 });
 
 it("drops a clipboard read that lands after the sheet is gone", async () => {

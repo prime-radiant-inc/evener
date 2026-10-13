@@ -154,7 +154,13 @@ func TestRunExitsWhenTheModelLeavesAServiceRunning(t *testing.T) {
 	}
 	// The kill is reported where the operator can see what died: id, command
 	// text, runtime.
-	if !strings.Contains(stderr.String(), "undisposed background job") || !strings.Contains(stderr.String(), serviceCommand) {
-		t.Fatalf("stderr does not report the killed job with its command text:\n%s", stderr.String())
+	reported := false
+	for line := range strings.SplitSeq(stderr.String(), "\n") {
+		if strings.HasPrefix(line, "[warning]") && strings.Contains(line, serviceCommand) {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Fatalf("stderr has no warning event naming the killed job's command text:\n%s", stderr.String())
 	}
 }

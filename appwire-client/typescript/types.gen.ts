@@ -78,6 +78,12 @@ export interface ArchivedListParams {
   projectKey: string;
   cursor?: string;
   limit?: number;
+  /**
+   * Revision is the revision of the list the caller holds (a response's
+   * Revision). When it is still the list's, the response says Unchanged and
+   * carries no rows. An older hub ignores it and answers the page.
+   */
+  revision?: string;
 }
 
 export interface ArchivedListResponse {
@@ -85,6 +91,19 @@ export interface ArchivedListResponse {
   nextCursor?: string;
   total: number;
   catalog?: string;
+  /**
+   * Revision fingerprints the whole list read, the same on every page of it;
+   * it changes when any row a page could show changes. An older hub sends
+   * none. It vouches for the rows a client holds only when every page it
+   * holds carried this same revision; a client whose pages carried
+   * different revisions holds none, and reads again.
+   */
+  revision?: string;
+  /**
+   * Unchanged is true when the request's Revision is still the list's: the
+   * response then carries no rows, and Total, Catalog and Revision stand.
+   */
+  unchanged?: boolean;
 }
 
 export interface AttentionChanged {
@@ -100,6 +119,13 @@ export interface AttentionChanged {
    * question's equivalent.
    */
   approvalPending?: boolean;
+  /**
+   * NeedsResponse is true while the session rests awaiting with no pending
+   * question: its turn ended with end_reason needs_response, asking for a
+   * reply. A plain reply rests idle and never carries it. Additive: an
+   * older hub omits it, decoding as false.
+   */
+  needsResponse?: boolean;
   prevLevel: string;
 }
 
@@ -408,6 +434,11 @@ export interface DaemonLifecycle {
   deadline?: string;
   blockers: DaemonBlocker[];
   failure?: string;
+  /**
+   * LastAttempt is why the most recent automatic retirement attempt did not
+   * retire the process; absent until the idle timer has made one.
+   */
+  lastAttempt?: DaemonRetirementAttempt;
 }
 
 export interface DaemonListParams {
@@ -439,6 +470,12 @@ export interface DaemonRetireResponse {
   lifecycle: DaemonLifecycle;
 }
 
+export interface DaemonRetirementAttempt {
+  at: string;
+  blockers: DaemonBlocker[];
+  error?: string;
+}
+
 export interface DaemonStatusParams {
 }
 
@@ -459,6 +496,44 @@ export interface DelegateStopResponse {
 export interface DeletionSkip {
   id: string;
   reason: string;
+  /**
+   * Kind classifies the skip structurally: SkipKindLive, or empty for any
+   * other reason, which Reason then explains.
+   */
+  kind?: string;
+}
+
+export interface DevicePairingApproveParams {
+  invitation: string;
+  publicKey: string;
+}
+
+export interface DevicePairingClaim {
+  publicKey: string;
+  client: string;
+  comparison: string;
+}
+
+export interface DevicePairingCreateParams {
+  origin: string;
+  tailnet: boolean;
+}
+
+export interface DevicePairingInvitation {
+  invitation: string;
+  origin: string;
+  tailnet: boolean;
+  expiresAt: number;
+}
+
+export interface DevicePairingParams {
+  invitation: string;
+}
+
+export interface DevicePairingStatus {
+  state: string;
+  claims: DevicePairingClaim[];
+  approvedKey?: string;
 }
 
 export interface DiagnosticCause {
@@ -508,6 +583,14 @@ export interface EvenerDelegateInfo {
   runGeneration: number;
   delegateId: string;
   ownerSessionId: string;
+  /**
+   * LogicalOwnerSessionID is the session whose activity rows scope this
+   * delegate: the nearest ancestor session (AncestorSessionIDs[0]) when there
+   * is one, else OwnerSessionID. OwnerSessionID is always the physical root, so
+   * a session-scoped client buckets its own children from a descendant's by
+   * this field.
+   */
+  logicalOwnerSessionId?: string;
   rootSessionId: string;
   childSessionId: string;
   transcriptRef: string;
@@ -524,6 +607,14 @@ export interface EvenerDelegateInfo {
   needsAttention: boolean;
   notResumableReason?: string;
   projectionRevision: number;
+  /**
+   * ReportPreview is the settled current run's reported text, capped at 4096
+   * Unicode code points including an ellipsis when truncated. Absent while the
+   * run is open, for an error-only or unreported outcome, and for a prior
+   * generation once a new run has started.
+   */
+  reportPreview?: string;
+  reportPreviewTruncated?: boolean;
   task?: string;
   description?: string;
   agentType?: string;
@@ -538,6 +629,13 @@ export interface EvenerDelegateInfo {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  /**
+   * LatestIntent is the open generation's newest stated tool-call intent
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the row's display line, the same Excerpt-bounded value the read
+   * projects. Empty whenever no run is open, and absent from older daemons.
+   */
+  latestIntent?: string;
   runningForMs?: number;
   quietForMs?: number;
   durationMs?: number;
@@ -763,15 +861,15 @@ export interface EvenerThread {
    */
   goal?: GoalState;
   /**
-   * HumanNote carries the human's one-paragraph session whiteboard when set,
-   * else empty. It powers the shared-notes display without a bespoke
+   * HumanNote carries the human's session whiteboard, line breaks kept, when
+   * set, else empty. It powers the shared-notes display without a bespoke
    * transport — like Goal, it is structured per-session state read from the
    * already-fetched thread snapshot.
    */
   humanNote?: string;
   /**
-   * AgentNote carries the agent's one-paragraph session whiteboard when set,
-   * else empty. It is read from the already-fetched thread snapshot like
+   * AgentNote carries the agent's session whiteboard, line breaks kept, when
+   * set, else empty. It is read from the already-fetched thread snapshot like
    * HumanNote.
    */
   agentNote?: string;
@@ -1892,16 +1990,13 @@ export interface JobActivityWorktree {
   dirty: boolean;
 }
 
-export interface JobOutputTail {
-  tail: string;
+export interface JobOutputPage {
+  offsetBytes: number;
+  bytesReturned: number;
   totalBytes: number;
-  retainedStart: number;
-  truncated: boolean;
-  /**
-   * HasEarlier is true when retained output exists before the window: a
-   * follow-up read with beforeBytes=RetainedStart returns the previous page.
-   */
-  hasEarlier?: boolean;
+  retainedStartBytes: number;
+  encoding: string;
+  data: string;
 }
 
 export interface JobsGetParams {
@@ -1930,7 +2025,7 @@ export interface JobsOutputParams {
 }
 
 export interface JobsOutputResponse {
-  data: JobOutputTail;
+  data: JobOutputPage;
 }
 
 export interface JobsTreeUpdatedParams {
@@ -2383,6 +2478,12 @@ export interface NavigationReadParams {
   resource: string;
   section?: string;
   sectionId?: string;
+  /**
+   * Catalog names a catalog read's catalog. On a project or project_page
+   * read it narrows the read to that catalog's project, as a location's
+   * catalog names it; an older hub refuses it there, and sends no location
+   * catalog to take it from.
+   */
   catalog?: string;
   projectKey?: string;
   tier?: string;
@@ -2425,6 +2526,14 @@ export interface NavigationSessionLocation {
   revision: number;
   ref: string;
   top_level_ref: string;
+  /**
+   * Catalog is the catalog ("projects", "archived_projects" or "test_runs")
+   * whose project ProjectKey names: a key can be in several, and a project
+   * or project_page read naming this catalog returns the project holding
+   * the session. Absent outside a project, and from an older hub, which
+   * also refuses a catalog on those reads.
+   */
+  catalog?: string;
   project_key?: string;
   top_level: boolean;
   tier?: string;
@@ -2505,6 +2614,16 @@ export interface NavigationSessionSummary {
    * has never run, and an offline row that ran must not read as "Not started".
    */
   offline?: boolean;
+  /**
+   * Archived says the rail files the session as archived: its own archive
+   * decision, its project's, or two weeks without activity (S14, the rule
+   * appwire.SearchResult.Archived reports for a live hit). It sits BESIDE Live
+   * rather than replacing it: a session archived while it is still running
+   * stays reachable through a pin, and this flag lets a client suppress the
+   * row's unread dot for it (#4199). Absent when it is not, and from an
+   * older hub.
+   */
+  archived?: boolean;
   updated_at?: string;
   more_subagents?: number;
   /**
@@ -2527,6 +2646,15 @@ export interface NavigationSessionSummary {
    * carries TurnEndedAt.
    */
   unseen?: boolean;
+  /**
+   * SeenThrough is the hub's seen-through mark for a live row, floored at
+   * the seen store's start, so a client can tell output that moved after it
+   * (an activity read's lastMovedAt) from output already seen, even
+   * mid-turn. It does not reflect an explicit "Mark as unread", so a client
+   * also reads Unseen. Absent on a row that isn't live, and from a hub with
+   * no seen store or an older hub.
+   */
+  seen_through?: string;
   /**
    * Own-session activity counts are captured before navigation fitting.
    * RunningJobCommand is the first available command, bounded for display.
@@ -2767,6 +2895,16 @@ export interface PluginEntry {
   gitCommitSha?: string;
   installedAt: number;
   lastUpdated: number;
+  /**
+   * UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+   * newer version: a newer remote commit for a git-backed plugin, or new
+   * contents in its marketplace, which the check refreshes first, for one
+   * stored in its marketplace's own repo. Absent means no known update: no check has run,
+   * the check found the plugin current or could not read its source, or the
+   * plugin is used in place from a directory. Clients offer Upgrade only when
+   * it is true.
+   */
+  updateAvailable?: boolean;
 }
 
 export interface PluginLaunchCandidate {
@@ -2838,6 +2976,11 @@ export interface ProjectDeleteResponse {
 export interface ProjectDeleteSkip {
   id: string;
   reason: string;
+  /**
+   * Kind classifies the skip structurally: SkipKindLive, or empty for any
+   * other reason, which Reason then explains.
+   */
+  kind?: string;
 }
 
 export interface ProjectsRecentParams {
@@ -3078,7 +3221,7 @@ export interface SessionActivity {
   minutes: number[];
   /**
    * RunningSubagents counts the session's subagents, at every depth, whose
-   * own turn is running.
+   * run is open: SubagentTally.Running, the count its Live row shows.
    */
   runningSubagents: number;
   /**
@@ -3097,6 +3240,14 @@ export interface SessionActivity {
    * call, and when the daemon predates the field.
    */
   latestIntent?: string;
+  /**
+   * LastMovedAt is the Unix-millisecond time of the tree's newest transcript
+   * motion (ThreadActivity.LastMovedAt). A client compares it with the
+   * session's seen_through to tell whether anything moved since the person
+   * last looked, mid-turn included. Absent until the tree has moved since
+   * its daemon began serving it, and from an older hub or daemon.
+   */
+  lastMovedAt?: number;
 }
 
 export interface SessionActivityAncestor {
@@ -3126,6 +3277,16 @@ export interface SessionActivityContext {
   ancestryKnown: boolean;
   epoch: string;
   availability: string;
+  /**
+   * ReportPreview is a per-response capability, authored by the producer that
+   * built the rows: true when this source pushes the bounded report preview on
+   * evener/delegate/updated, so a client may merge a settled report without
+   * re-reading the collection. An older producer omits it, and the client keeps
+   * the read. It is deliberately not on appwire.FeatureSet, which is the
+   * client-facing connection's own hardcoded constant and says nothing about a
+   * remote or local source's capabilities.
+   */
+  reportPreview?: boolean;
 }
 
 export interface SessionActivityCounts {
@@ -3171,6 +3332,12 @@ export interface SessionActivitySummary {
   refreshPending?: boolean;
   context: SessionActivityContext;
   scope: SessionActivityScope;
+  /**
+   * Delegates counts a delegate as active while its run is open. For a root
+   * read at scope subtree, Active is the Live row's SubagentTally.Running
+   * and evener/activity/read's runningSubagents; scope session counts only
+   * direct children.
+   */
   delegates: SessionActivityCounts;
   jobs: SessionActivityCounts;
   watches: SessionActivityCounts;
@@ -3186,6 +3353,12 @@ export interface SessionDelegate {
    * RunGeneration identifies the current activation; zero means no run has started.
    */
   runGeneration: number;
+  /**
+   * ProjectionRevision is the same aggregate projection revision the
+   * evener/delegate/updated frame carries. It is an ordering key (a read row
+   * seeds the client's merge order), not display data.
+   */
+  projectionRevision: number;
   /**
    * ReportPreview is the settled current run's reported text, capped at 4096
    * Unicode code points including an ellipsis when truncated.
@@ -3214,6 +3387,14 @@ export interface SessionDelegate {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  /**
+   * LatestIntent is the open generation's newest stated tool-call intent
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the controller's live value when non-empty, else the folded journal
+   * value — the same join the pushed frame applies, so the read and the
+   * frame agree for every row state. Absent from older daemons.
+   */
+  latestIntent?: string;
   usage?: EvenerUsage;
   worktree?: JobActivityWorktree;
 }
@@ -3615,6 +3796,12 @@ export interface ThreadActivity {
    * from a daemon that predates it.
    */
   latestIntent?: string;
+  /**
+   * LastMovedAt is LastActivityAt counting only real motion: absent until
+   * the tree has moved since the daemon began serving the session, so a
+   * daemon restart is not news to a client comparing it with a seen mark.
+   */
+  lastMovedAt?: number;
 }
 
 export interface ThreadCapabilities {
@@ -4564,6 +4751,10 @@ export const METHOD_NAMES = [
   "evener/path/validate",
   "evener/git/head",
   "evener/mobile/pairing",
+  "evener/devicePairing/create",
+  "evener/devicePairing/read",
+  "evener/devicePairing/approve",
+  "evener/devicePairing/cancel",
   "evener/navigation/read",
   "evener/favorite/set",
   "evener/archive/set",
@@ -4622,6 +4813,7 @@ export const METHOD_NAMES = [
   "evener/plugin/enable",
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
+  "evener/plugin/checkUpdates",
   "evener/command/list",
   "evener/spawn/slashCatalog",
   "evener/settings/overview",
@@ -4689,6 +4881,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/path/validate",
   "evener/paths/complete",
   "evener/plugin/checkNow",
+  "evener/plugin/checkUpdates",
   "evener/plugin/disable",
   "evener/plugin/enable",
   "evener/plugin/install",
@@ -4784,7 +4977,6 @@ export const STEERING_KINDS = [
   "no-tool-calls",
   "loop-detected",
   "tasks-done",
-  "task-nudge",
   "task-inactive",
   "note-handoff",
   "goal-objective",
@@ -4818,6 +5010,8 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "notes-context",
   "warning",
   "interrupted",
+  "approval_decision",
+  "memory-context",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
@@ -4871,6 +5065,10 @@ export interface MethodTypes {
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
   "evener/git/head": { params: GitHeadParams; result: GitHeadResponse };
   "evener/mobile/pairing": { params: MobilePairingParams; result: MobilePairingResponse };
+  "evener/devicePairing/create": { params: DevicePairingCreateParams; result: DevicePairingInvitation };
+  "evener/devicePairing/read": { params: DevicePairingParams; result: DevicePairingStatus };
+  "evener/devicePairing/approve": { params: DevicePairingApproveParams; result: DevicePairingStatus };
+  "evener/devicePairing/cancel": { params: DevicePairingParams; result: DevicePairingStatus };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
   "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
   "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };
@@ -4929,6 +5127,7 @@ export interface MethodTypes {
   "evener/plugin/enable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
+  "evener/plugin/checkUpdates": { params: EmptyParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
   "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };

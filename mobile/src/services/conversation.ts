@@ -35,8 +35,6 @@ import type {
 	ThreadTurnsListResponse,
 	TranscriptDisplayConfigV1,
 	TurnCancelQueuedResponse,
-	TurnDrainAsSteerResponse,
-	TurnPromoteQueuedAsSteerResponse,
 } from "@evener/appwire-client";
 import { acquireThreadSubscription, hydrateThread, isStaleCursorError } from "@evener/appwire-client";
 import type { MobileConversation } from "../../../mobile-native/src/projectedRows";
@@ -124,7 +122,7 @@ export interface ConversationReadProjection {
 }
 
 // The canonical service interface — preserved for screen test mocks that only
-// need the basic open/send/steer/queue/interrupt/close surface.
+// need the basic open/send/queue/interrupt/close surface.
 export interface ConversationService {
 	open(ref: string, cursor?: string): Promise<MobileConversation>;
 	// The page above cursor, or above before (the oldest row kept after a trim):
@@ -147,7 +145,6 @@ export interface ConversationService {
 	}>;
 	subscribeNotifications(handler: (n: AnyNotification) => void): () => void;
 	send(input: InputItem[]): Promise<MutationReceipt>;
-	steer(input: InputItem[], expectedQueueRevision?: number): Promise<MutationReceipt>;
 	queue(input: InputItem[]): Promise<MutationReceipt>;
 	interrupt(): Promise<MutationReceipt>;
 	compact(): Promise<void>;
@@ -193,15 +190,6 @@ export interface ConversationTurnForkActions {
 export interface ConversationClearActions {
 	clear(): Promise<ThreadClearResponse>;
 	adoptClear(response: ThreadClearResponse): ConversationReadProjection;
-}
-
-export interface QueueConversationService extends LiveConversationService {
-	promoteQueuedAsSteer(
-		index: number,
-		expectedEntryId: string,
-		expectedInstanceId: string,
-	): Promise<TurnPromoteQueuedAsSteerResponse>;
-	drainAsSteer(expectedQueueRevision: number, expectedInstanceId: string): Promise<TurnDrainAsSteerResponse>;
 }
 
 let defaultIdCounter = 0;
@@ -288,14 +276,12 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
 	return caps;
 }
 
-type MutationKind = "send" | "steer" | "drain" | "queue" | "cancel" | "interrupt" | "clear";
+type MutationKind = "send" | "queue" | "cancel" | "interrupt" | "clear";
 export const CANONICAL_MUTATION_DISPOSITIONS = ["applied", "replayed"] as const;
 export type CanonicalMutationDisposition = (typeof CANONICAL_MUTATION_DISPOSITIONS)[number];
 
 const CANONICAL_MUTATION_PROJECTION: Readonly<Record<MutationKind, "pending" | "reflected" | "removed">> = {
 	send: "pending",
-	steer: "pending",
-	drain: "pending",
 	queue: "pending",
 	cancel: "removed",
 	interrupt: "reflected",
@@ -338,27 +324,22 @@ function nonemptyString(raw: unknown, label: string): string {
 // The result envelope around a receipt stays exact via exactObject.
 const RECEIPT_CORRELATION_KEYS = ["clientMutationId", "disposition", "threadId", "projectionState"] as const;
 
-const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<Record<MutationKind, readonly string[]>> = {
+type RequiredReceiptKey = (typeof RECEIPT_CORRELATION_KEYS)[number] | "turnId" | "queueEntryIds";
+
+const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<Record<MutationKind, readonly RequiredReceiptKey[]>> = {
 	send: [...RECEIPT_CORRELATION_KEYS, "turnId"],
-	steer: [...RECEIPT_CORRELATION_KEYS, "turnId"],
-	drain: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	interrupt: [...RECEIPT_CORRELATION_KEYS, "turnId"],
 	queue: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
 	cancel: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
 	clear: [...RECEIPT_CORRELATION_KEYS],
 };
 
-// Receipt keys the daemon includes only when it has something to report: a
-// drain may name the queue entries and client mutations it consumed, and any
+// A receipt key the daemon includes only when it has something to report: any
 // kind may name the instance the receipt is bound to.
-const OPTIONAL_RECEIPT_KEYS_BY_KIND: Readonly<Partial<Record<MutationKind, readonly string[]>>> = {
-	drain: ["queueEntryIds", "consumedClientMutationIds"],
-};
 const OPTIONAL_RECEIPT_KEYS_ANY_KIND = ["instanceId"] as const;
 
 const KNOWN_RECEIPT_KEYS: ReadonlySet<string> = new Set([
 	...Object.values(REQUIRED_RECEIPT_KEYS_BY_KIND).flat(),
-	...Object.values(OPTIONAL_RECEIPT_KEYS_BY_KIND).flat(),
 	...OPTIONAL_RECEIPT_KEYS_ANY_KIND,
 ]);
 
@@ -416,15 +397,13 @@ function decodeMutationResult(
 
 	const receiptObject =
 		result.receipt !== null && typeof result.receipt === "object" ? (result.receipt as Record<string, unknown>) : null;
-	const requiredReceiptKeys = [...REQUIRED_RECEIPT_KEYS_BY_KIND[kind]];
-	for (const key of [...(OPTIONAL_RECEIPT_KEYS_BY_KIND[kind] ?? []), ...OPTIONAL_RECEIPT_KEYS_ANY_KIND]) {
+	const kindReceiptKeys = REQUIRED_RECEIPT_KEYS_BY_KIND[kind];
+	const requiredReceiptKeys: string[] = [...kindReceiptKeys];
+	for (const key of OPTIONAL_RECEIPT_KEYS_ANY_KIND) {
 		if (receiptObject !== null && Object.hasOwn(receiptObject, key)) {
 			requiredReceiptKeys.push(key);
 		}
 	}
-	const hasDrainedEntries = kind === "drain" && receiptObject !== null && Object.hasOwn(receiptObject, "queueEntryIds");
-	const hasConsumedClientMutationIds =
-		kind === "drain" && receiptObject !== null && Object.hasOwn(receiptObject, "consumedClientMutationIds");
 	const receipt = decodedReceipt(result.receipt, requiredReceiptKeys, `${kind} receipt`);
 	if (receipt.clientMutationId !== clientMutationId) {
 		throw new Error(`ConversationService: ${kind} receipt correlation mismatch`);
@@ -448,51 +427,35 @@ function decodeMutationResult(
 		}
 		decoded.instanceId = expectedInstanceId;
 	}
-	if (kind === "send" || kind === "steer" || kind === "drain" || kind === "interrupt") {
+	// decodedReceipt has checked the kind's keys are present and no other
+	// known key is, so the kind's table says which of these the receipt holds.
+	if (kindReceiptKeys.includes("turnId")) {
 		decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
 	}
-	if (kind === "queue" || kind === "cancel" || hasDrainedEntries) {
+	if (kindReceiptKeys.includes("queueEntryIds")) {
 		const ids = receipt.queueEntryIds;
 		if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== "string" || id.trim() === "")) {
 			throw new Error("ConversationService: queue entry ids are empty or invalid");
 		}
 		decoded.queueEntryIds = [...ids];
 	}
-	if (hasConsumedClientMutationIds) {
-		const consumed = receipt.consumedClientMutationIds;
-		if (
-			!Array.isArray(consumed) ||
-			consumed.length === 0 ||
-			consumed.some((id) => typeof id !== "string" || id.trim() === "")
-		) {
-			throw new Error(`ConversationService: ${kind} receipt consumed client mutation ids are invalid`);
-		}
-		decoded.consumedClientMutationIds = [...consumed];
-	}
 	return decoded;
 }
 
-function validateQueueAction(
-	kind: "cancel" | "promote" | "drain",
+function validateCancelQueued(
 	result: unknown,
 	clientMutationId: string,
 	expectedInstanceId: string,
 	expectedThreadId: string,
-	expectedEntryId?: string,
+	expectedEntryId: string,
 ): void {
-	const receipt = decodeMutationResult(
-		kind === "cancel" ? "cancel" : "drain",
-		result,
-		clientMutationId,
-		expectedInstanceId,
-	);
+	const receipt = decodeMutationResult("cancel", result, clientMutationId, expectedInstanceId);
 	const ids = receipt.queueEntryIds;
 	if (
 		receipt.threadId !== expectedThreadId ||
 		receipt.instanceId !== expectedInstanceId ||
-		!ids?.length ||
-		new Set(ids).size !== ids.length ||
-		(kind !== "drain" && (ids.length !== 1 || ids[0] !== expectedEntryId))
+		ids?.length !== 1 ||
+		ids[0] !== expectedEntryId
 	) {
 		throw new Error("ConversationService: queue action receipt identity mismatch");
 	}
@@ -501,7 +464,7 @@ function validateQueueAction(
 export function createConversationService<ReadLease = unknown>(
 	client: ConversationClientLike | AppwireClient,
 	options: ConversationServiceOptions<ReadLease> = {},
-): QueueConversationService &
+): LiveConversationService &
 	ConversationModelCatalog &
 	ConversationGoalActions &
 	ConversationForkActions &
@@ -565,14 +528,6 @@ export function createConversationService<ReadLease = unknown>(
 	// completions (an older open resolving after a newer open, or a refresh
 	// resolving after close/reopen) no-ops against the live pair.
 	let openEpoch = 0;
-
-	function requireQueueRun(): void {
-		// The capability half of a drain or promote: the harness steers (the
-		// daemon converts the entries into steering, which a send-only harness
-		// cannot take). The status half -- a running turn, or a queue a Stop
-		// parked -- is the caller's, through the SDK's sessionControls.
-		if (!capabilities?.steer) throw new Error("Running queued messages is unavailable for this session.");
-	}
 
 	function requireQueueInstance(expected: string): string {
 		const threadRef = requireRef();
@@ -844,33 +799,6 @@ export function createConversationService<ReadLease = unknown>(
 			return decodeMutationResult("send", result, clientMutationId, expectedInstanceId);
 		},
 
-		async steer(input, expectedQueueRevision) {
-			requireCap("steer", "steer");
-			const threadRef = requireRef();
-			const expectedInstanceId = nonemptyString(instanceId, "thread instance id");
-			const clientMutationId = idFactory();
-			const result = await (expectedQueueRevision === undefined
-				? client.request("turn/steer", {
-						ref: threadRef,
-						clientMutationId,
-						expectedInstanceId,
-						input,
-					})
-				: client.request("turn/drainAsSteer", {
-						ref: threadRef,
-						clientMutationId,
-						expectedInstanceId,
-						expectedQueueRevision,
-						input,
-					}));
-			return decodeMutationResult(
-				expectedQueueRevision === undefined ? "steer" : "drain",
-				result,
-				clientMutationId,
-				expectedInstanceId,
-			);
-		},
-
 		async queue(input) {
 			requireCap("queue", "queue");
 			const threadRef = requireRef();
@@ -1063,38 +991,7 @@ export function createConversationService<ReadLease = unknown>(
 				expectedEntryId,
 				expectedInstanceId,
 			});
-			validateQueueAction("cancel", result, clientMutationId, expectedInstanceId, expectedThreadId, expectedEntryId);
-			return result;
-		},
-
-		async promoteQueuedAsSteer(index, expectedEntryId, expectedInstanceId) {
-			const threadRef = requireQueueInstance(expectedInstanceId);
-			requireQueueRun();
-			const expectedThreadId = nonemptyString(threadId, "thread id");
-			const clientMutationId = idFactory();
-			const result = await client.request("turn/promoteQueuedAsSteer", {
-				ref: threadRef,
-				index,
-				expectedEntryId,
-				expectedInstanceId,
-				clientMutationId,
-			});
-			validateQueueAction("promote", result, clientMutationId, expectedInstanceId, expectedThreadId, expectedEntryId);
-			return result;
-		},
-
-		async drainAsSteer(expectedQueueRevision, expectedInstanceId) {
-			const threadRef = requireQueueInstance(expectedInstanceId);
-			requireQueueRun();
-			const expectedThreadId = nonemptyString(threadId, "thread id");
-			const clientMutationId = idFactory();
-			const result = await client.request("turn/drainAsSteer", {
-				ref: threadRef,
-				expectedQueueRevision,
-				expectedInstanceId,
-				clientMutationId,
-			});
-			validateQueueAction("drain", result, clientMutationId, expectedInstanceId, expectedThreadId);
+			validateCancelQueued(result, clientMutationId, expectedInstanceId, expectedThreadId, expectedEntryId);
 			return result;
 		},
 

@@ -1,6 +1,7 @@
 import { WireError } from "@evener/appwire-client";
 import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
@@ -10,6 +11,8 @@ import {
   activityContext,
   activityDelegate,
   activityJob,
+  activityRef,
+  activitySummary,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
 import { deriveScope } from "../statusbar/statusScope";
@@ -20,16 +23,23 @@ import { WatchesTab } from "./WatchesTab";
 
 beforeAll(async () => {
   await import("../../panes/session");
+  await import("../../panes/transcript");
 });
 beforeEach(() => resetWorkspaceStoreForTests());
 
 afterEach(() => {
   cleanup();
   connectionStore.setState({ client: null, state: "idle" });
+  resetWorkspaceStoreForTests();
   vi.restoreAllMocks();
 });
 const scope = () =>
-  deriveScope(createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(), "remote:owner", null);
+  deriveScope(
+    createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
+    "remote:owner",
+    null,
+    null,
+  );
 it("shows incomplete empty as progress then drills the exact stable delegate child", async () => {
   const client = activityClient();
   let finish: (() => void) | undefined;
@@ -46,22 +56,26 @@ it("shows incomplete empty as progress then drills the exact stable delegate chi
   });
   connectionStore.getState().connect(client);
   const root = workspaceStore.getState().openPane("session", { ref: "remote:owner" });
+  const source = workspaceStore.getState().mainPane();
   render(<AgentsTab scope={scope()} />);
-  expect(screen.getByText(/Loading subagents/)).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.queryByText(/No subagents/)).toBeNull();
   await waitFor(() => expect(finish).toBeTypeOf("function"));
   finish?.();
   const inspect = await screen.findByRole("button", { name: /inspect/ });
   await act(async () => fireEvent.click(inspect));
-  const cascade = workspaceStore.getState().mainPane();
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+  expect(workspaceStore.getState().mainPane()).toBe(source);
   expect(cascade?.type).toBe("sessionZoom");
+  expect(cascade?.slot).toBe("secondary");
   expect(cascade?.params).toEqual({
     ref: "other:opaque/child",
-    source: { type: "session", params: { ref: "remote:owner" } },
+    source: { type: "transcript", params: { ref: "remote:owner" } },
     edges: [{ ownerRef: "remote:owner", childRef: "other:opaque/child", delegateId: "raw-id" }],
+    inspection: { origin: { paneId: root, type: "session", ref: "remote:owner" } },
   });
-  expect(cascade?.id).toBe(root);
-  expect(workspaceStore.getState().focusedPaneId).toBe(root);
+  expect(cascade?.id).not.toBe(root);
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascade?.id);
   expect(workspaceStore.getState().panes.filter((pane) => pane.type === "transcript")).toHaveLength(0);
   expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(0);
 });
@@ -74,14 +88,14 @@ it("opens job output using the supplied job transcript ref and raw owner", async
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  const open = vi.spyOn(workspaceStore.getState(), "openPane").mockImplementation(() => "test-pane");
   render(<JobsTab scope={scope()} />);
   fireEvent.click(await screen.findByRole("button", { name: /run checks/ }));
-  expect(open).toHaveBeenCalledWith(
-    "transcript",
-    { ref: "job:authoritative", parentRef: "source:owner" },
-    { slot: "secondary" },
-  );
+  const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
+  expect(opened).toMatchObject({
+    slot: "secondary",
+    params: { ref: "job:authoritative", parentRef: "source:owner" },
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(opened?.id);
 });
 
 it("visible page-boundary demand heals a failed continuation while the actual tab stays mounted", async () => {
@@ -140,10 +154,7 @@ it("visible page-boundary demand heals a failed continuation while the actual ta
     expect(screen.getByRole("button", { name: /first loaded/ })).toBeTruthy();
     view?.unmount();
     act(() =>
-      client.emitNotification({
-        method: "evener/thread/activity/changed",
-        params: { ref: "remote:owner", threadId: "owner", sessionId: "owner", resources: ["delegates"] },
-      }),
+      client.emitNotification(activityChangedNotification({ ref: "remote:owner", threadId: "owner" }, ["delegates"])),
     );
     await act(async () => vi.advanceTimersByTimeAsync(120000));
     expect(continuationReads).toBe(2);
@@ -163,7 +174,7 @@ it("definitive unavailable jobs never claim empty or remain a loading promise", 
   render(<JobsTab scope={scope()} />);
   expect(await screen.findByText("Jobs unavailable for this session.")).toBeTruthy();
   expect(screen.queryByText("No jobs at this level.")).toBeNull();
-  expect(screen.queryByText("Loading jobs…")).toBeNull();
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
   expect(screen.queryByRole("button", { name: /retry|repair/i })).toBeNull();
 });
 
@@ -254,10 +265,7 @@ it.each([
       throw new WireError("unsupported source", -32014, { evenerErrorInfo: "actionUnavailable" });
     });
     act(() =>
-      client.emitNotification({
-        method: "evener/thread/activity/changed",
-        params: { ref: "remote:owner", threadId: "owner", sessionId: "owner", resources: [resource] },
-      }),
+      client.emitNotification(activityChangedNotification({ ref: "remote:owner", threadId: "owner" }, [resource])),
     );
     await waitFor(() =>
       expect(sessionActivitySnapshot(client, "remote:owner", "session")?.[resource].permanent).toBe(true),
@@ -307,4 +315,77 @@ it("each positive page needs fresh visible boundary evidence instead of draining
     cleanup();
     vi.unstubAllGlobals();
   }
+});
+
+// The no-read pushed merge is gated on a live context that advertises the
+// bounded preview. The shared activityContext() omits reportPreview on purpose,
+// so these two tests opt in per test rather than flipping every other activity
+// test onto the new path.
+const pushContext = () => ({ ...activityContext(), reportPreview: true });
+const delegateReads = (client: ReturnType<typeof activityClient>) =>
+  client.calls.filter((call) => call.method === "evener/thread/delegates/list").length;
+
+it("a pushed delegate frame patches a loaded row with zero collection reads when the source advertises the preview", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: pushContext(),
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    delegates: [activityDelegate({ ownerRef: ref, rootRef: ref })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<AgentsTab scope={scope()} />);
+  await screen.findByRole("button", { name: /inspect/ });
+  const before = delegateReads(client);
+  await act(async () => {
+    client.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "owner",
+        ref: activityRef,
+        delegate: {
+          runGeneration: 1,
+          delegateId: "delegate-1",
+          ownerSessionId: "owner",
+          logicalOwnerSessionId: "owner",
+          rootSessionId: "owner",
+          childSessionId: "child",
+          transcriptRef: "remote:child",
+          type: "delegate",
+          lifecycle: "running",
+          phase: "running",
+          status: "failed",
+          terminal: false,
+          resumable: true,
+          needsAttention: false,
+          projectionRevision: 2,
+          reportPreview: "pushed report",
+          description: "pushed row",
+        },
+      },
+    });
+  });
+  expect(delegateReads(client)).toBe(before);
+  expect(sessionActivitySnapshot(client, activityRef, "session")?.delegates.rows[0]).toMatchObject({
+    status: "failed",
+    reportPreview: "pushed report",
+    description: "pushed row",
+  });
+  expect(screen.getByRole("button", { name: /pushed row/ })).toBeTruthy();
+});
+
+it("a source without the preview capability keeps reading delegates on an invalidation", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  render(<AgentsTab scope={scope()} />);
+  await screen.findByRole("button", { name: /inspect/ });
+  const before = delegateReads(client);
+  await act(async () => {
+    client.emitNotification(activityChangedNotification({ ref: activityRef, threadId: "owner" }, ["delegates"]));
+  });
+  await waitFor(() => expect(delegateReads(client)).toBe(before + 1));
 });

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -324,8 +325,12 @@ func (s *Snapshot) decode(token string) (cursor, error) {
 	}
 	return c, nil
 }
+
+// Page returns the page of choices token continues (the first page when token
+// is empty). A zero maxCount or maxBytes is unspecified: a continuation reuses
+// the bound its cursor was issued for, and a first page uses the default.
 func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
-	if s == nil || len(s.key) == 0 || maxCount <= 0 || maxCount > DefaultPageMaxCount || maxBytes <= 0 || maxBytes > DefaultPageMaxBytes {
+	if s == nil || len(s.key) == 0 {
 		return Page{}, errors.New("invalid page bounds")
 	}
 	off := 0
@@ -334,10 +339,25 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 		if e != nil {
 			return Page{}, e
 		}
+		if maxCount == 0 {
+			maxCount = c.Count
+		}
+		if maxBytes == 0 {
+			maxBytes = c.Bytes
+		}
 		if c.Count != maxCount || c.Bytes != maxBytes {
-			return Page{}, errors.New("stale cursor")
+			return Page{}, fmt.Errorf("cursor was issued for max_count=%d and max_bytes=%d; omit max_count and max_bytes or repeat those values with this cursor, or omit the cursor to start a new listing", c.Count, c.Bytes)
 		}
 		off = c.Offset
+	}
+	if maxCount == 0 {
+		maxCount = DefaultPageMaxCount
+	}
+	if maxBytes == 0 {
+		maxBytes = DefaultPageMaxBytes
+	}
+	if maxCount < 0 || maxCount > DefaultPageMaxCount || maxBytes < 0 || maxBytes > DefaultPageMaxBytes {
+		return Page{}, errors.New("invalid page bounds")
 	}
 	status := s.Status
 	if status == nil {

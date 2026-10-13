@@ -65,6 +65,10 @@ const MaxTerminalStructuredResultBytes = 1024 * 1024
 const (
 	PacketReported      PacketKind = "reported"
 	PacketTerminalError PacketKind = "terminal_error"
+	// PacketUpdate is a running generation's mid-work update, queued by
+	// delegate_update_posted. It never settles a run: validateTerminalPacket
+	// refuses it on every terminal path.
+	PacketUpdate PacketKind = "update"
 )
 
 // StructuredResultSource names where a terminal packet's structured result
@@ -154,6 +158,7 @@ type Aggregate struct {
 	NeedsAttention     bool              `json:"needs_attention"`
 	RunStartedAt       time.Time         `json:"run_started_at,omitzero"`
 	LatestActivityAt   time.Time         `json:"latest_activity_at,omitzero"`
+	LatestIntent       string            `json:"latest_intent,omitempty"`
 	LatestOutcome      *Outcome          `json:"latest_outcome,omitempty"`
 	LatestPacket       *TerminalPacket   `json:"latest_packet,omitempty"`
 	PendingDeliveries  []PendingDelivery `json:"pending_deliveries,omitempty"`

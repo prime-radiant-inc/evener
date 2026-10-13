@@ -12,6 +12,7 @@ import {
 	type AskUserQuestion,
 	housekeepingAction,
 	mcpToolParts,
+	memoryMutation,
 	parseAskUserQuestions,
 	skillName,
 	type ThreadModel,
@@ -340,6 +341,13 @@ export interface RunPart {
 	key: string;
 	family: ToolFamily;
 	text: string;
+	/** How many of the run's steps the part holds. */
+	count: number;
+	/** The one program, skill or MCP server every step in the part names,
+	 * when they all name the same one. */
+	name?: string;
+	/** How many of a memory part's steps changed memory, not only read it. */
+	changes?: number;
 	/** Drawn after the text as "(2 failed)", in red ink even when folded. */
 	failed: number;
 }
@@ -372,6 +380,9 @@ interface Group {
 	unnamed: number;
 	/** Whether a task_list step in the part changed the list, not only read it. */
 	changedTasks: boolean;
+	/** How many calls in the part attempted a memory mutation (the package's
+	 * memoryMutation): a part with any changed a page, not only read one. */
+	memoryMutations: number;
 	/** How many questions a part's ask_user calls asked: a call can ask several. */
 	questions: number;
 }
@@ -411,13 +422,18 @@ function namedBy(family: ToolFamily, step: RunStep): string | undefined {
 	return undefined;
 }
 
+// The one name every step in a part gives, when each gives one and they agree.
+function oneNameOf(group: Group): string | undefined {
+	const [only] = [...group.names];
+	return group.names.size === 1 && group.unnamed === 0 ? only : undefined;
+}
+
 function partText(group: Group): string {
 	const n = group.count;
 	const plural = (one: string, many: string) => (n === 1 ? one : many);
 	const times = n === 1 ? "once" : `${n} times`;
 	// Named only when every step in the part is known and the same.
-	const [only] = [...group.names];
-	const oneName = group.names.size === 1 && group.unnamed === 0 ? only : undefined;
+	const oneName = oneNameOf(group);
 	switch (group.family) {
 		case "read":
 			return `read ${n} ${plural("file", "files")}`;
@@ -435,6 +451,12 @@ function partText(group: Group): string {
 			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
 		case "tasks":
 			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
+		case "memory": {
+			const mutated = group.memoryMutations > 0;
+			const count = mutated ? group.memoryMutations : n;
+			const countText = count === 1 ? "" : mutated && count === 2 ? " twice" : ` ${count} times`;
+			return `${mutated ? "updated" : "read"} memory${countText}`;
+		}
 		case "transcript":
 			return n === 1 ? "read a transcript" : `read ${n} transcripts`;
 		case "sessions":
@@ -477,7 +499,16 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 		const part = partOf(step);
 		let group = groups.get(part.key);
 		if (!group) {
-			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false, questions: 0 };
+			group = {
+				...part,
+				count: 0,
+				failed: 0,
+				names: new Set(),
+				unnamed: 0,
+				changedTasks: false,
+				memoryMutations: 0,
+				questions: 0,
+			};
 			groups.set(part.key, group);
 		}
 		group.count += 1;
@@ -486,6 +517,9 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			failed += 1;
 		}
 		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
+		if (part.family === "memory" && memoryMutation(step.label)) {
+			group.memoryMutations += 1;
+		}
 		// A call whose questions don't parse still asked one.
 		if (part.family === "ask")
 			group.questions += parseAskUserQuestions({ argumentsJSON: step.detail.arguments })?.length ?? 1;
@@ -499,12 +533,18 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 	return {
 		steps: steps.length,
 		...(durationMs === undefined ? {} : { durationMs }),
-		parts: [...groups.values()].map((group) => ({
-			key: group.key,
-			family: group.family,
-			text: partText(group),
-			failed: group.failed,
-		})),
+		parts: [...groups.values()].map((group) => {
+			const name = oneNameOf(group);
+			return {
+				key: group.key,
+				family: group.family,
+				text: partText(group),
+				count: group.count,
+				...(name === undefined ? {} : { name }),
+				...(group.family === "memory" ? { changes: group.memoryMutations } : {}),
+				failed: group.failed,
+			};
+		}),
 		failed,
 	};
 }

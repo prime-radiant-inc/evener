@@ -5,10 +5,10 @@ import rawStyles from "./badge.module.css";
 import { Badge, type BadgeTone } from "./index";
 
 const styles = {
-  neutral: requireClass(rawStyles.neutral, "badge.module.css", "neutral"),
-  attention: requireClass(rawStyles.attention, "badge.module.css", "attention"),
-  alive: requireClass(rawStyles.alive, "badge.module.css", "alive"),
-  danger: requireClass(rawStyles.danger, "badge.module.css", "danger"),
+  neutral: requireClass(rawStyles.badgeNeutral, "badge.module.css", "badgeNeutral"),
+  attention: requireClass(rawStyles.badgeAttention, "badge.module.css", "badgeAttention"),
+  alive: requireClass(rawStyles.badgeAlive, "badge.module.css", "badgeAlive"),
+  danger: requireClass(rawStyles.badgeDanger, "badge.module.css", "badgeDanger"),
 };
 
 test("renders the count as text", () => {

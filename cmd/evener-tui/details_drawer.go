@@ -106,10 +106,10 @@ func (d detailsDrawer) View() string {
 		// write-path strip can still carry ESC/OSC/BEL/C1 controls, and this
 		// drawer is one of the readers that prints it.
 		if detail.HumanNote != "" {
-			fmt.Fprintf(&b, "You:    %s\n", tuitext.StripControls(detail.HumanNote))
+			fmt.Fprintf(&b, "You:    %s\n", indentNoteContinuation(tuitext.StripControls(detail.HumanNote)))
 		}
 		if detail.AgentNote != "" {
-			fmt.Fprintf(&b, "Agent:  %s\n", tuitext.StripControls(detail.AgentNote))
+			fmt.Fprintf(&b, "Agent:  %s\n", indentNoteContinuation(tuitext.StripControls(detail.AgentNote)))
 		}
 		for _, u := range detail.SessionURLs {
 			label := tuitext.StripControls(u.URL)
@@ -121,12 +121,11 @@ func (d detailsDrawer) View() string {
 			}
 			fmt.Fprintf(&b, "Link:   %s\n", label)
 		}
-		empty := detail.HumanNote == "" && detail.AgentNote == "" && len(detail.SessionURLs) == 0
-		if empty && sharedNotesWritable(detail.Live, detail.State, detail.Capabilities.ResumeRequired) {
+		switch sharedNotesEmptyHintFor(detail) {
+		case sharedNotesAddHint:
 			b.WriteString(ghostText("Add a note with /notes"))
 			b.WriteString("\n")
-		}
-		if empty && !sharedNotesWritable(detail.Live, detail.State, detail.Capabilities.ResumeRequired) {
+		case sharedNotesInertHint:
 			b.WriteString(ghostText("No shared notes"))
 			b.WriteString("\n")
 		}
@@ -138,6 +137,23 @@ func (d detailsDrawer) View() string {
 	}
 	writeEvenerDiagnostics(&b, detail.Diagnostics)
 	return strings.TrimSpace(b.String())
+}
+
+// notesValueIndent lines a note's continuation lines up under the value column
+// of the "You:    " and "Agent:  " labels.
+const notesValueIndent = "        "
+
+// indentNoteContinuation indents every continuation line of a multi-line
+// whiteboard to the notes value column, so a later line (one the human wrote as
+// "Agent: ...", say) cannot read as another field. Blank lines stay empty.
+func indentNoteContinuation(note string) string {
+	lines := strings.Split(note, "\n")
+	for i := 1; i < len(lines); i++ {
+		if lines[i] != "" {
+			lines[i] = notesValueIndent + lines[i]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func modelAndProfile(model, profile string) string {
@@ -269,4 +285,27 @@ func capabilityList(caps hubSessionCapabilities) string {
 		out = append(out, "change model")
 	}
 	return strings.Join(out, ", ")
+}
+
+// sharedNotesEmptyHint is the ghost line the drawer's shared-notes section
+// shows in place of notes and links.
+type sharedNotesEmptyHint int
+
+const (
+	// sharedNotesNoHint: the section is hidden or has content to show.
+	sharedNotesNoHint sharedNotesEmptyHint = iota
+	// sharedNotesAddHint: the section is empty and writable, so it invites /notes.
+	sharedNotesAddHint
+	// sharedNotesInertHint: the section is empty and read-only.
+	sharedNotesInertHint
+)
+
+func sharedNotesEmptyHintFor(detail hubSessionDetail) sharedNotesEmptyHint {
+	if !detail.Capabilities.SharedNotes || detail.HumanNote != "" || detail.AgentNote != "" || len(detail.SessionURLs) > 0 {
+		return sharedNotesNoHint
+	}
+	if sharedNotesWritable(detail.Live, detail.State, detail.Capabilities.ResumeRequired) {
+		return sharedNotesAddHint
+	}
+	return sharedNotesInertHint
 }

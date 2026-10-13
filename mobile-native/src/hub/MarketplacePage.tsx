@@ -24,7 +24,11 @@ export function MarketplacePage({ route, navigation }: NativeStackScreenProps<Hu
 	return (
 		<GroupedPage>
 			<SheetStatus />
-			{owned.marketplaceWarning ? <GroupFooter tone="danger">{owned.marketplaceWarning}</GroupFooter> : null}
+			{owned.marketplaceWarning ? (
+				<GroupFooter tone="danger" testID="marketplace-warning">
+					{owned.marketplaceWarning}
+				</GroupFooter>
+			) : null}
 			{/* Keyed by name: a marketplace's filter, error and pending writes are its own. */}
 			<MarketplaceDetail
 				key={name}

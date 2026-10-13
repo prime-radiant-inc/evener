@@ -5,6 +5,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { type PaneProps, registerPaneForTests } from "../../../../shell/paneRegistry";
 import { isPaneOpen, workspaceStore } from "../../../../shell/workspace";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../../../widgets/internal/requireClass";
+import visuallyHiddenStyles from "../../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { ToolCallItem } from "../ToolCallItem";
 import "./taskCard"; // registers the real "task_list" descriptor
 
@@ -971,13 +973,21 @@ test("a legacy cancelled row without a settle stamp never outranks a stamped set
   expect(rows[0]!.textContent).toContain("newer completion");
 });
 
+// The VisuallyHidden widget's sr-only class, through requireClass so a
+// renamed class fails loudly.
+const VISUALLY_HIDDEN_CLASS = requireClass(
+  visuallyHiddenStyles.visuallyHidden,
+  "visuallyhidden.module.css",
+  "visuallyHidden",
+);
+
 test("the status rides along visually-hidden on every window row", () => {
   renderItem(mainUpdate());
   openRow();
   const rows = screen.getAllByTestId("task-card-row");
-  expect(within(rows[0]!).getByText("done").className).toContain("srOnly");
-  expect(within(rows[1]!).getByText("started").className).toContain("srOnly");
-  expect(within(rows[2]!).getByText("pending").className).toContain("srOnly");
+  expect(within(rows[0]!).getByText("done").classList.contains(VISUALLY_HIDDEN_CLASS)).toBe(true);
+  expect(within(rows[1]!).getByText("started").classList.contains(VISUALLY_HIDDEN_CLASS)).toBe(true);
+  expect(within(rows[2]!).getByText("pending").classList.contains(VISUALLY_HIDDEN_CLASS)).toBe(true);
 });
 
 // ---- notes: only the ones this call added ------------------------------

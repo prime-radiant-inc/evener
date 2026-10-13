@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -55,8 +56,9 @@ func TestParseGoTestJSONRefusesAPackageSeenOnlyOnStart(t *testing.T) {
 	if err == nil {
 		t.Fatal("a stream that only starts the package must fail the completeness check")
 	}
-	if !strings.Contains(err.Error(), "produced no terminal event") {
-		t.Fatalf("refusal does not name the missing terminal event: %v", err)
+	var missing *missingTerminalEventError
+	if !errors.As(err, &missing) || !slices.Equal(missing.packages, []string{"example.com/mod"}) {
+		t.Fatalf("refusal = %v, want a missing terminal event for example.com/mod", err)
 	}
 }
 

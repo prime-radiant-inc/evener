@@ -309,7 +309,7 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 	if strings.TrimSpace(input) == "" {
 		return
 	}
-	release, err := s.beginRetirementMutation("autonomous")
+	release, err := s.beginNamingRetirementMutation()
 	if err != nil {
 		return
 	}
@@ -420,7 +420,7 @@ func (s *Session) launchCompactionNamerGated(ctx context.Context, turn schema.Tu
 	if !s.shouldNameFromCompaction() {
 		return
 	}
-	release, err := s.beginRetirementMutation("autonomous")
+	release, err := s.beginNamingRetirementMutation()
 	if err != nil {
 		return
 	}

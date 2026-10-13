@@ -16,8 +16,8 @@ import (
 // Session.mu is exempt because the emit path re-acquires it, which makes
 // "held across an emit" a self-deadlock rather than a convention
 // (session_emit_lock_guard_test.go). Every other mutex here is treated as
-// forbidden whether or not it is held across an emit TODAY — four of them are
-// (responseSideEffectsMu, queueEventsMu, queuePersistMu, subagent.mu), and for
+// forbidden whether or not it is held across an emit TODAY — five of them are
+// (responseSideEffectsMu, queueEventsMu, queuePersistMu, restMu, subagent.mu), and for
 // the rest nothing would announce it if a future emit moved inside their
 // critical section. A sampler that takes one is one refactor away from wedging
 // the daemon, and the refactor would be in a different file from the sampler.
@@ -78,6 +78,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 	{owner: "Session", field: "memoryMu", hold: func(s *Session) func() {
 		s.memoryMu.Lock()
 		return s.memoryMu.Unlock
+	}},
+	{owner: "Session", field: "restMu", hold: func(s *Session) func() {
+		s.restMu.Lock()
+		return s.restMu.Unlock
 	}},
 	{owner: "Session", field: "responseSideEffectsMu", hold: func(s *Session) func() {
 		s.responseSideEffectsMu.Lock()

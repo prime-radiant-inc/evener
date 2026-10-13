@@ -1,8 +1,18 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import { mulberry32 } from "../../dev/mulberry32";
 import type { AnsiLine } from "./ansi";
-import { AnsiTailBuffer, parseAnsiLines } from "./ansi";
+import { AnsiTailBuffer, parseAnsiByteRows, parseAnsiLines } from "./ansi";
+
+test("byte rows map visible UTF16 positions to original bytes across controls and malformed scalars", () => {
+  const parsed = parseAnsiByteRows(
+    new Uint8Array([65, 27, 91, 51, 49, 109, 0xf0, 0x9f, 0x98, 0x80, 0xff, 0xc3, 40, 10]),
+    70,
+  );
+  expect(parsed.rows[0]?.line.map((run) => run.text).join("")).toBe("A😀��(");
+  expect(parsed.rows[0]?.textByteOffsets).toEqual(new Uint16Array([0, 6, 6, 10, 11, 12]));
+});
 
 function plainText(lines: AnsiLine[]): string {
   return lines.map((line) => line.map((run) => run.text).join("")).join("\n");
@@ -314,4 +324,164 @@ test("parseAnsiLines with empty string produces one empty line", () => {
 test("parseAnsiLines handles content that is only newlines", () => {
   const lines = parseAnsiLines("\n\n");
   expect(lines).toEqual([[], [], []]);
+});
+
+test("byte rows preserve malformed source spans instead of re-encoding replacements", () => {
+  const parsed = parseAnsiByteRows(new Uint8Array([0xff, 0xc3, 40, 10, 0xc3, 0xa9]), 70);
+  expect(
+    parsed.rows.map(({ offsetBytes, endBytes, line }) => ({ offsetBytes, endBytes, text: plainText([line]) })),
+  ).toEqual([
+    { offsetBytes: 70, endBytes: 74, text: "��(" },
+    { offsetBytes: 74, endBytes: 76, text: "é" },
+  ]);
+});
+
+test("byte fragments stay scalar-safe and keep style across long logical lines", () => {
+  const bytes = new Uint8Array(8200).fill(65);
+  bytes.set([27, 91, 51, 49, 59, 49, 109]);
+  bytes.set([0xf0, 0x9f, 0x98, 0x80], 4095);
+  const parsed = parseAnsiByteRows(bytes, 0);
+  expect(parsed.rows.map((row) => [row.offsetBytes, row.endBytes])).toEqual([
+    [0, 4095],
+    [4095, 8191],
+    [8191, 8200],
+  ]);
+  expect(parsed.rows.flatMap((row) => row.line.map((run) => run.text)).join("")).toBe(
+    `${"A".repeat(4088)}😀${"A".repeat(4101)}`,
+  );
+  for (const row of parsed.rows)
+    expect(row.line).toMatchObject([{ foreground: { kind: "named", name: "red" }, bold: true }]);
+});
+
+test("control-only byte fragments advance checkpoints without adding rows", () => {
+  const bytes = new Uint8Array(8200).fill(120);
+  bytes.set([27, 93]);
+  const parsed = parseAnsiByteRows(bytes, 20);
+  expect(parsed.rows).toEqual([]);
+  expect(parsed.boundaries.map((boundary) => boundary.offsetBytes)).toEqual([20, 4116, 8212, 8220]);
+  expect(parsed.endState.control.kind).toBe("osc");
+});
+
+test("byte checkpoints carry a split OSC and clone state before scanning", () => {
+  const first = parseAnsiByteRows(new Uint8Array([27, 93, 120, 27]), 0);
+  const second = parseAnsiByteRows(new Uint8Array([92, 65, 10]), 4, first.endState);
+  expect(first.endState.control).toEqual({ kind: "osc", escape: true });
+  expect(second.rows.map((row) => plainText([row.line]))).toEqual(["A"]);
+  expect(second.endState.control).toEqual({ kind: "text" });
+});
+
+test("byte checkpoints carry a split CSI and actual decorations", () => {
+  const first = parseAnsiByteRows(new Uint8Array([27, 91, 51, 49, 59, 49]), 0);
+  const second = parseAnsiByteRows(new Uint8Array([109, 65, 10, 66]), 6, first.endState);
+  expect(second.rows).toMatchObject([
+    { offsetBytes: 6, endBytes: 9, line: [{ text: "A", foreground: { kind: "named", name: "red" }, bold: true }] },
+    { offsetBytes: 9, endBytes: 10, line: [{ text: "B", foreground: { kind: "named", name: "red" }, bold: true }] },
+  ]);
+  expect(first.endState.control.kind).toBe("csi");
+});
+
+test("byte rows retain blank newline rows but do not invent an EOF row", () => {
+  expect(parseAnsiByteRows(new Uint8Array([10, 10]), 0).rows).toEqual([
+    { offsetBytes: 0, endBytes: 1, line: [], textByteOffsets: new Uint16Array() },
+    { offsetBytes: 1, endBytes: 2, line: [], textByteOffsets: new Uint16Array() },
+  ]);
+  expect(parseAnsiByteRows(new Uint8Array(), 2).rows).toEqual([]);
+});
+
+// Deterministic byte streams that exercise every way a reused parse could
+// diverge from a fresh one: styles carried across lines, control strings and
+// CSI sequences split by a range edge, malformed and multi-byte scalars, and
+// logical lines long enough to split into several fragments.
+const STREAM_TOKENS = [
+  [65],
+  [66, 67, 68],
+  [10],
+  [10],
+  [0xc3, 0xa9],
+  [0xf0, 0x9f, 0x98, 0x80],
+  [0xff],
+  [27, 91, 51, 49, 59, 49, 109],
+  [27, 91, 48, 109],
+  [27, 91, 51, 50, 109],
+  [27, 93, 120, 121, 7],
+  [27, 93, 122],
+  [27, 92],
+  [27],
+  Array.from({ length: 3000 }, () => 70),
+];
+
+function randomStream(random: () => number, minimumBytes: number): Uint8Array {
+  const bytes: number[] = [];
+  while (bytes.length < minimumBytes) bytes.push(...(STREAM_TOKENS[Math.floor(random() * STREAM_TOKENS.length)] ?? []));
+  return new Uint8Array(bytes);
+}
+
+function randomRange(random: () => number, length: number): [number, number] {
+  const start = Math.floor(random() * length);
+  return [start, start + Math.floor(random() * (length - start + 1))];
+}
+
+test("a parse reusing earlier parses of overlapping ranges equals a fresh parse", () => {
+  const random = mulberry32(4242);
+  for (let trial = 0; trial < 60; trial++) {
+    const stream = randomStream(random, 1000 + Math.floor(random() * 8000));
+    const offset = 1000;
+    const earlier = Array.from({ length: 1 + Math.floor(random() * 2) }, () => {
+      const [start, end] = randomRange(random, stream.length);
+      return parseAnsiByteRows(stream.slice(start, end), offset + start);
+    });
+    const [start, end] = randomRange(random, stream.length);
+    // Half the trials resume from a state an earlier parse recorded, as a
+    // trimmed window does.
+    const checkpoint =
+      random() < 0.5 ? earlier[0]?.boundaries.find((boundary) => boundary.offsetBytes >= offset + start) : undefined;
+    const from = checkpoint === undefined ? start : checkpoint.offsetBytes - offset;
+    const bytes = stream.slice(from, Math.max(from, end));
+    expect(parseAnsiByteRows(bytes, offset + from, checkpoint?.state, earlier)).toEqual(
+      parseAnsiByteRows(bytes, offset + from, checkpoint?.state),
+    );
+  }
+});
+
+test("appending to a parsed range rescans only its unsettled last fragment", () => {
+  const first = new Uint8Array([27, 91, 51, 49, 109, 65, 10, 66, 10, 67, 0xf0, 0x9f]);
+  const earlier = parseAnsiByteRows(first, 0);
+  const bytes = new Uint8Array([...first, 0x98, 0x80, 10, 68]);
+  const parsed = parseAnsiByteRows(bytes, 0, undefined, [earlier]);
+  expect(parsed.rows.map((row) => plainText([row.line]))).toEqual(["A", "B", "C😀", "D"]);
+  expect(parsed.rows[0]).toBe(earlier.rows[0]);
+  expect(parsed.rows[1]).toBe(earlier.rows[1]);
+  expect(parsed.rows[2]).not.toBe(earlier.rows[2]);
+});
+
+test("a prepended range rejoins an earlier parse once its terminal state agrees", () => {
+  const tail = new Uint8Array([65, 10, 27, 91, 48, 109, 66, 10, 67, 10, 68]);
+  const earlier = parseAnsiByteRows(tail, 11);
+  const prefix = new Uint8Array([27, 91, 51, 49, 109, 88, 10, 89, 89, 89, 89]);
+  const parsed = parseAnsiByteRows(new Uint8Array([...prefix, ...tail]), 0, undefined, [earlier]);
+  expect(parsed.rows.map((row) => plainText([row.line]))).toEqual(["X", "YYYYA", "B", "C", "D"]);
+  expect(parsed.rows[1]?.line).toMatchObject([{ text: "YYYYA", foreground: { kind: "named", name: "red" } }]);
+  // The prefix's red reaches B's row, and the reset inside it makes the
+  // states agree again from C on.
+  expect(parsed.rows[2]).not.toBe(earlier.rows[1]);
+  expect(parsed.rows[3]).toBe(earlier.rows[2]);
+});
+
+test("a boundary reached inside a control string does not reuse rows parsed as text", () => {
+  // The size split lands at byte 4096 in both parses, but only the full parse
+  // is inside the OSC there: the earlier one began mid-string and read its
+  // payload as visible text.
+  const bytes = new Uint8Array([27, 93, ...new Array(20000).fill(120), 7, 65, 10]);
+  const earlier = parseAnsiByteRows(bytes.slice(4096), 4096);
+  const parsed = parseAnsiByteRows(bytes, 0, undefined, [earlier]);
+  expect(parsed).toEqual(parseAnsiByteRows(bytes, 0));
+  expect(parsed.rows.map((row) => plainText([row.line]))).toEqual(["A"]);
+});
+
+test("a range ending inside an earlier parse reuses no rows past its own end", () => {
+  const bytes = new TextEncoder().encode("one\ntwo\nthree\nfour\n");
+  const earlier = parseAnsiByteRows(bytes, 0);
+  const parsed = parseAnsiByteRows(bytes.slice(0, 8), 0, undefined, [earlier]);
+  expect(parsed).toEqual(parseAnsiByteRows(bytes.slice(0, 8), 0));
+  expect(parsed.rows.map((row) => plainText([row.line]))).toEqual(["one", "two"]);
 });

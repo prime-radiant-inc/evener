@@ -27,7 +27,9 @@ import {
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { Driver } from "../skillguard/run.mjs";
+import { measureDelayedFloatingDock } from "./startup.mjs";
 import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
+import { checkMovingControls } from "./click-regression.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -51,14 +53,19 @@ const BOOT = {
   bootLabel: "the shellguard entry global window.settledShell",
 };
 
-// One page load, one measurement: opens a fresh page at `viewport`, waits for
-// the harness to settle, and returns the parsed result of `expression`. Every
-// measurement below is one call to this - the per-measure differences are the
-// viewport and the expression or page action, nothing else.
-async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
-  const page = await connectPage(cdpEndpoint);
+// One page load, one measurement: loads the harness as a new document in the
+// shared tab, with empty localStorage, at `viewport`, waits for it to settle,
+// and returns the parsed result of `expression`. Every measurement below is
+// one call to this - the per-measure differences are the viewport and the
+// expression or page action, nothing else.
+async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expression) {
+  const page = await connectPage(cdpEndpoint, sharedTabId);
   const { send } = page;
   try {
+    // Every measurement shares this tab, and the outgoing document can still
+    // save its layout until the navigation replaces it, so clear storage as each
+    // new document starts. The script ends with this CDP session.
+    await send("Page.addScriptToEvaluateOnNewDocument", { source: "try { localStorage.clear(); } catch {}" });
     await applyViewport(send, viewport);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
     await evaluate(send, "window.settledShell");
@@ -160,13 +167,30 @@ function assertDockResize(result) {
 async function measureFloatingDock(page) {
   const driver = new Driver({});
   driver.page = page;
+  await driver.waitPage(
+    `(async () => {
+      const { getDockviewApi } = await import('/src/shell/workspace.ts');
+      return getDockviewApi() != null;
+    })()`,
+    { label: "real floating fixture's restored workspace" },
+  );
   await evaluate(
     driver.send,
     `(async () => {
       const { workspaceStore, getDockviewApi } = await import('/src/shell/workspace.ts');
-      const paneId = workspaceStore.getState().openPane('settings');
-      window.shellguardFloat = { paneId, workspaceStore, getDockviewApi };
+      window.shellguardFloat = { workspaceStore, getDockviewApi };
     })()`,
+  );
+  // DockHost is a lazy chunk and settledShell waits only for the rail, so the
+  // dock can still be booting here. A pane opened before DockHost's onReady is
+  // re-minted under a new id when onReady restores the layout an earlier page
+  // saved, and the id openPane returned then never gets a panel. DockHost
+  // registers the api at the top of its synchronous onReady, so a non-null api
+  // means that restore has finished.
+  await driver.waitPage("window.shellguardFloat.getDockviewApi() != null", { label: "real Dockview api ready" });
+  await evaluate(
+    driver.send,
+    "window.shellguardFloat.paneId = window.shellguardFloat.workspaceStore.getState().openPane('settings')",
   );
   await driver.waitPage(
     "window.shellguardFloat.getDockviewApi()?.getPanel(window.shellguardFloat.paneId) != null",
@@ -451,6 +475,11 @@ function assertMobileResult(result) {
 const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
 const OVERVIEW_THEMES = ["light", "dark"];
 const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
+// The Overview sweep's tall task list renders this many live rows (40-row
+// fixture, every fourth settled into the collapsed fold). The wait gate and
+// the fixture-sanity assert below share it, so resizing the fixture cannot
+// desync them into an unexplained wait timeout.
+const TALL_TASK_ROWS = 30;
 const RAIL_ACTION = '[data-session-actions-ref="local:p0-s0"]:not([data-pane-id])';
 const LONG_VALUES = [
   `anthropic/${"modelidentifier".repeat(12)}`,
@@ -460,13 +489,19 @@ const LONG_VALUES = [
 ];
 
 async function waitForDom(send, expression, label) {
+  // Presence predicates can return DOM nodes, which must not cross CDP by value.
+  return waitForValue(send, `Boolean(${expression})`, label);
+}
+
+async function waitForValue(send, expression, label) {
   return evaluate(send, `(async () => {
     const deadline = performance.now() + 15000;
-    while (!(${expression})) {
+    let value;
+    while (!(value = (${expression}))) {
       if (performance.now() > deadline) throw new Error(${JSON.stringify(label)} + ': ' + document.body.innerText.slice(-1500));
       await new Promise(resolve => requestAnimationFrame(resolve));
     }
-    return true;
+    return value;
   })()`);
 }
 
@@ -490,13 +525,20 @@ async function settleOverview(send) {
     const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
     if (!aside) return true;
     const box = aside.getBoundingClientRect();
+    // A sliding Overview that overflows the page gives Linux Chrome classic
+    // scrollbars, which can outlive the slide and later vanish under a press.
+    const page = document.documentElement;
+    if (page.scrollWidth > innerWidth + 1 || page.scrollHeight > innerHeight + 1) {
+      throw new Error('Overview entrance overflows the page: ' + JSON.stringify({
+        scrollWidth: page.scrollWidth, scrollHeight: page.scrollHeight, aside: box.toJSON() }));
+    }
     return box.right <= innerWidth + 1 && box.left >= -1;
   })()`, "Overview finishes its entrance");
 }
 
-async function clickControl(send, selector) {
+export async function clickControl(send, selector) {
   await waitForDom(send, `document.querySelector(${JSON.stringify(selector)})`, `mounted control ${selector}`);
-  const point = await evaluate(send, `(async () => {
+  let point = await evaluate(send, `(async () => {
     const marker = document.querySelector(${JSON.stringify(selector)});
     const element = marker?.closest('button') ?? marker;
     if (!element) throw new Error('missing control: ' + ${JSON.stringify(selector)} + ' ' + JSON.stringify({
@@ -511,10 +553,13 @@ async function clickControl(send, selector) {
   })()`);
   await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
   try {
-    await waitForDom(send, `(() => {
+    point = await waitForValue(send, `(() => {
       const marker = document.querySelector(${JSON.stringify(selector)});
       const element = marker?.closest('button') ?? marker;
-      return element && getComputedStyle(element).visibility === 'visible' && element.contains(document.elementFromPoint(${point.x}, ${point.y}));
+      if (!element || getComputedStyle(element).visibility !== 'visible') return false;
+      const box = element.getBoundingClientRect();
+      const current = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      return box.width && box.height && element.contains(document.elementFromPoint(current.x, current.y)) && current;
     })()`, `hit-testable control ${selector}`);
   } catch (error) {
     const witness = await evaluate(send, `(() => {
@@ -534,8 +579,7 @@ async function clickControl(send, selector) {
 
 async function pressKey(send, key, code, keyCode, modifiers = 0) {
   for (const type of ["keyDown", "keyUp"]) {
-    await send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: keyCode,
-      nativeVirtualKeyCode: keyCode, modifiers,
+    await send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: keyCode, modifiers,
       ...(type === "keyDown" && key === "Enter" && modifiers === 0 ? { text: "\r" } : {}) });
   }
 }
@@ -639,6 +683,72 @@ async function measureOverview(send) {
   })()`);
 }
 
+// Shared into the page evals below via .toString(), like fullTextMeasurement:
+// every scroll container under the Overview, in document order. The viewport
+// finders below want ActivityViewport's own body div - the first DIV in the
+// list; a non-div scroller can sit earlier (the breadcrumb strip's
+// overflow-x hidden pairs its overflow-y to computed auto), so they must keep
+// the tagName filter, while the pre-screenshot reset walks the whole list.
+function overviewScrollContainers(root) {
+  return Array.from(root.querySelectorAll("*")).filter((el) => ["auto", "scroll"].includes(getComputedStyle(el).overflowY));
+}
+
+// The Tasks tab over a list taller than the viewport (the harness's
+// evener/tasks/list fixture answers with 40 rows): the same page-height
+// contract the rail scenario asserts, extended to the Overview's own tab
+// bodies. The tab's scroll container must own the tall list, and the
+// document must not grow: a tall task list scrolling the whole page frame
+// is the bug this step exists to catch.
+async function measureOverviewTasks(send) {
+  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Tasks"]`);
+  await waitForDom(
+    send,
+    `document.querySelectorAll('[data-testid="task-row"]').length >= ${TALL_TASK_ROWS}`,
+    "the Overview's tall task list rendered",
+  );
+  await settleOverview(send);
+  return evaluate(send, `(() => {
+    const overviewScrollContainers = ${overviewScrollContainers.toString()};
+    const de = document.documentElement;
+    const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+    const scroller = overviewScrollContainers(aside).find((el) => el.tagName === "DIV");
+    const rows = document.querySelectorAll('[data-testid="task-row"]').length;
+    return {
+      rows,
+      scroller: scroller && {
+        clientHeight: scroller.clientHeight,
+        scrollHeight: scroller.scrollHeight,
+        scrollTop: scroller.scrollTop,
+      },
+      document: { height: de.scrollHeight, width: de.scrollWidth },
+    };
+  })()`);
+}
+
+function assertOverviewTasks(result, viewport) {
+  const failures = [];
+  // Fixture sanity: the tall list really rendered, so "no page overflow" is
+  // a measurement of the loaded tab, not of an empty one that never fetched.
+  if (result.rows < TALL_TASK_ROWS) {
+    failures.push(`expected a tall task list in the Overview, found ${result.rows} rows`);
+  }
+  // The list must actually overflow the tab, so the document check below is
+  // a real measurement: a list shorter than the viewport would make it vacuous.
+  if (!result.scroller || result.scroller.scrollHeight <= result.scroller.clientHeight + 1) {
+    failures.push(`the Overview tab body is not scrolling its task list: ${JSON.stringify(result.scroller)}`);
+  }
+  if (result.document.height > viewport.height + 1) {
+    failures.push(
+      `the task list set the page's height: document ${result.document.height}px in a ${viewport.height}px viewport - ` +
+        "the Overview's tab scroller, not the page frame, must own the tall list",
+    );
+  }
+  if (result.document.width > viewport.width + 1) {
+    failures.push(`the task list set the page's width: document ${result.document.width}px in a ${viewport.width}px viewport`);
+  }
+  return failures;
+}
+
 function assertOverview(result, viewport, theme) {
   const failures = [];
   const labels = ["Agents\n100/100", "Jobs\n100/100", "Watches\n100/100", "Tasks\n100/100", "About"];
@@ -664,7 +774,6 @@ function assertOverview(result, viewport, theme) {
     }
   }
   if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1) failures.push(`page overflow ${JSON.stringify(result.document)}`);
-  failures.push(...result.errors.map(error => `page error: ${error}`));
   return failures;
 }
 
@@ -825,8 +934,9 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
 
 async function measureActivityRowPadding(send, viewport) {
   const outer = await evaluate(send, `(() => {
+    const overviewScrollContainers = ${overviewScrollContainers.toString()};
     const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
-    const body = [...aside.querySelectorAll('div')].find(el => getComputedStyle(el).overflowY === 'auto');
+    const body = overviewScrollContainers(aside).find((el) => el.tagName === "DIV");
     if (!body) throw new Error('Overview scroll viewport missing');
     const style = getComputedStyle(body);
     return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
@@ -876,7 +986,8 @@ async function measureActivityRowPadding(send, viewport) {
   }
 }
 
-async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture) {
+// Browser regressions may prepare real page input without replacing the flow.
+export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture, preparePage) {
   const target = await openPage(cdpEndpoint, "about:blank");
   const page = await connectPage(cdpEndpoint, target.id);
   const { send } = page;
@@ -888,26 +999,38 @@ async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGestu
     await evaluate(send, `window.configureOverview(${JSON.stringify(theme)})`);
     await settleOverview(send);
     await openRailOverview(send);
+    const fixture = preparePage && await preparePage(send);
     const result = await measureOverview(send);
     if (process.env.EVENER_SCRATCH_DIR) {
       await evaluate(send, `(() => {
+        const overviewScrollContainers = ${overviewScrollContainers.toString()};
         const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
-        for (const element of aside.querySelectorAll('*')) {
-          if (['auto', 'scroll'].includes(getComputedStyle(element).overflowY)) element.scrollTop = 0;
-        }
+        for (const element of overviewScrollContainers(aside)) element.scrollTop = 0;
       })()`);
       const screenshot = await send("Page.captureScreenshot", { format: "png" });
       await writeFile(path.join(process.env.EVENER_SCRATCH_DIR, `overview-${viewport.width}-${theme}.png`), Buffer.from(screenshot.result.data, "base64"));
     }
     const failures = assertOverview(result, viewport, theme);
+    result.tasksTab = await measureOverviewTasks(send);
+    failures.push(...assertOverviewTasks(result.tasksTab, viewport));
     const padding = await measureActivityRowPadding(send, viewport);
     result.rowPadding = padding.result;
     failures.push(...padding.failures);
     try {
       result.keyboard = await trustedOverviewFlow(send, viewport, childGesture);
     } catch (error) {
-      failures.push(`trusted interaction: ${error.message}`);
+      const witness = await evaluate(send, `(() => {
+        const state = window.overviewGuardState();
+        return { ...state, calls: state.calls.slice(-12), errors: window.__shellGuardErrors || [],
+          mountedOverview: !!document.querySelector(${JSON.stringify(OVERVIEW)}) };
+      })()`);
+      failures.push(`trusted interaction: ${error.message}; child witness: ${JSON.stringify(witness)}`);
     }
+    await fixture?.afterInteraction;
+    // The initial geometry snapshot predates trusted input. Read this same
+    // page again even when an interaction failed, and report each event once.
+    result.errors = await evaluate(send, "window.__shellGuardErrors || []");
+    failures.push(...result.errors.map(error => `page error: ${error}`));
     return { result, failures };
   } finally {
     await clearViewportOverride(send);
@@ -944,18 +1067,25 @@ async function main() {
       viteDeadline.clear();
     }
     cdpEndpoint = await waitForBrowserReady(guard);
+    // The measurements share this tab, named by id: Chrome keeps listing a tab
+    // for a moment after /json/close, so "the first listed page" can be the
+    // click-geometry tab just closed, whose socket fails or never answers (#3895).
+    const sharedTab = await openPage(cdpEndpoint, "about:blank");
+    console.log(`shellguard click geometry: ${JSON.stringify(await checkMovingControls(cdpEndpoint, clickControl))}`);
     const result = await measureOnPage(
       cdpEndpoint,
+      sharedTab.id,
       vitePort,
       VIEWPORT,
       "(async () => { await window.applyShellNavigationDelta(); const renders = window.measureRailRenderCounts(); return JSON.stringify({ ...window.measureShell(), paneFooters: window.measurePaneFooters(), counts: renders.counts, changedRowID: renders.changedRowID, visibleRowIDs: renders.visibleRowIDs }); })()",
     );
-    const dockResize = await measureOnPage(cdpEndpoint, vitePort, VIEWPORT, measureDockResize);
-    const floatingDock = await measureOnPage(cdpEndpoint, vitePort, VIEWPORT, measureFloatingDock);
+    const dockResize = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, VIEWPORT, measureDockResize);
+    const floatingDock = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, VIEWPORT, measureFloatingDock);
     // Both mobile measurements come from ONE page load of the emulated phone:
     // the sidebar geometry and the tap-floor audit need the same context.
     const mobile = await measureOnPage(
       cdpEndpoint,
+      sharedTab.id,
       vitePort,
       MOBILE_VIEWPORT,
       "JSON.stringify({ sidebar: window.measureMobileSidebar(), tap: window.measureTapTargets() })",
@@ -983,6 +1113,11 @@ async function main() {
         }
       }
     }
+    const delayedFloatingDock = await measureDelayedFloatingDock(
+      cdpEndpoint, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT, VIEWPORT, measureFloatingDock,
+    );
+    failures.push(...assertFloatingDock(delayedFloatingDock));
+    console.log(`shellguard delayed workspace: ${JSON.stringify(delayedFloatingDock)}`);
     failures.push(...await checkSessionHoverCards(cdpEndpoint, vitePort));
     if (failures.length === 0) {
       console.log(
@@ -1032,7 +1167,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

@@ -7,7 +7,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -102,7 +101,7 @@ func validateGeneratedRegionMarkers(doc []byte) error {
 		if bytes.Equal(line.text, []byte(endMarker)) {
 			endCount++
 			if !open && orderErr == nil {
-				orderErr = errors.New("doc has an END marker before its GENERATED BEGIN marker")
+				orderErr = reject(errEndBeforeBegin, "doc has an END marker before its GENERATED BEGIN marker")
 			}
 			open = false
 		}
@@ -115,13 +114,13 @@ func validateGeneratedRegionMarkers(doc []byte) error {
 		return orderErr
 	}
 	if validBeginCount != beginCount {
-		return fmt.Errorf("doc has %d malformed GENERATED BEGIN marker lines", beginCount-validBeginCount)
+		return reject(errMalformedBeginMarker, "doc has %d malformed GENERATED BEGIN marker lines", beginCount-validBeginCount)
 	}
 	if beginCount != 1 {
-		return fmt.Errorf("doc has %d GENERATED regions; each family doc must have exactly one", beginCount)
+		return reject(errRegionCount, "doc has %d GENERATED regions; each family doc must have exactly one", beginCount)
 	}
 	if endCount != 1 {
-		return fmt.Errorf("doc has %d %q marker lines; each family doc must have exactly one", endCount, endMarker)
+		return reject(errEndMarkerCount, "doc has %d %q marker lines; each family doc must have exactly one", endCount, endMarker)
 	}
 	if open {
 		return fmt.Errorf("doc has a GENERATED BEGIN marker with no following %q line", endMarker)
@@ -169,9 +168,9 @@ func RewriteRegion(doc []byte, family string, body string) ([]byte, error) {
 	_, regionStart, lineEnding, found := findMarkerLine(doc, strings.TrimSuffix(begin, "\n"))
 	if !found {
 		if bytes.Contains(doc, []byte(genericBeginPrefix)) {
-			return nil, fmt.Errorf("doc has a GENERATED region, but not one for family %q (want marker %q)", family, strings.TrimSuffix(begin, "\n"))
+			return nil, reject(errRegionForOtherFamily, "doc has a GENERATED region, but not one for family %q (want marker %q)", family, strings.TrimSuffix(begin, "\n"))
 		}
-		return nil, fmt.Errorf("doc has no marked region for family %q (want marker %q)", family, strings.TrimSuffix(begin, "\n"))
+		return nil, reject(errNoMarkedRegion, "doc has no marked region for family %q (want marker %q)", family, strings.TrimSuffix(begin, "\n"))
 	}
 	if lineEnding == "" {
 		return nil, fmt.Errorf("family %q's BEGIN marker has no line ending before its body", family)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,10 @@ func requireRealBwrap(t *testing.T) HostFacts {
 	if facts.OS != "linux" || !facts.BwrapCapable || facts.BwrapPath == "" {
 		t.Skip("bwrap not capable on this host")
 	}
+	// The tests anchor their caches at a fixture home; the runner's own Go
+	// settings would put real directories (on whatever filesystem the runner
+	// keeps them) under the overlay instead.
+	facts.GoPath, facts.GoModCache, facts.GoCache, facts.XDGCacheHome = "", "", "", ""
 	return facts
 }
 
@@ -339,5 +344,218 @@ func TestBwrapSessionTmpInsideADevShmWorkspaceStaysWritable(t *testing.T) {
 	}
 	if !strings.Contains(out, "WORKSPACE-DENIED") {
 		t.Errorf("the read-only /dev/shm workspace accepted a write:\n%s", out)
+	}
+}
+
+// A delegate is routinely handed files from its parent's session scratch, which
+// lives beside its own in the root's scratch tree (#4170). The shell must see the
+// tree read-only exactly where the file tools may read it, keep its own scratch
+// writable, and still hide the rest of the host /tmp.
+func TestBwrapShellSeesTheScratchTreeTheFileToolsRead(t *testing.T) {
+	facts := requireRealBwrap(t)
+	base, err := os.MkdirTemp("/tmp", "evener-bwrap-scratch-tree-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	base = resolveCleanPath(base)
+	if !pathUnder(base, "/tmp") {
+		t.Skipf("/tmp resolves to %q on this host; the private /tmp shadows nothing", base)
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	var scratch [2]string
+	for i, session := range []string{"parent", "child"} {
+		s, err := OpenSessionScratch(base, cwd, "root", session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Cleanup() })
+		scratch[i] = s.Dir
+	}
+	parentScratch, ownScratch := scratch[0], scratch[1]
+	preserved := filepath.Join(parentScratch, "preserved.txt")
+	elsewhere := filepath.Join(base, "elsewhere.txt")
+	for _, f := range []string{preserved, elsewhere} {
+		if err := os.WriteFile(f, []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const script = `set -u
+if test "$(cat "$1" 2>/dev/null)" = fixture; then echo PARENT-VISIBLE; fi
+if (printf forbidden > "$2/forbidden") 2>/dev/null; then echo PARENT-WRITABLE; fi
+if printf ok > "$3/written"; then echo OWN-WRITABLE; fi
+if test -e "$4"; then echo ELSEWHERE-VISIBLE; fi`
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			f := facts
+			f.Home = t.TempDir()
+			rp, err := Resolve(SandboxPolicy{Mode: mode}, f, cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, err := NewWrapper(rp, facts.BwrapPath, ownScratch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			argv := w.Wrap([]string{"/bin/bash", "-c", script, "scratch-tree-test", preserved, parentScratch, ownScratch, elsewhere}, cwd)
+			cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
+			cmd.Env = ApplyEnvFloor(os.Environ(), rp, ownScratch)
+			raw, err := cmd.CombinedOutput()
+			out := string(raw)
+			if err != nil {
+				t.Fatalf("sandboxed command failed: %v\n%s", err, out)
+			}
+			if got, want := strings.Contains(out, "PARENT-VISIBLE"), rp.FileToolCanRead(preserved); got != want {
+				t.Errorf("shell sees the parent's scratch file = %v, file tools may read it = %v; they must agree:\n%s", got, want, out)
+			}
+			if strings.Contains(out, "PARENT-WRITABLE") {
+				t.Errorf("the scratch tree must be read-only outside the session's own scratch:\n%s", out)
+			}
+			if !strings.Contains(out, "OWN-WRITABLE") {
+				t.Errorf("the session's own scratch must stay writable:\n%s", out)
+			}
+			if strings.Contains(out, "ELSEWHERE-VISIBLE") {
+				t.Errorf("host /tmp outside the scratch tree must stay hidden:\n%s", out)
+			}
+		})
+	}
+}
+
+// Under real bwrap, a cache root holding an extra writable root is not
+// overlaid: the write to the granted root persists, and a write elsewhere in
+// that cache fails where it happens instead of vanishing with an overlay.
+// Another cache that holds no write root stays overlaid (its write succeeds
+// and is discarded).
+func TestBwrapCacheHoldingAWritableRootIsNotOverlaid(t *testing.T) {
+	facts := requireRealBwrap(t)
+	if !facts.OverlaySupported {
+		t.Skip("this bwrap has no overlay support")
+	}
+	home, err := os.MkdirTemp("/var/tmp", "evener-overlay-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	cache := filepath.Join(home, ".cache")
+	library := filepath.Join(cache, "library")
+	npm := filepath.Join(home, ".npm")
+	for _, dir := range []string{library, npm} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	facts.Home = home
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rp.CacheStrategy != CacheOverlay {
+		t.Skipf("cache strategy is %v, not overlay", rp.CacheStrategy)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `echo kept > "$1/kept"; echo private > "$3/private" && echo NPM-WRITABLE; if echo gone > "$2/stray" 2>/dev/null; then echo STRAY-WRITTEN; fi`
+	argv := w.Wrap([]string{"/bin/sh", "-c", script, "overlay-test", library, cache, npm}, cwd)
+	out, _ := exec.CommandContext(t.Context(), argv[0], argv[1:]...).CombinedOutput()
+	if _, err := os.Stat(filepath.Join(library, "kept")); err != nil {
+		t.Errorf("a write to the granted root must persist: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "STRAY-WRITTEN") {
+		t.Errorf("a write elsewhere in a cache holding a writable root must fail, not land in an overlay:\n%s", out)
+	}
+	if !strings.Contains(string(out), "NPM-WRITABLE") {
+		t.Errorf("a cache holding no writable root must stay overlaid and writable:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(npm, "private")); !os.IsNotExist(err) {
+		t.Errorf("a write into an overlaid cache must be discarded: %v", err)
+	}
+}
+
+// A cache root sharing storage with a writable root through another symlink
+// is not overlaid either, and the write to the writable root persists.
+func TestBwrapCacheSharingAWritableRootThroughASymlinkIsNotOverlaid(t *testing.T) {
+	facts := requireRealBwrap(t)
+	if !facts.OverlaySupported {
+		t.Skip("this bwrap has no overlay support")
+	}
+	base, err := os.MkdirTemp("/var/tmp", "evener-overlay-links-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	storage := filepath.Join(base, "storage")
+	library := filepath.Join(storage, "cache", "library")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "links")
+	if err := os.Symlink(storage, link); err != nil {
+		t.Fatal(err)
+	}
+	facts.Home = filepath.Join(base, "home")
+	facts.GoCache = filepath.Join(link, "cache")
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(rp.CacheRoots, facts.GoCache) {
+		t.Errorf("a cache holding a writable root through a symlink must not be overlaid: %v", rp.CacheRoots)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := w.Wrap([]string{"/bin/sh", "-c", `echo kept > "$1/kept"`, "rebind-test", library}, cwd)
+	if out, err := exec.CommandContext(t.Context(), argv[0], argv[1:]...).CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed command failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(library, "kept")); err != nil {
+		t.Errorf("a write to the writable root must persist: %v", err)
+	}
+}
+
+// The plugin store and the user skills directory are carved out of the masked
+// ~/.config/evener read-only in every mode (#4171): the shell reads a plugin
+// skill's files and runs its hook script, cannot write either, and still sees
+// nothing else of ~/.config/evener.
+func TestBwrapShellReadsEvenerContentThroughTheCredentialMask(t *testing.T) {
+	facts := requireRealBwrap(t)
+	// Outside /tmp, so the private /tmp tmpfs is not what hides the secret.
+	home, err := os.MkdirTemp("/var/tmp", "evener-content-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for layout, write := range evenerContentLayouts {
+		fx := write(t, filepath.Join(home, layout))
+		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+			t.Run(layout+"/"+mode.String(), func(t *testing.T) {
+				f := facts
+				f.Home = filepath.Join(home, layout)
+				f.EvenerContentRoots = fx.contentRoots()
+				rp, err := Resolve(SandboxPolicy{Mode: mode, InfraReadRoots: []string{fx.plugin}}, f, cwd)
+				if err != nil {
+					t.Fatal(err)
+				}
+				w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				argv := w.Wrap(fx.scriptCommand("/bin/bash"), cwd)
+				cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
+				cmd.Env = ApplyEnvFloor(os.Environ(), rp, w.SessionTmp())
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("sandboxed command failed: %v\n%s", err, out)
+				}
+				assertEvenerContentOutput(t, string(out))
+			})
+		}
 	}
 }

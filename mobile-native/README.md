@@ -12,6 +12,15 @@ AppWire client and selected services/state modules. The native UI is in this
 directory; the old Tauri UI is not loaded or used as feature authority. Current
 web/server behavior defines scope.
 
+Shell-job output uses the shared lossless byte-page decoder for the existing
+latest-output screen. Its focused two-second rereads preserve prior successful
+output through transport failures. The displayed start and byte count come from
+the raw page; the server retention floor is a separate fact. This view requires
+the current AppWire protocol and adds no native history-paging UI. See the
+[job output contract](../docs/product/session-activity.md#job-output-pages).
+Its fixtures use the six raw-page fields: `offsetBytes`, `bytesReturned`,
+`totalBytes`, `retainedStartBytes`, `encoding` and `data`.
+
 The [current status](../docs/design/mobile/status.md), [remaining work](../docs/design/mobile/ios-v1-remaining.md) and [acceptance index](../docs/design/mobile/acceptance.md) distinguish implementation from current-artifact qualification. The full development plan and dated evidence remain on branch `live-concepts-plan2-integrate` at checkpoint `04ae937af`.
 
 Run `make test-native` from the repository root after installing native dependencies.
@@ -80,6 +89,26 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
+## Memory-refresh transcript updates
+
+Automatic index observations appear as standalone **Refreshed my memory** rows.
+They start folded at every detail level, including Full, with System events
+either on or off. General expansion defaults do not open them. Tapping shows
+scope, state, truncation and formatted content through the native Markdown
+renderer. Unavailable and revoked states stay visible while folded. A separate
+**Source** disclosure exposes the complete original text, including content the
+formatted view omits; malformed observations open as that text directly and do
+not block later valid observations.
+
+Explicit open and closed choices for the refresh and Source are independent.
+Both survive remounts and detail-level changes, scoped by hub, session and item;
+folding the refresh preserves its Source choice. Live and reloaded history use
+this same presentation. Web and native share payload validation. Memory tools
+and model context retain their separate owners. See the [memory guide](../docs/product/memory.md).
+The JavaScript tests and iOS Metro bundle check do not establish installed-iPhone
+touch behavior or narrow-layout wrapping; those require a current-source device
+or simulator smoke check.
+
 ## Shared-notes transcript updates
 
 Internal snapshots fold under **Shared notes updated**. Chat hides them even
@@ -114,6 +143,21 @@ lasts for the app lifetime and adds no disk persistence.
 
 ## Current scope
 
+Assistant filename actions and document chips share the file-reference grammar.
+Authored HTML tags are literal text, so they do not suppress otherwise eligible
+filenames, including across paragraphs and table cells. Actual Markdown link
+destinations, opaque labels, fenced/indented code and Mermaid keep native Markdown
+rules even inside HTML-shaped blocks; inline-code filenames remain eligible.
+Web may instead display that block's Markdown syntax as literal text.
+Prose filenames use once-resolved Markdown entities: `docs/a&amp;b.md` opens
+`docs/a&b.md`, including in HTML-shaped prose. Backticked filenames stay literal,
+while explicit Markdown destinations keep their once-decoded entity/URI meaning
+and opaque labels. Prose and code never percent-decode filenames. Generated prose
+labels preserve that resolved meaning in the installed native parser.
+Recognition preserves the original response and binds actions to the owning
+conversation's current cwd, without reading files. Automated adapter/parser checks
+do not establish installed-device rendering or touch behavior.
+
 - The recent-session roster is bounded and has server-side search. Project
   navigation has paged catalogs, archived views, favorites and archive actions.
   Complete organization/pinning and management acceptance remain open.
@@ -139,6 +183,24 @@ lasts for the app lifetime and adds no disk persistence.
   configuration/trust. These advertised operations are wired in source and await
   current-artifact workflow qualification. Full parity, upgrade/recovery and
   failure/lifecycle acceptance are unfinished; see the [acceptance ledger](../docs/design/mobile/acceptance.md).
+- Activity separates current work from independent Done delegate and Completed
+  background-job histories. All starts both histories closed; Done reveals every
+  terminal outcome, including failures, with neutral rows and truthful reasons.
+  Active descendants retain navigation and stop controls. Search narrows loaded
+  rows while chips keep authoritative counts, including unknown counts. The
+  binding carries loaded membership into its replacement shared store after
+  reconnect, so its existing paging owner restores later rows without a phone
+  retry loop. Visible end demand survives same-height closed-history pages;
+  changed rows/geometry, scrolling away and focus gate further demand, while
+  errors retain the shared backoff. Tests execute the installed native edge
+  latch with real paging and rendering. They cover identity and view intent; device geometry,
+  keyboard and VoiceOver remain separate qualification.
+- Board, project/location and pinned session rows show only running delegates
+  in their subagent chips. Settled failures have no visual or spoken count.
+  The session header keeps neutral Subagents access with the authoritative total,
+  or “count unknown” when only a delegate roster is available. A session's own
+  errors, current questions and approvals retain their attention and priority;
+  offline and stale-input rules remain unchanged.
 - Historical production roster reads were slow. Representative-data measurement
   and normal deployment verification remain open; tiny fixtures do not establish
   production responsiveness. Voice/barge-in is outside v1.
@@ -222,3 +284,25 @@ See the [current status](../docs/design/mobile/status.md) for SDK evidence and
 current qualification boundaries. The latest real SDK shutdown journey received
 `thread/closed` from backend `3284d6ac5`; older failures remain historical `d2d5eedf9`
 evidence.
+
+## Adding a Hub
+
+In the Hub Web UI, open **Settings → Mobile app → Pair a device** and create an
+invitation. **Scan pairing code** in the native app reads its QR and displays a
+fingerprint in eight groups of four hexadecimal digits. Compare every group
+with the claim shown in the Web UI and approve it there. The app then opens its
+existing name/review step; **Connect** commits
+the Hub to secure storage. Scanning a second code cannot replace a pending
+invitation. Cancellation immediately invalidates the pending invitation and
+aborts its request, before navigation finishes. Backgrounding or navigating to
+another screen pauses polling even when Add Hub remains mounted. Late responses
+cannot select or save a Hub. Returning to Add Hub in the foreground resumes with
+the same key.
+Network failures retry; an expired or rejected invitation requires a new scan.
+The phone uses the operating system's Tailscale connection when the Hub is on a
+tailnet. No microphone access is needed for pairing.
+
+Direct credential QR codes, pairing links and manual entry remain available.
+The shared [device pairing protocol](../docs/device-pairing.md) specifies the
+invitation and encrypted approval; the Hub is the approval authority, while the
+native Hub store remains the authority for saved connections.

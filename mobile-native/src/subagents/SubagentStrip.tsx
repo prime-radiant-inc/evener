@@ -2,18 +2,17 @@ import { View } from "react-native";
 import type { Palette } from "../design/tokens";
 import { useColors } from "../ui";
 import type { SubagentTally } from "../session/sessionState";
-import { type SubagentState, stripSegments } from "./subagentModel";
+import { type StripSegment, stripSegments } from "./subagentModel";
 
 const HEIGHT = 6;
 
 /** Each state's color in the strip, and in the chips' swatches, its legend. */
-export function stateColors(palette: Palette): Record<SubagentState, string> {
-	return { failed: palette.danger, running: palette.alive, done: palette.edge };
+export function stateColors(palette: Palette): Record<StripSegment["state"], string> {
+	return { running: palette.alive, done: palette.edge };
 }
 const GAP = 1;
 
-/** The Subagents list's full-width strip (spec 9): failures, then running,
- * then done, sized by count. Nothing once every subagent is done. */
+/** Active delegates followed by quiet terminal history. */
 export function SubagentStrip({ tally, width }: { tally: SubagentTally; width: number }) {
 	const { palette } = useColors();
 	const segments = stripSegments(tally, width, GAP);
@@ -22,7 +21,7 @@ export function SubagentStrip({ tally, width }: { tally: SubagentTally; width: n
 	return (
 		<View
 			accessible
-			accessibilityLabel={`${tally.failed} failed, ${tally.running} running, ${tally.done} done`}
+			accessibilityLabel={`${tally.running} running, ${tally.failed + tally.done} done`}
 			style={{ width, height: HEIGHT, borderRadius: HEIGHT / 2, overflow: "hidden", flexDirection: "row", gap: GAP }}
 		>
 			{segments.map((segment) => (

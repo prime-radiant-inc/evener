@@ -58,28 +58,13 @@
   color: var(--ink-mid);
 }
 
-/* Standard visually-hidden recipe (see statusrow.module.css's own copy of
- * this comment) - names the trigger's action for assistive tech without
- * hiding the model name itself, which stays in the chip's visible text. */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
  * 4): the trigger is the only way to open the model picker, so a coarse
  * pointer needs the platform's 44px tap floor - min-height, not height, so
  * the row's own sizing above stays untouched and this only ever grows it.
- * (pointer: coarse), not a width breakpoint like button.module.css's own
+ * (any-pointer: coarse), not a width breakpoint like button.module.css's own
  * phone block: this trigger isn't a widgets/button consumer. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .trigger {
     min-height: var(--tap-min);
   }

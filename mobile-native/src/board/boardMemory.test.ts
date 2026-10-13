@@ -20,7 +20,7 @@ describe("seen markers", () => {
 		expect(new SeenMarkers(storage, "hub-a").adopted).toBe(true);
 	});
 
-	it("on first run, adopts the newest row as the epoch so nothing past floods Finished", () => {
+	it("on first run, adopts the newest row as the epoch so nothing past arrives unseen", () => {
 		const seen = new SeenMarkers(memoryStorage(), "hub-a");
 		seen.adoptEpoch([{ updated_at: at(5) }, { updated_at: at(9) }, {}]);
 		expect(seen.isSeen({ ref: "old", updated_at: at(9) })).toBe(true);
@@ -59,15 +59,6 @@ describe("seen markers", () => {
 		seen.markSeen({ ref: "a", updated_at: at(10) });
 		expect(seen.isSeen({ ref: "a", updated_at: at(10) })).toBe(true);
 		expect(seen.isSeen({ ref: "a", updated_at: at(11) })).toBe(false);
-	});
-
-	it("keeps Mark as unread until the session is opened", () => {
-		const seen = new SeenMarkers(memoryStorage(), "hub-a");
-		seen.adoptEpoch([{ updated_at: at(30) }]);
-		seen.markUnread("a");
-		expect(seen.isSeen({ ref: "a", updated_at: at(1) })).toBe(false);
-		seen.markSeen({ ref: "a", updated_at: at(1) });
-		expect(seen.isSeen({ ref: "a", updated_at: at(1) })).toBe(true);
 	});
 
 	it("survives a relaunch and keeps hubs apart", () => {
@@ -122,20 +113,31 @@ describe("seen markers", () => {
 		expect(seen.isSeen({ ref: "a", updated_at: at(3) })).toBe(true);
 	});
 
-	it("keeps 500 marks in all, unread kept first", () => {
+	it("keeps the newest 500 marks", () => {
 		const storage = memoryStorage();
 		const seen = new SeenMarkers(storage, "hub-a");
 		seen.adoptEpoch([{ updated_at: at(0) }]);
-		seen.markUnread("keep-unread");
 		for (let i = 1; i <= 505; i++)
 			seen.markSeen({ ref: `s${i}`, updated_at: new Date(Date.UTC(2026, 8, 26, 13, 0, i)).toISOString() });
 		const stored = JSON.parse(storage.values.get("evener.native.seen.hub-a") as string);
 		expect(Object.keys(stored.sessions)).toHaveLength(500);
-		expect(stored.sessions["keep-unread"]).toEqual({ unread: true });
-		// The unread mark takes one of the 500, so the newest 499 seen marks stay.
 		expect(stored.sessions.s505).toBeDefined();
-		expect(stored.sessions.s7).toBeDefined();
-		expect(stored.sessions.s6).toBeUndefined();
+		expect(stored.sessions.s6).toBeDefined();
+		expect(stored.sessions.s5).toBeUndefined();
+	});
+
+	it("reads an unread record an older build stored as no mark at all", () => {
+		const storage = memoryStorage(
+			new Map([
+				[
+					"evener.native.seen.hub-a",
+					JSON.stringify({ adopted: true, epoch: at(30), sessions: { a: { unread: true } } }),
+				],
+			]),
+		);
+		const seen = new SeenMarkers(storage, "hub-a");
+		expect(seen.isSeen({ ref: "a", updated_at: at(1) })).toBe(true);
+		expect(seen.isSeen({ ref: "a", updated_at: at(31) })).toBe(false);
 	});
 
 	it("tells subscribers when something changes", () => {
@@ -143,11 +145,11 @@ describe("seen markers", () => {
 		let calls = 0;
 		const stop = seen.subscribe(() => calls++);
 		const before = seen.getRevision();
-		seen.markUnread("a");
+		seen.markSeen({ ref: "a", updated_at: at(1) });
 		expect(calls).toBe(1);
 		expect(seen.getRevision()).toBe(before + 1);
 		stop();
-		seen.markUnread("b");
+		seen.markSeen({ ref: "b", updated_at: at(1) });
 		expect(calls).toBe(1);
 	});
 });

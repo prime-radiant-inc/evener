@@ -1,6 +1,6 @@
 // Pure row-model builder for the dense activity tree: walks a parsed
-// ActivityTree and returns the flat list of rows to render. Live and failed entries keep
-// their original order; other terminal entries collapse behind one fold row per
+// ActivityTree and returns the flat list of rows to render. Active entries keep
+// their original order; settled entries collapse behind one fold row per
 // parent session (revealed in original order when the fold is expanded).
 // Sessions never become rows — the panel header covers the root and a delegate
 // row stands in for its child session.
@@ -282,8 +282,7 @@ export interface ActivityDelegateState {
 }
 
 // A terminal entry's failure is the outcome the daemon already decided, so the
-// rows and merged badge counts use that same truth; failed rows stay visible
-// outside inactive folds.
+// rows and merged badge counts use that same truth regardless of disclosure.
 // Work that has not ended carries no outcome and can only say so through its
 // current status.
 export function jobIsFailed(job: ActivityJob): boolean {
@@ -355,13 +354,6 @@ function sessionIsActive(session: ActivitySessionNode): boolean {
 function entryIsActive(entry: ActivityEntry): boolean {
   if (entry.kind === "shell") return jobIsActive(entry.job);
   return activityDelegateState(entry.delegate).active;
-}
-
-function entryIsFailed(entry: ActivityEntry): boolean {
-  if (entry.kind === "shell") return jobIsFailed(entry.job);
-  const delegate: ActivityDelegate = entry.delegate;
-  const state = activityDelegateState(delegate);
-  return state.failed;
 }
 
 export function jobRowFields(
@@ -483,7 +475,7 @@ export function indexActivityEntities(tree: ActivityTree): Map<string, ActivityJ
     // the panel would give it: index membership stays independent of what is
     // disclosed, while an indexed row still matches that entry's panel row.
     visitSession(walk) {
-      for (const entry of walk.entries) walk.emit(entry, !entryIsActive(entry) && !entryIsFailed(entry));
+      for (const entry of walk.entries) walk.emit(entry, !entryIsActive(entry));
     },
   });
 
@@ -501,7 +493,7 @@ export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet
       const visible: ActivityEntry[] = [];
       const inactive: ActivityEntry[] = [];
       for (const entry of walk.entries) {
-        (entryIsActive(entry) || entryIsFailed(entry) ? visible : inactive).push(entry);
+        (entryIsActive(entry) ? visible : inactive).push(entry);
       }
       for (const entry of visible) walk.emit(entry, false);
       if (inactive.length === 0) return;

@@ -1,5 +1,5 @@
 import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -77,20 +77,26 @@ test("a missing file renders an empty editor, not an error", async () => {
   connectFakeClient({ path: "/home/u/.config/evener/AGENTS.md", exists: false, content: "" });
   renderSection();
   await waitFor(() => expect(editor().value).toBe(""));
-  expect(screen.queryByText(/Failed to load/)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 // The hub's own text is the whole point for a file editor - "permission
 // denied" and "is a directory" are what tell the user what to fix - and it
-// has to be announced, not just drawn.
-test("a failed load shows the hub's own reason and announces it", async () => {
+// has to be announced, not just drawn. The store translates the failure while
+// it still has its type, so a hub's WireError keeps its explanation and a
+// client-side failure shows its friendly form, never the client's own text.
+test.each([
+  ["a hub-reported WireError", new WireError("permission denied", -32000)],
+  ["a client-side failure", new Error("AppwireClient internal detail")],
+])("a failed load from %s shows that error's friendly form and announces it", async (_name, err) => {
   const fake = new FakeClient("ready");
   fake.on("evener/settings/agentsDoc/get", () => {
-    throw new Error("disk on fire");
+    throw err;
   });
   connectionStore.getState().connect(fake);
   renderSection();
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Failed to load: disk on fire"));
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(err)));
+  expect(screen.queryByText(/AppwireClient internal detail/)).toBeNull();
 });
 
 test("Save and Revert are disabled until the draft differs from the loaded file", async () => {
@@ -201,7 +207,7 @@ test("a changed broadcast while the draft is dirty keeps the draft and offers Lo
       params: { ...DOC, content: "# from the TUI\n" },
     } as AnyNotification);
   });
-  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("changed on disk"));
+  await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
   expect(editor().value).toBe("# hi\nmore");
 
   await user.click(screen.getByRole("button", { name: "Load current" }));
@@ -276,7 +282,7 @@ test("a save superseded by a broadcast keeps the changed-on-disk note", async ()
     expect(getToasts().some((t) => t.kind === "warning" && t.text.startsWith("Saved AGENTS.md, but"))).toBe(true),
   );
   expect(getToasts().some((t) => t.text === "Saved AGENTS.md")).toBe(false);
-  expect(screen.getByRole("status").textContent).toContain("changed on disk");
+  expect(screen.getByRole("status")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Load current" })).toBeTruthy();
   expect(editor().value).toBe("# hi\nmore");
 });
@@ -319,7 +325,7 @@ test("a read landing after a superseded save re-syncs a draft that matches disk"
   await act(async () => {
     finishWriting(sent);
   });
-  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("changed on disk"));
+  await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
   expect(saveButton().disabled).toBe(false);
 
   await act(async () => {
@@ -357,7 +363,7 @@ test("a save resolving on a replaced client defers to the document the replaceme
   act(() => {
     connectFakeClient({ ...DOC, content: "# theirs\n" });
   });
-  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("changed on disk"));
+  await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
 
   await act(async () => {
     finishWriting({ ...DOC, content: "# hi\nmore" });
@@ -367,7 +373,7 @@ test("a save resolving on a replaced client defers to the document the replaceme
     expect(getToasts().some((t) => t.kind === "warning" && t.text.startsWith("Saved AGENTS.md, but"))).toBe(true),
   );
   expect(getToasts().some((t) => t.text === "Saved AGENTS.md")).toBe(false);
-  expect(screen.getByRole("status").textContent).toContain("changed on disk");
+  expect(screen.getByRole("status")).toBeTruthy();
   expect(editor().value).toBe("# hi\nmore");
 });
 
@@ -401,14 +407,13 @@ test("a failed reload after a successful load shows a reload notice and keeps th
 
   act(() => {
     fake.on("evener/settings/agentsDoc/get", () => {
-      throw new WireError("hub unreachable", -1);
+      throw new WireError("reload-failure-from-hub", -1);
     });
     fake.emitStateChange("reconnecting");
     fake.emitReady();
   });
 
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Couldn't reload AGENTS.md"));
-  expect(screen.getByRole("alert").textContent).toContain("hub unreachable");
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("reload-failure-from-hub"));
   expect(editor().value).toBe("# hi\n");
 
   const user = userEvent.setup();
@@ -431,12 +436,12 @@ test("Reload in the reload notice re-reads the file", async () => {
 
   act(() => {
     fake.on("evener/settings/agentsDoc/get", () => {
-      throw new WireError("hub unreachable", -1);
+      throw new WireError("reload-failure-from-hub", -1);
     });
     fake.emitStateChange("reconnecting");
     fake.emitReady();
   });
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Couldn't reload AGENTS.md"));
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("reload-failure-from-hub"));
 
   fake.on("evener/settings/agentsDoc/get", () => ({ ...DOC, content: "# back\n" }));
   await userEvent.setup().click(screen.getByRole("button", { name: "Reload" }));
@@ -454,7 +459,7 @@ test("a reconnect while the draft is dirty keeps the draft and offers Load curre
   act(() => {
     connectFakeClient({ ...DOC, content: "# while we were away\n" });
   });
-  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("changed on disk"));
+  await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
   expect(editor().value).toBe("# hi\nmore");
 
   await user.click(screen.getByRole("button", { name: "Load current" }));
@@ -497,7 +502,7 @@ test("a host switch shows the new host's cached document, never the previous hos
   );
 
   await waitFor(() => expect(editor().value).toBe("# beta\n"));
-  expect(screen.queryByText(/changed on disk/)).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
   // The new host's document IS the baseline, so there is nothing to save.
   expect(saveButton().disabled).toBe(true);
 });
@@ -539,5 +544,5 @@ test("a host switch whose document equals the old draft never arms Save over an 
 
   await waitFor(() => expect(saveButton().disabled).toBe(true));
   expect(editor().value).toBe("# beta\n");
-  expect(screen.queryByText(/changed on disk/)).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
 });

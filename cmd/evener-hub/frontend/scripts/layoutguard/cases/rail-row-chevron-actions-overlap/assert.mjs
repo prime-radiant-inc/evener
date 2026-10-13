@@ -37,9 +37,10 @@
 //      there" for the hover menu.
 //   6. The occupant sits flush at the slot's right edge (the revealed menu
 //      right-aligns over the same edge).
-//   7. The menu is right-justified to that same edge and hugs its glyph:
-//      the Menu widget's standalone-button padding must not come back
-//      (a trigger wider than the app's md icon-button box means it did).
+//   7. The menu is right-justified to that same edge and stays an icon
+//      button: Menu's icon-only trigger is a square, and a trigger wider
+//      than the app's md icon-button box means the standalone text-trigger
+//      padding came back.
 export default function assert(measurement) {
   const failures = [];
 
@@ -124,12 +125,11 @@ export default function assert(measurement) {
     }
 
     // 7. The menu hugs the slot's right edge too (right-justified, the same
-    // x the occupant vacates) - and hugs its GLYPH: the Menu widget's
-    // standalone-button padding (--space-4 both sides) used to center the
-    // "..." ~16px in from that edge and blow the trigger up to ~47px. The
-    // row's own padding override keeps it glyph-sized; 32px (the app's
-    // standard md icon-button box) is the bound a padded-out regression
-    // crosses. Checked in BOTH states, not just revealed: the geometry is
+    // x the occupant vacates) - and stays icon-sized: the Menu widget's
+    // text-trigger padding (--space-4 both sides) would center the "..."
+    // ~16px in from that edge and blow the trigger up to ~47px. The
+    // icon-only trigger is a square; 32px (the app's standard md
+    // icon-button box) is the bound a padded-out regression crosses. Checked in BOTH states, not just revealed: the geometry is
     // state-independent, so the resting copy must hold the same edges - and
     // checking it keeps a state-dependent width or justification regression
     // from sneaking through.
@@ -140,7 +140,7 @@ export default function assert(measurement) {
     }
     if (f.kebab.width > 32) {
       failures.push(
-        `${at}: the kebab trigger is ${f.kebab.width.toFixed(1)}px wide - the row's glyph-hugging padding (RailRow.module.css's .actions button[aria-haspopup="menu"]) is gone; a trigger wider than the app's standard md icon button (32px) means the standalone-button padding is back, centering the glyph away from the right edge and re-widening the shared cell`,
+        `${at}: the kebab trigger is ${f.kebab.width.toFixed(1)}px wide - Menu's icon-only square (menu.module.css's .triggerIcon) is gone; a trigger wider than the app's standard md icon button (32px) means the standalone-button padding is back, centering the glyph away from the right edge and re-widening the shared cell`,
       );
     }
   }

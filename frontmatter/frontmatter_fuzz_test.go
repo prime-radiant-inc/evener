@@ -9,9 +9,9 @@ import (
 
 // FuzzParse drives the real frontmatter.Parse seam over arbitrary documents.
 // The oracle is floor "no panic" plus the one structural invariant Parse always
-// guarantees: the returned Body is a suffix of the raw document, because Parse
-// only ever strips a leading delimiter…YAML…delimiter prefix and never rewrites
-// the body. (Note Meta == nil is NOT equivalent to "no frontmatter": a present
+// guarantees: the returned Body is a suffix of the raw document with its line
+// endings normalized, because Parse only ever strips a leading
+// delimiter…YAML…delimiter prefix and rewrites nothing but line endings. (Note Meta == nil is NOT equivalent to "no frontmatter": a present
 // frontmatter block whose YAML is null — e.g. "---\n!---\n" — also nils the meta
 // map without error, so a Meta-based body invariant would be unsound.)
 func FuzzParse(f *testing.F) {
@@ -38,8 +38,9 @@ func FuzzParse(f *testing.F) {
 			return
 		}
 
-		if !strings.HasSuffix(raw, doc.Body) {
-			t.Fatalf("Body is not a suffix of the input:\n input=%q\n body=%q", raw, doc.Body)
+		normalized := strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", "\n"), "\r", "\n")
+		if !strings.HasSuffix(normalized, doc.Body) {
+			t.Fatalf("Body is not a suffix of the normalized input:\n input=%q\n body=%q", raw, doc.Body)
 		}
 	})
 }

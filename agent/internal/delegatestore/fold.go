@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/provenance"
@@ -174,6 +176,10 @@ func applyEvent(state State, event Event) error {
 		return applyDeliveryAcknowledged(state, event)
 	case EventDelegateAttentionChanged:
 		return applyAttentionChanged(state, event)
+	case EventDelegateUpdatePosted:
+		return applyUpdatePosted(state, event)
+	case EventDelegateIntentStated:
+		return applyIntentStated(state, event)
 	default:
 		return fmt.Errorf("unknown delegate event kind %q", event.Kind)
 	}
@@ -234,6 +240,10 @@ func applyRunStarted(state State, event Event) error {
 	aggregate.PreparedTerminal = nil
 	aggregate.RunStartedAt = payload.StartedAt
 	aggregate.LatestActivityAt = payload.StartedAt
+	// A new generation starts with an empty line; the words of the run that
+	// just ended never carry into the resumed run (the spec's per-generation
+	// discipline).
+	aggregate.LatestIntent = ""
 	return nil
 }
 
@@ -322,6 +332,9 @@ func applyRunFinished(state State, event Event) error {
 	}
 	aggregate.CurrentRunOpen = false
 	aggregate.LatestActivityAt = payload.Outcome.EndedAt
+	// The generation settled: retire its intent with the outcome, so the
+	// frame field and the read field agree on a settled row.
+	aggregate.LatestIntent = ""
 	aggregate.LatestPacket = cloneTerminalPacket(packet)
 	return nil
 }
@@ -456,6 +469,69 @@ func applyAttentionChanged(state State, event Event) error {
 	return nil
 }
 
+func applyUpdatePosted(state State, event Event) error {
+	payload := event.UpdatePosted
+	if event.Seq == 0 {
+		return fmt.Errorf("delegate %q update sequence is zero", event.DelegateID)
+	}
+	aggregate, err := requireExactOpenRun(state, event.DelegateID, payload.Generation)
+	if err != nil {
+		return err
+	}
+	// Settling means the generation's report is prepared and nothing may land
+	// behind it; stopping means a stop owns the generation.
+	if aggregate.Phase != PhaseRunning {
+		return fmt.Errorf("delegate %q phase %q cannot post an update", event.DelegateID, aggregate.Phase)
+	}
+	if strings.TrimSpace(payload.Message) == "" {
+		return fmt.Errorf("delegate %q update message is empty", event.DelegateID)
+	}
+	message, err := json.Marshal(payload.Message)
+	if err != nil {
+		return fmt.Errorf("delegate %q update message: %w", event.DelegateID, err)
+	}
+	return queueDelivery(aggregate, UpdateDeliveryID(event.DelegateID, event.Seq), payload.Generation,
+		&TerminalPacket{Kind: PacketUpdate, Message: message})
+}
+
+// applyIntentStated records a running generation's newest tool-call intent.
+// It mirrors applyUpdatePosted's open-run guard with one deliberate
+// divergence: an empty Intent folds as the turn-start clear, where
+// applyUpdatePosted rejects empty payloads.
+func applyIntentStated(state State, event Event) error {
+	payload := event.IntentStated
+	aggregate, err := requireExactOpenRun(state, event.DelegateID, payload.Generation)
+	if err != nil {
+		return err
+	}
+	if aggregate.Phase != PhaseRunning {
+		return fmt.Errorf("delegate %q phase %q cannot state intent", event.DelegateID, aggregate.Phase)
+	}
+	aggregate.LatestIntent = payload.Intent
+	return nil
+}
+
+// UpdateDeliveryID names the pending delivery a delegate_update_posted event
+// queues. The event's journal sequence is unique for the life of the journal,
+// so the receiver's attention id for an update never repeats.
+func UpdateDeliveryID(delegateID string, seq uint64) string {
+	return fmt.Sprintf("%s/update/%d", delegateID, seq)
+}
+
+// IsUpdateDeliveryID reports whether deliveryID names an update's delivery,
+// the shape UpdateDeliveryID builds, rather than a generation's report.
+// Classifying by id shape is safe because ids are minted only by
+// UpdateDeliveryID and delegateDeliveryID, and the fuzz invariant pins each
+// kind's shape.
+func IsUpdateDeliveryID(deliveryID string) bool {
+	delegateID, seq, ok := strings.Cut(deliveryID, "/update/")
+	if !ok || delegateID == "" {
+		return false
+	}
+	_, err := strconv.ParseUint(seq, 10, 64)
+	return err == nil
+}
+
 func validateEventEnvelope(event Event) error {
 	if event.DelegateID == "" {
 		return fmt.Errorf("delegate event %q has empty delegate id", event.Kind)
@@ -470,6 +546,8 @@ func validateEventEnvelope(event Event) error {
 		event.SubtreeStopCompleted != nil,
 		event.DeliveryAcknowledged != nil,
 		event.AttentionChanged != nil,
+		event.UpdatePosted != nil,
+		event.IntentStated != nil,
 	}
 	count := 0
 	for _, present := range payloads {
@@ -497,6 +575,10 @@ func validateEventEnvelope(event Event) error {
 		matching = event.DeliveryAcknowledged != nil
 	case EventDelegateAttentionChanged:
 		matching = event.AttentionChanged != nil
+	case EventDelegateUpdatePosted:
+		matching = event.UpdatePosted != nil
+	case EventDelegateIntentStated:
+		matching = event.IntentStated != nil
 	default:
 		return fmt.Errorf("unknown delegate event kind %q", event.Kind)
 	}
@@ -645,6 +727,12 @@ func appendDelivery(aggregate *Aggregate, deliveryID string, generation uint64, 
 	if deliveryID != wantID {
 		return fmt.Errorf("delegate %q delivery id %q, want %q", aggregate.DelegateID, deliveryID, wantID)
 	}
+	return queueDelivery(aggregate, deliveryID, generation, packet)
+}
+
+// queueDelivery appends a pending delivery to the delegate's FIFO under an id
+// not already queued.
+func queueDelivery(aggregate *Aggregate, deliveryID string, generation uint64, packet *TerminalPacket) error {
 	for _, pending := range aggregate.PendingDeliveries {
 		if pending.DeliveryID == deliveryID {
 			return fmt.Errorf("delegate %q delivery %q already exists", aggregate.DelegateID, deliveryID)
@@ -758,6 +846,7 @@ type publicProjection struct {
 	NotResumableReason string
 	NeedsAttention     bool
 	LatestActivityAt   string
+	LatestIntent       string
 	LatestOutcome      *Outcome
 }
 
@@ -769,6 +858,7 @@ func (aggregate *Aggregate) publicProjection() publicProjection {
 		NotResumableReason: aggregate.NotResumableReason,
 		NeedsAttention:     aggregate.NeedsAttention,
 		LatestActivityAt:   aggregate.LatestActivityAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
+		LatestIntent:       aggregate.LatestIntent,
 		LatestOutcome:      cloneOutcome(aggregate.LatestOutcome),
 	}
 }

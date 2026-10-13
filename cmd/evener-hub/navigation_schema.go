@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"slices"
 	"unicode/utf8"
@@ -55,6 +54,7 @@ type navigationLocationMetadata struct {
 	Revision     uint64 `json:"revision"`
 	Ref          string `json:"ref"`
 	TopLevelRef  string `json:"top_level_ref"`
+	Catalog      string `json:"catalog,omitempty"`
 	ProjectKey   string `json:"project_key,omitempty"`
 	TopLevel     bool   `json:"top_level"`
 	Tier         string `json:"tier,omitempty"`
@@ -66,8 +66,14 @@ type navigationProjectAnchor struct {
 }
 
 func navigationSchemaError(category string) error {
-	return fmt.Errorf("navigation schema: %s", category)
+	return navigationSchemaViolationError{category: category}
 }
+
+// navigationSchemaViolationError is a navigation snapshot that breaks the schema;
+// category names the rule it breaks and never carries snapshot content.
+type navigationSchemaViolationError struct{ category string }
+
+func (e navigationSchemaViolationError) Error() string { return "navigation schema: " + e.category }
 
 func validateNavigationResourceSnapshot(
 	key navigationResourceKey,
@@ -235,7 +241,7 @@ func validateNavigationMetadata(key navigationResourceKey, generation string, re
 			!validVersion(metadata.GenerationID, metadata.Revision) || metadata.Ref != key.ID ||
 			!navigationSchemaIdentity(metadata.Ref, false) || !navigationSchemaIdentity(metadata.TopLevelRef, false) ||
 			!navigationSchemaIdentity(metadata.ProjectKey, true) || !navigationSchemaIdentity(metadata.Tier, true) ||
-			!navigationSchemaIdentity(metadata.PinSectionID, true) {
+			!navigationSchemaIdentity(metadata.PinSectionID, true) || !validLocationCatalog(metadata.Catalog, metadata.ProjectKey) {
 			return nil, navigationSchemaError("metadata")
 		}
 		return metadata, nil
@@ -595,4 +601,14 @@ func navigationRootChildrenWithinBounds(key navigationResourceKey, count int) bo
 	default:
 		return count == 0
 	}
+}
+
+// validLocationCatalog accepts a location's catalog: absent (as an older
+// hub's always is), or one of the catalogs beside a project key.
+func validLocationCatalog(catalog, projectKey string) bool {
+	if catalog == "" {
+		return true
+	}
+	_, err := parseNavigationCatalog(catalog)
+	return err == nil && projectKey != ""
 }

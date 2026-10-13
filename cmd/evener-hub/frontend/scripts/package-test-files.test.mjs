@@ -20,10 +20,32 @@ import {
   resolvePackageImport,
   sourceFilesOnDisk,
   testFilesOnDisk,
+  vitestArgs,
 } from "./package-test-files.mjs";
 
 const root = path.resolve("/repo/cmd/evener-hub/frontend");
 const dir = path.resolve("/repo/appwire-client/typescript");
+
+// A read-only checkout denies the bundled config copy Vite's default loader
+// writes under node_modules/.vite-temp, so every vitest spawn in this script
+// has to pass the runner loader (issue #4193).
+test("the vitest spawns load vite.config.ts with the runner config loader", () => {
+  assert.deepEqual(vitestArgs("list", "--filesOnly"), ["list", "--filesOnly", "--configLoader", "runner"]);
+  assert.deepEqual(
+    vitestArgs("run", "--reporter=json", "--outputFile=/tmp/report.json", "pkg/a.test.ts"),
+    ["run", "--reporter=json", "--outputFile=/tmp/report.json", "pkg/a.test.ts", "--configLoader", "runner"],
+  );
+});
+
+// Pins that both spawn sites go THROUGH the helper: asserting the helper's
+// output alone would stay green if a call site bypassed it with a raw argv.
+test("package-test-files spawns vitest only through vitestArgs", () => {
+  const source = readFileSync(fileURLToPath(new URL("./package-test-files.mjs", import.meta.url)), "utf8");
+  const viaHelper = source.match(/spawnSync\(\s*vitestBin\s*,\s*vitestArgs\(/g) ?? [];
+  const raw = source.match(/spawnSync\(\s*vitestBin\s*,\s*\[/g) ?? [];
+  assert.equal(viaHelper.length, 2, "both vitest spawns must go through vitestArgs");
+  assert.equal(raw.length, 0, "a raw vitest spawn bypasses the runner config loader");
+});
 
 test("collectedUnder keeps only the package's files and resolves them against the vitest root", () => {
   const output = [

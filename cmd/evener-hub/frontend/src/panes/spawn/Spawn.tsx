@@ -8,6 +8,7 @@ import {
   basename,
   collectAdvancedOverrides,
   effortLabel,
+  errorText,
   filterSlashMenuItems,
   findBuiltinArgument,
   friendlyLaunchErrorMessage,
@@ -45,28 +46,31 @@ import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
   Chevron,
+  CloseIcon,
   ConfirmDialog,
   chordLabel,
   Dialog,
+  DirectoryIcon,
+  DirectoryPicker,
+  Disclosure,
   Dropzone,
   FormRow,
   IconButton,
+  InlineNotice,
   Loader,
+  type ModelCatalog,
+  type ModelCatalogEntry,
   PaneScaffold,
   PromptCard,
   Select,
   SendIcon,
   Tooltip,
   useToasts,
+  VisuallyHidden,
 } from "../../widgets";
-import { CloseIcon } from "../../widgets/dialog/CloseIcon";
-import { DirectoryIcon, DirectoryPicker } from "../../widgets/directorypicker";
-import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
-import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
-import selectStyles from "../../widgets/select/select.module.css";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
@@ -188,7 +192,6 @@ const CLASS = {
   directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
   directoryText: requireClass(styles.directoryText, "spawn.module.css", "directoryText"),
   directoryPath: requireClass(styles.directoryPath, "spawn.module.css", "directoryPath"),
-  notice: requireClass(styles.notice, "spawn.module.css", "notice"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
   modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
@@ -197,21 +200,20 @@ const CLASS = {
   effortValue: requireClass(styles.effortValue, "spawn.module.css", "effortValue"),
   effortChevron: requireClass(styles.effortChevron, "spawn.module.css", "effortChevron"),
   effortSelect: requireClass(styles.effortSelect, "spawn.module.css", "effortSelect"),
-  srOnly: requireClass(styles.srOnly, "spawn.module.css", "srOnly"),
+  effortLabel: requireClass(styles.effortLabel, "spawn.module.css", "effortLabel"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
   promptSubtitle: requireClass(styles.promptSubtitle, "spawn.module.css", "promptSubtitle"),
   promptAnchor: requireClass(styles.promptAnchor, "spawn.module.css", "promptAnchor"),
-  modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
   pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
+  pluginSummaryAction: requireClass(pluginSelectionStyles.summaryAction, "pluginSelection.module.css", "summaryAction"),
   // The host picker's native <select> reuses the Select widget's own stylesheet
   // class: the widget renders a native <select> too, but its SelectOption has no
   // per-option disabled flag, and an offline host must be RENDERED yet not
   // selectable (Component 06b). The class only borrows the visual treatment.
-  hostSelect: requireClass(selectStyles.select, "select.module.css", "select"),
   // The Connect affordance beside the picker: one button per offline remote
   // host, an enabled control so a never-attached host is reachable rather
   // than dead UI (component 06 §"Connecting a configured host").
@@ -993,6 +995,15 @@ function SpawnForm({
     model === "" &&
     advancedModel === "" &&
     (noDefaultModel || providerChoiceScopes.current.has(`${harness}\0${cwd}`));
+  // What the card's model trigger stands for, in the same order its label is
+  // chosen below.
+  const modelTriggerState = modelRequired
+    ? "required"
+    : model
+      ? "chosen"
+      : resolvedDefaultModel !== ""
+        ? "resolved-default"
+        : "default";
   // The model half of the host gate (component 07b review, round five): a
   // non-empty model belongs to the host whose catalog offered it, so it cannot
   // be submitted until the SELECTED host's model list has settled - see
@@ -1318,6 +1329,21 @@ function SpawnForm({
   // nothing about it is host-derived, so the form stays startable exactly as it
   // was before host routing existed.
   const [hostCatalogPending, setHostCatalogPending] = useState(() => !isLocalHost(submittedSource));
+  // A failed catalog read (a full forwarded-read pool, a host briefly
+  // unreachable) is said, with a Retry: nothing else re-reads the catalogs
+  // until the host changes. Retry bumps catalogRetryRevision, which re-runs the
+  // load below without the host-change reset, so the draft keeps what it has.
+  // Each catalog's failure is kept on its own, so a host refusing both says both.
+  const [hostCatalogErrors, setHostCatalogErrors] = useState<{ harnesses?: string; schema?: string }>({});
+  const hostCatalogErrorText = [
+    hostCatalogErrors.harnesses !== undefined && `Couldn't load this host's harnesses: ${hostCatalogErrors.harnesses}.`,
+    hostCatalogErrors.schema !== undefined && `Couldn't load this host's launch options: ${hostCatalogErrors.schema}.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const [catalogRetryRevision, setCatalogRetryRevision] = useState(0);
+  const retryHostCatalogs = useCallback(() => setCatalogRetryRevision((revision) => revision + 1), []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: catalogRetryRevision is a trigger-only dep - Retry bumps it to read both catalogs again
   useEffect(() => {
     let active = true;
     // A changed target retires the previous host's catalogs before the new
@@ -1350,6 +1376,10 @@ function SpawnForm({
       setPluginSelection({ mode: "default" });
       setKnownSelectionIssues([]);
     }
+    setHostCatalogErrors({});
+    const catalogLoadFailed = (catalog: keyof typeof hostCatalogErrors) => (err: unknown) => {
+      if (active) setHostCatalogErrors((errors) => ({ ...errors, [catalog]: errorText(err) }));
+    };
     // An answer stamps its OWN catalog as settled for this host, and is the
     // only thing that may reconcile that half of the draft: an empty list read
     // as "this host offers nothing" wiped the draft's harness and every
@@ -1363,22 +1393,16 @@ function SpawnForm({
     // the catalog it DID answer (round six). `active` is false once this host is
     // superseded, so a previous host's late answer never certifies the current
     // one.
-    const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then(
-      (r) => {
-        if (!active) return;
-        setHarnesses(r.data);
-        setHarnessesHostSettled(submittedSource);
-      },
-      () => {},
-    );
-    const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then(
-      (r) => {
-        if (!active) return;
-        setSchemaOptions(perLaunchEvenerOptions(r));
-        setSchemaHostSettled(submittedSource);
-      },
-      () => {},
-    );
+    const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then((r) => {
+      if (!active) return;
+      setHarnesses(r.data);
+      setHarnessesHostSettled(submittedSource);
+    }, catalogLoadFailed("harnesses"));
+    const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then((r) => {
+      if (!active) return;
+      setSchemaOptions(perLaunchEvenerOptions(r));
+      setSchemaHostSettled(submittedSource);
+    }, catalogLoadFailed("schema"));
     void Promise.all([harnessesLoad, schemaLoad]).then(() => {
       // Settlement alone releases Start, even when one or both loads never
       // answered: the host refuses what it cannot serve at launch rather than
@@ -1390,7 +1414,7 @@ function SpawnForm({
     return () => {
       active = false;
     };
-  }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues]);
+  }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues, catalogRetryRevision]);
 
   // The draft's launch config is chosen from the SELECTED host's catalogs, and
   // the draft store carries it across a host switch (component 07b review, round
@@ -2375,16 +2399,19 @@ function SpawnForm({
     <PaneScaffold title="New session" mobileTitle="New session">
       <div className={CLASS.form}>
         {staleNotice !== null && (
-          <div className={CLASS.notice} role="status">
-            <span>Discarded last-used model {staleNotice} — no longer offered by this hub.</span>
-            <IconButton
-              label="Dismiss notice"
-              icon={<CloseIcon />}
-              variant="quiet"
-              size="sm"
-              onClick={() => setStaleNotice(null)}
-            />
-          </div>
+          <InlineNotice
+            action={
+              <IconButton
+                label="Dismiss notice"
+                icon={<CloseIcon />}
+                variant="quiet"
+                size="sm"
+                onClick={() => setStaleNotice(null)}
+              />
+            }
+          >
+            Discarded last-used model {staleNotice} — no longer offered by this hub.
+          </InlineNotice>
         )}
 
         {/* Host picker (Component 06b): rendered only when the manifest lists a
@@ -2405,9 +2432,8 @@ function SpawnForm({
                 : "Where the session runs."
             }
           >
-            <select
+            <Select
               id="spawn-host"
-              className={CLASS.hostSelect}
               value={displayHostChoice}
               // A submit snapshots this choice (handleSpawn's closure carries
               // the submittedSource/remoteLaunch that thread/start and
@@ -2427,13 +2453,12 @@ function SpawnForm({
                 // name it — the Connect affordance below is the single path that
                 // reaches an offline host.
               }}
-            >
-              {displaySources.map((candidate) => (
-                <option key={candidate.id} value={candidate.id} disabled={!candidate.online}>
-                  {candidate.online ? candidate.label : `${candidate.label} (offline)`}
-                </option>
-              ))}
-            </select>
+              options={displaySources.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.online ? candidate.label : `${candidate.label} (offline)`,
+                disabled: !candidate.online,
+              }))}
+            />
             {displayRemoteHosts.some((candidate) => !candidate.online) && (
               <div className={CLASS.hostConnectRow}>
                 {displayRemoteHosts
@@ -2462,6 +2487,7 @@ function SpawnForm({
             type="button"
             id="spawn-cwd"
             className={CLASS.directoryButton}
+            data-state={cwd ? "chosen" : "unset"}
             aria-label={`Working directory: ${cwd || "Choose a folder"}`}
             aria-haspopup="dialog"
             aria-expanded={directoryOpen}
@@ -2598,7 +2624,7 @@ function SpawnForm({
                       no default (kata xgk8), otherwise the chosen model, the
                       resolved default model's own "<model> (default)", or
                       plain "(default)" until the resolve lands. */}
-                  <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
+                  <span className={CLASS.modelTrigger} data-testid="spawn-model-slot" data-state={modelTriggerState}>
                     <ModelSwitchTrigger
                       label={
                         modelRequired
@@ -2643,8 +2669,8 @@ function SpawnForm({
                     <span className={CLASS.effortChevron} aria-hidden="true">
                       <Chevron direction="down" />
                     </span>
-                    <label className={CLASS.srOnly} htmlFor="spawn-reasoning-effort">
-                      Prompt reasoning effort
+                    <label className={CLASS.effortLabel} htmlFor="spawn-reasoning-effort">
+                      <VisuallyHidden>Prompt reasoning effort</VisuallyHidden>
                     </label>
                     <select
                       id="spawn-reasoning-effort"
@@ -2692,35 +2718,43 @@ function SpawnForm({
           </Dropzone>
         </div>
         {providerRequired && (
-          <div className={CLASS.notice} role="status">
-            {providerSetupIsLocal ? (
+          <InlineNotice
+            action={
               <>
-                <span>Connect a provider to use a model. Sign in or add an API key here.</span>
-                <Button onClick={openProviderSetup}>Connect provider</Button>
+                {providerSetupIsLocal && <Button onClick={openProviderSetup}>Connect provider</Button>}
+                <Button variant="quiet" onClick={() => void providerSetup.retry()}>
+                  Retry provider check
+                </Button>
               </>
-            ) : (
-              // A remote host's provider registry is not editable from this
-              // browser: the credentials editor is controller-scoped, so it
-              // would configure the wrong machine. Say where the work has to
-              // happen instead of offering an action that cannot unblock the
-              // spawn.
-              <span>No provider is configured on {remoteSourceLabel}. Configure one on that host to use a model.</span>
-            )}
-            <Button variant="quiet" onClick={() => void providerSetup.retry()}>
-              Retry provider check
-            </Button>
-          </div>
+            }
+          >
+            {providerSetupIsLocal
+              ? "Connect a provider to use a model. Sign in or add an API key here."
+              : // A remote host's provider registry is not editable from this
+                // browser: the credentials editor is controller-scoped, so it
+                // would configure the wrong machine. Say where the work has to
+                // happen instead of offering an action that cannot unblock the
+                // spawn.
+                `No provider is configured on ${remoteSourceLabel}. Configure one on that host to use a model.`}
+          </InlineNotice>
         )}
         {usesEvenerModels && providerSetup.status === "error" && (
-          <div className={CLASS.notice} role="status">
-            <span>Could not check provider configuration.</span>
-            <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
-            {providerSetupIsLocal && (
-              <Button variant="quiet" onClick={openProviderSetup}>
-                Review providers
-              </Button>
-            )}
-          </div>
+          <InlineNotice
+            tone="danger"
+            live="status"
+            action={
+              <>
+                <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
+                {providerSetupIsLocal && (
+                  <Button variant="quiet" onClick={openProviderSetup}>
+                    Review providers
+                  </Button>
+                )}
+              </>
+            }
+          >
+            Could not check provider configuration.
+          </InlineNotice>
         )}
         {connectingProvider && providerSetupIsLocal && (
           <ConnectProviderDialogBoundary
@@ -2760,17 +2794,36 @@ function SpawnForm({
             below: it explains why Start is disabled, so it sits beside the
             control it names rather than in a form row that no longer exists. */}
         {modelRequired && (
-          <p className={CLASS.modelNote} role="alert">
+          <InlineNotice live="alert" data-reason={noDefaultModel ? "no-default-model" : "provider-model"}>
             {noDefaultModel
               ? "This hub has no default model configured — choose one to start."
               : "Choose one of the connected provider's models to start."}
-          </p>
+          </InlineNotice>
         )}
 
+        {hostCatalogErrorText !== "" && (
+          <InlineNotice
+            tone="danger"
+            live="status"
+            data-testid="spawn-host-catalog-error"
+            action={
+              <Button variant="quiet" type="button" onClick={retryHostCatalogs}>
+                Retry
+              </Button>
+            }
+          >
+            {hostCatalogErrorText}
+          </InlineNotice>
+        )}
         {pluginSelectionSupported && (
           <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
             {previewResponse === null && (
-              <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary" role="status">
+              <div
+                className={CLASS.pluginSummary}
+                data-testid="spawn-plugin-summary"
+                data-state={pluginPreview.state.status}
+                role="status"
+              >
                 <strong>Plugins for this session</strong>
                 {pluginPreview.state.status === "loading" && <span>Inspecting plugins…</span>}
                 {pluginPreview.state.status === "error" && (
@@ -2778,9 +2831,11 @@ function SpawnForm({
                     <span title={pluginPreview.state.message}>
                       Couldn't inspect plugins: {pluginPreview.state.message}
                     </span>
-                    <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
-                      Retry
-                    </Button>
+                    <div className={CLASS.pluginSummaryAction}>
+                      <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
+                        Retry
+                      </Button>
+                    </div>
                   </>
                 )}
               </div>
@@ -2790,7 +2845,11 @@ function SpawnForm({
                 id="spawn-plugin-selection"
                 data-testid="spawn-plugin-disclosure"
                 summary={
-                  <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary">
+                  <div
+                    className={CLASS.pluginSummary}
+                    data-testid="spawn-plugin-summary"
+                    data-state={pluginPreview.state.status}
+                  >
                     <strong>Plugins for this session</strong>
                     <span>
                       {configuredPluginNames.length > 0

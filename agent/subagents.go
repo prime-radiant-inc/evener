@@ -447,7 +447,7 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 	case agent != nil && len(agent.Tools) > 0:
 		allowed = append([]string(nil), agent.Tools...)
 		if agent.PluginName == "builtin" {
-			allowed = appendUniqueStrings(allowed, nativeMemoryToolNames...)
+			allowed = appendUniqueStrings(allowed, memoryReadToolNames...)
 		}
 		allowed = appendUniqueStrings(allowed, intrinsicSubagentTools...)
 		// Delegation tools in a typed role's list are allowance-gated: a role
@@ -523,6 +523,10 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 		selected[resultToolName] = true
 	}
 	for _, name := range protectedGrantTools() {
+		delete(selected, name)
+	}
+	// No delegate saves memory (filterUnavailableMemoryTools).
+	for _, name := range memorySaveToolNames {
 		delete(selected, name)
 	}
 	if !canDelegate {
@@ -816,9 +820,7 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg := configFromSnapshot(frozenConfig.Clone())
 	subCfg.MemoryStateRoot = parentCfg.MemoryStateRoot
 	subCfg.DisableMemory = subCfg.DisableMemory || parentCfg.DisableMemory
-	if subCfg.MemoryProjectID != parentCfg.MemoryProjectID {
-		subCfg.MemoryProjectID = ""
-	}
+	subCfg.MemoryProjectID = parentCfg.MemoryProjectID
 	subCfg.Project = parentCfg.Project
 	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
@@ -872,6 +874,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.MCPInline = nil
 	subCfg.spawn.sessionID = ""
 	subCfg.spawn.parentJobActivity = nil
+	subCfg.spawn.parentJobIntent = nil
 	subCfg.spawn.parentDelegateID = ""
 	subCfg.spawn.delegateController = s.delegateController
 	subCfg.spawn.retirementController = s.retirementController.Load()
@@ -1148,9 +1151,11 @@ func (s *Session) prepareSubagentRunFromSelection(
 		// session cleanup path, so dispose every scratch it provisioned: the
 		// sandbox-owned one AND the one an unsandboxed environment mints on its
 		// first command, which the construction above reaches through its own git
-		// snapshot. A prepared environment belongs to whoever prepared it.
-		if ownsFreshEnv && !hasPreparedEnv {
-			endEnvironmentScratch(subEnv)
+		// snapshot. The child never existed, so its named scratch goes too
+		// rather than waiting for the root's archive. A prepared environment
+		// belongs to whoever prepared it.
+		if local, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok && ownsFreshEnv && !hasPreparedEnv {
+			_ = local.DisposeSessionScratch()
 		}
 		return nil, err
 	}
@@ -1357,12 +1362,31 @@ func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) 
 }
 
 func (s *Session) noteParentJobActivity(phase string) {
-	if s == nil || s.cfg.spawn.parentJobActivity == nil {
+	if s == nil {
 		return
 	}
-	parentID := s.cfg.spawn.parentDelegateID
-	if parentID != "" {
-		s.cfg.spawn.parentJobActivity(parentID, phase)
+	s.noteParentJob(s.cfg.spawn.parentJobActivity, phase)
+}
+
+// noteParentJobIntent reports the open generation's newest stated tool-call
+// intent to the child's own delegate row, or the explicit clear an execution
+// start states. Plain phase reports never touch this channel.
+func (s *Session) noteParentJobIntent(intent string) {
+	if s == nil {
+		return
+	}
+	s.noteParentJob(s.cfg.spawn.parentJobIntent, intent)
+}
+
+// noteParentJob hands a child-side observation to the per-child binding that
+// owns it: the own-session fence both reporting channels share — only a
+// session with a parent delegate row and a live report hook reports at all.
+func (s *Session) noteParentJob(report func(parentID string, value string), value string) {
+	if report == nil {
+		return
+	}
+	if parentID := s.cfg.spawn.parentDelegateID; parentID != "" {
+		report(parentID, value)
 	}
 }
 
@@ -2022,7 +2046,11 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 	// Remaining attention is re-armed only once the finished generation is
 	// announced and released: a successor generation must not start ahead
-	// of its predecessor's result.
+	// of its predecessor's result. With none remaining, the generation may
+	// have consumed attention it presented (finishAttentionTurn), which no
+	// attention reservation reported, so it lowers the controller's lingering
+	// needs-attention projection itself instead of leaving it for a parent
+	// drive that may never come.
 	if stableRun {
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("inspect remaining delegate attention", pendingErr))
@@ -2030,6 +2058,8 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
 				a.sess.emit(events.EventWarning, warningDataFromError("rearm remaining delegate attention", armErr))
 			}
+		} else if clearErr := a.sess.delegateController.clearResolvedDelegateAttention(a.sess.owningDelegateID); clearErr != nil {
+			a.sess.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", clearErr))
 		}
 	}
 	if done != nil {
@@ -2076,9 +2106,15 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	a.mu.Lock()
 	a.finalizing = true
 	a.mu.Unlock()
-	drained, err := a.sess.DrainJobTree(ctx)
+	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
+	}
+	// The report is the latest one the session accepted, taken whole: its
+	// text and its structured output come from the same source, whatever
+	// text the drain's turns returned.
+	if reply, reported := a.sess.communicatedReply(); reported {
+		return reply, parentDriveNotify, nil
 	}
 	if drained != "" {
 		result = drained

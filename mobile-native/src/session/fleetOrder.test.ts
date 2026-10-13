@@ -8,8 +8,8 @@ const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISO
 const failed = row("failed", { state: "errored", updated_at: at(5) });
 const question = row("question", { state: "awaiting", ask_pending: true, updated_at: at(1) });
 const working = row("working", { state: "active", updated_at: at(9) });
-const finished = row("finished", { state: "awaiting", updated_at: at(8) });
-const bands = liveBands([failed, question, working, finished], [failed, question], () => false);
+const idle = row("idle", { state: "idle", updated_at: at(8) });
+const bands = liveBands([failed, question, working, idle], [failed, question], () => false);
 /** Next's destination: the head of the order it serves. */
 const nextSession = (from: LiveBands, ref: string, recent: readonly string[]) =>
 	nextQueue(from, ref, recent)[0] ?? null;
@@ -89,16 +89,16 @@ describe("Next serves what alerted you first (spec 8.3)", () => {
 });
 
 describe("Live order for the title bar's swipes (spec 6)", () => {
-	it("walks Needs you, Finished, Working and Idle", () => {
-		expect(liveOrder(bands).map((r) => r.ref)).toEqual(["failed", "question", "finished", "working"]);
+	it("walks Needs you, Working and Idle", () => {
+		expect(liveOrder(bands).map((r) => r.ref)).toEqual(["failed", "question", "working", "idle"]);
 	});
 
 	it("finds the neighbor either way, and nothing past the ends or off the list", () => {
 		const order = liveOrder(bands);
-		expect(neighbor(order, "question", 1)?.ref).toBe("finished");
+		expect(neighbor(order, "question", 1)?.ref).toBe("working");
 		expect(neighbor(order, "question", -1)?.ref).toBe("failed");
 		expect(neighbor(order, "failed", -1)).toBeNull();
-		expect(neighbor(order, "working", 1)).toBeNull();
+		expect(neighbor(order, "idle", 1)).toBeNull();
 		expect(neighbor(order, "gone", 1)).toBeNull();
 	});
 });

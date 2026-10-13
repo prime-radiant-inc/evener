@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
@@ -154,6 +155,7 @@ type DelegateStatusInfo struct {
 	RunStartedAt        string                       `json:"run_started_at,omitempty"`
 	RunEndedAt          string                       `json:"run_ended_at,omitempty"`
 	LatestActivityAt    string                       `json:"latest_activity_at,omitempty"`
+	LatestIntent        string                       `json:"latest_intent,omitempty"`
 	RunningForMS        *int64                       `json:"running_for_ms,omitempty"`
 	QuietForMS          *int64                       `json:"quiet_for_ms,omitempty"`
 	DurationMS          *int64                       `json:"duration_ms,omitempty"`
@@ -251,10 +253,12 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		ds.Tools = append(ds.Tools, ToolInfo{Name: name, Source: source})
 	}
 
-	// Inspection retains every winner; completion uses only the user view.
+	// Inspection retains every winner; completion uses only the user view, and
+	// only for skills this session can actually load (a session without the
+	// memory save tools does not offer the gardening-memory completion).
 	ds.SkillCatalog = s.skills.InspectionEntries()
 	for _, descriptor := range ds.SkillCatalog {
-		if descriptor.Unavailable || !descriptor.Controls.UserInvocable {
+		if descriptor.Unavailable || !descriptor.Controls.UserInvocable || !s.skillAvailableToSession(descriptor.CatalogName) {
 			continue
 		}
 		meta := descriptor.Meta
@@ -324,10 +328,8 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	}
 	if s.delegateController != nil {
 		rootID := s.delegateController.rootSessionID
-		for _, row := range s.delegateController.Snapshot().rows {
-			if row.descriptor.OwnerSessionID == s.ID() {
-				ds.Delegates = append(ds.Delegates, delegateStatusInfoFromSnapshot(now, rootID, row))
-			}
+		for _, row := range s.delegateController.sessionSubtreeSnapshot(s.ID()) {
+			ds.Delegates = append(ds.Delegates, delegateStatusInfoFromSnapshot(now, rootID, row))
 		}
 	}
 
@@ -388,6 +390,8 @@ func SessionOwnsDelegate(ctx context.Context, stateDir, parentSessionID, childSe
 
 // SessionOwnedDelegateIDs reads the session's subtree in the root-owned
 // delegate journal without loading transcripts. Fork provenance is not ownership.
+// ctx is checked before the journal fold and again after the in-memory subtree
+// walk, so a cancellation during either is returned instead of a result.
 func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([]string, error) {
 	if err := schema.ValidateSessionID(sessionID); err != nil {
 		return nil, err
@@ -412,43 +416,26 @@ func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([
 	}
 	// Committed descriptors remain ownership evidence after interrupted writes.
 	// A killed daemon may leave an incomplete trailing batch; it is not replayed.
-	children := make(map[string][]string)
-	var pending []string
+	// Only rows the root owns count, so a row outside that ownership, and any
+	// row whose parentage runs through one, is in no session's subtree here.
+	rootOwned := make(delegatestore.State, len(result.Value.state))
 	for delegateID, aggregate := range result.Value.state {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != rootID {
-			continue
-		}
-		children[aggregate.Descriptor.ParentDelegateID] = append(children[aggregate.Descriptor.ParentDelegateID], delegateID)
-		if sessionID == rootID || aggregate.Descriptor.ChildSessionID == sessionID {
-			pending = append(pending, delegateID)
+		if aggregate != nil && aggregate.Descriptor.OwnerSessionID == rootID {
+			rootOwned[delegateID] = aggregate
 		}
 	}
-	ids := make(map[string]bool)
-	visited := make(map[string]bool)
-	for len(pending) != 0 {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		delegateID := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if visited[delegateID] {
-			continue
-		}
-		visited[delegateID] = true
-		id := result.Value.state[delegateID].Descriptor.ChildSessionID
+	owners := sessionSubtreeOwners(rootOwned, sessionID)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// sessionSubtreeOwners seeds the walk with sessionID; the caller asks only
+	// for the sessions below it.
+	delete(owners, sessionID)
+	out := make([]string, 0, len(owners))
+	for id := range owners {
 		if err := schema.ValidateSessionID(id); err != nil {
 			return nil, err
 		}
-		if id != sessionID {
-			ids[id] = true
-		}
-		pending = append(pending, children[delegateID]...)
-	}
-	out := make([]string, 0, len(ids))
-	for id := range ids {
 		out = append(out, id)
 	}
 	sort.Strings(out)
@@ -484,6 +471,18 @@ func LoadSessionDelegateStatus(ctx context.Context, stateDir, sessionID string) 
 }
 
 func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSnapshot) DelegateStatusInfo {
+	return delegateStatusInfo(now, rootID, row, false)
+}
+
+// delegateFrameStatusInfo is the status a pushed `evener/delegate/updated`
+// frame carries. Like the activity read, it omits the usage and worktree of a
+// terminal packet whose metadata runs past the payload cap and never parses such
+// a document; a diagnostics status is not that frame, so it keeps them.
+func delegateFrameStatusInfo(now time.Time, rootID string, row delegateSnapshot) DelegateStatusInfo {
+	return delegateStatusInfo(now, rootID, row, true)
+}
+
+func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boundedMetadata bool) DelegateStatusInfo {
 	descriptor := row.descriptor
 	timing := projectStableDelegateStatus(now, row)
 	out := DelegateStatusInfo{
@@ -515,6 +514,7 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 		OriginItemID:        descriptor.OriginItemID,
 		RunStartedAt:        timing.RunStartedAt,
 		LatestActivityAt:    timing.LatestActivityAt,
+		LatestIntent:        row.latestIntent,
 		RunningForMS:        cloneInt64(timing.RunningForMS),
 		QuietForMS:          cloneInt64(timing.QuietForMS),
 		DurationMS:          cloneInt64(timing.DurationMS),
@@ -540,9 +540,17 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 		out.StructuredValid = cloneBool(packet.StructuredResultValid)
 		out.StructuredReason = packet.StructuredResultReason
 		out.Warnings = append([]string(nil), packet.Warnings...)
-		if len(packet.Metadata) != 0 {
+		// The activity read bounds the payload with the same helper, so a pushed
+		// frame omits the same usage and worktree -- and, like the read, never
+		// parses an oversized document at all. Detailed status asks for a
+		// diagnostics projection and keeps the whole payload.
+		payload := packet.Metadata
+		if boundedMetadata {
+			payload = boundActivityDelegatePayload(payload)
+		}
+		if len(payload) != 0 {
 			var metadata delegateTerminalPacketMetadata
-			if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+			if err := json.Unmarshal(payload, &metadata); err != nil {
 				out.Diagnostics = append(out.Diagnostics, "delegate terminal metadata is invalid")
 			} else {
 				out.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)
@@ -577,7 +585,8 @@ func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdat
 		Model: info.Model, ReasoningEffort: info.ReasoningEffort, OriginTurnID: info.OriginTurnID,
 		OriginToolCallID: info.OriginToolCallID, OriginItemID: info.OriginItemID, RunStartedAt: info.RunStartedAt,
 		RunEndedAt: info.RunEndedAt, LatestActivityAt: info.LatestActivityAt, RunningForMS: cloneInt64(info.RunningForMS),
-		QuietForMS: cloneInt64(info.QuietForMS), DurationMS: cloneInt64(info.DurationMS), PacketKind: info.PacketKind,
+		LatestIntent: info.LatestIntent,
+		QuietForMS:   cloneInt64(info.QuietForMS), DurationMS: cloneInt64(info.DurationMS), PacketKind: info.PacketKind,
 		Message: append(json.RawMessage(nil), info.Message...), StructuredResult: append(json.RawMessage(nil), info.StructuredResult...),
 		StructuredValid: cloneBool(info.StructuredValid), StructuredReason: info.StructuredReason,
 		Warnings: append([]string(nil), info.Warnings...), Diagnostics: append([]string(nil), info.Diagnostics...),

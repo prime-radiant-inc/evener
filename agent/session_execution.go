@@ -66,6 +66,10 @@ func (s *Session) beginExecution(name string) {
 			started(turnID)
 		}
 		s.emit(events.EventExecutionStarted, events.ExecutionStartedData{TurnID: turnID})
+		// A new execution clears the reported line, the root meter's own
+		// boundary: a row names this turn's work, not the words of a turn
+		// that already finished.
+		s.noteParentJobIntent("")
 	}
 	s.attachedTranscript().BeginExecution(turnID, reopen)
 	if reopen {
@@ -457,7 +461,7 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		s.announceFailClosed()
 		return refusal
 	}
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.DoorSynced, transcript.PlaceSession)
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
 	if !rec.Recorded && s.servedByDaemon() {
 		switch writer := s.attachedTranscript(); {
 		case writer != nil && writer.Closed():

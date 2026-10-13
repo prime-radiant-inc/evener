@@ -35,23 +35,72 @@ a scripted `llm.ProviderAdapter` response and assert the Evener side effects.
 
 ### Prompt Prose Is Not a Test Oracle
 
-Do not test the presence, absence, equality, order, regex match, token count, or
-snapshot of words or clauses in assembled/system prompts, prompt sections,
-model-facing tool or agent descriptions, or natural-language steering,
-reminder, warning, or tool-result prose. These assertions pin copy, not
-behavior. If a test's only claim is that the prose contains a sentence, delete
-it rather than replacing it with another textual disguise.
+Pin assembled/system prompts, prompt sections, model-facing tool and agent
+descriptions, and natural-language steering, reminder, warning, or tool-result
+prose only with a whole-output golden snapshot. `agenttest.CheckGolden` compares
+the complete rendered text with a file under `testdata/`, and a wording change
+regenerates the file with an `-update-prompt` flag so the diff is read in
+review. `agent/testdata/memoryprompt` and `agent/testdata/messagingprompt` are
+the pattern: one golden per session kind, rendered from the requests a real
+session sends.
 
-Replace prompt-prose assertions with structural or behavioral ones: typed
-template inputs, section identity and order, schema properties and enums,
-capability metadata, route or branch selection, structured event or data
-fields, provider request shape, or downstream side effects. An opaque sentinel
-may prove that user or task data crosses a plumbing boundary, but it must not
-encode or pin natural-language copy.
+Never test prose by presence, absence, substring, regex match, token count, or
+order of words or clauses. Those assertions pin fragments of copy, not behavior,
+and they pass while the surrounding text drifts. If a test's only claim is that
+the prose contains a sentence, delete it and let the golden cover the text.
+
+Assert behavior structurally: typed template inputs, section identity and order,
+schema properties and enums, capability metadata, route or branch selection,
+structured event or data fields, provider request shape, or downstream side
+effects. An opaque sentinel may prove that user or task data crosses a plumbing
+boundary, but it must not encode or pin natural-language copy.
 
 Exact text assertions are allowed only when the text is itself a machine or API
 contract value, such as a JSON field name, enum token, error code, or CLI flag.
 Prefer asserting such values through their structured representation.
+
+### Copy Is Not a Test Oracle
+
+The same rule holds for every human-readable string, not only prompts: UI copy,
+labels, empty-state and usage text, toast and error messages, log lines, and Go
+error strings. A test that passes because a string came out the same as it went
+in proves nothing and breaks on every wording change. Never write:
+
+- an assertion that rendered or returned text equals, contains, or matches a
+  hardcoded phrase (`findByText("Use: name command [args...]")`,
+  `strings.Contains(err.Error(), "not found")`);
+- an assertion that output equals a constant imported from the code under test
+  (`findByText(USAGE_MESSAGE)`): the test only re-reads the source, so it
+  cannot fail for a behavioral reason;
+- a test whose whole claim is that some copy exists.
+
+Assert what the copy is for instead:
+
+- **Frontend:** that the state changed. A refusal raises `role="alert"`, the
+  list did not grow, the request was never sent, focus moved, a control became
+  disabled, a callback fired with the right structured value. Locate elements
+  by role, and by accessible name only to pick the right control, never as the
+  thing being verified. Use `data-testid` when no role and name is stable.
+- **Go:** that the error is the right error. Match a sentinel with
+  `errors.Is`, a type with `errors.As`, or a structured field or code, and
+  assert the side effects that did or did not happen.
+
+When the text really is the contract (an enum token, a wire field, a CLI flag,
+a file format), assert it through its structured form, as above. When it is
+copy a person reads, review it in the diff and test the behavior around it.
+
+`copyonly_audit_test.go` enforces the rule against tests whose whole claim is
+that some copy exists. It runs `internal/devtool/copyonly` over every tracked
+Go and TypeScript test and fails on a test whose name says it shows, renders or
+says something and whose every check compares output with production copy. It
+skips expected errors, counts, attributes, machine-contract tokens, and text
+the test supplied itself. When it flags your test, assert the behavior instead.
+If the copy must stay the oracle (model-facing text whose conversion is
+deferred, or a false positive), add a row to
+`internal/devtool/copyonly/allowlist.tsv`: the file, the test name, and the
+reason it is kept, tab-separated. Rows are keyed by file and test name, not
+line. The audit also fails on a row whose test is no longer flagged, so remove
+the row when you convert, delete or rename the test.
 
 ## Flakes and Timeouts
 
@@ -876,6 +925,40 @@ sources, and dependency tree into a private repository-shaped fixture, then run
 the config, HTTP routes, and wrapper there. Never run `npm ci` through the
 shared symlink to make those tests pass.
 
+A fresh agent worktree has no frontend install. The cheap setup that stays
+inside every preflight's rules is to symlink a lockfile-matched real install
+from another tree: `cmp` this tree's `package-lock.json` against the
+install's first, then `ln -s`. The frontend tree's `.gitignore` ignores the
+link, but `mobile-native/.gitignore` uses `node_modules/`, which does not
+match a symlink: that link shows as untracked in `git status`, so keep it
+out of commits by path, not by ignore.
+
+The web gate - `evener-dev dev web-checks`: typecheck, test, lint - writes
+nothing under `cmd/evener-hub/frontend`, so it runs in a checkout whose
+frontend directory denies writes. (`make test-web` as a whole is not
+read-only: its own prerequisites write `./evener-dev` and may `npm ci`.)
+`vitest_run_args` selects `--configLoader runner` (Vite's default loader
+writes a bundled config under `node_modules/.vite-temp`), the plugin that
+restores `dist/PLACEHOLDER` applies to builds only, and `webCheckSpec` points
+`EVENER_FRONTEND_VITE_CACHE_DIR` at each check's private scratch root, so
+Vitest's dependency cache never lands in the checkout's `.vite-cache` (issue
+#4193). The other `npm test` phases match: `check-package-tests` passes
+`--configLoader runner` to its own Vitest spawns, and the
+`node --test scripts/*.test.mjs` phase loads its configs with the runner
+loader (`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs`,
+`distPlaceholderPlugin.test.mjs`, and `browserguard-vite.mjs`, which that
+phase spawns; `editorial-preview.test.mjs` does the same and keeps its loads
+inside its own temporary copy).
+
+A focused run in a read-only lane needs those same two things by hand, with
+the real config - no scratch config is needed:
+`EVENER_FRONTEND_VITE_CACHE_DIR=<absolute scratch path outside the checkout>
+npx vitest run <file> --configLoader runner --maxWorkers=2`. The value has to
+be absolute: a relative one resolves against the config root and lands back in
+the checkout (the gate passes an absolute path). Keep a test-file filter, keep
+at least two workers (the vmThreads isolation floor explained below), and
+discard the scratch cache directory afterward.
+
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
 actually use (affinity- and cgroup-quota-aware, not the host's advertised
@@ -895,6 +978,18 @@ extends the same reasoning to the other gate runs sharing it, which a fixed
 count could not see. Both are start-time readings of a lagging metric, not
 admission control: runs that begin together can still stack. Neither lever
 widens a timeout or replaces an awaitable completion with polling.
+
+One in-band check used to be the exception: the flush-scope hygiene meta-test
+(src/testFlushScopeHygiene.test.ts) parsed every test file under the frontend's
+`src/` with the TypeScript compiler inside a single vitest test bounded only by
+the default 5000ms, so its runtime grew with the tree and with CPU contention
+and breached the per-test ceiling the timing ratchet enforces
+(`perTestCeilingSeconds` in testing-budget.json; warn-only locally, failing
+under `CHECK=1`) (issue #3966). It now parses only the files that can name the
+flush, so its runtime does not scale with the tree. The heavy local gates still
+compete for CPU, so run `make test-web`, `make vet` and `make lint` one at a
+time where you can.
+
 `LOAD_AWARE_LOAD1` replaces the measured load average for every budget the
 helper sizes. The CI `tests` lanes set it to 0, because a fresh runner's own
 checkout and cache restore are still in the one-minute average when the gate
@@ -938,6 +1033,12 @@ timers, use `hoverForTooltip` (src/widgets/tooltip/tooltipTestUtils.ts): it
 crosses the show delay on a fake clock scoped to the hover, so it needs none
 of that wiring, and it must be called on real timers.
 
+The frontend has no jest-dom (it is not in `package.json`), so matchers
+such as `toHaveValue`, `toBeDisabled` or `toBeInTheDocument` fail
+`npm run typecheck` even when vitest, which never typechecks, runs them
+green. Assert on the DOM directly (`input.value`, `el.textContent`,
+`button.disabled`, `document.activeElement`).
+
 `await user.click(...)` returns once the event is dispatched, not once the
 handler's async work finishes. An effect that sits behind an `await` has to
 be awaited, never asserted right after the click. Work that goes through
@@ -947,8 +1048,12 @@ durably before the RPC) is awaited with `flushPendingTurnsProjectionForTests()`
 (src/panes/session/composer/queue/testing/flushPendingTurnsProjection.ts),
 and the test asserts directly afterwards. Every storage transaction registers
 with the projection work tracker, so the flush returns once the whole chain
-has settled, and the dispatched request has gone out by then. A `waitFor`
-on the request races that chain against a 1000ms ceiling, which a loaded
+has settled, and the dispatched request has gone out by then. The flush
+waits only for work registered with that tracker: if production code adds
+an awaited step outside storage (say, a component awaits a store call
+before clearing its state), wrap the whole operation in
+`trackProjectionWork` (src/stores/projectionWork.ts), or the flush returns
+early. A `waitFor` on the request races that chain against a 1000ms ceiling, which a loaded
 host can outlast, and it stops as soon as the request appears, with the
 receipt's settle and the refresh after it still to come. A test that holds
 tracked work open on purpose (a held read or commit) cannot flush until it
@@ -960,6 +1065,72 @@ then can be the next test's fake client, so the next test sees an extra
 call. For the same reason a suite resets every global store it renders
 against, such as `resetToastStoreForTests()`, in `beforeEach`; otherwise a
 toast from the previous test can satisfy this test's assertion.
+
+### Frontend store-fixture contracts
+
+Five contracts that repeatedly bite store-test authors, none of them visible
+from the assertion that fails:
+
+- A store fixture's `thread/read` handler must echo the request generation
+  (`requestGeneration: params.requestGeneration ?? …`), or the response is
+  thrown away: `readDisposition` (appwire-client/typescript/reducer.ts)
+  discards a latest-window response whose `requestGeneration` is older than
+  the held history's `issuedGeneration`, so a handler returning a static
+  fixture with a stale default generation turns the read into a silent no-op
+  — issued on the wire, never applied to the model. Assert on wire request
+  counts when only issuance matters.
+- `holdNextWriteTransaction(stores)`
+  (src/stores/testing/stalledIndexedDB.ts) matches the next readwrite
+  transaction opened over exactly that store set, not the cache method that
+  opened it, so an earlier matching transaction can consume a broadly armed
+  hold. Arm it immediately before the intended real `put` call
+  in a call-through spy, and observe the method entry and the hold's
+  `reached` boundary separately. The helper lets fake-indexeddb commit and
+  withholds the completion event; it does not prove an active transaction
+  lock blocks other writes, so diagnose a stalled successor from its actual
+  pending operation.
+- To test a boundary before commit, while the write can still abort, hook
+  the request itself: wrap the object-store method in a call-through spy
+  that either holds the request's `success` event with `holdIndexedDBEvent`
+  or calls `this.transaction.abort()`. Match the call by `this.name` and the
+  exact key the caller builds, not by call order, since production may add
+  an earlier read. Worked example: src/stores/humanNoteDrafts.test.ts.
+- fake-indexeddb throws a synchronous `DataError` from the store method
+  itself for a put/add whose key cannot be derived (`buildRecordAddPut`
+  throws before any request is created). Such a test proves method-fault
+  handling only; request-error and rollback proofs need an actual failing
+  request, its observed error and transaction abort, and a reopen check that
+  earlier writes did not persist.
+- Both the real client and `FakeClient` isolate notification-handler errors
+  — a throwing subscriber must not abort dispatch — so an assertion inside
+  a notification callback is swallowed instead of failing the test, and the
+  failure surfaces later as an unrelated stall or timeout. Capture callback
+  assertion errors outside the catching pipeline and assert them in the test
+  body.
+
+The console guard (src/testConsoleGuard.ts) fails a test on any unspied
+`console.error`/`warn`/`log`/`info`/`debug` call, with a message that
+names the call and the `vi.spyOn(console, …)` recipe. A diagnostic probe
+that prints its
+observations therefore reports a phantom failure: record probe observations
+to a scratch file or spy on the console.
+
+### Navigation fixtures
+
+- A session summary in a v3 navigation graph may not nest other sessions:
+  the TS codec (appwire-client/typescript/state/navigation/codec.ts) and Go
+  schema both enforce flat session rows ("Session summaries are flat; the
+  empty owned slot preserves graph structure", navigation_schema.go). A
+  fixture that nests fails the TS codec as `invalid resource graph`, not as
+  the behavior under test. Prove a recursive roster walk at the
+  selector/helper level, and
+  discovery through real stores with flat rows.
+- The store's progress validator rejects an empty page only when it still
+  reports data ("… returned no rows with remaining data",
+  state/navigation/store.ts), and the codec accepts `sessions: [],
+  remaining: 0, truncated: true`, so `remaining === 0` alone is not proof
+  that a roster sweep completed. Absence proofs must check truncation; keep
+  the ordinary non-truncated empty terminal page as a removal control.
 
 ### Whole-system residue audit
 
@@ -1097,7 +1268,13 @@ IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
 - **`npm run shellguard`** renders the production AppShell (rail + workspace)
   with a scripted tall sidebar tree and asserts the PAGE never grows taller
   than the viewport — the rail's own body is the scroll container, not the
-  document.
+  document. The Overview sweep also opens the Tasks tab over a scripted
+  task list taller than any swept viewport and asserts the tab's own
+  scroller owns that list while the document stays at the viewport height.
+  The floating fixture waits for the restored workspace before opening
+  Settings. A held lazy DockHost request verifies that it captures no pane ID
+  before restoration, then proves real placement, overhang, native input and
+  resize after the request resumes. Workspace restoration and Dockview stay real.
 - **`npm run spawnguard`** renders the real Spawn pane through its staging and
   breakpoint path, asserting the responsive form remains usable at three widths.
 - **`npm run transcriptscrollguard`** renders the real transcript through the
@@ -1126,6 +1303,19 @@ virtualization engine with real measurements. The second exists because the
 first could not have caught the bug that prompted it. Hand-authored markup
 freezes whatever was current when the case was written, so restoring the old
 glyph would have left the guard green while the app broke.
+
+A new dev harness entry that mounts the app-router SPA itself — none of
+the existing `src/dev/*-entry.tsx` guards does this today; they mount
+fixtures or shell components directly — needs two things, or it presents as
+a dead document with no error captured anywhere: reset the
+route before the app import — a router-driven shell renders NotFound from the
+harness path, so call `window.history.replaceState(null, "", "/")` —
+and set a synchronous boot-marker global before any top-level
+`await import("../main")`, because the `load` event fires while that import's
+top-level await is still pending, and a boot check on a global set after it
+re-navigates the live document forever. Order the entry: synchronous
+install/setup, boot marker, `replaceState`, then the dynamic import, and
+wait for the real evidence global separately, with its own timeout.
 
 The full-stack skill guard is a different KIND of check:
 
@@ -1584,6 +1774,18 @@ does slip through shows up on the hub's stderr:
 ```
 [hub] past index: skipped /…/projects/alpha-0123456789/sessions/placeholder.meta.json: invalid session id (want a 22-character base62 UUIDv7 payload): invalid UUID payload
 ```
+
+## Driving Turns from a Go Fixture
+
+A session runs one turn at a time. A `turn/start` during an active turn is
+refused with `turn is already active`, so a fixture must wait for each turn
+to finish before starting the next.
+
+To wait on the turn lifecycle, call `thread/read` with
+`ThreadReadParams{Ref: ref, Subscribe: true}` on the same daemon connection
+before `TurnStart`. Without `Subscribe: true` the read returns a snapshot
+and subscribes to nothing, so `Client.Notifications()` never carries that
+thread's `thread/status/changed` or `history/updated`.
 
 ## A Disposable Hub Needs Its Own HOME
 

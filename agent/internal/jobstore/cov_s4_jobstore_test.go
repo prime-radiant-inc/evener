@@ -177,49 +177,6 @@ func TestOutputRetainedStartReportsPrunedPrefix(t *testing.T) {
 	}
 }
 
-// TestGrepFileLimitScansClosedFile pins the package-level grep over a closed
-// output file, including offset shifting when the file holds only a retained
-// tail, plus the limit-validation and open-failure arms.
-func TestGrepFileLimitScansClosedFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "job_A.log")
-	o, err := OpenOutput(path, 1<<20)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	appendOutput(t, o, "prefix\nserver ready\ndone\n")
-	if err := o.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	re := regexp.MustCompile(`ready`)
-	wantOffset := int64(len("prefix\n"))
-
-	matches, err := GrepFileLimit(path, re, 1<<16, 0, 1<<16)
-	if err != nil {
-		t.Fatalf("GrepFileLimit: %v", err)
-	}
-	if len(matches) != 1 || matches[0].Line != "server ready" || matches[0].ByteOffset != wantOffset {
-		t.Fatalf("GrepFileLimit matches = %+v, want server-ready at %d", matches, wantOffset)
-	}
-
-	shifted, err := GrepFileLimitAt(path, re, 1<<16, 0, 1<<16, 100)
-	if err != nil {
-		t.Fatalf("GrepFileLimitAt: %v", err)
-	}
-	if len(shifted) != 1 || shifted[0].ByteOffset != wantOffset+100 {
-		t.Fatalf("GrepFileLimitAt matches = %+v, want offset shifted by retainedStart", shifted)
-	}
-
-	if _, err := GrepFileLimit(path, re, -1, 0, 1<<16); !errors.Is(err, ErrInvalidLimit) {
-		t.Fatalf("GrepFileLimit(-1) err = %v, want ErrInvalidLimit", err)
-	}
-	if matches, err := GrepFileLimit(path, re, 0, 0, 1<<16); err != nil || matches != nil {
-		t.Fatalf("GrepFileLimit(0) = %+v, %v, want nil,nil", matches, err)
-	}
-	if _, err := GrepFileLimit(filepath.Join(t.TempDir(), "missing.log"), re, 1<<16, 0, 1<<16); err == nil {
-		t.Fatal("GrepFileLimit on missing file succeeded, want open error")
-	}
-}
-
 // TestRemoveOutputArtifactsIsIdempotent pins RemoveOutputArtifacts: it deletes
 // the log and its metadata sidecar, and a second call over the now-missing
 // artifacts is a clean no-op.

@@ -20,15 +20,10 @@
   overflow-wrap: anywhere;
 }
 
-.hintSummary {
-  appearance: none;
-  background: none;
-  border: 0;
-  padding: 0;
-  cursor: pointer;
+.hintText {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  color: var(--ink-mid);
 }
 
 .hint {

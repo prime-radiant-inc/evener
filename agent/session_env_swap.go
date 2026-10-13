@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -181,7 +182,9 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.recordAbandonedEnvironmentLocked(prior, next)
 	s.rebuildToolDefsCache()
 	promptWarning := s.refreshSystemPromptCache(next)
+	installedWorkingDir := s.envInfo.WorkingDir
 	s.mu.Unlock()
+	s.emit(events.EventEnvironmentChanged, events.EnvironmentChangedData{WorkingDir: installedWorkingDir})
 	s.reportPromptRenderFailure(promptWarning)
 	return nil
 }

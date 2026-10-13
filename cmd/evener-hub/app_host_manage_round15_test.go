@@ -3,9 +3,9 @@ package hub
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -164,7 +164,8 @@ func TestHostManageHubTOMLSaveSyncsItsDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("writeHubTOMLHosts succeeded into a directory it cannot open, want the post-rename directory sync to refuse the commit")
 	}
-	if !strings.Contains(err.Error(), "hub.toml directory") {
+	// The directory is write-only, so opening it for the sync is what fails.
+	if !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("writeHubTOMLHosts error = %q, want the directory-sync step's refusal", err)
 	}
 }

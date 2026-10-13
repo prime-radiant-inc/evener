@@ -3,6 +3,9 @@
 // Menlo (spec § Activity run: "intent sentence, target in Menlo, and a status
 // mark"), and the web draws the parts composed into its one line.
 
+import { diffStats } from "./editDiff";
+import { clip, lineCount } from "./toolCallText";
+
 /** A step's words: what it did, what it acted on, the rest of the sentence,
  * and what it found ("Read" "agent/tree.go" · "lines 1-4"). */
 export interface StepWords {
@@ -34,4 +37,40 @@ export function summaryOf<Step, Ctx = undefined>(
 /** The words with a detail added, when there is one. */
 export function withDetail(words: StepWords, detail: string | undefined): StepWords {
   return detail === undefined ? words : { ...words, detail };
+}
+
+/** The header read_file puts before an image or a document's base64 data. */
+export const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
+
+/** A read's line range from its requested bounds or the output it returned. */
+export function readLineRange(args: Record<string, unknown>, output: string): string | undefined {
+  const offsetArg = args.offset;
+  const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
+  const limitArg = args.limit;
+  const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : lineCount(output);
+  if (count > 0) return `lines ${offset}-${offset + count - 1}`;
+  return output === "" ? undefined : `lines ${offset}`;
+}
+
+/** How many entries a search result lists (grep, glob, memory_search), once
+ * there is a result to count. A search lists its entries one per line, then
+ * any notes about the result (cut at the cap, paths left out) after a blank
+ * line, so only the lines before the first blank line count. Go reads results
+ * the same way (agent/searchresult), and agent/testdata/toolwire's recorded
+ * calls pin both to the tools' real output. */
+export function searchResultCount(output: string | undefined, noun: string): string | undefined {
+  if (!output) return undefined;
+  const blank = output.indexOf("\n\n");
+  return `${lineCount(blank < 0 ? output : output.slice(0, blank))} ${noun}`;
+}
+
+/** The quoted, bounded pattern shared by grep-like summaries. */
+export function quotedSearchPattern(pattern: string): string {
+  return `"${clip(pattern, 50)}"`;
+}
+
+/** An edit's result: its diff's added and removed lines, or "ok" for none. */
+export function diffResultText(text: string): string {
+  const { added, removed } = diffStats(text);
+  return added === 0 && removed === 0 ? "ok" : `+${added} -${removed}`;
 }

@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Pressable, View } from "react-native";
 import { basename, parentOf } from "@evener/appwire-client";
 import type { MCPServerSpec } from "@evener/appwire-client";
-import { Action, Copy, useColors } from "./ui";
+import { Copy, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function LaunchResourceRow({
 	item,
@@ -34,13 +35,13 @@ export function LaunchResourceRow({
 					</Copy>
 				</Pressable>
 				{remove && (
-					<Action
+					<Button
+						text
+						label="Remove"
 						disabled={disabled}
-						label={`Remove ${path ? "path" : "server"} ${path ? item : item.name}`}
+						accessibilityLabel={`Remove ${path ? "path" : "server"} ${path ? item : item.name}`}
 						onPress={remove}
-					>
-						Remove
-					</Action>
+					/>
 				)}
 			</View>
 			{expanded && (

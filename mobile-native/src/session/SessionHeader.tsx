@@ -98,6 +98,7 @@ export function SessionHeader({
 					}}
 				>
 					<Text
+						testID="connection-status"
 						allowFontScaling={allowFontScaling}
 						// Android reads this live region; iOS has none, and this
 						// connection status stays unannounced there on purpose: it is
@@ -190,8 +191,6 @@ function Chip({ chip, onPress }: { chip: ContextChip; onPress: () => void }) {
 				style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: ink, fontVariant: ["tabular-nums"] }}
 			>
 				{chip.label}
-				{chip.failed ? " · " : null}
-				{chip.failed ? <Text style={{ color: palette.dangerInk }}>{chip.failed}</Text> : null}
 			</Text>
 			{chip.dot ? <FreshDot /> : null}
 		</Pressable>

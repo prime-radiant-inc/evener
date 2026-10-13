@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -459,15 +458,16 @@ func TestWriteAuthFileToleratesUnsupportedDirSync(t *testing.T) {
 func TestWriteAuthFilePropagatesDirSyncFailure(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "auth.json")
+	syncErr := errors.New("injected dir-sync failure")
 	withAuthOpenDir(t, func(string) (authDirFile, error) {
-		return &recordingAuthDir{syncErr: errors.New("injected dir-sync failure")}, nil
+		return &recordingAuthDir{syncErr: syncErr}, nil
 	})
 
 	err := WriteAuthFile(path, []byte("record\n"))
 	if err == nil {
 		t.Fatal("WriteAuthFile() = nil, want the directory-sync failure")
 	}
-	if !strings.Contains(err.Error(), "sync auth directory") {
+	if !errors.Is(err, syncErr) {
 		t.Fatalf("WriteAuthFile() error = %v, want a directory-sync failure", err)
 	}
 	if _, statErr := os.Stat(path); statErr != nil {

@@ -159,6 +159,79 @@ func TestDelegateRestoreLeavesTheHandedEnvironmentUnnamed(t *testing.T) {
 	}
 }
 
+// TestMetaRecordsTheScratchTempDir: the hub removes an archived session's tree
+// from its own temp dir, which a daemon started with another TMPDIR does not
+// use. The meta records the daemon's temp dir so the hub looks there too.
+func TestMetaRecordsTheScratchTempDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	root := newSession(t, withoutGitSnapshot())
+	if got := root.Meta().ScratchTempDir; got != os.TempDir() {
+		t.Errorf("meta ScratchTempDir = %q, want this process's temp dir %q", got, os.TempDir())
+	}
+}
+
+// A relative TMPDIR means nothing to the hub, which runs in another working
+// directory, so the meta records it resolved against the daemon's.
+func TestMetaRecordsARelativeTempDirAsAbsolute(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if err := os.Mkdir(filepath.Join(cwd, "reltmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", "reltmp")
+	root := newSession(t, withoutGitSnapshot())
+	if got, want := root.Meta().ScratchTempDir, filepath.Join(cwd, "reltmp"); got != want {
+		t.Errorf("meta ScratchTempDir = %q, want the absolute %q", got, want)
+	}
+}
+
+// TestDelegateResumedAsRootReopensItsScratchInItsRootsTree: `serve --resume
+// <delegate>` restores a delegate as a top-level session. Its scratch is still
+// its directory in its root's tree, so it reopens what it had and goes when the
+// root is archived, instead of opening a tree of its own nobody archives.
+func TestDelegateResumedAsRootReopensItsScratchInItsRootsTree(t *testing.T) {
+	meta := artifactRestoreMeta(t)
+	rootID := artifactRestoreMeta(t).ID
+	meta.IsSubagent = true
+	meta.JobTreeRootSessionID = rootID
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, meta, artifactRestoreConfig(t, t.TempDir())); err == nil {
+		t.Cleanup(sess.Close)
+	}
+	if root, session := env.ScratchIdentity(); root != rootID || session != meta.ID {
+		t.Errorf("delegate resumed as a root named its scratch %s/%s, want %s/%s", root, session, rootID, meta.ID)
+	}
+}
+
+// TestDelegateResumedAsRootKeepsItsTreeAcrossResumes: a delegate resumed as a
+// root re-roots its job clock at its own ID, so the job tree root no longer
+// names the spawning root. Its meta records the scratch tree root itself, and
+// a second resume from that meta reopens the same directory.
+func TestDelegateResumedAsRootKeepsItsTreeAcrossResumes(t *testing.T) {
+	meta := artifactRestoreMeta(t)
+	rootID := artifactRestoreMeta(t).ID
+	meta.IsSubagent = true
+	meta.JobTreeRootSessionID = rootID
+	first, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, artifactRestoreConfig(t, t.TempDir()))
+	if err != nil {
+		t.Fatalf("first restore: %v", err)
+	}
+	saved := first.Meta()
+	first.Close()
+	if saved.ScratchTreeRootID != rootID {
+		t.Fatalf("meta after the first resume records scratch tree root %q, want %q", saved.ScratchTreeRootID, rootID)
+	}
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if second, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, saved, artifactRestoreConfig(t, t.TempDir())); err == nil {
+		t.Cleanup(second.Close)
+	}
+	if root, _ := env.ScratchIdentity(); root != rootID {
+		t.Errorf("second resume named its scratch tree %q, want %q", root, rootID)
+	}
+}
+
 // TestResumeReopensTheSameScratch: a session's scratch outlives close, and the
 // restored session reopens the same directory, files and all.
 func TestResumeReopensTheSameScratch(t *testing.T) {
