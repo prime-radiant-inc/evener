@@ -14234,6 +14234,58 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // With no IndexedDB at all - the global absent, not merely failing - the
+  // mutation runtime is never created, and a composer send must still reach the
+  // daemon on the direct path, the same product rule every other storage
+  // failure follows. Before #4194 the durable enqueue threw "IndexedDB is
+  // unavailable" here, so every send failed.
+  test("a send goes out directly when IndexedDB is absent entirely", async () => {
+    const savedIndexedDB = globalThis.indexedDB;
+    vi.stubGlobal("indexedDB", undefined);
+    try {
+      const fake = connectMutationClient();
+      fake.on("turn/start", (params) => ({
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+        receipt: mutationReceipt(params.clientMutationId),
+      }));
+      await ensureActiveMutationTarget(fake, "ref_a");
+
+      await threadsStore.getState().send("ref_a", "sent with no IndexedDB");
+
+      const sent = fake.calls.filter((call) => call.method === "turn/start");
+      expect(sent, "the send never reached the daemon").toHaveLength(1);
+      const sentParams = sent[0]?.params as { clientMutationId?: string; input?: unknown } | undefined;
+      expect(sentParams?.clientMutationId).toBeTruthy();
+      expect(sentParams?.input).toBeDefined();
+    } finally {
+      vi.stubGlobal("indexedDB", savedIndexedDB);
+    }
+  });
+
+  // The direct path is for the four composer send verbs only: a durable write of
+  // any other method keeps its fail-closed contract even with no IndexedDB.
+  // turn/promoteQueuedAsSteer stands for that boundary - an ordinary "enqueue"
+  // durable write that is not a composer send verb.
+  test("a non-send durable verb still fails closed when IndexedDB is absent", async () => {
+    const savedIndexedDB = globalThis.indexedDB;
+    vi.stubGlobal("indexedDB", undefined);
+    try {
+      const fake = connectMutationClient();
+      await ensureActiveMutationTarget(fake, "ref_a");
+
+      // The refusal's text is copy, not a contract: assert the behavior (no
+      // durable row could be written, so the verb fails closed and no RPC
+      // leaves) rather than the message (docs/developing-evener/testing.md,
+      // "Copy Is Not a Test Oracle").
+      await expect(
+        threadsStore.getState().promoteQueuedAsSteer("ref_a", 1, "entry_2", { text: "queued message" }),
+      ).rejects.toThrow();
+      expect(fake.calls.some((call) => call.method === "turn/promoteQueuedAsSteer")).toBe(false);
+    } finally {
+      vi.stubGlobal("indexedDB", savedIndexedDB);
+    }
+  });
+
   // Another tab still holding the previous schema blocks the outbox's upgrade,
   // and the adapter refuses the open at once rather than wait. That refusal is
   // the storage's, not the send's, so the send goes out directly.
