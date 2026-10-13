@@ -214,6 +214,15 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		meta = &m
 	}
+	// Refuse a bare delegate resume before anything is loaded or reserved
+	// (#4442); refuseBareDelegateResume carries the rationale. --resume-with
+	// forks the source into a new session, so its meta is not the resumed
+	// delegate and is not refused.
+	if meta != nil && cfg.resumeWith == "" {
+		if err := refuseBareDelegateResume(*meta); err != nil {
+			return err
+		}
+	}
 
 	// Determine prompt.
 	prompt := strings.TrimSpace(cfg.prompt)
