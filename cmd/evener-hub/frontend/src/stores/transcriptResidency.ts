@@ -30,6 +30,7 @@ interface HydrationTask {
   settled: boolean;
   ownerSettled: boolean;
   retired: boolean;
+  successor?: HydrationTask;
 }
 
 export interface TranscriptResidency {
@@ -41,6 +42,7 @@ export interface TranscriptResidency {
     ref: string,
     intent: "background" | "foreground",
     run?: (signal: AbortSignal) => Promise<void>,
+    demand?: "join" | "replace",
   ): Promise<void>;
   revoke(ref: string, reason: "gap" | "storage" | "alias" | "deleted"): void;
   /** Synchronously retire in-flight hydration publication claims for a same-tab
@@ -101,12 +103,24 @@ export function createTranscriptResidency(
     if (hydrationByRef.get(task.ref) === task) hydrationByRef.delete(task.ref);
     const queuedIndex = hydrationQueue.indexOf(task);
     if (queuedIndex >= 0) hydrationQueue.splice(queuedIndex, 1);
+    const successor = task.successor;
+    task.successor = undefined;
+    if (successor && !successor.retired) {
+      hydrationByRef.set(task.ref, successor);
+      enqueueHydration(successor);
+    }
     if (!task.ownerSettled) {
       task.ownerSettled = true;
       if (error === undefined) task.resolve();
       else task.reject(error);
     }
     startAvailableHydrations();
+  }
+
+  function enqueueHydration(task: HydrationTask): void {
+    task.queued = true;
+    hydrationQueue.push(task);
+    hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
   }
 
   function startAvailableHydrations(): void {
@@ -140,6 +154,8 @@ export function createTranscriptResidency(
   function retireHydration(task: HydrationTask): void {
     if (task.settled || task.retired) return;
     task.retired = true;
+    if (task.successor) retireHydration(task.successor);
+    task.successor = undefined;
     task.controller.abort();
     if (hydrationByRef.get(task.ref) === task) hydrationByRef.delete(task.ref);
     const queuedIndex = hydrationQueue.indexOf(task);
@@ -176,15 +192,17 @@ export function createTranscriptResidency(
     ref: string,
     intent: "background" | "foreground",
     run?: (signal: AbortSignal) => Promise<void>,
+    demand: "join" | "replace" = "join",
   ): Promise<void> {
     if (!ready || disposed) return Promise.resolve();
     const existing = hydrationByRef.get(ref);
-    if (existing) {
-      if (existing.queued && intent === "foreground") {
-        existing.intent = "foreground";
+    const joined = demand === "replace" ? existing?.successor : existing;
+    if (joined) {
+      if (!joined.started && intent === "foreground") {
+        joined.intent = "foreground";
         hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
       }
-      return existing.promise;
+      return joined.promise;
     }
     let resolve!: () => void;
     let reject!: (error: unknown) => void;
@@ -208,12 +226,14 @@ export function createTranscriptResidency(
       retired: false,
     };
     hydrationTasks.add(task);
-    hydrationByRef.set(ref, task);
-    if (networkHydrations < options.networkHydrations) startHydration(task);
+    // A replacement cannot use the predecessor's result. Coalesce it into one
+    // successor, admitted through the capacity queue only after settlement.
+    // Until then, independent refs can still use every genuinely free slot.
+    if (existing) existing.successor = task;
     else {
-      task.queued = true;
-      hydrationQueue.push(task);
-      hydrationQueue.sort((a, b) => Number(b.intent === "foreground") - Number(a.intent === "foreground"));
+      hydrationByRef.set(ref, task);
+      enqueueHydration(task);
+      startAvailableHydrations();
     }
     return promise;
   }
@@ -224,9 +244,10 @@ export function createTranscriptResidency(
     },
     connection(generation, connected) {
       if (generation !== connectionGeneration || connected !== ready) {
+        const generationChanged = generation !== connectionGeneration;
         connectionGeneration = generation;
         ready = connected;
-        if (!connected) retireHydrations();
+        if (generationChanged || !connected) retireHydrations();
       }
     },
     reservePending(_ref, bytes) {

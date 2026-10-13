@@ -23,6 +23,114 @@ function setup(pendingBytes = DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS.pendingBytes
 }
 
 describe("transcript residency: hydration scheduling", () => {
+  test("replacement demand coalesces behind its predecessor without delaying independent reads", async () => {
+    const { residency } = setup();
+    const predecessor = deferred<void>();
+    const independent = deferred<void>();
+    const successor = deferred<void>();
+    const runs: string[] = [];
+    let active = 0;
+    let maximum = 0;
+    const run = (name: string, gate: Promise<void>) => async () => {
+      runs.push(name);
+      maximum = Math.max(maximum, ++active);
+      await gate;
+      active -= 1;
+    };
+    const first = residency.scheduleHydration("local:one", "background", run("first", predecessor.promise));
+    const replacement = residency.scheduleHydration(
+      "local:one",
+      "background",
+      run("replacement", successor.promise),
+      "replace",
+    );
+    const duplicate = residency.scheduleHydration(
+      "local:one",
+      "background",
+      run("duplicate", successor.promise),
+      "replace",
+    );
+    const joined = residency.scheduleHydration("local:one", "background", run("joined", successor.promise));
+    const other = residency.scheduleHydration("local:two", "background", run("independent", independent.promise));
+    try {
+      expect(runs).toEqual(["first", "independent"]);
+      expect(joined).toBe(first);
+      expect(duplicate).toBe(replacement);
+      expect(residency.snapshot().networkHydrations).toBe(2);
+      predecessor.resolve();
+      await first;
+      await vi.waitFor(() => expect(runs).toEqual(["first", "independent", "replacement"]));
+      expect(active).toBe(2);
+      expect(maximum).toBe(2);
+      successor.resolve();
+      independent.resolve();
+      await Promise.all([replacement, duplicate, joined, other]);
+      expect(residency.snapshot().networkHydrations).toBe(0);
+    } finally {
+      predecessor.resolve();
+      successor.resolve();
+      independent.resolve();
+      residency.dispose();
+      await Promise.allSettled([first, replacement, duplicate, joined, other]);
+    }
+  });
+
+  test("connected generation changes retire outgoing claims and queued callbacks without freeing issued slots", async () => {
+    const { residency } = setup();
+    const authorities = [deferred<void>(), deferred<void>()];
+    const refs = ["local:one", "local:two", "local:three"];
+    const oldRuns: string[] = [];
+    const currentRuns: string[] = [];
+    const signals: AbortSignal[] = [];
+    let active = 0;
+    let maximum = 0;
+    const oldTasks = refs.map((ref, index) =>
+      residency.scheduleHydration(ref, "background", async (signal) => {
+        oldRuns.push(ref);
+        signals.push(signal);
+        maximum = Math.max(maximum, ++active);
+        await authorities[index]?.promise;
+        active -= 1;
+      }),
+    );
+    oldTasks.push(
+      residency.scheduleHydration(
+        "local:one",
+        "background",
+        async () => {
+          oldRuns.push("retired successor");
+        },
+        "replace",
+      ),
+    );
+    residency.connection(2, true);
+    const currentTasks = refs.map((ref) =>
+      residency.scheduleHydration(ref, "background", async () => {
+        currentRuns.push(ref);
+        maximum = Math.max(maximum, ++active);
+        await Promise.resolve();
+        active -= 1;
+      }),
+    );
+    try {
+      expect(residency.snapshot().networkHydrations).toBe(2);
+      expect(currentRuns).toEqual([]);
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+      await Promise.all(oldTasks);
+      expect(active).toBe(2);
+      for (const authority of authorities) authority.resolve();
+      await Promise.all(currentTasks);
+      expect(oldRuns).toEqual(refs.slice(0, 2));
+      expect(currentRuns).toEqual(refs);
+      expect(maximum).toBe(2);
+      expect(residency.snapshot().networkHydrations).toBe(0);
+    } finally {
+      for (const authority of authorities) authority.resolve();
+      residency.dispose();
+      await Promise.allSettled([...oldTasks, ...currentTasks]);
+    }
+  });
+
   test("limits background hydration to two slots and starts queued foreground work first", async () => {
     const { residency } = setup();
     const refs = ["local:one", "local:two", "local:three", "local:four"];
