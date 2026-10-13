@@ -101,3 +101,50 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 		t.Fatalf("empty reasoning_content on assistant turns: %v", out[0])
 	}
 }
+
+// TestToChatMessages_ImageDetailHonorsRowCap pins the wire detail an image part
+// carries. The chat wire accepts only OpenAI's auto|low|high: strict
+// OpenAI-compatible endpoints reject anything else with HTTP 400 (#4489), so
+// the cap vocabulary's "original" (full resolution) must reach the wire as
+// "high", "omit" must drop the field, and a part that names no detail must take
+// the row's cap. A part's own detail still wins when the row sets none.
+func TestToChatMessages_ImageDetailHonorsRowCap(t *testing.T) {
+	userImage := func(detail string) llm.Message {
+		return llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "look"},
+			{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{1}, MediaType: "image/png", Detail: detail}},
+		}}
+	}
+	detailOf := func(t *testing.T, caps registry.Caps, msg llm.Message) any {
+		t.Helper()
+		out, err := toChatMessages([]llm.Message{msg}, caps, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts, ok := out[0]["content"].([]map[string]any)
+		if !ok || len(parts) != 2 {
+			t.Fatalf("content = %#v", out[0]["content"])
+		}
+		return parts[1]["image_url"].(map[string]any)["detail"]
+	}
+	withCap := func(d string) registry.Caps { return registry.Caps{ImageDetail: &d} }
+
+	if got := detailOf(t, withCap("original"), userImage("")); got != "high" {
+		t.Fatalf(`image_detail "original" wire detail = %v, want "high"`, got)
+	}
+	if got := detailOf(t, withCap("omit"), userImage("")); got != nil {
+		t.Fatalf(`image_detail "omit" must drop the detail field, got %v`, got)
+	}
+	if got := detailOf(t, withCap("low"), userImage("")); got != "low" {
+		t.Fatalf(`image_detail "low" wire detail = %v, want "low"`, got)
+	}
+	if got := detailOf(t, registry.Caps{}, userImage("")); got != nil {
+		t.Fatalf("no image_detail must drop the field, got %v", got)
+	}
+	if got := detailOf(t, registry.Caps{}, userImage("original")); got != "high" {
+		t.Fatalf(`part detail "original" must map to "high", got %v`, got)
+	}
+	if got := detailOf(t, withCap("low"), userImage("high")); got != "high" {
+		t.Fatalf("a part's own detail must win over the row cap, got %v", got)
+	}
+}

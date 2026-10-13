@@ -183,3 +183,19 @@ func TestListModelsReadsContextWindowAlone(t *testing.T) {
 		t.Fatalf("ContextWindow = %v, want 1048576", c.ContextWindow)
 	}
 }
+
+// TestListModelsReadsGatewayVisionCapability pins that a gateway advertising
+// vision under the capabilities object (lunaroute's shape) yields image input,
+// so the model is not resolved as image-blind. An explicit vision:false, or no
+// capabilities object at all, must not advertise image input.
+func TestListModelsReadsGatewayVisionCapability(t *testing.T) {
+	if c := listRow(t, `{"id":"vision-model","capabilities":{"vision":true,"tools":true}}`); !c.AcceptsModality("image") {
+		t.Fatalf("capabilities.vision:true must advertise image input: %+v", c.InputModalities)
+	}
+	if c := listRow(t, `{"id":"blind-model","capabilities":{"vision":false,"tools":true}}`); c.AcceptsModality("image") {
+		t.Fatalf("capabilities.vision:false must not advertise image input: %+v", c.InputModalities)
+	}
+	if c := listRow(t, `{"id":"quiet-model","context_length":8192}`); c.AcceptsModality("image") {
+		t.Fatalf("a row with no capabilities must not advertise image input: %+v", c.InputModalities)
+	}
+}

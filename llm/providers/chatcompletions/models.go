@@ -33,6 +33,9 @@ type modelEntry struct {
 	Architecture        struct {
 		InputModalities []string `json:"input_modalities"`
 	} `json:"architecture"`
+	Capabilities struct {
+		Vision *bool `json:"vision"`
+	} `json:"capabilities"`
 	Reasoning struct {
 		Mandatory        *bool    `json:"mandatory"`
 		DefaultEnabled   *bool    `json:"default_enabled"`
@@ -88,6 +91,11 @@ func (m modelEntry) row() registry.Model {
 	}
 	if len(m.Architecture.InputModalities) > 0 {
 		caps.InputModalities = dedupStrings(m.Architecture.InputModalities)
+	} else if registry.BoolValue(m.Capabilities.Vision) {
+		// A gateway that advertises capabilities instead of architecture
+		// (lunaroute's shape) names vision directly. Chat models take text, so
+		// an advertised vision capability is image input.
+		caps.InputModalities = []string{"text", "image"}
 	}
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {
