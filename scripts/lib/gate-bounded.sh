@@ -151,9 +151,16 @@ run_enumeration() {
 # cache like every other discovery-adjacent step. A relative target must resolve
 # against the tree the caller names, so the cd lives here; run_bounded captures
 # the build's stdout in log-file and replays its stderr on a nonzero exit.
+#
+# GOFLAGS is cleared for the build: every caller builds infrastructure (this
+# checkout's evener-dev) from the repository root, and an inherited relative
+# -overlay or -modfile in GOFLAGS is meant for a module directory, not the
+# repository root — applying it here fails the build (issue #144 review). The
+# flag helpers clear it for the same reason; module enumeration and tests keep
+# the caller's GOFLAGS.
 run_bounded_build() {
 	local bound="$1" what="$2" module="$3" log_file="$4" output="$5" dir="$6" target="$7"
-	( cd "$dir" && run_bounded "$bound" "$what" "$module" "$log_file" go build -o "$output" "$target" )
+	( cd "$dir" && GOFLAGS= run_bounded "$bound" "$what" "$module" "$log_file" go build -o "$output" "$target" )
 }
 
 # run_bounded <bound> <what> <module> <log-file> <cmd...> — run cmd in the

@@ -1002,8 +1002,9 @@ One in-band check used to be the exception: the flush-scope hygiene meta-test
 `src/` with the TypeScript compiler inside a single vitest test bounded only by
 the default 5000ms, so its runtime grew with the tree and with CPU contention
 and breached the per-test ceiling the timing ratchet enforces
-(`perTestCeilingSeconds` in testing-budget.json; warn-only locally, failing
-under `CHECK=1`) (issue #3966). It now parses only the files that can name the
+(`perTestCeilingSeconds` in testing-budget.json; warn-only in every mode, until
+the ceiling is segmented by test class and enforced — #4601) (issue #3966). It now parses
+only the files that can name the
 flush, so its runtime does not scale with the tree. The heavy local gates still
 compete for CPU, so run `make test-web`, `make vet` and `make lint` one at a
 time where you can.
@@ -1240,9 +1241,14 @@ per-test ceiling regardless of package (`testing-budget.json`'s
 `gate-surface-lib.sh`, so it measures the same surface `ROOT_FULL=1 make test`
 proves.
 
-Enforcement of the ratios is conditional. A local run only warns. A package over 1.5x its
-budget, or any per-test ceiling breach, is nonzero only under `CHECK=1` in a
-CI-shaped environment (`$CI` set, or `--strict`). A missing or empty
+Enforcement of the ratios is conditional. A local run only warns. A package over
+1.5x its budget is nonzero only under `CHECK=1` in a CI-shaped environment (`$CI`
+set, or `--strict`). The per-test ceiling is warn-only in every mode, `CHECK=1`
+included: it has never run in CI, #4601 records the ceiling's pre-existing
+breaches, and enforcing the flat 3s now would red the gate on tests that were
+always over it — segmentation by test class lands first and strict enforcement
+follows, and issue #144 (whose "done when" is strict enforcement) stays open
+until then. A missing or empty
 `testing-budget.json` is an explicit warn state, so `CHECK=1` exits zero until
 `make test-rebaseline` lands a measured baseline. The checked-in baseline
 predates issue #172's switch to package wall time, so the Go-package ratio check
@@ -1251,8 +1257,14 @@ under the new metric (#141): a budget whose Go-package numbers were blessed
 under a different metric is never enforced, and a full rebaseline records the
 metric marker that re-enables enforcement. A narrowed `--modules`/`--no-web`
 rebaseline never adds the marker; it only preserves one a full rebaseline
-already stamped. The `"web"` row and the per-test ceiling keep the metrics
-issue #172 did not change, so both stay enforced either way.
+already stamped. The `"web"` row warns with them: its metric did not change, but
+the checked-in number was blessed on a quiet workstation and a four-core CI
+runner measures the same suite 2.6x to 3.9x higher (356.45s over a 90.77s budget
+on one run), so it is no more comparable to a CI run than the Go numbers are.
+While the file carries no wall-time marker, every ratio failure — Go packages and
+`web` alike — is reported with its numbers and does not fail the run; a budget
+that does carry the marker is enforced as before, and the per-test ceiling is
+warn-only as above.
 
 A broken measurement is not conditional. `go list` or `go test` exiting
 nonzero, or a package `go list` reported that the `go test -json` stream never
@@ -1264,12 +1276,16 @@ package it measured and preserves the rest of the file, so a narrowed run
 (`--modules`, `--no-web`, or a frontend that is not checked out) refreshes
 part of the file instead of deleting the entries it did not measure.
 
-It is deliberately not part of `make merge-approval-gate`, and it is not
-required CI: measuring durations means a second full non-fuzz
-`go test -json` run, which would double the very gate runtime this ratchet
-exists to protect. Wiring real enforcement into CI needs the durations sourced
-from the gate's own run instead of a second one. Deciding how to do that is an
-open follow-up (kata b6rv).
+Enforcement reads the gate's own run, not a second one. When
+`EVENER_GATE_TIMING_TSV` names a file, `make test`'s runner captures the
+ratchet's rows from the tests it already runs — plain modules through
+`go test -json`, a sharded package from its shards' own `-test.v` logs, the
+frontend from the vitest JSON reporter — and writes them there on a green run
+(issue #144). `make merge-approval-gate` passes that file to
+`--check --measured`, so the budget is enforced there without a second non-fuzz
+run; CI's two Go test lanes and its web lane each check the rows their own
+scope produced. A run that writes no file fails the check rather than passing
+silently.
 
 ## The Browser Guards
 
@@ -2002,10 +2018,10 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | `make api-package-preflight` | Ensure the appwire-client/typescript dependency install is present and healthy before the qualification runner starts. | node_modules carries the pinned tsc and the ws the qualification runner imports, or is repaired with npm ci. | Setup prerequisite for test-api-package. | Node 22+; never runs npm ci through a symlinked node_modules. | node_modules is missing and npm ci fails, is a mismatched symlink, or lacks a working tsc / ws; on a real install the message names `cd appwire-client/typescript && npm ci`, and on a symlinked one it names the shared install instead. |
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies (installed by api-package-preflight); qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. TEST_SCOPE picks the Go modules: all (default), root (the root module alone) or nonroot (every other module); CI runs root and nonroot on separate runners. | Any module, frontend stream, or setup failure is nonzero. |
-| `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
+| `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, the timing budget checked against the rows that same test run produced, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. The timing check reads the gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is strict where the ratchet's own policy is (CI) and warn-only on a local run; the per-test ceiling is warn-only in every mode until it is segmented by test class and enforced (#4601). | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
 | `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
-| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. While the budget file's metric marker is absent (the checked-in pre-#172 baseline, until a rebaseline rewrites it under package wall time), the Go-package ratio check is suspended to a warning; the frontend ("web") row and the per-test ceiling keep their unchanged metrics and stay enforced. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its budget is nonzero once the budget file carries the wall-time metric marker; while the marker is absent those ratios are warnings. The "web" row and any per-test ceiling breach are metric-independent and nonzero regardless, and a missing or empty budget file always exits zero. |
+| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. While the budget file's metric marker is absent (the checked-in pre-#172 baseline, until a rebaseline rewrites it under package wall time), the Go-package ratio check is suspended to a warning; the frontend ("web") row warns with them: its metric did not change, but the checked-in number was blessed on a quiet workstation and a four-core CI runner measures the same suite 2.6x-3.9x higher, so it is not comparable to a CI run either. While the file carries no wall-time marker every ratio warns with its numbers; the per-test ceiling is warn-only in every mode, CHECK=1 included, until it is segmented by test class and enforced (#4601). | Local/on-demand. merge-approval-gate runs the check through --measured over the rows its own ROOT_FULL=1 make test run captured, so enforcing the budget no longer needs a second full test run (issue #144); invoked bare it still measures by running the suite itself. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its budget is nonzero once the budget file carries the wall-time metric marker; while the marker is absent those ratios warn, the "web" row among them. A per-test ceiling breach is reported and named but nonzero in no mode until the ceiling is segmented by test class and enforced (#4601). A missing or empty budget file always exits zero. |
 
 ### Other targets
 
