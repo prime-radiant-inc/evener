@@ -1358,9 +1358,38 @@ export async function retryBrowserAnnotationsWithOutcome(
   const database = await connection.open();
   const transaction = database.transaction(ANNOTATION_OPERATIONS_STORE, "readonly");
   const completed = transactionCompletion(transaction);
-  const [operations] = await Promise.all([
-    requestResult<AnnotationOperationRow[]>(transaction.objectStore(ANNOTATION_OPERATIONS_STORE).getAll()),
-    completed,
-  ]);
-  return { pending: operations.some((operation) => operation.state === "pending") };
+  void completed.catch(() => undefined);
+  // This scan ends the runtime's shared retry pass, so a stalled request
+  // would leave every later retry awaiting the same never-settling promise.
+  // The same deadline the repository's transactions carry applies: abort
+  // while the transaction can still abort, retire the connection, settle
+  // the caller so its retry-needed state survives for the next pass.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      tryAbortTransaction(transaction);
+      connection.retire(database);
+      timedOut = true;
+      reject(new Error("Document annotation outcome scan timed out"));
+    }, STORAGE_WAIT_MS);
+  });
+  try {
+    const [operations] = await Promise.race([
+      Promise.all([
+        requestResult<AnnotationOperationRow[]>(transaction.objectStore(ANNOTATION_OPERATIONS_STORE).getAll()),
+        completed,
+      ]),
+      deadline,
+    ]);
+    return { pending: operations.some((operation) => operation.state === "pending") };
+  } catch (error) {
+    if (!timedOut) {
+      tryAbortTransaction(transaction);
+      await completed.catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
