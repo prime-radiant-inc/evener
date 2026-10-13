@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -969,13 +970,29 @@ func withResolvedMasks(masked []string) []string {
 // case — is unaffected. Seatbelt additionally grants the canonical spelling, and
 // its trailing denials already covered the target; this closes the same shape for
 // the mount-based backend.
+//
+// A root is also judged BY FILE IDENTITY against the masked set. Two spellings of one
+// path — another letter case on a case-insensitive volume, a hard link, a firmlink
+// alias — are not two paths to the filesystem, and a comparison of strings alone
+// would admit one of them while the mask names the other: bwrap then binds the file
+// at the admitted spelling in its own case-sensitive namespace, where the mask,
+// applied to the other spelling, does not cover the copy. The masked paths are
+// stat'd once per call and compared with os.SameFile, so this adds no per-root walk
+// cost beyond the root's own ancestors.
 func filterMasked(roots []string, rp ResolvedPolicy) []string {
 	if len(roots) == 0 {
 		return roots
 	}
+	maskedInfos := maskFileInfos(rp.MaskedPaths)
 	out := roots[:0:0]
 	for _, r := range roots {
 		if rp.masks(r, false) || rp.masks(resolveExistingPrefix(r), false) {
+			continue
+		}
+		// The identity clause carries the same carve-out exemption masks() does: a
+		// mask that transiently overlaps a readable carve-out (a scratch dir a denylist
+		// entry points into) must not take the carve-out's own root away with it.
+		if !carveOutExempt(r, rp) && underMaskByIdentity(r, maskedInfos) {
 			continue
 		}
 		out = append(out, r)
@@ -984,6 +1001,52 @@ func filterMasked(roots []string, rp ResolvedPolicy) []string {
 		return nil
 	}
 	return out
+}
+
+// carveOutExempt reports whether root is covered by a readable carve-out
+// (ResolvedPolicy.UnmaskedRoots), with the same .git exception masks() makes.
+func carveOutExempt(root string, rp ResolvedPolicy) bool {
+	for _, carve := range rp.UnmaskedRoots {
+		if pathUnder(root, carve) {
+			return !insideGitDir(root, carve)
+		}
+	}
+	return false
+}
+
+// maskFileInfos stats every masked path that exists, once, for the identity
+// comparisons filterMasked makes.
+func maskFileInfos(masked []string) []fs.FileInfo {
+	infos := make([]fs.FileInfo, 0, len(masked))
+	for _, m := range masked {
+		if fi, err := os.Stat(m); err == nil {
+			infos = append(infos, fi)
+		}
+	}
+	return infos
+}
+
+// underMaskByIdentity reports whether path, or a directory above it, IS a masked
+// path (or a masked file, for path itself) by file identity, so a mask spelled one
+// way covers a root spelled another.
+func underMaskByIdentity(path string, maskedInfos []fs.FileInfo) bool {
+	if len(maskedInfos) == 0 {
+		return false
+	}
+	for p := path; ; {
+		if fi, err := os.Stat(p); err == nil {
+			for _, mi := range maskedInfos {
+				if os.SameFile(fi, mi) {
+					return true
+				}
+			}
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		p = parent
+	}
 }
 
 // withEvenerConfigMask returns the masked set with Evener's own config root in

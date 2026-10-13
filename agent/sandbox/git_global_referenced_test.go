@@ -733,6 +733,66 @@ func TestGlobalGitReferencedFileUnderAWritableRootInAnotherSpelling(t *testing.T
 	}
 }
 
+// TestGlobalGitReferencedFileHardlinkedToAMaskedFileIsDropped pins the mask judgement
+// by FILE IDENTITY, which runs on any filesystem: a hard link is another name for one
+// file, so a config naming a hard link to a masked file names that file, and a
+// comparison of strings cannot see it because the link's own spelling is unmasked.
+func TestGlobalGitReferencedFileHardlinkedToAMaskedFileIsDropped(t *testing.T) {
+	t.Parallel()
+	home := clean(t.TempDir())
+	masked := filepath.Join(home, ".git-credentials")
+	writeFixtureFile(t, masked, "https://user:token@example.invalid\n")
+	link := filepath.Join(home, "config-link")
+	if err := os.Link(masked, link); err != nil {
+		t.Skipf("hard links unavailable here: %v", err)
+	}
+
+	host := darwinSeatbeltHost()
+	host.Home = home
+	host.GitGlobalReferencedPaths = []string{link}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if slices.Contains(rp.Spawned.ReadRoots, link) {
+		t.Errorf("a name that is a hard link to a masked file must not be granted: %v", rp.Spawned.ReadRoots)
+	}
+}
+
+// TestGlobalGitReferencedFileInsideAMaskedPathInAnotherSpelling pins the identity
+// judgement for a masked DIRECTORY: on a case-insensitive volume (macOS by default,
+// casefolded Linux mounts) `~/.SSH/id_rsa` IS the masked `~/.ssh/id_rsa`, and
+// resolving the supplied spelling preserves its case, so only file identity refuses
+// it. Without that, bwrap binds the key at the granted spelling in its own
+// case-sensitive namespace, where the mask — applied to the other spelling — does not
+// cover the copy. SKIPS on a case-sensitive filesystem, which cannot build the shape.
+func TestGlobalGitReferencedFileInsideAMaskedPathInAnotherSpelling(t *testing.T) {
+	t.Parallel()
+	home := clean(t.TempDir())
+	secretDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(secretDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, filepath.Join(secretDir, "id_rsa"), "PRIVATE KEY\n")
+	otherSpelling := filepath.Join(home, ".SSH", "id_rsa")
+	if _, err := os.Stat(otherSpelling); err != nil {
+		t.Skip("case-sensitive filesystem: .SSH and .ssh are different directories here")
+	}
+
+	host := darwinSeatbeltHost()
+	host.Home = home
+	host.GitGlobalReferencedPaths = []string{otherSpelling}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, root := range []string{otherSpelling, filepath.Join(secretDir, "id_rsa")} {
+		if slices.Contains(rp.Spawned.ReadRoots, root) {
+			t.Errorf("a masked credential must not be granted under any spelling (%q): %v", root, rp.Spawned.ReadRoots)
+		}
+	}
+}
+
 // referencedFilesFixture materializes a home holding two referenced files (one per
 // core key) and returns their paths.
 func referencedFilesFixture(t *testing.T) (home, ignore, attrs string) {
