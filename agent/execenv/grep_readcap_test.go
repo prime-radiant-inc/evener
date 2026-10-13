@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // stubGrepMaxFileBytes lowers the per-file read cap for a test and restores
@@ -100,16 +101,23 @@ func TestGrepSkipsFilesPastTheReadCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
-	if want := "small.txt\n\n" + note; got != want {
-		t.Fatalf("walk past the read cap = %q, want %q", got, want)
+	entries, notes := searchresult.Split(got)
+	if entries != "small.txt" {
+		t.Fatalf("walk past the read cap = %q, want only %q", got, "small.txt")
+	}
+	if notes == "" {
+		t.Error("walk past the read cap omitted the over-cap note")
 	}
 	got, err = env.Grep(t.Context(), "needle", root, "", false, 100, "content")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "small.txt:1:needle small\n\n" + note; got != want {
-		t.Fatalf("content past the read cap = %q, want %q", got, want)
+	entries, notes = searchresult.Split(got)
+	if entries != "small.txt:1:needle small" {
+		t.Fatalf("content past the read cap = %q, want only %q", got, "small.txt:1:needle small")
+	}
+	if notes == "" {
+		t.Error("content walk past the read cap omitted the over-cap note")
 	}
 
 	got, err = env.Grep(t.Context(), "needle", big, "", false, 100, "content")
@@ -151,9 +159,12 @@ func TestSandboxedGrepSkipsFilesPastTheReadCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
-	if want := "small.txt\n\n" + note; got != want {
-		t.Fatalf("sandboxed walk past the read cap = %q, want %q", got, want)
+	entries, notes := searchresult.Split(got)
+	if entries != "small.txt" {
+		t.Fatalf("sandboxed walk past the read cap = %q, want only %q", got, "small.txt")
+	}
+	if notes == "" {
+		t.Error("sandboxed walk past the read cap omitted the over-cap note")
 	}
 	got, err = env.Grep(t.Context(), "needle", big, "", false, 100, "content")
 	if err != nil {

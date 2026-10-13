@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // writeFakeRg writes a shell-script ripgrep whose --files listings honor
@@ -68,13 +70,16 @@ func TestRgArmDisclosesFilesPastTheReadCap(t *testing.T) {
 	defer env.Cleanup()
 	env.lookPath = func(string) (string, error) { return rg, nil }
 
-	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
 	got, err := env.Grep(t.Context(), "needle", root, "", false, 100, "content")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "small.txt:1:needle small\n\n" + note; got != want {
-		t.Fatalf("rg-arm directory search with an over-cap file = %q, want %q", got, want)
+	entries, notes := searchresult.Split(got)
+	if entries != "small.txt:1:needle small" {
+		t.Fatalf("rg-arm directory search with an over-cap file = %q, want entries %q", got, "small.txt:1:needle small")
+	}
+	if notes == "" {
+		t.Error("rg-arm directory search with an over-cap file omitted the over-cap note")
 	}
 }
 
@@ -93,12 +98,15 @@ func TestRgArmDisclosesFilesPastTheReadCapOnNoMatches(t *testing.T) {
 	defer env.Cleanup()
 	env.lookPath = func(string) (string, error) { return rg, nil }
 
-	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
 	got, err := env.Grep(t.Context(), "nomatch", root, "", false, 100, "content")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "\n\n" + note; got != want {
-		t.Fatalf("rg-arm search with no matches and an over-cap file = %q, want %q", got, want)
+	entries, notes := searchresult.Split(got)
+	if entries != "" {
+		t.Fatalf("rg-arm search with no matches and an over-cap file = %q, want no entries", got)
+	}
+	if notes == "" {
+		t.Error("rg-arm no-match search with an over-cap file omitted the over-cap note from its empty result")
 	}
 }

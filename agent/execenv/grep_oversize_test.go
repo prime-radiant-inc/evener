@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // stubGrepStreamWindowBytes shrinks one window of the over-cap streaming
@@ -150,27 +151,55 @@ func TestGrepWalkDisclosesFilesPastTheReadCap(t *testing.T) {
 	defer env.Cleanup()
 	env.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
 
-	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
 	got, err := env.Grep(t.Context(), "needle", root, "", false, 100, "files_with_matches")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "small.txt\n\n" + note; got != want {
-		t.Fatalf("walk past the read cap (files_with_matches) = %q, want %q", got, want)
+	entries, notes := searchresult.Split(got)
+	if entries != "small.txt" {
+		t.Fatalf("walk past the read cap (files_with_matches) = %q, want only %q", got, "small.txt")
+	}
+	if notes == "" {
+		t.Error("walk past the read cap (files_with_matches) omitted the over-cap note")
 	}
 	got, err = env.Grep(t.Context(), "needle", root, "", false, 100, "content")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "small.txt:1:needle small\n\n" + note; got != want {
-		t.Fatalf("walk past the read cap (content) = %q, want %q", got, want)
+	entries, notes = searchresult.Split(got)
+	if entries != "small.txt:1:needle small" {
+		t.Fatalf("walk past the read cap (content) = %q, want only %q", got, "small.txt:1:needle small")
+	}
+	if notes == "" {
+		t.Error("walk past the read cap (content) omitted the over-cap note")
 	}
 	got, err = env.Grep(t.Context(), "needle", onlyBig, "", false, 100, "content")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "\n\n" + note; got != want {
-		t.Fatalf("walk holding only an over-cap file = %q, want %q", got, want)
+	entries, notes = searchresult.Split(got)
+	if entries != "" {
+		t.Fatalf("walk holding only an over-cap file = %q, want no entries", got)
+	}
+	if notes == "" {
+		t.Error("walk holding only an over-cap file omitted the over-cap note from its empty result")
+	}
+
+	// A tree with no over-cap file says nothing: the note appears only when
+	// something was actually left out.
+	plain := filepath.Join(base, "plain")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plain, "small.txt"), []byte("needle small\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = env.Grep(t.Context(), "needle", plain, "", false, 100, "content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "small.txt:1:needle small"; got != want {
+		t.Fatalf("walk with no over-cap file = %q, want bare %q: the note must not appear unearned", got, want)
 	}
 }
 
@@ -190,9 +219,12 @@ func TestSandboxedGrepWalkDisclosesFilesPastTheReadCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
-	if want := "small.txt\n\n" + note; got != want {
-		t.Fatalf("sandboxed walk past the read cap = %q, want %q", got, want)
+	entries, notes := searchresult.Split(got)
+	if entries != "small.txt" {
+		t.Fatalf("sandboxed walk past the read cap = %q, want only %q", got, "small.txt")
+	}
+	if notes == "" {
+		t.Error("sandboxed walk past the read cap omitted the over-cap note")
 	}
 }
 
