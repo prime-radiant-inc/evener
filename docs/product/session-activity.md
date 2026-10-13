@@ -247,7 +247,8 @@ one state the session vocabulary does not have: quiet. An open run shows the
 alive dot while fresh, dims it to quiet ink once its latest activity passes
 the shared twenty-second threshold, reads amber for attention and red for
 failure (a diamond on the web, so failure never depends on hue alone), and
-shows no mark once settled. One shared client rule computes the state and the
+shows no mark once settled, a settled failure excepted: its red mark is its
+outcome. One shared client rule computes the state and the
 threshold, so the web sidebar, the web activity tree's delegate rows and the
 phone's list read the same dot and flip at the same instant: the sidebar times
 one threshold wake per running row, the tree's live tick covers its rows, and
@@ -876,7 +877,9 @@ failures, under its existing per-session Inactive folds. Counts include every
 entry grouped there. Opening a fold reveals rows in their original order with
 details collapsed by default. Active descendants and the ancestors needed to
 reach them remain outside the folds, regardless of an ancestor's settled outcome.
-Settled row glyphs and status text use ordinary quiet ink. True outcomes remain
+Settled jobs keep their glyphs and status text in ordinary quiet ink; a settled
+delegate shows the dot's settled vocabulary instead - no mark done, the red
+diamond failed. True outcomes remain
 available to assistive technology even when duration replaces visible status;
 live questions, approvals and current errors retain their attention treatment.
 Detail, action and read failures remain recovery information, not settled outcomes.

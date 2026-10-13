@@ -55,6 +55,7 @@ import {
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { resetThreadsStoreForTests } from "../stores/threads";
+import { emptyStateReasons } from "../widgets/emptystate/emptyStateTestUtils";
 import { AppShell } from "./AppShell";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { ClientProvider } from "./clientContext";
@@ -925,7 +926,7 @@ test("a real session URL wins over an Activity-only saved layout", async () => {
 
 test("mounts and renders the welcome pane", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
-  expect(await screen.findByText("No session open")).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toContain("no-session"));
 });
 
 test("wires the injected client into connectionStore (connects on mount)", async () => {
@@ -1827,8 +1828,8 @@ test("an unknown path renders NotFound instead of the workspace", async () => {
   window.history.pushState({}, "", "/not/a/real/route");
   render(<AppShell client={new FakeClient("ready")} />);
 
-  expect(await screen.findByText("Page not found")).toBeTruthy();
-  expect(screen.queryByText("No session open")).toBeNull();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["not-found"]));
+  expect(screen.queryByTestId("workspace-host")).toBeNull();
 });
 
 test("clicking Go home from NotFound returns to the welcome pane", async () => {

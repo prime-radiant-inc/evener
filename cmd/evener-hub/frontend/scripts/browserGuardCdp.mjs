@@ -1188,3 +1188,21 @@ export async function assertGuardOrigin(send, expectedHost) {
  * State reports and assertions keep reading native `.disabled`.
  */
 export const REFUSED_BUTTON_SELECTOR = ':disabled, [aria-disabled="true"]';
+
+/**
+ * The REAL accessibility tree Chrome computes for the first element matching
+ * `selector` - `Accessibility.queryAXTree`'s nodes for that DOM subtree. The
+ * DOM's role/aria-* attributes are only the tree's INPUT (an aria-hidden
+ * subtree drops out entirely, and a native element's role can come from its
+ * tag alone), so a guard that claims what assistive tech hears reads this, not
+ * the attributes. Returns null when nothing matches; a browser that refuses
+ * the domain fails the send rather than reporting an empty tree as a pass.
+ */
+export async function queryAccessibilityTree(send, selector) {
+  await send("Accessibility.enable");
+  const root = await send("DOM.getDocument", { depth: -1, pierce: true });
+  const found = await send("DOM.querySelector", { nodeId: root.result.root.nodeId, selector });
+  if (!found.result.nodeId) return null;
+  const tree = await send("Accessibility.queryAXTree", { nodeId: found.result.nodeId });
+  return tree.result.nodes;
+}

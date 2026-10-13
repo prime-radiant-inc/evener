@@ -1681,8 +1681,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// (native worktree tools spec §5 occupancy locks / §5 table row "session
 	// init, launch cwd inside a managed worktree"): apply the idempotent
 	// occupancy-lock rule. A no-op when resumeWorktreeReentry already
-	// established occupancy tracking above.
-	s.applyInitInsideWorktreeLock(ei.IsGitRepo)
+	// established occupancy tracking above. The function decides repo-ness
+	// structurally, not from ei.IsGitRepo (#4132).
+	s.applyInitInsideWorktreeLock()
 
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.

@@ -37,7 +37,7 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 	// Hold the lock here as the namer would, so the uncontended keys below
 	// are read once it is free.
 	sub.sess.mu.Lock()
-	time.AfterFunc(heldSessionLockForSnapshotRetry, sub.sess.mu.Unlock)
+	time.AfterFunc(heldSnapshotLockForRetry, sub.sess.mu.Unlock)
 	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
 	if !reflect.DeepEqual(snapshot["pending_attention_ids"], []string{attentionID}) || snapshot["current_run_open"] != false || snapshot["done_closed"] != true {
 		t.Fatalf("snapshot omitted strict pending predicate or finished warm channel: %#v", snapshot)
@@ -152,7 +152,17 @@ func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 	snapshots := make(chan map[string]any, 1)
 	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
 		cfg.subagentAfterFinalStatePublish = func(got *subagent) {
-			snapshots <- stableSupervisionFailureSnapshot(root, got, fixture.adapter)
+			// The snapshot omits the keys any busy lock guards, and these
+			// assertions need the controller-guarded settlement and binding
+			// keys while the claim is live. Take the controller lock as an
+			// incidental holder would, then read once it is free; the hook
+			// blocks the finalization tail, so the claim outlives the retry.
+			// TryLock: a lock already held leaves the first attempt busy
+			// without waiting on a holder the test did not schedule.
+			if root.delegateController.mu.TryLock() {
+				time.AfterFunc(heldSnapshotLockForRetry, root.delegateController.mu.Unlock)
+			}
+			snapshots <- stableSupervisionSnapshotWithoutBusyLock(root, got, fixture.adapter)
 		}
 	})
 	const attentionID = "attention:diagnostic-settlement"
@@ -163,6 +173,9 @@ func TestStableSupervisionFailureSnapshotCapturesSettlementClaim(t *testing.T) {
 	case snapshot = <-snapshots:
 	default:
 		t.Fatal("real no-action final state observer was not reached")
+	}
+	if busy := supervisionSnapshotBusyLockNames(snapshot); len(busy) != 0 {
+		t.Fatalf("settlement snapshot locks still busy: %v", busy)
 	}
 	wantClaim := []map[string]any{{"generation": uint64(2), "ready": true, "mode": delegateSettlementOrdinary}}
 	if !reflect.DeepEqual(snapshot["settlement_claims"], wantClaim) || snapshot["settlement_claimed"] != true ||
@@ -310,38 +323,58 @@ func TestStableSupervisionFailureSnapshotCapturesNotificationPayload(t *testing.
 	}
 }
 
-// heldSessionLockForSnapshotRetry is how long a test holds a session lock to
-// make uncontendedStableSupervisionSnapshot's first attempt find it busy. It
-// is not a deadline: the helper retries until the lock is free, so any length
-// passes; it only has to outlast that first attempt for the retry to run.
-const heldSessionLockForSnapshotRetry = 50 * time.Millisecond
+// heldSnapshotLockForRetry is how long a test holds a runtime lock so the
+// retrying readers' first attempt finds it busy. It is not a deadline: the
+// reader waits until the lock is free, so any length passes; it only has to
+// outlast that first attempt for the retry to run.
+const heldSnapshotLockForRetry = 50 * time.Millisecond
+
+// supervisionSnapshotUncontendedTripwire bounds how long a reader retries a
+// failure snapshot while a lock it wants stays busy.
+// TRIPWIRE: incidental holders keep a lock for milliseconds; 30s only fires on
+// a lock that is genuinely leaked, not scheduler contention under a loaded suite.
+const supervisionSnapshotUncontendedTripwire = 30 * time.Second
+
+// supervisionSnapshotBusyLockNames lists the "<name>_lock_busy" keys a failure
+// snapshot recorded for the locks it could not take.
+func supervisionSnapshotBusyLockNames(snapshot map[string]any) []string {
+	busy := []string{}
+	for key := range snapshot {
+		if strings.HasSuffix(key, "_lock_busy") {
+			busy = append(busy, key)
+		}
+	}
+	return busy
+}
+
+// stableSupervisionSnapshotWithoutBusyLock retries the best-effort failure
+// snapshot until it reads no lock busy, so a caller that checks the keys a busy
+// lock omits reads them uncontended. It runs on the child's run goroutine (the
+// subagentAfterFinalStatePublish hook), which must not touch *testing.T, so it
+// bounds itself with a tripwire and returns its last snapshot, leaving any busy
+// keys for the test goroutine to report.
+func stableSupervisionSnapshotWithoutBusyLock(root *Session, sub *subagent, adapter *fakeAdapter) map[string]any {
+	deadline := time.Now().Add(supervisionSnapshotUncontendedTripwire)
+	for {
+		snapshot := stableSupervisionFailureSnapshot(root, sub, adapter)
+		if len(supervisionSnapshotBusyLockNames(snapshot)) == 0 || !time.Now().Before(deadline) {
+			return snapshot
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
 
 // uncontendedStableSupervisionSnapshot is stableSupervisionFailureSnapshot
-// taken once no lock it reads is busy. The snapshot never waits for a lock,
-// and paths outside the run, such as the child's session namer, can hold one
-// briefly after it quiesces, so a test that checks its uncontended keys
-// retries it instead.
+// taken once no lock it reads is busy. The snapshot never waits for a lock, and
+// paths outside the run, such as the child's session namer, can hold one briefly
+// after it quiesces, so a test that checks its uncontended keys retries it
+// instead.
 func uncontendedStableSupervisionSnapshot(t *testing.T, root *Session, sub *subagent, adapter *fakeAdapter) map[string]any {
 	t.Helper()
-	var snapshot map[string]any
-	var busy []string
-	defer func() {
-		if t.Failed() && len(busy) != 0 {
-			t.Logf("locks still busy: %v", busy)
-		}
-	}()
-	// TRIPWIRE: incidental holders keep a lock for milliseconds; 30s only
-	// fires on a lock that is genuinely leaked.
-	waitForCondition(t, 30*time.Second, "a snapshot with no busy lock", func() bool {
-		snapshot = stableSupervisionFailureSnapshot(root, sub, adapter)
-		busy = busy[:0]
-		for key := range snapshot {
-			if strings.HasSuffix(key, "_lock_busy") {
-				busy = append(busy, key)
-			}
-		}
-		return len(busy) == 0
-	})
+	snapshot := stableSupervisionSnapshotWithoutBusyLock(root, sub, adapter)
+	if busy := supervisionSnapshotBusyLockNames(snapshot); len(busy) != 0 {
+		t.Fatalf("supervision snapshot locks still busy after %s: %v", supervisionSnapshotUncontendedTripwire, busy)
+	}
 	return snapshot
 }
 

@@ -896,7 +896,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   //
   // `attachments` is accepted for signature symmetry but never restored: a
   // queued entry's edit keeps image attachments out of the composer per
-  // parity (contracts-composer-queue-pending.md:70, parity-m5-
+  // parity (contracts-composer-queue-pending.md:122, parity-m5-
   // composer.md:102) - dropped image attachments surface via QueueStrip's
   // own durable queue state. `skillNames` restores the entry's selections
   // as chips (union with the current draft's chips, deduped by name): a

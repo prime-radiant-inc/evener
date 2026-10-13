@@ -232,5 +232,5 @@ export function ConnectionBanner({
       ? { label: "Reload", onClick: reloadPage }
       : { label: "Retry", onClick: () => void handleRetry(), inFlight: retrying };
 
-  return <Banner tone="danger" message={message} action={action} />;
+  return <Banner tone="danger" message={message} action={action} reason={closedReason ?? "closed"} />;
 }
