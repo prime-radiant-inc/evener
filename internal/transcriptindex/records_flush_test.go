@@ -133,6 +133,104 @@ func TestAscendingInPlaceWritesMakeTheFlushRewriteFromTheLowest(t *testing.T) {
 	}
 }
 
+// A table that buffered small content must stay honest after another handle
+// grows the file past the buffer limit and this one adopts the growth: the
+// buffered copy is stale and its length names nothing on disk, so reads go to
+// the file and a flush never truncates the other handle's records away.
+func TestAnAdoptedTableThatOutgrewTheBufferReadsTheFile(t *testing.T) {
+	previous := recordBufferLimit
+	recordBufferLimit = 4 * itemRecordSize
+	t.Cleanup(func() { recordBufferLimit = previous })
+
+	tbl, _ := openCountingTable(t, itemRecordSize, 2)
+	if tbl.buf == nil {
+		t.Fatal("the small table should be buffered")
+	}
+
+	// Another handle grows the file past the shrunk limit, and adoption
+	// takes up its counts.
+	if _, err := tbl.file.WriteAt(make([]byte, 8*itemRecordSize), 2*itemRecordSize); err != nil {
+		t.Fatal(err)
+	}
+	tbl.n = 10
+
+	// The reload an adoption performs sees a file past the limit.
+	if err := tbl.load(); err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := tbl.read(9, 1)
+	if err != nil {
+		t.Fatalf("read past the old buffer: %v", err)
+	}
+	if len(record) != int(itemRecordSize) {
+		t.Fatalf("record = %d bytes, want one whole record", len(record))
+	}
+	if err := tbl.flush(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := tbl.file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 10*itemRecordSize {
+		t.Fatalf("file holds %d bytes after the flush, want the other handle's %d kept",
+			info.Size(), 10*itemRecordSize)
+	}
+}
+
+// The strings file's buffer carries the same adoption hazard, and the same
+// honesty: growth another handle committed past the limit survives this
+// handle's reload and flush.
+func TestAnAdoptedStringsFileThatOutgrewTheBufferKeepsTheFile(t *testing.T) {
+	previous := recordBufferLimit
+	recordBufferLimit = 16
+	t.Cleanup(func() { recordBufferLimit = previous })
+
+	f, err := os.Create(filepath.Join(t.TempDir(), "strings"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if _, err := f.WriteString("seed"); err != nil {
+		t.Fatal(err)
+	}
+	b := &blob{file: f, n: 4}
+	if err := b.load(); err != nil {
+		t.Fatal(err)
+	}
+	if b.buf == nil {
+		t.Fatal("the small strings file should be buffered")
+	}
+
+	// Another handle grows the file past the shrunk limit; adoption takes
+	// up its length.
+	if _, err := f.WriteAt([]byte(" and much more than the buffer allows"), 4); err != nil {
+		t.Fatal(err)
+	}
+	b.n = 41
+
+	if err := b.load(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := b.get(strRef{Off: 19, Len: 5}); err != nil {
+		t.Fatalf("read past the old buffer: %v", err)
+	} else if string(got) != "than " {
+		t.Fatalf("string at 19 = %q, want the grown file's bytes", got)
+	}
+	if err := b.flush(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 41 {
+		t.Fatalf("file holds %d bytes after the flush, want the other handle's growth kept", info.Size())
+	}
+}
+
 // A buffered truncate only shrinks buf; the flush that publishes it must
 // still shrink the file, or rows past the counts would survive a restart.
 func TestATruncateShrinkReachesTheFileOnFlush(t *testing.T) {

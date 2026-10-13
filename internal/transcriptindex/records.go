@@ -561,6 +561,12 @@ func (b *blob) load() error {
 		return err
 	}
 	if info.Size() > recordBufferLimit {
+		// Another handle grew the file past what this handle buffers, so
+		// the buffered copy and its watermark are stale: reads through buf
+		// would serve truncated bytes and a flush would truncate the file
+		// down to buf. Stop buffering; reads and writes go to the file.
+		b.buf = nil
+		b.flushed = 0
 		return nil
 	}
 	b.buf = make([]byte, info.Size())
@@ -624,6 +630,9 @@ func (t *table) load() error {
 		return err
 	}
 	if info.Size() > recordBufferLimit {
+		// As blob.load: the buffered copy is stale, so stop buffering.
+		t.buf = nil
+		t.flushed = 0
 		return nil
 	}
 	t.buf = make([]byte, info.Size())
