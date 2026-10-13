@@ -24,11 +24,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
 	caps := res.Caps
 	lite := registry.BoolValue(caps.ResponsesLite)
-	detail := "high"
-	if d := registry.StringValue(caps.ImageDetail); d != "" {
-		detail = d
-	}
-	instructions, inputItems, err := toResponsesInput(req.Messages, detail)
+	instructions, inputItems, err := toResponsesInput(req.Messages, registry.StringValue(caps.ImageDetail))
 	if err != nil {
 		return nil, err
 	}

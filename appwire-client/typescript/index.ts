@@ -154,12 +154,16 @@ export {
   unconfiguredLabel,
 } from "./credentialLabels";
 export type {
+  DelegateDotFields,
+  DelegateDotState,
   DelegateEndingFields,
   DelegateModelFields,
   DelegateTiming,
   DelegateTimingFields,
 } from "./delegateDetails";
 export {
+  DELEGATE_QUIET_AFTER_MS,
+  delegateDotState,
   delegateEndingText,
   delegateModel,
   delegateNotResumableText,

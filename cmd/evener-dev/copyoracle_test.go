@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -32,12 +33,42 @@ func copyOracleRepo(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	for _, args := range [][]string{{"init", "-q"}, {"add", "--", "."}} {
-		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+	// The developer's git config (a global excludes file, templates) must not
+	// decide which fixture files get tracked.
+	for _, args := range [][]string{{"init", "-q", "--template="}, {"config", "core.excludesFile", ""}, {"add", "--", "."}} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 	return root
+}
+
+// TestCopyOracleRepoTracksItsFilesDespiteTheDevelopersGitConfig gives the
+// process a global excludes file that ignores every Go file and checks the
+// fixture repository still tracks all of its files.
+func TestCopyOracleRepoTracksItsFilesDespiteTheDevelopersGitConfig(t *testing.T) {
+	home := t.TempDir()
+	excludes := filepath.Join(home, "excludes")
+	if err := os.WriteFile(excludes, []byte("*.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(home, "gitconfig")
+	if err := os.WriteFile(config, []byte("[core]\n\texcludesFile = "+excludes+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", config)
+
+	root := copyOracleRepo(t)
+	out, err := exec.Command("git", "-C", root, "ls-files").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"other/y_test.go", "pkg/x.go", "pkg/x_test.go"}
+	if got := strings.Fields(string(out)); !slices.Equal(got, want) {
+		t.Fatalf("tracked files = %q, want %q", got, want)
+	}
 }
 
 // fakeTS stands in for the TypeScript half (a node process) and records the

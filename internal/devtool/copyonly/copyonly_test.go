@@ -1,6 +1,7 @@
 package copyonly
 
 import (
+	"go/parser"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -500,6 +501,30 @@ func TestRegexCore(t *testing.T) {
 		if got := regexCore(rx); got != want {
 			t.Errorf("regexCore(%q) = %q, want %q", rx, got, want)
 		}
+	}
+}
+
+// TestConcatenationPrefixIgnoresGrouping checks that a concatenation ending
+// in a value gives the same known literal prefix however it is parenthesized.
+func TestConcatenationPrefixIgnoresGrouping(t *testing.T) {
+	t.Parallel()
+	prefix := func(src string) (string, bool) {
+		t.Helper()
+		e, err := parser.ParseExpr(src)
+		if err != nil {
+			t.Fatalf("ParseExpr(%s): %v", src, err)
+		}
+		got := comparisons(e)
+		if len(got) != 1 {
+			t.Fatalf("comparisons(%s) = %+v, want one", src, got)
+		}
+		return got[0].lit, got[0].partial
+	}
+	leftLit, leftPartial := prefix(`strings.Contains(out, "launchconfig:" + " mkdir " + dir)`)
+	rightLit, rightPartial := prefix(`strings.Contains(out, "launchconfig:" + (" mkdir " + dir))`)
+	if rightLit != leftLit || !leftPartial || !rightPartial {
+		t.Fatalf("parenthesized prefix = %q (partial %v), left-associative = %q (partial %v); want equal and partial",
+			rightLit, rightPartial, leftLit, leftPartial)
 	}
 }
 
