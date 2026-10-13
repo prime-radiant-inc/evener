@@ -545,7 +545,7 @@ func TestGlobalGitReferencedSymlinkIsNeverGranted(t *testing.T) {
 // way to read whatever the session later points it at.
 func TestConfinedReferencedFiles(t *testing.T) {
 	t.Parallel()
-	home := t.TempDir()
+	home := clean(t.TempDir())
 	writable := filepath.Join(home, "work")
 	subdir := filepath.Join(home, "subdir")
 	for _, dir := range []string{writable, subdir} {
@@ -567,7 +567,7 @@ func TestConfinedReferencedFiles(t *testing.T) {
 	}
 	// A `..` after a symlink to a directory OUTSIDE the home: git opens the file where
 	// the kernel's resolution lands, not where lexical cleaning would put it.
-	elsewhere := t.TempDir()
+	elsewhere := clean(t.TempDir())
 	if err := os.MkdirAll(filepath.Join(elsewhere, "subdir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -634,11 +634,79 @@ func TestExtraReadRootSymlinkIntoAMaskedTargetIsDropped(t *testing.T) {
 	}
 }
 
+// TestGlobalGitReferencedFileIsConfinedBeforeTheSharedTreeGuard pins the ORDER of the
+// two admissions. The shared-tree guard cleans each candidate, so a value whose
+// cleaned spelling is a real path of its own — a `..` the kernel resolves after a
+// symlink — must be judged before that cleaning: otherwise the grant lands on
+// whatever the cleaned spelling names, which here is a whole DIRECTORY rather than the
+// file git opens, breaking the file-exact boundary.
+func TestGlobalGitReferencedFileIsConfinedBeforeTheSharedTreeGuard(t *testing.T) {
+	t.Parallel()
+	home := clean(t.TempDir())
+	elsewhere := clean(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(elsewhere, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, filepath.Join(elsewhere, "notes"), "notes\n")
+	link := filepath.Join(home, "link")
+	if err := os.Symlink(filepath.Join(elsewhere, "subdir"), link); err != nil {
+		t.Fatal(err)
+	}
+	// `~/link/../notes` is <elsewhere>/notes to the kernel, while its cleaned spelling
+	// is <home>/notes — made a directory here so a grant of it would expose a tree.
+	dir := filepath.Join(home, "notes")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	host := darwinSeatbeltHost()
+	host.Home = home
+	host.GitGlobalReferencedPaths = []string{link + string(filepath.Separator) + ".." + string(filepath.Separator) + "notes"}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if slices.Contains(rp.Spawned.ReadRoots, dir) {
+		t.Errorf("the cleaned spelling of a `..`-after-a-symlink value must never be granted, least of all as a directory: %v", rp.Spawned.ReadRoots)
+	}
+}
+
+// TestGlobalGitReferencedFileUnderAWritableAliasIsRefused pins the writable-root
+// containment check at the RESOLVED spelling too: an extra writable root the user
+// configured as a symlink makes the files beneath its target writable through the
+// alias, so a config-named file there can be swapped for a link to anything at any
+// time. unmaskedContentRoots already judges writable roots both ways.
+func TestGlobalGitReferencedFileUnderAWritableAliasIsRefused(t *testing.T) {
+	t.Parallel()
+	home := clean(t.TempDir())
+	storage := clean(t.TempDir())
+	referenced := filepath.Join(storage, "ignore")
+	writeFixtureFile(t, referenced, "ignored.txt\n")
+	alias := filepath.Join(home, "writable-alias")
+	if err := os.Symlink(storage, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	host := darwinSeatbeltHost()
+	host.Home = home
+	host.GitGlobalReferencedPaths = []string{referenced}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, ExtraWritableRoots: []string{alias}}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if slices.Contains(rp.Spawned.ReadRoots, referenced) {
+		t.Errorf("a file inside a root the session may write THROUGH A SYMLINK must not be granted: %v", rp.Spawned.ReadRoots)
+	}
+}
+
 // referencedFilesFixture materializes a home holding two referenced files (one per
 // core key) and returns their paths.
 func referencedFilesFixture(t *testing.T) (home, ignore, attrs string) {
 	t.Helper()
-	home = t.TempDir()
+	// Canonicalized, because the confinement rule compares a path with what it
+	// resolves to: on macOS an uncleaned t.TempDir() spelling (/var/folders/...) has
+	// already been resolved through /var by the filesystem.
+	home = clean(t.TempDir())
 	ignore = filepath.Join(home, "ignore")
 	attrs = filepath.Join(home, "attrs")
 	writeFixtureFile(t, ignore, "ignored.txt\n")

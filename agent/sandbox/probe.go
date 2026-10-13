@@ -460,6 +460,17 @@ func confinedReferencedFiles(candidates, writable []string) []string {
 	if len(candidates) == 0 {
 		return nil
 	}
+	// Writable roots are judged at their literal AND resolved spellings, like
+	// unmaskedContentRoots: an extra writable root the user configured as a symlink
+	// makes the files beneath its TARGET writable through the alias, so a candidate
+	// under the target is as swappable as one under the link.
+	writableAll := make([]string, 0, 2*len(writable))
+	for _, w := range writable {
+		writableAll = append(writableAll, w)
+		if resolved, err := filepath.EvalSymlinks(w); err == nil {
+			writableAll = append(writableAll, resolved)
+		}
+	}
 	out := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		clean := filepath.Clean(c)
@@ -470,7 +481,7 @@ func confinedReferencedFiles(candidates, writable []string) []string {
 		if err != nil || StripDataVolumeAlias(resolved) != StripDataVolumeAlias(clean) {
 			continue
 		}
-		if isUnderAnyRoot(clean, writable) {
+		if isUnderAnyRoot(clean, writableAll) {
 			continue
 		}
 		out = append(out, clean)

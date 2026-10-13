@@ -879,9 +879,13 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// bwrap binds that name afresh at every spawn. So they are the one grant that
 		// must be fixed — admitted only when nothing about the name can change — rather
 		// than merely guarded; see confinedReferencedFiles.
-		gitReferenced := confinedReferencedFiles(
-			guardedHostRoots(host.GitGlobalReferencedPaths, host.Home, worktree),
-			slices.Concat(writeFile, layout.WritablePaths))
+		// Confined BEFORE the shared-tree guard, because that guard cleans each
+		// candidate: cleaning a `..` that follows a symlink names a different path from
+		// the one git opens, and a candidate whose cleaned spelling happens to be a real
+		// directory would then be granted as a whole tree.
+		gitReferenced := guardedHostRoots(
+			confinedReferencedFiles(host.GitGlobalReferencedPaths, slices.Concat(writeFile, layout.WritablePaths)),
+			host.Home, worktree)
 		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, gitReferenced, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
