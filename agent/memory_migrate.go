@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"io/fs"
@@ -72,10 +73,16 @@ const memoryBackupCopyPrefix = ".MEMORY.md.copying-"
 // change the scope at any point, and neither step relies on it holding
 // still. A failure leaves the index in place for the next run.
 func moveLegacyMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte, backup string) error {
-	if err := backUpMemoryIndex(env, root, raw, backup); err != nil {
+	return moveLegacyMemoryIndexCtx(context.Background(), env, root, legacy, raw, backup)
+}
+
+// moveLegacyMemoryIndexCtx is moveLegacyMemoryIndex with the caller's context
+// threaded to each read.
+func moveLegacyMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte, backup string) error {
+	if err := backUpMemoryIndexCtx(ctx, env, root, raw, backup); err != nil {
 		return err
 	}
-	return removeMigratedMemoryIndex(env, root, legacy, raw)
+	return removeMigratedMemoryIndexCtx(ctx, env, root, legacy, raw)
 }
 
 // backUpMemoryIndex keeps raw, an index's bytes, as a backup in root, trying
@@ -89,7 +96,13 @@ func moveLegacyMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy 
 // one. Any other link failure, such as a filesystem without hard links, is
 // returned.
 func backUpMemoryIndex(env *execenv.LocalExecutionEnvironment, root string, raw []byte, backup string) error {
-	if repeated, err := memoryBackupHolds(env, root, raw); err != nil || repeated {
+	return backUpMemoryIndexCtx(context.Background(), env, root, raw, backup)
+}
+
+// backUpMemoryIndexCtx is backUpMemoryIndex with the caller's context threaded
+// to each read.
+func backUpMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root string, raw []byte, backup string) error {
+	if repeated, err := memoryBackupHoldsCtx(ctx, env, root, raw); err != nil || repeated {
 		return err
 	}
 	copied := filepath.Join(root, memoryBackupCopyPrefix+rand.Text())
@@ -103,7 +116,7 @@ func backUpMemoryIndex(env *execenv.LocalExecutionEnvironment, root string, raw 
 			return err
 		}
 		// Another migration may have just backed up the same bytes.
-		if repeated, err := memoryBackupHolds(env, root, raw); err != nil || repeated {
+		if repeated, err := memoryBackupHoldsCtx(ctx, env, root, raw); err != nil || repeated {
 			return err
 		}
 		if backup, err = freeMemoryBackupPath(env, root); err != nil {
@@ -124,12 +137,18 @@ func backUpMemoryIndex(env *execenv.LocalExecutionEnvironment, root string, raw 
 // run. A captured file that can't be put back keeps its private name, where
 // the next migration finds it.
 func removeMigratedMemoryIndex(env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte) error {
+	return removeMigratedMemoryIndexCtx(context.Background(), env, root, legacy, raw)
+}
+
+// removeMigratedMemoryIndexCtx is removeMigratedMemoryIndex with the caller's
+// context threaded to the captured-bytes read.
+func removeMigratedMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte) error {
 	staged := filepath.Join(root, memoryIndexStagingPrefix+rand.Text())
 	if err := env.RenamePath(legacy, staged); err != nil {
 		// fs.ErrNotExist: another migration moved the index first.
 		return ignoreNotExist(err)
 	}
-	captured, err := env.ReadFileRaw(staged)
+	captured, err := env.ReadFileRawCtx(ctx, staged)
 	if err != nil {
 		return err
 	}
@@ -142,7 +161,7 @@ func removeMigratedMemoryIndex(env *execenv.LocalExecutionEnvironment, root, leg
 		if err != nil {
 			return err
 		}
-		restored = backUpMemoryIndex(env, root, captured, backup)
+		restored = backUpMemoryIndexCtx(ctx, env, root, captured, backup)
 	}
 	if restored != nil {
 		return restored
@@ -154,6 +173,12 @@ func removeMigratedMemoryIndex(env *execenv.LocalExecutionEnvironment, root, leg
 // backup (memoryLegacyIndexBackup, numbered or not, in any case) holds
 // exactly raw.
 func memoryBackupHolds(env *execenv.LocalExecutionEnvironment, root string, raw []byte) (bool, error) {
+	return memoryBackupHoldsCtx(context.Background(), env, root, raw)
+}
+
+// memoryBackupHoldsCtx is memoryBackupHolds with the caller's context threaded
+// to each backup read.
+func memoryBackupHoldsCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root string, raw []byte) (bool, error) {
 	entries, err := env.ListDirectory(root, 1)
 	if err != nil {
 		return false, err
@@ -163,7 +188,7 @@ func memoryBackupHolds(env *execenv.LocalExecutionEnvironment, root string, raw 
 		if !entry.IsRegular || entry.Size != int64(len(raw)) || !strings.HasPrefix(strings.ToLower(entry.Name), prefix) {
 			continue
 		}
-		if existing, err := env.ReadFileRaw(filepath.Join(root, entry.Name)); err == nil && bytes.Equal(existing, raw) {
+		if existing, err := env.ReadFileRawCtx(ctx, filepath.Join(root, entry.Name)); err == nil && bytes.Equal(existing, raw) {
 			return true, nil
 		}
 	}
@@ -451,20 +476,32 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 // returns an error and leaves the index in place, so the next run finishes
 // the job.
 func migrateMemoryScope(env *execenv.LocalExecutionEnvironment) error {
+	return migrateMemoryScopeCtx(context.Background(), env)
+}
+
+// migrateMemoryScopeCtx is migrateMemoryScope with the caller's context
+// threaded to each index and page read.
+func migrateMemoryScopeCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment) error {
 	legacies, err := legacyMemoryIndexes(env)
 	if err != nil || len(legacies) == 0 {
 		return err
 	}
-	return migrateLegacyMemoryIndexes(env, legacies)
+	return migrateLegacyMemoryIndexesCtx(ctx, env, legacies)
 }
 
 // migrateLegacyMemoryIndexes is migrateMemoryScope's work for the root
 // indexes legacyMemoryIndexes found, in that order.
 func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies []string) error {
+	return migrateLegacyMemoryIndexesCtx(context.Background(), env, legacies)
+}
+
+// migrateLegacyMemoryIndexesCtx is migrateLegacyMemoryIndexes with the caller's
+// context threaded to each read.
+func migrateLegacyMemoryIndexesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, legacies []string) error {
 	root := env.WorkingDirectory()
 	// Only regular page files are read or written; a FIFO, directory or
 	// symlink named like a page is not listed and so is skipped.
-	listed, err := listMemoryPages(env)
+	listed, err := listMemoryPagesCtx(ctx, env)
 	if err != nil {
 		return err
 	}
@@ -484,7 +521,7 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 	}
 	var read []readIndex
 	for _, legacy := range legacies {
-		raw, err := env.ReadFileRaw(legacy)
+		raw, err := env.ReadFileRawCtx(ctx, legacy)
 		if errors.Is(err, fs.ErrNotExist) {
 			// A concurrent run moved it after the listing, so it is migrated.
 			continue
@@ -513,7 +550,7 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 	var writeErrs []error
 	for _, page := range slices.Sorted(maps.Keys(descriptions)) {
 		abs := filepath.Join(root, filepath.FromSlash(page))
-		body, err := env.ReadFileRaw(abs)
+		body, err := env.ReadFileRawCtx(ctx, abs)
 		if err != nil {
 			// Removed since the listing or unreadable, the page is skipped so the
 			// scope still finishes.
@@ -549,7 +586,7 @@ func migrateLegacyMemoryIndexes(env *execenv.LocalExecutionEnvironment, legacies
 		if err != nil {
 			return err
 		}
-		if err := moveLegacyMemoryIndex(env, root, index.path, index.raw, backup); err != nil {
+		if err := moveLegacyMemoryIndexCtx(ctx, env, root, index.path, index.raw, backup); err != nil {
 			return err
 		}
 	}

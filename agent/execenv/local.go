@@ -1690,6 +1690,13 @@ func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, 
 	return e.EditFileWithCtx(context.Background(), path, oldString, newString, replaceAll, finish)
 }
 
+// EditFileCtx is EditFile with the caller's context threaded to its read, so a
+// cancelled edit ends a read parked on a stream. It is the interface-visible
+// entry of ContextualFileReader.
+func (e *LocalExecutionEnvironment) EditFileCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool) (string, error) {
+	return e.EditFileWithCtx(ctx, path, oldString, newString, replaceAll, nil)
+}
+
 // EditFileWithCtx is EditFileWith with the caller's context threaded to its
 // read, so a cancelled edit ends a read parked on a stream.
 func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {

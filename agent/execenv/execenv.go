@@ -147,6 +147,24 @@ type FileMutator interface {
 	RenamePath(oldPath, newPath string) error
 }
 
+// ContextualFileReader is an optional execution-environment capability: the
+// formatted file read and edit entries with the caller's context threaded to
+// the read, so a cancelled tool call ends a read parked on a stream. It is
+// separate from ExecutionEnvironment, like the other optional capabilities, so
+// existing implementers (test fakes) are unaffected; the file tools type-assert
+// for it and fall back to the ctx-less entries when it is absent.
+type ContextualFileReader interface {
+	ReadFileCtx(ctx context.Context, path string, offsetLine, limitLines *int) (string, error)
+	EditFileCtx(ctx context.Context, path, oldString, newString string, replaceAll bool) (string, error)
+}
+
+// ContextualFileMutator is FileMutator's read entry with the caller's context
+// threaded to the read; apply_patch type-asserts for it, falling back to
+// ReadFileRaw when absent.
+type ContextualFileMutator interface {
+	ReadFileRawCtx(ctx context.Context, path string) ([]byte, error)
+}
+
 // StreamHandle is a running streamed process. Wait blocks until exit and returns
 // the exit code; Signal terminates the process group (SIGTERM then SIGKILL).
 // SignalName reports the signal that terminated the process, when the platform

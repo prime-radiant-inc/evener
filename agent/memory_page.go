@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -270,6 +271,12 @@ func memoryStampDate(v any) string {
 // enters a dot directory, which holds no pages, so a .git in the scope does
 // not slow the listing.
 func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
+	return listMemoryPagesCtx(context.Background(), env)
+}
+
+// listMemoryPagesCtx is listMemoryPages with the caller's context threaded to
+// each page read, so a cancelled memory read ends a read parked on a stream.
+func listMemoryPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
 	root := env.WorkingDirectory()
 	entries, err := env.ListVisibleDirectory(root, memoryPageWalkDepth)
 	if err != nil {
@@ -285,7 +292,7 @@ func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, erro
 			pages = append(pages, filenameMemoryPage(rel, entry.ModTime))
 			continue
 		}
-		raw, err := env.ReadFileRaw(filepath.Join(root, entry.Name))
+		raw, err := env.ReadFileRawCtx(ctx, filepath.Join(root, entry.Name))
 		if page, ok := memoryPageFromRead(rel, raw, err, entry.ModTime); ok {
 			pages = append(pages, page)
 		}
