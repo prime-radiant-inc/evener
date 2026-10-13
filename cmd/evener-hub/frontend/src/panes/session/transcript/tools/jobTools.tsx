@@ -15,7 +15,6 @@ import {
   jobStopSummary,
   parseArgs,
   str,
-  toolStepSummary,
 } from "@evener/appwire-client";
 import { CopyButton } from "../../../../widgets";
 import { jobStatusDisplay } from "../../chrome/activityFormat";
@@ -235,8 +234,9 @@ registerToolRenderer({
   match: (name) => name.startsWith("job_"),
   icon: "job",
   fold: "never",
-  // The package's words for a job tool this build doesn't know: which
-  // operation it ran, never the raw tool name.
-  summary: (item: ItemModel) => toolStepSummary(item),
+  // No summary: this family fallback wants exactly the default row words
+  // (DEFAULT_DESCRIPTOR's own, toolRenderers.ts) - the operation a job tool this
+  // build doesn't know ran, never its raw name - so it omits the field rather
+  // than restating the default's lambda.
   body: HeadClippedOutputBody,
 });
