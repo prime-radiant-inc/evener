@@ -2,6 +2,7 @@ package evener_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -639,5 +640,61 @@ func TestTimed(t *testing.T) {}
 	}
 	if leftovers := runnerScratchDirs(t, ctrl); len(leftovers) == 0 {
 		t.Fatalf("a refused timing destination deleted the scratch holding the captured rows")
+	}
+}
+
+// TestModuleRunnerDoesNotWriteThroughASiblingSymlink pins the review finding on
+// the temp file's name. The capture used to write `<dest>.tmp-<script pid>` with
+// plain truncating redirection, so a symlink planted at that predictable path
+// was followed and its target overwritten before publication. The temp file is
+// created exclusively instead, so a planted symlink is never written through.
+// The plant lands while the fixture's own test run is still going, long before
+// the export, so the ordering is structural rather than a race.
+func TestModuleRunnerDoesNotWriteThroughASiblingSymlink(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
+
+import "testing"
+
+func TestTimed(t *testing.T) {}
+`)
+
+	dest := filepath.Join(root, "measured.tsv")
+	victim := filepath.Join(root, "victim.txt")
+	const precious = "PRECIOUS\n"
+	writeTestFile(t, victim, []byte(precious), 0o644)
+
+	script, err := filepath.Abs(moduleRunnerScript)
+	if err != nil {
+		t.Fatalf("abs %s: %v", moduleRunnerScript, err)
+	}
+	cmd := exec.Command("bash", script, "-short", "-count=1")
+	cmd.Dir = modules
+	cmd.Env = runnerEnv(t, append(controlledScratchEnv(ctrl),
+		"MODULES=timingmod", "EVENER_GATE_TIMING_TSV="+dest)...)
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the runner: %v", err)
+	}
+	// $$ in the script is this bash process's pid.
+	planted := fmt.Sprintf("%s.tmp-%d", dest, cmd.Process.Pid)
+	if err := os.Symlink(victim, planted); err != nil {
+		t.Fatalf("planting the symlink at %s: %v", planted, err)
+	}
+	waitErr := cmd.Wait()
+
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("reading the symlink's target: %v", err)
+	}
+	if string(got) != precious {
+		t.Fatalf("the capture wrote through a planted sibling symlink:\n%s", got)
+	}
+	if waitErr != nil {
+		t.Fatalf("the run failed with the symlink planted: %v\n%s", waitErr, out.String())
+	}
+	if rows, err := os.ReadFile(dest); err != nil || !strings.Contains(string(rows), "TEST\t") {
+		t.Fatalf("the run published no timing rows at %s (err = %v):\n%s", dest, err, out.String())
 	}
 }

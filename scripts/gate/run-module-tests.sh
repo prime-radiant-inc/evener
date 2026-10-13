@@ -825,15 +825,21 @@ if [ "$timing_enabled" -eq 1 ]; then
 	# Publish atomically: write beside the destination and rename it into place.
 	# A later --measured replay reads the destination, so a partial file there
 	# would read as a complete but truncated measurement; the rename keeps the
-	# file absent or whole. An export that fails — including a destination that
-	# is a directory, which the rename would silently move the temp file into —
-	# keeps the scratch holding the rows: they are the expensive part, and
-	# cleanup would otherwise delete them and force another full run.
-	timing_tmp="${EVENER_GATE_TIMING_TSV}.tmp-$$"
+	# file absent or whole. mktemp creates the temp file exclusively, so a
+	# symlink planted at a predictable sibling path is neither followed nor
+	# written through. An export that fails — including a destination that is a
+	# directory, which the rename would silently move the temp file into — keeps
+	# the scratch holding the rows: they are the expensive part, and cleanup
+	# would otherwise delete them and force another full run.
 	if [ "$fail" -ne 0 ]; then
 		:
 	elif [ "${#row_files[@]}" -eq 0 ]; then
 		printf 'run-module-tests.sh: the timing capture produced no rows; not writing %s\n' "$EVENER_GATE_TIMING_TSV" >&2
+		fail=1
+	elif ! timing_tmp="$(mktemp "${EVENER_GATE_TIMING_TSV}.tmp-XXXXXX")"; then
+		keep_failed_logs=1
+		printf 'run-module-tests.sh: could not create a temporary file beside %s\n' "$EVENER_GATE_TIMING_TSV" >&2
+		printf 'run-module-tests.sh: the captured rows are retained in %s\n' "$logdir" >&2
 		fail=1
 	elif ! cat "${row_files[@]}" >"$timing_tmp"; then
 		rm -f "$timing_tmp"
