@@ -12661,6 +12661,12 @@ test("a Stop after the drain converges still cancels the moved row before the pa
   // would call clearResumedIdentity has not run.
   await threadsStore.getState().resumeSession(fromRef);
   await flushIndexedDBUntil(() => false);
+  // The drive settled and published the resumed identity, and the trailing
+  // drain's empty pass has run: no rows remain under the old ref, so the swap
+  // registration is the only thing that still holds the moved row for the old
+  // ref's Stop.
+  expect(threadsStore.getState().resumedIdentities.has(fromRef)).toBe(true);
+  expect(await storage.listOutbox(fromRef)).toEqual([]);
   // The pane still shows the old ref. The Stop lands here - after convergence,
   // before the follow - and must reach the row the drive moved.
   await threadsStore.getState().shutdown(fromRef);
@@ -12751,6 +12757,9 @@ test("a Stop on the old ref after the pane follows the identity does not cancel 
   notifyReadyForMutationDispatch([toRef]);
   await flushIndexedDBUntil(() => starts.length > 0);
   expect(starts).toEqual([toRef]);
+  // Not canceled: the old ref's Stop no longer reaches this row.
+  const followedOutbox = await storage.listOutbox(toRef);
+  expect(followedOutbox.map((record) => record.state)).not.toContain("canceled");
 });
 
 // The Stop's own cancellation write is an await, and the pane's follow effect
@@ -12831,6 +12840,97 @@ test("a Stop whose cancellation awaits while the pane follows the identity still
   });
   try {
     await threadsStore.getState().shutdown(fromRef);
+    expect(followed).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+  toFencedNow = false;
+  await threadsStore.getState().refreshThread(toRef);
+  notifyReadyForMutationDispatch([toRef]);
+  await flushIndexedDBUntil(() => starts.length > 0);
+  expect(starts).toEqual([]);
+  const outbox = await storage.listOutbox(toRef);
+  expect(outbox.map((record) => ({ id: record.clientMutationId, state: record.state }))).toEqual([
+    { id: seeded.clientMutationId, state: "canceled" },
+  ]);
+});
+
+// forceStop carries the same straddle: its own cancellation write is an await,
+// and the follow can land inside it. The synchronous capture must cover this
+// call site too, not only shutdown.
+test("a forceStop whose cancellation awaits while the pane follows the identity still cancels the moved row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  const fromRef = "local:force-straddle-from";
+  const toRef = "local:force-straddle-to";
+  const fromShape = () =>
+    readResponse(fromRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: fromRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  let toFencedNow = true;
+  fake.on("thread/read", (params) => (params.ref === toRef ? (toFencedNow ? toFenced() : toIdle()) : fromShape()));
+  fake.on("thread/resume", () => toFenced());
+  fake.on("evener/thread/forceStop", () => ({}));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread(fromRef);
+  await threadsStore.getState().ensureThread(toRef);
+  const seeded = await storage.enqueueIntent({
+    targetRef: fromRef,
+    threadId: `thr_${fromRef}`,
+    instanceId: "instance-old",
+    method: "turn/start",
+    payload: { ref: fromRef, expectedInstanceId: "instance-old", input: [{ type: "text", text: "parked" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "parked" }] },
+  });
+  await threadsStore.getState().resumeSession(fromRef);
+  await flushIndexedDBUntil(() => false);
+  let followed = false;
+  const realCancel = MutationOutboxIndexedDB.prototype.cancelUnattempted;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "cancelUnattempted").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    target: string,
+  ) {
+    if (target === fromRef && !followed) {
+      followed = true;
+      threadsStore.getState().clearResumedIdentity(fromRef);
+    }
+    return realCancel.call(this, target);
+  });
+  try {
+    await threadsStore.getState().forceStop(fromRef);
     expect(followed).toBe(true);
   } finally {
     spy.mockRestore();

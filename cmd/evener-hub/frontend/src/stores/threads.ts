@@ -1907,7 +1907,9 @@ const resumeSwapTargets = new Map<string, { toRef: string; token: symbol }>();
 // same (fromRef, toRef) pair - inFlightResumes drops the first when it resolves
 // while its trailing drain still awaits storage, and a second press then starts
 // a second drive that registers the same pair - so matching only the pair would
-// let the first drive's drain clear the second drive's live registration.
+// let the first drive settle the second drive's live registration. The drain no
+// longer settles (see scheduleRetargetDrain), so the drive's own failure catch
+// is the only token-matched settle.
 function registerResumeSwap(fromRef: string, toRef: string): symbol {
   const token = Symbol("resumeSwap");
   resumeSwapTargets.set(fromRef, { toRef, token });
