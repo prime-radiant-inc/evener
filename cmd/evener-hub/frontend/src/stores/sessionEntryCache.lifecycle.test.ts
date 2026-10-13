@@ -1,5 +1,7 @@
-import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import type { ThreadReadResponse } from "@evener/appwire-client";
+import { IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore, IDBTransaction } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
+import { EntryWriteAdmission } from "./entryWriteAdmission";
 import {
   ENTRY_COVERAGE_STORE,
   ENTRY_ITEM_STORE,
@@ -10,7 +12,8 @@ import {
   type TranscriptSessionMetadata,
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { settleRealTasks } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction, settleRealTasks } from "./testing/stalledIndexedDB";
+import { TranscriptRepository } from "./transcriptRepository";
 
 const caches: Array<{ close(): void }> = [];
 const databases: Array<{ factory: IDBFactory; name: string }> = [];
@@ -66,6 +69,7 @@ async function countRows(factory: IDBFactory, name: string, store: string): Prom
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   for (const database of openedDatabases.splice(0)) database.close();
   for (const cache of caches.splice(0)) cache.close();
   for (const { factory, name } of databases.splice(0)) await deleteDatabase(factory, name);
@@ -89,6 +93,210 @@ function row(historyKey: string, entry: number) {
     item: { id: `row-${entry}`, turnId: "turn-1", type: "assistant", text: `body-${entry}` },
   };
 }
+
+it.each(["request", "completion"] as const)(
+  "bounds a held write %s event, releases admission and fences late success",
+  async (heldEvent) => {
+    const { cache, factory } = newCache();
+    // Open and exercise the connection before installing the event hold: this
+    // must test the transaction deadline, not the existing open watchdog.
+    expect(await cache.commitBatch({ historyKey: "seed", clearEpoch: 0, items: [row("seed", 1)] })).toMatchObject({
+      outcome: "committed",
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const opened = vi.spyOn(factory, "open");
+    const closed = vi.spyOn(IDBDatabase.prototype, "close");
+    const aborted = vi.spyOn(IDBTransaction.prototype, "abort");
+    const committed = vi.fn();
+    cache.subscribeWrites(committed);
+    const writes = vi.spyOn(cache, "commitBatch");
+    let requestHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    const completionHold =
+      heldEvent === "completion"
+        ? holdNextWriteTransaction([ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE])
+        : undefined;
+    if (heldEvent === "request") {
+      const get = IDBObjectStore.prototype.get;
+      vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, key) {
+        const request = get.call(this, key);
+        if (!requestHold && this.transaction.mode === "readwrite") {
+          requestHold = holdIndexedDBEvent(request, "success");
+        }
+        return request;
+      });
+    }
+    const admission = new EntryWriteAdmission(4 * 1024 * 1024);
+    const identity = { clientId: "client", hostId: "host", sessionId: "stalled", incarnation: "inc" };
+    const historyKey = entryHistoryKey(identity);
+    const owner = new TranscriptRepository(cache, {
+      ref: "ref-stalled",
+      threadId: "thread-stalled",
+      historyKey,
+      identity,
+      clearEpoch: 0,
+      lifetime: 1,
+      admission,
+    });
+    const response: ThreadReadResponse = {
+      thread: {
+        id: "thread-stalled",
+        sessionId: "stalled",
+        preview: "",
+        ephemeral: false,
+        modelProvider: "test/provider",
+        createdAt: 1,
+        updatedAt: 1,
+        status: { type: "idle" },
+        cwd: "/tmp",
+        cliVersion: "test",
+        source: "evener",
+        evener: {
+          ref: "ref-stalled",
+          capabilities: {
+            send: true,
+            steer: true,
+            interrupt: true,
+            compact: true,
+            clear: true,
+            forkFromTurn: true,
+            shutdown: true,
+            changeModel: true,
+            changeVisionModel: true,
+            queue: true,
+            goal: true,
+            sharedNotes: true,
+            rename: true,
+          },
+          queue: { revision: 0 },
+        },
+        turns: [
+          {
+            id: "turn-1",
+            status: "completed",
+            version: 1,
+            itemsView: "full",
+            items: [
+              {
+                type: "agentMessage",
+                id: "item-stalled",
+                transcriptKey: "item-stalled",
+                turnId: "turn-1",
+                position: { entry: 1, item: 0 },
+                version: 1,
+                text: "stalled body",
+              },
+            ],
+          },
+        ],
+      },
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: "inc", length: 1 },
+      overlay: [],
+    };
+    try {
+      expect(owner.acceptRead(response, { lifetime: 1, readId: "read-stalled", boundary: "stalled" })).toBe(true);
+      if (completionHold) await completionHold.reached;
+      else {
+        await settleRealTasks(() => requestHold !== undefined);
+        expect(requestHold).toBeDefined();
+        await requestHold?.reached;
+      }
+      expect(opened).not.toHaveBeenCalled();
+      expect(admission.snapshotForTesting().backgroundInFlight).toBe(true);
+      expect(admission.snapshotForTesting().retainedBytes).toBeGreaterThan(0);
+      const pending = writes.mock.results[0]?.value as ReturnType<SessionEntryCache["commitBatch"]>;
+      let settled = false;
+      void pending.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      await expect(pending).resolves.toEqual({
+        outcome: "failed",
+        error: expect.any(Error),
+      });
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(aborted).toHaveBeenCalled();
+      expect(committed).not.toHaveBeenCalled();
+      expect(admission.snapshotForTesting()).toMatchObject({ backgroundInFlight: false, retainedBytes: 0 });
+      expect(owner.retainedInventoryForTesting().inFlightBodies).toEqual([]);
+      expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+
+      // Do not release the lost event to get recovery: another session must
+      // succeed using a replacement connection while the old callback is held.
+      await expect(
+        cache.commitBatch({ historyKey: "next-session", clearEpoch: 0, items: [row("next-session", 2)] }),
+      ).resolves.toMatchObject({ outcome: "committed" });
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(committed).toHaveBeenCalledTimes(1);
+      await expect(cache.getLatest("next-session", 10)).resolves.toMatchObject([{ transcriptKey: "row-2" }]);
+      // Holding completion means the real transaction already committed. A
+      // timeout must not claim it rolled back or destroy its durable rows.
+      await expect(cache.getLatest(historyKey, 10)).resolves.toMatchObject(
+        heldEvent === "completion" ? [{ transcriptKey: "item-stalled", item: { text: "stalled body" } }] : [],
+      );
+      requestHold?.release();
+      completionHold?.release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(committed).toHaveBeenCalledTimes(1);
+      await expect(pending).resolves.toMatchObject({ outcome: "failed" });
+      expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    } finally {
+      owner.dispose();
+      requestHold?.release();
+      completionHold?.release();
+    }
+  },
+);
+
+it("bounds failed write cleanup when the abort event never arrives", async () => {
+  const { cache, factory } = newCache();
+  await cache.commitBatch({ historyKey: "seed", clearEpoch: 0, items: [row("seed", 1)] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const opened = vi.spyOn(factory, "open");
+  const committed = vi.fn();
+  cache.subscribeWrites(committed);
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  const transact = IDBDatabase.prototype.transaction;
+  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const transaction = transact.apply(this, args);
+    if (!hold && transaction.mode === "readwrite") hold = holdIndexedDBEvent(transaction, "abort");
+    return transaction;
+  });
+  vi.spyOn(IDBObjectStore.prototype, "get").mockImplementationOnce(() => {
+    throw new Error("request work failed");
+  });
+  const pending = cache.commitBatch({ historyKey: "failed", clearEpoch: 0, items: [row("failed", 1)] });
+  let settled = false;
+  void pending.then(() => {
+    settled = true;
+  });
+  try {
+    await settleRealTasks(() => hold !== undefined);
+    expect(hold).toBeDefined();
+    await hold?.reached;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(settled).toBe(true);
+    await expect(pending).resolves.toEqual({
+      outcome: "failed",
+      error: expect.any(Error),
+    });
+    expect(committed).not.toHaveBeenCalled();
+    await expect(
+      cache.commitBatch({ historyKey: "next-session", clearEpoch: 0, items: [row("next-session", 2)] }),
+    ).resolves.toMatchObject({ outcome: "committed" });
+    expect(opened).toHaveBeenCalledTimes(1);
+    await expect(cache.getLatest("failed", 10)).resolves.toEqual([]);
+  } finally {
+    hold?.release();
+  }
+});
 
 it("clear removes every entry store row and advances the durable epoch together", async () => {
   const { cache, factory, name } = newCache();
