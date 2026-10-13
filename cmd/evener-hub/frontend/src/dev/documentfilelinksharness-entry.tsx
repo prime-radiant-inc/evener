@@ -1,6 +1,7 @@
 import { parseFileReference } from "@evener/appwire-client/docContent";
 import { createRoot } from "react-dom/client";
 import { enhanceFileReferences } from "../panes/session/transcript/messages/fileReferenceDOM";
+import { openSessionByRef } from "../shell/sessionPlacement";
 import { documentPaneState, workspaceStore } from "../shell/workspace";
 import { selectLocation } from "../stores/navigation/selectors";
 import { navigationStore } from "../stores/navigation/store";
@@ -62,7 +63,7 @@ const target = window as typeof window & {
     requests(): Promise<number>;
     state(): unknown;
     route(): unknown;
-    prepareSource(childRef?: string): string;
+    prepareSource(childRef?: string): string | Promise<string>;
     qualifyMarkdown: typeof qualifyMarkdown;
   };
 };
@@ -75,6 +76,13 @@ target.fileLinksFixture = {
   }),
   route: () => ({ pathname: location.pathname, location: selectLocation(fixtureRef)(navigationStore.getState()) }),
   // Starting-fixture preparation only, never called between filename Open and Back.
+  // The read-only transcript pane is gone: a child source beside its parent
+  // is the child's own live conversation pane now. The child is opened
+  // through the product's own session-link seam (openSessionByRef), which
+  // routes through the child's /s/<ref> deep link: the phone's route
+  // placement then opens the child beside its owner - the same shape any
+  // link to a nested session produces - and the awaited pane id is the one
+  // that placement committed.
   prepareSource: (childRef) => {
     const workspace = workspaceStore.getState();
     const parent = workspace.panes.find((pane) => pane.type === "session");
@@ -84,9 +92,19 @@ target.fileLinksFixture = {
     }
     workspace.promotePane(parent.id);
     workspace.focusPane(parent.id);
-    return childRef
-      ? workspace.openPane("transcript", { ref: childRef, parentRef: fixtureRef }, { slot: "secondary" })
-      : parent.id;
+    if (!childRef) return parent.id;
+    openSessionByRef(childRef);
+    return (async () => {
+      const deadline = performance.now() + 15000;
+      for (;;) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        const opened = workspaceStore
+          .getState()
+          .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === childRef);
+        if (opened) return opened.id;
+        if (performance.now() > deadline) throw new Error(`child conversation pane for ${childRef} never opened`);
+      }
+    })();
   },
   qualifyMarkdown,
 };

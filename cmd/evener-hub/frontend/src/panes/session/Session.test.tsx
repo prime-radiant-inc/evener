@@ -19,7 +19,7 @@ import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { urlToPane } from "../../shell/routing";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
@@ -47,10 +47,13 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import ReadOnlyTranscript from "../transcript/testing/CommittedTranscript";
+import { resumeCascadeScope } from "../zoom/actions";
+import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
+import { readDraft, writeDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
@@ -4854,10 +4857,213 @@ test("visible retained transcript resolves qualified job and stable delegate row
     expect.arrayContaining([expect.objectContaining({ params: { ref: "job:provided-ref", parentRef: ref } })]),
   );
   fireEvent.click(screen.getByRole("button", { name: "Open delegate transcript" }));
-  expect(workspaceStore.getState().panes.filter((p) => p.type === "transcript")).toEqual(
-    expect.arrayContaining([expect.objectContaining({ params: { ref: "source:opaque-child", parentRef: ref } })]),
+  expect(workspaceStore.getState().panes.filter((p) => p.type === "session")).toEqual(
+    expect.arrayContaining([expect.objectContaining({ params: { ref: "source:opaque-child" } })]),
   );
   expect(
     fake.calls.filter((c) => c.method === "evener/jobs/list" || c.method === "evener/thread/watches/list"),
   ).toHaveLength(0);
+});
+
+// One store-driven resume is published per ref (resumedIdentities is keyed by
+// the ref the pane was showing), but a ref can be retained by more than one
+// workspace view at once: an ordinary session pane and a cascade column
+// embedding the same conversation both mount ConversationBody, and dockview
+// unmounts a pane's whole tree while its tab is inactive. The first view to
+// follow the resume must not consume the notification for a view that is not
+// mounted at that moment, or that view reopens on the superseded identity.
+// See ConversationBody.tsx's resume effect.
+const subscribePopstate = (notify: () => void) => {
+  window.addEventListener("popstate", notify);
+  return () => window.removeEventListener("popstate", notify);
+};
+
+function transcriptRead(ref: string | undefined): ThreadReadResponse {
+  if (ref === undefined) throw new Error("thread/read requires ref");
+  return readResponse(ref, {
+    turns: [
+      {
+        id: `turn_${ref}`,
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: `item_${ref}`,
+            turnId: `turn_${ref}`,
+            type: "agentMessage",
+            text: `${ref} transcript`,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+}
+
+// The finding: an ordinary conversation tab is inactive while its cascade
+// column resumes. The column consumes the notification and the retained tab
+// never follows the resumed identity. Cover resuming while the other view is
+// inactive, then reopening it.
+test("a cascade column's resume reaches an ordinary view of the same ref when it reopens", async () => {
+  const sourceRef = "local:root";
+  const ref = "local:child";
+  const resumed = "local:child-resumed";
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => transcriptRead(readRef));
+
+  // Two retained views of `ref`: the cascade pane embedding it (its column is
+  // mounted here) and the ordinary session pane, inactive (its Session is not
+  // mounted). A draft typed for the conversation sits under `ref`.
+  const cascadePane: OpenPaneRecord = {
+    id: "cascade",
+    type: "sessionZoom",
+    slot: "secondary",
+    params: {
+      ref,
+      source: { type: "session", params: { ref: sourceRef } },
+      edges: [{ ownerRef: sourceRef, childRef: ref, delegateId: "d1" }],
+    },
+  };
+  const ordinaryPane: OpenPaneRecord = { id: "ordinary", type: "session", slot: "main", params: { ref } };
+  workspaceStore.setState({ panes: [ordinaryPane, cascadePane], focusedPaneId: cascadePane.id });
+  const cascadeLifetime = conversationPaneLifetime(cascadePane);
+  const cascadeSeat: ConversationSeat = {
+    readView: null,
+    composerSource: null,
+    keepViewRemount: () => true,
+    viewFallbackId: cascadePane.id,
+    focused: false,
+    keyboardScrollPaneId: null,
+    onResumedIdentity: (resumedRef) => resumeCascadeScope(cascadeLifetime, ref, resumedRef),
+  };
+  writeDraft(ref, "draft typed before the resume");
+
+  function OrdinaryView({ open }: { open: boolean }) {
+    // AppShell drives a session pane from the URL, so a followed resume
+    // re-renders it on the resumed ref; `open` stands for dockview mounting the
+    // pane's tree only while its tab is the active one.
+    const pathname = useSyncExternalStore(subscribePopstate, () => window.location.pathname);
+    if (!open) return null;
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") return null;
+    return <Session params={route.params as { ref: string }} paneId={ordinaryPane.id} focused={true} />;
+  }
+  function Harness({ open }: { open: boolean }) {
+    return (
+      <>
+        <ConversationBody
+          ref={ref}
+          seat={cascadeSeat}
+          render={({ content }) => <div data-testid="cascade-column">{content}</div>}
+        />
+        <OrdinaryView open={open} />
+      </>
+    );
+  }
+
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(ref)}`);
+  const { rerender } = render(
+    <ClientProvider client={fake}>
+      <Harness open={false} />
+    </ClientProvider>,
+  );
+  await act(async () => {});
+
+  // The store-driven resume publishes the identity (its own hydration of the
+  // resumed ref already landed; see resumeFencedForSend).
+  act(() => {
+    threadsStore.setState((state) => ({ resumedIdentities: new Map(state.resumedIdentities).set(ref, resumed) }));
+  });
+  await act(async () => {});
+
+  // The cascade column followed, but the ordinary view is still inactive and
+  // has not followed: the notification must survive for it.
+  expect(threadsStore.getState().resumedIdentities.get(ref)).toBe(resumed);
+  // The draft carried to the resumed identity.
+  expect(readDraft(resumed)).toBe("draft typed before the resume");
+
+  // Reopen the ordinary view: it must follow the retained identity.
+  rerender(
+    <ClientProvider client={fake}>
+      <Harness open={true} />
+    </ClientProvider>,
+  );
+  await screen.findByText(`${resumed} transcript`);
+  expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumed)}`);
+  // The last view has followed, so the notification is now consumed.
+  expect(threadsStore.getState().resumedIdentities.has(ref)).toBe(false);
+});
+
+// The finding's other shape: a collapsed column in another cascade. That pane
+// still covers the ref but mounts no ConversationBody until it becomes active,
+// so the mounted column must leave the notification for it.
+test("a resume survives a collapsed column in another cascade until that cascade mounts", async () => {
+  const sourceRef = "local:root";
+  const ref = "local:child";
+  const resumed = "local:child-resumed";
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => transcriptRead(readRef));
+
+  const cascadeParams = (leaf: string) => ({
+    ref: leaf,
+    source: { type: "session" as const, params: { ref: sourceRef } },
+    edges: [{ ownerRef: sourceRef, childRef: leaf, delegateId: "d1" }],
+  });
+  const mountedPane: OpenPaneRecord = {
+    id: "cascade-a",
+    type: "sessionZoom",
+    slot: "main",
+    params: cascadeParams(ref),
+  };
+  const collapsedPane: OpenPaneRecord = {
+    id: "cascade-b",
+    type: "sessionZoom",
+    slot: "secondary",
+    params: cascadeParams(ref),
+  };
+  workspaceStore.setState({ panes: [mountedPane, collapsedPane], focusedPaneId: mountedPane.id });
+  const seatFor = (pane: OpenPaneRecord): ConversationSeat => {
+    const lifetime = conversationPaneLifetime(pane);
+    return {
+      readView: null,
+      composerSource: null,
+      keepViewRemount: () => true,
+      viewFallbackId: pane.id,
+      focused: false,
+      keyboardScrollPaneId: null,
+      onResumedIdentity: (resumedRef) => resumeCascadeScope(lifetime, ref, resumedRef),
+    };
+  };
+  const mountedSeat = seatFor(mountedPane);
+  const collapsedSeat = seatFor(collapsedPane);
+
+  function Harness({ open }: { open: boolean }) {
+    return (
+      <>
+        <ConversationBody ref={ref} seat={mountedSeat} render={({ content }) => <div>{content}</div>} />
+        {open && <ConversationBody ref={ref} seat={collapsedSeat} render={({ content }) => <div>{content}</div>} />}
+      </>
+    );
+  }
+
+  const { rerender } = render(
+    <ClientProvider client={fake}>
+      <Harness open={false} />
+    </ClientProvider>,
+  );
+  await act(async () => {});
+
+  act(() => {
+    threadsStore.setState((state) => ({ resumedIdentities: new Map(state.resumedIdentities).set(ref, resumed) }));
+  });
+  await act(async () => {});
+  expect(threadsStore.getState().resumedIdentities.get(ref)).toBe(resumed);
+
+  rerender(
+    <ClientProvider client={fake}>
+      <Harness open={true} />
+    </ClientProvider>,
+  );
+  await act(async () => {});
+  expect(threadsStore.getState().resumedIdentities.has(ref)).toBe(false);
 });

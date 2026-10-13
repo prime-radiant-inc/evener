@@ -208,7 +208,10 @@ export function SessionChrome({
     if (!isMobile && activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
     else {
       if (paneId) workspaceStore.getState().focusPane(paneId);
-      activitySidebarStore.getState().openFor(sessionRef);
+      // The owning pane rides along: an embedded cascade column keeps its
+      // inspector focused even when an ordinary pane for the same
+      // conversation exists.
+      activitySidebarStore.getState().openFor(sessionRef, undefined, undefined, paneId);
     }
   };
   const overviewLabel = activityActionLabel(activitySummary, subagents, "Overview");

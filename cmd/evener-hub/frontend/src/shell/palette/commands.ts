@@ -630,7 +630,10 @@ export function buildCommands(): Command[] {
       scope: "session",
       run: (ctx) => {
         if (!ctx.sessionRef) return;
-        activitySidebarStore.getState().openFor(ctx.sessionRef, "about");
+        // The owning pane rides along (the session menu's own Overview
+        // action): an embedded cascade column keeps its inspector focused
+        // even when an ordinary pane for the same conversation exists.
+        activitySidebarStore.getState().openFor(ctx.sessionRef, "about", undefined, ctx.sessionPaneId ?? undefined);
       },
     },
     {
@@ -643,17 +646,28 @@ export function buildCommands(): Command[] {
       run: (ctx) => {
         if (!canReadSharedNotes(focusedModel(ctx.sessionRef))) return blocked(UNAVAILABLE_REASON);
         if (!ctx.sessionRef) return;
-        // The notes bar lives inside the session pane: with a details or
-        // tasks pane focused, that pane may not even be mounted, and a
-        // notes-state change alone would look like a no-op. Focus (or open)
-        // the session pane first - but only when the notes are about to
-        // EXPAND: closing from a companion pane must not yank the user's
-        // focus away. The focus request waits for the panel to mount and
-        // take it, so a freshly opened pane still lands focus.
+        // The notes bar lives inside the conversation surface: the session
+        // pane, or the embedded conversation of a cascade column. Focus (or
+        // open) that seat first - with a details or tasks pane focused, it may
+        // not even be mounted, and a notes-state change alone would look like a
+        // no-op. The addressed seat is preferred over opening a pane: a
+        // cascade column already hosts the conversation and its notes bar, so
+        // opening one would put a second pane on the same conversation and
+        // pull the user off the inspector. Only when the notes are about to
+        // EXPAND: closing from a companion pane must not yank the user's focus
+        // away. The focus request waits for the panel to mount and take it, so
+        // a freshly opened pane still lands focus.
         if (!topNotesStore.getState().isExpanded(ctx.sessionRef)) {
-          workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
+          const seat = ctx.sessionPaneId
+            ? workspaceStore.getState().panes.find((pane) => pane.id === ctx.sessionPaneId)
+            : undefined;
+          if (seat && (seat.type === "session" || seat.type === "sessionZoom")) {
+            workspaceStore.getState().focusPane(seat.id);
+          } else {
+            workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
+          }
         }
-        topNotesStore.getState().toggleAndFocus(ctx.sessionRef);
+        topNotesStore.getState().toggleAndFocus(ctx.sessionRef, ctx.sessionPaneId ?? undefined);
       },
     },
     {

@@ -8,6 +8,7 @@ import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   focusedActivityScopeRef,
+  focusedSessionPaneId,
   focusedSessionRef,
   resetFocusedActivityScopeForTests,
   useFocusedActivityScopeRef,
@@ -32,6 +33,7 @@ const restorePaneFixtures: Array<() => void> = [];
 beforeAll(() => {
   restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("session")));
   restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("transcript")));
+  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("sessionZoom")));
   restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("doc")));
   restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("settings", { singleton: true })));
 });
@@ -55,6 +57,20 @@ describe("focusedSessionRef", () => {
   test("is null when a non-session pane is focused", () => {
     workspaceStore.getState().openPane("settings", {});
     expect(focusedSessionRef()).toBeNull();
+  });
+
+  test("resolves a focused cascade to its leaf conversation and hosting pane", () => {
+    const zoomId = workspaceStore.getState().openPane("sessionZoom", {
+      ref: "local:leaf",
+      source: { type: "session", params: { ref: "local:root" } },
+      edges: [{ ownerRef: "local:parent", childRef: "local:leaf", delegateId: "d1" }],
+    });
+    // A cascade column is a live conversation seat now, so the shell's own
+    // "which session is the user on" readers must resolve it - the address a
+    // palette handoff or a composer focus needs is the cascade's leaf under
+    // the zoom pane that hosts its column.
+    expect(focusedSessionRef()).toBe("local:leaf");
+    expect(focusedSessionPaneId()).toBe(zoomId);
   });
 });
 

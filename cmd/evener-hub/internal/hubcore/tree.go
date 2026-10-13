@@ -1370,23 +1370,23 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			candidates[m.ID] = true
 		}
 	}
+	// The walk itself is RootIndex.WalkToTopLevel, the one implementation the
+	// rollup and search's grouping share; only the parent/subagent/known
+	// rules are the tree's own.
+	known := func(id string) bool {
+		_, ok := metaMap[id]
+		return ok
+	}
 	for id := range candidates {
-		// chain runs from id up to the first non-subagent ancestor.
-		chain := []string{id}
-		seen := map[string]bool{id: true}
-		ancestorID := parentOf(id)
-		for ancestorID != "" && isSubagent(ancestorID) && !seen[ancestorID] {
-			seen[ancestorID] = true
-			chain = append(chain, ancestorID)
-			ancestorID = parentOf(ancestorID)
-		}
-		if _, ok := metaMap[ancestorID]; !ok || isSubagent(ancestorID) {
+		walk, ok := roots.WalkToTopLevel(id, parentOf, isSubagent, known)
+		if !ok {
 			continue
 		}
+		ancestorID := walk.Ancestor
 		// Ended is sticky down the chain: a subagent under an ended parent
 		// counts as ended whatever its own entry reports.
 		state := stateFor(id)
-		if stateFor(ancestorID) == "ended" || slices.ContainsFunc(chain[1:], func(c string) bool { return stateFor(c) == "ended" }) {
+		if stateFor(ancestorID) == "ended" || slices.ContainsFunc(walk.Chain[1:], func(c string) bool { return stateFor(c) == "ended" }) {
 			state = "ended"
 		}
 		if state != "active" && len(liveMap[id].RunningJobs) == 0 {
@@ -1394,12 +1394,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		}
 		// A fork original renders under its continuation, so its subagents
 		// raise the continuation's task tree.
-		top := ancestorID
-		for seenForks := map[string]bool{}; roots.IsNested(top) && !seenForks[top]; {
-			seenForks[top] = true
-			top = forkChildren[top]
-		}
-		workingRoots[top] = true
+		workingRoots[walk.Top] = true
 	}
 
 	// Build the Projects slice.

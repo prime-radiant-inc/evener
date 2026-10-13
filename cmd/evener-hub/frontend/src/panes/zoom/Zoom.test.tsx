@@ -27,12 +27,14 @@ import {
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
+import { readDraft } from "../session/composer/draft";
+import { replaceEditorText } from "../session/testing/editor";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
 import { holdReaderFrames, installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
-import { enterAgentCascade, popAgentCascade } from "./actions";
+import { enterAgentCascade, popAgentCascade, returnFromAgentCascade } from "./actions";
 import { cascadeScope } from "./cascadeTestUtils";
 import { recordCascadeOrigin } from "./inspectionOrigin";
 import type { SessionZoomParams } from "./intent";
@@ -73,7 +75,7 @@ function CommittedZoom() {
   return <Zoom paneId={pane.id} params={pane.params as SessionZoomParams} focused />;
 }
 
-function fixture(ancestryKnown = true) {
+function fixture(ancestryKnown = true, leafRef = "child") {
   const fake = new FakeClient("ready");
   const statuses = new Map<string, string>();
   const identities = new Map([
@@ -161,9 +163,9 @@ function fixture(ancestryKnown = true) {
   }));
   connectionStore.getState().connect(fake);
   const params: SessionZoomParams = {
-    ref: "child",
+    ref: leafRef,
     source: { type: "session", params: { ref: "root" } },
-    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+    edges: [{ ownerRef: "root", childRef: leafRef, delegateId: "d1" }],
   };
   const pane: OpenPaneRecord = { id: "cascade", type: "sessionZoom", slot: "main", params };
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
@@ -198,7 +200,7 @@ function inspectedCascade() {
     slot: "secondary",
     params: {
       ref: "child",
-      source: { type: "transcript", params: { ref: "root" } },
+      source: { type: "session", params: { ref: "root" } },
       edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
       inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
     } satisfies SessionZoomParams,
@@ -277,7 +279,7 @@ test("genuine cascade column movement supersedes reflow without Return or neighb
   }
 });
 
-test("root and child render through real read-only readers inside one scaffold", async () => {
+test("root and child render through real conversation readers inside one scaffold", async () => {
   const { fake } = fixture();
   const mounted = mount(fake);
   await screen.findByText("root content old-root");
@@ -291,12 +293,14 @@ test("root and child render through real read-only readers inside one scaffold",
     const controls = within(column).getByTestId("cascade-activity-controls");
     expect(content.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   }
-  expect(screen.queryByRole("textbox")).toBeNull();
+  // Every readable column renders its conversation: one composer each, no
+  // more than the columns on screen.
+  expect(screen.getAllByRole("textbox")).toHaveLength(2);
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
-test("separated read-only Zoom Return closes inspection and focuses its surviving source", async () => {
+test("separated Zoom Return closes inspection and focuses its surviving source", async () => {
   const { fake } = fixture();
   const { source, inspector } = inspectedCascade();
   const sourceLifetime = conversationPaneLifetime(source);
@@ -307,8 +311,10 @@ test("separated read-only Zoom Return closes inspection and focuses its survivin
   // never renders it: the first drill shows only the subagent's conversation.
   expect(columnRefs()).toEqual(["child"]);
   expect(spineRefs()).toEqual([]);
-  expect(screen.queryByRole("textbox")).toBeNull();
-  expect(inspectorLifetime.composer).toBeNull();
+  expect(within(screen.getByTestId("cascade-column")).getByRole("textbox")).toBeTruthy();
+  // The cascade fabricates no composer for the origin ref: the origin
+  // conversation never renders in the pane.
+  expect(inspectorLifetime.composers.get("root")).toBeUndefined();
   requestPaneFocus(inspector.id);
   act(() => fireEvent.click(screen.getByRole("button", { name: "Return to previous view" })));
   expect(workspaceStore.getState().panes).toEqual([source]);
@@ -376,7 +382,7 @@ test("a cascade with no live origin keeps the readable parent column", async () 
     slot: "secondary",
     params: {
       ref: "child",
-      source: { type: "transcript", params: { ref: "root" } },
+      source: { type: "session", params: { ref: "root" } },
       edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
       inspection: { origin: null },
     } satisfies SessionZoomParams,
@@ -388,8 +394,35 @@ test("a cascade with no live origin keeps the readable parent column", async () 
   expect(columnRefs()).toEqual(["root", "child"]);
 });
 
+test("a local notLoaded column with no send surface keeps its session actions menu", async () => {
+  // The drilled column's conversation is a local notLoaded snapshot with
+  // send:false, no recovery obligation and no retained owner. The embedded
+  // composer cannot render its card (or its own session menu) in that state,
+  // and the column's Open conversation control is gone, so the column must
+  // keep the fallback session menu a standalone pane shows here - its Force
+  // shutdown action is the only recovery this column can offer.
+  const { fake, statuses } = fixture(true, "local:child");
+  statuses.set("local:child", "notLoaded");
+  fake.on("evener/thread/forceStop", () => {
+    statuses.set("local:child", "idle");
+    return {};
+  });
+  mount(fake);
+  await screen.findByText("local:child content local:child");
+  const leaf = cascadeScope("local:child", "cascade-column");
+  expect(leaf.querySelector("[data-composer] [role='textbox']")).toBeNull();
+  const trigger = within(leaf).getByRole("button", { name: "Session actions" });
+  fireEvent.click(trigger);
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Force shutdown…" }));
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
+  // Recovery: the confirmed shutdown refreshes the snapshot and the column's
+  // composer card returns, so the fallback menu's one recovery action leads
+  // back to a usable conversation in the column.
+  await waitFor(() => expect(leaf.querySelector("[data-composer] [role='textbox']")).not.toBeNull());
+});
+
 test.each(["deleted", "missing"] as const)(
-  "a $0 child has a scoped terminal explanation while parent, Open conversation and Return stay usable",
+  "a $0 child has a scoped terminal explanation while parent and Return stay usable",
   async (failure) => {
     const { fake, response, context } = fixture();
     const error =
@@ -421,12 +454,6 @@ test.each(["deleted", "missing"] as const)(
     expect(within(child).queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText("root content old-root")).toBeTruthy();
     if (failure === "deleted") expect(threadsStore.getState().deletedRefs.has("child")).toBe(true);
-    act(() => fireEvent.click(within(child).getByRole("button", { name: "Open conversation" })));
-    expect(
-      workspaceStore
-        .getState()
-        .panes.some((pane) => pane.type === "session" && (pane.params as { ref: string }).ref === "child"),
-    ).toBe(true);
     act(() => popAgentCascade("cascade", "root"));
     expect(currentParams().ref).toBe("root");
     expect(columnRefs()).toEqual(["root"]);
@@ -510,6 +537,131 @@ test("a transient child read failure recovers through the existing owner without
   expect(workspaceStore.getState().focusedPaneId).toBe("cascade");
 });
 
+test("a store-driven resume replaces the drilled column's identity in place", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+  const lifetime = conversationPaneLifetime(currentPane());
+  const childView = retainedTranscriptReadView(lifetime, "child", "cascade");
+  // A draft typed in the parent column must follow the resumed identity.
+  const editor = within(cascadeScope("child")).getByRole("textbox", { name: "Message" });
+  replaceEditorText(editor, "draft follows the resume");
+
+  // The resume driver's seam: the store resumed the conversation the column
+  // was showing onto a new ref, already hydrated by the driver's refresh
+  // before the identity publishes.
+  await act(async () => {
+    await threadsStore.getState().ensureThread("child-resumed");
+  });
+  act(() =>
+    threadsStore.setState((state) => ({
+      resumedIdentities: new Map(state.resumedIdentities).set("child", "child-resumed"),
+    })),
+  );
+  await screen.findByText("child-resumed content child-resumed");
+
+  // The path entry is replaced in place: the column keeps its position, the
+  // drilled descendant keeps its edge, and the superseded identity's retained
+  // reader is retired.
+  expect(columnRefs()).toEqual(["child-resumed", "grandchild"]);
+  expect(screen.getByText("grandchild content grandchild-id")).toBeTruthy();
+  expect(childView.alive).toBe(false);
+  expect(currentParams()).toEqual({
+    ref: "grandchild",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [
+      { ownerRef: "root", childRef: "child-resumed", delegateId: "d1" },
+      { ownerRef: "child-resumed", childRef: "grandchild", delegateId: "d2" },
+    ],
+  });
+  await waitFor(() =>
+    expect(within(cascadeScope("child-resumed")).getByRole("textbox", { name: "Message" }).textContent).toBe(
+      "draft follows the resume",
+    ),
+  );
+});
+
+test("simultaneous parent and leaf resumes each replace their own scope", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+
+  // One commit carries both columns' identity changes: both callbacks hold
+  // the same pane record, and whichever resume runs first retypes it before
+  // the other applies.
+  await act(async () => {
+    await threadsStore.getState().ensureThread("child-resumed");
+    await threadsStore.getState().ensureThread("grandchild-resumed");
+  });
+  act(() =>
+    threadsStore.setState((state) => ({
+      resumedIdentities: new Map(state.resumedIdentities)
+        .set("child", "child-resumed")
+        .set("grandchild", "grandchild-resumed"),
+    })),
+  );
+  await screen.findByText("child-resumed content child-resumed");
+  expect(currentParams().ref).toBe("grandchild-resumed");
+  expect(currentParams().edges).toEqual([
+    { ownerRef: "root", childRef: "child-resumed", delegateId: "d1" },
+    { ownerRef: "child-resumed", childRef: "grandchild-resumed", delegateId: "d2" },
+  ]);
+  // The leaf column's conversation renders the resumed identity too.
+  await screen.findByText("grandchild-resumed content grandchild-resumed");
+});
+
+test("resuming the rendered source moves the cascade's source ownership to the resumed identity", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  // A draft typed in the source column follows the resumed identity.
+  const editor = within(cascadeScope("root")).getByRole("textbox", { name: "Message" });
+  replaceEditorText(editor, "source draft carries to the resumed identity");
+
+  await act(async () => {
+    await threadsStore.getState().ensureThread("root-resumed");
+  });
+  act(() =>
+    threadsStore.setState((state) => ({
+      resumedIdentities: new Map(state.resumedIdentities).set("root", "root-resumed"),
+    })),
+  );
+  await screen.findByText("root-resumed content root-resumed");
+
+  // The source column moved onto the resumed identity, and the source
+  // descriptor and retained source ownership moved with it.
+  expect(columnRefs()).toEqual(["root-resumed", "child"]);
+  expect(currentParams().source).toMatchObject({ type: "session", params: { ref: "root-resumed" } });
+  expect(conversationPaneLifetime(currentPane()).sourceRef).toBe("root-resumed");
+  const resumedEditor = within(cascadeScope("root-resumed")).getByRole("textbox", { name: "Message" });
+  expect(resumedEditor.textContent).toBe("source draft carries to the resumed identity");
+  // Subsequent editing persists under the resumed identity: the retained
+  // state binds persistence to the ref it was created with, so a reload of
+  // the resumed conversation finds the newer text while the superseded
+  // identity does not.
+  replaceEditorText(resumedEditor, "edited after the source resume");
+  expect(readDraft("root-resumed")).toBe("edited after the source resume");
+  expect(readDraft("root")).not.toBe("edited after the source resume");
+
+  // Return reopens the resumed conversation with its carried draft, not
+  // the superseded identity.
+  act(() => returnFromAgentCascade("cascade"));
+  expect(currentPane()).toMatchObject({ type: "session", params: { ref: "root-resumed" } });
+});
+
 test("deeper drill retains the root view as a paused spine and pop reuses its source role", async () => {
   const { fake } = fixture();
   mount(fake);
@@ -530,6 +682,44 @@ test("deeper drill retains the root view as a paused spine and pop reuses its so
   expect(columnRefs()).toEqual(["root"]);
   expect(rootView.readable).toBe(true);
   expect(screen.queryByTestId("cascade-spine")).toBeNull();
+});
+
+// The deeper drill leaves two readable columns (the leaf and its immediate
+// parent) sharing one hosting pane, and the dispatcher runs same-action
+// handlers in registration order until one accepts - so keyboard scroll
+// must belong to the leaf alone, or the parent column's registration would
+// swallow every Alt+Arrow and Alt+Home/End keypress forever.
+test("keyboard scroll drives the drilled leaf column, not the first-registered parent", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+  expect(workspaceStore.getState().focusedPaneId).toBe("cascade");
+
+  // VirtualList's markup is port > sizer > item > row, so each column's
+  // scroll port is three parents above one of its transcript rows.
+  const scrollPort = (column: HTMLElement) => {
+    const row = column.querySelector('[data-testid="transcript-row"]');
+    const port = row?.parentElement?.parentElement?.parentElement ?? null;
+    if (!port) throw new Error("Missing column scroll port");
+    return port;
+  };
+  const parentPort = scrollPort(cascadeScope("child", "cascade-column"));
+  const leafPort = scrollPort(cascadeScope("grandchild", "cascade-column"));
+  const parentBefore = parentPort.scrollTop;
+  const leafBefore = leafPort.scrollTop;
+
+  act(() => {
+    fireEvent.keyDown(document.body, { key: "ArrowDown", code: "ArrowDown", altKey: true });
+  });
+
+  expect(leafPort.scrollTop).toBeGreaterThan(leafBefore);
+  expect(parentPort.scrollTop).toBe(parentBefore);
 });
 
 // The drill reveals the leaf by scrolling the column track to its end. The
@@ -653,6 +843,10 @@ test.each([
 ] as const)(
   "a %s ancestor keeps the session-list signal glyph but hides its own family label from assistive tech",
   async (state, runtimeText, glyphState) => {
+    // The active fixture thread carries no stop capability, so its column's
+    // composer reports the stopless state through its diagnostic canary —
+    // expected output for this fixture, asserted rather than silenced.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { fake, statuses } = fixture();
     statuses.set("root", state);
     mount(fake);
@@ -682,6 +876,12 @@ test.each([
     const column = screen.getByTestId("cascade-column");
     expect(within(column).getByText(runtimeText).getAttribute("data-runtime-state")).toBe(state);
     expect(screen.queryByTestId("cascade-spine")).toBeNull();
+    if (state === "active") {
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("no Stop"), expect.objectContaining({ ref: "root" }));
+    } else {
+      expect(warn).not.toHaveBeenCalled();
+    }
+    warn.mockRestore();
   },
 );
 
@@ -875,7 +1075,7 @@ test("a replaced nested origin never renders a non-leaf column on the phone", as
     slot: "secondary",
     params: {
       ref: "grandchild",
-      source: { type: "transcript", params: { ref: "child" } },
+      source: { type: "session", params: { ref: "child" } },
       edges: [{ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }],
       inspection: { origin: { paneId: origin.id, type: "session", ref: "child" } },
     } satisfies SessionZoomParams,
@@ -899,7 +1099,7 @@ test("a replaced nested origin never renders a non-leaf column on the phone", as
   expect(chromeStore.getState().paneTitle).toBe("child");
 });
 
-test("the phone cascade keeps one title, with status and Open conversation at the column bottom", async () => {
+test("the phone cascade keeps one title, with the conversation's composer at the column bottom", async () => {
   const { fake } = fixture();
   installMobileViewport();
   mount(fake);
@@ -913,10 +1113,15 @@ test("the phone cascade keeps one title, with status and Open conversation at th
   // second chips row piles under the transcript.
   expect(screen.queryByTestId("statusbar")).toBeNull();
   expect(screen.getByTestId("cascade-activity-controls")).toBeTruthy();
-  // The column's runtime state and Open-conversation action sit below the
-  // transcript content, in the column's own footer bar.
+  // The column's runtime state and the conversation's own composer sit
+  // below the transcript content, in the column's own footer bar — the bar
+  // the home-indicator clearance pads.
   const footerBar = screen.getByTestId("cascade-column-footer");
-  expect(within(footerBar).getByRole("button", { name: "Open conversation" })).toBeTruthy();
+  expect(
+    screen.getByTestId("cascade-column-content").compareDocumentPosition(footerBar) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(footerBar.querySelector("[data-composer]")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Open conversation" })).toBeNull();
   expect(
     screen.getByTestId("cascade-column-content").compareDocumentPosition(footerBar) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
@@ -931,10 +1136,20 @@ test("the desktop cascade column keeps its own title and the pane footer status 
   expect(screen.queryByTestId("cascade-column-footer")).toBeNull();
   expect(screen.getByTestId("statusbar")).toBeTruthy();
   const inColumn = within(childColumn);
-  const headerButton = inColumn.getByRole("button", { name: "Open conversation" });
+  // The conversation's composer rides below the transcript content inside
+  // the column; the header keeps the title and runtime state only.
+  const composer = childColumn.querySelector("[data-composer]");
+  expect(composer).toBeTruthy();
   expect(
-    inColumn.getByTestId("cascade-column-content").compareDocumentPosition(headerButton) &
-      Node.DOCUMENT_POSITION_PRECEDING,
+    inColumn.getByTestId("cascade-column-content").compareDocumentPosition(composer as Node) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(inColumn.queryByRole("button", { name: "Open conversation" })).toBeNull();
+  const header = childColumn.querySelector("header");
+  if (!header) throw new Error("Missing column header");
+  expect(
+    header.compareDocumentPosition(inColumn.getByTestId("cascade-column-content") as Node) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
 });
 
@@ -990,8 +1205,11 @@ test("a held abandoned grandchild read cannot replace a later sibling or move fo
   await screen.findByText("sibling content sibling-id");
   expect(grandchild.alive).toBe(false);
   const siblingColumn = cascadeScope("sibling", "cascade-column");
-  const open = within(siblingColumn).getByRole("button", { name: "Open conversation" });
-  open.focus();
+  const open = siblingColumn.querySelector<HTMLElement>('[data-composer] [role="textbox"]');
+  if (!open) throw new Error("Missing sibling composer");
+  act(() => {
+    open.focus();
+  });
   await act(async () => held.resolve(response("grandchild")));
   expect(currentParams().ref).toBe("sibling");
   expect(columnRefs()).toEqual(["root", "sibling"]);

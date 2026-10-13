@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { sessionActionError } from "@evener/appwire-client";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { m, spatialTransition, useReducedMotion } from "../../motion";
@@ -12,15 +13,17 @@ import { type OpenPaneRecord, workspaceStore } from "../../shell/workspace";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
-import { Button, PaneScaffold, Skeleton } from "../../widgets";
+import { Button, EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { ConversationBody, type ConversationSeat } from "../session/ConversationBody";
+import { retainedConversationComposer } from "../session/composer/retainedComposer";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
-import { ReadOnlyThreadContent } from "../transcript/ReadOnlyThreadContent";
 import {
   clearCascadeUserTransition,
   hasCascadeUserTransition,
   popAgentCascade,
   reconcileCascadeBinding,
+  resumeCascadeScope,
   returnFromAgentCascade,
 } from "./actions";
 import { CascadeColumn } from "./CascadeColumn";
@@ -74,7 +77,13 @@ function ScopeConversation({
       return thread === undefined ? undefined : { name: thread.name, imageSessionId: thread.imageSessionId };
     }),
   );
-  const sessionId = snapshot?.context?.sessionId ?? scope.sessionId;
+  // The scope's node describes the path's canonical session, but a ref the
+  // canonical data does not describe yet - a column the resume driver just
+  // moved onto a resumed ref, whose thread hydration precedes its activity
+  // snapshot - must not fence-pop on the stale canonical identity. The
+  // requested ref's own hydrated session (the wire Thread.sessionId the
+  // model keeps as imageSessionId) is the truth for that window.
+  const sessionId = snapshot?.context?.sessionId ?? model?.imageSessionId ?? scope.sessionId;
   const previous = lifetime.resolvedSessions.get(scope.requestedRef);
   const rebinding = sessionId !== undefined && previous !== undefined && previous !== sessionId;
   // A new thread image can arrive before its activity context. Keep its bytes
@@ -96,6 +105,37 @@ function ScopeConversation({
 
   const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot, subagents);
   activity.leaf.title = (imageMatches && model?.name) || scope.title;
+  const composer = (admitted ? retainedConversationComposer(lifetime, scope.requestedRef) : null) ?? null;
+  const seat = useMemo<ConversationSeat>(
+    () => ({
+      readView: view,
+      composerSource: composer,
+      // The retained view's readable flag tracks this column's admission
+      // and readability; a collapsed or retired scope stops remounting.
+      keepViewRemount: () => view.readable,
+      viewFallbackId: pane.id,
+      // Keyboard scroll belongs to the drilled leaf alone: the dispatcher
+      // runs same-action handlers in registration order until one accepts,
+      // so a registration from the parent column would swallow every scroll
+      // key aimed at the leaf.
+      keyboardScrollPaneId: leaf ? pane.id : null,
+      // The host pane owns focus: a mounting column conversation never
+      // autofocuses its composer — the user taps in, or the pane's own
+      // focus plumbing acts.
+      focused: false,
+      // A resumed conversation replaces its path entry in place; a cascade
+      // column has no route of its own to navigate. The seat declares the
+      // fallback session menu so the conversation's own gate can render it in
+      // the one state whose only recovery it carries - a local notLoaded
+      // snapshot whose composer shows no card, and so no menu of its own -
+      // exactly as a standalone pane does. Every other state keeps its menu
+      // through the composer or the column's activity chrome, and the gate
+      // never fires there.
+      onResumedIdentity: (resumedRef) => resumeCascadeScope(lifetime, scope.requestedRef, resumedRef),
+      sessionMenu: true,
+    }),
+    [view, composer, leaf, pane, lifetime, scope.requestedRef],
+  );
   const readableWidth = leaf ? 440 : 400;
   const desktopWidth = readable ? readableWidth : 52;
   // A lone column fills the pane so the first drill reads as the subagent's
@@ -113,13 +153,38 @@ function ScopeConversation({
       transition={userTransition ? spatialTransition() : { duration: 0 }}
     >
       {readable ? (
-        <CascadeColumn paneId={pane.id} scope={activity}>
-          {admitted ? (
-            <ReadOnlyThreadContent ref={scope.requestedRef} view={view} availability={snapshot?.summaryState} />
-          ) : (
-            <Skeleton />
-          )}
-        </CascadeColumn>
+        admitted ? (
+          <ConversationBody
+            ref={scope.requestedRef}
+            seat={seat}
+            render={({ state, content, footer }) => (
+              <CascadeColumn
+                paneId={pane.id}
+                scope={activity}
+                content={
+                  state === "deleted" ? (
+                    <EmptyState title="This session was deleted" hint="Its transcript is gone." reason="deleted" />
+                  ) : state === "loading" ? (
+                    snapshot?.summaryState?.permanent && snapshot.summaryState.unavailable ? (
+                      <EmptyState
+                        title="Transcript unavailable"
+                        reason="unavailable"
+                        hint={sessionActionError("Couldn't load transcript", snapshot.summaryState.error)}
+                      />
+                    ) : (
+                      <Loader label="Loading transcript" />
+                    )
+                  ) : (
+                    content
+                  )
+                }
+                conversationFooter={state === "live" ? footer : null}
+              />
+            )}
+          />
+        ) : (
+          <CascadeColumn paneId={pane.id} scope={activity} content={<Skeleton />} conversationFooter={null} />
+        )
       ) : (
         <CascadeSpine paneId={pane.id} scope={activity} />
       )}

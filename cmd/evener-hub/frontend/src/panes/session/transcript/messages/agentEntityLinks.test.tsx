@@ -349,9 +349,7 @@ test.each([false, true])(
       expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
       fireEvent.click(screen.getByRole("button", { name: "Open delegate transcript" }));
       expect(workspaceStore.getState().panes).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: "transcript", params: { ref: "local:child", parentRef: thread.ref } }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ type: "session", params: { ref: "local:child" } })]),
       );
     }
     fireEvent.click(link);

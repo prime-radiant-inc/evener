@@ -12,8 +12,9 @@ import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
-import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
-import { deriveCascadePath, parseZoomParams } from "../panes/zoom/intent";
+import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
+import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
+import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import {
   selectLiveRows,
@@ -23,7 +24,6 @@ import {
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
-import { sessionActivitySnapshot } from "../stores/sessionActivity";
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
@@ -32,7 +32,7 @@ import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
 import { DockRegion } from "./DockRegion";
-import { focusedSessionRef } from "./focusedSession";
+import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
 import { StackHost } from "./mobile/StackHost";
@@ -48,7 +48,13 @@ import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacem
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
-import { documentPaneState, type OpenPaneRecord, sourcePaneSessionRef, workspaceStore } from "./workspace";
+import {
+  conversationOpenParentRef,
+  documentPaneState,
+  type OpenPaneRecord,
+  sourcePaneSessionRef,
+  workspaceStore,
+} from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -213,17 +219,37 @@ function routePlacementIsApplied(
   };
   if (location === null) {
     if (locationGone) return main.type === "welcome";
-    return locationTerminal && main.type === "session" && sessionRefOf(main) === ref;
+    if (!locationTerminal) return false;
   }
-  const ancestorRef = location.top_level ? ref : location.top_level_ref;
+  // A terminal read cannot confirm top-level ownership - the recorded parent
+  // may itself be nested - so the terminal arm below must not restructure
+  // anything (openRouteAsPane's terminal arm only focuses). Placement counts
+  // as applied only while the routed conversation is both held beside its
+  // recorded context and the visible one: the retained context, not the
+  // missing location, owns the placement until a successful read confirms
+  // ownership, and a fresh navigation to that route must still focus it.
+  const terminalUnconfirmed = location === null;
+  const ancestorRef = location === null ? ref : location.top_level ? ref : location.top_level_ref;
   const focusedPane = panes.find((pane) => pane.id === workspace.focusedPaneId);
   const transcriptMatchesRoute = (pane: OpenPaneRecord | undefined): boolean => {
     if (pane?.type !== "transcript") return false;
     const params = pane.params as { ref?: unknown; parentRef?: unknown };
     return (
-      (typeof params.parentRef === "string" && transcriptContextIncludes(params.parentRef, ref)) ||
+      // A job log's parent context can cross into a conversation pane's
+      // recorded parent chain, so the check must follow the conversation
+      // walk (both holder types plus the recorded edge), not the pure
+      // transcript-params walk that stops at the first session pane.
+      (typeof params.parentRef === "string" && conversationContextIncludes(params.parentRef, ref)) ||
       (ancestorRef !== ref && params.ref === ref && params.parentRef === ancestorRef)
     );
+  };
+  // A conversation pane carries no parent params: the opened-from context is
+  // recorded beside its lifetime. A focused child of that context is a
+  // companion of the routed conversation, not a violation of its placement.
+  const conversationMatchesRoute = (pane: OpenPaneRecord | undefined): boolean => {
+    if (pane?.type !== "session") return false;
+    const parentRef = conversationOpenParentRef(pane);
+    return parentRef !== undefined && conversationContextIncludes(parentRef, ref);
   };
   const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
   const focusedIntent = rawFocused?.type === "sessionZoom" ? parseZoomParams(rawFocused.params) : null;
@@ -232,20 +258,23 @@ function routePlacementIsApplied(
     rawFocused?.slot === "secondary" &&
     !!focusedIntent?.inspection;
   const conversationRef = focusedPane?.type === "session" ? sessionRefOf(focusedPane) : null;
+  // The cascade was opened from this route - through its own inspection, the
+  // route's session as its source, or a job transcript the route's chain
+  // includes - so its column conversations are companions of the route.
+  const zoomCoversRouteSource = (pane: OpenPaneRecord, params: SessionZoomParams): boolean => {
+    const role = routeRole(pane);
+    return (
+      !!params.inspection || (role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role)
+    );
+  };
   const focusedCascadeConversation =
     allowFocusedCompanion &&
     conversationRef !== null &&
     workspace.panes.some((pane) => {
       if (pane.type !== "sessionZoom") return false;
       const params = parseZoomParams(pane.params);
-      if (!params) return false;
-      const role = routeRole(pane);
-      const coversSource =
-        !!params.inspection || (role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role);
-      if (!coversSource) return false;
-      const client = connectionStore.getState().client;
-      const context = client ? (sessionActivitySnapshot(client, params.ref, "session")?.context ?? null) : null;
-      return deriveCascadePath(params, context).scopes.some((scope) => scope.requestedRef === conversationRef);
+      if (!params || !zoomCoversRouteSource(pane, params)) return false;
+      return zoomParamsCoverConversation(params, conversationRef);
     });
   const documentState = focusedPane?.type === "doc" ? documentPaneState(focusedPane) : undefined;
   if (
@@ -266,15 +295,31 @@ function routePlacementIsApplied(
       return true;
     }
   }
+  if (allowFocusedCompanion && documentState?.origin?.type === "sessionZoom") {
+    const origin = documentState.origin;
+    const params = parseZoomParams(origin.params);
+    // A cascade column's filename open binds its document to the hosting
+    // zoom: that pane's cascade covers the routed conversation, so the
+    // focused document is the route's companion, like the column
+    // conversation above.
+    if (params && zoomCoversRouteSource(origin, params)) return true;
+  }
   const focusedCompanion =
     focusedPane?.type === "sessionTasks" ||
     focusedPane?.type === "sessionDetails" ||
     transcriptMatchesRoute(focusedPane) ||
+    conversationMatchesRoute(focusedPane) ||
     focusedCascadeConversation;
   const focusIsApplied = (paneId: string): boolean =>
     workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion) || focusedSeparatedInspection;
 
   if (ancestorRef === null || ancestorRef === ref) {
+    if (terminalUnconfirmed) {
+      if (main.type === "session" && sessionRefOf(main) === ref) return focusIsApplied(main.id);
+      const held = panes.find((pane) => pane.type === "session" && sessionRefOf(pane) === ref);
+      const heldParent = held === undefined ? undefined : conversationOpenParentRef(held);
+      return held !== undefined && heldParent !== undefined && heldParent !== ref && focusIsApplied(held.id);
+    }
     return (
       focusIsApplied(main.id) &&
       main.type === "session" &&
@@ -329,6 +374,25 @@ function openRouteAsPane(
     }
 
     pendingSessionRef.current = null;
+    if (location === null) {
+      // A terminal read failed with no retained data, so top-level
+      // ownership is unconfirmed: the recorded parent may itself be nested,
+      // and placing through it would promote an intermediate pane by
+      // discarding the workspace (openNestedSessionWithOwner places its
+      // owner through replacePrimary, whose cold arm drops every pane
+      // whenever that owner is not already main). A conversation the
+      // workspace already holds beside its recorded context keeps every
+      // pane instead: focus that conversation, and let a later successful
+      // read place by confirmed ownership.
+      const held = workspaceStore
+        .getState()
+        .panes.find((pane) => pane.type === "session" && refParam(pane.params) === ref);
+      const heldParent = held === undefined ? undefined : conversationOpenParentRef(held);
+      if (held !== undefined && heldParent !== undefined && heldParent !== ref) {
+        workspaceStore.getState().focusPane(held.id);
+        return;
+      }
+    }
     const ancestorRef = location?.top_level ? ref : (location?.top_level_ref ?? ref);
     if (ancestorRef === ref) {
       openTopLevelSession(ref);
@@ -487,7 +551,8 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       registry.registerAction(ACTIONS.paletteOpen, () => openPalette()),
       registry.registerAction(ACTIONS.composerFocus, () => {
         const ref = focusedSessionRef();
-        if (ref !== null) requestComposerFocus(ref);
+        const paneId = focusedSessionPaneId();
+        if (ref !== null) requestComposerFocus(ref, paneId);
       }),
       registry.registerAction(ACTIONS.nextNeedsYou, () => {
         const state = navigationStore.getState();

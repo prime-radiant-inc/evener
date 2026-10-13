@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3478,43 +3480,122 @@ func stableSupervisionRefusal(sub *subagent) string {
 }
 
 // stableSupervisionState renders the controller, root and child state a
-// supervision quiescence wait reads, for its timeout report.
+// supervision quiescence wait reads, for its timeout report. The report runs
+// after the wait's bound has already fired, so it must print whatever it can
+// read without waiting: every source is taken with TryLock, a source that is
+// busy renders its "<source>_lock_busy" marker in place of the fields behind it,
+// and each source is taken once, released before the next. This is the same
+// best-effort discipline stableSupervisionFailureSnapshot uses. A report that
+// waits on the lock it reports on turns a did-not-quiesce failure into a hang,
+// which is the opposite of what it exists for.
+//
+// The trailing childGates{...} line cannot call the live gate accessors —
+// childStopGated, childFatalRunGated, childDrainAbandoned, childDrainGracePending
+// and childCommittedSendStart — because the first three take c.mu through
+// directStableDelegateForChildSession, and the fatal-run gate takes the subagent
+// registry's mu through getSub and then sub.mu. Each gate is instead rendered
+// from the TryLocked source that already printed its fields, and each predicate
+// names the accessor it mirrors, so a change there shows up here as a drift.
 func stableSupervisionState(root *Session, sub *subagent) string {
-	sub.mu.Lock()
+	// sub.sess is assigned once, at subagent creation (delegate_runtime.go's cold
+	// restore and subagents.go's start), and never reassigned, so an unlocked read
+	// cannot race a writer; stableSupervisionFailureSnapshot reads it the same way.
 	sess := sub.sess
-	sub.mu.Unlock()
 	if sess == nil || sess.delegateController == nil {
 		return "child has no session or controller"
 	}
 	c := sess.delegateController
-	c.mu.Lock()
-	var b strings.Builder
-	if agg := c.durable[sess.owningDelegateID]; agg != nil {
-		fmt.Fprintf(&b, "aggregate{gen=%d phase=%v open=%v needs=%v} ", agg.Generation, agg.Phase, agg.CurrentRunOpen, agg.NeedsAttention)
-	}
-	if live := c.live[sess.owningDelegateID]; live != nil {
-		fmt.Fprintf(&b, "live{binding=%v finalizing=%v recovery=%v} ", live.binding != nil, live.finalizing != nil, live.recoveryRequired)
-	}
-	if st := c.attention[sess.owningDelegateID]; st != nil {
-		fmt.Fprintf(&b, "attention{wake=%v parked=%v restoreFailures=%d turn=%d} ", st.wakeIDs, st.parked, st.restoreFailures, st.driveTurn)
-	}
-	fmt.Fprintf(&b, "reservations=%d eligible=%v delivery=%v ", len(c.reservations), c.delegateAttentionWakeEligibleLocked(sess.owningDelegateID), c.hasDeliveryWorkForOwnerLocked(sess.owningDelegateID))
-	c.mu.Unlock()
-	root.attentionMu.Lock()
-	fmt.Fprintf(&b, "rootRetry{active=%v delay=%v} ", root.stableAttentionRetry.active, root.stableAttentionRetry.delay)
-	root.attentionMu.Unlock()
-	sub.mu.Lock()
-	fmt.Fprintf(&b, "sub{running=%v driving=%v finalizing=%v dispose=%v closed=%v fatal=%v status=%v} ", sub.running, sub.driving, sub.finalizing, sub.disposeGated, sub.closed, sub.fatalRunGated, sub.status)
-	sub.mu.Unlock()
-	root.mu.Lock()
-	fmt.Fprintf(&b, "root{state=%v} ", root.state)
-	root.mu.Unlock()
-	sess.mu.Lock()
-	fmt.Fprintf(&b, "child{state=%v} ", sess.state)
-	sess.mu.Unlock()
+	owner := sess.owningDelegateID
 	id := sess.id
-	fmt.Fprintf(&b, "childGates{stop=%v fatalRun=%v drainAbandoned=%v drainGrace=%v committedSend=%v}", root.childStopGated(id), root.childFatalRunGated(id), root.childDrainAbandoned(id), root.childDrainGracePending(id), root.childCommittedSendStart(id))
+	stop, drainAbandoned, drainGrace := "controller_lock_busy", "controller_lock_busy", "controller_lock_busy"
+	var b strings.Builder
+	if c.mu.TryLock() {
+		if agg := c.durable[owner]; agg != nil {
+			fmt.Fprintf(&b, "aggregate{gen=%d phase=%v open=%v needs=%v} ", agg.Generation, agg.Phase, agg.CurrentRunOpen, agg.NeedsAttention)
+		}
+		if live := c.live[owner]; live != nil {
+			fmt.Fprintf(&b, "live{binding=%v finalizing=%v recovery=%v} ", live.binding != nil, live.finalizing != nil, live.recoveryRequired)
+		}
+		if st := c.attention[owner]; st != nil {
+			fmt.Fprintf(&b, "attention{wake=%v parked=%v restoreFailures=%d turn=%d} ", st.wakeIDs, st.parked, st.restoreFailures, st.driveTurn)
+		}
+		fmt.Fprintf(&b, "reservations=%d eligible=%v delivery=%v ", len(c.reservations), c.delegateAttentionWakeEligibleLocked(owner), c.hasDeliveryWorkForOwnerLocked(owner))
+		row, ok := stableSupervisionDirectRowLocked(c, root, id)
+		c.mu.Unlock()
+		// childStopGated: ok && delegateRowStopGated(row).
+		stop = strconv.FormatBool(ok && delegateRowStopGated(row))
+		if root.drainAbandonedMu.TryLock() {
+			abandoned, abandonedOK := root.drainAbandonedChildren[id]
+			grace, graceOK := root.drainGraceChildren[id]
+			root.drainAbandonedMu.Unlock()
+			// childDrainAbandoned: exists && abandoned.generation == row.generation.
+			drainAbandoned = strconv.FormatBool(ok && abandonedOK && abandoned.generation == row.generation)
+			// childDrainGracePending: row.currentRunOpen && drainGraceChildForRow(id, row) matched.
+			drainGrace = strconv.FormatBool(ok && row.currentRunOpen && graceOK && grace.delegateID == row.id && grace.generation == row.generation)
+		} else {
+			drainAbandoned, drainGrace = "drain_lock_busy", "drain_lock_busy"
+		}
+	} else {
+		b.WriteString("controller_lock_busy ")
+	}
+	if root.attentionMu.TryLock() {
+		fmt.Fprintf(&b, "rootRetry{active=%v delay=%v} ", root.stableAttentionRetry.active, root.stableAttentionRetry.delay)
+		root.attentionMu.Unlock()
+	} else {
+		b.WriteString("attention_lock_busy ")
+	}
+	fatalRun := "subagent_lock_busy"
+	if sub.mu.TryLock() {
+		fmt.Fprintf(&b, "sub{running=%v driving=%v finalizing=%v dispose=%v closed=%v fatal=%v status=%v} ", sub.running, sub.driving, sub.finalizing, sub.disposeGated, sub.closed, sub.fatalRunGated, sub.status)
+		// childFatalRunGated: getSub(id).fatalRunGated. The report reads the passed
+		// sub, so it never takes the subagent registry's mu.
+		fatalRun = strconv.FormatBool(sub.fatalRunGated)
+		sub.mu.Unlock()
+	} else {
+		b.WriteString("subagent_lock_busy ")
+	}
+	if root.mu.TryLock() {
+		fmt.Fprintf(&b, "root{state=%v} ", root.state)
+		root.mu.Unlock()
+	} else {
+		b.WriteString("root_lock_busy ")
+	}
+	if sess.mu.TryLock() {
+		fmt.Fprintf(&b, "child{state=%v} ", sess.state)
+		sess.mu.Unlock()
+	} else {
+		b.WriteString("session_lock_busy ")
+	}
+	committedSend := "send_start_lock_busy"
+	if root.childCommittedSendMu.TryLock() {
+		// childCommittedSendStart: childCommittedSendChildren[id] present.
+		_, held := root.childCommittedSendChildren[id]
+		root.childCommittedSendMu.Unlock()
+		committedSend = strconv.FormatBool(held)
+	}
+	fmt.Fprintf(&b, "childGates{stop=%s fatalRun=%s drainAbandoned=%s drainGrace=%s committedSend=%s}", stop, fatalRun, drainAbandoned, drainGrace, committedSend)
 	return b.String()
+}
+
+// stableSupervisionDirectRowLocked captures the direct stable delegate row for
+// childSessionID while c.mu is held. It mirrors directStableDelegateForChildSession
+// (job_watch.go) — snapshotsForChildSession's filter over c.durable
+// (delegate_tree_controller.go) plus delegateRowVisibleTo's pick — which the
+// report cannot call because that accessor would re-take c.mu.
+func stableSupervisionDirectRowLocked(c *delegateTreeController, root *Session, childSessionID string) (delegateSnapshot, bool) {
+	ids := make([]string, 0)
+	for id, agg := range c.durable {
+		if agg != nil && agg.Descriptor.ChildSessionID == childSessionID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, row := range c.captureDelegateSnapshotsLocked(ids) {
+		if delegateRowVisibleTo(root, row.parentID, row.descriptor.OwnerSessionID) {
+			return row, true
+		}
+	}
+	return delegateSnapshot{}, false
 }
 
 // TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive pins the

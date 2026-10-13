@@ -340,7 +340,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // row's provenance is a built-in, plugin, project or user command. The model
   // is keyed by ref, so loading a different target never borrows old/global rows.
   const visibleSlashCatalog = model?.diagnostics?.commands ?? [];
-  const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session" });
+  const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session", sessionPaneId: paneId ?? null });
   const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog, model?.skills ?? []);
   // The menu is only ever open when a token matched AND the merged catalog
   // has at least one fuzzy label hit for it - a matched-but-empty token (e.g.
@@ -418,7 +418,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
     setPendingGoalReplacement(null);
-    requestComposerFocus(ref);
+    // The request carries this seat's pane: with an ordinary pane and an
+    // embedded column sharing the ref, only the composer the goal row was
+    // clicked in takes focus, so typing lands in its editor alone.
+    requestComposerFocus(ref, paneId ?? null);
   };
 
   const editGoal = (objective: string): void => {
@@ -440,7 +443,13 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // Tasks tab; on mobile there is no sidebar, so the per-session Sheet
     // keeps its behavior.
     if (isMobile) tasksPanelRef.current?.open();
-    else activitySidebarStore.getState().openWith("tasks");
+    else {
+      // The owning pane rides along, like every other embedded-column
+      // request: the sidebar opens THIS conversation's Tasks and holds its
+      // scope, keeping the cascade focused even when an ordinary pane for
+      // the same conversation exists.
+      activitySidebarStore.getState().openFor(ref, "tasks", undefined, paneId);
+    }
   };
 
   useEffect(() => {
@@ -615,7 +624,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // for a prefix - the user's own existing draft sits AFTER the cursor in
   // that case, so jumping to the very end would land past it instead of
   // where they'd actually want to keep typing (e.g. a command's arguments).
-  const quoteInsertRequest = useQuoteInsertRequest(ref);
+  const quoteInsertRequest = useQuoteInsertRequest(ref, paneId);
   const consumedQuoteInsertIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!quoteInsertRequest || quoteInsertRequest.id === consumedQuoteInsertIdRef.current) return;
@@ -633,7 +642,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // monotonic id so consuming a request from a previous mount under the SAME
   // still-pending request never replays it, and consumeComposerFocus() below
   // makes it one-shot.
-  const composerFocusRequest = useComposerFocusRequest(ref);
+  const composerFocusRequest = useComposerFocusRequest(ref, paneId);
   const consumedComposerFocusIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!composerFocusRequest || composerFocusRequest.id === consumedComposerFocusIdRef.current) return;
@@ -1178,6 +1187,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     setBusyAction("submit");
     const ctx: PaletteRunContext = {
       sessionRef: ref,
+      sessionPaneId: paneId ?? null,
       onPage: "session",
       toasts,
       // Neither method is reachable here: both belong to app-global palette
@@ -1531,9 +1541,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       {(!ended || showFollowUpCard) && (
         // data-composer is the hold-hints overlay's anchor (shell/holdhints):
         // the composer.focus chip positions itself above this wrapper. The
-        // value carries this pane's session ref so the overlay can anchor to
-        // the FOCUSED pane's composer when several are mounted.
-        <div className={CLASS.formAnchor} data-composer={ref}>
+        // value carries this pane's session ref, and data-composer-pane its
+        // owning pane id, so the overlay can anchor to the FOCUSED pane's
+        // composer when several are mounted - including an ordinary pane and a
+        // cascade column showing the same conversation.
+        <div className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only
