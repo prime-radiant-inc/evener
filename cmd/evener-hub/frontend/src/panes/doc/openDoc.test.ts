@@ -103,3 +103,39 @@ test("openDocBeside propagates an explicit browser-readonly-session origin uncha
     params: { session: "sess_4", path: "NOTES.md", kind: "file", origin },
   });
 });
+
+test("openDocBeside focuses the open document instead of duplicating it when the origin churns", () => {
+  vi.restoreAllMocks();
+  const sourceId = workspaceStore.getState().openPane("transcript", { ref: "sess_5" });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const reference = bindFilePath("src/x.ts", "/work");
+  if (!source || !reference) throw new Error("fixture did not create a source and bound file");
+
+  openDocBeside({
+    session: "sess_5",
+    reference,
+    sourcePaneId: sourceId,
+    origin: { kind: "browser-origin", paneId: "pane_session_1", compositionOwnerId: "composer-before-reload" },
+  });
+  const existing = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!existing) throw new Error("document did not open");
+
+  // A composer identity churns across a reload, so the same document's next
+  // open-beside carries a fresh opening origin. The document is still the
+  // same document: the reused pane is focused, never duplicated beside
+  // itself.
+  openDocBeside({
+    session: "sess_5",
+    reference,
+    sourcePaneId: sourceId,
+    origin: { kind: "browser-origin", paneId: "pane_session_1", compositionOwnerId: "composer-after-reload" },
+  });
+
+  const documents = workspaceStore.getState().panes.filter((pane) => pane.type === "doc");
+  expect(documents).toHaveLength(1);
+  const document = documents[0];
+  if (!document) throw new Error("the reused document pane is missing");
+  expect(document.id).toBe(existing.id);
+  expect(workspaceStore.getState().focusedPaneId).toBe(existing.id);
+  expect(documentPaneState(document)).toEqual({ reference, origin: source, reopen: 1 });
+});
