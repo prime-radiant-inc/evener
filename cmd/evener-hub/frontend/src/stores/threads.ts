@@ -97,7 +97,12 @@ import {
 import { SessionEntryCache } from "./sessionEntryCache";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
-import { type TranscriptReader, TranscriptRepository, type TranscriptRetirementOutcome } from "./transcriptRepository";
+import {
+  nextTranscriptReadIdentity,
+  type TranscriptReader,
+  TranscriptRepository,
+  type TranscriptRetirementOutcome,
+} from "./transcriptRepository";
 import {
   createTranscriptResidency,
   type ReceivedTranscriptUpdate,
@@ -673,7 +678,6 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   retirement?: Promise<TranscriptRetirementOutcome>;
   retirementEpoch?: number;
   lifetime: number;
-  readSequence: number;
   historyKey?: string;
   // True while an in-flight same-tab Clear has suppressed this route's
   // publication and persistence claims. An aborted Clear clears it, re-enabling
@@ -716,7 +720,7 @@ export function installEntryTranscriptFixtureForTests(options: EntryTranscriptFi
   if (entryTranscriptFixtureForTests) throw new Error("an entry transcript fixture is already installed");
   // The lifetime counter is per-installation bookkeeping, NOT a durable
   // connection identifier: it resets to 1 each time the fixture is installed.
-  const fixture: EntryTranscriptRoute = { ...options, lifetime: 1, readSequence: 0 };
+  const fixture: EntryTranscriptRoute = { ...options, lifetime: 1 };
   entryTranscriptFixtureForTests = fixture;
   return {
     settled: () => fixture.repository?.settled() ?? Promise.resolve(),
@@ -757,7 +761,6 @@ function entryTranscriptRoute(ref: string): EntryTranscriptRoute | undefined {
       clientId: location.origin,
       hostId: "local",
       lifetime: 1,
-      readSequence: 0,
     };
     productionEntryRoutes.set(ref, route);
   }
@@ -1261,6 +1264,17 @@ async function acceptEntryTranscriptHydration(
     if (fixture.repository === claimedRepository) retireEntryTranscriptRoute(fixture);
     return;
   }
+  if (
+    pending.entryHistoryKey === historyKey &&
+    authorities &&
+    pending.entryHistoryGeneration !== authorities.historyGeneration
+  ) {
+    // This response predates a durable deletion, even if its broadcast never
+    // arrived. Retire only its binding, never grant this read the new fence.
+    // A subsequent source read can establish a new repository and authority.
+    if (fixture.repository === claimedRepository) retireEntryTranscriptRoute(fixture);
+    return;
+  }
   // A failed or held-out authority read keeps the installed repository rather
   // than adopting unread authorities; a brand-new route falls back to the
   // epoch-0/generation-0 baseline and lets the durable fence decide.
@@ -1300,8 +1314,7 @@ async function acceptEntryTranscriptHydration(
   if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
   repository.acceptRead(response, {
     lifetime: fixture.lifetime,
-    readId: `fixture-read-${++fixture.readSequence}`,
-    boundary: `fixture-boundary-${fixture.readSequence}`,
+    ...nextTranscriptReadIdentity(),
   });
   repository.acceptBeforeReadCut(
     hydration.fixtureNotifications.map((update) => update.notification),
@@ -1418,6 +1431,10 @@ type PendingThreadHydration = {
   // authority read resolves moves the counter, so the acquisition is refused
   // rather than granted the new authorities.
   entryRetirement?: number;
+  // The installed binding's durable deletion claim when the source read began.
+  // A later durable observation must not grant an older response a newer fence.
+  entryHistoryKey?: string;
+  entryHistoryGeneration?: number;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
 // therefore arrive in the gap between the source subscription and snapshot
@@ -4766,6 +4783,7 @@ function beginThreadHydration(
   if (previousPending) retirePendingHydration(ref, previousPending, pendingThreadHydrations);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putThreadModel(ref, baseModel);
+  const entryRoute = entryTranscriptRoute(ref);
   const pending = {
     client,
     epoch,
@@ -4776,6 +4794,8 @@ function beginThreadHydration(
     baseModel,
     requestGeneration,
     entryRetirement: entryRouteRetirements.get(ref) ?? 0,
+    entryHistoryKey: entryRoute?.repository ? entryRoute.historyKey : undefined,
+    entryHistoryGeneration: entryRoute?.repository ? (entryRoute.historyGeneration ?? 0) : undefined,
   };
   pendingThreadHydrations.set(ref, pending);
   return pending;
@@ -4791,6 +4811,7 @@ function beginWatchedHydration(
   if (previousPending) retirePendingHydration(ref, previousPending, pendingWatchedHydrations);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putWatchedThreadModel(ref, baseModel);
+  const entryRoute = entryTranscriptRoute(ref);
   const pending = {
     client,
     epoch,
@@ -4799,6 +4820,8 @@ function beginWatchedHydration(
     routing: pendingHydrationRouting(ref, baseModel ?? model),
     baseModel,
     requestGeneration,
+    entryHistoryKey: entryRoute?.repository ? entryRoute.historyKey : undefined,
+    entryHistoryGeneration: entryRoute?.repository ? (entryRoute.historyGeneration ?? 0) : undefined,
   };
   pendingWatchedHydrations.set(ref, pending);
   return pending;
@@ -6885,8 +6908,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       if (fixtureState && fixtureRepository && capturedAuthority !== undefined) {
         accepted = fixtureRepository.acceptPage(resp, {
           lifetime: fixtureState.lifetime,
-          readId: `fixture-page-${++fixtureState.readSequence}`,
-          boundary: `fixture-page-boundary-${fixtureState.readSequence}`,
+          ...nextTranscriptReadIdentity(),
           authority: capturedAuthority,
           ...(capturedBefore === undefined ? {} : { before: capturedBefore }),
           requestCursor: capturedCursor,
