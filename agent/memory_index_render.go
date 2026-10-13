@@ -42,6 +42,10 @@ func sortedMemoryPages(pages []memoryPage) []memoryPage {
 
 // memoryTextEscaper escapes a page's path as its index link text, so the
 // text's closing "](" is the line's first unescaped one (memoryIndexLineFor).
+// Only "\" and "]" need it: the index is text the model reads, not Markdown a
+// renderer draws, and memoryIndexLineFor finds a line by its first unescaped
+// "](" alone. Escaping "[", backticks or emphasis marks would change what the
+// model reads as the path to pass to memory_read.
 var memoryTextEscaper = strings.NewReplacer(`\`, `\\`, `]`, `\]`)
 
 // memoryAngleEscaper escapes a path written as an angle-bracket link
