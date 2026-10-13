@@ -87,9 +87,19 @@ func memoryEvalResolveToolchain(compiledRoot string) (string, error) {
 
 // memoryEvalFileProxy names dir as a local file proxy URL for GOPROXY. A cache
 // path may contain URL-reserved characters, so the path is escaped rather than
-// concatenated into the URL.
+// concatenated into the URL. GOPROXY's list separators "," and "|" are escaped
+// on top of that: url.URL leaves a comma alone (it is an RFC 3986 sub-delim), so
+// an unescaped one would split one cache path into two proxies — the second not
+// a URL at all — and the toolchain download would fail with "invalid proxy URL
+// missing scheme" instead of being served from the cache (see
+// TestMemoryEvalFileProxyEscapesGoproxySeparators).
 func memoryEvalFileProxy(dir string) string {
-	return (&url.URL{Scheme: "file", Path: dir}).String()
+	proxy := url.URL{Scheme: "file", Path: dir}
+	escaped := proxy.EscapedPath()
+	escaped = strings.ReplaceAll(escaped, ",", "%2C")
+	escaped = strings.ReplaceAll(escaped, "|", "%7C")
+	proxy.RawPath = escaped
+	return proxy.String()
 }
 
 // memoryEvalGoModCache names the module cache the PATH Go resolves for this
@@ -112,6 +122,29 @@ func memoryEvalGoModCache() string {
 		return ""
 	}
 	return filepath.Join(entries[0], "pkg", "mod")
+}
+
+// memoryEvalToolchainDownloadPresent reports whether cache holds the download
+// records of the compiling toolchain, which is what the file proxy serves. A
+// machine that installed the pin natively rather than through the module cache
+// this process points at has none, and no offline fallback can materialize it
+// there. Tests that need the fallback to fetch the toolchain say so rather than
+// failing on the machine's installation shape.
+func memoryEvalToolchainDownloadPresent(cache string) bool {
+	if cache == "" {
+		return false
+	}
+	name := "v0.0.1-" + runtime.Version() + "." + runtime.GOOS + "-" + runtime.GOARCH
+	entries, err := os.ReadDir(filepath.Join(cache, "cache", "download", "golang.org", "toolchain", "@v"))
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Name() == name+".zip" || entry.Name() == name+".info" {
+			return true
+		}
+	}
+	return false
 }
 
 type memoryEvalAdmission struct {

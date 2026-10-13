@@ -57,6 +57,13 @@ func TestMemoryEvalToolchainCapture(t *testing.T) {
 // selection must still resolve the exact toolchain offline, from the module
 // cache; before the fix GOPROXY=off made the older PATH Go fail to fetch it.
 func TestMemoryEvalToolchainNoCompiledRoot(t *testing.T) {
+	// The fallback can only serve what the module cache holds. Without the
+	// toolchain's download records an older ambient Go has nothing to
+	// materialize offline, so a failure here would be this machine's
+	// installation shape (a natively installed pin), not the resolution code's.
+	if !memoryEvalToolchainDownloadPresent(memoryEvalGoModCache()) {
+		t.Skip("module cache holds no toolchain download records to serve")
+	}
 	// Serial: t.Setenv swaps PATH for the whole process.
 	original := os.Getenv("PATH")
 	toolchainBin := ""
@@ -92,6 +99,88 @@ func TestMemoryEvalToolchainNoCompiledRoot(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if want := "go version " + runtime.Version() + " " + runtime.GOOS + "/" + runtime.GOARCH; err != nil || strings.TrimSpace(string(out)) != want {
 		t.Fatalf("resolved Go version = %q, error = %v, want %q", out, err, want)
+	}
+}
+
+// GOPROXY splits its list on "," and "|", so a cache path holding one of those
+// must be escaped in the file proxy URL. url.URL leaves a comma unescaped (an
+// RFC 3986 sub-delim), which turned one proxy into two — the second not a URL —
+// and the child Go failed with "invalid proxy URL missing scheme" before it
+// could be served the cached toolchain.
+func TestMemoryEvalFileProxyEscapesGoproxySeparators(t *testing.T) {
+	t.Parallel()
+	dir := string(filepath.Separator) + filepath.Join("mod,cache|with separators", "cache", "download")
+	proxy := memoryEvalFileProxy(dir)
+	if strings.ContainsAny(proxy, ",|") {
+		t.Fatalf("file proxy %q still carries a GOPROXY separator", proxy)
+	}
+	if n := len(strings.FieldsFunc(proxy, func(r rune) bool { return r == ',' || r == '|' })); n < 1 {
+		t.Fatalf("file proxy %q splits into no GOPROXY entry at all", proxy)
+	}
+	parsed, err := url.Parse(proxy)
+	if err != nil {
+		t.Fatalf("parse file proxy %q: %v", proxy, err)
+	}
+	if parsed.Scheme != "file" || parsed.Path != dir {
+		t.Fatalf("file proxy %q resolved to scheme %q path %q, want file %q", proxy, parsed.Scheme, parsed.Path, dir)
+	}
+}
+
+// The fallback names the module cache as a file proxy, so a cache root whose own
+// path contains a GOPROXY separator must still resolve the compiling toolchain.
+// The cache is reached through a symlink from a comma-bearing root, which is the
+// shape a machine with a comma in its GOPATH or GOMODCACHE uses; the child Go
+// finds the pin already extracted there, so the test downloads records through
+// the proxy rather than unpacking a toolchain of its own. On a host whose PATH Go
+// is already the pin the switch needs no download and this test proves only that
+// the comma path does not break resolution; the unit test above is what pins the
+// escaping in CI.
+func TestMemoryEvalFallbackResolvesThroughACommaCachePath(t *testing.T) {
+	realCache := memoryEvalGoModCache()
+	if !memoryEvalToolchainDownloadPresent(realCache) {
+		t.Skip("module cache holds no toolchain download records to serve")
+	}
+	// Serial: t.Setenv swaps PATH for the whole process.
+	original := os.Getenv("PATH")
+	toolchainBin := ""
+	if goroot := os.Getenv("GOROOT"); goroot != "" {
+		toolchainBin = filepath.Join(goroot, "bin")
+	}
+	// Drop every PATH entry that carries the pin itself — the compiled GOROOT's
+	// bin and the module-cache toolchain's bin — so the child Go is the machine's
+	// own. On the host this issue is about that Go is older than the pin, which is
+	// what makes the fallback consult the file proxy at all.
+	lane := make([]string, 0, len(filepath.SplitList(original)))
+	for _, dir := range filepath.SplitList(original) {
+		if dir != toolchainBin && !strings.Contains(dir, "golang.org/toolchain@") {
+			lane = append(lane, dir)
+		}
+	}
+	t.Setenv("PATH", strings.Join(lane, string(filepath.ListSeparator)))
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Setenv("PATH", original)
+	}
+	// Report which Go the fallback will actually run: `go version` alone
+	// auto-switches to the pin, so ask with GOTOOLCHAIN=local to see the binary.
+	probe := exec.Command("go", "version")
+	probe.Env = append(os.Environ(), "GOENV=off", "GOTOOLCHAIN=local")
+	if out, err := probe.Output(); err == nil && strings.Contains(string(out), runtime.Version()) {
+		t.Logf("PATH Go is already the pin (%s); the file proxy was built but no download was needed", strings.TrimSpace(string(out)))
+	}
+
+	cacheRoot := t.TempDir()
+	commaCache := filepath.Join(cacheRoot, "mod,cache")
+	if err := os.Symlink(realCache, commaCache); err != nil {
+		t.Fatalf("link the module cache under a comma path: %v", err)
+	}
+	t.Setenv("GOMODCACHE", commaCache)
+
+	root, err := memoryEvalResolveToolchain("")
+	if err != nil {
+		t.Fatalf("fallback resolution through a comma cache path: %v", err)
+	}
+	if !filepath.IsAbs(root) {
+		t.Fatalf("resolved Go root %q is not absolute", root)
 	}
 }
 
