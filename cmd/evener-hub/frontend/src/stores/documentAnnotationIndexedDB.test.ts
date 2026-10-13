@@ -869,7 +869,7 @@ it("fences a pending note before deletion and resumes useful work afterward", as
 });
 
 it("rejects a save against a confirmed-suppressed epoch whose fence transaction failed", async () => {
-  let fail = true;
+  const fail = true;
   const f = await fixture("suppressed-epoch-save", {
     beforeCommit: (operation) => {
       if (operation === "expiry" && fail) throw new Error("fence fault");
