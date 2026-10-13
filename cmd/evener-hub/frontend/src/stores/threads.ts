@@ -877,6 +877,7 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
   if (!fixture || fixture.ref !== ref || !fixture.repository) return false;
   const repository = fixture.repository;
   const openingToken = beginEntryTranscriptLocalOpening(ref);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     fixture.reader ??= fixture.repository.attachReader();
     startProductionEntryMigration(fixture);
@@ -886,7 +887,21 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     // below is one such publication; this is the subscription that outlives it.
     fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptModel(ref));
     publishEntryTranscriptModel(ref);
-    const result = await fixture.reader.openLocal(200);
+    const reader = fixture.reader;
+    const result = await Promise.race([
+      reader.openLocal(200),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => {
+          reader.dispose();
+          if (fixture.reader === reader) fixture.reader = undefined;
+          resolve(undefined);
+        }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
+      }),
+    ]);
+    if (!result) {
+      fixture.lastLocalOpenStatus = "recovery-needed";
+      return false;
+    }
     fixture.lastLocalOpenStatus = result.status;
     if (
       result.model &&
@@ -900,6 +915,7 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     }
     return result.status !== "recovery-needed";
   } finally {
+    if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
   }
 }
@@ -6511,6 +6527,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
       if (!usesEntryTranscripts(ref) || (await openEntryTranscript(ref))) return;
+      if (count > 0) return; // Another mounted reader already owns the live bodies.
       if (ensureGenerations.get(ref) !== generation || (refCounts.get(ref) ?? 0) <= 0) return;
       // Missing or unwritten backing rows cannot establish the captured view.
       // Retire the held source proof so recovery asks for a complete baseline.

@@ -368,7 +368,7 @@ it.each(["evicted", "failed-write"] as const)(
     const client = connect();
     client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
     const background = acquireBackgroundThread("local:a");
-    await background.hydrated;
+    await background.ready;
     if (failure === "failed-write") {
       await expect(settleEntryTranscriptForTests("local:a")).rejects.toThrow("transcript recovery failed");
     } else {
@@ -404,6 +404,63 @@ it.each(["evicted", "failed-write"] as const)(
     background.release();
   },
 );
+
+it("existing background opening deadline releases paging hold and fences a late local result", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const entered = deferred<void>();
+  const released = deferred<void>();
+  const original = storage.getLatestWindow.bind(storage);
+  const lookup = vi.spyOn(storage, "getLatestWindow").mockImplementationOnce(async (...args) => {
+    const window = await original(...args);
+    entered.resolve();
+    await released.promise;
+    return window;
+  });
+  client.on("thread/read", (params) => ({
+    ...response("local:a", [turn("recovered", 2)]),
+    authoritative: true,
+    requestGeneration: params.requestGeneration,
+  }));
+  let settled = false;
+  const opening = threadsStore
+    .getState()
+    .ensureThread("local:a")
+    .then(() => {
+      settled = true;
+    });
+  try {
+    await entered.promise;
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(true);
+    await vi.waitFor(() => expect(settled).toBe(true));
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["recovered"]);
+    released.resolve();
+    await lookup.mock.results[0]?.value;
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["recovered"]);
+  } finally {
+    released.resolve();
+    await opening;
+    background.release();
+  }
+});
 
 it("ordinary disk-only lookup deadline starts the source opening and a late lookup cannot replace it", async () => {
   await seedDiskOnlyOpening();
@@ -1333,7 +1390,7 @@ it("a fresh foreground lifetime with a surviving background owner caches the cle
   const client = connect();
   client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
   const background = acquireBackgroundThread("local:a");
-  await background.hydrated;
+  await background.ready;
   await threadsStore.getState().ensureThread("local:a");
   await settleEntryTranscriptForTests("local:a");
   expect(await clearCachedSessions()).toEqual({ committed: true });
