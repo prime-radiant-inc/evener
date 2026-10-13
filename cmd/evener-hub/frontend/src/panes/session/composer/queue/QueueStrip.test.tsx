@@ -744,6 +744,108 @@ test("a QueueStrip recovery dismiss refuses a stale durable token and preserves 
   if (failures.length > 1) throw new AggregateError(failures, "strip dismiss checkpoint failed");
 });
 
+test("consecutive recovery dismissals each present current durable authority", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "strip-consecutive-dismiss";
+  const key = browserDraftKey("ref_a");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const observerRepository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const storage = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const observerStorage = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const failures: unknown[] = [];
+  const attempt = async (check: () => void | Promise<void>) => {
+    try {
+      await check();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  let source: ComposerSourceState | undefined;
+  let unmount: (() => void) | undefined;
+  try {
+    setMutationStorageForTests(storage);
+    await repository.seedDraft(key, { text: "ordinary", skillNames: [], mentions: [] });
+    const first = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a", turnId: "turn_1" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    const second = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a", turnId: "turn_2" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.transferToRecovery(first.clientMutationId, "rejected", "stop refused");
+    await storage.transferToRecovery(second.clientMutationId, "rejected", "stop refused");
+    await act(async () => {
+      source = createComposerSourceState("ref_a", { repository, key, outbox: storage });
+      await source.ready();
+    });
+    const mountedSource = source as ComposerSourceState;
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const view = renderStrip(defaultProps({ source: mountedSource }));
+    unmount = view.unmount;
+    await flushPendingTurnsProjectionForTests();
+    const dismissTarget = (): HTMLElement => {
+      const [target] = screen.getAllByRole("button", { name: "Dismiss" });
+      if (!target) throw new Error("missing dismiss button");
+      return target;
+    };
+
+    // The first dismissal deletes its row and advances the durable session
+    // revision its own guard presented.
+    await act(async () => {
+      fireEvent.click(dismissTarget());
+    });
+    await flushPendingTurnsProjectionForTests();
+    await attempt(async () =>
+      waitFor(async () => expect(await observerStorage.getRecovery(first.clientMutationId)).toBeUndefined()),
+    );
+    // The source must ADOPT the revision its own successful discard advanced
+    // (3 -> 4) so the next press presents current durable authority instead of
+    // the stale token the storage would refuse.
+    await attempt(async () => waitFor(() => expect(mountedSource.getDraftToken().sessionRevision).toBe(4)));
+
+    // The second dismissal must present CURRENT durable authority - the
+    // revision the first dismissal just advanced - instead of the source's
+    // press-time token, or the storage refuses it and the row survives.
+    await act(async () => {
+      fireEvent.click(dismissTarget());
+    });
+    await flushPendingTurnsProjectionForTests();
+    await attempt(async () =>
+      waitFor(async () => expect(await observerStorage.getRecovery(second.clientMutationId)).toBeUndefined()),
+    );
+    // Both deletions advanced the durable revision; the acknowledged row
+    // carries both advances.
+    await attempt(async () =>
+      waitFor(async () => expect((await observerRepository.load(key))?.token.sessionRevision).toBe(5)),
+    );
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(async () => {
+      await act(async () => {
+        await source?.whenSettled();
+        unmount?.();
+        source?.dispose();
+      });
+    });
+    observerStorage.close();
+    storage.close();
+    observerRepository.close();
+    repository.close();
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "strip dismiss checkpoint failed");
+});
+
 describe("visibility", () => {
   test.each(["rejected", "blockedUnknown"])(
     "notes %s recovery never offers composer message editing",
