@@ -111,6 +111,15 @@ and the reason it is kept, tab-separated. Rows are keyed by file and test name,
 not line. Each audit also fails on a row whose test is no longer flagged, so
 remove the row when you convert, delete or rename the test.
 
+To find what is left to convert, `go run ./cmd/evener-dev/bin dev copy-oracle`
+inventories every assertion whose oracle is production copy, per package and
+category, using the same two scanners. `--hits FILE` writes each one as TSV,
+`--copy-only FILE` lists the copy-only tests instead, and `--path PREFIX` and
+`--only ts|go` narrow the scan. The TypeScript half runs under `node` with the
+frontend's install, so run `make web-preflight` first, or pass `--only go`.
+After converting a test, `tools/copy-oracle/mutate.sh` breaks the behavior it
+now checks and confirms the test fails.
+
 ## Flakes and Timeouts
 
 Two standing rules (Jesse, 2026-07-20/21), both absolute:

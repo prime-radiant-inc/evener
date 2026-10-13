@@ -9,14 +9,20 @@ import (
 	"testing"
 )
 
-// scanFixture scans one test file's source with prod as both production
-// corpora and one sentence as the text assets.
+// scanFixture scans one test file's source with prod as the production
+// corpus and one sentence as the text assets, and returns its targets.
 func scanFixture(t *testing.T, path, src string, prod ...string) []Target {
 	t.Helper()
 	s := newScanner(strings.Join(prod, "\n"), "Always use the tools you have.")
-	targets, err := s.scanGo(path, src)
+	r, err := s.scanGo(path, src, false)
 	if err != nil {
-		t.Fatalf("scanFile(%s): %v", path, err)
+		t.Fatalf("scanGo(%s): %v", path, err)
+	}
+	var targets []Target
+	for _, c := range r.copyOnly {
+		if c.Purpose == PurposeCopy {
+			targets = append(targets, Target{File: c.File, Test: c.Test, Line: c.Line})
+		}
 	}
 	return targets
 }
@@ -51,10 +57,9 @@ func TestCountsRows(t *testing.T) {
 }
 `
 
-// TestTargets ports every Go case of tools/copy-oracle/test_inventory.py, plus
-// the cases the Go AST settles that the line-based scanner could not. The
-// TypeScript cases live with the TypeScript scanner in
-// cmd/evener-hub/frontend/src/dev/copyonly.
+// TestTargets pins which Go tests are copy-only targets, including the cases
+// a line-based scanner gets wrong. The TypeScript cases live with the
+// TypeScript scanner in cmd/evener-hub/frontend/src/dev/copyonly.
 func TestTargets(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

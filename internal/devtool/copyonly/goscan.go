@@ -25,17 +25,32 @@ var diagnostics = map[string]bool{
 	"Log": true, "Logf": true, "Skip": true, "Skipf": true,
 }
 
-func (s *scanner) scanGo(path, src string) ([]Target, error) {
+// errish is the subject of a text check that is an error or error-ish value.
+var errish = regexp.MustCompile(`(?i)(\.Error\(\)|\berr\w*\b|\bErr\w*\b|stderr|errOut|errMsg|message|msg)`)
+
+// fileReport is one test file's share of a Report; fixtures counts its
+// fixture literals.
+type fileReport struct {
+	hits     []Hit
+	fixtures int
+	copyOnly []CopyOnlyTest
+}
+
+// scanGo reports the file's copy-only tests, and its copy hits and fixture
+// count when withHits is set.
+func (s *scanner) scanGo(path, src string, withHits bool) (fileReport, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, src, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
-		return nil, err
+		return fileReport{}, err
 	}
-	var targets []Target
+	var r fileReport
+	if withHits {
+		r = s.goHits(fset, src, file, path)
+	}
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || fn.Body == nil || !testFunc.MatchString(fn.Name.Name) ||
-			!copyPurposeName.MatchString(fn.Name.Name) {
+		if !ok || fn.Recv != nil || fn.Body == nil || !testFunc.MatchString(fn.Name.Name) {
 			continue
 		}
 		checks := goChecks(fn.Body)
@@ -51,10 +66,47 @@ func (s *scanner) scanGo(path, src string) ([]Target, error) {
 			}
 		}
 		if allCopy {
-			targets = append(targets, Target{File: path, Test: fn.Name.Name, Line: fset.Position(fn.Pos()).Line})
+			purpose := PurposeBehavior
+			if copyPurposeName.MatchString(fn.Name.Name) {
+				purpose = PurposeCopy
+			}
+			r.copyOnly = append(r.copyOnly, CopyOnlyTest{
+				File: path, Line: fset.Position(fn.Pos()).Line, Test: fn.Name.Name, Purpose: purpose,
+			})
 		}
 	}
-	return targets, nil
+	return r, nil
+}
+
+// goHits finds every text check anywhere in the file, helpers included, whose
+// literal is production copy, and counts the ones whose literal only tests
+// use. Contract-shaped literals are neither.
+func (s *scanner) goHits(fset *token.FileSet, src string, file *ast.File, path string) fileReport {
+	var r fileReport
+	ast.Inspect(file, func(n ast.Node) bool {
+		for _, c := range comparisons(n) {
+			if contractShaped(c.lit) {
+				continue
+			}
+			var category string
+			switch {
+			case s.goProd.contains(c.lit):
+				category = CategoryGoCopy
+				subject := src[fset.Position(c.subject.Pos()).Offset:fset.Position(c.subject.End()).Offset]
+				if errish.MatchString(subject) {
+					category = CategoryGoErrString
+				}
+			case s.isAssetPhrase(c.lit):
+				category = CategoryGoAsset
+			default:
+				r.fixtures++
+				continue
+			}
+			r.hits = append(r.hits, Hit{File: path, Line: fset.Position(n.Pos()).Line, Category: category, Literal: c.lit})
+		}
+		return true
+	})
+	return r
 }
 
 // goChecks collects the test's claims: every `if` condition and every
@@ -184,9 +236,12 @@ func (s *scanner) goCopyClaim(cond ast.Expr, supplied string) bool {
 // isGoCopy reports a literal found in production Go source, or a phrase found
 // in a production text asset.
 func (s *scanner) isGoCopy(lit string) bool {
-	if s.goProd.contains(lit) {
-		return true
-	}
+	return s.goProd.contains(lit) || s.isAssetPhrase(lit)
+}
+
+// isAssetPhrase reports a phrase (eight runes or more, with a space) found in
+// a production text asset.
+func (s *scanner) isAssetPhrase(lit string) bool {
 	return utf8.RuneCountInString(lit) >= 8 && strings.Contains(lit, " ") && s.assets.contains(lit)
 }
 
@@ -252,44 +307,70 @@ func isCopyTerm(term ast.Expr) bool {
 	return false
 }
 
-// copyLiterals returns the literals the expression compares text with:
-// strings.Contains and its kin, == and != against a string, and
-// regexp.MustCompile(...).MatchString (the regex's literal core).
+// copyLiterals returns the literals the expression compares text with,
+// anywhere inside it.
 func copyLiterals(e ast.Expr) []string {
 	var lits []string
 	ast.Inspect(e, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.CallExpr:
-			if pkg, fn := selector(n.Fun); pkg == "strings" && copyComparers[fn] && len(n.Args) == 2 {
-				if lit, ok := stringLit(n.Args[1]); ok {
-					lits = append(lits, strings.TrimSpace(lit))
-				}
-			}
-			if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MatchString" {
-				if compile, ok := sel.X.(*ast.CallExpr); ok && len(compile.Args) == 1 {
-					if pkg, fn := selector(compile.Fun); pkg == "regexp" && fn == "MustCompile" {
-						if lit, ok := stringLit(compile.Args[0]); ok {
-							lits = append(lits, strings.TrimSpace(regexCore(lit)))
-						}
-					}
-				}
-			}
-		case *ast.BinaryExpr:
-			if n.Op == token.EQL || n.Op == token.NEQ {
-				for _, side := range []ast.Expr{n.X, n.Y} {
-					if lit, ok := stringLit(side); ok {
-						lits = append(lits, strings.TrimSpace(lit))
-					}
-				}
-			}
+		for _, c := range comparisons(n) {
+			lits = append(lits, c.lit)
 		}
 		return true
 	})
 	return lits
 }
 
+// comparison is a text check: the literal (trimmed; a regex's literal core)
+// and the value it is checked against.
+type comparison struct {
+	lit     string
+	subject ast.Expr
+}
+
+// comparisons returns the text checks node n itself makes: strings.Contains
+// and its kin, == and != against a string (on either side), and
+// regexp.MustCompile(...).MatchString.
+func comparisons(n ast.Node) []comparison {
+	switch n := n.(type) {
+	case *ast.CallExpr:
+		if pkg, fn := selector(n.Fun); pkg == "strings" && copyComparers[fn] && len(n.Args) == 2 {
+			if lit, ok := stringLit(n.Args[1]); ok {
+				return []comparison{{strings.TrimSpace(lit), n.Args[0]}}
+			}
+		}
+		if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MatchString" && len(n.Args) == 1 {
+			if compile, ok := sel.X.(*ast.CallExpr); ok && len(compile.Args) == 1 {
+				if pkg, fn := selector(compile.Fun); pkg == "regexp" && fn == "MustCompile" {
+					if lit, ok := stringLit(compile.Args[0]); ok {
+						return []comparison{{strings.TrimSpace(regexCore(lit)), n.Args[0]}}
+					}
+				}
+			}
+		}
+	case *ast.BinaryExpr:
+		if n.Op != token.EQL && n.Op != token.NEQ {
+			return nil
+		}
+		var found []comparison
+		if lit, ok := stringLit(n.Y); ok {
+			found = append(found, comparison{strings.TrimSpace(lit), n.X})
+		}
+		if lit, ok := stringLit(n.X); ok {
+			found = append(found, comparison{strings.TrimSpace(lit), n.Y})
+		}
+		return found
+	}
+	return nil
+}
+
+// stringLit is the text a string literal holds; for a concatenation that
+// starts with one ("copy "+value), the literal in front.
 func stringLit(e ast.Expr) (string, bool) {
-	lit, ok := ast.Unparen(e).(*ast.BasicLit)
+	e = ast.Unparen(e)
+	if concat, ok := e.(*ast.BinaryExpr); ok && concat.Op == token.ADD {
+		return stringLit(concat.X)
+	}
+	lit, ok := e.(*ast.BasicLit)
 	if !ok || lit.Kind != token.STRING {
 		return "", false
 	}
