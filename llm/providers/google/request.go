@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -42,15 +43,8 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 		}
 	}
 	if req.ReasoningEffort != nil {
-		budget := llm.ReasoningBudget(*req.ReasoningEffort)
-		if budget > 0 {
-			genCfg["thinkingConfig"] = map[string]any{
-				"thinkingBudget": budget,
-				// includeThoughts asks Gemini to return thought summaries; without it
-				// the model thinks internally but streams no thought parts, so the
-				// live-thinking backend has nothing to render.
-				"includeThoughts": true,
-			}
+		if thinking := thinkingConfig(*req.ReasoningEffort, caps); thinking != nil {
+			genCfg["thinkingConfig"] = thinking
 		}
 	}
 
@@ -111,6 +105,40 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 		return nil, err
 	}
 	return body, nil
+}
+
+// thinkingConfig builds the generationConfig.thinkingConfig object for a
+// reasoning effort, or nil when the effort names no thinking. Gemini has two
+// thinking wire shapes: thinkingLevel (Gemini 3.x, catalog rows whose
+// ReasoningControls list effort) and thinkingBudget (2.5 era, rows listing
+// budget_tokens). Sending a budget to a level-only model is a wire 400.
+// A row that lists effort but no ladder, and an uncataloged row, take the
+// level: Gemini's current generation is level-shaped, and the budget form is
+// the legacy one. includeThoughts asks Gemini to return thought summaries;
+// without it the model thinks internally but streams no thought parts, so the
+// live-thinking backend has nothing to render.
+func thinkingConfig(effort string, caps registry.Caps) map[string]any {
+	shape := map[string]any{"includeThoughts": true}
+	levelShaped := !slices.Contains(caps.ReasoningControls, "budget_tokens")
+	if levelShaped {
+		level := effort
+		if len(caps.EffortValues) > 0 {
+			// The wire spells a level the row lists; ShapeRequest has already
+			// clamped the request to the ladder.
+			level = llm.VouchedEffort(effort, caps.EffortValues)
+			if level == "" {
+				return nil
+			}
+		}
+		shape["thinkingLevel"] = level
+		return shape
+	}
+	budget := llm.ReasoningBudget(effort)
+	if budget <= 0 {
+		return nil
+	}
+	shape["thinkingBudget"] = budget
+	return shape
 }
 
 func reconcileOutputField(body map[string]any, admitted, outputCap *int) error {

@@ -57,8 +57,14 @@ func TestProtocolBuildBody(t *testing.T) {
 		t.Fatal("the model rides in the URL, never the body")
 	}
 	gen := body["generationConfig"].(map[string]any)
-	if gen["temperature"] != 0.2 || gen["thinkingConfig"].(map[string]any)["thinkingBudget"] != llm.ReasoningBudget("high") {
+	thinking := gen["thinkingConfig"].(map[string]any)
+	// protoRes carries an effort-only ladder with no levels, so the builder
+	// spells the requested effort as a thinkingLevel, not a budget.
+	if gen["temperature"] != 0.2 || thinking["thinkingLevel"] != "high" {
 		t.Fatalf("generationConfig = %v", gen)
+	}
+	if _, has := thinking["thinkingBudget"]; has {
+		t.Fatalf("an effort-shaped row never sends thinkingBudget: %v", gen)
 	}
 	if tools := body["tools"].([]map[string]any); len(tools) != 1 || tools[0]["google_search"] == nil {
 		t.Fatalf("google_search expected without function tools: %v", body["tools"])
@@ -83,6 +89,48 @@ func TestProtocolBuildBody(t *testing.T) {
 	off := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.Reasoning = new(false) }))
 	if _, has := off["generationConfig"].(map[string]any)["thinkingConfig"]; has {
 		t.Fatal("Reasoning=false sends no thinkingConfig")
+	}
+}
+
+// Gemini has two thinking wire shapes: thinkingLevel (Gemini 3.x) and
+// thinkingBudget (2.5 era). The catalog says which a row takes through
+// ReasoningControls; sending a budget to a level-only model is a wire 400.
+func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
+	level := func(t *testing.T, body map[string]any) any {
+		t.Helper()
+		thinking := body["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
+		if _, has := thinking["thinkingBudget"]; has {
+			t.Fatalf("level-shaped row sent thinkingBudget: %v", thinking)
+		}
+		return thinking["thinkingLevel"]
+	}
+
+	// An effort-only row with a ladder sends the vouched level. ShapeRequest
+	// clamps the request to the ladder first, so the builder spells what the
+	// row lists.
+	row := protoRes(func(c *registry.Caps) { c.EffortValues = []string{"low", "medium", "high"} })
+	if got := level(t, protoBuild(t, protoReq("medium"), row)); got != "medium" {
+		t.Fatalf("thinkingLevel = %v", got)
+	}
+	if got := level(t, protoBuild(t, protoReq("xhigh"), row)); got != "high" {
+		t.Fatalf("xhigh must clamp down to the ladder's top level, got %v", got)
+	}
+
+	// A budget-only row (gemini-2.5-pro) keeps the numeric budget.
+	budget := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.ReasoningControls = []string{"budget_tokens"} }))
+	thinking := budget["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
+	if thinking["thinkingBudget"] != llm.ReasoningBudget("high") {
+		t.Fatalf("thinkingBudget = %v", thinking)
+	}
+	if _, has := thinking["thinkingLevel"]; has {
+		t.Fatalf("a budget-shaped row never sends thinkingLevel: %v", thinking)
+	}
+
+	// An uncataloged row knows nothing about the model's controls; Gemini's
+	// current generation takes levels, so that is the default shape.
+	unknown := protoBuild(t, protoReq("high"), protoRes(func(c *registry.Caps) { c.ReasoningControls = nil }))
+	if got := level(t, unknown); got != "high" {
+		t.Fatalf("unknown row thinkingLevel = %v", got)
 	}
 }
 

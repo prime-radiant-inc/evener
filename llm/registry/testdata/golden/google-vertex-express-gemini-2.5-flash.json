@@ -55,6 +55,7 @@
       "cachedContent": false,
       "generationConfig.stopSequences": true,
       "generationConfig.temperature": true,
+      "generationConfig.thinkingConfig": true,
       "generationConfig.topP": true,
       "labels": false,
       "safetySettings": true,
