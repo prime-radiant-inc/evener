@@ -1532,3 +1532,144 @@ func freezeTranscriptRepairLaneClockForTest(t *testing.T) func(time.Duration) {
 	t.Cleanup(func() { transcriptIndexRepairNow = old })
 	return func(advance time.Duration) { now = now.Add(advance) }
 }
+
+// TestADirectlyConstructedServerHealsAMissingSidecarOnItsOwn pins the
+// construction contract the registry's arming hangs on: a server built the
+// way an embedder builds it — NewWebServer and the RPC surface Handler()
+// serves, no runMain — arms repairs through its own default lifetime, so a
+// valid transcript with no sidecar at all recovers on the server's own
+// instead of answering history-failed read after read with no repair
+// anywhere.
+func TestADirectlyConstructedServerHealsAMissingSidecarOnItsOwn(t *testing.T) {
+	// Whatever a previous test's wiring left in the shared registry, this
+	// one starts from nothing armed: the server's construction must do the
+	// arming, not a test's.
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	transcriptIndexRepairs.wire(done)
+
+	cfg, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("first question"))),
+		execution("turn_m1", schema.NewTurn(schema.TurnAssistant, llm.Assistant("first answer"))),
+	)
+	// The never-indexed shape: the transcript stands, no sidecar at all.
+	if err := os.RemoveAll(transcriptindex.DirFor(path)); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	// captureRepairLog keeps the real recipe's two advisory lines inside the
+	// test instead of on the package's stderr.
+	logged := captureRepairLog(t)
+	web := NewWebServer(cfg)
+	_ = web.Handler()
+	read := func() (appwire.ThreadReadResponse, error) {
+		value, err := web.appRPC.Router().Dispatch(context.Background(), appwire.Request{
+			ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+			Params: mustPagingJSON(t, appwire.ThreadReadParams{
+				Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 40, RequestGeneration: 1,
+			}),
+		})
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		response, ok := value.(appwire.ThreadReadResponse)
+		if !ok {
+			t.Fatalf("read answered %T, want ThreadReadResponse", value)
+		}
+		return response, nil
+	}
+
+	// The first read answers the retryable rebuilding state — a repair is
+	// armed behind it, not the terminal history-failed.
+	_, err := read()
+	requireTranscriptIndexRebuilding(t, err)
+
+	// The armed repair is the real recipe — no seam — and the sidecar it
+	// commits is the re-read's signal.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(transcriptindex.DirFor(path), "CURRENT")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the armed repair never built the sidecar")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if lines := logged(); len(lines) != 2 {
+		t.Fatalf("repair log = %q, want exactly two lines for one repair", lines)
+	}
+
+	// Recovery, not a status: the re-read returns the transcript's data.
+	response, err := read()
+	if err != nil {
+		t.Fatalf("read after the repair: %v", err)
+	}
+	if items := flattenTestItems(response.Thread.Turns); len(items) != 2 || items[0].Text != "first question" || items[1].Text != "first answer" {
+		t.Fatalf("post-repair items = %+v, want the transcript's two", flattenTestItems(response.Thread.Turns))
+	}
+}
+
+// TestDetachedRepairLoggingKeepsTheSinkTheRegistryWasArmedWith pins
+// hubLogfFor's rule for the repair registry's own log: the sink resolves
+// once, when the registry is armed, so a detached repair — one that can
+// outlive the startup and shutdown windows where os.Stderr is redirected —
+// never follows a later reassign of the mutable global into an unintended
+// or closed sink.
+func TestDetachedRepairLoggingKeepsTheSinkTheRegistryWasArmedWith(t *testing.T) {
+	old := os.Stderr
+	t.Cleanup(func() { os.Stderr = old })
+
+	// The sink the arming must capture: a file the test reads back.
+	armed, err := os.CreateTemp(t.TempDir(), "repair-sink-armed-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = armed
+	wireRepairsForTest(t)
+
+	// The late redirect, after the arming — captureHubStderr's own shape.
+	late, err := os.CreateTemp(t.TempDir(), "repair-sink-late-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = late
+
+	feed, completions, _ := installRepairSeam(t)
+	path := filepath.Join(t.TempDir(), "late.transcript.jsonl")
+	_, _ = transcriptIndexRepairs.answerRead(path, "")
+	feed(func(path, refused string) error { return nil })
+	<-completions
+	os.Stderr = old
+	if err := armed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	redirected, err := os.ReadFile(late.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(redirected) != 0 {
+		t.Fatalf("the repair log followed the late stderr reassign: %q", redirected)
+	}
+	logged, err := os.ReadFile(armed.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The lines went to the armed sink instead: exactly two for one repair,
+	// each naming this transcript — the count is the behavior, the name is
+	// data, and no sentence is pinned.
+	lines := strings.Split(strings.TrimSpace(string(logged)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("repair log = %q, want exactly two lines for one repair", string(logged))
+	}
+	base := filepath.Base(path)
+	for _, line := range lines {
+		if !strings.Contains(line, base) {
+			t.Fatalf("repair log = %q, want every line naming %s", string(logged), base)
+		}
+	}
+}

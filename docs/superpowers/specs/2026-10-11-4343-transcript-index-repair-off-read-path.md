@@ -191,7 +191,12 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      ordinary-failure retry, and the TUI's paced entry retry, which has
      no ordinary-error retry and would otherwise strand a first entry
      on the bare error.
-   - Repair registry: keyed by transcript path, in package hub. Its
+   - Repair registry: keyed by transcript path, in package hub, armed
+     with the server's lifetime at construction — a directly constructed
+     server (`NewWebServer` plus `Handler()`, no runMain) recovers a
+     staled or missing sidecar under the default lifetime on its own;
+     `runMain` re-wires with the hub's background context, so shutdown
+     still gates repairs. Its
      single-flight start must never block a registrant: a mutex plus an
      in-flight map (or `singleflight`'s `DoChan` with the result
      channel discarded — the hub's `Do` usage, `app_models.go:225`,
@@ -442,7 +447,10 @@ redundant double catch-up on every cold read: one inside `Open`, one at
 9. Hub-side observability, in the established `[hub]` log style, naming
    the session: one advisory line when a background repair starts, one
    when it completes (carrying the outcome: finished or failed), and one
-   when a path exhausts its repair budget. The incident was only
+   when a path exhausts its repair budget — written through the sink
+   resolved when the registry is armed, `hubLogfFor`'s rule, so a detached
+   repair never follows a late `os.Stderr` reassign into an unintended
+   or closed sink. The incident was only
    diagnosable from mtimes and CPU burn.
 
 10. Evergreen docs: update the S10 row in `docs/product/subsystems.md`

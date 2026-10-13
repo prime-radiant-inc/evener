@@ -32,11 +32,20 @@ var transcriptRepairLaneExhaustedInterval = 10 * time.Minute
 // real clock; a variable for tests.
 var transcriptIndexRepairNow = time.Now
 
+// transcriptIndexRepairLogSink is the repair registry's log destination,
+// resolved when the registry is armed — hubLogfFor's rule: a detached
+// repair outlives the startup and shutdown windows where os.Stderr gets
+// redirected, so reading the mutable global per line would follow a late
+// reassign (captureHubStderr, issue #2783) into an unintended or closed
+// sink. runMain arms before any redirect runs, so the captured destination
+// is the one the hub's own startup chose.
+var transcriptIndexRepairLogSink = os.Stderr
+
 // transcriptIndexRepairLog is the repair registry's advisory log line, in the
 // established [hub] style, naming the session's transcript. A package
 // variable so tests can capture the lines.
 var transcriptIndexRepairLog = func(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+	_, _ = fmt.Fprintf(transcriptIndexRepairLogSink, "[hub] "+format+"\n", args...)
 }
 
 // runTranscriptIndexRepair is the repair recipe the registry runs: rebuild
@@ -194,11 +203,13 @@ func newTranscriptIndexRepairRegistry() *transcriptIndexRepairRegistry {
 
 // wire arms the registry with the hub's background context: repairs start
 // only while it is live, so shutdown abandons an in-flight repair exactly as
-// a crash would, which the sidecar's commit rule makes harmless.
+// a crash would, which the sidecar's commit rule makes harmless. The repair
+// log's sink resolves here too, once per arming.
 func (r *transcriptIndexRepairRegistry) wire(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ctx = ctx
+	transcriptIndexRepairLogSink = os.Stderr
 }
 
 // armedLocked reports whether a repair may start. Callers hold r.mu.
