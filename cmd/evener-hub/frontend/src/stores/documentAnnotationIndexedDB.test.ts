@@ -895,6 +895,36 @@ it("rejects a save against a confirmed-suppressed epoch whose fence transaction 
   expect(await annotationSnapshot(f)).toEqual(rowsBefore);
 });
 
+it("an aborted reset leaves the live epoch unsuppressed: annotations stay listed and an unchanged reread accepts", async () => {
+  let failReset = false;
+  const f = await fixture("aborted-reset-live-epoch", {
+    beforeCommit: (operation) => {
+      if (operation === "reset" && failReset) throw new Error("reset fault");
+    },
+  });
+  // A live epoch with a committed, listed annotation.
+  const listed = await f.repo.listAnnotations(f.document);
+  expect(listed.length).toBeGreaterThan(0);
+  const incarnation = (await f.drafts.load(f.key))?.token.namespaceIncarnation;
+  if (!incarnation) throw new Error("missing incarnation");
+
+  // The reset aborts as a whole transaction: nothing durable changed.
+  failReset = true;
+  await expect(f.repo.resetOwnedNamespace(f.key.namespace, incarnation)).rejects.toThrow("reset fault");
+  failReset = false;
+
+  // The aborted reset must not leave its suppression behind: the live
+  // annotations stay listed, and an unchanged reread of unchanged content
+  // accepts instead of treating the epoch as expired - a surviving confirmed
+  // suppression would fence the read and delete payloads the reset never
+  // removed.
+  expect(await f.repo.listAnnotations(f.document)).toEqual(listed);
+  const reread = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-A"));
+  expect(reread.state).toBe("accepted");
+  if (reread.state !== "accepted") throw new Error("unchanged reread was not accepted");
+  expect(await f.repo.listAnnotations(f.document)).toEqual(listed);
+});
+
 it("applied text survives a failed expiry deletion, stale cleanup and reversion", async () => {
   let failDeletion = true;
   const f = await fixture("read-expiry-delete-fault", {

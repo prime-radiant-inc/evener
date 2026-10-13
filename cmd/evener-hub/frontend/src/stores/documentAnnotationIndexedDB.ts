@@ -1093,81 +1093,108 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     expectedIncarnation: string,
   ): Promise<{ committed: boolean; incarnation: string }> {
     const namespaceKey = annotationNamespaceKey(namespace);
+    // Reset's suppression is provisional until its transaction commits: the
+    // entries still cancel in-flight handoffs and hide listings while the
+    // reset runs, but an ABORTED reset must not leave confirmed suppression
+    // behind - surviving entries would vanish live annotations from listings
+    // and let an unchanged reread treat the epoch as expired, deleting
+    // payloads the reset never removed. An independently confirmed expiry (a
+    // changed read's proof) keeps its own entry untouched.
+    const provisioned: string[] = [];
     for (const [documentKey, state] of this.#readStates) {
       if (documentKeyNamespace(documentKey) !== namespaceKey) continue;
       const accepted = state.accepted;
       if (accepted && accepted.lease.namespaceIncarnation === expectedIncarnation) {
-        this.#suppressedEpochs.set(epochIdentity(accepted.lease), {
-          requestId: state.ticket.requestId,
-          confirmed: true,
-        });
+        const identity = epochIdentity(accepted.lease);
+        if (this.#suppressedEpochs.has(identity)) continue;
+        this.#suppressedEpochs.set(identity, { requestId: state.ticket.requestId, confirmed: false });
+        provisioned.push(identity);
       }
     }
+    const confirmProvisioned = (): void => {
+      for (const identity of provisioned) {
+        const entry = this.#suppressedEpochs.get(identity);
+        if (entry && !entry.confirmed) entry.confirmed = true;
+      }
+    };
+    const releaseProvisioned = (): void => {
+      for (const identity of provisioned) {
+        const entry = this.#suppressedEpochs.get(identity);
+        if (entry && !entry.confirmed) this.#suppressedEpochs.delete(identity);
+      }
+    };
     const newIncarnation = createSecureUUID();
-    const result = await this.#transaction(
-      [
-        ANNOTATION_NAMESPACES_STORE,
-        ANNOTATION_HEADS_STORE,
-        ANNOTATION_EVIDENCE_STORE,
-        ANNOTATION_PAYLOADS_STORE,
-        ANNOTATION_OPERATIONS_STORE,
-        ANNOTATION_SEQUENCES_STORE,
-        ANNOTATION_EXPIRY_STORE,
-      ],
-      "readwrite",
-      async (transaction) => {
-        const namespaceRow = await requestResult<NamespaceRow | undefined>(
-          transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(namespaceKey),
-        );
-        if (!namespaceRow || namespaceRow.incarnation !== expectedIncarnation) {
-          return { committed: false, incarnation: namespaceRow?.incarnation ?? "" };
-        }
-        await deleteRowsWhere<AnnotationHeadRow>(
-          transaction,
+    let result: { committed: boolean; incarnation: string };
+    try {
+      result = await this.#transaction(
+        [
+          ANNOTATION_NAMESPACES_STORE,
           ANNOTATION_HEADS_STORE,
-          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
-          (row) => row.documentKey,
-        );
-        await deleteRowsWhere<AnnotationEvidenceRow>(
-          transaction,
           ANNOTATION_EVIDENCE_STORE,
-          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
-          (row) => row.evidenceKey,
-        );
-        await deleteRowsWhere<AnnotationPayloadRow>(
-          transaction,
           ANNOTATION_PAYLOADS_STORE,
-          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
-          (row) => row.payloadKey,
-        );
-        await deleteRowsWhere<AnnotationOperationRow>(
-          transaction,
           ANNOTATION_OPERATIONS_STORE,
-          (row) => row.namespaceKey === namespaceKey,
-          (row) => row.operationKey,
-        );
-        await deleteRowsWhere<AnnotationSequenceRow>(
-          transaction,
           ANNOTATION_SEQUENCES_STORE,
-          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
-          (row) => row.documentKey,
-        );
-        await deleteRowsWhere<AnnotationExpiryRow>(
-          transaction,
           ANNOTATION_EXPIRY_STORE,
-          (row) => annotationNamespaceKey(row.receipt.key.namespace) === namespaceKey,
-          (row) => row.expiryKey,
-        );
-        await requestResult(
-          transaction
-            .objectStore(ANNOTATION_NAMESPACES_STORE)
-            .put({ namespaceKey, incarnation: newIncarnation } satisfies NamespaceRow),
-        );
-        this.#options.beforeCommit?.("reset");
-        return { committed: true, incarnation: newIncarnation };
-      },
-    );
+        ],
+        "readwrite",
+        async (transaction) => {
+          const namespaceRow = await requestResult<NamespaceRow | undefined>(
+            transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(namespaceKey),
+          );
+          if (!namespaceRow || namespaceRow.incarnation !== expectedIncarnation) {
+            return { committed: false, incarnation: namespaceRow?.incarnation ?? "" };
+          }
+          await deleteRowsWhere<AnnotationHeadRow>(
+            transaction,
+            ANNOTATION_HEADS_STORE,
+            (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+            (row) => row.documentKey,
+          );
+          await deleteRowsWhere<AnnotationEvidenceRow>(
+            transaction,
+            ANNOTATION_EVIDENCE_STORE,
+            (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+            (row) => row.evidenceKey,
+          );
+          await deleteRowsWhere<AnnotationPayloadRow>(
+            transaction,
+            ANNOTATION_PAYLOADS_STORE,
+            (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+            (row) => row.payloadKey,
+          );
+          await deleteRowsWhere<AnnotationOperationRow>(
+            transaction,
+            ANNOTATION_OPERATIONS_STORE,
+            (row) => row.namespaceKey === namespaceKey,
+            (row) => row.operationKey,
+          );
+          await deleteRowsWhere<AnnotationSequenceRow>(
+            transaction,
+            ANNOTATION_SEQUENCES_STORE,
+            (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+            (row) => row.documentKey,
+          );
+          await deleteRowsWhere<AnnotationExpiryRow>(
+            transaction,
+            ANNOTATION_EXPIRY_STORE,
+            (row) => annotationNamespaceKey(row.receipt.key.namespace) === namespaceKey,
+            (row) => row.expiryKey,
+          );
+          await requestResult(
+            transaction
+              .objectStore(ANNOTATION_NAMESPACES_STORE)
+              .put({ namespaceKey, incarnation: newIncarnation } satisfies NamespaceRow),
+          );
+          this.#options.beforeCommit?.("reset");
+          return { committed: true, incarnation: newIncarnation };
+        },
+      );
+    } catch (error) {
+      releaseProvisioned();
+      throw error;
+    }
     if (result.committed) {
+      confirmProvisioned();
       // Reset wakes every registration in its exact namespace, and no other.
       this.#publishNamespaceWake(namespaceKey);
       for (const [identity, record] of [...this.#pendingExpiries]) {
@@ -1178,6 +1205,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           this.#pendingExpiries.delete(identity);
         }
       }
+    } else {
+      releaseProvisioned();
     }
     return result;
   }
