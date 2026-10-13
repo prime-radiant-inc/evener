@@ -280,11 +280,14 @@ func TestBuildBody_UndecodableImageIsConfigurationError(t *testing.T) {
 	if !errors.As(err, &cfg) {
 		t.Fatalf("err = %T %v, want *llm.ConfigurationError", err, err)
 	}
+	if !errors.Is(err, image.ErrFormat) {
+		t.Fatalf("err = %v, want the decoder's error preserved as the cause", err)
+	}
 	got, jsonErr := json.Marshal(cfg.Error())
 	if jsonErr != nil {
 		t.Fatalf("marshal error string: %v", jsonErr)
 	}
-	const want = `"configuration error: cannot send image to anthropic: image: unknown format (media type \"image/bmp\"); Anthropic accepts image/png, image/jpeg, image/gif, and image/webp"`
+	const want = `"configuration error: cannot send image to anthropic: cannot decode image with media type \"image/bmp\"; Anthropic accepts image/png, image/jpeg, image/gif, and image/webp"`
 	if string(got) != want {
 		t.Fatalf("refusal message:\n got %s\nwant %s", got, want)
 	}

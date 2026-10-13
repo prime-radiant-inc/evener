@@ -33,7 +33,15 @@ func toolResultHasProviderImage(result *llm.ToolResultData) bool {
 // error text.
 func normalizeImageInput(data []byte, claimedMediaType string) ([]byte, string, error) {
 	if _, format, err := image.Decode(bytes.NewReader(data)); err == nil && format == "gif" {
-		if frames, derr := gif.DecodeAll(bytes.NewReader(data)); derr == nil && len(frames.Image) > 1 {
+		// image.Decode reads only a GIF's first frame, so a corrupt later frame
+		// slips past it; gif.DecodeAll is the full-file check. Its error must
+		// propagate: falling through would hand the malformed GIF to the
+		// provider, which would fail the whole request instead.
+		frames, derr := gif.DecodeAll(bytes.NewReader(data))
+		if derr != nil {
+			return nil, "", fmt.Errorf("decode OpenAI GIF input %q: %w", claimedMediaType, derr)
+		}
+		if len(frames.Image) > 1 {
 			return encodeImageInputAsPNG(frames.Image[0])
 		}
 	}

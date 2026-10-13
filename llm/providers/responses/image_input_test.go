@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"image"
+	"image/color"
+	"image/gif"
 	"image/png"
 	"strings"
 	"testing"
@@ -29,6 +31,23 @@ func rasterFixturePNG(t *testing.T) []byte {
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
 		t.Fatalf("encode PNG fixture: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// multiFrameGIF encodes a two-frame GIF (an animation).
+func multiFrameGIF(t *testing.T) []byte {
+	t.Helper()
+	frame := func(c color.Color) *image.Paletted {
+		p := image.NewPaletted(image.Rect(0, 0, 2, 2), color.Palette{c, color.White})
+		return p
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, &gif.GIF{
+		Image: []*image.Paletted{frame(color.Black), frame(color.RGBA{R: 0xff})},
+		Delay: []int{0, 0},
+	}); err != nil {
+		t.Fatalf("encode GIF fixture: %v", err)
 	}
 	return buf.Bytes()
 }
@@ -151,5 +170,39 @@ func TestNormalizeImageInput(t *testing.T) {
 	}
 	if _, _, err := normalizeImageInput([]byte("not a raster"), "image/png"); err == nil {
 		t.Fatal("normalizeImageInput accepted non-raster bytes")
+	}
+}
+
+// An animated GIF is flattened to its first frame: OpenAI's input_image carries
+// a single still, and gif decoding must survive a second frame.
+func TestNormalizeImageInput_FlattensAnimatedGIF(t *testing.T) {
+	frames := multiFrameGIF(t)
+	all, err := gif.DecodeAll(bytes.NewReader(frames))
+	if err != nil || len(all.Image) != 2 {
+		t.Fatalf("fixture is not a two-frame GIF: frames=%d err=%v", len(all.Image), err)
+	}
+	data, mediaType, err := normalizeImageInput(frames, "image/gif")
+	if err != nil {
+		t.Fatalf("normalizeImageInput(animated gif): %v", err)
+	}
+	if mediaType != "image/png" {
+		t.Fatalf("media type = %q, want image/png (first frame)", mediaType)
+	}
+	if _, format, err := image.Decode(bytes.NewReader(data)); err != nil || format != "png" {
+		t.Fatalf("flattened bytes decode as (%q, %v), want png", format, err)
+	}
+}
+
+// A GIF whose first frame reads but whose later frame data is corrupt must be
+// rejected locally, not passed through to the provider as-is: image.Decode
+// reads only the first frame, so gif.DecodeAll is the only full-file check.
+func TestNormalizeImageInput_RejectsCorruptLaterGIFFrame(t *testing.T) {
+	full := multiFrameGIF(t)
+	truncated := full[:len(full)-10]
+	if _, format, err := image.Decode(bytes.NewReader(truncated)); err != nil || format != "gif" {
+		t.Fatalf("fixture no longer exhibits a readable first frame: (%q, %v)", format, err)
+	}
+	if _, _, err := normalizeImageInput(truncated, "image/gif"); err == nil {
+		t.Fatal("normalizeImageInput passed through a GIF with a corrupt later frame")
 	}
 }
