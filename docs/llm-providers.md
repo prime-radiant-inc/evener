@@ -142,8 +142,9 @@ the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
 `MaxOutputTokens`, `EffortValues`, `DefaultEffort`, `Cost`, `Reasoning`, plus
 `ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`).
 `InputModalities` comes from OpenRouter's `architecture.input_modalities`, or,
-when that list is empty, from a gateway's `capabilities.vision` (an advertised
-vision capability is `["text", "image"]`). It
+when that list carries no entry, from a gateway's `capabilities.vision` (an
+advertised vision capability is `["text", "image"]`); the Codex backend states
+the list itself. It
 overrides catalog and curated facts but **never a field the user layer (layer
 4) set**, and it never touches any other wire-shaping cap. Live rows matching
 the non-chat pattern list (`embedding`, `whisper`, `tts`, `dall-e`,

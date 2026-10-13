@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Mutation check for a converted test: break the behavior, confirm the tests fail.
 #
-# When converting a copy-oracle test (see inventory.py), the new assertion must
-# still catch a real regression. This applies one perl substitution to a
-# production file, runs the given test command, and passes only if the tests
-# FAIL.
+# When converting a copy-oracle test (see `evener dev copy-oracle`), the new
+# assertion must still catch a real regression. This applies one perl
+# substitution to a production file, runs the given test command, and passes
+# only if the tests FAIL.
 #
 # Usage:
 #   tools/copy-oracle/mutate.sh <file> <perl-subst> -- <test command...>

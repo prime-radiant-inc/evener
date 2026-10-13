@@ -198,4 +198,7 @@ func TestListModelsReadsGatewayVisionCapability(t *testing.T) {
 	if c := listRow(t, `{"id":"quiet-model","context_length":8192}`); c.AcceptsModality("image") {
 		t.Fatalf("a row with no capabilities must not advertise image input: %+v", c.InputModalities)
 	}
+	if c := listRow(t, `{"id":"both-model","architecture":{"input_modalities":["text"]},"capabilities":{"vision":true}}`); c.AcceptsModality("image") || len(c.InputModalities) != 1 {
+		t.Fatalf("architecture.input_modalities must win over capabilities.vision: %+v", c.InputModalities)
+	}
 }

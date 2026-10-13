@@ -1,25 +1,35 @@
-// Finds TypeScript tests that exist only to check wording, the ratchet behind
-// docs/developing-evener/testing.md's "Copy Is Not a Test Oracle".
-// copyonlyAudit.test.ts runs scanRepo over the repository and fails on any
-// target missing from allowlist.tsv. Go tests have their own scanner and
-// allowlist in internal/devtool/copyonly.
+// Inventories TypeScript tests that use human-readable copy as their oracle,
+// the TypeScript half of docs/developing-evener/testing.md's "Copy Is Not a
+// Test Oracle" tooling (the Go half, and the `evener dev copy-oracle`
+// command that runs both, live in internal/devtool/copyonly).
 //
-// A target is a test whose name says its subject is wording (it shows,
-// renders, labels, says, ...) and whose every check is a copy claim. A check
-// is an expect(...) chain or a getBy*/findBy* query. It is a copy claim when
-// it compares output with a copy literal and with nothing else: a count, an
-// attribute or state read, a spy assertion or a role query makes it a behavior
-// check. A copy literal also appears in production TypeScript source, is not
-// shaped like an identifier, code or markup, and is not text the test itself
-// supplied: seeing a test's own fixture come back out is a real behavioral
-// check.
+// copyonlyAudit.test.ts runs scanRepo over the repository and fails on any
+// target missing from allowlist.tsv. A target is a test whose name says its
+// subject is wording (it shows, renders, labels, says, ...) and whose every
+// check is a copy claim. A check is an expect(...) chain or a getBy*/findBy*
+// query. It is a copy claim when it compares output with a copy literal and
+// with nothing else: a count, an attribute or state read, a spy assertion or a
+// role query makes it a behavior check. A copy literal also appears in
+// production TypeScript source, is not shaped like an identifier, code or
+// markup, and is not text the test itself supplied: seeing a test's own
+// fixture come back out is a real behavioral check.
+//
+// inventoryRepo also lists every copy hit (a by-text query or text matcher
+// against production copy, sorted into ts-assert, ts-locator and ts-constant),
+// the fixture literals per package, and the copy-only tests whose names say
+// they test behavior. Run directly, this module prints that inventory as
+// JSON for `evener dev copy-oracle`:
+//
+//   node cmd/evener-hub/frontend/src/dev/copyonly/copyonly.ts --root REPO [--path PREFIX]
 //
 // Tests are read with the TypeScript compiler, so comments, strings, regex
 // literals, JSX text, multi-line and typed declarations can't blur a test's
-// boundaries or fake a check.
+// boundaries or fake a check. The module runs under Node's type stripping, so
+// it uses only erasable TypeScript syntax and no relative imports.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { argv, stdout } from "node:process";
 import * as ts from "typescript";
 
 /** A test that exists only to check wording. */
@@ -28,6 +38,27 @@ export interface Target {
   file: string;
   test: string;
   line: number;
+}
+
+/** One assertion whose oracle is production copy. */
+export interface Hit {
+  file: string;
+  line: number;
+  category: "ts-assert" | "ts-locator" | "ts-constant";
+  literal: string;
+}
+
+/** A test whose every check is a copy claim; its name says it tests wording (copy) or behavior. */
+export interface CopyOnlyTest extends Target {
+  purpose: "copy" | "behavior";
+}
+
+/** The inventory of a set of tests; printed for internal/devtool/copyonly's Report. */
+export interface Inventory {
+  hits: Hit[];
+  /** Per package (a test file's directory): literals found only in tests. */
+  fixtures: Record<string, number>;
+  copyOnly: CopyOnlyTest[];
 }
 
 /**
@@ -43,10 +74,23 @@ const TEST_SUPPORT = /(\/__tests__\/|TestUtils\.|\/testing\/|\/src\/dev\/)/;
 
 /**
  * Every target among the TypeScript tests git tracks under root, sorted by
- * file and line. Tracked files are read as they are in the working tree;
- * untracked files are left out, so a scratch file can't change the answer.
+ * file and line.
  */
 export function scanRepo(root: string): Target[] {
+  return inventoryRepo(root, "", false)
+    .copyOnly.filter((t) => t.purpose === "copy")
+    .map(({ file, test, line }) => ({ file, test, line }));
+}
+
+/**
+ * The inventory of the TypeScript tests git tracks under root whose path
+ * starts with prefix, copy-only tests sorted by file and line. Tracked files
+ * are read as they are in the working tree; untracked files are left out, so
+ * a scratch file can't change the answer. Hits and fixture counts are left
+ * out unless withHits is set: they look up every literal in every test, which
+ * the audit doesn't need.
+ */
+export function inventoryRepo(root: string, prefix: string, withHits = true): Inventory {
   const files = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 1 << 28 })
     .split("\0")
     .filter(
@@ -70,12 +114,17 @@ export function scanRepo(root: string): Target[] {
     .map(read)
     .join("\n");
   const scanner = new Scanner(prod);
-  const targets: Target[] = [];
-  for (const f of files.filter((f) => TEST_FILE.test(f))) {
+  const inventory: Inventory = { hits: [], fixtures: {}, copyOnly: [] };
+  for (const f of files.filter((f) => TEST_FILE.test(f) && f.startsWith(prefix))) {
     const text = read(f);
-    if (text !== null) targets.push(...scanner.scanFile(f, text));
+    if (text === null) continue;
+    const found = scanner.inventoryFile(f, text, withHits);
+    inventory.hits.push(...found.hits);
+    inventory.copyOnly.push(...found.copyOnly);
+    if (found.fixtures > 0) inventory.fixtures[dirname(f)] = (inventory.fixtures[dirname(f)] ?? 0) + found.fixtures;
   }
-  return targets.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1));
+  inventory.copyOnly.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1));
+  return inventory;
 }
 
 /** A test name that says its subject is wording. */
@@ -91,6 +140,9 @@ const TEXT_QUERY = /^(get|find|query)(All)?By(Text|Title)$/;
 const ROLE_QUERY = /^(get|find|query)(All)?ByRole$/;
 const TEXT_MATCHERS = new Set(["toContain", "toBe", "toEqual", "toMatch", "toHaveTextContent", "toStrictEqual"]);
 const NUMERIC_MATCHERS = new Set(["toBe", "toEqual", "toStrictEqual"]);
+/** Calls that act on the element a query found: a by-text query inside one only locates a control. */
+const CLICK_CALLS = new Set(["press", "click", "act"]);
+const CLICK_RECEIVERS = new Set(["fireEvent", "user", "userEvent"]);
 /** Reads of structure or state: a check through one of these is about the element, not its words. */
 const BEHAVIOR_PROPERTIES = new Set(["length", "tagName", "dataset", "checked", "disabled", "className", "classList"]);
 const BEHAVIOR_CALLS = new Set(["getAttribute", "hasAttribute", "toHaveAttribute", "toHaveLength"]);
@@ -112,30 +164,81 @@ interface TestDeclaration {
   call: ts.CallExpression;
 }
 
+/** One test file's share of an Inventory; fixtures counts its fixture literals. */
+interface FileInventory {
+  hits: Hit[];
+  fixtures: number;
+  copyOnly: CopyOnlyTest[];
+}
+
 /** Looks literals up in the production corpus; a miss scans all of it, so answers are memoized. */
 export class Scanner {
+  private readonly prod: string;
   private readonly memo = new Map<string, boolean>();
 
-  constructor(private readonly prod: string) {}
+  constructor(prod: string) {
+    this.prod = prod;
+  }
 
+  /** The file's targets: its copy-only tests whose names say they test wording. */
   scanFile(file: string, text: string): Target[] {
+    return this.inventoryFile(file, text, false)
+      .copyOnly.filter((t) => t.purpose === "copy")
+      .map(({ file, test, line }) => ({ file, test, line }));
+  }
+
+  /** The file's copy-only tests, and its hits and fixture count when withHits is set. */
+  inventoryFile(file: string, text: string, withHits = true): FileInventory {
     const kind = file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
     const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind);
     const imported = copyImports(sf);
-    const targets: Target[] = [];
+    const found: FileInventory = withHits ? this.copyHits(file, sf, imported) : { hits: [], fixtures: 0, copyOnly: [] };
     const visit = (node: ts.Node): void => {
       const decl = testDeclaration(node);
       if (decl === null) {
         ts.forEachChild(node, visit);
         return;
       }
-      const name = rawText(decl.name, sf);
-      if (COPY_PURPOSE_NAME.test(name) && this.isCopyOnly(decl, sf, imported)) {
-        targets.push({ file, test: name, line: sf.getLineAndCharacterOfPosition(decl.call.getStart(sf)).line + 1 });
+      if (this.isCopyOnly(decl, sf, imported)) {
+        const test = rawText(decl.name, sf);
+        found.copyOnly.push({
+          file,
+          test,
+          line: lineOf(decl.call, sf),
+          purpose: COPY_PURPOSE_NAME.test(test) ? "copy" : "behavior",
+        });
       }
     };
     visit(sf);
-    return targets;
+    return found;
+  }
+
+  /**
+   * Every by-text query and text matcher in the file whose argument is
+   * production copy or an imported copy constant, and how many literals were
+   * fixture data the tests supplied.
+   */
+  private copyHits(file: string, sf: ts.SourceFile, imported: Set<string>): FileInventory {
+    const found: FileInventory = { hits: [], fixtures: 0, copyOnly: [] };
+    walk(sf, (node) => {
+      const check = textCheck(node);
+      if (check === null) return;
+      const { call, arg, isQuery } = check;
+      const line = lineOf(ts.isPropertyAccessExpression(call.expression) ? call.expression.name : call.expression, sf);
+      if (ts.isIdentifier(arg)) {
+        if (imported.has(arg.text)) found.hits.push({ file, line, category: "ts-constant", literal: arg.text });
+        return;
+      }
+      const probe = literalProbe(arg, sf);
+      if (probe === null || contractShaped(probe)) return;
+      if (!this.inProd(probe)) {
+        found.fixtures++;
+        return;
+      }
+      const category = isQuery && insideClick(call) ? "ts-locator" : "ts-assert";
+      found.hits.push({ file, line, category, literal: probe });
+    });
+    return found;
   }
 
   private isCopyOnly(decl: TestDeclaration, sf: ts.SourceFile, imported: Set<string>): boolean {
@@ -166,6 +269,49 @@ export class Scanner {
     }
     return found;
   }
+}
+
+function lineOf(node: ts.Node, sf: ts.SourceFile): number {
+  return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+}
+
+/**
+ * A text check: a by-text or by-title query, or a text matcher, with the
+ * argument it compares. The audit's copy claims and the inventory's hits both
+ * read checks through this, so they agree on what one is.
+ */
+function textCheck(node: ts.Node): { call: ts.CallExpression; arg: ts.Expression; isQuery: boolean } | null {
+  if (!ts.isCallExpression(node)) return null;
+  const name = calleeName(node) ?? "";
+  const isQuery = TEXT_QUERY.test(name);
+  const isMatcher = ts.isPropertyAccessExpression(node.expression) && TEXT_MATCHERS.has(name);
+  const arg = node.arguments[0];
+  if (arg === undefined || !(isQuery || isMatcher)) return null;
+  return { call: node, arg, isQuery };
+}
+
+/** The text a query or matcher argument stands for: a string's raw text, a regex's literal core. */
+function literalProbe(arg: ts.Expression, sf: ts.SourceFile): string | null {
+  if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) return rawText(arg, sf).trim();
+  if (ts.isRegularExpressionLiteral(arg)) return regexCore(arg.text.slice(1, arg.text.lastIndexOf("/"))).trim();
+  return null;
+}
+
+/** The node is an argument, however deep, of a click: fireEvent.x(...), user.x(...), press/click/act(...). */
+function insideClick(node: ts.Node): boolean {
+  for (let p = node.parent; p !== undefined && !ts.isBlock(p) && !ts.isSourceFile(p); p = p.parent) {
+    if (!ts.isCallExpression(p)) continue;
+    const callee = p.expression;
+    if (CLICK_CALLS.has(calleeName(p) ?? "")) return true;
+    if (
+      ts.isPropertyAccessExpression(callee) &&
+      ts.isIdentifier(callee.expression) &&
+      CLICK_RECEIVERS.has(callee.expression.text)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -240,7 +386,11 @@ function startsAssertion(call: ts.CallExpression): boolean {
   );
 }
 
-/** The whole member/call chain a call starts: `expect(x).not.toBe(y)` for `expect(x)`. */
+/**
+ * The whole member/call chain a call starts: `expect(x).not.toBe(y)` for
+ * `expect(x)`, looking through the parentheses, `as`, `satisfies` and `!`
+ * wrappers that leave the chain unchanged: `(expect(x) as T).toBe(y)`.
+ */
 function chainTop(node: ts.Node): ts.Node {
   let top = node;
   for (;;) {
@@ -248,7 +398,11 @@ function chainTop(node: ts.Node): ts.Node {
     const continues =
       ((ts.isPropertyAccessExpression(p) || ts.isElementAccessExpression(p) || ts.isCallExpression(p)) &&
         p.expression === top) ||
-      ts.isNonNullExpression(p);
+      ts.isNonNullExpression(p) ||
+      ts.isParenthesizedExpression(p) ||
+      ts.isAsExpression(p) ||
+      ts.isSatisfiesExpression(p) ||
+      ts.isTypeAssertionExpression(p);
     if (!continues) return top;
     top = p;
   }
@@ -291,18 +445,11 @@ const IMPORTED_COPY = Symbol("imported copy");
 function copyProbes(check: ts.Node, sf: ts.SourceFile, imported: Set<string>): (string | typeof IMPORTED_COPY)[] {
   const probes: (string | typeof IMPORTED_COPY)[] = [];
   walk(check, (node) => {
-    if (!ts.isCallExpression(node)) return;
-    const name = calleeName(node) ?? "";
-    const arg = node.arguments[0];
-    const isMatcher = ts.isPropertyAccessExpression(node.expression) && TEXT_MATCHERS.has(name);
-    if (arg === undefined || !(TEXT_QUERY.test(name) || isMatcher)) return;
-    if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
-      probes.push(rawText(arg, sf).trim());
-    } else if (ts.isRegularExpressionLiteral(arg)) {
-      probes.push(regexCore(arg.text.slice(1, arg.text.lastIndexOf("/"))).trim());
-    } else if (ts.isIdentifier(arg) && imported.has(arg.text)) {
-      probes.push(IMPORTED_COPY);
-    }
+    const arg = textCheck(node)?.arg;
+    if (arg === undefined) return;
+    const probe = literalProbe(arg, sf);
+    if (probe !== null) probes.push(probe);
+    else if (ts.isIdentifier(arg) && imported.has(arg.text)) probes.push(IMPORTED_COPY);
   });
   return probes;
 }
@@ -418,4 +565,17 @@ export function regexCore(rx: string): string {
     if (runeLength(r) > runeLength(best)) best = r;
   }
   return best;
+}
+
+if (import.meta.main) {
+  const args = argv.slice(2);
+  const flag = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const root = flag("--root");
+  if (root === undefined) throw new Error("usage: node copyonly.ts --root REPO [--path PREFIX]");
+  // The wire shape internal/devtool/copyonly's Report decodes.
+  const { hits, fixtures, copyOnly } = inventoryRepo(root, flag("--path") ?? "");
+  stdout.write(JSON.stringify({ hits, fixtures, copy_only: copyOnly }));
 }

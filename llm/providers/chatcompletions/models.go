@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,20 +22,16 @@ import (
 // max_input_tokens, max_completion_tokens and max_output_tokens at the row's
 // top level instead of under top_provider, so those are read too.
 type modelEntry struct {
-	ID                  string   `json:"id"`
-	ContextLength       int      `json:"context_length"`
-	ContextWindow       int      `json:"context_window"`
-	MaxInputTokens      int      `json:"max_input_tokens"`
-	MaxCompletionTokens int      `json:"max_completion_tokens"`
-	MaxOutputTokens     int      `json:"max_output_tokens"`
-	SupportedParameters []string `json:"supported_parameters"`
-	Architecture        struct {
-		InputModalities []string `json:"input_modalities"`
-	} `json:"architecture"`
-	Capabilities struct {
-		Vision *bool `json:"vision"`
-	} `json:"capabilities"`
-	Reasoning struct {
+	ID                  string                          `json:"id"`
+	ContextLength       int                             `json:"context_length"`
+	ContextWindow       int                             `json:"context_window"`
+	MaxInputTokens      int                             `json:"max_input_tokens"`
+	MaxCompletionTokens int                             `json:"max_completion_tokens"`
+	MaxOutputTokens     int                             `json:"max_output_tokens"`
+	SupportedParameters []string                        `json:"supported_parameters"`
+	Architecture        requestutil.GatewayArchitecture `json:"architecture"`
+	Capabilities        requestutil.GatewayCapabilities `json:"capabilities"`
+	Reasoning           struct {
 		Mandatory        *bool    `json:"mandatory"`
 		DefaultEnabled   *bool    `json:"default_enabled"`
 		SupportedEfforts []string `json:"supported_efforts"`
@@ -87,14 +82,9 @@ func (m modelEntry) row() registry.Model {
 		if m.Reasoning.Mandatory != nil && *m.Reasoning.Mandatory {
 			caps.ThinkingAlwaysOn = new(true)
 		}
-		caps.EffortValues = dedupStrings(m.Reasoning.SupportedEfforts)
+		caps.EffortValues = requestutil.DedupStrings(m.Reasoning.SupportedEfforts)
 	}
-	if len(m.Architecture.InputModalities) > 0 {
-		caps.InputModalities = dedupStrings(m.Architecture.InputModalities)
-	} else if registry.BoolValue(m.Capabilities.Vision) {
-		// A gateway may publish vision under capabilities, not architecture.
-		caps.InputModalities = []string{"text", "image"}
-	}
+	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {
 			caps.Cost = &registry.Cost{Input: in, Output: out}
@@ -126,16 +116,6 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		return nil, nil
 	})
 	return rows, err
-}
-
-func dedupStrings(in []string) []string {
-	var out []string
-	for _, s := range in {
-		if s != "" && !slices.Contains(out, s) {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // perTokenCostToPerMillion converts OpenRouter's per-token price strings

@@ -25,17 +25,32 @@ var diagnostics = map[string]bool{
 	"Log": true, "Logf": true, "Skip": true, "Skipf": true,
 }
 
-func (s *scanner) scanGo(path, src string) ([]Target, error) {
+// errish is the subject of a text check that is an error or error-ish value.
+var errish = regexp.MustCompile(`(?i)(\.Error\(\)|\berr\w*\b|\bErr\w*\b|stderr|errOut|errMsg|message|msg)`)
+
+// fileReport is one test file's share of a Report; fixtures counts its
+// fixture literals.
+type fileReport struct {
+	hits     []Hit
+	fixtures int
+	copyOnly []CopyOnlyTest
+}
+
+// scanGo reports the file's copy-only tests, and its copy hits and fixture
+// count when withHits is set.
+func (s *scanner) scanGo(path, src string, withHits bool) (fileReport, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, src, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
-		return nil, err
+		return fileReport{}, err
 	}
-	var targets []Target
+	var r fileReport
+	if withHits {
+		r = s.goHits(fset, src, file, path)
+	}
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || fn.Body == nil || !testFunc.MatchString(fn.Name.Name) ||
-			!copyPurposeName.MatchString(fn.Name.Name) {
+		if !ok || fn.Recv != nil || fn.Body == nil || !testFunc.MatchString(fn.Name.Name) {
 			continue
 		}
 		checks := goChecks(fn.Body)
@@ -51,10 +66,48 @@ func (s *scanner) scanGo(path, src string) ([]Target, error) {
 			}
 		}
 		if allCopy {
-			targets = append(targets, Target{File: path, Test: fn.Name.Name, Line: fset.Position(fn.Pos()).Line})
+			purpose := PurposeBehavior
+			if copyPurposeName.MatchString(fn.Name.Name) {
+				purpose = PurposeCopy
+			}
+			r.copyOnly = append(r.copyOnly, CopyOnlyTest{
+				File: path, Line: fset.Position(fn.Pos()).Line, Test: fn.Name.Name, Purpose: purpose,
+			})
 		}
 	}
-	return targets, nil
+	return r, nil
+}
+
+// goHits finds every text check anywhere in the file, helpers included, whose
+// literal is production copy, and counts the ones whose literal only tests
+// use. Contract-shaped literals are neither.
+func (s *scanner) goHits(fset *token.FileSet, src string, file *ast.File, path string) fileReport {
+	var r fileReport
+	tf := fset.File(file.Pos())
+	ast.Inspect(file, func(n ast.Node) bool {
+		for _, c := range comparisons(n) {
+			if contractShaped(c.lit) {
+				continue
+			}
+			var category string
+			switch {
+			case s.goProd.contains(c.lit):
+				category = CategoryGoCopy
+				subject := src[tf.Offset(c.subject.Pos()):tf.Offset(c.subject.End())]
+				if errish.MatchString(subject) {
+					category = CategoryGoErrString
+				}
+			case s.isAssetPhrase(c.lit):
+				category = CategoryGoAsset
+			default:
+				r.fixtures++
+				continue
+			}
+			r.hits = append(r.hits, Hit{File: path, Line: tf.Line(n.Pos()), Category: category, Literal: c.lit})
+		}
+		return true
+	})
+	return r
 }
 
 // goChecks collects the test's claims: every `if` condition and every
@@ -184,15 +237,19 @@ func (s *scanner) goCopyClaim(cond ast.Expr, supplied string) bool {
 // isGoCopy reports a literal found in production Go source, or a phrase found
 // in a production text asset.
 func (s *scanner) isGoCopy(lit string) bool {
-	if s.goProd.contains(lit) {
-		return true
-	}
+	return s.goProd.contains(lit) || s.isAssetPhrase(lit)
+}
+
+// isAssetPhrase reports a phrase (eight runes or more, with a space) found in
+// a production text asset.
+func (s *scanner) isAssetPhrase(lit string) bool {
 	return utf8.RuneCountInString(lit) >= 8 && strings.Contains(lit, " ") && s.assets.contains(lit)
 }
 
 // checksBehavior reports a condition that checks something besides wording
 // anywhere inside it: an expected error (`err == nil`), a length, a numeric
-// comparison, or any other comparison that doesn't compare text with copy.
+// comparison, any other comparison that doesn't compare text with copy, or
+// text built from copy and a value ("Hello "+name), which checks the value.
 func checksBehavior(cond ast.Expr) bool {
 	found := false
 	ast.Inspect(cond, func(n ast.Node) bool {
@@ -209,6 +266,10 @@ func checksBehavior(cond ast.Expr) bool {
 			}
 		case *ast.CallExpr:
 			found = found || isIdent(n.Fun, "len")
+		}
+		// "copy "+value checks that the value came through.
+		for _, c := range comparisons(n) {
+			found = found || c.partial
 		}
 		return !found
 	})
@@ -252,47 +313,82 @@ func isCopyTerm(term ast.Expr) bool {
 	return false
 }
 
-// copyLiterals returns the literals the expression compares text with:
-// strings.Contains and its kin, == and != against a string, and
-// regexp.MustCompile(...).MatchString (the regex's literal core).
+// copyLiterals returns the literals the expression compares text with,
+// anywhere inside it.
 func copyLiterals(e ast.Expr) []string {
 	var lits []string
 	ast.Inspect(e, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.CallExpr:
-			if pkg, fn := selector(n.Fun); pkg == "strings" && copyComparers[fn] && len(n.Args) == 2 {
-				if lit, ok := stringLit(n.Args[1]); ok {
-					lits = append(lits, strings.TrimSpace(lit))
-				}
-			}
-			if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MatchString" {
-				if compile, ok := sel.X.(*ast.CallExpr); ok && len(compile.Args) == 1 {
-					if pkg, fn := selector(compile.Fun); pkg == "regexp" && fn == "MustCompile" {
-						if lit, ok := stringLit(compile.Args[0]); ok {
-							lits = append(lits, strings.TrimSpace(regexCore(lit)))
-						}
-					}
-				}
-			}
-		case *ast.BinaryExpr:
-			if n.Op == token.EQL || n.Op == token.NEQ {
-				for _, side := range []ast.Expr{n.X, n.Y} {
-					if lit, ok := stringLit(side); ok {
-						lits = append(lits, strings.TrimSpace(lit))
-					}
-				}
-			}
+		for _, c := range comparisons(n) {
+			lits = append(lits, c.lit)
 		}
 		return true
 	})
 	return lits
 }
 
-func stringLit(e ast.Expr) (string, bool) {
-	lit, ok := ast.Unparen(e).(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
-		return "", false
+// comparison is a text check: the literal (trimmed; a regex's literal core)
+// and the value it is checked against. partial marks a literal that is only
+// the front of a concatenation with a non-literal ("copy "+value): the check
+// then also asks whether the value came through, which is behavior.
+type comparison struct {
+	lit     string
+	subject ast.Expr
+	partial bool
+}
+
+// comparisons returns the text checks node n itself makes: strings.Contains
+// and its kin, == and != against a string (on either side), and
+// regexp.MustCompile(...).MatchString.
+func comparisons(n ast.Node) []comparison {
+	check := func(e, subject ast.Expr, core func(string) string) []comparison {
+		lit, complete, ok := stringLit(e)
+		if !ok {
+			return nil
+		}
+		return []comparison{{lit: strings.TrimSpace(core(lit)), subject: subject, partial: !complete}}
 	}
-	s, err := strconv.Unquote(lit.Value)
-	return s, err == nil
+	same := func(s string) string { return s }
+	switch n := n.(type) {
+	case *ast.CallExpr:
+		if pkg, fn := selector(n.Fun); pkg == "strings" && copyComparers[fn] && len(n.Args) == 2 {
+			return check(n.Args[1], n.Args[0], same)
+		}
+		if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MatchString" && len(n.Args) == 1 {
+			if compile, ok := sel.X.(*ast.CallExpr); ok && len(compile.Args) == 1 {
+				if pkg, fn := selector(compile.Fun); pkg == "regexp" && fn == "MustCompile" {
+					return check(compile.Args[0], n.Args[0], regexCore)
+				}
+			}
+		}
+	case *ast.BinaryExpr:
+		if n.Op != token.EQL && n.Op != token.NEQ {
+			return nil
+		}
+		return append(check(n.Y, n.X, same), check(n.X, n.Y, same)...)
+	}
+	return nil
+}
+
+// stringLit is the text a string literal holds. A concatenation of literals
+// is one literal; one that also concatenates a value ("copy "+value) gives
+// the literal text in front, with complete false.
+func stringLit(e ast.Expr) (text string, complete, ok bool) {
+	e = ast.Unparen(e)
+	if concat, isConcat := e.(*ast.BinaryExpr); isConcat && concat.Op == token.ADD {
+		front, frontComplete, ok := stringLit(concat.X)
+		if !ok || !frontComplete {
+			return front, false, ok
+		}
+		back, backComplete, backOK := stringLit(concat.Y)
+		if !backOK || !backComplete {
+			return front, false, true
+		}
+		return front + back, true, true
+	}
+	lit, isLit := e.(*ast.BasicLit)
+	if !isLit || lit.Kind != token.STRING {
+		return "", false, false
+	}
+	text, err := strconv.Unquote(lit.Value)
+	return text, err == nil, err == nil
 }
