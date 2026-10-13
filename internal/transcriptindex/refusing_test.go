@@ -791,6 +791,128 @@ func TestRefusingHandlesReturnErrLockBusyWithoutBlocking(t *testing.T) {
 	}
 }
 
+// The repair path's revalidation (#4497 r9): a registration that lands after
+// another repair already committed a fresh build must adopt that outcome
+// instead of rebuilding the healthy sidecar again — a second full rebuild
+// re-pays the whole cost and rotates an incarnation readers hold. The
+// refusal names the build it refused; RebuildIfStillRefused rebuilds only
+// while that build is still the live one.
+func TestRebuildIfStillRefusedSkipsABuildTheRefusalDidNotName(t *testing.T) {
+	path, dir := openCommittedSidecar(t, fixture{name: "committed", header: everything().header, lines: []fixtureLine{entryLine(user("hello"))}})
+	before := snapshotSidecar(t, dir, false)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := OpenWithoutCatchUp(path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close() //nolint:errcheck // the test's own handle; hygiene only
+
+	// The delayed registration: the refusal named a build another reader's
+	// repair has already replaced.
+	if err := x.RebuildIfStillRefused(info.Size(), "build_the_refusal_named"); err != nil {
+		t.Fatal(err)
+	}
+	assertSameSidecar(t, "the no-op repair", before, snapshotSidecar(t, dir, false))
+
+	// The no-live-build refusal is answered by any committed build: an
+	// empty name skips over a live sidecar too.
+	if err := x.RebuildIfStillRefused(info.Size(), ""); err != nil {
+		t.Fatal(err)
+	}
+	assertSameSidecar(t, "the answered no-build refusal", before, snapshotSidecar(t, dir, false))
+}
+
+func TestRebuildIfStillRefusedRebuildsTheBuildTheRefusalStillNames(t *testing.T) {
+	path := writeFixture(t, fixture{name: "stale", header: everything().header, lines: []fixtureLine{entryLine(user("hello"))}})
+	dir := t.TempDir()
+	authorForeignSidecar(t, dir, 1)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := OpenWithoutCatchUp(path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close() //nolint:errcheck // the test's own handle; hygiene only
+
+	if err := x.RebuildIfStillRefused(info.Size(), "build_foreign"); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.ReadFile(filepath.Join(dir, currentFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(bytes.TrimSpace(current)); got == "build_foreign" {
+		t.Fatal("CURRENT still names the refused build: the repair did not rebuild")
+	}
+	y := openIndex(t, path, dir)
+	assertAllWindows(t, y, path)
+}
+
+func TestRebuildIfStillRefusedRebuildsWhenNoBuildAnswersTheRefusal(t *testing.T) {
+	path := writeFixture(t, fixture{name: "absent", header: everything().header, lines: []fixtureLine{entryLine(user("hello"))}})
+	dir := t.TempDir()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := OpenWithoutCatchUp(path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close() //nolint:errcheck // the test's own handle; hygiene only
+
+	// The refusal carried no build name and nothing has committed one since.
+	if err := x.RebuildIfStillRefused(info.Size(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, currentFileName)); err != nil {
+		t.Fatalf("the repair left no live build: %v", err)
+	}
+	y := openIndex(t, path, dir)
+	assertAllWindows(t, y, path)
+}
+
+// The revalidation's own failure class: a CURRENT it cannot read must fail
+// the repair ordinarily — the registry counts it against the budget and
+// retries — instead of guessing a skip, which would record success over a
+// sidecar still broken, or guessing a rebuild, whose committed CURRENT would
+// bury an access fault a permission change cannot fix.
+func TestRebuildIfStillRefusedAnswersAnUnreadableCurrentOrdinarily(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix file permission to make CURRENT unreadable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the file permission this test relies on")
+	}
+	path, dir := openCommittedSidecar(t, preludeFixture())
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, currentFileName), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, currentFileName), 0o644) })
+	x, err := OpenWithoutCatchUp(path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close() //nolint:errcheck // the test's own handle; hygiene only
+
+	err = x.RebuildIfStillRefused(info.Size(), "")
+	if err == nil {
+		t.Fatal("revalidation over an unreadable CURRENT must not answer success")
+	}
+	if errors.Is(err, ErrRebuildRequired) || errors.Is(err, ErrLockBusy) {
+		t.Fatalf("revalidation over an unreadable CURRENT = %v, want the ordinary access error", err)
+	}
+}
+
 func TestOrdinaryHandlesStillRebuildWhereRefusingHandlesRefuse(t *testing.T) {
 	t.Run("Open rebuilds an identity-stale sidecar", func(t *testing.T) {
 		path := writeFixture(t, fixture{name: "stale", header: everything().header, lines: []fixtureLine{entryLine(user("hello"))}})

@@ -98,10 +98,11 @@ type MessageSearch struct {
 	read func(transcriptPath string, held *appwire.SnapshotIdentity) (transcriptItems, error)
 	// askRepair, when set, is asked to start the shared background repair
 	// for a transcript whose index refused a read (ErrRebuildRequired):
-	// the hub wires its repair registry's refresher lane here. Nil keeps the
-	// refresher skipping such sessions silently, the way one unwired
-	// (a test) still indexes through a healthy sidecar.
-	askRepair func(transcriptPath string)
+	// the hub wires its repair registry's refresher lane here. The ask
+	// carries the refused build's own name for the repair's revalidation.
+	// Nil keeps the refresher skipping such sessions silently, the way one
+	// unwired (a test) still indexes through a healthy sidecar.
+	askRepair func(transcriptPath, refusedBuild string)
 	// writeMu keeps a Refresh and a Forget from interleaving their writes to
 	// one session.
 	writeMu sync.Mutex
@@ -314,9 +315,19 @@ func (x *MessageSearch) Refresh(ctx context.Context, sessions []MessageSearchSes
 				// The sidecar needs a rebuild this read refuses to run:
 				// skip the session for the cycle — no failure recorded, no
 				// inline rebuild, no lock-hold — and ask for the shared
-				// repair through the lane, which paces itself.
+				// repair through the lane, which paces itself. The ask
+				// carries the refused build's own name, the identity the
+				// armed repair revalidates against: an ask that lands after
+				// another repair already committed must not rebuild the
+				// healthy sidecar again.
 				if x.askRepair != nil {
-					x.askRepair(session.TranscriptPath)
+					var refusal *transcriptindex.RebuildRequiredError
+					errors.As(err, &refusal)
+					refused := ""
+					if refusal != nil {
+						refused = refusal.Build
+					}
+					x.askRepair(session.TranscriptPath, refused)
 				}
 				continue
 			case errors.Is(err, transcriptindex.ErrLockBusy):
@@ -374,8 +385,9 @@ func (x *MessageSearch) indexedTranscripts(ctx context.Context) (map[string]inde
 
 // SetRepairAsker wires the repair ask the refresher consults when a
 // transcript's index refuses a read: the hub's repair registry, whose
-// refresher lane runs at most one such repair hub-wide.
-func (x *MessageSearch) SetRepairAsker(ask func(transcriptPath string)) {
+// refresher lane runs at most one such repair hub-wide. The ask carries the
+// refused build's own name for the repair's revalidation.
+func (x *MessageSearch) SetRepairAsker(ask func(transcriptPath, refusedBuild string)) {
 	x.askRepair = ask
 }
 

@@ -47,8 +47,8 @@ func openTestMessageSearch(t *testing.T) *MessageSearch {
 	}
 	// The ask is fire-and-forget, the way the hub wires its lane; the
 	// mirror keeps its error for tests that call it directly.
-	index.SetRepairAsker(func(transcriptPath string) {
-		_ = rebuildTranscriptIndexForTest(transcriptPath)
+	index.SetRepairAsker(func(transcriptPath, refusedBuild string) {
+		_ = rebuildTranscriptIndexForTest(transcriptPath, refusedBuild)
 	})
 	t.Cleanup(func() { _ = index.Close() })
 	return index
@@ -57,8 +57,9 @@ func openTestMessageSearch(t *testing.T) *MessageSearch {
 // rebuildTranscriptIndexForTest mirrors the repair recipe the hub's registry
 // runs (cmd/evener-hub/app_threadread_repair.go), so a refresh whose refusing
 // read skips a session repairs its sidecar and the next cycle reads it, the
-// way the wired hub does.
-func rebuildTranscriptIndexForTest(transcriptPath string) error {
+// way the wired hub does — including the revalidation against the refused
+// build the ask carries.
+func rebuildTranscriptIndexForTest(transcriptPath, refusedBuild string) error {
 	info, err := os.Stat(transcriptPath)
 	if err != nil {
 		return err
@@ -68,7 +69,7 @@ func rebuildTranscriptIndexForTest(transcriptPath string) error {
 		return err
 	}
 	defer index.Close() //nolint:errcheck // test repair
-	return index.Rebuild(info.Size())
+	return index.RebuildIfStillRefused(info.Size(), refusedBuild)
 }
 
 // writeTestTranscript writes a format-2 transcript of turns for sessionID at
@@ -440,7 +441,7 @@ func TestALockHeldByAnotherHandleSkipsTheRefreshSilently(t *testing.T) {
 	writeTestTranscript(t, path, "s1", schema.NewTurn(schema.TurnUserInput, llm.User("settle the lock question")))
 	index := openTestMessageSearch(t)
 	var asks int
-	index.SetRepairAsker(func(string) { asks++ })
+	index.SetRepairAsker(func(string, string) { asks++ })
 
 	release, err := transcriptindex.HoldSidecarLockForTest(transcriptindex.DirFor(path))
 	if err != nil {

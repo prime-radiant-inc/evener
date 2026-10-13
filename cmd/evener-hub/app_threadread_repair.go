@@ -41,8 +41,10 @@ var transcriptIndexRepairLog = func(format string, args ...any) {
 // runTranscriptIndexRepair is the repair recipe the registry runs: rebuild
 // the sidecar from the transcript, off the request path, through the
 // exported Rebuild — the one place a full rebuild legitimately runs on the
-// hub. A package variable so tests can hold a repair open, fail it, or
-// observe it.
+// hub — revalidated against the refused build the registration carried, so
+// a registration that lands after another repair already committed skips
+// its rebuild. A package variable so tests can hold a repair open, fail it,
+// or observe it.
 var runTranscriptIndexRepair = repairTranscriptIndex
 
 // transcriptIndexRepairRecorded, when set, runs after one armed repair's
@@ -62,22 +64,28 @@ var transcriptIndexRepairRecorded func(path string)
 var transcriptIndexRepairPreOpen func(path string)
 
 // repairTranscriptIndex rebuilds path's transcript index sidecar from the
-// transcript — the authority — through the exported Rebuild, under the
-// blocking exclusive lock, in the caller's goroutine. It stats the transcript
+// transcript — the authority — under the blocking exclusive lock, in the
+// caller's goroutine, revalidated against refusedBuild: the name of the live
+// build the registration's refusal stood on, so a repair armed late — after
+// another reader's repair already committed a fresh build — adopts that
+// outcome instead of rebuilding the healthy sidecar again, re-paying the full
+// cost and rotating an incarnation readers hold. It stats the transcript
 // first and aborts without creating anything when it is already gone. The
 // stat narrows but cannot close the race with a concurrent deletion: the
 // open's MkdirAll and lock-file creation can still land after a deletion
-// removed the transcript and its sidecar directory, resurrecting them. The
-// failure path closes it instead — a rebuild that fails while the
+// removed the transcript and its sidecar directory, resurrecting them. Both
+// outcome paths close it instead — a rebuild that fails while the
 // transcript is gone removes the sidecar directory, finishing deletion's
-// contract; with no transcript at the path no live session can own the
-// directory, and a transcript that exists again is a new session's, left
-// entirely to it. It opens an ordinary handle without catching up, so this
-// rebuild is the one that runs — an open with a built-in catch-up would
-// either duplicate the rebuild for identity triggers or no-op for
-// corruption. It must not use the hub's cached handles: they carry the
-// refusing policy, which would refuse this rebuild too.
-func repairTranscriptIndex(transcriptPath string) error {
+// contract, and so does a revalidation no-op, whose resurrected open left
+// the directory behind the same way; with no transcript at the path no live
+// session can own the directory, and a transcript that exists again is a
+// new session's, left entirely to it. It opens an ordinary handle
+// without catching up, so this rebuild is the one that runs — an open
+// with a built-in catch-up would either duplicate the rebuild for identity
+// triggers or no-op for corruption. It must not use the hub's cached
+// handles: they carry the refusing policy, which would refuse this rebuild
+// too.
+func repairTranscriptIndex(transcriptPath, refusedBuild string) error {
 	info, err := os.Stat(transcriptPath)
 	if err != nil {
 		return err
@@ -91,21 +99,36 @@ func repairTranscriptIndex(transcriptPath string) error {
 		return err
 	}
 	defer index.Close() //nolint:errcheck // the rebuild has committed or not; close is hygiene
-	if err := index.Rebuild(info.Size()); err != nil {
+	defer index.Close() //nolint:errcheck // the rebuild has committed or not; close is hygiene
+	// finishDeletion removes the sidecar directory a resurrecting open
+	// recreated after a deletion won the race the recipe's first stat only
+	// narrows, closing the lock file first: on Windows the still-open lock
+	// file keeps the directory from being removed, and the deferred Close
+	// tolerates this second, idempotent call. A cleanup failure is logged,
+	// never hidden — the registry's own log carries it the way it carries
+	// repairs.
+	finishDeletion := func() {
+		_ = index.Close()
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			transcriptIndexRepairLog("transcript index repair cleanup failed (%s): %v",
+				filepath.Base(transcriptPath), rmErr)
+		}
+	}
+	// The deletion contract holds on both outcomes: a rebuild that fails
+	// while the transcript is gone removes the sidecar directory, finishing
+	// the deletion the race interrupted — and so does a revalidation no-op,
+	// whose resurrected open left the directory behind the same way. With no
+	// transcript at the path no live session can own the directory, and a
+	// transcript that exists again is a new session's, left entirely to it.
+	if err := index.RebuildIfStillRefused(info.Size(), refusedBuild); err != nil {
 		if _, serr := os.Stat(transcriptPath); os.IsNotExist(serr) {
-			// Close before removing: on Windows the still-open lock file keeps
-			// the directory from being removed, and the artifacts the open
-			// resurrected would survive the cleanup the deletion is owed. The
-			// deferred Close tolerates this second call (it is idempotent). A
-			// cleanup failure is logged, never hidden — the registry's own log
-			// carries it the way it carries repairs.
-			_ = index.Close()
-			if rmErr := os.RemoveAll(dir); rmErr != nil {
-				transcriptIndexRepairLog("transcript index repair cleanup failed (%s): %v",
-					filepath.Base(transcriptPath), rmErr)
-			}
+			finishDeletion()
 		}
 		return err
+	}
+	if _, serr := os.Stat(transcriptPath); os.IsNotExist(serr) {
+		finishDeletion()
+		return serr
 	}
 	return nil
 }
@@ -190,12 +213,14 @@ func (r *transcriptIndexRepairRegistry) exhaustedLocked(path string, e *transcri
 }
 
 // answerRead answers a read whose refusing handle refused a rebuild of
-// path's sidecar: it arms the path's single repair when none is in flight
-// (never blocking the caller) and reports whether a repair is armed, and
-// whether the path's budget is exhausted for the transcript's current
-// stamp — the re-arming read answers history-failed itself, while
-// subsequent reads during the re-armed repair answer rebuilding.
-func (r *transcriptIndexRepairRegistry) answerRead(path string) (armed, exhausted bool) {
+// path's sidecar — refused naming the live build the refusal stood on, the
+// identity the armed repair revalidates against. It arms the path's single
+// repair when none is in flight (never blocking the caller) and reports
+// whether a repair is armed, and whether the path's budget is exhausted for
+// the transcript's current stamp — the re-arming read answers history-failed
+// itself, while subsequent reads during the re-armed repair answer
+// rebuilding.
+func (r *transcriptIndexRepairRegistry) answerRead(path, refused string) (armed, exhausted bool) {
 	base := filepath.Base(path)
 	r.mu.Lock()
 	if e := r.entries[path]; e != nil && e.inFlight {
@@ -215,7 +240,7 @@ func (r *transcriptIndexRepairRegistry) answerRead(path string) (armed, exhauste
 	exhausted = r.exhaustedLocked(path, e)
 	r.mu.Unlock()
 	transcriptIndexRepairLog("transcript index repair started (%s)", base)
-	go r.run(path, false)
+	go r.run(path, false, refused)
 	return true, exhausted
 }
 
@@ -235,8 +260,10 @@ func (r *transcriptIndexRepairRegistry) inFlight(path string) bool {
 // in flight just skips, retrying next cycle; client reads start their own
 // path's repair immediately, independent of the lane. A path whose budget is
 // exhausted is paced: the lane skips it until the interval has passed since
-// its last refresher re-arm, without recording a failure.
-func (r *transcriptIndexRepairRegistry) askFromRefresher(path string) {
+// its last refresher re-arm, without recording a failure. refused names the
+// live build the refresher's own refusal stood on, the identity the armed
+// repair revalidates against.
+func (r *transcriptIndexRepairRegistry) askFromRefresher(path, refused string) {
 	base := filepath.Base(path)
 	r.mu.Lock()
 	if !r.armedLocked() || r.laneBusy {
@@ -270,7 +297,7 @@ func (r *transcriptIndexRepairRegistry) askFromRefresher(path string) {
 	}
 	r.mu.Unlock()
 	transcriptIndexRepairLog("transcript index repair started (%s)", base)
-	go r.run(path, true)
+	go r.run(path, true, refused)
 }
 
 // forget drops path's registry entry — the session is gone. A repair
@@ -286,9 +313,11 @@ func (r *transcriptIndexRepairRegistry) forget(path string) {
 // run completes one armed repair in its detached goroutine: the recipe, then
 // the outcome recorded into the path's entry only if it still exists.
 // viaLane marks a refresher-fed repair, which holds the lane's single slot
-// until it completes.
-func (r *transcriptIndexRepairRegistry) run(path string, viaLane bool) {
-	err := runTranscriptIndexRepair(path)
+// until it completes. refused is the live build the registration's refusal
+// stood on, the revalidation key the recipe rebuilds only while the disk
+// still names it.
+func (r *transcriptIndexRepairRegistry) run(path string, viaLane bool, refused string) {
+	err := runTranscriptIndexRepair(path, refused)
 	base := filepath.Base(path)
 	r.mu.Lock()
 	if viaLane {

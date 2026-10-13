@@ -40,24 +40,26 @@ func wireRepairsForTest(t *testing.T) context.Context {
 // completions receives one signal per finished repair — fired from the
 // registry's post-recording hook, so a received signal means the outcome is
 // recorded and the log lines written, never merely that the recipe returned;
-// calls counts recipes the registry started.
-func installRepairSeam(t *testing.T) (feed func(func(path string) error), completions chan struct{}, calls *atomic.Int32) {
+// calls counts recipes the registry started. The outcome receives the refused
+// build's name the registration carried, so a test can feed the recipe a
+// stub that answers it.
+func installRepairSeam(t *testing.T) (feed func(func(path, refused string) error), completions chan struct{}, calls *atomic.Int32) {
 	t.Helper()
 	calls = &atomic.Int32{}
-	outcomes := make(chan func(string) error, 16)
+	outcomes := make(chan func(path, refused string) error, 16)
 	completions = make(chan struct{}, 16)
 	old := runTranscriptIndexRepair
 	oldRecorded := transcriptIndexRepairRecorded
-	runTranscriptIndexRepair = func(path string) error {
+	runTranscriptIndexRepair = func(path, refused string) error {
 		calls.Add(1)
 		outcome, ok := <-outcomes
 		if !ok {
 			return nil // the test finished; let the goroutine retire
 		}
-		return outcome(path)
+		return outcome(path, refused)
 	}
 	transcriptIndexRepairRecorded = func(string) { completions <- struct{}{} }
-	feed = func(fn func(path string) error) { outcomes <- fn }
+	feed = func(fn func(path, refused string) error) { outcomes <- fn }
 	t.Cleanup(func() {
 		runTranscriptIndexRepair = old
 		transcriptIndexRepairRecorded = oldRecorded
@@ -133,6 +135,18 @@ func staleSidecarForTest(t *testing.T, path string) uint64 {
 		t.Fatal("the seeded sidecar recorded no entries")
 	}
 	return entries - 1
+}
+
+// refusedBuildName reads the sidecar's committed build name — the identity a
+// refusal of this sidecar carries and the armed repair revalidates its
+// rebuild against, the same way the production refusal reads it.
+func refusedBuildName(t *testing.T, path string) string {
+	t.Helper()
+	current, err := os.ReadFile(filepath.Join(transcriptindex.DirFor(path), "CURRENT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(current))
 }
 
 // corruptTranscriptEntry breaks the first entry's JSON in place: the text
@@ -339,7 +353,7 @@ func TestConcurrentReadsDuringARepairAllAnswerRebuilding(t *testing.T) {
 	// The repair holds the sidecar's exclusive lock, as its rebuild does.
 	holding := make(chan struct{})
 	held := make(chan struct{})
-	feed(func(p string) error {
+	feed(func(p, refused string) error {
 		release, err := transcriptindex.HoldSidecarLockForTest(transcriptindex.DirFor(p))
 		if err != nil {
 			return err
@@ -347,7 +361,7 @@ func TestConcurrentReadsDuringARepairAllAnswerRebuilding(t *testing.T) {
 		close(holding)
 		<-held
 		release()
-		return repairTranscriptIndex(p)
+		return repairTranscriptIndex(p, refused)
 	})
 	_, err := readStaleSession(t, cfg, entry)
 	requireTranscriptIndexRebuilding(t, err)
@@ -375,6 +389,59 @@ func TestConcurrentReadsDuringARepairAllAnswerRebuilding(t *testing.T) {
 	<-completions
 	if _, err := readStaleSession(t, cfg, entry); err != nil {
 		t.Fatalf("read after the repair completed: %v", err)
+	}
+}
+
+// A refusal's registration can land long after the refusing read answered —
+// the refusal path's own header gate reads the transcript between them, a
+// real window under load — and in that window another reader's repair can
+// already have committed. The late registration still arms its repair; the
+// recipe must adopt the committed outcome instead of rebuilding the healthy
+// sidecar again, which would re-pay the full rebuild and rotate an
+// incarnation readers hold. The refusal's identity — the build it stood on —
+// is the revalidation key (#4497 r9 medium).
+func TestADelayedRefusalLandingAfterACompletedRepairDoesNotRebuildAgain(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, calls := installRepairSeam(t)
+	cfg, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("first question"))),
+	)
+	staleSidecarForTest(t, path)
+	// The identity both readers' refusals carry: the stale build's name.
+	refused := refusedBuildName(t, path)
+
+	// One reader's read registers, and the real recipe repairs: the sidecar
+	// is healthy, the registry entry gone.
+	_, err := readStaleSession(t, cfg, entry)
+	requireTranscriptIndexRebuilding(t, err)
+	feed(repairTranscriptIndex)
+	<-completions
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("repairs = %d, want 1", got)
+	}
+	committed := refusedBuildName(t, path)
+	if committed == refused {
+		t.Fatal("the first repair did not commit a fresh build")
+	}
+
+	// The delayed registration — the second reader's refusal, answered after
+	// the repair finished — arms the path's repair again, carrying the same
+	// refused identity.
+	if armed, _ := transcriptIndexRepairs.answerRead(path, refused); !armed {
+		t.Fatal("the delayed registration did not arm a repair")
+	}
+	feed(repairTranscriptIndex)
+	<-completions
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("repairs = %d, want the delayed registration to run its repair", got)
+	}
+	if got := refusedBuildName(t, path); got != committed {
+		t.Fatalf("the delayed repair rebuilt the healthy sidecar: CURRENT = %q, want the committed %q", got, committed)
+	}
+
+	// The committed sidecar the delayed repair adopted still reads.
+	if _, err := readStaleSession(t, cfg, entry); err != nil {
+		t.Fatalf("read after the delayed repair: %v", err)
 	}
 }
 
@@ -598,7 +665,10 @@ func TestARepairThatLosesTheTranscriptToDeletionLeavesNoSidecar(t *testing.T) {
 	}
 	t.Cleanup(func() { transcriptIndexRepairPreOpen = old })
 
-	err := repairTranscriptIndex(path)
+	// The refusal the read answered named the sidecar's live build; the
+	// recipe revalidates against it exactly as the registered flow does.
+	refused := refusedBuildName(t, path)
+	err := repairTranscriptIndex(path, refused)
 	if err == nil {
 		t.Fatal("the rebuild should fail with the transcript deleted mid-repair")
 	}
@@ -637,7 +707,8 @@ func TestAFailedRepairKeepsTheSidecarWhenTheTranscriptSurvives(t *testing.T) {
 		_ = os.Chmod(path, 0o644)
 	})
 
-	err := repairTranscriptIndex(path)
+	refused := refusedBuildName(t, path)
+	err := repairTranscriptIndex(path, refused)
 	if err == nil {
 		t.Fatal("the rebuild should fail with an unreadable transcript")
 	}
@@ -721,11 +792,11 @@ func TestAVanishedTranscriptAbortsTheRepairWithoutCreatingAnything(t *testing.T)
 
 	// The transcript vanishes while the repair is queued: the recipe stats it
 	// first and aborts without creating anything.
-	feed(func(p string) error {
+	feed(func(p, refused string) error {
 		if err := os.Remove(p); err != nil {
 			return err
 		}
-		return repairTranscriptIndex(p)
+		return repairTranscriptIndex(p, refused)
 	})
 	<-completions
 	requireUnchangedSidecar(t, transcriptindex.DirFor(path), before)
@@ -745,7 +816,7 @@ func TestTheRepairFailureBudget(t *testing.T) {
 	for range 3 {
 		_, err := readStaleSession(t, cfg, entry)
 		requireTranscriptIndexRebuilding(t, err)
-		feed(func(string) error { return boom })
+		feed(func(_, _ string) error { return boom })
 		<-completions
 	}
 	// The exhausted budget is pinned by what the registry does below — the
@@ -758,7 +829,7 @@ func TestTheRepairFailureBudget(t *testing.T) {
 	held := make(chan struct{})
 	_, err := readStaleSession(t, cfg, entry)
 	requireTranscriptHistoryFailed(t, err, last)
-	feed(func(string) error {
+	feed(func(_, _ string) error {
 		close(held)
 		<-holdRelease
 		return nil
@@ -794,20 +865,20 @@ func TestTheRepairFailureBudget(t *testing.T) {
 // lane, takes the exhausted path's first unpaced re-arm and fails it too, and
 // proves the next lane ask within the interval skips: the path is now paced,
 // with the failed re-arm's timestamp to measure from.
-func exhaustTheLaneBudget(t *testing.T, feed func(func(path string) error), completions <-chan struct{}, path string) {
+func exhaustTheLaneBudget(t *testing.T, feed func(func(path, refused string) error), completions <-chan struct{}, path string) {
 	t.Helper()
 	boom := errors.New("repair failed on purpose")
 	for range 3 {
-		transcriptIndexRepairs.askFromRefresher(path)
-		feed(func(string) error { return boom })
+		transcriptIndexRepairs.askFromRefresher(path, refusedBuildName(t, path))
+		feed(func(_, _ string) error { return boom })
 		<-completions
 	}
 	// The first re-arm after exhaustion is taken — nothing paces it yet —
 	// and fails, recording the moment the interval measures from.
-	transcriptIndexRepairs.askFromRefresher(path)
-	feed(func(string) error { return boom })
+	transcriptIndexRepairs.askFromRefresher(path, refusedBuildName(t, path))
+	feed(func(_, _ string) error { return boom })
 	<-completions
-	transcriptIndexRepairs.askFromRefresher(path)
+	transcriptIndexRepairs.askFromRefresher(path, refusedBuildName(t, path))
 	if transcriptIndexRepairs.inFlight(path) {
 		t.Fatal("the lane took an exhausted path within the interval, want a skip")
 	}
@@ -835,7 +906,7 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 	// askFromRefresher decides take-or-skip synchronously under the
 	// registry's mutex, so the entry's in-flight flag is settled the moment
 	// the ask returns.
-	transcriptIndexRepairs.askFromRefresher(path)
+	transcriptIndexRepairs.askFromRefresher(path, refusedBuildName(t, path))
 	if transcriptIndexRepairs.inFlight(path) {
 		t.Fatal("the lane took an exhausted path within the interval, want a skip")
 	}
@@ -846,7 +917,7 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 	// Once the interval has passed since the re-arm — advanced explicitly,
 	// never slept past — the lane takes it again.
 	advance(60 * time.Millisecond)
-	transcriptIndexRepairs.askFromRefresher(path)
+	transcriptIndexRepairs.askFromRefresher(path, refusedBuildName(t, path))
 	feed(repairTranscriptIndex)
 	<-completions
 	if got := calls.Load(); got != 5 {
@@ -883,7 +954,7 @@ func TestTheLanePacesAnExhaustedPathOnlyWhileItsStampStands(t *testing.T) {
 	if err := os.Chtimes(path, future, future); err != nil {
 		t.Fatal(err)
 	}
-	transcriptIndexRepairs.askFromRefresher(path)
+	transcriptIndexRepairs.askFromRefresher(path, refusedBuildName(t, path))
 	if !transcriptIndexRepairs.inFlight(path) {
 		t.Fatal("the lane paced a path whose transcript changed, want an immediate re-arm")
 	}
@@ -908,8 +979,8 @@ func TestARefresherFedRepairHoldsTheLaneToOneAtATime(t *testing.T) {
 
 	held := make(chan struct{})
 	release := make(chan struct{})
-	transcriptIndexRepairs.askFromRefresher(pathA)
-	feed(func(string) error {
+	transcriptIndexRepairs.askFromRefresher(pathA, refusedBuildName(t, pathA))
+	feed(func(_, _ string) error {
 		close(held)
 		<-release
 		return nil
@@ -917,7 +988,7 @@ func TestARefresherFedRepairHoldsTheLaneToOneAtATime(t *testing.T) {
 	<-held
 
 	// The lane is busy: the second path's ask skips.
-	transcriptIndexRepairs.askFromRefresher(pathB)
+	transcriptIndexRepairs.askFromRefresher(pathB, refusedBuildName(t, pathB))
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("repairs = %d, want the lane to run one refresher-fed repair at a time", got)
 	}
@@ -929,7 +1000,7 @@ func TestARefresherFedRepairHoldsTheLaneToOneAtATime(t *testing.T) {
 
 	close(release)
 	<-completions // the lane's repair retires
-	feed(func(string) error { return nil })
+	feed(func(_, _ string) error { return nil })
 	<-completions // the client read's own repair retires too
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("repairs = %d, want the client read's own repair beside the lane's", got)
@@ -959,7 +1030,7 @@ func TestARefresherRefusalRegistersThroughTheWiredLane(t *testing.T) {
 
 	// The lane's repair runs the real recipe when fed, so the refusal's
 	// registration is observable as that repair completing.
-	feed(func(string) error { return repairTranscriptIndex(path) })
+	feed(func(_, refused string) error { return repairTranscriptIndex(path, refused) })
 	sessions := []hubcore.MessageSearchSession{{ID: entry.Meta.ID, TranscriptPath: path}}
 
 	// First cycle: the refusing read skips the session — nothing indexed,
@@ -1021,10 +1092,10 @@ func TestProjectDeletionDropsTheRepairEntry(t *testing.T) {
 	release := make(chan struct{})
 	_, err := readStaleSession(t, cfg, entry)
 	requireTranscriptIndexRebuilding(t, err)
-	feed(func(string) error {
+	feed(func(_, refused string) error {
 		close(held)
 		<-release
-		return repairTranscriptIndex(path)
+		return repairTranscriptIndex(path, refused)
 	})
 	<-held
 

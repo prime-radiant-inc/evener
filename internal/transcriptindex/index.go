@@ -73,12 +73,17 @@ var ErrRebuildRequired = errors.New("transcript index needs a rebuild this handl
 // the handle refuses to block on it (see OpenRefusing).
 var ErrLockBusy = errors.New("transcript index lock is held")
 
-// RebuildRequiredError is ErrRebuildRequired carrying the ordinal of the last
-// entry the refused build had recorded — its committed entry count minus one,
-// the ordinal TranscriptHistoryFailed documents — read off the live build's
-// meta.json at refusal time. Zero when there is no live build.
+// RebuildRequiredError is ErrRebuildRequired carrying the refused build's own
+// facts: the name of the live build the refusal stood on — the revalidation
+// key the repair's recipe re-reads the disk against, so a registration that
+// lands after another repair already committed a fresh build can adopt that
+// outcome instead of rebuilding the healthy sidecar again — and the ordinal
+// of the last entry that build had recorded, its committed entry count minus
+// one, the ordinal TranscriptHistoryFailed documents. An empty name is the
+// no-live-build refusal.
 type RebuildRequiredError struct {
 	LastEntry uint64
+	Build     string
 }
 
 func (e *RebuildRequiredError) Error() string {
@@ -358,6 +363,34 @@ func (x *Index) Rebuild(length int64) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	return x.locked(true, func() error { return x.rebuild(length, "") })
+}
+
+// RebuildIfStillRefused rebuilds the sidecar only while the live build is
+// still the one the caller's refusal named — the repair path's revalidation.
+// A registration can land after another repair already committed a fresh
+// build (a delayed refusal, or a refresher ask aged by its lane): rebuilding
+// then would re-pay the full cost against a healthy sidecar and rotate an
+// incarnation readers hold, so the check adopts that outcome instead. The
+// check runs under the exclusive lock in the same step as the rebuild, so
+// the build it saw is the build the rebuild replaces. An empty refused name
+// is the no-live-build refusal: any committed build answers it. A live
+// build that is gone again answers the name it had — the next read re-arms
+// with the empty name, and the repair after that one rebuilds. A CURRENT the
+// check cannot read is an ordinary error, so the registry counts the repair
+// against its budget instead of recording a guess.
+func (x *Index) RebuildIfStillRefused(length int64, refused string) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.locked(true, func() error {
+		live, err := liveBuildName(x.dir)
+		if err != nil {
+			return err
+		}
+		if live != refused {
+			return nil
+		}
+		return x.rebuild(length, "")
+	})
 }
 
 // locked runs fn holding the sidecar lock, shared or exclusive, after taking
@@ -869,24 +902,39 @@ func (x *Index) rebuild(length int64, incarnation string) error {
 }
 
 // refuseRebuild answers a refusing handle's rebuild trigger: the
-// ErrRebuildRequired refusal carrying the ordinal of the last entry the
-// refused build had recorded. Read off the disk at refusal time — the
-// meta.json the atomic rename published, the only source left after a failed
-// adoption discarded the parsed copy — so the value is tear-safe and holds
-// the committed count even when a discarded mid-scan had advanced the
-// in-memory one. Zero when there is no live build.
+// ErrRebuildRequired refusal carrying the refused build's name and the
+// ordinal of the last entry it had recorded. Read off the disk at refusal
+// time — the meta.json the atomic rename published, the only source left
+// after a failed adoption discarded the parsed copy — so the values are
+// tear-safe and hold the committed count even when a discarded mid-scan had
+// advanced the in-memory one. Zero entries and an empty name when there is
+// no live build.
 func (x *Index) refuseRebuild() error {
 	last := uint64(0)
-	if current, err := os.ReadFile(filepath.Join(x.dir, currentFileName)); err == nil {
-		data, err := os.ReadFile(filepath.Join(x.dir, string(bytes.TrimSpace(current)), metaFile))
-		if err == nil {
+	build, err := liveBuildName(x.dir)
+	if err == nil && build != "" {
+		if data, err := os.ReadFile(filepath.Join(x.dir, build, metaFile)); err == nil {
 			var m meta
 			if json.Unmarshal(data, &m) == nil && m.Entries > 0 {
 				last = m.Entries - 1
 			}
 		}
 	}
-	return &RebuildRequiredError{LastEntry: last}
+	return &RebuildRequiredError{LastEntry: last, Build: build}
+}
+
+// liveBuildName reads the sidecar's committed build name: empty when no
+// CURRENT exists — no live build — and the ordinary read error otherwise, so
+// callers can tell "nothing is committed" from "the pointer cannot be read".
+func liveBuildName(dir string) (string, error) {
+	current, err := os.ReadFile(filepath.Join(dir, currentFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read current build: %w", err)
+	}
+	return string(bytes.TrimSpace(current)), nil
 }
 
 func (x *Index) buildNew(length int64, incarnation string) error {

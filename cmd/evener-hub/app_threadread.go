@@ -342,8 +342,10 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 		var refusal *transcriptindex.RebuildRequiredError
 		errors.As(err, &refusal)
 		last := uint64(0)
+		refused := ""
 		if refusal != nil {
 			last = refusal.LastEntry
+			refused = refusal.Build
 		}
 		path := pastTranscriptPath(entry)
 		// The header gate first: a transcript whose header cannot be this
@@ -361,7 +363,7 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 			// read that could not see the transcript.
 			return err
 		}
-		armed, exhausted := transcriptIndexRepairs.answerRead(path)
+		armed, exhausted := transcriptIndexRepairs.answerRead(path, refused)
 		if armed && !exhausted {
 			return appwire.TranscriptIndexRebuilding()
 		}
