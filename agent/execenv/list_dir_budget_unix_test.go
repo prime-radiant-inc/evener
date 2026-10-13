@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"syscall"
 	"testing"
@@ -184,9 +185,14 @@ func TestListDirBudgetListsThroughASymlinkToADirectory(t *testing.T) {
 }
 
 // TestSandboxedListDirBudgetRejectsAFIFOTargetPromptly pins the confined
-// arm's side of the medium: its root open is an openat with O_DIRECTORY, so a
-// FIFO target has always failed promptly there. This keeps the two arms from
-// drifting apart on the class of the refusal.
+// arm's side of the round-4 medium: its root open is an openat with
+// O_DIRECTORY, so a FIFO target has always failed promptly there. Prompt
+// completion is the contract and holds on every platform; the CLASS of the
+// refusal is the resolver's to choose — Linux's openat2 surfaces the raw
+// ENOTDIR, while darwin's component walk classifies a non-directory final
+// component as a traversal refusal (errSymlinkComponent), which mapOpenErr
+// answers with the typed symlink denial, a refusal that does not preserve
+// ENOTDIR. Both are prompt, structured refusals of the same target.
 func TestSandboxedListDirBudgetRejectsAFIFOTargetPromptly(t *testing.T) {
 	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
 	fifo := mkListDirFIFO(t, worktree)
@@ -201,7 +207,11 @@ func TestSandboxedListDirBudgetRejectsAFIFOTargetPromptly(t *testing.T) {
 		if err == nil {
 			t.Fatal("confined listing of a FIFO target succeeded")
 		}
-		if !errors.Is(err, syscall.ENOTDIR) {
+		if runtime.GOOS == "darwin" {
+			if _, ok := errors.AsType[*sandbox.DeniedError](err); !ok {
+				t.Fatalf("confined FIFO target on darwin = %q, want the resolver's typed symlink denial", err)
+			}
+		} else if !errors.Is(err, syscall.ENOTDIR) {
 			t.Fatalf("confined FIFO target = %q, want the not-a-directory class (ENOTDIR)", err)
 		}
 	case <-time.After(5 * time.Second):
