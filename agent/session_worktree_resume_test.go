@@ -1077,12 +1077,13 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe(t *testi
 
 	orig := gitExecTimeout
 	gitExecTimeout = time.Nanosecond
-	// Restore immediately after construction so this session's own Close runs
-	// with the real deadline; the cleanup is a safety net for a fatal inside
-	// newSession (which would otherwise leak the starved deadline).
-	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
-	gitExecTimeout = orig
+	// Register the restore BEFORE newSession: a fatal inside it would otherwise
+	// leave the starved deadline in place for the rest of the package run.
 	t.Cleanup(func() { gitExecTimeout = orig })
+	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	// Restore as soon as construction ends so this session's own Close runs with
+	// the real deadline; the cleanup above is idempotent.
+	gitExecTimeout = orig
 
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
