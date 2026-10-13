@@ -268,6 +268,46 @@ func TestBuildBwrapArgvOverlaysTheHostGoPath(t *testing.T) {
 	}
 }
 
+// A cache root whose filesystem refuses an unprivileged overlay lower (an
+// EINVAL that would abort the WHOLE sandbox, failing every spawn) is left out of
+// the argv, while a healthy root keeps its overlay (#4220).
+func TestBuildBwrapArgvLeavesOutAnUnoverlayableCacheRoot(t *testing.T) {
+	home := t.TempDir()
+	good, bad := filepath.Join(home, "gocache"), filepath.Join(home, "modcache")
+	for _, d := range []string{good, bad} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	facts := HostFacts{
+		OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true,
+		GoCache: good, GoModCache: bad,
+		OverlayLowerOK: func(root string) bool { return root != bad },
+	}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, "/tmp/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(liveCacheRoots(w.Policy()), bad) {
+		t.Fatalf("a cache root the overlay cannot mount must not be served: %v", liveCacheRoots(w.Policy()))
+	}
+	if !slices.Contains(liveCacheRoots(w.Policy()), good) {
+		t.Fatalf("a healthy cache root must still be served: %v", liveCacheRoots(w.Policy()))
+	}
+	args := buildBwrapArgv(w.Policy(), w.SessionTmp(), cwd)
+	if hasSeq(args, "--overlay-src", bad, "--tmp-overlay", bad) {
+		t.Errorf("one unoverlayable root must be left out (its EINVAL aborts every spawn): %v", args)
+	}
+	if !hasSeq(args, "--overlay-src", good, "--tmp-overlay", good) {
+		t.Errorf("a healthy cache root must keep its overlay: %v", args)
+	}
+}
+
 func TestBuildBwrapArgvNoOverlayWhenSessionPrivate(t *testing.T) {
 	// The default fixture host lacks overlay → session-private cache → no overlay
 	// mounts in the argv (the env floor redirects the cache vars instead).
