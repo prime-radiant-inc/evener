@@ -32,8 +32,8 @@
 
 import type { ThreadModel } from "@evener/appwire-client";
 import { formatTokenCount } from "@evener/appwire-client";
-import { forwardRef, useImperativeHandle, useState } from "react";
-import { Button, InspectorCard, Meter, Sheet } from "../../../widgets";
+import { forwardRef, type ReactNode, useImperativeHandle, useState } from "react";
+import { Button, Meter, PropertyList, Sheet, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTimestamp, sessionTokens, tokenUnitLabel } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
@@ -61,15 +61,10 @@ export interface DetailsPanelHandle {
 
 const CLASS = {
   section: requireClass(styles.section, "detailspanel.module.css", "section"),
-  session: requireClass(styles.session, "detailspanel.module.css", "session"),
   sectionTitle: requireClass(styles.sectionTitle, "detailspanel.module.css", "sectionTitle"),
-  list: requireClass(styles.list, "detailspanel.module.css", "list"),
-  row: requireClass(styles.row, "detailspanel.module.css", "row"),
-  label: requireClass(styles.label, "detailspanel.module.css", "label"),
   value: requireClass(styles.value, "detailspanel.module.css", "value"),
   meter: requireClass(styles.meter, "detailspanel.module.css", "meter"),
   dim: requireClass(styles.dim, "detailspanel.module.css", "dim"),
-  path: requireClass(styles.path, "detailspanel.module.css", "path"),
 };
 
 // A finished session has no live context occupancy to report: the hub builds
@@ -82,37 +77,39 @@ function isEndedStatus(type: string): boolean {
   return type === "ended" || type === "closed";
 }
 
-function DetailRow({
-  label,
-  testId,
-  scope,
-  children,
-}: {
-  label: string;
-  testId: string;
-  /** What the row's figure counts, when that can vary (the token total). */
-  scope?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className={CLASS.row} data-testid={testId} data-scope={scope}>
-      <dt className={CLASS.label}>{label}</dt>
-      <dd className={CLASS.value}>{children}</dd>
-    </div>
-  );
+// detailRow builds one PropertyList row whose value carries the row's own
+// testid, so a caller can find a fact without matching its label text.
+// `scope` says what the row's figure counts, when that can vary (the token
+// total).
+function detailRow(
+  label: string,
+  testId: string,
+  value: ReactNode,
+  mono = false,
+  scope?: string,
+): StackedPropertyListRow {
+  return {
+    label,
+    mono,
+    value: (
+      <span className={CLASS.value} data-testid={testId} data-scope={scope}>
+        {value}
+      </span>
+    ),
+  };
 }
 
 // Section renders a titled group, or nothing at all when every row inside it
 // was omitted for want of data - a heading over an empty list would advertise
-// facts the panel does not have. The caller's `value && <DetailRow/>` guards
-// arrive here as falsy children, which is what gets filtered out.
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  const rows = (Array.isArray(children) ? children : [children]).filter(Boolean);
-  if (rows.length === 0) return null;
+// facts the panel does not have. The caller's `value && detailRow(...)`
+// guards arrive here as falsy entries, which is what gets filtered out.
+function Section({ title, rows }: { title: string; rows: (StackedPropertyListRow | false | null | undefined)[] }) {
+  const present = rows.filter((row): row is StackedPropertyListRow => Boolean(row));
+  if (present.length === 0) return null;
   return (
     <section className={CLASS.section}>
       <h3 className={CLASS.sectionTitle}>{title}</h3>
-      <dl className={CLASS.list}>{rows}</dl>
+      <PropertyList layout="stacked" rows={present} />
     </section>
   );
 }
@@ -142,87 +139,62 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
 
   return (
     <>
-      {/* Session is three flat, always-present, single-line strings - the
-          exact shape InspectorCard already provides, so this composes the
-          widget instead of duplicating it via Section/DetailRow. Usage and
-          Location stay on Section/DetailRow: Usage's rows are a Meter and a
-          two-value ↑/↓ readout, not single string values, and Location's
-          cwd/project are absolute paths that need their own wrapping line
-          (.path below) that InspectorCard's row has no room for. The
-          wrapping div keeps InspectorCard on the same .section divider
-          rhythm as its neighbors. */}
-      <div className={`${CLASS.section} ${CLASS.session}`}>
-        <InspectorCard
-          title="Session"
-          properties={[
-            { key: "model", label: "model", value: modelLabel(model.modelProvider, model.model) },
-            { key: "state", label: "state", value: model.status.type },
-            { key: "session-id", label: "session id", value: model.threadId },
-          ]}
-        />
-      </div>
-      <Section title="Usage">
-        {showContext && (
-          <DetailRow label="context" testId="session-details-context">
-            <span className={CLASS.meter}>
-              <Meter
-                label={`Context: ${formatTokenCount(model.contextUsed)} of ${formatTokenCount(model.contextWindow)} tokens used, ${percent} percent`}
-                value={model.contextUsed}
-                max={model.contextWindow}
-                tone={contextTone(model.contextPressure)}
-              />
-            </span>
-            <span>{percent}% used</span>
-            <span className={CLASS.dim}>
-              {formatTokenCount(model.contextUsed)} / {formatTokenCount(model.contextWindow)}
-            </span>
-            <span className={CLASS.dim}>{formatTokenCount(remaining)} left</span>
-          </DetailRow>
-        )}
-        {workMs > 0 && (
-          <DetailRow label="work time" testId="session-details-work-time">
-            {formatWorkDuration(workMs)}
-          </DetailRow>
-        )}
-        {tokens && (
-          <DetailRow label={tokensLabel} testId="session-details-tokens" scope={tokens.scope}>
-            <span>↑{formatTokenCount(tokens.inputTokens)}</span>
-            <span>↓{formatTokenCount(tokens.outputTokens)}</span>
-          </DetailRow>
-        )}
-        {model.cost && (
-          <DetailRow label="cost" testId="session-details-cost">
-            {model.cost}
-          </DetailRow>
-        )}
-      </Section>
-      <Section title="Location">
-        {model.cwd && (
-          <DetailRow label="working dir" testId="session-details-cwd">
-            <span className={CLASS.path}>{model.cwd}</span>
-          </DetailRow>
-        )}
-        {projectPath && (
-          <DetailRow label="project" testId="session-details-project">
-            <span className={CLASS.path}>{projectPath}</span>
-          </DetailRow>
-        )}
-        {model.gitBranch && (
-          <DetailRow label="branch" testId="session-details-branch">
-            <span className={CLASS.path}>{model.gitBranch}</span>
-          </DetailRow>
-        )}
-        {createdAt && (
-          <DetailRow label="started" testId="session-details-created">
-            {createdAt}
-          </DetailRow>
-        )}
-        {updatedAt && (
-          <DetailRow label="last activity" testId="session-details-updated">
-            {updatedAt}
-          </DetailRow>
-        )}
-      </Section>
+      <Section
+        title="Session"
+        rows={[
+          detailRow("model", "session-details-model", modelLabel(model.modelProvider, model.model), true),
+          detailRow("state", "session-details-state", model.status.type),
+          detailRow("session id", "session-details-id", model.threadId, true),
+        ]}
+      />
+      <Section
+        title="Usage"
+        rows={[
+          showContext &&
+            detailRow(
+              "context",
+              "session-details-context",
+              <>
+                <span className={CLASS.meter}>
+                  <Meter
+                    label={`Context: ${formatTokenCount(model.contextUsed)} of ${formatTokenCount(model.contextWindow)} tokens used, ${percent} percent`}
+                    value={model.contextUsed}
+                    max={model.contextWindow}
+                    tone={contextTone(model.contextPressure)}
+                  />
+                </span>
+                <span>{percent}% used</span>
+                <span className={CLASS.dim}>
+                  {formatTokenCount(model.contextUsed)} / {formatTokenCount(model.contextWindow)}
+                </span>
+                <span className={CLASS.dim}>{formatTokenCount(remaining)} left</span>
+              </>,
+            ),
+          workMs > 0 && detailRow("work time", "session-details-work-time", formatWorkDuration(workMs)),
+          tokens &&
+            detailRow(
+              tokensLabel,
+              "session-details-tokens",
+              <>
+                <span>↑{formatTokenCount(tokens.inputTokens)}</span>
+                <span>↓{formatTokenCount(tokens.outputTokens)}</span>
+              </>,
+              false,
+              tokens.scope,
+            ),
+          !!model.cost && detailRow("cost", "session-details-cost", model.cost),
+        ]}
+      />
+      <Section
+        title="Location"
+        rows={[
+          !!model.cwd && detailRow("working dir", "session-details-cwd", model.cwd, true),
+          !!projectPath && detailRow("project", "session-details-project", projectPath, true),
+          !!model.gitBranch && detailRow("branch", "session-details-branch", model.gitBranch, true),
+          !!createdAt && detailRow("started", "session-details-created", createdAt),
+          !!updatedAt && detailRow("last activity", "session-details-updated", updatedAt),
+        ]}
+      />
     </>
   );
 }

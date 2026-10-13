@@ -48,7 +48,14 @@ fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/copy-oracle-mutate.XXXXXX")
 work="$scratch/worktree"
 log="$scratch.log"
+launch_pipe="$scratch/launch"
+mkfifo "$launch_pipe"
+# child is the pid, and so the process group id, of a launched test run.
+# launching is set while a run is between fork and its setpgrp, when a signal
+# has no group to stop yet; pending_signal holds such a signal's exit status.
 child=""
+launching=""
+pending_signal=""
 
 # stop_group <pgid> stops every process in a test run's process group: TERM,
 # up to 5 seconds' grace, then KILL, then up to 5 more seconds for the kernel
@@ -75,12 +82,24 @@ cleanup() {
     wait "$child" 2>/dev/null || true
   fi
   git worktree remove --force "$work" 2>/dev/null || true
+  rm -f "$launch_pipe"
   rmdir "$scratch" 2>/dev/null || true
 }
+
+# on_signal <status> exits with status, through cleanup. During a launch it
+# only records the signal: run_tests honours it once the run's process group
+# exists, so cleanup can stop the whole group.
+on_signal() {
+  if [[ -n "$launching" ]]; then
+    pending_signal=$1
+    return
+  fi
+  exit "$1"
+}
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 # Build the throwaway tree: HEAD, then the caller's uncommitted tracked
 # changes and untracked (not ignored) files, so a test edited but not yet
@@ -110,12 +129,37 @@ done < <(git ls-files -- '*package.json' 'package.json')
 # mutation. perl makes the process its own group leader (setpgrp) and then
 # execs the command in place, so the group id is the pid in $!; bash job
 # control (set -m) races the subshell's exec and can leave it in ours.
+#
+# The launcher acknowledges on the launch pipe (fd 4 in the child) once setpgrp
+# has run, and only then is the run registered in child. A signal before that
+# is deferred until registration, so cleanup only ever signals a process group,
+# never a bare pid that may already belong to another process. Holding fd 4
+# open read-write until the launcher has it keeps opening the FIFO from
+# blocking; closing it afterwards turns a launcher that dies early into EOF.
+# The acknowledgement is one byte, so a read a signal interrupts has either
+# consumed it or not: there is no partial acknowledgement to lose on retry.
 run_tests() {
-  local status=0
-  (cd "$work" && exec perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@") >"$log" 2>&1 &
-  child=$!
-  wait "$child" || status=$?
-  stop_group "$child"
+  local status=0 pid ack=""
+  launching=1
+  exec 4<>"$launch_pipe"
+  exec 3<"$launch_pipe"
+  (exec 3<&- && cd "$work" && exec perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; open(my $launch, ">&=", 4) or die "launch pipe: $!\n"; print $launch "L"; close $launch; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@") >"$log" 2>&1 &
+  pid=$!
+  exec 4>&-
+  # If a deferred signal interrupts read (status above 128), read again.
+  until read -r -n 1 ack <&3; do (($? > 128)) || break; done
+  exec 3<&-
+  if [[ "$ack" == L ]]; then
+    child=$pid
+  else
+    echo "launch failed: the test launcher exited before forming its process group (log: $log)" >&2
+  fi
+  launching=""
+  if [[ -n "$pending_signal" ]]; then
+    exit "$pending_signal"
+  fi
+  wait "$pid" || status=$?
+  stop_group "$pid"
   child=""
   return "$status"
 }

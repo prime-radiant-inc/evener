@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>scope-hierarchy-ancestor-wraps layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-ui);
+    line-height: var(--line-height-ui);
+  }
+
+  /* The activity sidebar's column at a phone width; its own layout is not
+     under test. */
+  .sidebar { width: 280px; display: flex; }
+</style>
+</head>
+<body data-font-size="m">
+<!-- ScopeCrumbs.tsx's hierarchy markup: <nav class="crumbs hierarchy"> with
+     one .crumbWrap per crumb, indented by depth through margin-inline-start;
+     ancestors are Button variant="link" (.button.link), the leaf is
+     .crumbCurrent with aria-current. -->
+<div class="sidebar">
+  <nav class="crumbs hierarchy" aria-label="Scope" data-nav>
+    <span class="crumbWrap" style="margin-inline-start: calc(var(--space-2) * 0)">
+      <button class="button link" type="button" data-ancestor>Investigate why the nightly deploy to the arm64 build farm keeps timing out after the health check</button>
+    </span>
+    <span class="crumbWrap" style="margin-inline-start: calc(var(--space-2) * 1)">
+      <button class="button link" type="button" data-ancestor>check_remnant_build_farm_arm64_west_replica_02_teardown_log_after_the_failed_swap</button>
+    </span>
+    <span class="crumbWrap" style="margin-inline-start: calc(var(--space-2) * 2)">
+      <span class="crumbCurrent" aria-current="page">Read the log</span>
+    </span>
+  </nav>
+</div>
+
+<script>
+function rectOf(element) {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height };
+}
+
+window.measure = () => {
+  const nav = document.querySelector("[data-nav]");
+  return {
+    nav: rectOf(nav),
+    ancestors: [...document.querySelectorAll("[data-ancestor]")].map((button) => ({
+      rect: rectOf(button),
+      scrollWidth: button.scrollWidth,
+      clientWidth: button.clientWidth,
+      lineHeight: parseFloat(getComputedStyle(button).lineHeight),
+    })),
+  };
+};
+</script>
+</body>
+</html>

@@ -205,13 +205,9 @@ test("left-justifies both mobile rows without indenting the goal", () => {
   expect(compactRules).toMatch(/\.task,\s*\.goal\s*\{[^}]*justify-content:\s*flex-start/);
 });
 
-test("uses the approved semantic green ring and uppercase micro-label treatment", () => {
+test("uses the approved semantic green ring", () => {
   const dot = currentWorkCssRule("dot");
   expect(dot).toContain("border: 1px solid var(--alive)");
   expect(dot).toContain("background: var(--alive-bg)");
   expect(dot).not.toContain("var(--accent)");
-
-  const label = currentWorkCssRule("label");
-  expect(label).toContain("text-transform: uppercase");
-  expect(label).toContain("letter-spacing: var(--tracking-eyebrow)");
 });

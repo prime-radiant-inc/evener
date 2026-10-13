@@ -48,6 +48,14 @@ export default function ToolIconGallerySection() {
           <p className={styles.rowLabel}>size 16</p>
           <ToolIcon kind="wrench" size={16} />
         </div>
+        {/* tone: the activity sidebar's state glyphs - working, needs you,
+            failed. */}
+        {(["alive", "attention", "danger"] as const).map((tone) => (
+          <div className={styles.row} key={tone}>
+            <p className={styles.rowLabel}>tone {tone}</p>
+            <ToolIcon kind="delegate" tone={tone} />
+          </div>
+        ))}
       </ThemeFlip>
     </section>
   );

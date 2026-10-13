@@ -1,0 +1,22 @@
+{
+  "name": "listrow-chips-keep-label",
+  "description": "ListRow: a collection row at phone widths with a long label and two state chips (a host row: 'connecting' + 'Restart orphan-unverified') must leave the label a readable width - the chips wrap under it rather than squeezing it to a few characters - and nothing may spill out of the row. A short label keeps its chips beside it on the same line.",
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/listrow/listrow.module.css",
+    "widgets/chip/chip.module.css"
+  ],
+  "widthMatrix": [{ "width": 320 }, { "width": 390 }, { "width": 390, "short": true }],
+  "mutation": {
+    "declaration": "widgets/listrow/listrow.module.css: .heading { flex-wrap: wrap } and .label { flex: 1 1 12ch } (both deleted - the pre-fix rule, chips flex:none beside a min-width:0 label, fails at 320px with the label squeezed to 14.6px); .label { max-width: max-content } (deleted alone - fails the 390px short-label fixture, its chips wrapped off the label's line)",
+    "verified": "2026-10-12",
+    "expect": "fail"
+  }
+}

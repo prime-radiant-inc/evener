@@ -14,6 +14,58 @@ test("associates the visible label with the control via htmlFor/id", () => {
   expect(screen.getByLabelText("Hub address")).toBeTruthy();
 });
 
+test("without htmlFor the row is a group named by its label", () => {
+  const { container } = render(
+    <FormRow label="Model fallbacks">
+      <input aria-label="first" />
+      <button type="button">second</button>
+    </FormRow>,
+  );
+  const group = screen.getByRole("group", { name: "Model fallbacks" });
+  expect(group.contains(screen.getByRole("textbox", { name: "first" }))).toBe(true);
+  expect(group.contains(screen.getByRole("button", { name: "second" }))).toBe(true);
+  expect(container.querySelector("label")).toBeNull();
+});
+
+test("a group's help describes the group", () => {
+  const help = "group help";
+  render(
+    <FormRow label="Model fallbacks" help={help}>
+      <input aria-label="first" />
+    </FormRow>,
+  );
+  const describedBy = screen.getByRole("group").getAttribute("aria-describedby");
+  expect(document.getElementById(describedBy ?? "")?.textContent).toBe(help);
+});
+
+test("a group's error is an alert that describes the group", () => {
+  render(
+    <FormRow label="Model fallbacks" help="group help" error="group error">
+      <input aria-label="first" />
+    </FormRow>,
+  );
+  const describedBy = screen.getByRole("group").getAttribute("aria-describedby");
+  expect(document.getElementById(describedBy ?? "")).toBe(screen.getByRole("alert"));
+});
+
+test("a group with neither help nor error has no aria-describedby", () => {
+  render(
+    <FormRow label="Model fallbacks">
+      <input aria-label="first" />
+    </FormRow>,
+  );
+  expect(screen.getByRole("group").hasAttribute("aria-describedby")).toBe(false);
+});
+
+test("a row with htmlFor is not a group", () => {
+  render(
+    <FormRow label="Hub address" htmlFor="hub-addr">
+      <input id="hub-addr" />
+    </FormRow>,
+  );
+  expect(screen.queryByRole("group")).toBeNull();
+});
+
 test("renders children inside the row", () => {
   render(
     <FormRow label="Hub address" htmlFor="hub-addr">

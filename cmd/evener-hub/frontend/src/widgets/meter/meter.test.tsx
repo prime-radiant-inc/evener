@@ -5,10 +5,10 @@ import { Meter, type MeterTone } from "./index";
 import rawStyles from "./meter.module.css";
 
 const styles = {
-  neutral: requireClass(rawStyles.neutral, "meter.module.css", "neutral"),
-  attention: requireClass(rawStyles.attention, "meter.module.css", "attention"),
-  alive: requireClass(rawStyles.alive, "meter.module.css", "alive"),
-  danger: requireClass(rawStyles.danger, "meter.module.css", "danger"),
+  neutral: requireClass(rawStyles.fillNeutral, "meter.module.css", "fillNeutral"),
+  attention: requireClass(rawStyles.fillAttention, "meter.module.css", "fillAttention"),
+  alive: requireClass(rawStyles.fillAlive, "meter.module.css", "fillAlive"),
+  danger: requireClass(rawStyles.fillDanger, "meter.module.css", "fillDanger"),
 };
 
 test("renders role=meter with aria-valuenow/min/max reflecting value/max", () => {

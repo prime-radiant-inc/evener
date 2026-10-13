@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { useResolvedScheme } from "../../stores/prefs";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
+import { ZoomableMedia } from "../zoomablemedia";
 import { DiagramViewer } from "./DiagramViewer";
 import { MERMAID_DIAGRAM_ATTR } from "./markers";
 import styles from "./mermaid.module.css";
@@ -12,7 +13,6 @@ export { MERMAID_DIAGRAM_ATTR } from "./markers";
 
 const CLASS = {
   root: requireClass(styles.root, "mermaid.module.css", "root"),
-  clickable: requireClass(styles.clickable, "mermaid.module.css", "clickable"),
   error: requireClass(styles.error, "mermaid.module.css", "error"),
   svg: requireClass(styles.svg, "mermaid.module.css", "svg"),
 };
@@ -40,9 +40,9 @@ export interface MermaidDiagramProps {
  * render pipeline is the two-layer sanitize in security.ts; the rendered SVG
  * is non-interactive (the container opens the fullscreen DiagramViewer on
  * click - the svg itself never takes pointer events, so no anchor that could
- * survive a future sanitizer regression is ever clickable). The container is
- * only a <button> once a diagram has rendered; while loading (or after a
- * failed render) it stays a plain, non-focusable <div>, since there is no
+ * survive a future sanitizer regression is ever clickable). The diagram is
+ * only a button (ZoomableMedia) once it has rendered; while loading (or after
+ * a failed render) it stays a plain, non-focusable <div>, since there is no
  * rendered diagram for the viewer to open. */
 export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: MermaidDiagramProps) {
   const scheme = useResolvedScheme();
@@ -96,20 +96,20 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: MermaidDiagr
       // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via the mermaid pipeline's two DOMPurify layers, see security.ts
       <div className={CLASS.svg} aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }} />
     );
-    // A rendered diagram is a real control, not a static block: render the
-    // container as a button so a keyboard user can open the viewer too, and the
-    // click handler is on a focusable element (no a11y suppression).
+    // A rendered diagram is a real control, not a static block: it renders as
+    // ZoomableMedia so a keyboard user can open the viewer too, and the click
+    // handler is on a focusable element (no a11y suppression).
     return (
       <>
-        <button
-          type="button"
-          className={`${CLASS.root} ${CLASS.clickable}`}
-          {...{ [MERMAID_DIAGRAM_ATTR]: "" }}
-          aria-label="Open diagram fullscreen"
-          onClick={() => setViewer({ svg })}
-        >
-          {body}
-        </button>
+        <div className={CLASS.root}>
+          <ZoomableMedia
+            label="Open diagram fullscreen"
+            onOpen={() => setViewer({ svg })}
+            {...{ [MERMAID_DIAGRAM_ATTR]: "" }}
+          >
+            {body}
+          </ZoomableMedia>
+        </div>
         {viewer !== null && <DiagramViewer open svg={viewer.svg} source={source} onClose={() => setViewer(null)} />}
       </>
     );

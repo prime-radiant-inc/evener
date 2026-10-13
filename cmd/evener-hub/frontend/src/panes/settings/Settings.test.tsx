@@ -12,6 +12,7 @@ import { resetSettingsOverviewStoreForTests } from "../../stores/settingsOvervie
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import Settings from "./Settings";
 import { SETTINGS_SECTIONS, settingsSectionLabel } from "./sections";
+import { statusReasons } from "./sections/reasonTestUtils";
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -49,7 +50,7 @@ afterEach(() => {
 // that read fails, so a test that shows either section waits for its error
 // state before it ends, leaving no update in flight.
 async function sectionLoadFailed(): Promise<void> {
-  await waitFor(() => expect(emptyStateReasons(screen.getByTestId("settings-content"))).toEqual(["unavailable"]));
+  await waitFor(() => expect(statusReasons(screen.getByTestId("settings-content"))).toEqual(["unavailable"]));
 }
 
 // FIX 1: settings has no way out other than clicking a session in the rail

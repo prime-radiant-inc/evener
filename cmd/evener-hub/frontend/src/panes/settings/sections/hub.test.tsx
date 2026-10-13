@@ -1,14 +1,14 @@
-import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage, type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
-import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { HubSection } from "./hub";
-import { settingsFieldIds, settingsFieldRow } from "./settingsFieldTestUtils";
+import { statusReasons } from "./reasonTestUtils";
+import { settingsFieldHelp, settingsFieldIds } from "./settingsFieldTestUtils";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -43,7 +43,7 @@ test("fetches the overview on mount and renders the 3 read-only fields with thei
   expect(screen.getByText("30s")).toBeTruthy();
   expect(settingsFieldIds()).toEqual(["listen-address", "run-dir", "spawn-timeout"]);
   for (const field of settingsFieldIds()) {
-    expect(settingsFieldRow(field ?? "").querySelector("p")).not.toBeNull();
+    expect(settingsFieldHelp(field ?? "")).not.toBeNull();
   }
   await waitFor(() =>
     expect(fake.calls).toEqual([
@@ -75,10 +75,11 @@ describe("on load failure", () => {
 
     render(<HubSection />);
 
-    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
-    const hint = screen.getByTestId("empty-state").querySelector('[data-slot="hint"]');
-    if (hint === null) throw new Error("load failure shows no hint");
-    expect(hint.textContent).toMatch(/\S/);
+    await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+    const notice = document.querySelector<HTMLElement>('[role="status"][data-reason="unavailable"]');
+    if (notice === null) throw new Error("load failure shows no notice");
+    expect(within(notice).getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByTestId("empty-state")).toBeNull();
     expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
   });
 
@@ -90,7 +91,7 @@ describe("on load failure", () => {
     const user = userEvent.setup();
 
     render(<HubSection />);
-    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+    await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
 
     fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
     fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
@@ -98,5 +99,19 @@ describe("on load failure", () => {
 
     expect(await screen.findByText("127.0.0.1:9180")).toBeTruthy();
     await waitFor(() => expect(fake.calls).toHaveLength(3));
+  });
+
+  test("a hub-reported WireError shows that error's friendly form", async () => {
+    const fake = connectFakeClient();
+    const err = new WireError("overview index is rebuilding", -32000);
+    fake.on("evener/settings/overview", () => {
+      throw err;
+    });
+
+    render(<HubSection />);
+
+    await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+    const notice = document.querySelector('[role="status"][data-reason="unavailable"]');
+    expect(notice?.textContent).toContain(friendlyErrorMessage(err));
   });
 });

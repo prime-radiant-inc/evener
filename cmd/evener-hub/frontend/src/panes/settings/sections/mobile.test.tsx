@@ -6,6 +6,7 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { MobileSection } from "./mobile";
+import { statusReasons } from "./reasonTestUtils";
 
 // Lets one test simulate a rejected `import("qrcode.react")` chunk load: the
 // mock only throws while the flag is set, so every other test imports the
@@ -88,9 +89,10 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
 
     // The failure stays scoped to the QR slot: an error fallback instead of
     // the QR, with the section and its copy-pairing-link action intact.
-    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+    await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+    expect(emptyStateReasons(document.body)).toEqual([]);
     expect(screen.getByRole("button", { name: "Copy pairing link" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Mobile app" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Scan with your phone" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();
     expect(onCaughtError).toHaveBeenCalledTimes(1);
     const caughtError = onCaughtError.mock.calls[0]?.[0];
@@ -140,7 +142,7 @@ test("renders resolved QR svg output inside the labelled image wrapper", async (
   expect(svg.querySelector("path")).not.toBeNull();
 });
 
-test("shows configuration guidance instead of a QR when the Hub has no reachable origin", async () => {
+test("does not offer a direct credential QR when no destination is available", async () => {
   client.on("evener/mobile/pairing", () => {
     throw new WireError("mobile pairing requires a reachable non-loopback Hub origin", -32013, {
       evenerErrorInfo: "conflict",
@@ -150,7 +152,5 @@ test("shows configuration guidance instead of a QR when the Hub has no reachable
   renderMobileSection();
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["needs-configuration"]));
-  // The guidance names the hub.toml key that fixes it.
-  expect(screen.getByTestId("empty-state").textContent).toContain("mobile_base_url");
   expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();
 });

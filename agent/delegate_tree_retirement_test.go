@@ -795,6 +795,32 @@ func retirementAwait(t *testing.T, ready <-chan struct{}) {
 	}
 }
 
+// retirementCreateBarrierTripwire bounds the two waits in
+// retirementCreateListingBarrier: the create reaching the model-list barrier, and
+// the create finishing after the barrier is released. Neither is the fixture's
+// rendezvous — `entered` is, since it closes while the create is parked inside its
+// first model listing. Reaching that listing runs the create's selection and, in
+// the after-reservation case, the committed reservation's durable writes and the
+// child Session's construction up to its own startup listing; after the release
+// the create still finishes that construction, installs and adopts the child
+// Session, preseedes the transcript, completes the committed start durably, and
+// launches. No channel this fixture controls gates any of that, and no production
+// deadline bounds it either (the committed start's context is
+// context.WithCancel(context.Background()), #4133), so both ceilings are hang
+// guards, never speed assertions, and must sit far above what the work costs at
+// rest.
+//
+// 30s matches this package's standing whole-operation tripwire for in-process
+// work (stallHandshakeTimeout, awaitSignal, waitForCondition); a correct create
+// reaches and leaves the barrier in tens of milliseconds at rest, so nothing but
+// a genuine hang reaches this. The previous 10s was sized as if both waits were
+// the rendezvous they follow, and #4133's evidence shows it was not: a controlled
+// 12s pause on one legitimate post-barrier step
+// (testOnly.delegateInitialInputAppend inside preseedInput) made the 10s guard
+// fire with the create healthy, and in the field sighting the post-release fatal
+// came after the reach wait had already spent ~8.9s of the test's 18.86s.
+const retirementCreateBarrierTripwire = 30 * time.Second
+
 func TestRetirementDelegateCreateBeforeReservation(t *testing.T) {
 	t.Parallel()
 	retirementCreateListingBarrier(t, true)
@@ -834,7 +860,13 @@ func retirementCreateListingBarrier(t *testing.T, beforeReservation bool) {
 	go func() {
 		result <- root.createDelegate(context.Background(), delegateArgs{Task: "before-reservation-sentinel", AgentType: "retirement-list"})
 	}()
-	retirementAwait(t, entered)
+	// Not the rendezvous: in the after-reservation case this spans the committed
+	// reservation's durable writes (see retirementCreateBarrierTripwire).
+	select {
+	case <-entered:
+	case <-time.After(retirementCreateBarrierTripwire):
+		t.Fatal("external dependency barrier was not reached")
+	}
 	tree.mu.Lock()
 	unpublished := len(tree.durable) == 0 && len(tree.reservations) == 0
 	committedWithoutRuntime := len(tree.durable) == 1
@@ -856,7 +888,9 @@ func retirementCreateListingBarrier(t *testing.T, beforeReservation bool) {
 	var d delegateResult
 	select {
 	case d = <-result:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	// Awaits the create's own result; the bound is only a hang guard over the
+	// rest of the create (see retirementCreateBarrierTripwire).
+	case <-time.After(retirementCreateBarrierTripwire):
 		t.Fatal("create did not leave model-list barrier")
 	}
 	if d.Err != nil {

@@ -41,6 +41,7 @@ import {
   Button,
   Cadence,
   EmptyState,
+  InlineNotice,
   Loader,
   PaneScaffold,
   type VirtualListHandle,
@@ -221,7 +222,7 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
         Force shutdown…
       </Button>
       <ForceStopDialog open={open} onClose={() => setOpen(false)} onConfirm={stop} />
-      {error && <span role="alert">{error}</span>}
+      {error && <InlineNotice tone="danger">{error}</InlineNotice>}
     </>
   );
 }
@@ -726,9 +727,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               !restartPending &&
               !controlsFor(model).send && <SessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />}
             {reconciliationFailed && (
-              <div role="alert" data-testid="message-recovery-pending">
+              <InlineNotice live="alert" data-testid="message-recovery-pending">
                 Message recovery has not completed. Sending will resume after recovery succeeds.
-              </div>
+              </InlineNotice>
             )}
             <PendingChips sessionRef={ref} />
             {composerSource && <Composer ref={ref} paneId={paneId} source={composerSource} focused={paneFocused} />}

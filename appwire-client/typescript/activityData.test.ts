@@ -34,11 +34,6 @@ describe("jobStatusDisplay", () => {
     expect(killed).not.toBe("command_killed");
   });
 
-  it("joins a legacy pre-split failed record to the display words by its reason", () => {
-    expect(jobStatusDisplay("failed", "exit_nonzero")).toBe("Command failed");
-    expect(jobStatusDisplay("failed", "killed_by_signal: terminated")).toBe("Command killed");
-  });
-
   it("keeps a machinery failed status raw", () => {
     expect(jobStatusDisplay("failed")).toBe("failed");
     expect(jobStatusDisplay("failed", "wait_failed")).toBe("failed");

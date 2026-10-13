@@ -29,26 +29,14 @@
   font-size: var(--font-size-ui);
 }
 
-/* The whole labelled add block is one flex child of CollectionEditor's own add
- * <form>, and the picker's trigger is width:100% of its container - so every
- * link in the chain down to it has to grow first, or the trigger inherits a
- * content-sized width and collapses to the placeholder's own text width
- * (measured: 106px inside a 600px row). */
+/* The labelled add field sits in CollectionEditor's add-field slot beside its
+ * Add button, and the picker's trigger is width:100% of its container - so
+ * the FormRow has to grow first, or the trigger inherits a content-sized
+ * width and collapses to the placeholder's own text width (measured: 106px
+ * inside a 600px row). */
 .addBlock {
   display: flex;
   flex: 1 1 0;
   min-width: 0;
   flex-direction: column;
-}
-
-.addRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.addField {
-  display: flex;
-  flex: 1;
-  min-width: 0;
 }

@@ -134,14 +134,6 @@
   background: var(--hover-2);
 }
 
-.expandedTitle {
-  font-weight: var(--font-weight-semibold);
-  font-size: var(--font-size-caption);
-  letter-spacing: var(--tracking-eyebrow);
-  color: var(--ink-mid);
-  text-transform: uppercase;
-}
-
 .expandedBody {
   padding: var(--space-3) var(--space-4);
   max-height: 40vh;

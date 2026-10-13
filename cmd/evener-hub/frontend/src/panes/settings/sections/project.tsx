@@ -27,7 +27,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
-import { Button, Loader } from "../../../widgets";
+import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import type { LaunchFormPaths } from "./launchShared/fields";
@@ -38,7 +38,6 @@ import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect"
 const CLASS = {
   root: requireClass(styles.root, "project.module.css", "root"),
   help: requireClass(styles.help, "project.module.css", "help"),
-  error: requireClass(styles.error, "project.module.css", "error"),
 };
 
 function readQueryCwd(): string {
@@ -193,22 +192,33 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       </p>
       {load.phase === "loading" && <Loader label="Loading project launch settings" />}
       {load.phase === "error" && (
-        <p className={CLASS.error} data-reason="load-failed">
-          Failed to load project launch settings. {load.message}{" "}
-          <Button type="button" onClick={() => retryLoad()}>
-            Retry
-          </Button>
-        </p>
+        <InlineNotice
+          tone="danger"
+          data-reason="load-failed"
+          action={
+            <Button type="button" onClick={() => retryLoad()}>
+              Retry
+            </Button>
+          }
+        >
+          Failed to load project launch settings. {load.message}
+        </InlineNotice>
       )}
       {load.phase === "ready" && (
         <>
           {refreshError !== null && (
-            <p className={CLASS.error} role="status" data-reason="refresh-failed">
-              Could not re-read this host's project settings. {refreshError}{" "}
-              <Button type="button" onClick={() => reload()}>
-                Retry
-              </Button>
-            </p>
+            <InlineNotice
+              tone="danger"
+              live="status"
+              data-reason="refresh-failed"
+              action={
+                <Button type="button" onClick={() => reload()}>
+                  Retry
+                </Button>
+              }
+            >
+              Could not re-read this host's project settings. {refreshError}
+            </InlineNotice>
           )}
           <LaunchConfigForm
             options={load.options}

@@ -1842,7 +1842,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 	}); err != nil {
 		t.Fatalf("register custom communicate schema: %v", err)
 	}
-	registerCommunicateTool(reg, deps)
+	_ = registerCommunicateTool(reg, deps)
 	if _, err := reg.Get("communicate").Exec(context.Background(), nil, map[string]any{
 		"message": "explicit null", "end_turn": true, "output": nil,
 	}); err != nil {

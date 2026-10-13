@@ -1,7 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { activityDelegate, activityJob } from "../../stores/sessionActivityTestUtils";
-import styles from "./activitybar.module.css";
 import { AgentRow, JobRow } from "./activityRows";
 
 test("stable delegate row uses authoritative phase and lifecycle without fabricated rollup counts", () => {
@@ -14,7 +13,7 @@ test("ended delegate preserves the supplied failed outcome", () => {
     <AgentRow sub={activityDelegate({ terminal: true, outcome: "failed", status: "failed", error: "read error" })} />,
   );
   expect(screen.getByText(/failed/)).toBeTruthy();
-  expect(view.container.querySelector('[aria-hidden="true"]')?.classList.contains(styles.glyphQuiet ?? "")).toBe(true);
+  expect(view.container.querySelector("svg")?.hasAttribute("data-tone")).toBe(false);
 });
 
 test.each([
@@ -29,19 +28,17 @@ test.each([
 ])("terminal $status jobs retain their wording with a quiet glyph", ({ status, reason, text }) => {
   const view = render(<JobRow job={activityJob({ status, reason, terminal: true })} />);
   expect(screen.getByText(text)).toBeTruthy();
-  expect(view.container.querySelector('[aria-hidden="true"]')?.classList.contains(styles.glyphQuiet ?? "")).toBe(true);
+  expect(view.container.querySelector("svg")?.hasAttribute("data-tone")).toBe(false);
 });
 
 test.each(["awaiting_input", "awaiting_approval"])("live $phase delegates keep attention", (phase) => {
   const view = render(<AgentRow sub={activityDelegate({ terminal: false, phase })} />);
-  expect(view.container.querySelector('[aria-hidden="true"]')?.classList.contains(styles.glyphAttention ?? "")).toBe(
-    true,
-  );
+  expect(view.container.querySelector("svg")?.getAttribute("data-tone")).toBe("attention");
 });
 
 test("live shell work keeps its alive glyph", () => {
   const view = render(<JobRow job={activityJob({ terminal: false, status: "running" })} />);
-  expect(view.container.querySelector('[aria-hidden="true"]')?.classList.contains(styles.glyphAlive ?? "")).toBe(true);
+  expect(view.container.querySelector("svg")?.getAttribute("data-tone")).toBe("alive");
 });
 
 test("job rows identify the work by its description while retaining the exact command", () => {

@@ -1,5 +1,13 @@
 import type { AnyNotification } from "@evener/appwire-client";
-import { makeTranscriptDisplayConfig, shippedDefault, toWireConfig, WireError } from "@evener/appwire-client";
+import {
+  ConnectionClosedError,
+  friendlyErrorMessage,
+  makeTranscriptDisplayConfig,
+  RequestTimeoutError,
+  shippedDefault,
+  toWireConfig,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -213,7 +221,7 @@ test("reverts a failed hub mutation and retries the last draft", async () => {
   }));
   client.on("evener/settings/transcriptDisplay/patch", () => {
     patchCalls += 1;
-    if (patchCalls === 1) throw new Error("server unavailable");
+    if (patchCalls === 1) throw new WireError("server unavailable", -32000);
     return retryResponse.promise;
   });
   connectionStore.getState().connect(client);
@@ -468,7 +476,7 @@ test("keeps Desktop and Mobile pending saves, failures, retry, and Toasts indepe
   const mobile = screen.getByTestId("transcript-display-card-mobile");
   expect(screen.getAllByRole("status")).toHaveLength(2);
 
-  responses.find((entry) => entry.layout === "desktop")?.response.reject(new Error("desktop unavailable"));
+  responses.find((entry) => entry.layout === "desktop")?.response.reject(new WireError("desktop unavailable", -32000));
   expect((await within(desktop).findByRole("alert")).textContent).toContain("desktop unavailable");
   expect(within(mobile).getByRole("status")).toBeTruthy();
   expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
@@ -572,4 +580,49 @@ test("reports a conflict instead of acknowledging two patches with one expected 
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: firstDraft });
   expect(screen.getAllByRole("button", { name: "Retry" }).length).toBeGreaterThan(0);
+});
+
+// The store keeps its own failure messages, and gives a hub WireError and the
+// client's connection-state failure their friendly form, so the notice never
+// shows the client's wiring text.
+test.each([
+  ["a hub-reported WireError", new WireError("transcript defaults are being rewritten", -32000)],
+  ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+  ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+])("a hub read failure from %s shows its friendly form", async (_name, err) => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/transcriptDisplay/get", () => {
+    throw err;
+  });
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubError).not.toBeNull());
+  expect(document.body.textContent).toContain(friendlyErrorMessage(err));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
+});
+
+// The client's own write failures (a timeout, a lost connection) show their
+// friendly form on the card, never the client's wiring text.
+test.each([
+  ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+  ["the client's lost socket", new Error("AppwireClient: socket closed (code 1006)")],
+])("a failed save from %s shows its friendly form", async (_name, err) => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  client.on("evener/settings/transcriptDisplay/patch", () => {
+    throw err;
+  });
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+
+  await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
+  expect((await screen.findByRole("alert")).textContent).toContain(friendlyErrorMessage(err));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
 });

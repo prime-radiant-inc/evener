@@ -99,7 +99,7 @@ describe("3-state loaded contract", () => {
     fake.on("evener/launch/getLayer", (params) => (params.layer === "project" ? PROJECT_LAYER : GLOBAL_LAYER));
     render(<ProjectSection sectionId="project" />);
     await screen.findByLabelText("Agent");
-    expect(screen.queryByTestId("launch-diagnostics")).toBeNull();
+    expect(screen.queryByTestId("diagnostics")).toBeNull();
   });
 });
 

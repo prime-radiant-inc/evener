@@ -17,7 +17,7 @@
 // replaced hands in an object that resolves the current client on each call.
 
 import type { AppwireClient } from "../../client";
-import { errorText } from "../../errors";
+import { friendlyErrorMessage } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { AuthStatusResponse } from "../../types.gen";
 import { createListRevision, readRevisioned } from "../extensions/listRevision";
@@ -29,7 +29,9 @@ export interface AuthStatusesState {
   /** Each provider's status by name; null until a read lands, since before
    * then nothing is known (an account sign-in must not read as signed in). */
   authStatuses: ReadonlyMap<string, AuthStatusResponse> | null;
-  /** The failed read's own text (errorText); null once a read succeeds. */
+  /** The failed read's friendlyErrorMessage, translated while the error still
+   * has its type so a hub's own WireError explanation survives; null once a
+   * read succeeds. */
   authStatusesError: string | null;
   fetchAuthStatuses(): Promise<void>;
 }
@@ -78,7 +80,7 @@ export function createAuthStatusesStore(client: AuthStatusesClient): AuthStatuse
               authStatuses: new Map((response.providers ?? []).map((status) => [status.provider, status])),
               authStatusesError: null,
             }),
-          onFailure: (err) => () => set({ authStatusesError: errorText(err) }),
+          onFailure: (err) => () => set({ authStatusesError: friendlyErrorMessage(err) }),
         });
       },
     };

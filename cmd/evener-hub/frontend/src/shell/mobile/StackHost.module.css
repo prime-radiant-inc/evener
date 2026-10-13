@@ -37,7 +37,7 @@
   border-bottom: 1px solid var(--edge);
 }
 
-.title {
+.stackTitle {
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
    * the same rule PaneScaffold's own .title records. */
@@ -63,7 +63,7 @@
   align-items: center;
 }
 
-.body {
+.stackBody {
   flex: 1 1 auto;
   /* min-height: 0 is required for a flex child to size correctly instead
    * of stretching this column to fit its content - same reasoning as

@@ -23,13 +23,12 @@ import { useId, useState } from "react";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import {
-  Button,
   type CollectionAddResult,
   CollectionEditor,
   ConfirmDialog,
   type DirectoryActions,
-  EmptyState,
   FormRow,
+  InlineNotice,
   PathField,
   type PathFieldKind,
   Skeleton,
@@ -46,8 +45,6 @@ const CLASS = {
   count: requireClass(styles.count, "dirListSetting.module.css", "count"),
   help: requireClass(styles.help, "dirListSetting.module.css", "help"),
   addBlock: requireClass(styles.addBlock, "dirListSetting.module.css", "addBlock"),
-  addRow: requireClass(styles.addRow, "dirListSetting.module.css", "addRow"),
-  addField: requireClass(styles.addField, "dirListSetting.module.css", "addField"),
 };
 
 export interface PathListEditorProps {
@@ -130,24 +127,17 @@ export function PathListEditor({
         renderAddField={({ value, onChange, disabled }) => (
           <div className={CLASS.addBlock}>
             <FormRow label={addLabel} htmlFor={addFieldId}>
-              <div className={CLASS.addRow}>
-                <span className={CLASS.addField}>
-                  <PathField
-                    ariaLabel={addLabel}
-                    directory={directory}
-                    id={addFieldId}
-                    value={value}
-                    onChange={onChange}
-                    kind={kind}
-                    complete={complete}
-                    placeholder={addPlaceholder}
-                    disabled={disabled}
-                  />
-                </span>
-                <Button type="submit" disabled={value.trim() === "" || disabled}>
-                  Add
-                </Button>
-              </div>
+              <PathField
+                ariaLabel={addLabel}
+                directory={directory}
+                id={addFieldId}
+                value={value}
+                onChange={onChange}
+                kind={kind}
+                complete={complete}
+                placeholder={addPlaceholder}
+                disabled={disabled}
+              />
             </FormRow>
           </div>
         )}
@@ -244,7 +234,9 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
       </header>
       <p className={CLASS.help}>{copy}</p>
       {error !== null ? (
-        <EmptyState title="Failed to load" hint={error} reason="unavailable" />
+        <InlineNotice tone="danger" live="status" data-reason="unavailable">
+          Failed to load: {error}
+        </InlineNotice>
       ) : loading && layer === null ? (
         <Skeleton />
       ) : (

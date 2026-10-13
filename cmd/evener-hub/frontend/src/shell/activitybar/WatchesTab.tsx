@@ -6,7 +6,7 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 import { buildWatchRows } from "@evener/appwire-client";
 import { useNowTick } from "../../panes/session/liveness";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { Skeleton } from "../../widgets";
+import { EmptyState, InlineNotice, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ActivityScope } from "../statusbar/statusScope";
 import { useActivityScrollProgress } from "./ActivityViewport";
@@ -15,8 +15,6 @@ import { WatchRow } from "./activityRows";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
-  emptyNote: requireClass(styles.emptyNote, "activitybar.module.css", "emptyNote"),
-  passiveMore: requireClass(styles.passiveMore, "activitybar.module.css", "passiveMore"),
 };
 
 export function WatchesTab({ scope }: { scope: ActivityScope }) {
@@ -30,11 +28,11 @@ export function WatchesTab({ scope }: { scope: ActivityScope }) {
     collection?.hasMore ?? false,
   );
   if (collection?.permanent && collection.rows.length === 0)
-    return <span className={CLASS.emptyNote}>Watches unavailable for this session.</span>;
+    return <EmptyState size="compact" title="Watches unavailable for this session." />;
   if (!collection || (collection.rows.length === 0 && !collection.complete)) return <Skeleton lines={2} />;
   const watches = collection.rows;
   if (watches.length === 0 && collection.complete)
-    return <span className={CLASS.emptyNote}>No watches at this level.</span>;
+    return <EmptyState size="compact" title="No watches at this level." />;
   return (
     <div className={CLASS.stack}>
       {watchRows.map((row) => (
@@ -50,9 +48,7 @@ export function WatchesTab({ scope }: { scope: ActivityScope }) {
         permanent={collection.permanent}
         loadMore={loadMore}
       />
-      {collection.error && !collection.permanent ? (
-        <span className={CLASS.emptyNote}>Watches are updating…</span>
-      ) : null}
+      {collection.error && !collection.permanent ? <InlineNotice live="off">Watches are updating…</InlineNotice> : null}
     </div>
   );
 }

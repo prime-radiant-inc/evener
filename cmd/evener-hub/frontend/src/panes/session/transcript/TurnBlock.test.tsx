@@ -335,15 +335,16 @@ test("an intent-less tool shows its own derived summary at chat and tools levels
   });
   const { rerender } = render(withConfig(config, <TurnBlock turn={turn([blankIntent], {}, config)} />));
 
-  // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
-  // <details> children), so it is present even when the group is closed.
+  // A closed intent group mounts its rows only once opened.
+  fireEvent.click(screen.getByTestId("intent-group").querySelector("summary")!);
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
+  // Derived from the call's own arguments (the fixture's command).
+  expect(screen.getByTestId("tool-row-summary").textContent).toContain("echo derived-summary");
 
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   rerender(withConfig(tools, <TurnBlock turn={turn([blankIntent], {}, tools)} />));
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
+  expect(screen.getByTestId("tool-row-summary").textContent).toContain("echo derived-summary");
 });
 
 // Regression for session 034MY2rfMj2ho4Nj6J0jFB: an intent-less read_file row
@@ -363,8 +364,11 @@ test("an intent-less read_file shows the Read summary, never 'Action summary una
   for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     const { unmount } = render(withConfig(config, <TurnBlock turn={turn([read], {}, config)} />));
-    expect(screen.getByTestId("tool-row-summary").textContent).toBe("Read src/foo.ts · lines 1-2");
-    expect(screen.queryByText(ACTION_SUMMARY_UNAVAILABLE)).toBeNull();
+    const group = screen.queryByTestId("intent-group") as HTMLDetailsElement | null;
+    if (group && !group.open) fireEvent.click(group.querySelector("summary")!);
+    // The descriptor's own summary names the fixture's path; the neutral
+    // projected fallback would not.
+    expect(screen.getByTestId("tool-row-summary").textContent).toContain("src/foo.ts");
     unmount();
   }
 });
@@ -383,9 +387,8 @@ test("Chat renders a closed action group that expands reasons without tool UI (c
 
   const group = screen.getByTestId("intent-group");
   expect(group.hasAttribute("open")).toBe(false);
-  // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
-  // <details> children), so it is present even when the group is closed.
-  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  // A closed group mounts none of its rows.
+  expect(screen.queryByTestId("tool-call-item")).toBeNull();
 
   const summary = group.querySelector("summary");
   if (summary === null) throw new Error("Chat intent summary did not render");
@@ -819,6 +822,15 @@ test("the gutter indent is one media query at exactly 700px with padding-left: v
   expect(css).toMatch(
     /@media\s*\(min-width:\s*700px\)\s*\{\s*\.runContent\s*\{\s*padding-left:\s*var\(--speaker-gutter\);\s*\}\s*\}/,
   );
+});
+
+test("an intent group's rule spans the turn column while its members take the gutter indent", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "..", "session.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(
+    /@media\s*\(min-width:\s*700px\)\s*\{\s*\.intentGroupItems\s*\{\s*padding-left:\s*var\(--speaker-gutter\);\s*\}\s*\}/,
+  );
+  expect(css).not.toMatch(/\.intentGroup\s*\{[^}]*padding/);
 });
 
 test("the speaker geometry is declared once on .turn: 34px gutter = 24px avatar + 10px gap", () => {

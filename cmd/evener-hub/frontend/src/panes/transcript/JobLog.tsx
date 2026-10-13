@@ -9,6 +9,7 @@ import { workspaceStore } from "../../shell/workspace";
 import {
   Button,
   EmptyState,
+  InlineNotice,
   Loader,
   PaneScaffold,
   ShellCommandBlock,
@@ -27,6 +28,7 @@ const CLASS = {
   joblogCommand: requireClass(styles.joblogCommand, "transcript.module.css", "joblogCommand"),
   joblog: requireClass(styles.joblog, "transcript.module.css", "joblog"),
   joblogNote: requireClass(styles.joblogNote, "transcript.module.css", "joblogNote"),
+  joblogNotice: requireClass(styles.joblogNotice, "transcript.module.css", "joblogNotice"),
 };
 
 type JobLogDisplayRow =
@@ -355,9 +357,11 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
           </span>
         )}
         {snapshot.outputError && (
-          <span className={CLASS.joblogNote} role="status">
-            {snapshot.outputError}
-          </span>
+          <div className={CLASS.joblogNotice}>
+            <InlineNotice tone="danger" live="status">
+              {snapshot.outputError}
+            </InlineNotice>
+          </div>
         )}
         {live === null && older === null && !snapshot.outputError && <Loader label="Loading job output" />}
         {live !== null && snapshot.windows.totalBytes === 0 && (

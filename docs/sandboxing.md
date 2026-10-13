@@ -277,6 +277,30 @@ unsandboxed root's `TMPDIR` is not in the tree.
   `<common>/rr-cache`. That is the intended behaviour: the mode runs the
   developer's git, not a blanked-out one.
 
+  **A global `core.excludesFile` or `core.attributesFile` gets no read grant of its
+  own in `restricted`** (accepted limitation, 2026-10-13; recorded in
+  [friction.md's T06](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
+  and [#4234](https://github.com/prime-radiant-inc/evener/issues/4234)). The grant
+  above is the config FILES, never the files they name, so such a file is readable
+  inside the sandbox only where it already sits under a root the mode grants — the
+  project worktree, `/etc`, `/opt`, `/nix/store` and the other system read roots — and
+  not elsewhere, typically under `$HOME`. Where it is not readable, the effect depends
+  on the host: macOS/Seatbelt reports
+
+      warning: unable to access '<path>': Operation not permitted
+
+  on every command that reads the file, while Linux/bubblewrap hides an ungranted
+  path, so git applies no excludes or attributes file at all and says nothing. This
+  is deliberate, not overlooked. Granting one file the config names means granting a
+  pathname a spawned process resolves by its literal name at every spawn, and six
+  review rounds on that route each closed one way of re-pointing a granted name at
+  another file — a symlink, a `..` the kernel resolves after one, a writable alias, a
+  letter case, a directory in place of the file — while exposing another, with the
+  last one specific to a backend whose code cannot be verified where CI runs. The
+  project's own `.gitignore`, `.gitattributes` and `.git/info/exclude` are unaffected;
+  they live in the worktree. A session that needs global rules elsewhere on the host
+  can run with `--sandbox off`, or the rules can move into the repository.
+
   **git under a sandbox is silent and fast on macOS** (ruled 2026-08-07). It was
   neither: every `git` call emitted two `xcrun_db` cache-write denials to stderr
   and cost seconds. The cause was the shim, not the sandbox. `/usr/bin/git`

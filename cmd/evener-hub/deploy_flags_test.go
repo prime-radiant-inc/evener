@@ -683,10 +683,7 @@ func TestRunMainLogsTheDeployPathItWasGiven(t *testing.T) {
 	origSHA := buildinfo.GitSHA
 	t.Cleanup(func() { buildinfo.GitSHA = origSHA })
 	buildinfo.GitSHA = ""
-	checkout, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("canonicalize the checkout: %v", err)
-	}
+	checkout := canonicalTempDir(t)
 	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1132,10 +1129,7 @@ func evenerCheckoutFixture(t *testing.T) string {
 	origSHA := buildinfo.GitSHA
 	t.Cleanup(func() { buildinfo.GitSHA = origSHA })
 	buildinfo.GitSHA = ""
-	checkout, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("canonicalize the checkout: %v", err)
-	}
+	checkout := canonicalTempDir(t)
 	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

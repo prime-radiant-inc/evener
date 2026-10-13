@@ -10,7 +10,17 @@ import type { MarketplaceSourceInput } from "@evener/appwire-client";
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type FormEvent, useId, useState } from "react";
-import { Button, Chevron, Chip, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
+import {
+  Button,
+  Chip,
+  EmptyState,
+  FormRow,
+  Input,
+  ListRow,
+  PathField,
+  RadioGroup,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
@@ -19,12 +29,6 @@ import styles from "./marketplacesPlugins.module.css";
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
   list: requireClass(styles.list, "marketplacesPlugins.module.css", "list"),
-  rowButton: requireClass(styles.rowButton, "marketplacesPlugins.module.css", "rowButton"),
-  rowMain: requireClass(styles.rowMain, "marketplacesPlugins.module.css", "rowMain"),
-  rowText: requireClass(styles.rowText, "marketplacesPlugins.module.css", "rowText"),
-  rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
-  rowChevron: requireClass(styles.rowChevron, "marketplacesPlugins.module.css", "rowChevron"),
-  empty: requireClass(styles.empty, "marketplacesPlugins.module.css", "empty"),
   addForm: requireClass(styles.addForm, "marketplacesPlugins.module.css", "addForm"),
   formActions: requireClass(styles.formActions, "marketplacesPlugins.module.css", "formActions"),
 };
@@ -88,23 +92,18 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
     <section className={CLASS.section}>
       <ul aria-label="Marketplaces" className={CLASS.list}>
         {marketplaces.length === 0 ? (
-          <li className={CLASS.empty} data-reason="empty">
-            No marketplaces registered. Add one below.
+          <li>
+            <EmptyState size="compact" reason="empty" title="No marketplaces registered. Add one below." />
           </li>
         ) : (
           marketplaces.map((m) => (
             <li key={m.name}>
-              <button type="button" className={CLASS.rowButton} onClick={() => onSelect(m.name)}>
-                <div className={CLASS.rowMain}>
-                  <div className={CLASS.rowText}>
-                    {m.name} <Chip>{m.source.kind}</Chip>
-                  </div>
-                  <div className={CLASS.rowMeta}>{marketplaceSourceLabel(m.source)}</div>
-                </div>
-                <span className={CLASS.rowChevron} aria-hidden="true">
-                  <Chevron direction="right" />
-                </span>
-              </button>
+              <ListRow
+                label={m.name}
+                chips={<Chip>{m.source.kind}</Chip>}
+                meta={marketplaceSourceLabel(m.source)}
+                onSelect={() => onSelect(m.name)}
+              />
             </li>
           ))
         )}

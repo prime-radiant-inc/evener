@@ -32,12 +32,27 @@ function MenuDemo() {
   );
 }
 
+// The icon-only trigger at rest: the rail's row/section "..." and the
+// session menu. Square at IconButton's sm size, named by `label`.
+function IconTriggerDemo() {
+  return (
+    <div className={styles.frame}>
+      <p className={styles.hint}>Icon-only trigger, default and quiet.</p>
+      <Menu icon="⋯" label="Actions for Alpha" items={ITEMS} />
+      <Menu icon="⋯" label="Actions for Beta" variant="quiet" items={ITEMS} />
+    </div>
+  );
+}
+
 export default function MenuGallerySection() {
   return (
     <section>
       <h2>Menu</h2>
       <ThemeFlip>
         <MenuDemo />
+      </ThemeFlip>
+      <ThemeFlip>
+        <IconTriggerDemo />
       </ThemeFlip>
     </section>
   );

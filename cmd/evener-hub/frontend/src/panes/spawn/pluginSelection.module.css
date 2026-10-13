@@ -1,12 +1,8 @@
-.panel {
+.content {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
-  padding: var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  background: var(--surface-1);
 }
 
 .desktopSurface {
@@ -77,15 +73,11 @@
   border-top: 1px solid var(--edge);
 }
 
-/* Indented to line up under the switch label: the 32px track plus the
- * wrapper's --space-2 gap (the 899px media query below widens the hit target
- * to 44px and adjusts this to match). */
 .metadata {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 2px;
-  padding-left: calc(32px + var(--space-2));
 }
 
 .source,
@@ -109,49 +101,37 @@
   font-size: var(--font-size-caption);
 }
 
-.diagnostics,
-.errors {
+.diagnostics {
   padding: var(--space-2);
   border: 1px solid var(--edge);
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
 
-.diagnostics ul,
-.errors ul {
+.diagnostics ul {
   margin: var(--space-1) 0 0;
   padding-left: var(--space-4);
 }
 
-.errors li {
+/* One selection issue per row: its message, then its own Remove. */
+.issueList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.issueList li {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
 }
 
-.errors {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.errors strong {
-  color: var(--ink-hi);
-}
-
-.empty {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
-}
-
 @media (max-width: 899px) {
   .desktopSurface {
     display: none;
-  }
-
-  .metadata {
-    padding-left: calc(44px + var(--space-2));
   }
 }

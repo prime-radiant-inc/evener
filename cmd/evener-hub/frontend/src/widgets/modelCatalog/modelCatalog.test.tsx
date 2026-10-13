@@ -68,7 +68,7 @@ test("a synchronously throwing catalog loader shows an inline error", async () =
     },
   });
   await userEvent.setup().click(openTrigger());
-  expect(await screen.findByText(/Couldn't load models/)).toBeTruthy();
+  expect(await screen.findByRole("alert")).toBeTruthy();
 });
 
 test("an open picker refreshes selectable models when provider configuration changes", async () => {

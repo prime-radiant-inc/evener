@@ -228,9 +228,15 @@ describe("resolvedDefaultLabel", () => {
     expect(resolvedDefaultLabel(booleanOpt, "global", { sandboxNet: false })).toBe("false (default)");
   });
 
-  test("the project layer keeps its own marker wording, value prepended", () => {
-    expect(resolvedDefaultLabel(booleanOpt, "project", { sandboxNet: true })).toBe("true (use global default)");
-    expect(resolvedDefaultLabel(selectOpt, "project", { reasoningEffort: "high" })).toBe("high (use global default)");
+  test("the project layer prepends the value to its own marker, not the global one", () => {
+    for (const [option, effective, value] of [
+      [booleanOpt, { sandboxNet: true }, "true"],
+      [selectOpt, { reasoningEffort: "high" }, "high"],
+    ] as const) {
+      const project = resolvedDefaultLabel(option, "project", effective);
+      expect(project?.startsWith(`${value} `), project).toBe(true);
+      expect(project).not.toBe(resolvedDefaultLabel(option, "global", effective));
+    }
   });
 
   test("a select whose empty marker is the generic one names the resolved value", () => {

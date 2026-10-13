@@ -33,6 +33,9 @@ func ValidateThreadTurnsListParams(params ThreadTurnsListParams) error {
 	// A before boundary with no cursor pages before it in the thread's current
 	// transcript.
 	if params.Cursor == "" && params.Before == nil {
+		// Do not reword: remoteCursorlessBeforeRefusal in
+		// cmd/evener-hub/internal/appsource/remote_hub_source.go matches this text
+		// to recognize a remote hub that predates the before field.
 		return InvalidParams("cursor or before is required for thread/turns/list")
 	}
 	// A cursor that is present must be one.

@@ -34,7 +34,7 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
-import { Button, CollectionEditor, Input, PathField, Switch, VisuallyHidden } from "../../../../widgets";
+import { CollectionEditor, FormRow, Input, PathField, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./collectionFields.module.css";
 import { controllerLaunchFormPaths, type LaunchFormPaths } from "./fields";
@@ -42,25 +42,8 @@ import { SettingsModelCatalog } from "./SettingsModelCatalog";
 
 const CLASS = {
   section: requireClass(styles.section, "collectionFields.module.css", "section"),
-  header: requireClass(styles.header, "collectionFields.module.css", "header"),
-  label: requireClass(styles.label, "collectionFields.module.css", "label"),
-  help: requireClass(styles.help, "collectionFields.module.css", "help"),
-  envRow: requireClass(styles.envRow, "collectionFields.module.css", "envRow"),
   envField: requireClass(styles.envField, "collectionFields.module.css", "envField"),
-  modelAddRow: requireClass(styles.modelAddRow, "collectionFields.module.css", "modelAddRow"),
-  modelAddField: requireClass(styles.modelAddField, "collectionFields.module.css", "modelAddField"),
-  pathAddRow: requireClass(styles.pathAddRow, "collectionFields.module.css", "pathAddRow"),
-  pathAddField: requireClass(styles.pathAddField, "collectionFields.module.css", "pathAddField"),
 };
-
-function SectionHeader({ label, help }: { label: string; help?: string }) {
-  return (
-    <div className={CLASS.header}>
-      <span className={CLASS.label}>{label}</span>
-      {help && <p className={CLASS.help}>{help}</p>}
-    </div>
-  );
-}
 
 // --- pathList / modelList: both a plain string[] behind CollectionEditor ---
 
@@ -99,25 +82,26 @@ function StringListField({
   }
 
   return (
-    <div className={CLASS.section}>
-      <SectionHeader label={option.label} help={option.description} />
-      <CollectionEditor<string>
-        label={option.label}
-        items={items}
-        inheritedItems={inheritedItems}
-        getKey={(item) => item}
-        renderItem={(item) => item}
-        removeLabel={(item) => `Remove ${item}`}
-        onRemove={(item) => onChange(items.filter((i) => i !== item))}
-        emptyMessage={emptyMessage}
-        addPlaceholder={addPlaceholder}
-        onAdd={handleAdd}
-        renderAddField={renderAddField}
-      />
-      {explicitEmpty && (
-        <Switch checked={explicitEmpty.checked} onChange={explicitEmpty.onChange} label={explicitEmpty.label} />
-      )}
-    </div>
+    <FormRow label={option.label} help={option.description || undefined}>
+      <div className={CLASS.section}>
+        <CollectionEditor<string>
+          label={option.label}
+          items={items}
+          inheritedItems={inheritedItems}
+          getKey={(item) => item}
+          renderItem={(item) => item}
+          removeLabel={(item) => `Remove ${item}`}
+          onRemove={(item) => onChange(items.filter((i) => i !== item))}
+          emptyMessage={emptyMessage}
+          addPlaceholder={addPlaceholder}
+          onAdd={handleAdd}
+          renderAddField={renderAddField}
+        />
+        {explicitEmpty && (
+          <Switch checked={explicitEmpty.checked} onChange={explicitEmpty.onChange} label={explicitEmpty.label} />
+        )}
+      </div>
+    </FormRow>
   );
 }
 
@@ -171,25 +155,23 @@ export function PathListField({ option, items, onChange, validatePath, inherited
       validateAdd={(trimmed) => validatePathListAdd(option, items, trimmed, validatePath)}
       inheritedItems={inheritedItems}
       renderAddField={({ value, onChange: setDraft, disabled }) => (
-        <div className={CLASS.pathAddRow}>
-          <PathAddField
-            value={value}
-            onChange={setDraft}
-            kind={kind}
-            placeholder={placeholder}
-            ariaLabel={option.label}
-            disabled={disabled}
-            paths={formPaths}
-          />
-        </div>
+        <PathAddField
+          value={value}
+          onChange={setDraft}
+          kind={kind}
+          placeholder={placeholder}
+          ariaLabel={option.label}
+          disabled={disabled}
+          paths={formPaths}
+        />
       )}
     />
   );
 }
 
 /**
- * The pathList add row: the shared path picker plus CollectionEditor's own
- * submit button. `complete` is the extensions store's evener/paths/complete
+ * The pathList add field: the shared path picker, beside CollectionEditor's
+ * own Add button. `complete` is the extensions store's evener/paths/complete
  * call, imported directly the way ModelAddField imports its own catalog
  * loader rather than threading a prop through StringListField - and no
  * `listRecents`, since a skills- or config-file list has no meaningful
@@ -223,23 +205,16 @@ function PathAddField({
   paths: LaunchFormPaths;
 }) {
   return (
-    <>
-      <span className={CLASS.pathAddField}>
-        <PathField
-          directory={paths.directory}
-          value={value}
-          onChange={onChange}
-          kind={kind}
-          complete={paths.complete}
-          placeholder={placeholder}
-          ariaLabel={ariaLabel}
-          disabled={disabled}
-        />
-      </span>
-      <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
-        Add
-      </Button>
-    </>
+    <PathField
+      directory={paths.directory}
+      value={value}
+      onChange={onChange}
+      kind={kind}
+      complete={paths.complete}
+      placeholder={placeholder}
+      ariaLabel={ariaLabel}
+      disabled={disabled}
+    />
   );
 }
 
@@ -286,18 +261,16 @@ export function ModelListField({
       }}
       explicitEmpty={{ checked: explicitEmpty, onChange: onExplicitEmptyChange, label: "No model fallbacks" }}
       inheritedItems={inheritedItems}
-      renderAddField={({ value, onChange: setDraft, disabled }) => (
-        <div className={CLASS.modelAddRow}>
-          <ModelAddField host={host} value={value} onChange={setDraft} disabled={disabled} />
-        </div>
+      renderAddField={({ value, onChange: setDraft }) => (
+        <ModelAddField host={host} value={value} onChange={setDraft} />
       )}
     />
   );
 }
 
 /**
- * The modelList add row: the shared model picker plus CollectionEditor's own
- * submit button. The picker is host-scoped (component 07b): the local hub's
+ * The modelList add field: the shared model picker, beside CollectionEditor's
+ * own Add button. The picker is host-scoped (component 07b): the local hub's
  * plain model/list with no harness/cwd - a launch-config fallback list isn't
  * scoped to one live spawn - or the selected remote host's through the proxy,
  * matching the scalar modelPicker field in this section's sibling fields.tsx.
@@ -306,27 +279,8 @@ export function ModelListField({
  * (the picker's own panel is portaled outside this <form>, so Enter inside the
  * picker picks a model rather than submitting the row).
  */
-function ModelAddField({
-  host,
-  value,
-  onChange,
-  disabled,
-}: {
-  host?: string;
-  value: string;
-  onChange: (value: string) => void;
-  disabled: boolean;
-}) {
-  return (
-    <>
-      <span className={CLASS.modelAddField}>
-        <SettingsModelCatalog host={host} value={value} onChange={onChange} />
-      </span>
-      <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
-        Add
-      </Button>
-    </>
-  );
+function ModelAddField({ host, value, onChange }: { host?: string; value: string; onChange: (value: string) => void }) {
+  return <SettingsModelCatalog host={host} value={value} onChange={onChange} />;
 }
 
 // --- envMap: name/value pairs, "NAME=value" add syntax ---------------------
@@ -372,27 +326,24 @@ function EnvAddFields({
 
   return (
     <>
-      <label className={CLASS.envField}>
-        <VisuallyHidden>Variable name</VisuallyHidden>
+      <div className={CLASS.envField}>
         <Input
+          aria-label="Variable name"
           value={name}
           onChange={(e) => onChange(`${e.target.value.replace(/=/g, "")}=${envValue}`)}
           placeholder="NAME"
           disabled={disabled}
         />
-      </label>
-      <label className={CLASS.envField}>
-        <VisuallyHidden>Variable value</VisuallyHidden>
+      </div>
+      <div className={CLASS.envField}>
         <Input
+          aria-label="Variable value"
           value={envValue}
           onChange={(e) => onChange(`${name}=${e.target.value}`)}
           placeholder="value"
           disabled={disabled}
         />
-      </label>
-      <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
-        Add
-      </Button>
+      </div>
     </>
   );
 }
@@ -417,8 +368,7 @@ export function EnvMapField({ option, value, onChange, inheritedItems = [] }: En
   }
 
   return (
-    <div className={CLASS.section}>
-      <SectionHeader label={option.label} help={option.description} />
+    <FormRow label={option.label} help={option.description || undefined}>
       <CollectionEditor<EnvEntry>
         label={option.label}
         items={entries}
@@ -434,12 +384,10 @@ export function EnvMapField({ option, value, onChange, inheritedItems = [] }: En
         emptyMessage="No environment variables configured."
         onAdd={handleAdd}
         renderAddField={({ value: draft, onChange: setDraft, disabled }) => (
-          <div className={CLASS.envRow}>
-            <EnvAddFields value={draft} onChange={setDraft} disabled={disabled} />
-          </div>
+          <EnvAddFields value={draft} onChange={setDraft} disabled={disabled} />
         )}
       />
-    </div>
+    </FormRow>
   );
 }
 
@@ -537,8 +485,7 @@ export function McpServerListField({
   }
 
   return (
-    <div className={CLASS.section}>
-      <SectionHeader label={option.label} help={option.description} />
+    <FormRow label={option.label} help={option.description || undefined}>
       <CollectionEditor<MCPServerSpec>
         label={option.label}
         items={items}
@@ -551,6 +498,6 @@ export function McpServerListField({
         addPlaceholder="name command args..."
         onAdd={handleAdd}
       />
-    </div>
+    </FormRow>
   );
 }

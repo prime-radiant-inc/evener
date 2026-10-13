@@ -376,3 +376,89 @@ function restoreOwnProperty(target: object, key: string, descriptor: PropertyDes
   if (descriptor) Object.defineProperty(target, key, descriptor);
   else delete (target as Record<string, unknown>)[key];
 }
+
+// An inactive tooltip (empty label) must not run the reveal lifecycle at all:
+// otherwise activating it under an already-focused trigger mounts the bubble
+// without the measurement that runs on reveal, leaving it misplaced.
+test("an inactive tooltip that activates after the focus delay shows nothing until its next reveal", () => {
+  vi.useFakeTimers();
+  const { rerender } = render(
+    <Tooltip label="">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  const trigger = screen.getByRole("button", { name: "Steer" });
+  act(() => trigger.focus());
+  advance(400);
+  rerender(
+    <Tooltip label="Session is busy">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(trigger.hasAttribute("aria-describedby")).toBe(false);
+  act(() => trigger.blur());
+  act(() => trigger.focus());
+  advance(400);
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+  expect(trigger.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
+});
+
+test("a tooltip that goes inactive while shown dismisses, and reactivating does not resurrect it", () => {
+  vi.useFakeTimers();
+  const { rerender } = render(
+    <Tooltip label="Session is busy">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  const trigger = screen.getByRole("button", { name: "Steer" });
+  act(() => trigger.focus());
+  advance(400);
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+  rerender(
+    <Tooltip label="">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  rerender(
+    <Tooltip label="Session is busy">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  expect(screen.queryByRole("tooltip")).toBeNull();
+});
+
+// Leaving while inactive must still be recorded: a tooltip deactivated while
+// focused, blurred while inactive, then reactivated must dismiss when the
+// pointer next leaves, not stay up on a stale "still focused" flag.
+test("leaving while inactive is still recorded, so a reactivated tooltip dismisses on its next leave", () => {
+  vi.useFakeTimers();
+  const { rerender } = render(
+    <Tooltip label="Session is busy">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  const trigger = screen.getByRole("button", { name: "Steer" });
+  const wrapper = trigger.parentElement as HTMLElement;
+  act(() => trigger.focus());
+  advance(400);
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+  rerender(
+    <Tooltip label="">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  act(() => trigger.blur());
+  rerender(
+    <Tooltip label="Session is busy">
+      <Button>Steer</Button>
+    </Tooltip>,
+  );
+  fireEvent.mouseEnter(wrapper);
+  advance(400);
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+  fireEvent.mouseLeave(wrapper);
+  advance(400);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+});

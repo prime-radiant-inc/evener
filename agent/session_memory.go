@@ -93,6 +93,22 @@ func (s *Session) memoryContextEnabled() bool {
 	return !s.cfg.DisableMemory && s.cfg.MemoryStateRoot != "" && s.reg != nil && s.reg.Get("memory_read") != nil
 }
 
+// gardeningMemorySkillName is the bundled skill whose instructions correct
+// memory pages with memory_write, memory_edit and memory_delete.
+const gardeningMemorySkillName = "gardening-memory"
+
+// skillAvailableToSession reports whether this session may advertise and load a
+// catalog skill. The gardening-memory skill corrects pages with the memory save
+// tools, so a session without them (a delegate, a memory-disabled session, or a
+// profile that denies a save tool) must neither see it in its catalog nor
+// activate it. Every other skill is available as the catalog advertises it.
+func (s *Session) skillAvailableToSession(name string) bool {
+	if name == gardeningMemorySkillName {
+		return s.memorySaveInstructionsEnabled()
+	}
+	return true
+}
+
 // memorySaveInstructionsEnabled gates text that tells the model to write or
 // correct memory: a session that can read but not write memory still gets its
 // indexes and read guidance, never instructions it cannot follow.
@@ -205,7 +221,7 @@ func (s *Session) unavailableMemoryToolNames() []string {
 // decides what to keep, so a delegate keeps only read and search. Run after
 // registration, before caching definitions.
 func (s *Session) filterUnavailableMemoryTools() {
-	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
+	if memoryNamespaceUnavailable(s.cfg) {
 		for name := range s.reg.RegisteredNames() {
 			if strings.HasPrefix(name, "memory_") {
 				s.reg.Remove(name)
@@ -218,6 +234,16 @@ func (s *Session) filterUnavailableMemoryTools() {
 			s.reg.Remove(name)
 		}
 	}
+}
+
+// memoryNamespaceUnavailable reports that cfg has no memory namespace, so
+// filterUnavailableMemoryTools removes every memory_-prefixed tool name. It is
+// the single owner of that predicate: the result tool's registration refuses a
+// memory_ name on exactly this condition (registerCommunicateTool), and the two
+// must not diverge. Session.memoryContextEnabled is deliberately NOT used — it
+// consults the registry, which is not yet installed while core tools register.
+func memoryNamespaceUnavailable(cfg SessionConfig) bool {
+	return cfg.DisableMemory || cfg.MemoryStateRoot == ""
 }
 
 // openMemoryEnvironment opens scope, creating its directory if it is absent.

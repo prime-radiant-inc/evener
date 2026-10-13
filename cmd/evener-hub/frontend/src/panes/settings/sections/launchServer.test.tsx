@@ -82,7 +82,7 @@ describe("load sequence", () => {
     render(<LaunchServerSection sectionId="launch-evener" />);
     await screen.findByLabelText("Agent");
     // The form is fully usable even though resolve() failed - "non-fatal".
-    expect(screen.queryByTestId("launch-diagnostics")).toBeNull();
+    expect(screen.queryByTestId("diagnostics")).toBeNull();
   });
 
   test("renders warnings from the initial resolve()'s diagnostics", async () => {
@@ -94,7 +94,7 @@ describe("load sequence", () => {
       diagnostics: [{ layer: "global", field: "sandbox", message: "sandbox_net has no effect without a sandbox mode" }],
     }));
     render(<LaunchServerSection sectionId="launch-evener" />);
-    await screen.findByTestId("launch-diagnostics");
+    await screen.findByTestId("diagnostics");
     expect(screen.getByText("sandbox: sandbox_net has no effect without a sandbox mode")).toBeTruthy();
   });
 });

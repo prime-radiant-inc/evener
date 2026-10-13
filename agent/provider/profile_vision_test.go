@@ -94,15 +94,15 @@ func TestProfileDocumentInputPredicate(t *testing.T) {
 		// user-message document; the image-only row does not.
 		{"openai/gpt-5.4", true},
 		{"openai/gpt-5.2", false},
-		// A pdf-declaring row on a protocol whose builder rejects or strips
-		// user-message documents still cannot take one: the Anthropic and
-		// Google builders reject the kind, chat silently strips it, so only
-		// the Responses builder's input_file representation delivers.
-		{"anthropic/claude-mythos-preview", false},
+		// A pdf-declaring row takes a user-message document when its protocol
+		// represents one: the Responses builder writes input_file and the
+		// Anthropic builder writes a document content block (#4209). The
+		// Google builder rejects the kind and chat silently strips it.
+		{"anthropic/claude-mythos-preview", true},
 		{"respdoc/doc-1", true},
 		{"respdoc/vis-1", false},
 		{"chatdoc/doc-1", false},
-		{"anthdoc/doc-1", false},
+		{"anthdoc/doc-1", true},
 		{"googdoc/doc-1", false},
 	}
 	for _, tc := range cases {

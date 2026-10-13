@@ -21,7 +21,6 @@ import {
   type ChangeEvent,
   type CSSProperties,
   memo,
-  type ReactNode,
   useCallback,
   useEffect,
   useId,
@@ -53,9 +52,9 @@ import { threadsStore } from "../../stores/threads";
 import {
   Badge,
   Button,
-  Chevron,
   ConfirmDialog,
   Dialog,
+  DisclosureHeading,
   EmptyState,
   FormRow,
   IconButton,
@@ -69,7 +68,6 @@ import {
   type TreeProps,
   type TreeRowInfo,
   useToasts,
-  VisuallyHidden,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
@@ -135,11 +133,6 @@ const CLASS = {
   parentScrollRail: requireClass(styles.parentScrollRail, "Rail.module.css", "parentScrollRail"),
   parentScrollBody: requireClass(styles.parentScrollBody, "Rail.module.css", "parentScrollBody"),
   section: requireClass(styles.section, "Rail.module.css", "section"),
-  sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
-  staticSectionLabel: requireClass(styles.staticSectionLabel, "Rail.module.css", "staticSectionLabel"),
-  sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
-  sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
-  sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
   organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
   organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
 };
@@ -177,34 +170,6 @@ interface RailSectionProps {
   actions: RailRowActions;
   isRowSelected: (node: RailNode) => boolean | undefined;
   projectRetryCallback: (key: string) => () => void;
-}
-
-// The rail's one section heading: an <h3> wrapping a disclosure button, so
-// every tier folds the same way and keeps its heading role for assistive tech.
-// The heading takes its name from the button's text (the chevron is
-// aria-hidden), so there is no second aria-label to keep in step. The chevron
-// TRAILS the title (matching RailRow's own trailing row chevrons) rather than
-// leading it, and an optional action slot hosts a heading-level menu (pin
-// sections).
-interface SectionHeadingProps {
-  label: string;
-  open: boolean;
-  onToggleOpen: () => void;
-  staticLabel: boolean;
-  action?: ReactNode;
-}
-function SectionHeading({ label, open, onToggleOpen, staticLabel, action }: SectionHeadingProps) {
-  return (
-    <div className={CLASS.sectionHeadingRow}>
-      <h3 className={staticLabel ? `${CLASS.sectionTitle} ${CLASS.staticSectionLabel}` : CLASS.sectionTitle}>
-        <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
-          {label}
-          <Chevron direction={open ? "down" : "right"} />
-        </button>
-      </h3>
-      {action !== undefined && <div className={CLASS.sectionHeadingAction}>{action}</div>}
-    </div>
-  );
 }
 
 // The rail's organize-by switcher: an icon-only quiet trigger opening the
@@ -375,7 +340,7 @@ function RailSection({
   if (nodes.length === 0) return null;
   return (
     <section className={CLASS.section}>
-      <SectionHeading label={title} open={open} onToggleOpen={onToggleOpen} staticLabel />
+      <DisclosureHeading level={3} label={title} eyebrow open={open} onOpenChange={onToggleOpen} />
       {open && (
         <RailTree
           nodes={nodes}
@@ -409,20 +374,16 @@ function PinnedRailSection({
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   return (
     <section className={CLASS.section}>
-      <SectionHeading
+      <DisclosureHeading
+        level={3}
         label={section.name}
         open={open}
-        onToggleOpen={onToggleOpen}
-        staticLabel={false}
+        onOpenChange={onToggleOpen}
         action={
           <Menu
             variant="quiet"
-            trigger={
-              <>
-                <span aria-hidden="true">⋯</span>
-                <VisuallyHidden>{`Actions for ${section.name}`}</VisuallyHidden>
-              </>
-            }
+            icon="⋯"
+            label={`Actions for ${section.name}`}
             items={[
               { id: "rename", label: "Rename", onSelect: onRename },
               { id: "delete", label: "Delete", onSelect: onDelete },
@@ -470,7 +431,7 @@ function ArchivedSection({
   const label = `Archived sessions (${count})`;
   return (
     <section className={CLASS.section}>
-      <SectionHeading label={label} open={open} onToggleOpen={onToggleOpen} staticLabel />
+      <DisclosureHeading level={3} label={label} eyebrow open={open} onOpenChange={onToggleOpen} />
       {open && (
         <RailTree
           nodes={nodes}

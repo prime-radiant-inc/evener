@@ -73,3 +73,17 @@ test("every kind is single-colour line art: currentColor stroke, fill none", () 
     unmount();
   }
 });
+
+// tone: a state hue for a glyph whose colour IS the state (the activity
+// sidebar's agent and job rows). The path stays currentColor; the tone is
+// reported on the svg so a reader of the DOM sees which state it carries.
+test.each(["alive", "attention", "danger"] as const)("tone %s is reported on the icon", (tone) => {
+  const { container } = render(<ToolIcon kind="job" tone={tone} />);
+  expect(container.querySelector("svg")?.getAttribute("data-tone")).toBe(tone);
+  expect(container.querySelector("path")?.getAttribute("stroke")).toBe("currentColor");
+});
+
+test("without a tone the icon carries no tone and inherits its ink", () => {
+  const { container } = render(<ToolIcon kind="job" />);
+  expect(container.querySelector("svg")?.hasAttribute("data-tone")).toBe(false);
+});

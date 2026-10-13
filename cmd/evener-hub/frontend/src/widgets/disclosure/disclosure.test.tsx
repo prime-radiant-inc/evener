@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { act, useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { resetDisclosureStoreForTests, setDisclosureOpen } from "./disclosureStore";
+import { beginDisclosureBaseline, resetDisclosureStoreForTests, setDisclosureOpen } from "./disclosureStore";
 import { Disclosure } from "./index";
 
 // jsdom runs no animations, so A6's motion can only be asserted at the
@@ -65,6 +65,138 @@ test("defaultOpen renders open when the store has no entry", () => {
     </Disclosure>,
   );
   expect(screen.getByText("Body")).toBeTruthy();
+});
+
+test("an expand-all baseline opens a store-backed disclosure, and one click closes it", () => {
+  render(
+    <Disclosure id={"scope\0row"} summary="Head" data-testid="d">
+      Body
+    </Disclosure>,
+  );
+  act(() => beginDisclosureBaseline("scope", ["row"], true));
+  expect((screen.getByTestId("d") as HTMLDetailsElement).open).toBe(true);
+  fireEvent.click(screen.getByText("Head"));
+  expect((screen.getByTestId("d") as HTMLDetailsElement).open).toBe(false);
+  expect(screen.queryByText("Body")).toBeNull();
+});
+
+test("ignoreBaseline keeps a disclosure on its default through expand-all while a reader's click still wins", () => {
+  render(
+    <Disclosure id={"scope\0row"} summary="Head" data-testid="d" ignoreBaseline>
+      Body
+    </Disclosure>,
+  );
+  act(() => beginDisclosureBaseline("scope", ["row"], true));
+  expect((screen.getByTestId("d") as HTMLDetailsElement).open).toBe(false);
+  fireEvent.click(screen.getByText("Head"));
+  expect((screen.getByTestId("d") as HTMLDetailsElement).open).toBe(true);
+  expect(screen.getByText("Body")).toBeTruthy();
+});
+
+test("variant defaults to the filled row and quiet is reported on the disclosure", () => {
+  render(
+    <>
+      <Disclosure id="v-default" summary="Default" data-testid="default">
+        Body
+      </Disclosure>
+      <Disclosure id="v-quiet" summary="Quiet" data-testid="quiet" variant="quiet">
+        Body
+      </Disclosure>
+    </>,
+  );
+  expect(screen.getByTestId("default").dataset.variant).toBe("default");
+  expect(screen.getByTestId("quiet").dataset.variant).toBe("quiet");
+  fireEvent.click(screen.getByText("Quiet"));
+  expect((screen.getByTestId("quiet") as HTMLDetailsElement).open).toBe(true);
+});
+
+// Declaration-level (jsdom runs no cascade): the quiet variant drops the hover
+// fill and the open-state wash, and keeps the summary flush with the content
+// column, while the default variant keeps both washes.
+test("the quiet variant declares no hover fill, no open wash, and no inline inset", () => {
+  const css = motionCss();
+  const rule = (selector: string) =>
+    css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+  expect(rule('.details[data-variant="quiet"] > .summary')).toMatch(/padding-inline:\s*0/);
+  expect(rule('.details[data-variant="quiet"] > .summary:hover:not([aria-disabled="true"])')).toMatch(
+    /background:\s*none/,
+  );
+  expect(rule('.details[data-variant="quiet"][open] > .summary')).toMatch(/background:\s*none/);
+  expect(rule(".details[open] > .summary")).toMatch(/background:\s*var\(--hover-2\)/);
+});
+
+test("the rule variant is reported on the disclosure, drops the chevron, and toggles like the others", async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <Disclosure id="v-rule" summary="Rule" data-testid="rule" variant="rule">
+        Rule body
+      </Disclosure>
+      <Disclosure id="v-default-chevron" summary="Default" data-testid="default">
+        Body
+      </Disclosure>
+    </>,
+  );
+  const details = screen.getByTestId("rule") as HTMLDetailsElement;
+  const summary = details.querySelector("summary")!;
+  expect(details.dataset.variant).toBe("rule");
+  expect(summary.querySelector("svg")).toBeNull();
+  expect(screen.getByTestId("default").querySelector("summary svg")).not.toBeNull();
+
+  await user.click(summary);
+  expect(details.open).toBe(true);
+  expect(within(details).getByText("Rule body")).toBeTruthy();
+
+  summary.focus();
+  expect(document.activeElement).toBe(summary);
+  await user.keyboard("{Enter}");
+  fireEvent.click(summary);
+  expect(details.open).toBe(false);
+});
+
+test("the rule variant is controllable like the others", () => {
+  const onOpenChange = vi.fn();
+  render(
+    <Disclosure open={false} onOpenChange={onOpenChange} summary="Head" variant="rule" data-testid="controlled-rule">
+      Body
+    </Disclosure>,
+  );
+  expect(screen.getByTestId("controlled-rule").dataset.variant).toBe("rule");
+  fireEvent.click(screen.getByText("Head"));
+  expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
+});
+
+// Declaration-level (jsdom runs no cascade): the rule variant centres its
+// caption between two flexible hairlines drawn by the summary's own
+// pseudo-elements and keeps the summary background unchanged on hover and open.
+test("the rule variant declares two flex hairlines on --edge and no hover or open background", () => {
+  const css = motionCss();
+  const rule = (selector: string) =>
+    css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+  const hairlines = rule(
+    '.details[data-variant="rule"] > .summary::before,\n.details[data-variant="rule"] > .summary::after',
+  );
+  expect(hairlines).toMatch(/content:\s*""/);
+  expect(hairlines).toMatch(/flex:\s*1/);
+  expect(hairlines).toMatch(/border-top:\s*1px solid var\(--edge\)/);
+  expect(rule('.details[data-variant="rule"] > .summary')).toMatch(/justify-content:\s*center/);
+  expect(rule('.details[data-variant="rule"] > .summary:hover:not([aria-disabled="true"])')).toMatch(
+    /background:\s*none/,
+  );
+  expect(rule('.details[data-variant="rule"][open] > .summary')).toMatch(/background:\s*none/);
+});
+
+// Declaration-level: one shared :focus-visible rule gives every variant's
+// summary the token ring, inset so a flush transcript row inside a clipping
+// scroll port still shows all four sides; no variant overrides it.
+test("every variant's summary draws the token focus ring, inset", () => {
+  const css = motionCss();
+  const shared = css.match(/(?:^|\})\s*\.summary:focus-visible\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(shared).toMatch(/outline:\s*var\(--focus-ring\)/);
+  expect(shared).toMatch(/outline-offset:\s*-2px/);
+  const focusRules = [...css.matchAll(/([^{}]*:focus-visible[^{}]*)\{([^}]*)\}/g)];
+  expect(focusRules).toHaveLength(1);
+  expect(css).not.toMatch(/outline:\s*none/);
 });
 
 test("controlled harness owns the open state", () => {

@@ -1,7 +1,12 @@
 // A project's archived sessions as a page source over the connection's shared
 // archived list store: what the Project screen's Archived tab reads, since
 // navigation v3 serves no archived rows.
-import type { ArchivedListParams, ArchivedListResponse, NavigationInvalidationTarget } from "@evener/appwire-client";
+import {
+	type ArchivedListParams,
+	type ArchivedListResponse,
+	friendlyErrorMessage,
+	type NavigationInvalidationTarget,
+} from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession } from "@evener/appwire-client/testing/navigation";
@@ -118,7 +123,7 @@ it("reports a failed read and keeps the loaded rows", async () => {
 	await pages.refresh();
 	await pages.more();
 	expect(pages.getSnapshot().rows.map((r) => r.ref)).toEqual(["local:a"]);
-	expect(pages.getSnapshot().error).toContain("no such page");
+	expect(pages.getSnapshot().error).toBe(friendlyErrorMessage(new Error("no such page")));
 });
 
 // A list whose read failed with no next page has nothing to page to, so the
@@ -134,7 +139,11 @@ it("reads a list again on more once its read failed with no next page", async ()
 	await pages.refresh();
 	fail = true;
 	await pages.refresh();
-	expect(pages.getSnapshot()).toMatchObject({ loaded: true, remaining: 0, error: "offline" });
+	expect(pages.getSnapshot()).toMatchObject({
+		loaded: true,
+		remaining: 0,
+		error: friendlyErrorMessage(new Error("offline")),
+	});
 
 	fail = false;
 	await pages.more();
@@ -187,7 +196,7 @@ it("reads a list again after an accepted change whose own read failed", async ()
 	const pages = new ArchivedPages(client, "projects", "p");
 	await pages.refresh();
 	await archivedListStoreFor(client).refreshLoaded();
-	expect(pages.getSnapshot().error).toBe("offline");
+	expect(pages.getSnapshot().error).toBe(friendlyErrorMessage(new Error("offline")));
 
 	await pages.refreshAfter();
 	expect(reads).toBe(3);

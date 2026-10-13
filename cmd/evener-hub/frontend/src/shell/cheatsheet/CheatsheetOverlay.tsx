@@ -30,7 +30,7 @@ import {
 import { Fragment, useEffect } from "react";
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
-import { Dialog, KeyHint } from "../../widgets";
+import { Dialog, Eyebrow, KeyHint } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { installKeybindings } from "../installKeybindings";
 import styles from "./cheatsheet.module.css";
@@ -38,7 +38,7 @@ import { closeCheatsheet, toggleCheatsheet, useCheatsheetStore } from "./cheatsh
 
 const CLASS = {
   groups: requireClass(styles.groups, "cheatsheet.module.css", "groups"),
-  groupTitle: requireClass(styles.groupTitle, "cheatsheet.module.css", "groupTitle"),
+  group: requireClass(styles.group, "cheatsheet.module.css", "group"),
   list: requireClass(styles.list, "cheatsheet.module.css", "list"),
   row: requireClass(styles.row, "cheatsheet.module.css", "row"),
   label: requireClass(styles.label, "cheatsheet.module.css", "label"),
@@ -131,8 +131,8 @@ export function CheatsheetOverlay() {
     >
       <div className={CLASS.groups}>
         {GROUPS.map((group) => (
-          <section key={group.id}>
-            <h3 className={CLASS.groupTitle}>{group.title}</h3>
+          <section className={CLASS.group} key={group.id}>
+            <Eyebrow as="h3">{group.title}</Eyebrow>
             <ul className={CLASS.list}>
               {ACTION_DISPLAY_ROWS.filter((row) => groupOf(row.actionId) === group.id).map((row) => {
                 const displayed = displayBindingsFor(bindings, row.actionId);

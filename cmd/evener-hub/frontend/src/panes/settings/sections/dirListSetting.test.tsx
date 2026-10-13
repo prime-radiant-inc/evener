@@ -1,12 +1,13 @@
+import { ConnectionClosedError, friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
-import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { DirListSetting, PathListEditor } from "./dirListSetting";
+import { alertReasons, statusReasons } from "./reasonTestUtils";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -274,18 +275,28 @@ describe("DirListSetting", () => {
       throw new Error("boom");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+    await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
     expect(entryCount()).toBeNull();
   });
 
-  test("shows a failed-to-load error when the launch layer fetch rejects", async () => {
+  // The load runs as the section opens, not because of anything the reader
+  // did, so its failure is a polite status rather than an interrupting alert.
+  // The store translates the failure while it still has its type: a hub's
+  // own explanation survives, and the client's connection-state wiring text
+  // never reaches the screen.
+  test.each([
+    ["a hub-reported WireError", new WireError("launch.toml is being rewritten", -32000)],
+    ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+  ])("shows a failed-to-load status, not an alert, with %s in its friendly form", async (_name, err) => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => {
-      throw new Error("network down");
+      throw err;
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
-    expect(screen.getByText("network down")).toBeTruthy();
+    await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
+    expect(alertReasons()).toEqual([]);
+    expect(screen.getByRole("status").textContent).toContain(friendlyErrorMessage(err));
+    expect(screen.queryByText(/AppwireClient/)).toBeNull();
   });
 
   test("adding a valid path validates then saves the layer with the new entry appended", async () => {

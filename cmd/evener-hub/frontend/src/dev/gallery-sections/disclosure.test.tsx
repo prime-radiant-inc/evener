@@ -20,3 +20,15 @@ test("each ThemeFlip pane shows disabled collapsed store and open controlled dis
     expect(open.closest("details")?.hasAttribute("open")).toBe(true);
   }
 });
+
+test("each ThemeFlip pane shows the rule variant both open and closed", () => {
+  render(<DisclosureGallerySection />);
+  const gallery = screen.getByTestId("disclosure-gallery");
+  const panes = gallery.querySelectorAll('[data-theme="dark"], [data-theme="light"]');
+  expect(panes).toHaveLength(2);
+
+  for (const pane of panes) {
+    const rules = Array.from(pane.querySelectorAll<HTMLDetailsElement>('details[data-variant="rule"]'));
+    expect(rules.map((details) => details.open).sort()).toEqual([false, true]);
+  }
+});

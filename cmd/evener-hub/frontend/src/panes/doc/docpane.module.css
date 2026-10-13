@@ -5,15 +5,6 @@
   --prose-font-size: var(--font-size-prose);
 }
 
-.imageButton {
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: zoom-in;
-}
-
 .image {
   display: block;
   max-width: 100%;

@@ -633,8 +633,13 @@ test("phrases a housekeeping call as its step line does", () => {
 // A call whose arguments the hub didn't send can't say it only clears a
 // note, so it says what the tool usually does, running and done alike.
 test("says notes_agent_set's usual lines when its arguments are missing", () => {
-  expect(toolStepProgress({ toolName: "notes_agent_set" })).toBe("Updating its note");
-  expect(toolStepSummary({ toolName: "notes_agent_set" })).toBe("Updated its note");
+  const missing = { toolName: "notes_agent_set" };
+  const set = housekeeping("notes_agent_set", { note: "Drain first." });
+  const cleared = toolWireStep("call_notes_agent_set");
+  expect(toolStepProgress(missing)).toBe(toolStepProgress(set));
+  expect(toolStepSummary(missing)).toBe(toolStepSummary(set));
+  expect(toolStepProgress(missing)).not.toBe(toolStepProgress(cleared));
+  expect(toolStepSummary(missing)).not.toBe(toolStepSummary(cleared));
 });
 
 test("says compact_context's usual lines when its arguments are missing", () => {

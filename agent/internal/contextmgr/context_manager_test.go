@@ -14,8 +14,10 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -320,6 +322,97 @@ func TestSummarizeToolResult_MemorySearch(t *testing.T) {
 	want := `[memory_search: "x" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A breaker nudge the registry appended to a repeated search
+// (agent/internal/tool appendIntervention) is not a note about the search, so
+// the summary must not show it as one. A search that wrote no notes of its own
+// is the case a positional rule (notes end at the second blank line) cannot
+// tell apart, and the case the issue named (#4223). The repeated result comes
+// from the registry itself, so no nudge text is copied here and the producer
+// and this reader are pinned to each other.
+func TestSummarizeToolResult_RepeatedSearchNudgeIsNotANote(t *testing.T) {
+	for _, tc := range []struct{ name, tool, body, want string }{
+		{
+			name: "a repeated grep with no notes of its own",
+			tool: "grep",
+			body: "a.go:1:x\nb.go:2:x",
+			want: `[grep: "x" → 2 matches]`,
+		},
+		{
+			name: "a repeated grep keeps its own note",
+			tool: "grep",
+			body: "a.go:1:x\n\nSENTINEL-NOTE",
+			want: `[grep: "x" → 1 matches; SENTINEL-NOTE]`,
+		},
+		{
+			name: "a repeated memory_search with no notes of its own",
+			tool: "memory_search",
+			body: "notes.md:1:x",
+			want: `[memory_search: "x" → 1 matches]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repeated := repeatedToolOutput(t, tc.tool, tc.body)
+			got := summarizeToolResult(tc.tool, repeated, json.RawMessage(`{"pattern":"x"}`))
+			if got != tc.want {
+				t.Fatalf("a repeated %s's nudge read as one of its notes: got %q, want %q", tc.tool, got, tc.want)
+			}
+		})
+	}
+}
+
+// repeatedToolOutput runs toolName twice through a registry whose executor
+// returns body, so the second result carries the registry's own repetition
+// nudge for a repeated identical call. It fails when the second call drew no
+// intervention, so a summarizer case cannot pass by never seeing one.
+func repeatedToolOutput(t *testing.T, toolName, body string) string {
+	t.Helper()
+	reg := tool.NewRegistry()
+	if err := reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: toolName},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return body, nil
+		},
+		Limit: schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: schema.TruncHeadCount},
+	}); err != nil {
+		t.Fatalf("register %s: %v", toolName, err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	call := llm.ToolCallData{ID: "c1", Name: toolName, Arguments: json.RawMessage(`{"pattern":"x"}`)}
+	first := reg.ExecuteCall(context.Background(), env, call)
+	repeated := reg.ExecuteCall(context.Background(), env, call)
+	if len(repeated.Output) <= len(first.Output) {
+		t.Fatalf("the repeated %s call drew no intervention: first %q, second %q", toolName, first.Output, repeated.Output)
+	}
+	return repeated.Output
+}
+
+// A search's own notes are kept, however many blocks they span. Opaque
+// sentinels stand in for the notes, so this pins that the notes cross the
+// summarizer without hardcoding any of the tools' or the registry's wording.
+func TestSummarizeToolResult_SearchKeepsItsNotes(t *testing.T) {
+	for _, tc := range []struct{ name, tool, output, want string }{
+		{
+			name:   "one note the tool wrote",
+			tool:   "grep",
+			output: "a.go:1:x\n\nSENTINEL-NOTE",
+			want:   `[grep: "x" → 1 matches; SENTINEL-NOTE]`,
+		},
+		{
+			name:   "two blocks, the second the registry's marker",
+			tool:   "glob",
+			output: "a.go\n\nSENTINEL-TOOL-NOTE\n\nSENTINEL-MARKER",
+			want:   `[glob: "x" → 1 files; SENTINEL-TOOL-NOTE; SENTINEL-MARKER]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := summarizeToolResult(tc.tool, tc.output, json.RawMessage(`{"pattern":"x"}`))
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

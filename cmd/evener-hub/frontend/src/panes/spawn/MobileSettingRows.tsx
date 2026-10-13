@@ -9,7 +9,7 @@
 // other.
 import { type PluginSelectionState, selectedPluginNames } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
-import { Button, Chevron, DirectoryPicker, type DirectoryPickerProps, Sheet } from "../../widgets";
+import { Button, Chevron, DirectoryPicker, type DirectoryPickerProps, InlineNotice, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
@@ -253,12 +253,17 @@ export function MobileSettingRows({
         )}
       </div>
       {pluginsSupported && pluginPreview.status === "error" && (
-        <div className={CLASS.sheetBody} role="status">
-          <span>Couldn't inspect plugins</span>{" "}
-          <Button variant="quiet" size="xs" type="button" onClick={onPluginRetry}>
-            Retry
-          </Button>
-        </div>
+        <InlineNotice
+          tone="danger"
+          live="status"
+          action={
+            <Button variant="quiet" size="xs" type="button" onClick={onPluginRetry}>
+              Retry
+            </Button>
+          }
+        >
+          Couldn't inspect plugins
+        </InlineNotice>
       )}
 
       <OptionSheet

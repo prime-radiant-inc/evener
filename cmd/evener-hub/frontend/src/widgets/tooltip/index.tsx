@@ -1,9 +1,12 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect } from "react";
 import { describeChild, FloatingBubblePortal, useFloatingBubble } from "../hovercard/floatingBubble";
 import { requireClass } from "../internal/requireClass";
 import styles from "./tooltip.module.css";
 
 export interface TooltipProps {
+  /** An empty label is an inactive tooltip: no bubble, no description, just
+   * the wrapper, so a caller can keep its trigger's element tree stable while
+   * the description comes and goes (IconButton's disabledReason). */
   label: string;
   children: ReactNode;
 }
@@ -31,7 +34,17 @@ const CLASS = {
  * documents why a portaled, viewport-positioned bubble is required).
  */
 export function Tooltip({ label, children }: TooltipProps) {
-  const { visible, wrapperRef, triggerProps, setBubbleRef, bubbleStyle, bubbleID, describedBy } = useFloatingBubble();
+  const { visible, wrapperRef, triggerProps, setBubbleRef, bubbleStyle, bubbleID, describedBy, dismiss } =
+    useFloatingBubble();
+  // An inactive tooltip is inert: it takes no hover/focus handlers that start a
+  // reveal, so it never holds a "visible" state the reveal's measurement did
+  // not run for, and one that goes inactive while shown dismisses. It keeps the
+  // leave/blur handlers, which only clear the lifecycle's hovered/focused flags,
+  // so a leave while inactive is still recorded when it reactivates.
+  const active = label !== "";
+  useLayoutEffect(() => {
+    if (!active) dismiss();
+  }, [active, dismiss]);
 
   return (
     // Already both mouse- AND keyboard-triggered (onFocus/onBlur mirror
@@ -40,11 +53,15 @@ export function Tooltip({ label, children }: TooltipProps) {
     // a new interactive control needing a role; it's showing/hiding a
     // role="tooltip" description already wired to the real trigger element
     // via aria-describedby (describedChild below).
-    <span ref={wrapperRef} className={CLASS.wrapper} {...triggerProps}>
-      {describeChild(children, describedBy)}
+    <span
+      ref={wrapperRef}
+      className={CLASS.wrapper}
+      {...(active ? triggerProps : { onMouseLeave: triggerProps.onMouseLeave, onBlur: triggerProps.onBlur })}
+    >
+      {describeChild(children, active ? describedBy : undefined)}
       <FloatingBubblePortal
         as="span"
-        show={visible}
+        show={active && visible}
         id={bubbleID}
         className={CLASS.bubble}
         style={bubbleStyle}

@@ -153,6 +153,12 @@ func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.cursor++
 		case tea.KeyEnter:
 			return p.editCurrent()
+		case tea.KeyRunes:
+			// T is the In-Repo tab's advertised trust key; Enter does the same. A
+			// pasted "T" is not a deliberate approval.
+			if !m.Paste && string(m.Runes) == "T" && p.tab == launchTabRepo {
+				return p, p.trustRepoCmd()
+			}
 		}
 	}
 	return p, nil
@@ -199,7 +205,15 @@ func (p LaunchSettingsPanel) CWD() string { return p.cwd }
 func (p LaunchSettingsPanel) View() string {
 	body := p.renderTabs() + "\n\n" + p.renderActiveTab()
 	width := 80
-	footer := tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("←→", "tab"), tuiprim.KbdHint("↑↓", "field"), tuiprim.KbdHint("enter", "edit"), tuiprim.KbdHint("esc", "close"))
+	hints := []string{tuiprim.KbdHint("←→", "tab")}
+	switch {
+	case p.tab != launchTabRepo:
+		hints = append(hints, tuiprim.KbdHint("↑↓", "field"), tuiprim.KbdHint("enter", "edit"))
+	case p.trustRepoCmd() != nil:
+		hints = append(hints, tuiprim.KbdHint("T", "trust"))
+	}
+	hints = append(hints, tuiprim.KbdHint("esc", "close"))
+	footer := tuiprim.ActionBarForWidth(width, hints...)
 	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Launch settings", Width: width, Body: body, Footer: footer})
 }
 
@@ -290,6 +304,16 @@ func renderRepoView(r *appwire.RepoLaunchConfigStatus) string {
 // trust: they never trusted it, or its contents changed since they did.
 func repoAwaitingTrust(r *appwire.RepoLaunchConfigStatus) bool {
 	return r.Trust == "untrusted" || r.Trust == "changed"
+}
+
+// trustRepoCmd returns the request that trusts the in-repo launch file, or nil
+// when there is no file awaiting trust.
+func (p LaunchSettingsPanel) trustRepoCmd() tea.Cmd {
+	r := p.resolved.Repo
+	if r == nil || r.Hash == "" || !repoAwaitingTrust(r) {
+		return nil
+	}
+	return CmdTrustRepo(p.client, p.cwd, r.Hash)
 }
 
 // LaunchSettingsEditRequestMsg is emitted when the user presses Enter on

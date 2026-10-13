@@ -36,7 +36,7 @@ set them by hand.
 | `EVENER_HUB_SPAWNED` | Set by `evener hub` for spawned `evener serve` daemons. |
 | `EVENER_HUB_TOKEN` | Per-hub bearer token passed to spawned `evener serve` daemons. |
 | `EVENER_RUN_DIR` | Rendezvous directory passed by `evener hub` to spawned daemons. |
-| `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one session, at `<tmp>/evener-scratch-<root session id>/<session id>`. It is kept across the session's ends and reopened on resume, with its Go (including its private GOPATH), npm and cargo caches pruned at each end; it is deleted when the hub archives or deletes the root session (by an explicit archive, by age, or by archiving its project) and its daemon is not running. Move durable artifacts into the workspace or another durable location. |
+| `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one session, at `<tmp>/evener-scratch-<root session id>/<session id>`. It is kept across the session's ends and reopened on resume, with its Go (including its private GOPATH), npm and cargo caches pruned at each end; it is deleted when the hub archives or deletes the root session (by an explicit archive, by age, or by archiving its project) and its daemon is not running. Move durable artifacts into the workspace or another durable location. A detached shell command (`mode="detached"`) does not get it, because the disowned process may outlive the scratch; the `TMPDIR` row says what its environment names instead. |
 
 ## Provider Configuration
 
@@ -123,7 +123,7 @@ process environments.
 | `SSH_CONNECTION` | Used to auto-detect headless OpenAI login sessions. |
 | `SSH_TTY` | Used to auto-detect headless OpenAI login sessions. |
 | `TERM` | Inherited by core-only command environments. |
-| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see `EVENER_SCRATCH_DIR`) for a sandboxed spawn and for an unsandboxed spawn whose file tools are confined, and to a world-usable session temp container instead when an unsandboxed spawn's file tools are unconfined — a privilege-dropping child cannot write the private `0700` scratch. The container exists on POSIX platforms only; elsewhere the scratch is kept. Its leaf is world-writable and world-readable like `/tmp`, so it must not hold secrets: session-private intermediates belong in `EVENER_SCRATCH_DIR`. |
+| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see `EVENER_SCRATCH_DIR`) for a sandboxed spawn and for an unsandboxed spawn whose file tools are confined, and to a world-usable session temp container instead when an unsandboxed spawn's file tools are unconfined — a privilege-dropping child cannot write the private `0700` scratch. The container exists on POSIX platforms only; elsewhere the scratch is kept. Its leaf is world-writable and world-readable like `/tmp`, so it must not hold secrets: session-private intermediates belong in `EVENER_SCRATCH_DIR`. A detached shell command always gets the container, never the scratch, and gets no `TMPDIR` at all if the container could not be provisioned. |
 | `USER` | Inherited by core-only command environments. |
 | `USERPROFILE` | Windows user profile fallback. |
 | `WAYLAND_DISPLAY` | Used to auto-detect graphical sessions and clipboard support. |

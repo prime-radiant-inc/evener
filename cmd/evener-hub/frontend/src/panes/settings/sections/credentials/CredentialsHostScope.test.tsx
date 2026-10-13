@@ -1,5 +1,5 @@
 import type { HostForwardedResult, HostRequestParams, HostRow, InstanceEntry } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -19,6 +19,7 @@ import { setMutationClientIdentityForTests } from "../../../../stores/mutationCl
 import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
 import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { shownReasons, statusReasons } from "../reasonTestUtils";
 import { CredentialsHostScope } from "./CredentialsHostScope";
 
 // The surface's states, read from their markers rather than from the words it
@@ -299,6 +300,31 @@ test("an unattached host's own refusal is shown honestly, not this hub's listing
 
   expect(await screen.findByText(/host "beta" is not attached/)).toBeTruthy();
   expect(screen.queryByText("controller-only")).toBeNull();
+});
+
+// The host partition translates a failed read while it still has its type, so
+// the notice renders the stored text as-is: a remote hub's own explanation
+// survives, and a client-side failure shows its friendly form, never the
+// client's internal text.
+test.each([
+  ["a hub-reported WireError", new WireError("remote providers.toml is being rewritten", -32000)],
+  ["a client-side failure", new Error("AppwireClient internal detail")],
+])("a remote host's failed read from %s shows that error's friendly form", async (_name, err) => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => {
+    throw err;
+  });
+
+  const select = await renderSettledScope();
+  const user = setupUser();
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+
+  await waitFor(() => expect(hostPartition(hostInstancesStore.getState(), "beta").error).not.toBeNull());
+  expect(document.body.textContent).toContain(friendlyErrorMessage(err));
+  expect(screen.queryByText(/AppwireClient internal detail/)).toBeNull();
 });
 
 test("a host that is no longer configured says so instead of falling back to this hub", async () => {
@@ -752,7 +778,7 @@ test("a registry read that fails shows the honest unverifiable state", async () 
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unverifiable"]));
   // A failed registry is never a permanent skeleton - that reads as "still
   // working" - and no remote read is issued under it.
   expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
@@ -774,7 +800,7 @@ test("the unverifiable state's retry re-reads the registry and restores verifica
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
   // The failed state by its own reason, never the pending state's.
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unverifiable"]));
 
   // The hosts list comes back, and Retry issues the registry's own read.
   registryDown = false;
@@ -799,7 +825,7 @@ test("a pane retry that recovers the registry reads the host exactly once", asyn
 
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unverifiable"]));
   expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(0);
 
   registryDown = false;
@@ -825,7 +851,7 @@ test("a recovery whose registry no longer names the host issues no read", async 
 
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unverifiable"]));
 
   registryDown = false;
   await setupUser().click(screen.getByRole("button", { name: "Retry" }));
@@ -878,7 +904,7 @@ test("a listing read before the registry ever answered is not verified when the 
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unverifiable"]));
   expect(screen.queryByText("on-beta")).toBeNull();
 });
 
@@ -923,7 +949,7 @@ test("a retained identity keeps a verified listing shown when the registry later
   // the rows are still read under the current one.
   act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
 
-  expect(emptyStateReasons(document.body)).not.toContain("unverifiable");
+  expect(shownReasons(document.body)).not.toContain("unverifiable");
   expect(screen.getByText("on-beta")).toBeTruthy();
 });
 

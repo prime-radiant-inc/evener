@@ -14,7 +14,7 @@ import { cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
 import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
-import { FocusScope, IconButton, SegmentedControl } from "../../widgets";
+import { CloseIcon, FocusScope, IconButton, SegmentedControl } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { tabbable } from "../../widgets/focusscope/tabbable";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -159,7 +159,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                   />
                   {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
                 </div>
-                <IconButton label="Close Overview" icon="×" variant="quiet" size="sm" onClick={close} />
+                <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
               </div>
               <div className={CLASS.tabs}>
                 <SegmentedControl<ActivityTab>
