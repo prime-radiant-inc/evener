@@ -881,6 +881,11 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 	// extension already applied the entry: the truncation before this
 	// extension removed its log record, and readers take each slot once.
 	if version > r.FirstOrdinal+1 {
+		if testKillAtTurnUpdateLog != nil {
+			if err := testKillAtTurnUpdateLog(); err != nil {
+				return err
+			}
+		}
 		if err := b.logUpdate(updatedTurn, slot, offset); err != nil {
 			return err
 		}

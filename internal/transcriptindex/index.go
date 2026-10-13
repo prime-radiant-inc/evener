@@ -116,6 +116,14 @@ var testKillAfterRecordWrites func() error
 // production.
 var testKillAfterItemUpdateLog func() error
 
+// testKillAtTurnUpdateLog, when set, runs in stampTurn in place of its
+// update-log row's write: it stands for that write faulting, so the row
+// never lands while the entry's earlier records — the item the same line
+// added — are already applied past the committed counts. An interrupted
+// scan then leaves no leftover row to name the half-applied line. Test seam
+// only; nil in production.
+var testKillAtTurnUpdateLog func() error
+
 // The sidecar directory holds a lock file, a pointer to the live build, and one
 // directory per build. A rebuild writes a new build and renames the pointer
 // over, so a reader never sees a half-built index.
@@ -891,6 +899,16 @@ func (x *Index) readHeader() error {
 // fails is removed, and the live build stays as it was.
 func (x *Index) rebuild(length int64, incarnation string) error {
 	if x.refusing {
+		// The caller may have partially applied state before falling back
+		// here — an append scan interrupted mid-entry leaves items past the
+		// committed meta with the in-memory counts advanced. The refusal
+		// answers this call, but that state must never be trusted by a
+		// later append: its truncate-to-count would keep the half-applied
+		// rows and replay the entry into duplicate positions. Mark the
+		// build stale so every later attempt takes this same refusing
+		// rebuild until the repair's build lands; refresh clears the mark
+		// with the load that replaces the abandoned one.
+		x.stale = true
 		return x.refuseRebuild()
 	}
 	err := x.buildNew(length, incarnation)

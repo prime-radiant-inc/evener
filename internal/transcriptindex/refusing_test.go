@@ -372,6 +372,40 @@ func TestRefusingCatchUpRefusesEachRebuildTrigger(t *testing.T) {
 		assertSameSidecar(t, "leftover-rows refusal", before, snapshotSidecar(t, dir, false))
 	})
 
+	t.Run("refused fallback keeps the partial scan untrusted", func(t *testing.T) {
+		fx := fixture{name: "partial", header: everything().header, lines: []fixtureLine{
+			entryLine(user("hello")),
+			entryLine(assistant(call("c1", "read_file", `{}`))),
+		}}
+		path, lines := writeHeaderOnly(t, fx)
+		dir := t.TempDir()
+		h := openIndex(t, path, dir)
+		appendBytes(t, path, lines[0])
+		catchUp(t, h)
+
+		// The refusing handle's catch-up scans the appended assistant entry:
+		// the item lands — past the committed counts — and the turn's
+		// re-stamp faults at its update-log write, so no row ever reaches the
+		// disk to name the half-applied line. The fallback rebuild refuses
+		// with the scan's partial application still in the handle's memory,
+		// and on a retry the leftover-rows trigger has nothing to collect:
+		// only the refusal's stale mark keeps that state untrusted.
+		x := openRefusing(t, path, dir)
+		want := lastRecordedEntry(t, dir)
+		appendBytes(t, path, lines[1])
+		simulateTurnKill(t)
+		requireRefusal(t, x.CatchUp(), want)
+		testKillAtTurnUpdateLog = nil
+
+		// The fault cleared, and the same handle retries before any repair
+		// commits: the refusal must answer again. The half-applied entry may
+		// never be replayed as an append — its item sits past the committed
+		// counts, and a replay would commit duplicate positions.
+		before := snapshotSidecar(t, dir, true)
+		requireRefusal(t, x.CatchUp(), want)
+		assertSameSidecar(t, "retry after the cleared fault", before, snapshotSidecar(t, dir, true))
+	})
+
 	t.Run("pending communicate", func(t *testing.T) {
 		fx := fixture{name: "pending", header: everything().header, lines: []fixtureLine{
 			entryLine(user("never resolved")),

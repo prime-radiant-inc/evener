@@ -59,6 +59,16 @@ func simulateItemKill(t *testing.T) {
 	t.Cleanup(func() { testKillAfterItemUpdateLog = nil })
 }
 
+// simulateTurnKill installs testKillAtTurnUpdateLog the same way
+// simulateItemKill installs testKillAfterItemUpdateLog.
+func simulateTurnKill(t *testing.T) {
+	t.Helper()
+	testKillAtTurnUpdateLog = func() error {
+		return errors.New("killed at the turn's update-log write")
+	}
+	t.Cleanup(func() { testKillAtTurnUpdateLog = nil })
+}
+
 // changedIgnoringIncarnation is x's ChangedSince(0), with Incarnation zeroed
 // so two builds of the same content compare equal regardless of which
 // random incarnation each minted.
