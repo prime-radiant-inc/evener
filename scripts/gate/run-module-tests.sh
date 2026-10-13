@@ -827,10 +827,12 @@ if [ "$timing_enabled" -eq 1 ]; then
 	# would read as a complete but truncated measurement; the rename keeps the
 	# file absent or whole. mktemp creates the temp file exclusively, so a
 	# symlink planted at a predictable sibling path is neither followed nor
-	# written through. An export that fails — including a destination that is a
-	# directory, which the rename would silently move the temp file into — keeps
-	# the scratch holding the rows: they are the expensive part, and cleanup
-	# would otherwise delete them and force another full run.
+	# written through. The rename is rename(2) through python3 rather than `mv`:
+	# rename(2) treats the destination as an exact filename and refuses a
+	# directory atomically, while `mv` moves the temp file inside one and
+	# reports success — no check-then-move can close that window. An export that
+	# fails keeps the scratch holding the rows: they are the expensive part, and
+	# cleanup would otherwise delete them and force another full run.
 	if [ "$fail" -ne 0 ]; then
 		:
 	elif [ "${#row_files[@]}" -eq 0 ]; then
@@ -847,13 +849,7 @@ if [ "$timing_enabled" -eq 1 ]; then
 		printf 'run-module-tests.sh: could not write the timing rows to %s\n' "$EVENER_GATE_TIMING_TSV" >&2
 		printf 'run-module-tests.sh: the captured rows are retained in %s\n' "$logdir" >&2
 		fail=1
-	elif [ -d "$EVENER_GATE_TIMING_TSV" ]; then
-		rm -f "$timing_tmp"
-		keep_failed_logs=1
-		printf 'run-module-tests.sh: the timing destination %s is a directory\n' "$EVENER_GATE_TIMING_TSV" >&2
-		printf 'run-module-tests.sh: the captured rows are retained in %s\n' "$logdir" >&2
-		fail=1
-	elif ! mv "$timing_tmp" "$EVENER_GATE_TIMING_TSV"; then
+	elif ! python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$timing_tmp" "$EVENER_GATE_TIMING_TSV"; then
 		rm -f "$timing_tmp"
 		keep_failed_logs=1
 		printf 'run-module-tests.sh: could not publish the timing rows to %s\n' "$EVENER_GATE_TIMING_TSV" >&2

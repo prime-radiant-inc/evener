@@ -703,18 +703,34 @@ func TestTimed(t *testing.T) {
 	cmd.Env = runnerEnv(t, append(controlledScratchEnv(ctrl),
 		"MODULES=timingmod", "EVENER_GATE_TIMING_TSV="+dest,
 		"FIXTURE_STARTED="+started, "FIXTURE_RELEASE="+release)...)
-	var out strings.Builder
-	cmd.Stdout, cmd.Stderr = &out, &out
+	// The output goes to a file, not a pipe: the runner's own `run_bounded` puts
+	// its monitored commands in their own process groups, so a stop that reaches
+	// only bash's group can leave a descendant holding a pipe open and block
+	// Wait. With a file there is nothing for a survivor to hold.
+	outPath := filepath.Join(root, "runner-output.log")
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		t.Fatalf("creating the output file: %v", err)
+	}
+	cmd.Stdout, cmd.Stderr = outFile, outFile
+	runnerOutput := func() string {
+		data, readErr := os.ReadFile(outPath)
+		if readErr != nil {
+			return ""
+		}
+		return string(data)
+	}
 	// The runner is a bash script that forks the module's `go test`; starting it
 	// through procgroup puts the whole tree in one process group so a failed
-	// handshake can be reaped as a unit. Killing only the bash would leave a
-	// descendant holding the output pipe and block Wait.
+	// handshake is reaped as a unit rather than leaving bash's group alive.
 	if err := procgroup.Start(cmd); err != nil {
+		_ = outFile.Close()
 		t.Fatalf("starting the runner: %v", err)
 	}
 	abort := func() {
 		procgroup.Kill(cmd.Process.Pid)
 		_ = cmd.Wait()
+		_ = outFile.Close()
 	}
 	// The fixture's own test is inside its run by now, which is before the
 	// export by construction.
@@ -725,7 +741,7 @@ func TestTimed(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			abort()
-			t.Fatalf("the fixture never announced itself:\n%s", out.String())
+			t.Fatalf("the fixture never announced itself:\n%s", runnerOutput())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -737,6 +753,7 @@ func TestTimed(t *testing.T) {
 	}
 	writeTestFile(t, release, []byte("go\n"), 0o644)
 	waitErr := cmd.Wait()
+	_ = outFile.Close()
 
 	got, err := os.ReadFile(victim)
 	if err != nil {
@@ -746,9 +763,9 @@ func TestTimed(t *testing.T) {
 		t.Fatalf("the capture wrote through a planted sibling symlink:\n%s", got)
 	}
 	if waitErr != nil {
-		t.Fatalf("the run failed with the symlink planted: %v\n%s", waitErr, out.String())
+		t.Fatalf("the run failed with the symlink planted: %v\n%s", waitErr, runnerOutput())
 	}
 	if rows, err := os.ReadFile(dest); err != nil || !strings.Contains(string(rows), "TEST\t") {
-		t.Fatalf("the run published no timing rows at %s (err = %v):\n%s", dest, err, out.String())
+		t.Fatalf("the run published no timing rows at %s (err = %v):\n%s", dest, err, runnerOutput())
 	}
 }
