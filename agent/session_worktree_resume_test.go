@@ -1004,10 +1004,16 @@ func newForeignBareLockedLane(t *testing.T) (*wtRepo, string) {
 	return r, path
 }
 
-// assertCoOccupyingUnknownOwnerTracked asserts the session warned about the
-// foreign bare lock naming an unknown owner and kept tracking the lane.
-func assertCoOccupyingUnknownOwnerTracked(t *testing.T, sess *Session, path string) {
+// assertCoOccupyingUnknownOwnerTracked asserts a co-occupying session: it warned
+// about the foreign bare lock naming an unknown owner (the notice is the
+// behavior the bare-lock cases exist to check), kept tracking the lane, and
+// left the foreign lock itself alone rather than relocking over another
+// owner's.
+func assertCoOccupyingUnknownOwnerTracked(t *testing.T, r *wtRepo, sess *Session, path string) {
 	t.Helper()
+	if entry := r.porcelainEntry(t, path); !entry.Locked || entry.LockReason != "" {
+		t.Errorf("porcelain entry for %s = locked=%v reason=%q, want the foreign bare lock preserved (locked=true, empty reason)", path, entry.Locked, entry.LockReason)
+	}
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
 		t.Errorf("no co-occupying notice naming an unknown owner: %v", msgs)
@@ -1023,7 +1029,7 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	t.Parallel()
 	r, path := newForeignBareLockedLane(t)
 	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
-	assertCoOccupyingUnknownOwnerTracked(t, sess, path)
+	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
 }
 
 // TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot: the
@@ -1034,7 +1040,7 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot(t *t
 	r, path := newForeignBareLockedLane(t)
 	sess := newSession(t, withDir(path), withoutGitSnapshot(),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
-	assertCoOccupyingUnknownOwnerTracked(t, sess, path)
+	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
 }
 
 // TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe reproduces
@@ -1066,7 +1072,7 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe(t *testi
 	if sess.envInfo.IsGitRepo {
 		t.Fatal("the session-start git probe reported a repository; the starved-probe condition was not exercised")
 	}
-	assertCoOccupyingUnknownOwnerTracked(t, sess, path)
+	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
 }
 
 // TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey: a session
