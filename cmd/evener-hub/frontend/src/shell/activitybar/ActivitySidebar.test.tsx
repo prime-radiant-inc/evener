@@ -855,3 +855,77 @@ test("an embedded parent column's Overview rebases its ancestor crumb onto the c
     mounted.unmount();
   }
 });
+
+test("a held parent in a cascade opened from a nested session keeps its ancestors and rebases the recorded suffix", async () => {
+  const user = userEvent.setup();
+  // The ancestry is root -> source -> parent -> leaf, but the cascade opens
+  // from the nested "source": its recorded edges begin one column below the
+  // root. Titles make the ancestor crumbs findable by name.
+  const context = (value: string) =>
+    cascadeContext(
+      value,
+      value === "leaf"
+        ? ["root", "source", "parent"]
+        : value === "parent"
+          ? ["root", "source"]
+          : value === "source"
+            ? ["root"]
+            : [],
+      (ancestor) => (ancestor === "root" ? "Root" : ancestor === "source" ? "Source" : ancestor),
+    );
+  const client = cascadeClient(context);
+  client.on("evener/thread/delegates/list", ({ ref: asked, scope }) => ({
+    context: context(asked),
+    scope: scope ?? "session",
+    delegates: [activityDelegate({ ownerRef: asked, description: `delegate owned by ${asked}` })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope("leaf");
+  const params: SessionZoomParams = {
+    ref: "leaf",
+    source: { type: "session", params: { ref: "source" } },
+    edges: [
+      { ownerRef: "source", childRef: "parent", delegateId: "d1" },
+      { ownerRef: "parent", childRef: "leaf", delegateId: "d2" },
+    ],
+  };
+  workspaceStore.setState({
+    panes: [
+      { id: "zoom", type: "sessionZoom", params, slot: "main" },
+      { id: "ordinary-parent", type: "session", params: { ref: "parent" }, slot: "secondary" },
+    ],
+    focusedPaneId: "zoom",
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread("parent");
+  });
+  const mounted = render(
+    <ClientProvider client={client}>
+      <MotionProvider>
+        <SessionChrome ref="parent" paneId="zoom" discoverActivity />
+        <ActivitySidebar />
+      </MotionProvider>
+    </ClientProvider>,
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
+    const sidebar = within(screen.getByTestId("activity-sidebar"));
+    await sidebar.findByRole("button", { name: /delegate owned by parent/ });
+    const crumbs = within(sidebar.getByRole("navigation", { name: "Scope" }));
+    // The held scope is the parent column: its two ancestors above the
+    // cascade's own start keep their authoritative refs, the crumb for the
+    // cascade's source is rebound to it, and the last crumb is the held parent.
+    const navRefs = () =>
+      crumbs.getAllByRole("button").map((button) => button.getAttribute("data-session-navigation-ref"));
+    expect(navRefs()).toEqual(["root", "source"]);
+    await act(async () => fireEvent.click(crumbs.getByRole("button", { name: "Source" })));
+    const pane = workspaceStore.getState().panes.find((item) => item.id === "zoom");
+    if (!pane) throw new Error("Missing zoom pane after breadcrumb pop");
+    expect((pane.params as SessionZoomParams).ref).toBe("source");
+    expect((pane.params as SessionZoomParams).edges).toEqual([]);
+  } finally {
+    mounted.unmount();
+  }
+});

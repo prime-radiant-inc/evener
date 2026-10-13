@@ -101,21 +101,27 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     // The crumb rebase covers any held column of the focused cascade, not only
     // its leaf: an embedded conversation's Overview holds a parent column, so
     // that scope keeps its own ancestry while each crumb is rebound to the
-    // cascade's requested ref for the column it names. The held scope's own
-    // activity context proves a full path only when the scope IS the selected
-    // leaf; otherwise the cascade's requested edges describe the whole path.
-    const fromContext = deriveCascadePath(params, snapshot?.context ?? null).scopes;
-    const scopes = fromContext.some((scope) => scope.requestedRef === ref)
-      ? fromContext
-      : deriveCascadePath(params, null).scopes;
-    if (!scopes.some((scope) => scope.requestedRef === ref)) return derived;
+    // cascade's requested ref for the column it names. The leaf's proven
+    // activity context describes the full path; a held parent is only covered
+    // by the cascade's recorded edge suffix, which begins at the cascade's own
+    // source, so the suffix is aligned to the held scope's own last crumb
+    // (deriveScope appends it) before rebasing: everything above the chain's
+    // start keeps its authoritative ref.
+    const leaf = params.ref === ref;
+    const scopes = deriveCascadePath(params, leaf ? (snapshot?.context ?? null) : null).scopes;
+    const held = scopes.findIndex((scope) => scope.requestedRef === ref);
+    if (held < 0) return derived;
+    const offset = derived.path.length - 1 - held;
+    if (offset < 0) return derived;
     const originRef = cascadeOriginRef(focusedPane);
-    const path = derived.path.map((crumb, index) => ({ ...crumb, ref: scopes[index]?.requestedRef ?? crumb.ref }));
+    const path = derived.path.map((crumb, index) =>
+      index < offset ? crumb : { ...crumb, ref: scopes[index - offset]?.requestedRef ?? crumb.ref },
+    );
     // The origin conversation never renders in the cascade, so the leaf's
     // breadcrumb cannot offer it: the rendered scopes are the clickable path.
     // A held parent column keeps its whole ancestry, whose origin crumb routes
     // to the retained origin pane instead.
-    return { ...derived, path: ref === params.ref ? path.filter((crumb) => crumb.ref !== originRef) : path };
+    return { ...derived, path: leaf ? path.filter((crumb) => crumb.ref !== originRef) : path };
   }, [open, resources, ref, snapshot, subagents, focusedPane]);
   const Body = scope === null ? null : activityTabSpec(tab).Body;
   // Resolved once per mount: spatialTransition reads getComputedStyle (a
