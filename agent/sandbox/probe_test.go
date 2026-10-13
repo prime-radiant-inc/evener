@@ -101,6 +101,33 @@ func TestSeatbeltRequiresDarwin(t *testing.T) {
 	}
 }
 
+// npm and cargo keep no go-env-style file for their cache location, so the probe
+// reads it from the environment alone (#4225). Unset leaves the facts empty,
+// which the resolver reads as "$HOME's default".
+func TestProbeReadsNpmAndCargoCacheEnv(t *testing.T) {
+	t.Parallel()
+	facts := probeHost(stubProbeSystem{env: map[string]string{"CARGO_HOME": "/custom/cargo", "npm_config_cache": "/custom/npm"}})
+	if facts.CargoHome != "/custom/cargo" || facts.NpmConfigCache != "/custom/npm" {
+		t.Errorf("probeHost CargoHome=%q NpmConfigCache=%q, want the environment values", facts.CargoHome, facts.NpmConfigCache)
+	}
+	unset := probeHost(stubProbeSystem{})
+	if unset.CargoHome != "" || unset.NpmConfigCache != "" {
+		t.Errorf("unset CARGO_HOME and npm_config_cache must leave the facts empty, got %q and %q", unset.CargoHome, unset.NpmConfigCache)
+	}
+}
+
+// npm reads its environment configuration through a lowercased key, so
+// NPM_CONFIG_CACHE names the same setting as npm_config_cache. A host that sets
+// the uppercase spelling must still get the root overlaid, or its cache writes
+// stay read-only.
+func TestProbeReadsNpmCacheEnvCaseInsensitively(t *testing.T) {
+	t.Parallel()
+	facts := probeHost(stubProbeSystem{env: map[string]string{"NPM_CONFIG_CACHE": "/custom/npm"}})
+	if facts.NpmConfigCache != "/custom/npm" {
+		t.Errorf("probeHost NpmConfigCache=%q, want the uppercase NPM_CONFIG_CACHE value", facts.NpmConfigCache)
+	}
+}
+
 // TestRealProberOptIn exercises the real host prober, but only when explicitly
 // opted in (EVENER_SANDBOX_PROBE_HOST=1). CI unit runs skip it so they never shell
 // out to bwrap — probing is off the hermetic unit
