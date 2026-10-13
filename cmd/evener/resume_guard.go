@@ -8,8 +8,7 @@ import (
 )
 
 // errBareDelegateResume is the sentinel a bare resume of a delegate returns.
-// Assert it with errors.Is/errors.As, never by substring; its prose is pinned
-// whole-output by the resume_guard_*.golden files under testdata/.
+// Assert it with errors.Is/errors.As, never by substring.
 var errBareDelegateResume = errors.New("bare delegate resume refused")
 
 // delegateOwnerHopLimit caps the owner-chain walk so a malformed or cyclic
@@ -72,4 +71,29 @@ func delegateRootOwner(meta schema.SessionMeta, stateDir string) string {
 		owner = parent.ParentSessionID
 	}
 	return ""
+}
+
+// latestResumableRootMeta returns the newest session meta that can be resumed
+// at all: the first by UpdatedAt descending whose IsSubagent is false.
+//
+// An implicit --resume-last must not become useless when a delegate was touched
+// more recently than its root (roborev, PR #4589): the operation the user meant
+// is "resume my latest session", which has a resumable answer. An explicit
+// delegate id is still refused. The selection lives here, not in
+// cmdutil.ResolveSessionMeta, so that function keeps its exact
+// newest-session meaning for every other caller.
+//
+// It reports false when the state dir has no resumable session, so the caller
+// keeps the delegate meta and lets refuseBareDelegateResume name the refusal.
+func latestResumableRootMeta(stateDir string) (schema.SessionMeta, bool) {
+	list, err := schema.ListSessionMetas(stateDir)
+	if err != nil {
+		return schema.SessionMeta{}, false
+	}
+	for _, meta := range list {
+		if !meta.IsSubagent {
+			return meta, true
+		}
+	}
+	return schema.SessionMeta{}, false
 }
