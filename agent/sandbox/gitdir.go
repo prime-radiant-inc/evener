@@ -487,82 +487,46 @@ func parseIncludePaths(text string) []string {
 	return out
 }
 
-// sectionBody returns the text between a "[...]" header's brackets, untrimmed, so
-// each caller can apply its own whitespace rule (git accepts neither a leading nor a
-// trailing space inside the brackets, and reads a subsection only in the quoted
-// form).
-func sectionBody(header string) string {
-	return strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(header), "["), "]")
-}
-
-// sectionName returns the leading section name of a "[section ...]" header: the
-// text between the brackets up to the first space, tab or quote, so
-// "[includeIf \"gitdir:x\"]" yields "includeIf". Case folding is the caller's.
-func sectionName(header string) string {
-	h := strings.TrimSpace(sectionBody(header))
-	if i := strings.IndexAny(h, " \t\""); i >= 0 {
-		h = h[:i]
-	}
-	return h
-}
-
-// bareSectionName returns the section name of a header that names a section with
-// NO subsection and no trailing text, else "". git reads `core.excludesFile` only
-// from a bare `[core]`: `[core "x"]` and the legacy `[core.excludesfile]` form name
-// different keys (core.x.excludesFile, core.excludesfile.*), so reading a value out
-// of one of those would follow a file a git command never opens.
-func bareSectionName(header string) string {
-	body := sectionBody(header)
-	if strings.ContainsAny(body, " \t\"") {
-		return "" // a subsection, or whitespace git does not accept inside the brackets
-	}
-	return body
-}
-
 // isIncludeSectionHeader reports whether a "[section ...]" header names the
 // include or includeIf section (case-insensitive, matching git).
 func isIncludeSectionHeader(header string) bool {
-	h := sectionName(header)
+	h := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(header), "["), "]")
+	h = strings.TrimSpace(h)
+	if i := strings.IndexAny(h, " \t\""); i >= 0 {
+		h = h[:i]
+	}
 	return strings.EqualFold(h, "include") || strings.EqualFold(h, "includeIf")
 }
 
 // includePathValue returns the path value of a "path = <value>" config line
-// (empty if the line is not a path key).
+// (empty if the line is not a path key). It strips surrounding double quotes and,
+// for an unquoted value, an inline # or ; comment.
 func includePathValue(line string) string {
-	value, _ := configValueLine(line, "path")
-	return value
-}
-
-// configValueLine returns the value of a "<key> = <value>" git-config line when
-// its key matches name (case-insensitively, matching git), and whether the line
-// assigns that key AT ALL — an assignment with an empty value is still an
-// assignment, which matters to a caller applying git's last-assignment-wins rule.
-// It strips surrounding double quotes and, for an unquoted value, an inline # or ;
-// comment.
-func configValueLine(line, name string) (value string, assigned bool) {
-	key, raw, found := strings.Cut(line, "=")
-	if !found || !strings.EqualFold(strings.TrimSpace(key), name) {
-		return "", false
+	key, value, found := strings.Cut(line, "=")
+	if !found {
+		return ""
 	}
-	val := strings.TrimSpace(raw)
+	if !strings.EqualFold(strings.TrimSpace(key), "path") {
+		return ""
+	}
+	val := strings.TrimSpace(value)
 	if len(val) >= 2 && val[0] == '"' {
-		if parsed, ok := quotedConfigValue(val); ok {
-			return parsed, true
+		if parsed, ok := quotedIncludePathValue(val); ok {
+			return parsed
 		}
-		return "", true
+		return ""
 	}
 	if c := strings.IndexAny(val, "#;"); c >= 0 {
 		val = strings.TrimSpace(val[:c])
 	}
-	return val, true
+	return val
 }
 
-// quotedConfigValue returns the first complete double-quoted git-config value.
-// Git permits escaped quotes and backslashes in a quoted value; scanning the
-// closing quote rather than using strings.Index prevents an escaped quote in a
-// value from truncating it — for a config include path that truncation would
-// bypass include protection.
-func quotedConfigValue(value string) (string, bool) {
+// quotedIncludePathValue returns the first complete double-quoted git-config
+// value. Git permits escaped quotes and backslashes in a quoted value; scanning
+// the closing quote rather than using strings.Index prevents an escaped quote in
+// an include path from truncating the path and bypassing include protection.
+func quotedIncludePathValue(value string) (string, bool) {
 	var out strings.Builder
 	for i := 1; i < len(value); i++ {
 		switch value[i] {
@@ -590,55 +554,6 @@ func quotedConfigValue(value string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// gitCoreReferencedKeys are the core.* config keys that name a FILE git reads
-// alongside the config file itself, in the order the probe reports them.
-var gitCoreReferencedKeys = []string{"excludesFile", "attributesFile"}
-
-// parseGitCoreReferencedValues returns the LAST value assigned to each of
-// gitCoreReferencedKeys in a git config text's BARE [core] section. The
-// bare-section restriction matches git: `[core "x"]` and the legacy
-// `[core.excludesfile]` header name different keys (core.x.excludesFile,
-// core.excludesfile.*), so a value read out of one of them would follow a file no
-// git command opens.
-func parseGitCoreReferencedValues(text string) map[string]string {
-	values := map[string]string{}
-	inCore := false
-	for raw := range strings.SplitSeq(text, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") {
-			end := strings.Index(line, "]")
-			if end < 0 {
-				inCore = false
-				continue
-			}
-			inCore = strings.EqualFold(bareSectionName(line[:end+1]), "core")
-			if rest := strings.TrimSpace(line[end+1:]); inCore && rest != "" {
-				recordGitCoreValue(rest, values)
-			}
-			continue
-		}
-		if inCore {
-			recordGitCoreValue(line, values)
-		}
-	}
-	return values
-}
-
-// recordGitCoreValue records any gitCoreReferencedKeys assignment on one config
-// line, a later assignment overwriting an earlier one — an EMPTY assignment
-// included, since git treats it as clearing the variable and granting the earlier
-// value would grant a file git no longer reads.
-func recordGitCoreValue(line string, values map[string]string) {
-	for _, key := range gitCoreReferencedKeys {
-		if value, assigned := configValueLine(line, key); assigned {
-			values[key] = value
-		}
-	}
 }
 
 // globCouldReachWritable reports whether a glob include path might match a file

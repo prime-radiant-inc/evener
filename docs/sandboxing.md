@@ -192,7 +192,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files and the files they name (`core.excludesFile`, `core.attributesFile`) + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -245,11 +245,9 @@ unsandboxed root's `TMPDIR` is not in the tree.
   The grant is deliberately narrow, and what it does **not** change matters as
   much as what it does:
 
-  - It is **file-exact**, and this grant adds no other read under the home
-    directory. The two config FILES are granted, never `$HOME` and never the
-    `~/.config` or `~/.config/git` directories. (The separate grant below, for the
-    files those configs *name*, can also name a path under your home — it is
-    itemized there.) A file that does not exist contributes nothing and
+  - It is **file-exact**, and it adds no other read under the home directory. The
+    two config FILES are granted, never `$HOME` and never the `~/.config` or
+    `~/.config/git` directories. A file that does not exist contributes nothing and
     never fails session start; a path that names a directory is refused outright.
     File-exactness is enforced where the candidates are *probed* — a candidate is
     admitted only if it exists and is not a directory — and not by the shared-tree
@@ -274,109 +272,31 @@ unsandboxed root's `TMPDIR` is not in the tree.
   - It reaches the **spawned layer only**. The model's file tools stay confined to
     the worktree and cannot browse the config.
 
-  **The files those configs name are readable in `restricted` too, read-only**
-  (ruled 2026-10-12, #4234).
-  A global config's `core.excludesFile` and `core.attributesFile` name files git
-  opens on ordinary commands — `status`, `add`, `commit` — and neither sits under a
-  root `restricted` grants. The failure was loudest on macOS, where the kernel judges
-  the path the process names and reports
-
-      warning: unable to access '<home>/.gitignore_global': Operation not permitted
-
-  on every command, but it is not cosmetic: on Linux an ungranted path is simply
-  absent inside the sandbox, so `git` silently ran *without* the developer's global
-  excludes and attributes files instead of complaining about them.
-
-  The grant is bounded exactly as narrowly as the config-file grant above, and by
-  the same machinery (probe, shared-tree guard, denylist, spawned layer only):
-
-  - **File-exact.** Each entry is an existing non-directory file. Never a directory,
-    never `$HOME`, never a parent of the file. At most one entry per key, because
-    only the LAST assignment of a key survives — git's own last-wins rule for a
-    single-valued variable — and the later of the two config files wins, which is
-    git's own order.
-  - **git's own path rules.** `~/x` is expanded against your home the way git
-    expands it, and an absolute path is granted as written — never lexically
-    cleaned, because git hands the pathname to the kernel, so a `..` that follows a
-    symlink resolves *through* the link. A spelling the kernel still has to resolve —
-    a `..`, a `.`, a doubled separator — is refused rather than granted under its
-    cleaned name: git opens the path as written, which would need ancestors the
-    sandbox does not hold, so a grant of the cleaned spelling would promise a file git
-    never manages to open. A value the sandbox cannot resolve to one file is refused
-    rather than guessed: a relative path (git resolves it against the working
-    directory of the git command, not to a stable file), `~user/...` (another user's
-    home), a bare `~` (the home directory), a directory, and a path that does not
-    exist (git ignores a missing file silently, so there is nothing to grant).
-  - **Only the bare `[core]` section is read**, matching git: a `[core "x"]`
-    subsection or the legacy `[core.excludesfile]` header names a different key, and
-    a file named there is never opened by git.
-  - **The granted name is fixed, never re-pointable**, and the denylist still wins.
-    A file is granted only when **no component of its path is a symlink at all** — so
-    the name *is* what the filesystem resolves it to, and there is nothing anyone
-    could re-point — when **no directory on its path is a root the session may write**
-    (judged by file identity, so a case, an alias or another spelling of one directory
-    cannot slip past), and when it is not inside a masked path by identity. bubblewrap
-    binds a read root by its literal name, follows symlinks when it binds, and does so
-    afresh at *every* spawn, so that same rule is re-applied when the bind is built:
-    a file that becomes a link after the policy was resolved is not bound again. So a
-    **symlinked `core.excludesFile`/`core.attributesFile` is not granted, nor is one
-    reached through a symlinked directory** — a deliberate loss: such a file was
-    equally ungranted before this change, and the *config file* grant keeps its
-    documented symlink support. The rule is deliberately free of spelling comparisons:
-    four review rounds of this grant were all one family — a containment judgement
-    made by comparing path strings — and the fix each time was to ask the filesystem
-    (file identity) or to require the simpler property (no symlink components), which
-    is also what makes the guarantee testable on a case-sensitive Linux host.
-    Residuals: a HARD link resolves to no other path, so a config naming a hard link
-    to a masked file is granted and the mask does not catch it — half closed, since a
-    hard link to a masked *file* is now refused by identity while one to a file inside
-    a masked directory is not; creating one is a deliberate act by the same user the
-    session runs as, tracked in
-    [#4473](https://github.com/prime-radiant-inc/evener/issues/4473). The config-FILE
-    grant has the same retargeting exposure for a symlinked `~/.gitconfig` whose
-    target the session can write, left as-is because a dotfile-managed config is a
-    supported shape; tracked in
-    [#4479](https://github.com/prime-radiant-inc/evener/issues/4479). And the
-    case-variant spelling coverage of the identity judgements — a mask reached by a
-    name that differs only in letter case on a case-insensitive volume — can only be
-    exercised there, not on a case-sensitive host; tracked in
-    [#4486](https://github.com/prime-radiant-inc/evener/issues/4486).
-  - **Read-only, spawned-layer only**, and it changes no write surface — the same
-    anti-hook-planting argument as the config-file grant.
-
-  What it deliberately does **not** cover, with the reason:
-
-  - `core.hooksPath` and `commit.template` are not followed. A hooks path is a
-    directory that must also be executable (a strictly larger grant, and the live
-    tests document a home `core.hooksPath` as knowingly-breaking); a commit template
-    is read only by an editor-driven commit.
-  - A `.git/config` (repository-local) or `/etc/gitconfig` value is not followed.
-    The repository's own config is model-adjacent content, so letting it name host
-    files for a read grant would let a cloned repository choose what the sandbox
-    opens. `/etc` is a read root anyway.
-  - A global config's `include.path` target is not granted either. Following
-    includes is an unbounded, recursive widening (a config can include any file),
-    which is a policy decision of its own; an unreadable home-anchored include makes
-    git *fatal* rather than warn, which is the sharper edge of the same issue and is
-    tracked in [#4467](https://github.com/prime-radiant-inc/evener/issues/4467).
-  - `GIT_CONFIG_GLOBAL` in the environment is not consulted: the probe reads the two
-    files `git-config(1)` names under FILES. A session that exports it therefore
-    keeps today's behaviour for that file, and `GIT_CONFIG_GLOBAL` and
-    `GIT_CONFIG_SYSTEM` pass through the environment floor unchanged — tracked in
-    [#4468](https://github.com/prime-radiant-inc/evener/issues/4468). This is the one
-    to suspect if a `restricted` session still reports an unreadable git config;
-    `GIT_CONFIG_GLOBAL=/dev/null` tells it apart from a sandbox fault.
-  - A global config the probe cannot read — unreadable, a device, or larger than the
-    probe's bounded 64 KiB read — contributes no referenced-file grant. The config
-    file itself stays readable in `restricted`, so only values named by a config that
-    large are missed. The value reader is the small one the include protection uses,
-    so a value git splits across lines with a trailing backslash, and text after a
-    closing quote, are read differently from git (see the probe's own comment).
-
   Because the config becomes readable, settings in it now take effect inside the
   sandbox — `rerere.enabled=true`, for instance, makes `git commit` create
   `<common>/rr-cache`. That is the intended behaviour: the mode runs the
   developer's git, not a blanked-out one.
+
+  **A global `core.excludesFile` or `core.attributesFile` outside the project is NOT
+  readable in `restricted`** (accepted limitation, 2026-10-13; recorded in
+  [friction.md's T06](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
+  and [#4234](https://github.com/prime-radiant-inc/evener/issues/4234)). The grant
+  above is the config FILES, never the files they name, so the effect depends on the
+  host: macOS/Seatbelt reports
+
+      warning: unable to access '<path>': Operation not permitted
+
+  on every command that reads the file, while Linux/bubblewrap hides an ungranted
+  path, so git applies no excludes or attributes file at all and says nothing. This
+  is deliberate, not overlooked. Granting one file the config names means granting a
+  pathname a spawned process resolves by its literal name at every spawn, and six
+  review rounds on that route each closed one way of re-pointing a granted name at
+  another file — a symlink, a `..` the kernel resolves after one, a writable alias, a
+  letter case, a directory in place of the file — while exposing another, with the
+  last one specific to a backend whose code cannot be verified where CI runs. The
+  project's own `.gitignore`, `.gitattributes` and `.git/info/exclude` are unaffected;
+  they live in the worktree. A session that needs global rules elsewhere on the host
+  can run with `--sandbox off`, or the rules can move into the repository.
 
   **git under a sandbox is silent and fast on macOS** (ruled 2026-08-07). It was
   neither: every `git` call emitted two `xcrun_db` cache-write denials to stderr

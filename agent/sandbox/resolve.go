@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -165,16 +164,6 @@ type ResolvedPolicy struct {
 	// Git is the resolved git-surface map: writable metadata, write-protected
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
 	Git GitLayout
-
-	// GitReferencedFiles are the files a global git config NAMES for git to read
-	// (core.excludesFile, core.attributesFile) that this policy grants to the spawned
-	// layer. They are listed apart from Spawned.ReadRoots because the bwrap argv
-	// builder re-applies their admission rule at every spawn: a bind follows the
-	// literal name afresh, so these are the roots that may not be symlinked and must
-	// still pass the writable-root and mask rules when the command starts. Seatbelt
-	// needs no equivalent re-check — it denies a masked target by path and matches
-	// case-insensitively, so a swapped link cannot reach past its denials.
-	GitReferencedFiles []string
 
 	// ToolchainBinDir is the macOS developer-toolchain bin directory the env floor
 	// puts on a spawned process's PATH, ahead of the system directories, so `git`
@@ -489,7 +478,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		resolveInputs: policy,
 		resolveHost:   host,
 	}
-	rp.FileTool, rp.Spawned, rp.GitReferencedFiles = scopesFor(policy, host, layout, worktree)
+	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
 	rp.configMasks = configMasks
 	// The masks' state is recorded before admission judges them, so a mask
 	// that changes in between differs from this record and is judged again
@@ -827,7 +816,7 @@ func cacheStrategyFor(mode Mode, backend Backend, host HostFacts) CacheStrategy 
 }
 
 // scopesFor builds the file-tool and spawned-process access scopes for a mode.
-func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree string) (fileTool, spawned AccessScope, referenced []string) {
+func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree string) (fileTool, spawned AccessScope) {
 	switch policy.Mode {
 	case ModeOff, ModeReadOnly:
 		// Reads anywhere (minus masked); no writes (session tmp is the only scratch).
@@ -869,13 +858,9 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// developer directory — ruled 2026-08-06), the user's global git config
 		// FILES (git fatals on a present-but-unreadable ~/.gitconfig, so without
 		// them git was unusable in this mode on any host with a global config —
-		// read-only and file-exact, ruled 2026-08-07) plus the files those configs
-		// name for git to read (core.excludesFile, core.attributesFile — a file git
-		// cannot open is one whose settings silently do not apply, and macOS/Seatbelt
-		// warns "unable to access ...: Operation not permitted" on every command that
-		// reads it, ruled 2026-10-12 for #4234), the session's hook/MCP-server paths
-		// (session infrastructure, which must run in every mode — ruled 2026-08-06),
-		// and write the git metadata subset. Those extra grants stay OUT
+		// read-only and file-exact, ruled 2026-08-07), the session's hook/MCP-server
+		// paths (session infrastructure, which must run in every mode — ruled
+		// 2026-08-06), and write the git metadata subset. Those extra grants stay OUT
 		// of readFile: a hook living in the plugin cache must be executable and the
 		// git shim must reach its toolchain, but the model must not gain a file-tool
 		// browse grant over either along with it.
@@ -885,20 +870,7 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// is not masked — and a masked one must stay masked in every mode.
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
 		gitConfig := guardedHostRoots(host.GitGlobalConfigPaths, host.Home, worktree)
-		// The files a global config NAMES can be re-pointed by the session itself: a
-		// write inside its own worktree changes what a granted name resolves to, and
-		// bwrap binds that name afresh at every spawn. So they are the one grant that
-		// must be fixed — admitted only when nothing about the name can change — rather
-		// than merely guarded; see confinedReferencedFiles.
-		// Confined BEFORE the shared-tree guard, because that guard cleans each
-		// candidate: cleaning a `..` that follows a symlink names a different path from
-		// the one git opens, and a candidate whose cleaned spelling happens to be a real
-		// directory would then be granted as a whole tree.
-		gitReferenced := guardedHostRoots(
-			confinedReferencedFiles(host.GitGlobalReferencedPaths, slices.Concat(writeFile, layout.WritablePaths)),
-			host.Home, worktree)
-		referenced = gitReferenced
-		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, gitReferenced, policy.InfraReadRoots))
+		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}
@@ -907,7 +879,7 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		fileTool.WriteRoots = nil
 		spawned.WriteRoots = nil
 	}
-	return fileTool, spawned, referenced
+	return fileTool, spawned
 }
 
 // dedupeRoots cleans, drops empty/whitespace-only entries, and de-duplicates a
@@ -970,145 +942,20 @@ func withResolvedMasks(masked []string) []string {
 
 // filterMasked drops any root the policy masks (ResolvedPolicy.Masks), upholding
 // the invariant that a resolved policy never grants a denylisted/pseudo-fs path.
-//
-// A root reached through a SYMLINK is judged at the path it really exposes as well
-// as at its literal name. bwrap's `--ro-bind <link> <link>` follows the link and
-// materializes the TARGET's content at the literal path (verified against the live
-// kernel: a granted `~/link` → `~/.ssh/id_rsa` made the key readable at `~/link`
-// even with `~/.ssh` masked), so a root whose literal path is unmasked but whose
-// target is masked would expose the masked file. Resolving costs one EvalSymlinks
-// per root, and a symlink whose target is unmasked — the ordinary dotfile-managed
-// case — is unaffected. Seatbelt additionally grants the canonical spelling, and
-// its trailing denials already covered the target; this closes the same shape for
-// the mount-based backend.
-//
-// A root is also judged BY FILE IDENTITY against the masked set. Two spellings of one
-// path — another letter case on a case-insensitive volume, a hard link, a firmlink
-// alias — are not two paths to the filesystem, and a comparison of strings alone
-// would admit one of them while the mask names the other: bwrap then binds the file
-// at the admitted spelling in its own case-sensitive namespace, where the mask,
-// applied to the other spelling, does not cover the copy. The masked paths are
-// stat'd once per call and compared with os.SameFile, so this adds no per-root walk
-// cost beyond the root's own ancestors.
 func filterMasked(roots []string, rp ResolvedPolicy) []string {
 	if len(roots) == 0 {
 		return roots
 	}
-	maskedInfos := pathFileInfos(rp.MaskedPaths)
 	out := roots[:0:0]
 	for _, r := range roots {
-		if rp.masks(r, false) || rp.masks(resolveExistingPrefix(r), false) {
-			continue
+		if !rp.masks(r, false) {
+			out = append(out, r)
 		}
-		// The identity clause carries the same carve-out exemption masks() does: a
-		// mask that transiently overlaps a readable carve-out (a scratch dir a denylist
-		// entry points into) must not take the carve-out's own root away with it.
-		// Both the root and what it RESOLVES to are judged by identity, so a root
-		// reached through a symlink is covered too (round 5 of #4474's review: a root
-		// whose literal ancestors never include the masked directory).
-		if !carveOutExempt(r, rp) &&
-			(underAnyIdentity(r, maskedInfos) || underAnyIdentity(resolveExistingPrefix(r), maskedInfos)) {
-			continue
-		}
-		out = append(out, r)
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
-}
-
-// carveOutExempt reports whether root is covered by a readable carve-out
-// (ResolvedPolicy.UnmaskedRoots), with the same .git exception masks() makes.
-func carveOutExempt(root string, rp ResolvedPolicy) bool {
-	for _, carve := range rp.UnmaskedRoots {
-		if pathUnder(root, carve) {
-			return !insideGitDir(root, carve)
-		}
-	}
-	return false
-}
-
-// pathFileInfos stats every path that exists, once, for the FILE IDENTITY comparisons
-// below: two spellings of one path are one file, and the filesystem is the only
-// authority on that.
-func pathFileInfos(paths []string) []fs.FileInfo {
-	infos := make([]fs.FileInfo, 0, len(paths))
-	for _, p := range paths {
-		if fi, err := os.Stat(p); err == nil {
-			infos = append(infos, fi)
-		}
-	}
-	return infos
-}
-
-// underAnyIdentity reports whether path, or a directory above it, IS one of infos
-// (os.SameFile), so containment holds under any spelling of either.
-func underAnyIdentity(path string, infos []fs.FileInfo) bool {
-	if len(infos) == 0 {
-		return false
-	}
-	for p := path; ; {
-		if fi, err := os.Stat(p); err == nil {
-			for _, want := range infos {
-				if os.SameFile(fi, want) {
-					return true
-				}
-			}
-		}
-		parent := filepath.Dir(p)
-		if parent == p {
-			return false
-		}
-		p = parent
-	}
-}
-
-// isPlainFile reports whether path names a real, NON-DIRECTORY file reached without a
-// single symlink component: every ancestor is a real directory and the last component
-// is a regular file. The referenced-file grant needs exactly that, and it is checked
-// again at every spawn because bwrap binds the literal name afresh.
-//
-// No symlink component means the path IS what the filesystem resolves it to, so
-// nothing a session writes can change what a bind at that name exposes. Requiring a
-// non-directory keeps the grant FILE-EXACT: should the named file become a directory,
-// bwrap would bind the whole tree and Seatbelt's subpath grant would cover its
-// descendants, neither of which this grant authorizes. A missing or unreadable
-// component is not a plain file either — there is nothing to grant.
-//
-// It walks the SPELLING's prefixes rather than a cleaned path: cleaning collapses a
-// `..` that follows a symlink, and the symlink before it is exactly what to catch
-// (`~/link/../notes` where `~/link` is a symlink names another directory's file, but
-// its cleaned spelling is a path of its own).
-func isPlainFile(path string) bool {
-	if !filepath.IsAbs(path) {
-		return false
-	}
-	path = strings.TrimRight(path, string(filepath.Separator))
-	if path == "" {
-		return false
-	}
-	// Every prefix of the spelling that ends at a separator, then the whole spelling.
-	for i := 1; i <= len(path); i++ {
-		if i < len(path) && path[i] != filepath.Separator {
-			continue
-		}
-		prefix := path[:i]
-		fi, err := os.Lstat(prefix)
-		if err != nil {
-			return false
-		}
-		if fi.Mode()&fs.ModeSymlink != 0 {
-			return false
-		}
-		if i == len(path) {
-			return !fi.IsDir()
-		}
-		if !fi.IsDir() {
-			return false
-		}
-	}
-	return false
 }
 
 // withEvenerConfigMask returns the masked set with Evener's own config root in

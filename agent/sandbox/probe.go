@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,21 +113,6 @@ type HostFacts struct {
 	// masked. A path that does not exist contributes nothing and never fails
 	// session start.
 	GitGlobalConfigPaths []string
-
-	// GitGlobalReferencedPaths are the files a user's global git config NAMES for git
-	// to read alongside it: the core.excludesFile and core.attributesFile targets.
-	// git reads them on ordinary commands (status, add, commit), so a file it cannot
-	// open is one whose settings silently do not apply. #4234 saw that as
-	// "warning: unable to access '<path>': Operation not permitted" on every command
-	// on macOS, and as a global excludes/attributes file that quietly stopped
-	// working on Linux, where bwrap hides an ungranted path instead of denying it.
-	//
-	// READ-ONLY, FILE-EXACT (an existing non-directory file), at most one entry per
-	// key, spawned-layer only, and it loses to the credential denylist — the same
-	// shape as GitGlobalConfigPaths. probeGitGlobalReferencedPaths is the single
-	// implementation of the admission rules, and docs/sandboxing.md states them for
-	// readers.
-	GitGlobalReferencedPaths []string
 
 	// EvenerContentRoots are the installed plugin files in Evener's plugin store
 	// and the user's skills directory at their configured locations.
@@ -308,7 +292,6 @@ func probeHost(system probeSystem) HostFacts {
 		facts.Home = home
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
-	facts.GitGlobalReferencedPaths = probeGitGlobalReferencedPaths(system, facts.GitGlobalConfigPaths)
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
@@ -375,136 +358,6 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 		}
 	}
 	return out
-}
-
-// probeGitGlobalReferencedPaths returns the existing files the user's global git
-// configs name for git to read: the core.excludesFile and core.attributesFile
-// targets of the config files the caller probed with probeGitGlobalConfigPaths, so
-// git's own FILES rules ($XDG_CONFIG_HOME/git/config then ~/.gitconfig) and the
-// existing-file test are shared rather than re-derived, and it reads only files that
-// are really there.
-//
-// Within one config the last assignment of a key wins, and across the two files the
-// later file wins — git's own rule for a single-valued variable and its own FILES
-// order — so the values are accumulated in that order. A config the probe cannot
-// read (unreadable, a device, or larger than the bounded read admits) contributes
-// nothing rather than failing session start.
-//
-// Two residual parser limits, deliberately shared with the git-config include
-// reader (gitdir.go's configValueLine): a value git SPLITS across lines with a
-// trailing backslash is read here as its unterminated first line (at worst a
-// missing grant), and text after a closing quote (`excludesFile = "~/x" y`, which
-// git reads as the path `~/x y`) is read here as the quoted part alone (at worst a
-// read-only grant of the quoted file the config names — still subject to the
-// shared-tree guard and the denylist).
-func probeGitGlobalReferencedPaths(system probeSystem, configPaths []string) []string {
-	home, err := system.userHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return nil
-	}
-	values := map[string]string{}
-	for _, config := range configPaths {
-		data, err := system.readFile(config)
-		if err != nil {
-			continue // an unreadable config names nothing we can follow
-		}
-		maps.Copy(values, parseGitCoreReferencedValues(string(data)))
-	}
-	var out []string
-	for _, key := range gitCoreReferencedKeys {
-		path := gitConfigReferencedPath(values[key], home)
-		if path == "" || !system.nonDirectoryFile(path) || slices.Contains(out, path) {
-			continue
-		}
-		out = append(out, path)
-	}
-	return out
-}
-
-// gitConfigReferencedPath returns the path a global-config pathname value names, or
-// "" when the value names no single file a grant could cover: a bare `~` (the home
-// directory itself) or `~user` (another user's home, which the host facts cannot
-// resolve), and a relative value, which git resolves against the working directory of
-// the git command rather than to any stable file.
-//
-// The `~` is joined by hand and an absolute value is returned AS WRITTEN, never
-// lexically cleaned: git hands the pathname to the kernel, so a `..` that follows a
-// symlink resolves through the link (`~/link/../ignore` where `~/link` is
-// /srv/dotfiles/subdir names /srv/dotfiles/ignore). Cleaning first would name a
-// different file from the one git opens — and grant it. The caller's confinement
-// check then compares this spelling against what it really resolves to.
-func gitConfigReferencedPath(value, home string) string {
-	if strings.HasPrefix(value, "~/") {
-		return home + string(filepath.Separator) + value[2:]
-	}
-	if !filepath.IsAbs(value) {
-		return ""
-	}
-	return value
-}
-
-// confinedReferencedFiles drops the files a global git config names that the session
-// could retarget, so what the grant exposes is fixed rather than re-pointable. bwrap
-// binds a read root by its LITERAL name, follows symlinks when it binds, and does so
-// afresh at every spawn, so the rule has to be about the path itself — and it is
-// deliberately SPELLING-FREE, because every comparison of spellings has a volume, an
-// alias or a letter case that defeats it:
-//
-//   - a path with NO SYMLINK COMPONENT at all is what the filesystem resolves it to,
-//     so nothing between the name and the file can be re-pointed (a symlinked
-//     excludes file, or one reached through a symlinked directory, is not granted);
-//   - the path's ancestor chain must hold no WRITABLE ROOT by FILE IDENTITY, since a
-//     directory the session may write is one it could turn into a link.
-//
-// A file that passes both is the file the config names, at any spawn.
-func confinedReferencedFiles(candidates, writable []string) []string {
-	if len(candidates) == 0 {
-		return nil
-	}
-	// The writable roots are judged at their literal AND resolved spellings, like
-	// unmaskedContentRoots: a writable root the user configured as a symlink makes the
-	// files beneath its TARGET writable through the alias. Containment itself is
-	// decided by FILE IDENTITY, which no spelling can defeat.
-	writableAll := make([]string, 0, 2*len(writable))
-	for _, w := range writable {
-		writableAll = append(writableAll, w)
-		if resolved, err := filepath.EvalSymlinks(w); err == nil {
-			writableAll = append(writableAll, resolved)
-		}
-	}
-	writableInfos := pathFileInfos(writableAll)
-	out := make([]string, 0, len(candidates))
-	for _, c := range candidates {
-		clean := filepath.Clean(c)
-		// A spelling the kernel still has to resolve — a `..`, a `.`, a doubled
-		// separator — is refused rather than granted under its cleaned name: git opens
-		// the path as written, so it would have to traverse ancestors the sandbox does
-		// not hold, and a grant of the cleaned spelling would promise a file git never
-		// manages to open (`~/unused/../global-ignore` is the case the review raised).
-		// The symlink walk runs on the SPELLING git hands the kernel (`c`), the
-		// containment walk on the spelling the policy will carry (`clean`).
-		if clean != c || !isPlainFile(c) || underAnyIdentity(clean, writableInfos) {
-			continue
-		}
-		out = append(out, clean)
-	}
-	return out
-}
-
-// referencedFileGrantable re-applies the referenced-file rule at SPAWN time, for the
-// bwrap argv builder: a bind follows the literal name afresh at every spawn, so a name
-// whose path (or an ancestor) has become a symlink since the policy was resolved, or
-// that has come to sit under a writable root or inside a masked path, must not be
-// bound again. Only a non-session writer can change any of that, which is exactly why
-// the check is repeated rather than trusted.
-func referencedFileGrantable(path string, rp ResolvedPolicy) bool {
-	if !isPlainFile(path) {
-		return false
-	}
-	if underAnyIdentity(path, pathFileInfos(rp.Spawned.WriteRoots)) {
-		return false
-	}
-	return !underAnyIdentity(path, pathFileInfos(rp.MaskedPaths))
 }
 
 // evenerContentRoots returns the plugin store's installed plugin files and the
