@@ -34,6 +34,7 @@ import { connectionStore } from "./connection";
 import "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 import {
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
