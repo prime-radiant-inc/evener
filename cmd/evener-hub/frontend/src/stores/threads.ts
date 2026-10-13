@@ -1023,14 +1023,15 @@ async function openCachedEntryTranscript(ref: string, generation: number): Promi
   await opening;
 }
 
-function releaseEntryTranscriptReader(ref: string): void {
+function releaseEntryTranscriptReader(ref: string, releaseDisplay = false): void {
+  if (heldCountsAtStore(ref)) return;
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref) return;
   clearEntryTranscriptLocalOpening(ref);
   fixture.reader?.dispose();
   fixture.reader = undefined;
   const model = threadsStore.getState().threads.get(ref);
-  if (model && isEntryTranscriptBackgroundOnly(ref)) {
+  if (releaseDisplay && model && isEntryTranscriptBackgroundOnly(ref)) {
     putThreadModel(ref, pruneBackgroundHistoryBodies(model));
   }
 }
@@ -1434,6 +1435,8 @@ const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
 const trackedHydrationAttempts = new Map<string, number>();
 const pendingMutationReconciliations = new Map<string, Promise<void>>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
+// Clear retires response ownership, not the mounted owner's need for a read.
+const clearHydrationDemands = new Map<HydrationOwnerKind, Map<string, number>>();
 
 // --- Notification routing index ---------------------------------------------
 //
@@ -2045,6 +2048,14 @@ function currentDispatchClient(
       // independently of restartBlockingObligations, which a stale thread
       // refresh can clear while the RPC is still in flight.
       state.stoppingRefs.has(targetRef) ||
+      // A graceful shutdown's own cancellation write is in flight: the write is
+      // an await and is not itself a fence, so a dispatch already scheduled for
+      // the ref could be admitted in that window and put the row the Stop is
+      // cancelling on the wire (#4552). Read only for the dispatcher's armed
+      // lookup (requireArmed): the Send faces and the storage-failure direct
+      // fallback must stay exactly as they were (Jesse's ruling), so a Send
+      // during the window is still admitted.
+      (requireArmed && shutdownDispatchGates.has(targetRef)) ||
       // A merely-resumable session's send must dispatch: the hub folds its
       // resume into turn/start, so the obligation does not park the mutation.
       // Only turn/start is carved out of the hub's recovery admission, though,
@@ -2363,6 +2374,7 @@ function getMutationRuntime(): MutationRuntime | null {
           notesUpdateGenerations.get(ref) === generation &&
           notesLatestIntentSequences.get(ref) === record.intentSequence;
         if (current) {
+          entryTranscriptRoute(ref)?.repository?.acceptResponseFields({ humanNote: response.note });
           threadsStore.setState((state) => ({
             threads: replaceThread(state.threads, ref, (model) => ({ ...model, humanNote: response.note })),
             watchedThreads: replaceThread(state.watchedThreads, ref, (model) => ({
@@ -2547,6 +2559,45 @@ function endStop(ref: string, signalled: boolean): void {
     else restartBlockingObligations.set(ref, group.previousObligation);
     return { restartBlockingObligations };
   });
+}
+
+// The dispatch-only gate a graceful shutdown arms for the refs its cancellation
+// writes reach (#4552; Jesse's 2026-10-13 ruling). A Stop's cancellation write
+// is an await and is not itself a fence, so a dispatch already scheduled for the
+// ref can be admitted in that window and put the row the Stop is cancelling on
+// the wire. forceStop closes the window with stoppingRefs; a graceful shutdown
+// must NOT, because that fence also refuses a Send the user makes during the
+// window (isLocalRecoveryFenced and isSendResumesLocal read it). This gate is
+// read by currentDispatchClient ALONE, never by the Send faces, so only the
+// cancelled row is kept off the wire. The named ref's arm is held for the whole
+// shutdown; the resume-swap target's is released as soon as its own write
+// settles. Refcounted: two overlapping shutdowns must not clear each other's
+// arm.
+const shutdownDispatchGates = new Map<string, number>();
+
+function armShutdownDispatchGate(ref: string): () => void {
+  shutdownDispatchGates.set(ref, (shutdownDispatchGates.get(ref) ?? 0) + 1);
+  // The release is idempotent per call, so a call site can release an arm early
+  // (the resume-swap target's arm covers only its own write) and still release
+  // unconditionally in its outer finally without double-decrementing.
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const count = shutdownDispatchGates.get(ref);
+    if (count === undefined) return;
+    if (count > 1) {
+      shutdownDispatchGates.set(ref, count - 1);
+      return;
+    }
+    shutdownDispatchGates.delete(ref);
+    // The ref's dispatch was fenced for the gate's window, and a dispatch
+    // scheduled inside it (a Send admitted during the shutdown, say) was
+    // refused. Re-schedule on the way out rather than leave the row parked
+    // until the next discovery scan finds it.
+    const runtime = getMutationRuntime();
+    if (runtime) scheduleMutationDispatch(runtime, [ref]);
+  };
 }
 
 // The explicit Resume action is the one user intent that still starts a daemon
@@ -6472,13 +6523,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const retirement = retireEntryTranscriptIfUnowned(ref);
     if (retirement) {
       releaseSubagentRows(ref);
-      releaseEntryTranscriptReader(ref);
+      releaseEntryTranscriptReader(ref, true);
       retireCanonicalThreadIfUnowned(ref);
       return retirement;
     }
     syncThreadSubscription(ref);
     releaseSubagentRows(ref);
-    releaseEntryTranscriptReader(ref);
+    releaseEntryTranscriptReader(ref, true);
     if (canonicalThreadOwnerActive(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
     // retry and wake anything still awaiting its first model.
@@ -6978,6 +7029,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const response = await client.request("goal/set", { ref, objective });
       if (goalUpdateGenerations.get(ref) !== generation) return response;
       const goal = objective === "" ? null : { objective, status: "active", iterations: 0 };
+      entryTranscriptRoute(ref)?.repository?.acceptResponseFields({ goal });
       threadsStore.setState((state) => {
         const threads = replaceThread(state.threads, ref, (model) => ({ ...model, goal }));
         const watchedThreads = replaceThread(state.watchedThreads, ref, (model) => ({ ...model, goal }));
@@ -7126,14 +7178,36 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     cancelPendingUserIntents(ref);
     // Captured before the await, for forceStop's reason above.
     const swapTarget = resumeSwapTargetFor(ref);
-    await cancelUnattemptedMutations(ref);
-    // Same mid-swap reach as forceStop's cancel above.
-    await cancelResumeSwapTarget(swapTarget);
-    const client = requireClient();
+    // The dispatch-only gate (#4552, Jesse's ruling): forceStop closes its
+    // cancellation write's window with stoppingRefs, but a graceful shutdown
+    // must not, because that fence also refuses a Send the user makes during the
+    // window. This gate covers exactly the refs the Stop's cancellation writes
+    // reach and is read by currentDispatchClient alone. Armed synchronously,
+    // before the first await, so the whole write window is fenced.
+    const releaseRef = armShutdownDispatchGate(ref);
+    const releaseSwapTarget = swapTarget === undefined ? undefined : armShutdownDispatchGate(swapTarget);
     try {
-      await client.request("thread/shutdown", { ref });
-    } catch (err) {
-      throw mapConflict(err);
+      await cancelUnattemptedMutations(ref);
+      if (swapTarget !== undefined) {
+        // The swap target's own cancellation write is the only thing its arm
+        // covers, so release it here rather than gating a live resumed ref for
+        // the whole shutdown RPC.
+        try {
+          // Same mid-swap reach as forceStop's cancel above.
+          await cancelResumeSwapTarget(swapTarget);
+        } finally {
+          releaseSwapTarget?.();
+        }
+      }
+      const client = requireClient();
+      try {
+        await client.request("thread/shutdown", { ref });
+      } catch (err) {
+        throw mapConflict(err);
+      }
+    } finally {
+      releaseSwapTarget?.();
+      releaseRef();
     }
   },
 
@@ -7415,20 +7489,29 @@ function deleteCachedRefs(refs: string[]): void {
 
 function reconcileClearInput(): void {
   if (threadsStore.getState().clearInFlight !== undefined) return;
+  const tracked = clearHydrationDemands.get("thread") ?? new Map<string, number>();
+  clearHydrationDemands.set("thread", tracked);
   for (const route of entryTranscriptRoutes()) {
     const generation = route.clearRefreshGeneration;
     route.clearRefreshGeneration = undefined;
-    if (
-      generation === undefined ||
-      generation !== hydrationOwnerGeneration("thread", route.ref) ||
-      !canonicalThreadOwnerActive(route.ref) ||
-      threadsStore.getState().deletedRefs.has(route.ref) ||
-      wiredClient?.state !== "ready"
-    )
-      continue;
-    // The ordinary refresh keeps read/publication ownership fences and the
-    // held cache lifetime's suppression. Reconnect owns a non-ready client.
-    void retryTrackedHydration(wiredClient, readyEpoch, route.ref).catch(() => {});
+    if (generation !== undefined) tracked.set(route.ref, generation);
+  }
+  const demands = [...clearHydrationDemands];
+  clearHydrationDemands.clear();
+  for (const [kind, refs] of demands) {
+    for (const [ref, generation] of refs) {
+      if (
+        generation !== hydrationOwnerGeneration(kind, ref) ||
+        !hydrationOwnerActive(kind, ref) ||
+        threadsStore.getState().deletedRefs.has(ref) ||
+        wiredClient?.state !== "ready"
+      )
+        continue;
+      // Ordinary refresh preserves publication fences and the held cache
+      // lifetime's suppression. Reconnect owns a non-ready client.
+      const retry = kind === "watched" ? retryWatchedHydration : retryTrackedHydration;
+      void retry(wiredClient, readyEpoch, ref).catch(() => {});
+    }
   }
 }
 
@@ -7467,11 +7550,14 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // Synchronous logical retirement, before the transaction resolves: a
   // pre-Clear hydration must not publish into the same-tab clear window. Issued
   // reads keep their capacity charge; only their claim to publish is retired.
-  for (const [ref, pending] of [...pendingThreadHydrations]) {
-    retirePendingHydration(ref, pending, pendingThreadHydrations);
-  }
-  for (const [ref, pending] of [...pendingWatchedHydrations]) {
-    retirePendingHydration(ref, pending, pendingWatchedHydrations);
+  for (const kind of ["thread", "watched"] as const) {
+    const pendingHydrations = kind === "thread" ? pendingThreadHydrations : pendingWatchedHydrations;
+    const demands = clearHydrationDemands.get(kind) ?? new Map<string, number>();
+    clearHydrationDemands.set(kind, demands);
+    for (const [ref, pending] of [...pendingHydrations]) {
+      demands.set(ref, hydrationOwnerGeneration(kind, ref));
+      retirePendingHydration(ref, pending, pendingHydrations);
+    }
   }
   residencyIfCreated?.retireClaims();
   // The entry cache is the tab's only durable Clear boundary.
@@ -7600,6 +7686,12 @@ function transcriptResidency(): TranscriptResidency {
 function syncTranscriptResidencyOwners(ref: string): void {
   residencyIfCreated?.connection(readyEpoch, wiredClient?.state === "ready");
   syncCacheLifetimeForeground(ref);
+  const route = entryTranscriptRoute(ref);
+  if (!route?.repository) return;
+  // A history or mutation hold owns repository retention, not the lifetime of
+  // the already-published display. Pane release drops its display separately.
+  if (heldCountsAtStore(ref)) route.reader ??= route.repository.attachReader();
+  else if (route.reader) releaseEntryTranscriptReader(ref);
 }
 
 export async function settleBackgroundTranscriptsForTests(): Promise<void> {
@@ -7770,6 +7862,7 @@ export function resetThreadsStoreForTests(): void {
   userIntentStopGenerations.clear();
   userIntentStopSequence = 0;
   activeStops.clear();
+  shutdownDispatchGates.clear();
   inFlightResumes.clear();
   resumeSwapTargets.clear();
   resetHumanNoteDrafts();
@@ -7829,6 +7922,7 @@ export function resetThreadsStoreForTests(): void {
   inflightWatchHydrateEpochs.clear();
   inflightWatchIncludeTurns.clear();
   pendingWatchedHydrations.clear();
+  clearHydrationDemands.clear();
   watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();

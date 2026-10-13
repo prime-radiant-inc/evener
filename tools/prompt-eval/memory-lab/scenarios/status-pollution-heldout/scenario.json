@@ -24,8 +24,8 @@
           "run": "python3 \"$LAB_DIR/memcheck.py\" index-lines"
         },
         {
-          "name": "new pages have a description",
-          "run": "python3 \"$LAB_DIR/memcheck.py\" new-pages --require-description"
+          "name": "new pages have a when line",
+          "run": "python3 \"$LAB_DIR/memcheck.py\" new-pages --require-when"
         }
       ],
       "memory": [

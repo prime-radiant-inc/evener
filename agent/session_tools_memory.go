@@ -20,7 +20,7 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 	}
 	tools := []tool.RegisteredTool{
 		{Definition: tool.DefMemoryRead(), ReadOnly: true, Exec: s.execMemoryRead},
-		{Definition: tool.MemoryDefinition(tool.DefWriteFile(), "memory_write"), Exec: s.execMemoryWrite},
+		{Definition: tool.DefMemoryWrite(), Exec: s.execMemoryWrite},
 		{Definition: tool.MemoryDefinition(tool.DefEditFile(), "memory_edit"), Exec: s.execMemoryEdit},
 		{Definition: tool.MemoryDefinition(tool.DefGrep(), "memory_search"), ReadOnly: true, Exec: s.execMemorySearch},
 		{Definition: tool.DefMemoryDelete(), Exec: s.execMemoryDelete},
@@ -178,9 +178,8 @@ func isMemoryIndexPath(file string) bool {
 }
 
 const (
-	memoryMissingDescriptionNote    = "\n\nThis page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter."
-	memoryMissingWhenNote           = "\n\nThis page has no when in its frontmatter. Add when: <one line> saying when a future session will need this page, the way a skill says when to use it."
-	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a description that contains a colon."
+	memoryMissingWhenNote           = "\n\nThis page has no when line in its frontmatter. Add when: <one line> saying when a future session needs this page: the moments it would otherwise get this wrong, at the level that covers all of them."
+	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a value that contains a colon."
 )
 
 // stampMemoryPage is raw, the bytes a tool is about to write to the file at
@@ -203,8 +202,6 @@ func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes
 	switch page := parseMemoryPage(rel, stamped, time.Time{}); {
 	case page.Unreadable:
 		notes = memoryUnreadableFrontmatterNote
-	case !page.HasDescription:
-		notes = memoryMissingDescriptionNote
 	case page.When == "":
 		notes = memoryMissingWhenNote
 	}
@@ -266,8 +263,12 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	page, err := memoryPageFromFields(args)
+	if err != nil {
+		return nil, err
+	}
 	return s.execOwnMemoryWrite(args, "write", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
-		forwarded["content"] = string(stamp([]byte(fmt.Sprint(forwarded["content"]))))
+		forwarded["content"] = string(stamp([]byte(page)))
 		return execFileWrite(ctx, env, forwarded, s.fileReadGuard(env))
 	})
 }

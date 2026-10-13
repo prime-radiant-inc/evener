@@ -713,6 +713,13 @@ export class TranscriptRepository {
     }
   }
 
+  /** Apply response metadata after the caller's generation and intent fences. */
+  acceptResponseFields(fields: Partial<Pick<ThreadModel, "goal" | "humanNote">>): void {
+    if (this.#disposed || this.#sealed || !this.#model) return;
+    this.#model = { ...this.#model, ...fields };
+    this.#publish();
+  }
+
   /** Accept a notification only when the captured authority still matches this repository. */
   accept(notification: AnyNotification, context: { lifetime: number }): boolean {
     if (this.#sealed || !this.#acceptsLifetime(context.lifetime)) return false;
@@ -1439,7 +1446,7 @@ export class TranscriptRepository {
         !this.acceptPage(page, {
           lifetime: this.#binding.lifetime,
           readId: boundary,
-          boundary,
+          boundary: `${boundary}:page:${seen.size}`,
           authority: this.#baselineIdentity,
           requestCursor: cursor,
           before,
