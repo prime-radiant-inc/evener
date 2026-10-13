@@ -16,8 +16,9 @@ import (
 // is what the cap must fail fast on instead of allocating until a
 // memory-limited container is SIGKilled (issue #4556). The value matches the
 // read caps the repo already uses elsewhere (apilog's maxAPILogLineBytes,
-// delegatestore's DefaultMaxLineBytes).
-const MaxWholeFileReadBytes = 128 << 20
+// delegatestore's DefaultMaxLineBytes). A variable so a test can exercise the
+// refusal with a fixture-sized cap.
+var MaxWholeFileReadBytes int64 = 128 << 20
 
 // errNotRegularFile is the refusal for an admitted path that is neither a
 // regular file nor (where allowed) a directory.

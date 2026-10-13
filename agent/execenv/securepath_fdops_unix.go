@@ -460,12 +460,19 @@ func (s *sandboxFS) readFileCtx(ctx context.Context, tool, abs string) ([]byte, 
 	if info.Size() > MaxWholeFileReadBytes {
 		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 	}
-	data, _, rerr := readBounded(ctx, f, f, MaxWholeFileReadBytes)
+	data, over, rerr := readBounded(ctx, f, f, MaxWholeFileReadBytes)
 	if rerr != nil {
 		if errors.Is(rerr, errGrepStreamStalled) {
 			return nil, fmt.Errorf("read %q: %w", abs, errGrepStreamStalled)
 		}
 		return nil, rerr
+	}
+	// A whole-file read REFUSES past the cap, unlike a windowed grep scan that
+	// truncates-and-discloses: an input whose stat size lies (a procfs special,
+	// a stream) must fail with the same typed refusal the off arm returns, not
+	// hand back the first cap+1 bytes as if they were the file (#4556).
+	if over {
+		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 	}
 	return data, nil
 }
