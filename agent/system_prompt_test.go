@@ -153,6 +153,15 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "Role is the override", d.Role == sentinelRole, true)
 		}},
+		{"resumed delegate", buildResumedPromptDelegate, func(t *testing.T, d promptData) {
+			// #4196: a bare `serve --resume <delegate-id>` carries no spawn parent,
+			// so only the persisted meta.IsSubagent flag reports the session kind.
+			// The prompt must take the subagent branches, and the tool gates that
+			// read isSubagentSession must agree with it.
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
+			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+			checkPromptInput(t, "HasEndReason", d.HasEndReason, false)
+		}},
 	}
 }
 
@@ -299,6 +308,24 @@ func buildDelegateWithRoleOverrideSession(t *testing.T) *Session {
 	}))
 }
 
+// buildResumedPromptDelegate restores a persisted delegate with an empty spawn
+// carrier (see restoreBareResumeSubagent), so only the persisted meta.IsSubagent
+// flag reports the session kind (#4196).
+func buildResumedPromptDelegate(t *testing.T) *Session {
+	t.Helper()
+	return restoreBareResumeSubagent(t, schema.SessionMeta{
+		ID:              "resumed-prompt-delegate",
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		IsSubagent:      true,
+		ParentSessionID: "01RESUMEDPARENT",
+		Config:          (SessionConfig{MaxSubagentDepth: 2}).toSnapshot(),
+	}, RestoreSessionConfig{
+		StateDir:      filepath.Join(t.TempDir(), "state"),
+		AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+	})
+}
+
 // TestSystemPromptRendersForEveryConfiguration renders each configuration
 // through the session's own render path. text/template reports a bad field or
 // method reference only in a branch it executes, so this is the check that
@@ -322,8 +349,8 @@ func TestSystemPromptRendersForEveryConfiguration(t *testing.T) {
 
 // TestPromptDataTypedInputs checks the typed inputs buildPromptData computes
 // for each configuration. The template cannot notice a wrong input, and these
-// values are also the premises that let the eight configurations run every
-// template body (see the branch map in the collapse plan).
+// values are also the premises that let the configurations run every template
+// body (see the branch map in the collapse plan).
 func TestPromptDataTypedInputs(t *testing.T) {
 	t.Parallel()
 	for _, cfg := range promptConfigs() {
