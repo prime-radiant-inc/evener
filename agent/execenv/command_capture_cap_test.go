@@ -25,19 +25,19 @@ func TestBufferedCommandCaptureIsBounded(t *testing.T) {
 	script := filepath.Join(dir, "flood")
 	writeExecFixture(t, script, "#!/bin/sh\nexec cat "+shellQuotePath(flood)+"\n")
 
-	cap := 4096
+	capBytes := 4096
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
-	env.outputCaptureCap = &cap
+	env.outputCaptureCap = &capBytes
 	res, err := env.ExecArgv(context.Background(), script, nil, 10_000, dir, nil)
 	if err != nil {
 		t.Fatalf("ExecArgv: %v", err)
 	}
 	if !res.StdoutTruncated {
-		t.Fatalf("stdout of %d bytes under a %d-byte cap reported untruncated", len(content), cap)
+		t.Fatalf("stdout of %d bytes under a %d-byte cap reported untruncated", len(content), capBytes)
 	}
-	if len(res.Stdout) > cap+len(fmt.Sprintf(outputOmissionMarker, 0))+16 {
-		t.Fatalf("capped stdout = %d bytes, want at most the %d-byte cap plus the marker", len(res.Stdout), cap)
+	if len(res.Stdout) > capBytes+len(fmt.Sprintf(outputOmissionMarker, 0))+16 {
+		t.Fatalf("capped stdout = %d bytes, want at most the %d-byte cap plus the marker", len(res.Stdout), capBytes)
 	}
 	if !strings.Contains(res.Stdout, "bytes omitted") {
 		t.Fatalf("capped stdout = %q, want an omission marker", res.Stdout)

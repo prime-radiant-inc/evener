@@ -3,6 +3,7 @@ package execenv
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,7 +62,7 @@ func TestGrepArmsDiscloseByteTruncationIdentically(t *testing.T) {
 	// Native arm: ripgrep unavailable, so the walk itself applies the budget.
 	nativeEnv := NewLocalExecutionEnvironment(root)
 	defer nativeEnv.Cleanup()
-	nativeEnv.lookPath = func(string) (string, error) { return "", fmt.Errorf("rg unavailable") }
+	nativeEnv.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
 	nativeOut, err := nativeEnv.Grep(context.Background(), "NEEDLE", root, "", false, 1_000_000, "content")
 	if err != nil {
 		t.Fatalf("native arm: %v", err)

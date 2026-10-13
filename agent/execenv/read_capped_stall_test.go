@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"os"
 	"sync"
@@ -85,5 +86,27 @@ func TestReadFileCappedBoundsAStalledRead(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("readFileCapped on a never-ready regular never returned: the off arm has no stall bound")
+	}
+}
+
+// TestReadFileCappedCtxObservesCancellation pins the ctx half of the off arm's
+// bounded read: an already-cancelled call answers with the cancellation rather
+// than parking on the stream it would have read.
+func TestReadFileCappedCtxObservesCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := readFileCappedCtx(ctx, stalledAferoFS{}, "kmsg-shaped")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("readFileCappedCtx(cancelled) = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("readFileCappedCtx(cancelled) did not observe the cancellation")
 	}
 }

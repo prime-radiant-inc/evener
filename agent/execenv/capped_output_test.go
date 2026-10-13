@@ -42,8 +42,8 @@ func TestCappedOutputBufferKeepsHeadAndTailAroundTheMarker(t *testing.T) {
 // stream. Chunked writes exercise the rolling tail window across boundaries.
 func TestCappedOutputBufferBoundsMemoryPastTheCap(t *testing.T) {
 	t.Parallel()
-	const cap = 64
-	b := newCappedOutputBuffer(cap)
+	const capBytes = 64
+	b := newCappedOutputBuffer(capBytes)
 	chunk := []byte("0123456789abcdef") // 16 bytes
 	for range 1000 {                    // 16000 bytes total
 		if _, err := b.Write(chunk); err != nil {
@@ -53,10 +53,10 @@ func TestCappedOutputBufferBoundsMemoryPastTheCap(t *testing.T) {
 	if !b.truncated() {
 		t.Fatal("a 16000-byte stream under a 64-byte cap reports untruncated")
 	}
-	if len(b.buf)+len(b.head)+len(b.tail) > cap {
-		t.Fatalf("capture retained %d bytes, want at most the %d-byte cap", len(b.buf)+len(b.head)+len(b.tail), cap)
+	if len(b.buf)+len(b.head)+len(b.tail) > capBytes {
+		t.Fatalf("capture retained %d bytes, want at most the %d-byte cap", len(b.buf)+len(b.head)+len(b.tail), capBytes)
 	}
-	if got := b.String(); len(got) > cap+len(fmt.Sprintf(outputOmissionMarker, 0))+16 {
+	if got := b.String(); len(got) > capBytes+len(fmt.Sprintf(outputOmissionMarker, 0))+16 {
 		t.Fatalf("capped capture rendered %d bytes, want the retained windows around the marker", len(got))
 	}
 }

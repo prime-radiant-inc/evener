@@ -435,6 +435,11 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 // read itself goes through readBounded, the single bounded-read constructor
 // that arms the byte cap, the stall deadline, and the ctx watcher together.
 func (s *sandboxFS) readFileCtx(ctx context.Context, tool, abs string) ([]byte, error) {
+	// A cancelled call answers before touching the filesystem, mirroring the
+	// off arm's pre-open fence.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return nil, err

@@ -1472,7 +1472,13 @@ func resolveOSVersion() string {
 // and limited to limitLines lines (default 2000); CRLF line endings are
 // normalized to LF.
 func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
-	out, _, err := e.ReadFileAndBytes(path, offsetLine, limitLines)
+	return e.ReadFileCtx(context.Background(), path, offsetLine, limitLines)
+}
+
+// ReadFileCtx is ReadFile with the caller's context threaded to the read, so a
+// cancelled call ends a read parked on a stream instead of waiting it out.
+func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, error) {
+	out, _, err := e.ReadFileAndBytesCtx(ctx, path, offsetLine, limitLines)
 	return out, err
 }
 
@@ -1481,6 +1487,12 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 // saw. The bytes are the complete file even when offset and limit select only
 // some of its lines; on error they are nil.
 func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *int, limitLines *int) (string, []byte, error) {
+	return e.ReadFileAndBytesCtx(context.Background(), path, offsetLine, limitLines)
+}
+
+// ReadFileAndBytesCtx is ReadFileAndBytes with the caller's context threaded to
+// the read (see ReadFileCtx).
+func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
 	abs := e.resolve(path)
 	var b []byte
 	var err error
@@ -1494,9 +1506,9 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 		// (symlink-refusing, root/denylist-checked).
 		// The image/PDF/binary/line-numbering contract below is applied identically
 		// to the returned bytes, so the output is unchanged from the off path.
-		b, err = sfs.readFile("read_file", abs)
+		b, err = sfs.readFileCtx(ctx, "read_file", abs)
 	} else {
-		b, err = readFileCapped(e.filesystem(), abs)
+		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
 	}
 	if err != nil {
 		// Best-effort "did you mean" suggestion for a genuine missing-file miss
@@ -1675,6 +1687,12 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 // EditFileWith is EditFile, except that finish, when not nil, turns the
 // edited bytes into the bytes written, inside the same read and write.
 func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
+	return e.EditFileWithCtx(context.Background(), path, oldString, newString, replaceAll, finish)
+}
+
+// EditFileWithCtx is EditFileWith with the caller's context threaded to its
+// read, so a cancelled edit ends a read parked on a stream.
+func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
 	sfs := e.sandbox()
 	var abs string
 	var b []byte
@@ -1693,13 +1711,13 @@ func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, 
 		if derr := sfs.checkWritable("edit_file", abs); derr != nil {
 			return "", derr
 		}
-		b, err = sfs.readFile("edit_file", abs)
+		b, err = sfs.readFileCtx(ctx, "edit_file", abs)
 	} else {
 		abs, err = e.resolveWrite(path)
 		if err != nil {
 			return "", err
 		}
-		b, err = readFileCapped(e.filesystem(), abs)
+		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
 	}
 	if err != nil {
 		return "", err

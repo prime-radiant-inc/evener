@@ -65,6 +65,9 @@ func readFileCapped(fsys afero.Fs, name string) ([]byte, error) {
 // filesystem cannot hold a device or FIFO and its FileInfo modes carry no
 // file-type bits, so the admission never refuses them.
 func readFileCappedCtx(ctx context.Context, fsys afero.Fs, name string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f, err := fsys.OpenFile(name, os.O_RDONLY|openNonblock, 0)
 	if err != nil {
 		return nil, err
