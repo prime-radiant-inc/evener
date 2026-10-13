@@ -89,6 +89,19 @@ When the text really is the contract (an enum token, a wire field, a CLI flag,
 a file format), assert it through its structured form, as above. When it is
 copy a person reads, review it in the diff and test the behavior around it.
 
+`copyonly_audit_test.go` enforces the rule against tests whose whole claim is
+that some copy exists. It runs `internal/devtool/copyonly` over every tracked
+Go and TypeScript test and fails on a test whose name says it shows, renders or
+says something and whose every check compares output with production copy. It
+skips expected errors, counts, attributes, machine-contract tokens, and text
+the test supplied itself. When it flags your test, assert the behavior instead.
+If the copy must stay the oracle (model-facing text whose conversion is
+deferred, or a false positive), add a row to
+`internal/devtool/copyonly/allowlist.tsv`: the file, the test name, and the
+reason it is kept, tab-separated. Rows are keyed by file and test name, not
+line. The audit also fails on a row whose test is no longer flagged, so remove
+the row when you convert, delete or rename the test.
+
 ## Flakes and Timeouts
 
 Two standing rules (Jesse, 2026-07-20/21), both absolute:
