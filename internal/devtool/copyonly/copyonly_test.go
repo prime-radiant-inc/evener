@@ -679,6 +679,31 @@ test("shows the label", () => {
   ` + body + `
 });
 `},
+		"typed each": {"renders hint %s", `test.each<[number]>([[1], [2]])("renders hint %s", (n) => {
+  ` + body + `
+});
+`},
+		"nested generic each": {"renders hint %s", `it.each<Array<[string, number]>>([
+  ["a", 1],
+])(
+  "renders hint %s",
+  (n) => {
+    ` + body + `
+  },
+);
+`},
+		"multi-line type arguments": {"renders hint %s", `test.each<
+  [string, number]
+>([
+  ["a", 1],
+])("renders hint %s", (n) => {
+  ` + body + `
+});
+`},
+		"function type in the type arguments": {"renders hint %s", `test.each<[(n: number) => string]>([[String]])("renders hint %s", (f) => {
+  ` + body + `
+});
+`},
 	}
 	for form, tc := range forms {
 		got := scanFixture(t, "a.test.tsx", tc.src+neighbours, "Try again", "Retry")
@@ -692,6 +717,32 @@ test("shows the label", () => {
 		if len(got) > 0 && got[0].Line != 1 {
 			t.Errorf("%s: first target starts on line %d, want 1", form, got[0].Line)
 		}
+	}
+}
+
+// TestTSCountAssertionsAreBehavior pins that a count of elements found by
+// their text, in any of its spellings, is a behavior check, as is any numeric
+// matcher.
+func TestTSCountAssertionsAreBehavior(t *testing.T) {
+	t.Parallel()
+	for _, check := range []string{
+		`expect(screen.getAllByText("Recommended")).toHaveLength(2);`,
+		`expect(screen.getAllByText("Recommended").length).toBe(2);`,
+		`expect(screen.getAllByText("Recommended").length).toEqual(2);`,
+		`expect(screen.queryAllByText("Recommended").length).toBeGreaterThanOrEqual(1);`,
+		`expect(rowsMatching(screen.getByText("Recommended"))).toBe(2);`,
+		`expect(rowsMatching(screen.getByText("Recommended"))).toStrictEqual(-1);`,
+	} {
+		src := "test(\"renders Recommended in both themes\", () => {\n  render(<Specimen />);\n  " + check + "\n});\n"
+		if got := scanFixture(t, "a.test.tsx", src, "Recommended"); len(got) != 0 {
+			t.Errorf("%s: targets = %+v, want none", check, got)
+		}
+	}
+	// The same test with a copy-only check is a target, so the cases above
+	// pass for the count and not for some other reason.
+	src := "test(\"renders Recommended in both themes\", () => {\n  render(<Specimen />);\n  expect(screen.getByText(\"Recommended\")).toBeTruthy();\n});\n"
+	if got := scanFixture(t, "a.test.tsx", src, "Recommended"); len(got) != 1 {
+		t.Errorf("copy-only control: targets = %+v, want one", got)
 	}
 }
 

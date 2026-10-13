@@ -31,16 +31,18 @@ var (
 	// copyIdent is an identifier named like copy (*_MESSAGE, *Label, ...).
 	copyIdent = regexp.MustCompile(`(MESSAGE|LABEL|COPY|TEXT|TITLE|HINT|ERROR|PROMPT|USAGE|PLACEHOLDER|Message|Label|Copy|Text|Title|Hint|Error|Prompt|Usage|Placeholder)S?$`)
 
-	// tsTestCall starts a test declaration; group 1 marks a test.each table.
-	tsTestCall = regexp.MustCompile(`^\s*(?:test|it)(?:\.(?:only|skip|concurrent))?(\.each)?\s*\(`)
+	// tsTestCall starts a test declaration, up to its type arguments or "(";
+	// group 1 marks a test.each table.
+	tsTestCall = regexp.MustCompile(`^\s*(?:test|it)(?:\.(?:only|skip|concurrent))?(\.each)?\b`)
 	tsStringAt = regexp.MustCompile(`^` + tsString)
 	tsCheck    = regexp.MustCompile(`\bexpect\(|\b(?:get|find)(?:All)?By\w+\(`)
 	// tsBehaviorOnLine is a check about something other than the wording,
 	// even when a copy hit sits on the same line: an expected error, a count
-	// or comparison, or text used only to find an element whose attribute or
-	// state is then checked.
+	// (`toHaveLength`, a `.length`, a numeric matcher) or comparison, or text
+	// used only to find an element whose attribute or state is then checked.
 	tsBehaviorOnLine = regexp.MustCompile(`\berr\s*==\s*nil|getAttribute\(|toHaveAttribute|\.dataset\b|className|\.checked\b|\.disabled\b` +
-		`|toHaveLength|toHaveBeenCalled|toBeGreaterThan|toBeLessThan|\blen\(|[=!<>]=?\s*-?\d+\b`)
+		`|toHaveLength|\.length\b|\.to(?:Be|Equal|StrictEqual)\(\s*-?\d` +
+		`|toHaveBeenCalled|toBeGreaterThan|toBeLessThan|\blen\(|[=!<>]=?\s*-?\d+\b`)
 	// tsNotInput is a line that carries no input to the code under test: a
 	// comment or a failure diagnostic.
 	tsNotInput = regexp.MustCompile(`^\s*(?://|/?\*)|\bt\.(?:Fatal|Error|Log|Skip)f?\(`)
@@ -205,7 +207,11 @@ func tsTestBlocks(text string) []tsBlock {
 			i++
 			continue
 		}
-		open := starts[i] + m[1] - 1 // the call's "("
+		open := skipTypeArgs(san, skipSpace(san, starts[i]+m[1])) // the call's "("
+		if open >= len(san) || san[open] != '(' {
+			i++
+			continue
+		}
 		if m[2] >= 0 {
 			// test.each(table)(name, fn): the test's own arguments follow
 			// the table.
@@ -245,6 +251,29 @@ func closeParen(code string, open int) int {
 			depth--
 			if depth == 0 {
 				return k + 1
+			}
+		}
+	}
+	return len(code)
+}
+
+// skipTypeArgs steps over type arguments at `at` (`<[number]>`,
+// `<Array<[string, number]>>`, possibly over several lines) and the space
+// after them. The ">" of an arrow (`=>`) in a function type doesn't close
+// anything.
+func skipTypeArgs(code string, at int) int {
+	if at >= len(code) || code[at] != '<' {
+		return at
+	}
+	depth := 0
+	for k := at; k < len(code); k++ {
+		switch {
+		case code[k] == '<':
+			depth++
+		case code[k] == '>' && code[k-1] != '=':
+			depth--
+			if depth == 0 {
+				return skipSpace(code, k+1)
 			}
 		}
 	}
