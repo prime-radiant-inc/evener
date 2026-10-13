@@ -332,8 +332,10 @@ func withPastTranscriptIndex(ctx context.Context, entry hubcore.PastEntry, fn fu
 // transiently answers its ordinary error; a path whose repair budget is
 // exhausted re-arms exactly one repair and answers history-failed itself,
 // naming the refusal's ordinal. Lock contention answers the rebuilding code
-// when the registry's own repair holds the lock, and an ordinary transient
-// error otherwise. Everything a rebuild cannot fix stays an ordinary error.
+// when the registry's own repair holds the lock, and the typed locked answer
+// otherwise — retryable, nothing registered — so a client with no
+// ordinary-error retry (the TUI's paced entry) converges it too. Everything
+// a rebuild cannot fix stays an ordinary error.
 func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 	switch {
 	case err == nil:
@@ -376,8 +378,10 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 			return appwire.TranscriptIndexRebuilding()
 		}
 		// A writer mid-extension or a foreign rebuild: ordinary contention,
-		// nothing registered. The client's existing retry converges.
-		return err
+		// nothing registered. The typed answer says so — retryable, no
+		// repair behind it — so a client with no ordinary-error retry (the
+		// TUI's paced entry) converges it too.
+		return appwire.TranscriptIndexLocked()
 	}
 	return err
 }

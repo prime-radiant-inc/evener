@@ -279,6 +279,54 @@ func readStaleSession(t *testing.T, cfg hubcore.WebConfig, entry hubcore.PastEnt
 	})
 }
 
+// The classifier's lock-contention split: a read that met the sidecar's lock
+// with no repair registered answers the typed contention answer —
+// retryable, nothing registered — so a client with no ordinary-error retry
+// (the TUI's paced entry) still converges; the registry's own in-flight
+// repair keeps the rebuilding answer, which names the repair the client is
+// waiting on.
+func TestAnswerPastTranscriptIndexErrorClassifiesLockContention(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, _ := installRepairSeam(t)
+	_, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+
+	// Nothing registered: ordinary contention answers the typed locked
+	// answer, not the bare error.
+	got := answerPastTranscriptIndexError(entry, transcriptindex.ErrLockBusy)
+	wire, ok := errors.AsType[appwire.WireError](got)
+	if !ok {
+		t.Fatalf("no-repair contention answered %T %v, want the typed locked answer", got, got)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptIndexLocked {
+		t.Fatalf("no-repair contention data = %#v, want the typed locked answer", wire.Data)
+	}
+	if data.RetryDisposition != appwire.RetryDispositionAutomatic {
+		t.Fatalf("locked answer disposition = %v, want automatic", data.RetryDisposition)
+	}
+
+	// The registry's own repair holds the lock: the rebuilding answer.
+	transcriptIndexRepairs.askFromRefresher(path, refusedBuildName(t, path))
+	if !transcriptIndexRepairs.inFlight(path) {
+		t.Fatal("setup: the refresher's ask armed no repair")
+	}
+	got = answerPastTranscriptIndexError(entry, transcriptindex.ErrLockBusy)
+	wire, ok = errors.AsType[appwire.WireError](got)
+	if !ok {
+		t.Fatalf("in-flight contention answered %T %v, want the typed rebuilding answer", got, got)
+	}
+	data, ok = wire.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptIndexRebuilding {
+		t.Fatalf("in-flight contention data = %#v, want the typed rebuilding answer", wire.Data)
+	}
+
+	// Let the parked repair retire so the registry is clean for the next test.
+	feed(repairTranscriptIndex)
+	<-completions
+}
+
 func TestAStaleSidecarAnswersRebuildingAndRepairsInBackground(t *testing.T) {
 	wireRepairsForTest(t)
 	logged := captureRepairLog(t)
