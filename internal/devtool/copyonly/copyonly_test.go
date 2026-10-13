@@ -599,6 +599,36 @@ func TestRenderShowsTheLabel(t *testing.T) {
 			prod: []string{"Try again"},
 		},
 		{
+			name: "go: a subtest's name is not a fixture input",
+			path: "a_test.go",
+			src: `package x
+func TestHelpShowsUsage(t *testing.T) {
+	t.Run("Usage: evener", func(t *testing.T) {
+		if !strings.Contains(help(), "Usage: evener") {
+			t.Fatal("no usage")
+		}
+	})
+}
+`,
+			prod: []string{"Usage: evener"},
+			want: []string{"TestHelpShowsUsage"},
+		},
+		{
+			name: "go: text a subtest passes to the code under test is supplied",
+			path: "a_test.go",
+			src: `package x
+func TestHelpShowsUsage(t *testing.T) {
+	t.Run("Usage: evener", func(t *testing.T) {
+		out := render("Usage: evener")
+		if !strings.Contains(out, "Usage: evener") {
+			t.Fatal("no usage")
+		}
+	})
+}
+`,
+			prod: []string{"Usage: evener"},
+		},
+		{
 			name: "ts: a multi-line declaration's name is not a fixture input",
 			path: "a.test.tsx",
 			src: `test(

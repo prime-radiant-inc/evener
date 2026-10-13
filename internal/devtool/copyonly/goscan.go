@@ -103,7 +103,8 @@ func selector(e ast.Expr) (string, string) {
 }
 
 // suppliedText is the test body minus what carries no input to the code under
-// test: the checks' conditions, comments, and failure diagnostics. `if`
+// test: the checks' conditions, comments, failure diagnostics, and subtest
+// names. `if`
 // initializers stay: `if got := render("x"); ...` supplies "x".
 func suppliedText(fset *token.FileSet, src string, file *ast.File, body *ast.BlockStmt, checks []ast.Expr) string {
 	type span struct{ lo, hi int }
@@ -119,9 +120,14 @@ func suppliedText(fset *token.FileSet, src string, file *ast.File, body *ast.Blo
 	}
 	ast.Inspect(body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
-			if recv, method := selector(call.Fun); recv == "t" && diagnostics[method] {
+			recv, method := selector(call.Fun)
+			if recv == "t" && diagnostics[method] {
 				cut = append(cut, span{off(call.Pos()), off(call.End())})
 				return false
+			}
+			// A subtest's name, like the test's own, supplies nothing.
+			if recv == "t" && method == "Run" && len(call.Args) > 0 {
+				cut = append(cut, span{off(call.Args[0].Pos()), off(call.Args[0].End())})
 			}
 		}
 		return true
