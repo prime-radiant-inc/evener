@@ -47,6 +47,78 @@ func TestMemoryEvalToolchainCapture(t *testing.T) {
 	}
 }
 
+// A trimmed test binary launched directly carries no compiled-in GOROOT, so the
+// fallback runs PATH Go to select the compiling version. `go test` hides that on
+// a developer machine: it exports GOROOT and prepends the compiling toolchain's
+// bin directory to PATH, neither of which a directly launched shard binary gets.
+// Drop that prepended entry so the fallback runs the same PATH Go the lane does.
+// On a machine whose remaining PATH Go is older than the pinned toolchain the
+// selection must still resolve the exact toolchain offline, from the module
+// cache; before the fix GOPROXY=off made the older PATH Go fail to fetch it.
+func TestMemoryEvalToolchainNoCompiledRoot(t *testing.T) {
+	// Serial: t.Setenv swaps PATH for the whole process.
+	original := os.Getenv("PATH")
+	toolchainBin := ""
+	if goroot := os.Getenv("GOROOT"); goroot != "" {
+		toolchainBin = filepath.Join(goroot, "bin")
+	}
+	t.Setenv("PATH", removePathEntry(original, toolchainBin))
+	if _, err := exec.LookPath("go"); err != nil {
+		// No PATH Go left to run; keep the full PATH rather than fail on this.
+		t.Setenv("PATH", original)
+	}
+	root, err := memoryEvalResolveToolchain("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(root) {
+		t.Fatalf("resolved Go root %q is not absolute", root)
+	}
+	cmd := exec.Command(filepath.Join(root, "bin", "go"), "version")
+	cmd.Env = []string{"GOENV=off", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off", "GOWORK=off"}
+	out, err := cmd.CombinedOutput()
+	if want := "go version " + runtime.Version() + " " + runtime.GOOS + "/" + runtime.GOARCH; err != nil || strings.TrimSpace(string(out)) != want {
+		t.Fatalf("resolved Go version = %q, error = %v, want %q", out, err, want)
+	}
+}
+
+// The fallback serves the module cache as a file proxy, so memoryEvalGoModCache
+// must name the cache the PATH Go resolves for this environment, or the proxy
+// points where the pinned toolchain is not. Cross-check it against Go's own
+// `go env GOMODCACHE` for the shapes a normal environment uses.
+func TestMemoryEvalGoModCacheMatchesGoEnv(t *testing.T) {
+	// Serial: t.Setenv mutates the process environment.
+	goBinary, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no go on PATH to report GOMODCACHE")
+	}
+	root := t.TempDir()
+	for _, shape := range []struct {
+		name                     string
+		gomodcache, gopath, home string
+	}{
+		{name: "explicit GOMODCACHE wins", gomodcache: filepath.Join(root, "cache"), gopath: filepath.Join(root, "gopath"), home: filepath.Join(root, "home")},
+		{name: "GOPATH's first entry", gopath: filepath.Join(root, "one") + string(filepath.ListSeparator) + filepath.Join(root, "two"), home: filepath.Join(root, "home")},
+		{name: "HOME fallback", home: filepath.Join(root, "home")},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			t.Setenv("GOMODCACHE", shape.gomodcache)
+			t.Setenv("GOPATH", shape.gopath)
+			t.Setenv("HOME", shape.home)
+			cmd := exec.Command(goBinary, "env", "GOMODCACHE")
+			cmd.Dir = root
+			cmd.Env = []string{"GOENV=off", "GOTOOLCHAIN=local", "GOWORK=off", "PATH=" + os.Getenv("PATH"), "HOME=" + shape.home, "GOMODCACHE=" + shape.gomodcache, "GOPATH=" + shape.gopath}
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("go env GOMODCACHE: %v", err)
+			}
+			if got, want := memoryEvalGoModCache(), strings.TrimSpace(string(out)); got != want {
+				t.Fatalf("memoryEvalGoModCache() = %q, go env GOMODCACHE = %q", got, want)
+			}
+		})
+	}
+}
+
 func TestMemoryEvalToolchain(t *testing.T) {
 	// Serial: fixture HOME/XDG isolation is process-global.
 	home := memoryEvalIsolateProcess(t)
