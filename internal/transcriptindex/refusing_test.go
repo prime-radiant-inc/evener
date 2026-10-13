@@ -215,7 +215,9 @@ func requireQuarantinedFirstItem(t testing.TB, window Window, want []appitempagi
 		t.Fatalf("window holds %d candidates, want the healthy reference's %d", len(window.Candidates), len(want))
 	}
 	first := window.Candidates[0]
-	if first.Item.ID != "item_unreadable_0" || first.Item.Description != "Unreadable transcript entry" {
+	// The quarantine's identity, not its copy: the stub item's machine ID is
+	// the API's own contract value (Copy Is Not a Test Oracle).
+	if first.Item.ID != "item_unreadable_0" {
 		t.Fatalf("first item = %+v, want the corrupted entry's quarantine", first.Item)
 	}
 	if !reflect.DeepEqual(window.Candidates[1:], want[1:]) {
@@ -660,6 +662,53 @@ func TestASpanReadOverAnOverUpdateSlotRefusesInsteadOfPanicking(t *testing.T) {
 	}
 	if !errors.Is(err, errCorrupt) && !errors.Is(err, ErrRebuildRequired) {
 		t.Fatalf("span over an overflowing slot = %v, want the corrupt refusal, not a panic", err)
+	}
+}
+
+// TestAStoredHeaderLengthThatCannotDecodeRefusesAndRepairs pins the
+// corruption class every bounds check passes but no rebuild trigger named:
+// meta.json's header_length can name bytes that do not decode as a header —
+// the read must refuse as corrupt and heal through a repair, never fail as
+// an ordinary error no repair answers.
+func TestAStoredHeaderLengthThatCannotDecodeRefusesAndRepairs(t *testing.T) {
+	path, dir := openCommittedSidecar(t, preludeFixture())
+	metaPath := filepath.Join(liveBuild(t, dir), metaFile)
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edited map[string]any
+	if err := json.Unmarshal(data, &edited); err != nil {
+		t.Fatal(err)
+	}
+	edited["header_length"] = 1
+	rewritten, err := json.Marshal(edited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metaPath, rewritten, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	x := openRefusing(t, path, dir)
+	_, err = x.Latest(5)
+	requireRefusal(t, err, lastRecordedEntry(t, dir))
+
+	// A foreign handle's rebuild recomputes the stored header offsets from
+	// the transcript, and the refusing handle converges onto the fresh build.
+	repair := openIndex(t, path, dir)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repair.Rebuild(info.Size()); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.CatchUp(); err != nil {
+		t.Fatalf("the refusing handle did not converge after the repair: %v", err)
+	}
+	if _, err := x.Latest(5); err != nil {
+		t.Fatal(err)
 	}
 }
 

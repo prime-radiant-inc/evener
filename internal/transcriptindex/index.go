@@ -833,7 +833,12 @@ func (x *Index) readHeader() error {
 	}
 	header, err := transcript.DecodeHeader(bytes.TrimSpace(line))
 	if err != nil {
-		return err
+		// A header the stored offsets cannot decode is sidecar corruption —
+		// a rebuild recomputes them from the transcript — while the ReadAt
+		// above stays the transcript I/O it is. Without the classification a
+		// self-consistent but corrupt header_length fails every read as an
+		// ordinary error no rebuild trigger ever answers.
+		return fmt.Errorf("%w: decode stored header: %w", errCorrupt, err)
 	}
 	x.prelude = apptranscript.PreludeTurn(header)
 	return nil
