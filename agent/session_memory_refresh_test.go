@@ -409,6 +409,17 @@ func newStalledMemoryRefresh(t *testing.T, root string) *stalledMemoryRefresh {
 	return r
 }
 
+// stalledRefreshTripwire bounds each blocking step of the stalled-read fixture
+// (the parked read reaching the boundary's I/O seam, the boundary returning,
+// the read completing after release), so a break fails here naming the wait
+// instead of hanging to the package timeout. The fixture is deterministic — a
+// frozen fake clock and hand-synchronized channels — so a step still blocked
+// here is a genuine hang in the boundary wait, never contention: a hang guard,
+// never a speed assertion. 30s matches this package's standing whole-operation
+// tripwire for in-process work (stallHandshakeTimeout, awaitSignal,
+// waitForCondition, retirementCreateBarrierTripwire).
+const stalledRefreshTripwire = 30 * time.Second
+
 // boundary runs one turn-start refresh to completion.
 func (r *stalledMemoryRefresh) boundary() {
 	r.s.maybeAppendMemoryContext(context.Background(), true)
@@ -421,20 +432,26 @@ func (r *stalledMemoryRefresh) stalledBoundary(t *testing.T) *memoryIndexFlight 
 	r.stall.Store(true)
 	done := make(chan struct{})
 	go func() { r.boundary(); close(done) }()
-	<-r.started
+	// TRIPWIRE: the fixture settles on its own channels; only a genuine hang
+	// reaches these bounds (see stalledRefreshTripwire).
+	awaitWithin(t, stalledRefreshTripwire, "the stalled personal index read reaching the boundary's I/O seam", func() { <-r.started })
+	// The 250ms is a literal, not memoryBoundaryBudget: the fixture advances
+	// exactly the production budget, so raising that budget leaves the boundary
+	// waiting on the parked read and the bound below is where the break shows.
 	r.clk.Advance(250 * time.Millisecond)
-	<-done
+	awaitWithin(t, stalledRefreshTripwire, "the turn-start memory boundary returning over the stalled personal index read (memoryBoundaryBudget no longer expires)", func() { <-done })
 	r.s.memoryMu.Lock()
 	defer r.s.memoryMu.Unlock()
 	return r.s.memoryIndexFlights["personal"]
 }
 
 // finish lets the stalled read complete and waits for it.
-func (r *stalledMemoryRefresh) finish(flight *memoryIndexFlight) {
+func (r *stalledMemoryRefresh) finish(t *testing.T, flight *memoryIndexFlight) {
+	t.Helper()
 	r.stall.Store(false)
 	close(r.release)
 	if flight != nil {
-		<-flight.done
+		awaitWithin(t, stalledRefreshTripwire, "the stalled personal index read completing after release", func() { <-flight.done })
 	}
 }
 
@@ -457,7 +474,7 @@ func TestMemoryRefreshStalledReadOfKnownScopeAppendsNothing(t *testing.T) {
 	if _, known := r.s.memoryBaselineFor("personal"); !known {
 		t.Fatal("stalled boundary dropped the baseline")
 	}
-	r.finish(flight)
+	r.finish(t, flight)
 	r.boundary()
 	if got := memoryContextCount(r.s); got != 1 {
 		t.Fatalf("boundary after the stall appended %d contexts, want none", got-1)
@@ -480,7 +497,7 @@ func TestMemoryRefreshOwnPageWriteDuringStalledReadIsNotEchoed(t *testing.T) {
 	// finish inside its budget; a later boundary reads afresh.
 	done := make(chan struct{})
 	go func() { r.boundary(); close(done) }()
-	r.finish(flight)
+	r.finish(t, flight)
 	<-done
 	r.boundary()
 	if got := memoryContextCount(r.s); got != 1 {
@@ -747,7 +764,7 @@ func TestMemoryRefreshStalledReadDefersIndexDelta(t *testing.T) {
 	if got := memoryContextCount(r.s); got != 1 {
 		t.Fatalf("stalled boundary appended %d contexts, want none", got-1)
 	}
-	r.finish(flight)
+	r.finish(t, flight)
 	r.boundary()
 	if got := memoryContextCount(r.s); got != 2 {
 		t.Fatalf("completed boundary appended %d contexts, want one change section", got-1)
@@ -898,7 +915,7 @@ func TestMemoryRefreshStalledReadDefersPageNotice(t *testing.T) {
 	if got := memoryContextCount(r.s); got != 1 {
 		t.Fatalf("stalled boundary appended %d contexts, want none", got-1)
 	}
-	r.finish(flight)
+	r.finish(t, flight)
 	r.boundary()
 	if got := memoryContextCount(r.s); got != 2 {
 		t.Fatalf("completed boundary appended %d contexts, want one page notice", got-1)
@@ -935,7 +952,7 @@ func TestMemoryRefreshPublishesALateReadAtTheNextBoundary(t *testing.T) {
 	}
 	writeMemoryPage(t, root, "opaque-late-page.md", describedMemoryPage("opaque-late-body-2\n"))
 	flight := r.stalledBoundary(t)
-	r.finish(flight)
+	r.finish(t, flight)
 	readsBefore := r.reads.Load()
 	r.boundary()
 	if got := r.reads.Load() - readsBefore; got != 0 {
@@ -958,7 +975,7 @@ func TestMemoryRefreshDiscardsAStaleReadEvenWhenComplete(t *testing.T) {
 	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "content": "---\ndescription: opaque-stale-own-2\n---\n"}); res.IsError {
 		t.Fatal(res.Output)
 	}
-	r.finish(flight)
+	r.finish(t, flight)
 	readsBefore := r.reads.Load()
 	r.boundary()
 	if got := r.reads.Load() - readsBefore; got != 1 {
@@ -1415,7 +1432,7 @@ func TestMemoryRefreshOwnPageWriteAfterUnavailableDeliversFullIndex(t *testing.T
 	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "content": "---\ndescription: opaque-mine-page\n---\n"}); res.IsError {
 		t.Fatal(res.Output)
 	}
-	r.finish(flight)
+	r.finish(t, flight)
 	r.boundary()
 	r.boundary()
 	text := lastMemoryContextText(r.s)
