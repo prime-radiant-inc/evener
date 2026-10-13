@@ -121,6 +121,62 @@ func TestGrepStreamMatchesWholeFileFeed(t *testing.T) {
 	}
 }
 
+// A named over-cap file whose matching line is itself longer than the read
+// cap still cannot be searched — no read may hold one line that long whole —
+// but the omission is disclosed, never silent (#4574 round 8, medium 4): the
+// result carries the incompleteness note even when nothing else matched, in
+// every output mode, while the lines around the skipped one still search.
+func TestGrepDisclosesOverlongLinesInANamedOverCapFile(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	line := "needle" + strings.Repeat("x", 17<<20)
+	overlong := filepath.Join(root, "oneline.log")
+	if err := os.WriteFile(overlong, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mixed := filepath.Join(root, "mixed.log")
+	if err := os.WriteFile(mixed, []byte("needle short\n"+line+"\nneedle tail\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(root)
+	defer env.Cleanup()
+	env.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
+
+	got, err := env.Grep(t.Context(), "needle", overlong, "", false, 100, "content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, notes := searchresult.Split(got)
+	if entries != "" {
+		t.Fatalf("overlong single line (content) = %q, want no entries: a line over the cap cannot be searched", got)
+	}
+	if notes == "" {
+		t.Error("overlong single line (content) omitted the incompleteness note: an empty match must say why")
+	}
+	got, err = env.Grep(t.Context(), "needle", overlong, "", false, 100, "count")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, notes = searchresult.Split(got)
+	if entries != "" {
+		t.Fatalf("overlong single line (count) = %q, want no row: no match was counted", got)
+	}
+	if notes == "" {
+		t.Error("overlong single line (count) omitted the incompleteness note: the undercount must say why")
+	}
+	got, err = env.Grep(t.Context(), "needle", mixed, "", false, 100, "content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, notes = searchresult.Split(got)
+	if want := "1:needle short\n3:needle tail"; entries != want {
+		t.Fatalf("lines around an overlong one (content) = %q, want %q: the skipped line must not stop the rest", got, want)
+	}
+	if notes == "" {
+		t.Error("lines around an overlong one (content) omitted the incompleteness note")
+	}
+}
+
 // A walk over a directory that holds an over-cap file skips it — the cap is
 // what keeps one file's bytes bounded — but not silently: the result says
 // how many files were left out and how to search one (#4574 round 4,
@@ -288,7 +344,8 @@ func TestGrepStreamSkipsABinaryTailAndOverlongLines(t *testing.T) {
 		t.Fatal(err)
 	}
 	// "needle mid" completes inside the last window before the NUL one, so
-	// it stands; nothing at or past the NUL window does.
+	// it stands; nothing at or past the NUL window does. A binary stop is
+	// the feed's whole-file binary skip, not a length omission: no note.
 	if want := "1:needle head\n3:needle mid"; got != want {
 		t.Fatalf("over-cap file with a binary tail = %q, want %q", got, want)
 	}
@@ -296,7 +353,11 @@ func TestGrepStreamSkipsABinaryTailAndOverlongLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "1:needle\n3:needle end"; got != want {
-		t.Fatalf("over-cap file with an overlong line = %q, want %q", got, want)
+	entries, notes := searchresult.Split(got)
+	if want := "1:needle\n3:needle end"; entries != want {
+		t.Fatalf("over-cap file with an overlong line = %q, want entries %q", got, want)
+	}
+	if notes == "" {
+		t.Error("over-cap file with an overlong line omitted the incompleteness note")
 	}
 }

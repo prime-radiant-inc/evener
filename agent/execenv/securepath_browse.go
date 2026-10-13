@@ -59,6 +59,11 @@ type grepAccum struct {
 	// truncated records that the walk found a result past maxResults, so
 	// finish adds grepTruncationNote as a note.
 	truncated bool
+	// overlongSkipped counts lines the named-file streaming path left out
+	// because a line longer than grepMaxFileBytes cannot be searched without
+	// holding it whole; the walk never streams, so it stays zero there.
+	// finishNotes turns it into the incompleteness note.
+	overlongSkipped int
 }
 
 // compileGrepPattern compiles a grep pattern as the native search reads it.
@@ -364,6 +369,9 @@ func (a *grepAccum) finishNotes() (out string, notes []string) {
 	if a.truncated {
 		notes = append(notes, grepTruncationNote(a.maxResults))
 	}
+	if a.overlongSkipped > 0 {
+		notes = append(notes, grepOverlongNote(a.overlongSkipped))
+	}
 	return out, notes
 }
 
@@ -376,7 +384,8 @@ func (a *grepAccum) finishNotes() (out string, notes []string) {
 // whole-file feed treats as binary, with matches from earlier windows
 // standing; a single line longer than grepMaxFileBytes is skipped — its
 // number spent, the scan resuming after it, its length alone deciding,
-// never where a window happens to fall — rather than held whole. A
+// never where a window happens to fall, and the omission disclosed in the
+// finish note — rather than held whole. A
 // cancelled context — checked between windows, because an ordinary regular
 // file takes no read deadline and a growing one can outlast any scan — or
 // a stalled read ends the scan. stop is the feed's: the results cap cut the
@@ -431,6 +440,7 @@ func (a *grepAccum) feedLargeFile(ctx context.Context, r io.ReadSeeker) (stop bo
 					// same boundary the unfinished tail below applies — so
 					// window alignment can never decide admission.
 					if len(line) > grepMaxFileBytes {
+						s.a.overlongSkipped++
 						i++
 						continue
 					}
@@ -442,6 +452,7 @@ func (a *grepAccum) feedLargeFile(ctx context.Context, r io.ReadSeeker) (stop bo
 				if len(pending) > grepMaxFileBytes {
 					// A line as long as the whole per-file read budget
 					// cannot be searched without holding it whole.
+					s.a.overlongSkipped++
 					skipping = true
 					pending = nil
 				}
@@ -513,6 +524,12 @@ func grepOversizeNote(n int) string {
 	return fmt.Sprintf("%d file(s) larger than the %d-byte read cap were left out; name one directly to search it", n, grepMaxFileBytes)
 }
 
+// grepOverlongNote is the note on a named-file search that left lines longer
+// than the read cap out: the model must not read the matches it got — or an
+// empty — as all the file held.
+func grepOverlongNote(n int) string {
+	return fmt.Sprintf("%d line(s) longer than the %d-byte read cap were left out; no line that long can be searched without holding it whole", n, grepMaxFileBytes)
+}
 
 // pseudoFsRoots are the pseudo-filesystem mount points a file-tree walk must
 // not descend into from outside: their contents are runtime state — process

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // neverEndingSeeker is an injectable large-file source for the streaming
@@ -170,8 +171,12 @@ func TestGrepStreamAdmitsOverCapLinesByLengthNotAlignment(t *testing.T) {
 		if err != nil {
 			t.Fatalf("window %d: past-cap line: %v", window, err)
 		}
-		if got != "" {
+		entries, notes := searchresult.Split(got)
+		if entries != "" {
 			t.Errorf("window %d: past-cap matching line = %q, want it skipped at every window size", window, got)
+		}
+		if notes == "" {
+			t.Errorf("window %d: past-cap matching line omitted the incompleteness note", window)
 		}
 	}
 	for _, window := range []int{8, 1000} {
