@@ -204,24 +204,43 @@ test("a reopened lease's read does not queue behind a departed holder's pending 
   fresh.release();
 });
 
-test("reacquiring during pending subscribe preserves active membership", async () => {
+// Reacquiring after the last holder departed while a subscribe is pending
+// supersedes the dead acquisition (round-21 medium 1): the fresh lease's
+// ensure issues its own request instead of joining — and inheriting the
+// failure of — a request whose owner is gone.
+test("reacquiring after a departed holder's pending subscribe supersedes it", async () => {
   const client = activityClient(),
-    pending = deferred<ThreadReadResponse>(),
-    entered = deferred<void>();
+    old = deferred<ThreadReadResponse>(),
+    firstEntered = deferred<void>(),
+    freshEntered = deferred<void>();
+  let reads = 0;
   client.on("thread/read", () => {
-    entered.resolve();
-    return pending.promise;
+    reads += 1;
+    if (reads === 1) {
+      firstEntered.resolve();
+      return old.promise;
+    }
+    freshEntered.resolve();
+    return { thread: { ...threadFixture().thread, id: "wire-fresh" } };
   });
   const first = acquireThreadSubscription(client, activityRef),
-    one = first.ensure();
-  await entered.promise;
+    one = first.ensure().then(
+      () => "settled",
+      () => "rejected",
+    );
+  await firstEntered.promise;
   first.release();
+
+  // The reacquired lease's ensure must neither wait on the departed
+  // request nor inherit its failure: the departed request failing lands on
+  // the departed holder's caller alone.
   const second = acquireThreadSubscription(client, activityRef),
     two = second.ensure();
-  pending.resolve(threadFixture());
-  await Promise.all([one, two]);
-  expect(callsTo(client, "thread/read")).toBe(1);
-  expect(callsTo(client, "thread/unsubscribe")).toBe(0);
+  old.reject(new Error("the departed acquisition failed"));
+  await two;
+  expect(reads).toBe(2);
+  await freshEntered.promise;
+  expect(await one).toBe("rejected");
   second.release();
 });
 test("last release cleans a subscription that completes late", async () => {

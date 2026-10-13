@@ -128,7 +128,11 @@ class ThreadSubscriptions {
   }
 
   private async ensure(member: Membership): Promise<void> {
-    if (member.transition) {
+    // The same retired-acquisition rule as read(): a held transition joins;
+    // one whose last holder departed is superseded by a fresh acquisition —
+    // a reopened activity must neither wait on the departed request nor
+    // inherit its failure.
+    if (member.transition && member.transitionEpoch !== member.retiredEpoch) {
       await member.transition;
       if (member.holders > 0) await this.ensure(member);
       return;
@@ -164,10 +168,14 @@ class ThreadSubscriptions {
     });
     // The acquisition's own settle: superseded requests keep teardown
     // ownership until they land, so the membership cannot be deleted out
-    // from under a flight that may still subscribe on the wire.
+    // from under a flight that may still subscribe on the wire. The
+    // empty-membership cleanup runs after every settle — a stale generation
+    // only means the connection changed: releaseEmpty self-gates on live
+    // holders and pending transitions, and its wire action is fenced by
+    // the ready state, so a stale settle can only complete the table
+    // cleanup the disconnect could not (round-21 low).
     const settled = () => {
       member.outstandingAcquisitions -= 1;
-      if (generation !== this.generation) return;
       if (member.transition === transition) return;
       this.releaseEmpty(member);
     };
