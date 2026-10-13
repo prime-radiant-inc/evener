@@ -1687,7 +1687,12 @@ test("text edited while the local outbox commit is pending survives that commit"
   expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 });
 
-test("a local outbox failure leaves the composer untouched and sends no RPC", async () => {
+// #4194: with no IndexedDB at all the mutation runtime is never created, and a
+// send must still go out - the product rule every other local-persistence
+// failure follows. The failure this fake produces is the transport's (no
+// turn/start handler is scripted), and the composer must still keep the unsent
+// draft rather than clear it.
+test("with no IndexedDB the composer still attempts the send and keeps its draft when it fails", async () => {
   // @ts-expect-error this test exercises the explicit unavailable-storage boundary
   globalThis.indexedDB = undefined;
   const user = userEvent.setup();
@@ -1700,7 +1705,13 @@ test("a local outbox failure leaves the composer untouched and sends no RPC", as
 
   await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(editor.textContent).toBe("hello");
-  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  // The send is attempted on the direct path even though no outbox row can be
+  // written. The transport fails, so the composer keeps the draft; every
+  // attempt reuses one clientMutationId, so a retry can only ever deliver once.
+  const attempts = fake.calls.filter((call) => call.method === "turn/start");
+  expect(attempts.length).toBeGreaterThan(0);
+  const ids = new Set(attempts.map((call) => (call.params as { clientMutationId?: string }).clientMutationId));
+  expect(ids.size).toBe(1);
 });
 
 test("a lost response never restores submitted content over a newer composer draft", async () => {
