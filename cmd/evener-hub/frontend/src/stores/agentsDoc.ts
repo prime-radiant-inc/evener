@@ -23,7 +23,7 @@
 // "no client connected" is a programmer error, not a state to degrade into.
 
 import type { AgentsDocResponse, AnyNotification, AppwireClientLike } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import {
@@ -46,6 +46,9 @@ export interface AgentsDocStoreState {
   /** The last document the hub confirmed - null until the first fetch lands. */
   doc: AgentsDocResponse | null;
   loading: boolean;
+  /** The failed read's friendlyErrorMessage, translated while the error still
+   * has its type so a hub's own WireError explanation survives; render it
+   * as-is. */
   error: string | null;
   fetch(): Promise<void>;
   /** Replaces the file whole. Resolves with the hub's view of the saved file,
@@ -109,7 +112,7 @@ function createAgentsDocInstance(port: AgentsDocPort): AgentsDocInstance {
         set({ doc, loading: false, error: null });
       } catch (err) {
         if (version !== requestVersion || connectionStore.getState().client !== client) return;
-        set({ loading: false, error: errorText(err) });
+        set({ loading: false, error: friendlyErrorMessage(err) });
       }
     },
 

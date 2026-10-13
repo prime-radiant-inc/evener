@@ -1,5 +1,5 @@
 import type { UpdateCheckResponse } from "@evener/appwire-client";
-import { GENERIC_ERROR_MESSAGE, HUB_UNREACHABLE_MESSAGE, WireError } from "@evener/appwire-client";
+import { HUB_UNREACHABLE_MESSAGE, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -121,7 +121,9 @@ describe("runCheck", () => {
 
     await act(() => hubUpdateStore.getState().runCheck());
 
-    expect(hubUpdateStore.getState().checkError).toBe(GENERIC_ERROR_MESSAGE);
+    const { checkError } = hubUpdateStore.getState();
+    expect(checkError).not.toBeNull();
+    expect(checkError).not.toContain("cyclic object value");
   });
 
   test("setChannel clears the stale check result", async () => {

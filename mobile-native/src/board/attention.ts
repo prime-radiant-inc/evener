@@ -137,10 +137,14 @@ export function rowClassifier(
  * (working, or reporting active) reads the hub alone: a turn end the hub
  * decides (with this phone's pending marks applied), or motion after its seen
  * mark, never this device's own markers. A resting one also counts a turn the
- * device's fallback hasn't seen. */
+ * device's fallback hasn't seen. An archived session gets no dot at all
+ * (#4164): a pin can keep one on the Board while it still runs, and the rail
+ * files it as archived, so nothing new rides on it (#4199). */
 function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boolean, moved: boolean): boolean {
 	// An offline row is shutDown (boardState).
 	if (!row.live || row.dormant || state === "shutDown") return false;
+	// A row the rail files as archived is new to no one (#4164, #4199).
+	if (row.archived) return false;
 	if (state === "working" || row.state === "active") return (hubTime(row.turn_ended_at) !== null && !seen) || moved;
 	return !seen || moved;
 }

@@ -413,19 +413,14 @@ function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadat
   return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
 }
 
-// A closed disclosure that owns the anchor: an intent-group entry's anchor
-// sits INSIDE its <details>, a folded tool run's anchor wraps its own
-// <details> (TurnBlock's runAnchorFor), so the two are looked up from
-// opposite directions. Either way the summary is the thing to focus.
+// A closed disclosure that owns the anchor: a folded tool run and an intent
+// group each wrap their own <details> in one anchor that lists its members
+// (TurnBlock's foldedAnchorFor), and their entries mount only while open, so
+// while closed the summary is the thing to measure and focus.
 function closedGroupSummary(anchor: HTMLElement): HTMLElement | undefined {
-  const id = anchor.dataset.viewAnchorId ?? "";
-  let summary: Element | null | undefined;
-  if (id.startsWith("intent:")) {
-    const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
-    summary = details?.querySelector(":scope > summary");
-  } else if (id.startsWith("run:")) {
-    summary = anchor.querySelector(':scope > details[data-testid="tool-run"]:not([open]) > summary');
-  }
+  const summary = anchor.querySelector(
+    ':scope > details:is([data-testid="tool-run"], [data-testid="intent-group"]):not([open]) > summary',
+  );
   return summary instanceof HTMLElement ? summary : undefined;
 }
 

@@ -16,7 +16,7 @@ import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../..
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import { retryBlockedBySnapshot, threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
+import { Button, IconButton, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   discardRecoveryPendingTurn,
@@ -108,30 +108,6 @@ export interface QueueStripProps {
   // before the durable enqueue starts and false once it commits or fails,
   // replacing what used to be a local, Composer-invisible `draining` state.
   onDrainBusyChange(busy: boolean): void;
-}
-
-// ActionButton wraps an IconButton in a Tooltip only when there's a reason
-// worth explaining (a disabled control) - an always-enabled button needs no
-// tooltip beyond its own accessible name (IconButton's `label`). A refusal
-// that carries a reason is aria-disabled rather than natively disabled: a
-// native disabled button cannot take focus, which would leave the reason
-// reachable by mouse only. With no onClick the press does nothing.
-function ActionButton({
-  disabledReason,
-  disabled,
-  onClick,
-  ...iconButtonProps
-}: { disabledReason?: string } & IconButtonProps) {
-  if (!disabledReason) return <IconButton {...iconButtonProps} disabled={disabled} onClick={onClick} />;
-  return (
-    <Tooltip label={disabledReason}>
-      {disabled ? (
-        <IconButton {...iconButtonProps} aria-disabled="true" />
-      ) : (
-        <IconButton {...iconButtonProps} onClick={onClick} />
-      )}
-    </Tooltip>
-  );
 }
 
 const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this session";
@@ -560,7 +536,7 @@ export function QueueStrip({
             <li key={entryId ?? index} className={CLASS.row} data-kind="queued">
               <span className={CLASS.rowText}>{displayText}</span>
               <div className={CLASS.rowActions}>
-                <ActionButton
+                <IconButton
                   label="Steer now"
                   icon={<span aria-hidden="true">⇧</span>}
                   size="sm"
@@ -569,7 +545,7 @@ export function QueueStrip({
                     !actionsAvailable
                       ? ACTIONS_UNAVAILABLE_REASON
                       : controls.drain
-                        ? undefined
+                        ? ""
                         : (controls.reason.drain ?? STEER_UNAVAILABLE)
                   }
                   onClick={() => {
@@ -586,25 +562,25 @@ export function QueueStrip({
                     }
                   }}
                 />
-                <ActionButton
+                <IconButton
                   label="Edit message"
                   icon={<span aria-hidden="true">✎</span>}
                   size="sm"
                   disabled={!editAvailable || busy}
-                  disabledReason={editDisabledReason({ actionsAvailable, hasTexts, imageOnly })}
+                  disabledReason={editDisabledReason({ actionsAvailable, hasTexts, imageOnly }) ?? ""}
                   onClick={() => {
                     if (entryId !== undefined && fullText !== undefined) {
                       void handleEdit(index, entryId, fullText, entrySkillNames, entryCommandNames, entryMentions);
                     }
                   }}
                 />
-                <ActionButton
+                <IconButton
                   label="Remove from queue"
                   icon={<span aria-hidden="true">✕</span>}
                   variant="danger"
                   size="sm"
                   disabled={!actionsAvailable || busy}
-                  disabledReason={actionsAvailable ? undefined : ACTIONS_UNAVAILABLE_REASON}
+                  disabledReason={actionsAvailable ? "" : ACTIONS_UNAVAILABLE_REASON}
                   onClick={() => {
                     if (entryId !== undefined) void handleCancel(index, entryId);
                   }}
@@ -711,7 +687,7 @@ export function QueueStrip({
                   // still needs a way off the strip. Without one its recovery
                   // record is permanent and keeps being counted as queued, so
                   // every failed Stop leaves a scar the user cannot clear.
-                  <ActionButton
+                  <IconButton
                     label="Dismiss"
                     icon={<span aria-hidden="true">✕</span>}
                     size="sm"
@@ -719,13 +695,13 @@ export function QueueStrip({
                     onClick={() => void handleDismiss(record)}
                   />
                 ) : (
-                  <ActionButton
+                  <IconButton
                     label="Edit message"
                     icon={<span aria-hidden="true">✎</span>}
                     size="sm"
                     disabled={rowBusy || onEditRecovery === undefined}
                     disabledReason={
-                      onEditRecovery === undefined ? "Open the session Composer to edit this message" : undefined
+                      onEditRecovery === undefined ? "Open the session Composer to edit this message" : ""
                     }
                     onClick={() => onEditRecovery?.(record)}
                   />

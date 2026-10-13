@@ -148,12 +148,27 @@ function errorToasts(): string[] {
     .map((toast) => toast.text);
 }
 
-// The failed first-fetch EmptyState's title and hint, joined the way a toast
-// joins the same failure's headline and detail.
+// Every failed first-fetch notice on the page. A failure is an InlineNotice,
+// never an EmptyState, so emptyStateReasons does not see it. The first fetch
+// runs as the panel opens, so its failure is a polite status (role=status)
+// rather than an alert that interrupts a screen reader.
+function failedNotices(): Element[] {
+  return [...document.querySelectorAll('[role="status"][data-reason="failed"]')];
+}
+
+// The failed first-fetch notice's heading and detail, joined the way a toast
+// joins the same failure's headline and detail. The heading is the notice's
+// title paragraph; the detail is the rest of the notice body beside it.
 function failedStateSentence(): string {
-  const failed = document.querySelector('[data-testid="empty-state"][data-reason="failed"]');
-  if (!failed) throw new Error("Missing failed empty state");
-  return [...failed.querySelectorAll("p")].map((p) => p.textContent).join(": ");
+  const [failed] = failedNotices();
+  if (!failed) throw new Error("Missing failed notice");
+  const heading = failed.querySelector("p");
+  if (!heading?.parentElement) throw new Error("Failed notice has no heading");
+  const detail = [...heading.parentElement.childNodes]
+    .filter((node) => node !== heading)
+    .map((node) => node.textContent)
+    .join("");
+  return [heading.textContent, detail].filter((part) => part !== "").join(": ");
 }
 
 // --- trigger badge: unchanged, still driven by the live-pushed aggregate ---
@@ -787,7 +802,8 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
   );
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
+  await waitFor(() => expect(failedNotices()).toHaveLength(1));
+  expect(emptyStateReasons(document.body)).toEqual([]);
   // The toast and the inline state report the same failure.
   expect(errorToasts()).toEqual([failedStateSentence()]);
 });
@@ -827,7 +843,7 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
   await act(async () => calls[0]?.reject(new Error("tasks boom")));
   await waitFor(() => expect(calls).toHaveLength(2));
   expect(errorToasts()).toEqual([]);
-  expect(emptyStateReasons(document.body)).not.toContain("failed");
+  expect(failedNotices()).toEqual([]);
 
   await act(async () => calls[1]?.resolve({ data: TASKS_DATA }));
   await screen.findByText("Wire up session actions");
@@ -854,7 +870,8 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
   );
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
+  await waitFor(() => expect(failedNotices()).toHaveLength(1));
+  expect(emptyStateReasons(document.body)).toEqual([]);
   // The toast is exactly the inline heading and detail.
   expect(errorToasts()).toEqual([failedStateSentence()]);
   const resumeHeading = failedStateSentence().split(": ")[0];
@@ -867,7 +884,7 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
     throw new Error("evener launch-check timed out");
   });
   render(<TasksPanelBody sessionRef="ref_b" model={testModel({ ref: "ref_b" })} />);
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
+  await waitFor(() => expect(failedNotices()).toHaveLength(1));
   expect(failedStateSentence().split(": ")[0]).not.toBe(resumeHeading);
 });
 
@@ -885,10 +902,14 @@ test("a rejection with no text of its own shows the headline alone, with no empt
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
-  const failed = screen.getByTestId("empty-state");
-  expect(failed.querySelectorAll("p")).toHaveLength(1);
-  expect(failed.querySelector('[data-slot="hint"]')).toBeNull();
+  await waitFor(() => expect(failedNotices()).toHaveLength(1));
+  const [failed] = failedNotices();
+  const heading = failed?.querySelector("p");
+  expect(failed?.querySelectorAll("p")).toHaveLength(1);
+  expect(heading?.textContent).not.toBe("");
+  // Nothing beside the heading: no empty detail line, no blank element.
+  expect(heading?.parentElement?.textContent).toBe(heading?.textContent);
+  expect([...(failed?.querySelectorAll("*") ?? [])].filter((element) => element.textContent === "")).toEqual([]);
 });
 
 // --- a failed LIVE re-fetch keeps the list it already has -------------------
@@ -989,7 +1010,9 @@ test("the stale notice and the toast report a re-fetch failure in the same words
 
   const stale = await screen.findByTestId("tasks-stale");
   await waitFor(() => expect(errorToasts()).toHaveLength(1));
-  expect(errorToasts()).toEqual([within(stale).getByRole("alert").textContent]);
+  // The notice's heading is the failure sentence; its body and Try again
+  // follow beneath it.
+  expect(errorToasts()).toEqual([within(stale).getByRole("alert").querySelector("p")?.textContent]);
 });
 
 // evener/task/updated is event-driven, never scheduled (internal/appprojector/
@@ -1124,18 +1147,15 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
-  // Headline and detail are asserted separately here, unlike the stale-notice
-  // tests above: with no previous page to keep, this path renders EmptyState,
-  // whose title and hint are two elements. The stale notice renders the same
-  // failure as one sentence in one element. Same words either way - a combined
-  // matcher just cannot span the EmptyState pair.
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["failed"]));
+  await waitFor(() => expect(failedNotices()).toHaveLength(1));
   expect(failedStateSentence()).toContain("tasks boom");
+  expect(screen.queryAllByTestId("task-row")).toHaveLength(0);
 
   await user.click(screen.getByRole("button", { name: "Try again" }));
 
   expect(await screen.findAllByTestId("task-row")).toHaveLength(2);
   expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
+  expect(failedNotices()).toEqual([]);
   expect(emptyStateReasons(document.body)).toEqual([]);
 });
 

@@ -50,8 +50,8 @@ func TestCovDecodeAskUserArgsJSON_PreservesAllFields(t *testing.T) {
 
 func TestCovAskResolutionText_OptionEmptyLabels(t *testing.T) {
 	q := askQuestion{Resolution: &askResolution{Kind: askResolutionOption, Labels: nil}}
-	if got := askResolutionText(q); got != "skipped (no answer)" {
-		t.Fatalf("empty labels option = %q, want skipped", got)
+	if got, skipped := askResolutionText(q), askResolutionText(askQuestion{}); got != skipped {
+		t.Fatalf("empty labels option = %q, want it to resolve as skipped (%q)", got, skipped)
 	}
 }
 
@@ -71,8 +71,9 @@ func TestCovAskResolutionText_DecideWithLeaning(t *testing.T) {
 
 func TestCovAskResolutionText_DecideNoLeaning(t *testing.T) {
 	q := askQuestion{Resolution: &askResolution{Kind: askResolutionDecide, Leaning: "  "}}
-	if got := askResolutionText(q); got != "you decide" {
-		t.Fatalf("decide no leaning = %q, want %q", got, "you decide")
+	noLeaning := askQuestion{Resolution: &askResolution{Kind: askResolutionDecide}}
+	if got, want := askResolutionText(q), askResolutionText(noLeaning); got != want {
+		t.Fatalf("decide with a blank leaning = %q, want it to read as no leaning (%q)", got, want)
 	}
 }
 
@@ -88,8 +89,8 @@ func TestCovAskResolutionText_Fallback(t *testing.T) {
 
 func TestCovAskResolutionText_UnknownKindDefaults(t *testing.T) {
 	q := askQuestion{Resolution: &askResolution{Kind: askResolutionKind(99)}}
-	if got := askResolutionText(q); got != "skipped (no answer)" {
-		t.Fatalf("unknown kind = %q, want skipped", got)
+	if got, skipped := askResolutionText(q), askResolutionText(askQuestion{}); got != skipped {
+		t.Fatalf("unknown kind = %q, want it to resolve as skipped (%q)", got, skipped)
 	}
 }
 

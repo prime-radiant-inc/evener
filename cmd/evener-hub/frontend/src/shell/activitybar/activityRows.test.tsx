@@ -1,7 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { activityDelegate, activityJob } from "../../stores/sessionActivityTestUtils";
-import styles from "./activitybar.module.css";
 import { AgentRow, JobRow } from "./activityRows";
 
 afterEach(() => {
@@ -77,7 +76,7 @@ test.each([
 ])("terminal $status jobs retain their wording with a quiet glyph", ({ status, reason, text }) => {
   const view = render(<JobRow job={activityJob({ status, reason, terminal: true })} />);
   expect(screen.getByText(text)).toBeTruthy();
-  expect(view.container.querySelector('[aria-hidden="true"]')?.classList.contains(styles.glyphQuiet ?? "")).toBe(true);
+  expect(view.container.querySelector("svg")?.hasAttribute("data-tone")).toBe(false);
 });
 
 test.each(["awaiting_input", "awaiting_approval"])("live $phase delegates keep attention", (phase) => {
@@ -87,7 +86,7 @@ test.each(["awaiting_input", "awaiting_approval"])("live $phase delegates keep a
 
 test("live shell work keeps its alive glyph", () => {
   const view = render(<JobRow job={activityJob({ terminal: false, status: "running" })} />);
-  expect(view.container.querySelector('[aria-hidden="true"]')?.classList.contains(styles.glyphAlive ?? "")).toBe(true);
+  expect(view.container.querySelector("svg")?.getAttribute("data-tone")).toBe("alive");
 });
 
 test("job rows identify the work by its description while retaining the exact command", () => {

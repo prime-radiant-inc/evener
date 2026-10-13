@@ -19,7 +19,18 @@ import { useConnectionStore } from "../../stores/connection";
 import { selectNeedsYouRows, selectNextSectionOffset, selectSectionRemaining } from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore } from "../../stores/threads";
-import { Chip, Dialog, KeyHint, StatusDot, useToasts } from "../../widgets";
+import {
+  Chip,
+  Dialog,
+  EmptyState,
+  Eyebrow,
+  InlineNotice,
+  ShortcutList,
+  type ShortcutListItem,
+  Skeleton,
+  StatusDot,
+  useToasts,
+} from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useClient } from "../clientContext";
 import { openInNewTab } from "../openInNewTab";
@@ -66,12 +77,7 @@ const CLASS = {
   age: requireClass(styles.age, "commandpalette.module.css", "age"),
   snippet: requireClass(styles.snippet, "commandpalette.module.css", "snippet"),
   mark: requireClass(styles.mark, "commandpalette.module.css", "mark"),
-  helpRow: requireClass(styles.helpRow, "commandpalette.module.css", "helpRow"),
-  helpKeys: requireClass(styles.helpKeys, "commandpalette.module.css", "helpKeys"),
-  helpDesc: requireClass(styles.helpDesc, "commandpalette.module.css", "helpDesc"),
-  empty: requireClass(styles.empty, "commandpalette.module.css", "empty"),
-  emptyTitle: requireClass(styles.emptyTitle, "commandpalette.module.css", "emptyTitle"),
-  emptyBody: requireClass(styles.emptyBody, "commandpalette.module.css", "emptyBody"),
+  help: requireClass(styles.help, "commandpalette.module.css", "help"),
 };
 
 // FIX 2: mentions "?" once, on the one thing every empty-query open shows -
@@ -81,49 +87,45 @@ const CLASS = {
 const SEARCH_PLACEHOLDER = "search live + past sessions · / for commands · ? for shortcuts";
 const SEARCH_DEBOUNCE_MS = 150;
 
-interface HelpRow {
-  keys: string[];
-  desc: string;
-}
-
 // UX fix: rebuilt from a stale, hand-rolled §2.8 list (search.js:697-705,
 // palette-only, whose Enter/Shift+Enter/Mod+Enter row was never accurate for
 // THIS composer's real keydown routing) into an app-wide shortcut legend,
-// rendered through the shared KeyHint widget (Mod resolves to the reviewing
+// rendered through the shared ShortcutList widget (Mod resolves to the reviewing
 // platform's own ⌘/Ctrl) instead of literal glyph strings.
 //
 // The palette's own rows (still accurate) come first; the composer/rail/ask-
 // dock rows this task adds follow. The same chord legitimately appears twice
 // (Mod+Enter: composer submit vs. ask dock/sandbox answer) - context-
-// dependent, not a duplicate, so both rows stay with their own desc.
-const HELP_ROWS: HelpRow[] = [
-  { keys: ["Mod", "K"], desc: "open the command palette" },
+// dependent, not a duplicate, so both rows stay with their own label.
+const HELP_ROWS: ShortcutListItem[] = [
+  { keys: ["Mod", "K"], label: "open the command palette" },
   {
     keys: ["/"],
-    desc: "in the palette — filters app-global commands; a session command (goal, model, …) hands off to the composer instead",
+    label:
+      "in the palette — filters app-global commands; a session command (goal, model, …) hands off to the composer instead",
   },
-  { keys: ["/"], desc: "at the start of an empty composer — opens the inline slash-command menu" },
-  { keys: ["↑"], desc: "move up the results list" },
-  { keys: ["↓"], desc: "move down the results list" },
-  { keys: ["Enter"], desc: "run the highlighted command (or open a search result)" },
-  { keys: ["Mod", "Enter"], desc: "open a search result in a new tab" },
-  { keys: ["Shift", "Enter"], desc: "jump to a turn in the current session" },
-  { keys: ["Esc"], desc: "close the palette (or back out of args mode)" },
-  { keys: ["Mod", "B"], desc: "toggle the sidebar — inert while typing in an editable field" },
-  { keys: ["Mod", "I"], desc: "focus the composer" },
-  { keys: ["Mod", "J"], desc: "go to the next session needing you" },
-  { keys: ["Mod", "'"], desc: "quote the selection into the composer" },
+  { keys: ["/"], label: "at the start of an empty composer — opens the inline slash-command menu" },
+  { keys: ["↑"], label: "move up the results list" },
+  { keys: ["↓"], label: "move down the results list" },
+  { keys: ["Enter"], label: "run the highlighted command (or open a search result)" },
+  { keys: ["Mod", "Enter"], label: "open a search result in a new tab" },
+  { keys: ["Shift", "Enter"], label: "jump to a turn in the current session" },
+  { keys: ["Esc"], label: "close the palette (or back out of args mode)" },
+  { keys: ["Mod", "B"], label: "toggle the sidebar — inert while typing in an editable field" },
+  { keys: ["Mod", "I"], label: "focus the composer" },
+  { keys: ["Mod", "J"], label: "go to the next session needing you" },
+  { keys: ["Mod", "'"], label: "quote the selection into the composer" },
   // Composer.tsx's own handleKeyDown: a plain Enter (or Mod+Enter, always)
   // submits - send now, or queue when the agent is mid-turn - and Shift+
   // Enter only steers when Enter-to-send is OFF (with it on, Shift+Enter is
   // a literal newline instead).
-  { keys: ["Enter"], desc: "send now (or queue, mid-turn) — when Enter-to-send is on" },
-  { keys: ["Shift", "Enter"], desc: "steer mid-turn — when Enter-to-send is off" },
-  { keys: ["Mod", "Enter"], desc: "send or queue now, regardless of the Enter-to-send setting" },
+  { keys: ["Enter"], label: "send now (or queue, mid-turn) — when Enter-to-send is on" },
+  { keys: ["Shift", "Enter"], label: "steer mid-turn — when Enter-to-send is off" },
+  { keys: ["Mod", "Enter"], label: "send or queue now, regardless of the Enter-to-send setting" },
   // AskDock.tsx's handleBatchKeyDown / sandboxEscalation.tsx's own Mod+Enter.
-  { keys: ["Mod", "Enter"], desc: "answer or approve (ask dock questions, sandbox approvals)" },
-  { keys: ["←"], desc: "previous ask-dock question" },
-  { keys: ["→"], desc: "next ask-dock question" },
+  { keys: ["Mod", "Enter"], label: "answer or approve (ask dock questions, sandbox approvals)" },
+  { keys: ["←"], label: "previous ask-dock question" },
+  { keys: ["→"], label: "next ask-dock question" },
 ];
 
 // Live-row status dot: the search API's normalized state (hubcore.
@@ -833,22 +835,11 @@ function renderResults(args: {
     return (
       <>
         <div className={CLASS.sectionHeader} data-section="help">
-          Keyboard shortcuts
+          <Eyebrow>Keyboard shortcuts</Eyebrow>
         </div>
-        {HELP_ROWS.map((row, i) => (
-          // HELP_ROWS is a fixed static list (order IS its meaning, like
-          // RowContent's own Highlighted parts above) and the same chord
-          // legitimately appears more than once (Mod+Enter: composer submit
-          // vs. ask dock answer) - desc alone isn't unique either, so the
-          // stable position is the only real identity here.
-          // biome-ignore lint/suspicious/noArrayIndexKey: fixed static list, position is identity - see above
-          <div className={CLASS.helpRow} key={i} data-help-row>
-            <span className={CLASS.helpKeys}>
-              <KeyHint keys={row.keys} />
-            </span>
-            <span className={CLASS.helpDesc}>{row.desc}</span>
-          </div>
-        ))}
+        <div className={CLASS.help}>
+          <ShortcutList items={HELP_ROWS} />
+        </div>
       </>
     );
   }
@@ -857,7 +848,7 @@ function renderResults(args: {
     return view.entries.map((entry) =>
       entry.type === "header" ? (
         <div className={CLASS.sectionHeader} key={`h-${entry.section}`} data-section={entry.section}>
-          {entry.label}
+          <Eyebrow>{entry.label}</Eyebrow>
         </div>
       ) : (
         <Row
@@ -874,48 +865,31 @@ function renderResults(args: {
 
   // No rows: the mode-specific placeholder.
   if (mode === "search") {
-    if (searchFailed) return <Empty reason="search-failed" title="Search failed" />;
+    if (searchFailed) return <InlineNotice tone="danger">Search failed</InlineNotice>;
     if (!query.trim()) return null;
-    return <Empty reason="no-matches" title="No matches" body="Nothing in live, past, or this session." />;
+    return <EmptyState size="compact" title="No matches" hint="Nothing in live, past, or this session." />;
   }
   if (mode === "command-filter") {
     return (
-      <Empty reason="no-commands" title="No commands match" body="Try a different keyword or open a session first." />
+      <EmptyState size="compact" title="No commands match" hint="Try a different keyword or open a session first." />
     );
   }
   // command-args
   if (selectedCommand?.args?.kind === "enum") {
-    if (enumStatus === "loading") return <Empty reason="options-loading" body="Loading…" />;
+    if (enumStatus === "loading") return <Skeleton lines={1} />;
     if (enumStatus === "error")
       return (
-        <Empty
-          reason="options-failed"
+        <EmptyState
+          size="compact"
           title="Couldn't load options"
-          body="Something went wrong. Close and reopen to retry."
+          hint="Something went wrong. Close and reopen to retry."
         />
       );
-    return <Empty reason="no-matches" title="No matches" />;
+    return <EmptyState size="compact" title="No matches" />;
   }
   // free-arg hint
-  return <Empty reason="free-arg" body={query.trim() ? `press ↵ to run with: ${query}` : "type a value and press ↵"} />;
-}
-
-// reason names which placeholder this is (data-reason), independent of
-// its copy.
-function Empty({
-  reason,
-  title,
-  body,
-}: {
-  reason: "search-failed" | "no-matches" | "no-commands" | "options-loading" | "options-failed" | "free-arg";
-  title?: string;
-  body?: string;
-}) {
   return (
-    <div className={CLASS.empty} data-reason={reason}>
-      {title && <p className={CLASS.emptyTitle}>{title}</p>}
-      {body && <p className={CLASS.emptyBody}>{body}</p>}
-    </div>
+    <EmptyState size="compact" title={query.trim() ? `press ↵ to run with: ${query}` : "type a value and press ↵"} />
   );
 }
 

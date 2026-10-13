@@ -46,8 +46,9 @@
   min-width: 0;
 }
 
-/* Projected intent-only actions use the same quiet disclosure treatment on
- * every TranscriptBody surface, including read-only and preview. */
+/* Projected intent-only actions fold under the same rule Disclosure (a caption
+ * centred between hairlines) on every TranscriptBody surface, including
+ * read-only and preview. */
 .intentGroup {
   width: 100%;
   /* A trailing or cross-turn intent run is promoted to its own virtual-list
@@ -61,43 +62,17 @@
   margin-inline: auto;
 }
 
-.intentGroupSummary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
-  color: var(--ink-low);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-style: italic;
-  text-align: center;
-  cursor: pointer;
-  list-style: none;
-}
-
-.intentGroupSummary::-webkit-details-marker {
-  display: none;
-}
-
-.intentGroupSummary::before,
-.intentGroupSummary::after {
-  content: "";
-  flex: 1;
-  border-top: 1px solid var(--edge);
-}
-
 .intentGroupItems {
   display: flex;
   flex-direction: column;
   gap: 0;
 }
 
-/* Above the breakpoint, the intent group items need the same
- * --speaker-gutter padding that .runContent provides for regular
- * tool-call rows. Without it, the .rowIcon's negative margin
- * (margin-left: calc(-1 * var(--speaker-gutter))) pulls the icon
- * out of the container — making icons invisible and rows appear
- * outdented. This matches the .runContent indent at turnblock.module.css:42-46. */
+/* Above the breakpoint the group's members take the same --speaker-gutter
+ * padding .runContent gives regular tool-call rows (turnblock.module.css), so
+ * each item's .rowIcon (margin-left: calc(-1 * var(--speaker-gutter))) pulls
+ * back into the gutter rather than out of the container. The summary's rule
+ * is not indented: it spans the turn's whole column. */
 @media (min-width: 700px) {
   .intentGroupItems {
     padding-left: var(--speaker-gutter);

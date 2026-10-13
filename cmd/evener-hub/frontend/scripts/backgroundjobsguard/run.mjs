@@ -129,7 +129,8 @@ function geometryExpr(jobId) {
     const body = document.querySelector(${q(viewport)});
     if (!body || rows.length !== 1) return null;
     const node = rows[0], r = node.getBoundingClientRect(), v = body.getBoundingClientRect();
-    const glyph = node.querySelector('[aria-hidden="true"]'), meta = node.querySelector('[class*="_rowMeta_"]');
+    // A plain ListRow with no trailing slot ends in its meta line.
+    const glyph = node.querySelector('[aria-hidden="true"]'), meta = node.querySelector(':scope > :last-child');
     const first = [...body.querySelectorAll('[data-activity-anchor]')].find(n => n.getBoundingClientRect().bottom > v.top);
     return { anchor: node.dataset.activityAnchor, text: node.textContent, offset: r.top - v.top,
       row: {top:r.top,bottom:r.bottom,height:r.height}, viewport: {top:v.top,bottom:v.bottom,height:v.height},

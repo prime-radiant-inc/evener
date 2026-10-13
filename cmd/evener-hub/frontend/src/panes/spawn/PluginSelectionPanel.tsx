@@ -9,7 +9,7 @@ import {
   setPluginSelected,
 } from "@evener/appwire-client";
 import { type ReactElement, useState } from "react";
-import { Button, Disclosure, Switch } from "../../widgets";
+import { Button, Card, Disclosure, EmptyState, InlineNotice, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./pluginSelection.module.css";
 
@@ -22,7 +22,7 @@ export interface PluginSelectionPanelProps {
 }
 
 const CLASS = {
-  panel: requireClass(styles.panel, "pluginSelection.module.css", "panel"),
+  content: requireClass(styles.content, "pluginSelection.module.css", "content"),
   tools: requireClass(styles.tools, "pluginSelection.module.css", "tools"),
   actions: requireClass(styles.actions, "pluginSelection.module.css", "actions"),
   list: requireClass(styles.list, "pluginSelection.module.css", "list"),
@@ -33,8 +33,7 @@ const CLASS = {
   description: requireClass(styles.description, "pluginSelection.module.css", "description"),
   resultCount: requireClass(styles.resultCount, "pluginSelection.module.css", "resultCount"),
   diagnostics: requireClass(styles.diagnostics, "pluginSelection.module.css", "diagnostics"),
-  errors: requireClass(styles.errors, "pluginSelection.module.css", "errors"),
-  empty: requireClass(styles.empty, "pluginSelection.module.css", "empty"),
+  issueList: requireClass(styles.issueList, "pluginSelection.module.css", "issueList"),
 };
 
 function sourceLabel(plugin: PluginLaunchCandidate): string {
@@ -71,116 +70,132 @@ export function PluginSelectionPanel({
   const diagnostics = preview.diagnostics ?? [];
 
   return (
-    <section className={CLASS.panel} data-testid="plugin-selection-panel" aria-label="Plugins for this session">
-      <div className={CLASS.tools}>
-        <div className={CLASS.resultCount} role="status">
-          {selectedCount} of {preview.plugins.length} selected
+    <Card variant="outlined" role="region" data-testid="plugin-selection-panel" aria-label="Plugins for this session">
+      <div className={CLASS.content}>
+        <div className={CLASS.tools}>
+          <div className={CLASS.resultCount} role="status">
+            {selectedCount} of {preview.plugins.length} selected
+          </div>
+          <div className={CLASS.actions}>
+            <Button
+              variant="quiet"
+              size="xs"
+              type="button"
+              onClick={() => onSelectionChange(selectAllPlugins(preview))}
+              aria-label="All"
+              disabled={removeOnly}
+            >
+              All
+            </Button>
+            <Button
+              variant="quiet"
+              size="xs"
+              type="button"
+              onClick={() => onSelectionChange(selectNoPlugins())}
+              aria-label="None"
+            >
+              None
+            </Button>
+          </div>
         </div>
-        <div className={CLASS.actions}>
-          <Button
-            variant="quiet"
-            size="xs"
-            type="button"
-            onClick={() => onSelectionChange(selectAllPlugins(preview))}
-            aria-label="All"
-            disabled={removeOnly}
-          >
-            All
-          </Button>
-          <Button
-            variant="quiet"
-            size="xs"
-            type="button"
-            onClick={() => onSelectionChange(selectNoPlugins())}
-            aria-label="None"
-          >
-            None
-          </Button>
-        </div>
-      </div>
 
-      {diagnostics.length > 0 && (
-        <div className={CLASS.diagnostics}>
-          <Disclosure
-            open={diagnosticsOpen}
-            onOpenChange={setDiagnosticsOpen}
-            summary={`${diagnostics.length} preview diagnostic${diagnostics.length === 1 ? "" : "s"} · Show details`}
+        {diagnostics.length > 0 && (
+          <div className={CLASS.diagnostics}>
+            <Disclosure
+              open={diagnosticsOpen}
+              onOpenChange={setDiagnosticsOpen}
+              summary={`${diagnostics.length} preview diagnostic${diagnostics.length === 1 ? "" : "s"} · Show details`}
+            >
+              <ul>
+                {diagnostics.map((diagnostic) => (
+                  <li key={`${diagnostic.name ?? ""}:${diagnostic.path ?? ""}:${diagnostic.message}`}>
+                    {diagnostic.name && <strong>{diagnostic.name}: </strong>}
+                    {diagnostic.message}
+                    {diagnostic.path && !diagnostic.message.includes(diagnostic.path) && (
+                      <span> ({diagnostic.path})</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </Disclosure>
+          </div>
+        )}
+
+        <div className={CLASS.list} data-testid="plugin-selection-list">
+          {preview.plugins.map((plugin) => {
+            const selected = selectedNames?.has(plugin.name) ?? plugin.selected;
+            return (
+              <div className={CLASS.row} key={plugin.name}>
+                <Switch
+                  checked={selected}
+                  label={plugin.name}
+                  disabled={removeOnly && !selected}
+                  onChange={(next) => {
+                    if (!removeOnly || !next)
+                      onSelectionChange(setPluginSelected(selection, preview, plugin.name, next));
+                  }}
+                  description={
+                    <span className={CLASS.metadata} data-testid="plugin-row-metadata">
+                      <span className={CLASS.source}>{sourceLabel(plugin)}</span>
+                      <span className={CLASS.counts}>{componentCounts(plugin)}</span>
+                      {plugin.description && <span className={CLASS.description}>{plugin.description}</span>}
+                    </span>
+                  }
+                />
+              </div>
+            );
+          })}
+        </div>
+        {preview.plugins.length === 0 && (
+          <EmptyState size="compact" title="No plugins are available for this session." />
+        )}
+
+        {removeOnly && (
+          <InlineNotice
+            tone="danger"
+            live="status"
+            title="Couldn't inspect plugins"
+            action={
+              <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
+                Retry
+              </Button>
+            }
           >
-            <ul>
-              {diagnostics.map((diagnostic) => (
-                <li key={`${diagnostic.name ?? ""}:${diagnostic.path ?? ""}:${diagnostic.message}`}>
-                  {diagnostic.name && <strong>{diagnostic.name}: </strong>}
-                  {diagnostic.message}
-                  {diagnostic.path && !diagnostic.message.includes(diagnostic.path) && (
-                    <span> ({diagnostic.path})</span>
-                  )}
+            Only removing plugins is available until the preview succeeds.
+          </InlineNotice>
+        )}
+
+        {selectionIssues.length > 0 && (
+          <InlineNotice
+            tone="danger"
+            title="Selected plugins need attention"
+            action={
+              <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
+                Retry
+              </Button>
+            }
+          >
+            <ul className={CLASS.issueList}>
+              {selectionIssues.map((error) => (
+                <li key={`${error.name}:${error.reason}`}>
+                  <span>
+                    <strong>{error.name}</strong>: {error.reason}
+                  </span>
+                  <Button
+                    variant="quiet"
+                    size="xs"
+                    type="button"
+                    aria-label={`Remove ${error.name}`}
+                    onClick={() => onSelectionChange(setPluginSelected(selection, preview, error.name, false))}
+                  >
+                    Remove
+                  </Button>
                 </li>
               ))}
             </ul>
-          </Disclosure>
-        </div>
-      )}
-
-      <div className={CLASS.list} data-testid="plugin-selection-list">
-        {preview.plugins.map((plugin) => {
-          const selected = selectedNames?.has(plugin.name) ?? plugin.selected;
-          return (
-            <div className={CLASS.row} key={plugin.name}>
-              <Switch
-                checked={selected}
-                label={plugin.name}
-                disabled={removeOnly && !selected}
-                onChange={(next) => {
-                  if (!removeOnly || !next) onSelectionChange(setPluginSelected(selection, preview, plugin.name, next));
-                }}
-              />
-              <div className={CLASS.metadata} data-testid="plugin-row-metadata">
-                <span className={CLASS.source}>{sourceLabel(plugin)}</span>
-                <span className={CLASS.counts}>{componentCounts(plugin)}</span>
-                {plugin.description && <span className={CLASS.description}>{plugin.description}</span>}
-              </div>
-            </div>
-          );
-        })}
+          </InlineNotice>
+        )}
       </div>
-      {preview.plugins.length === 0 && <p className={CLASS.empty}>No plugins are available for this session.</p>}
-
-      {removeOnly && (
-        <div className={CLASS.errors} role="status">
-          <strong>Couldn't inspect plugins</strong>
-          <span>Only removing plugins is available until the preview succeeds.</span>
-          <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
-            Retry
-          </Button>
-        </div>
-      )}
-
-      {selectionIssues.length > 0 && (
-        <div className={CLASS.errors} role="alert">
-          <strong>Selected plugins need attention</strong>
-          <ul>
-            {selectionIssues.map((error) => (
-              <li key={`${error.name}:${error.reason}`}>
-                <span>
-                  <strong>{error.name}</strong>: {error.reason}
-                </span>
-                <Button
-                  variant="quiet"
-                  size="xs"
-                  type="button"
-                  aria-label={`Remove ${error.name}`}
-                  onClick={() => onSelectionChange(setPluginSelected(selection, preview, error.name, false))}
-                >
-                  Remove
-                </Button>
-              </li>
-            ))}
-          </ul>
-          <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
-            Retry
-          </Button>
-        </div>
-      )}
-    </section>
+    </Card>
   );
 }

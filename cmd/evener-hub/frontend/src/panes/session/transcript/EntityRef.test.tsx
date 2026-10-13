@@ -117,7 +117,8 @@ function watchView(
   return view;
 }
 
-// A card's fact row by its field, or null when the card omits it.
+// A card's fact value by its field, or null when the card omits it. The
+// field marks the value, which sits in its row's dd beside the row's dt.
 function cardField(card: HTMLElement, field: string): HTMLElement | null {
   return card.querySelector(`[data-field="${field}"]`);
 }
@@ -223,7 +224,8 @@ test("each entity card reads its kind aloud, distinctly", () => {
   const labels = views.map(({ view, id }) => {
     const { unmount } = render(<EntityRef view={view} id={id} />);
     const card = focusCard();
-    const kind = card.querySelector<HTMLElement>("[data-entity-kind] strong");
+    // The kind label (an Eyebrow) leads the card's head row.
+    const kind = card.querySelector("[data-entity-kind]")?.firstElementChild?.firstElementChild;
     if (!kind) throw new Error("card has no kind label");
     // The label is plain content, so it is heard as part of the tooltip's
     // computed name: hidden or display:none label text drops out of it.
@@ -274,8 +276,8 @@ test("watch card renders a trigger and its note separately", () => {
   expect(summary.at(0)).toMatch(/\W/);
   expect(summary.at(-1)).toMatch(/\W/);
   const note = cardField(card, "note");
-  expect(note?.querySelector("dt")).not.toBeNull();
-  expect(note?.querySelector("dd")?.textContent).toBe("Preserve the release context");
+  expect(note?.closest("dd")?.parentElement?.querySelector("dt")).not.toBeNull();
+  expect(note?.textContent).toBe("Preserve the release context");
 });
 
 test("note-only watch card renders note content without raw condition grammar", () => {
@@ -481,8 +483,8 @@ test("job card carries normalized detail plus a stale caption", () => {
   expect(text).toContain("shell");
   expect(text).toContain("npm run build");
   expect(text).toContain("1s");
-  expect(cardField(card, "exit")?.querySelector("dd")?.textContent).toMatch(/\b0\b/);
-  expect(cardField(card, "output")?.querySelector("dd")?.textContent).toBe(formatByteCount(12));
+  expect(cardField(card, "exit")?.textContent).toMatch(/\b0\b/);
+  expect(cardField(card, "output")?.textContent).toBe(formatByteCount(12));
   expect(text).toContain("stale");
 });
 

@@ -96,7 +96,13 @@ func memoryIndexLine(p memoryPage) string {
 		return memoryUnlinkedIndexLine(p.Path)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), memoryLinkTarget(p.Path), p.Description)
+	// The when line stands in for the description: it is what the agent
+	// matches against its task, and showing both would cost visible pages.
+	summary := p.Description
+	if p.When != "" {
+		summary = p.When
+	}
+	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), memoryLinkTarget(p.Path), summary)
 	if p.Unreadable {
 		b.WriteString(" " + memoryFrontmatterUnreadable)
 	}

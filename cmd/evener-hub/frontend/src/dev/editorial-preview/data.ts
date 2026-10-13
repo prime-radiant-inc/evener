@@ -149,7 +149,7 @@ const parentItems: ThreadItem[] = [
     // 160 lines keeps the long line (31) inside the fold's hidden head at the
     // 100-line window ("Show 60 earlier lines"), and the short per-line
     // payloads keep the whole sample under read_file's 8,000-char retention
-    // budget (bodies.tsx's TAIL_MAX_CHARS) so no head is elided: the
+    // budget (bodies.tsx's TOOL_BODY_MAX_CHARS) so no head is elided: the
     // click-to-reveal scenario exposes the long line whole
     // (docs/web-ui/editorial-preview.md, scripts/editorial-preview-browser.mjs).
     Array.from(

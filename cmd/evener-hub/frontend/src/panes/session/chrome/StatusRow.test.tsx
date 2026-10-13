@@ -608,9 +608,9 @@ test("renders exact context counts and percentage in its accessible label and ho
 // pins the SAME three tiers against the same class table, so a drifted
 // threshold breaks one surface's expectations without the other's.
 const meterToneClass = {
-  neutral: requireClass(rawMeterStyles.neutral, "meter.module.css", "neutral"),
-  attention: requireClass(rawMeterStyles.attention, "meter.module.css", "attention"),
-  danger: requireClass(rawMeterStyles.danger, "meter.module.css", "danger"),
+  neutral: requireClass(rawMeterStyles.fillNeutral, "meter.module.css", "fillNeutral"),
+  attention: requireClass(rawMeterStyles.fillAttention, "meter.module.css", "fillAttention"),
+  danger: requireClass(rawMeterStyles.fillDanger, "meter.module.css", "fillDanger"),
 };
 
 test.each([

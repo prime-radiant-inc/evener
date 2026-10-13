@@ -27,11 +27,15 @@
   font-weight: var(--font-weight-semibold);
 }
 
+/* max-width + wrap: an action slot holding several buttons is capped at the
+   notice's width and wraps them, instead of escaping a phone-width pane. */
 .action {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  max-width: 100%;
 }
 
 .neutral {

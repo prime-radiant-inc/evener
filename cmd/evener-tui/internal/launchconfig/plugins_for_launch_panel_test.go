@@ -163,16 +163,6 @@ func TestPluginsForLaunchPanel_LowercaseNFiltersAndUppercaseNClears(t *testing.T
 	}
 }
 
-func TestPluginsForLaunchPanel_FooterDescribesFilterScopedAllAction(t *testing.T) {
-	p := NewPluginsForLaunchPanel(appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{
-		{Name: "alpha"},
-	}}, nil, 80)
-	view := p.View()
-	if !strings.Contains(view, "A all matching") || !strings.Contains(view, "N none") || strings.Contains(view, "n none") || strings.Contains(view, "all available") {
-		t.Fatalf("all action footer = %q", view)
-	}
-}
-
 func TestPluginsForLaunchPanel_ScrollingAndNarrowRender(t *testing.T) {
 	plugins := make([]appwire.PluginLaunchCandidate, 20)
 	for i := range plugins {

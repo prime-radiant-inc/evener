@@ -403,6 +403,11 @@ func (s *Session) prepareSkillActivations(ctx context.Context, invocations []ski
 			}
 			descriptor = resolved
 		}
+		// A skill this session cannot follow is refused before its source is
+		// read, on every route, whatever the source controls say.
+		if !s.skillAvailableToSession(descriptor.CatalogName) {
+			return nil, &skillActivationError{Invocation: invocation, Code: "policy_denied", Err: fmt.Errorf("skill %q needs the memory save tools this session does not have", descriptor.CatalogName)}
+		}
 		loaded, diagnostics, err := loadSkillInvocationSource(invocation, descriptor)
 		if err != nil {
 			code := "invalid_metadata"

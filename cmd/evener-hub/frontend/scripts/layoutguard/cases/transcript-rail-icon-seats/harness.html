@@ -23,8 +23,9 @@ const CHECK_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="
 // The three rows whose seats this case holds to one column. All class names
 // are the real modules' own local names (resolved.css de-scopes them): .turn
 // and .runContent from turnblock.module.css; .loader/.rail/.grid/.cell/.label
-// from loader.module.css (the content-free thinking row's real markup); .head/
-// .statusIcon/.headingText/.title from notificationcard.module.css. The think
+// from loader.module.css (the content-free thinking row's real markup); .staticHead/
+// .statusIcon/.headingText/.title from notificationcard.module.css (the static
+// notification head; a collapsible card's Disclosure summary is not railed). The think
 // row's own geometry is REPRODUCED under think-prefixed names in the frame
 // styles rather than linked as thinkblock.module.css: thinkblock and loader
 // both define .label, and resolved.css de-scopes every module into one flat
@@ -55,12 +56,10 @@ function rows() {
             <span class="label" data-loader-text>Thinking… · ~679 tokens</span>
           </span>
         </div>
-        <details>
-          <summary class="head">
-            <span class="statusIcon" data-notification-slot>${CHECK_SVG}</span>
-            <span class="headingText"><span class="title" data-notification-text>Job completed</span></span>
-          </summary>
-        </details>
+        <div class="staticHead">
+          <span class="statusIcon" data-notification-slot>${CHECK_SVG}</span>
+          <span class="headingText"><span class="title" data-notification-text>Job completed</span></span>
+        </div>
       </div>
     </div>`;
 }

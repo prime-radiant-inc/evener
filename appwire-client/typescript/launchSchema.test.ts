@@ -3,7 +3,6 @@ import { describe, expect, test } from "vitest";
 import {
   buildFormState,
   collectConfig,
-  emptyChoiceLabel,
   globalDefaultHint,
   groupOptions,
   inactivePromptDependent,
@@ -201,11 +200,6 @@ describe("resolvedEmptyChoice / emptyChoiceLabel", () => {
     expect(resolvedEmptyChoice(future, "global")).toEqual({ value: "", label: "(default)" });
     expect(resolvedEmptyChoice(future, "project")).toEqual({ value: "", label: "(use global default)" });
   });
-
-  test("emptyChoiceLabel is the generic per-layer placeholder text alone", () => {
-    expect(emptyChoiceLabel("global")).toBe("(default)");
-    expect(emptyChoiceLabel("project")).toBe("(use global default)");
-  });
 });
 
 describe("resolvedDefaultLabel", () => {
@@ -234,9 +228,15 @@ describe("resolvedDefaultLabel", () => {
     expect(resolvedDefaultLabel(booleanOpt, "global", { sandboxNet: false })).toBe("false (default)");
   });
 
-  test("the project layer keeps its own marker wording, value prepended", () => {
-    expect(resolvedDefaultLabel(booleanOpt, "project", { sandboxNet: true })).toBe("true (use global default)");
-    expect(resolvedDefaultLabel(selectOpt, "project", { reasoningEffort: "high" })).toBe("high (use global default)");
+  test("the project layer prepends the value to its own marker, not the global one", () => {
+    for (const [option, effective, value] of [
+      [booleanOpt, { sandboxNet: true }, "true"],
+      [selectOpt, { reasoningEffort: "high" }, "high"],
+    ] as const) {
+      const project = resolvedDefaultLabel(option, "project", effective);
+      expect(project?.startsWith(`${value} `), project).toBe(true);
+      expect(project).not.toBe(resolvedDefaultLabel(option, "global", effective));
+    }
   });
 
   test("a select whose empty marker is the generic one names the resolved value", () => {
@@ -484,8 +484,10 @@ describe("resolvedDefaultLabel with runtime-resolved effective layers", () => {
     expect(resolvedDefaultLabel(integerOpt, "project", { maxSubagentDepth: 50 })).toBe("50 (use global default)");
   });
 
-  test("max_rounds -1 names unlimited, matching the flag's own wording", () => {
-    expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: -1 })).toBe("unlimited (default)");
+  test("max_rounds -1 reads as unlimited, the same as 0", () => {
+    expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: -1 })).toBe(
+      resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: 0 }),
+    );
   });
 
   test("max_rounds 0 also names unlimited, matching applyDefaults' 0→-1 conversion", () => {

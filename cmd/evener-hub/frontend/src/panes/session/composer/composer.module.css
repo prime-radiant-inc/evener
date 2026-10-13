@@ -71,25 +71,6 @@
   border-color: var(--accent);
 }
 
-/* The whole thumbnail is the control that opens the lightbox, so nothing
- * inside the tile looks clickable without being clickable. */
-.imageOpenButton {
-  display: block;
-  width: 100%;
-  height: 100%;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-}
-
-/* Inset, because the tile clips its own overflow: an outset ring on a child
- * that fills the tile would be clipped away entirely. */
-.imageOpenButton:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
 .imageThumbnail {
   display: block;
   width: 100%;
@@ -175,7 +156,9 @@
     margin-right: calc(var(--tap-min) / 2);
   }
 
-  .imageOpenButton,
+  /* The open control is ZoomableMedia's button, the tile's only direct
+   * button child (the remove IconButton sits inside .removeSlot). */
+  .imageTile > :global(button),
   .imagePending {
     border-radius: inherit;
     overflow: hidden;

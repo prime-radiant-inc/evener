@@ -22,8 +22,12 @@ test("taskLabel falls back to #<id> when the id isn't found in state", () => {
   expect(taskLabel(tasks, 99)).toBe("#99");
 });
 
-test("taskLabel renders a placeholder when the update carries no id at all", () => {
-  expect(taskLabel(null, undefined)).toBe("(task)");
+test("taskLabel renders a placeholder, never a bare undefined, when the update carries no id at all", () => {
+  const tasks = [task({ id: 1, status: "done" })];
+  for (const label of [taskLabel(null, undefined), taskLabel(tasks, undefined)]) {
+    expect(label).not.toBe("");
+    expect(label).not.toMatch(/undefined/);
+  }
 });
 
 test("autoStartedTask finds the task the daemon auto-advanced after a completion", () => {

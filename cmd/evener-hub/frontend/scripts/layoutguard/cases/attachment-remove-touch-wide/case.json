@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "panes/session/composer/composer.module.css",
+    "widgets/zoomablemedia/zoomablemedia.module.css",
     "widgets/button/button.module.css",
     "widgets/iconbutton/iconbutton.module.css"
   ],

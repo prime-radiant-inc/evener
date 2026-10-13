@@ -437,7 +437,13 @@ type TreeNode struct {
 	// is also what leaves rollup state, AttentionRank and NeedsYouBand
 	// untouched — none of them gains a case to learn.
 	Dormant bool
-	Kind    string // "session" | "fork"
+	// Archived is true when the rail files the session as archived: the
+	// decision SessionArchived makes for the source that owns the row — its own
+	// archive decision, its project's, or the two-week age rule (S14). It rides
+	// the row so a consumer that shows an archived-but-still-running session (a
+	// pin keeps one reachable) can tell it is archived (#4199).
+	Archived bool
+	Kind     string // "session" | "fork"
 	// RunningJobs and CompletedJobs are the non-delegate jobs owned by this
 	// session. Delegates are counted in Subagents, never listed as rows.
 	RunningJobs   []appwire.EvenerJobInfo
@@ -949,6 +955,44 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		}
 	}
 
+	// markArchivedTree sets the archived fact on a node tree (#4199): every row
+	// and every nested fork original, each from its own session identity, its
+	// owning source and its last activity. A session with no meta has none to
+	// age, so now stands in, the way the Live filter reads it. A nested row is
+	// served in its own right — a location summary and the archived list both
+	// carry it — so it must carry the fact too. projectKeyFor gives a row its
+	// canonical project identity.
+	markArchivedTree := func(nodes []TreeNode, projectKeyFor func(TreeNode) string) {
+		var walk func([]TreeNode)
+		walk = func(rows []TreeNode) {
+			for index := range rows {
+				node := &rows[index]
+				source := sessionSourceFromID(node.ID)
+				if entry, live := liveMap[node.ID]; live {
+					source = liveEntrySource(entry)
+				}
+				lastActivity := now
+				if _, hasMeta := metaMap[node.ID]; hasMeta {
+					lastActivity = node.UpdatedAt
+				}
+				node.Archived = SessionArchived(decisions, node.ID, projectKeyFor(*node), source, lastActivity, now)
+				walk(node.Children)
+			}
+		}
+		walk(nodes)
+	}
+	// nodeProjectKey is a row's own canonical project identity, for the sections
+	// that are not grouped under one project: Live and Needs you.
+	nodeProjectKey := func(node TreeNode) string {
+		if m, ok := metaMap[node.ID]; ok {
+			return projectKeyForPath(EffectiveWorkingDir(m), resolvedProjects)
+		}
+		if entry, ok := liveMap[node.ID]; ok {
+			return projectKeyForPath(entry.WorkingDir, resolvedProjects)
+		}
+		return "no-project"
+	}
+
 	// runningSubagentState resolves a live in-process child's display state:
 	// the child's own projected status when its daemon carried one, else "idle".
 	// Liveness alone must not read as activity — a settled, resumable delegate
@@ -1423,6 +1467,16 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			}
 		}
 
+		// The project's wire key is its canonical ID, or the shared
+		// "no-project" key for sessions that resolve to no project. It is
+		// resolved here, before the tier split, because a row's own archived
+		// flag consults its project decision.
+		projectKey := acc.project.ID
+		if projectKey == "" {
+			projectKey = "no-project"
+			acc.workingDir = ""
+		}
+
 		// Split the project's rows into activity tiers. A session's
 		// tier is its effective-archived classification: a user decision overrides
 		// the auto rule, otherwise inactivity > 2 weeks auto-archives.
@@ -1437,6 +1491,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				archived = append(archived, row)
 			}
 		}
+		// Every row of a project shares the group's canonical key; the archived
+		// fact is set on each row and every nested fork original (#4199).
+		groupKeyFor := func(TreeNode) string { return projectKey }
+		markArchivedTree(current, groupKeyFor)
+		markArchivedTree(recent, groupKeyFor)
+		markArchivedTree(archived, groupKeyFor)
 
 		// Project placement: a project is archived when every source that owns
 		// it archived it, or when it has no non-archived (Current/Recent)
@@ -1445,11 +1505,6 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// own rows, so one host archiving a shared canonical ID/path must not
 		// move the merged row — and the other host's still-live rows under it —
 		// into the archived catalog.
-		projectKey := acc.project.ID
-		if projectKey == "" {
-			projectKey = "no-project"
-			acc.workingDir = ""
-		}
 		projectSources := sortedDecisionSources(acc.sources)
 		isArchived := projectArchivedByEverySource(decisions, projectKey, projectSources) ||
 			(len(current) == 0 && len(recent) == 0)
@@ -1584,6 +1639,13 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		unarchivedLive = append(unarchivedLive, node)
 	}
 	liveNodes = unarchivedLive
+	// Each remaining Live row is unarchived itself (the filter above dropped the
+	// rest), but a nested fork original under it may not be, and a location
+	// summary serves the nested row (#4199). The top-level row is left alone:
+	// the Live filter, not this marker, decides its own archive status.
+	for index := range liveNodes {
+		markArchivedTree(liveNodes[index].Children, nodeProjectKey)
+	}
 
 	// Build the NeedsYou triage tier: every top-level live session in the
 	// awaiting|warning|errored family, plus any other live session promoted by
@@ -1645,6 +1707,10 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		}
 		needsYou = append(needsYou, node)
 	}
+	// An age-archived live session still reaches Needs you (tierEligible clears
+	// only an explicit decision), so its row carries the archived fact too, and
+	// the Board suppresses its unread dot (#4199).
+	markArchivedTree(needsYou, nodeProjectKey)
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
 	// errored (broken beats blocked) > blocked on a person (a question, an
 	// approval, or a turn that ended on needs_response, #4093) > the rest of

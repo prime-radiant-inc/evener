@@ -46,25 +46,18 @@ func (p *devicePairings) prune() {
 	}
 }
 func (p *devicePairings) create(params appwire.DevicePairingCreateParams) (appwire.DevicePairingInvitation, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.prune()
 	origin := params.Origin
-	if p.cfg.MobileBaseURL != "" {
+	if origin == "" {
 		origin = p.cfg.MobileBaseURL
+		if origin == "" {
+			origin, _ = mobilePairingOrigin(p.cfg, "")
+		}
 	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "http" && u.Scheme != "https") {
 		return appwire.DevicePairingInvitation{}, appwire.InvalidParams("pairing requires a Hub HTTP(S) origin")
 	}
-	// Authenticated operators may select a MagicDNS name for a native tailnet
-	// connection. Validate its spelling and loopback status using the HTTPS rule;
-	// public plaintext delivery otherwise retains the mobile origin restriction.
-	check := *u
-	if params.Tailnet {
-		check.Scheme = "https"
-	}
-	_, ok := safeMobileOrigin(check.String())
+	_, ok := safeMobileOrigin(origin)
 	if !ok {
 		return appwire.DevicePairingInvitation{}, appwire.InvalidParams("choose a reachable Hub origin")
 	}
@@ -96,6 +89,9 @@ func (p *devicePairings) create(params appwire.DevicePairingCreateParams) (appwi
 	if len(p.cfg.AuthToken) == 0 || len(p.cfg.AuthToken) > 511 || strings.IndexFunc(p.cfg.AuthToken, func(c rune) bool { return c < '!' || c > '~' }) >= 0 {
 		return appwire.DevicePairingInvitation{}, appwire.Conflict("pairing requires a Hub credential of 1–511 non-space printable ASCII characters")
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.prune()
 	if len(p.entries) >= 16 {
 		return appwire.DevicePairingInvitation{}, appwire.Conflict("too many active invitations; cancel one or wait for expiry")
 	}

@@ -33,9 +33,11 @@ import {
 import { type Dispatch, type ReactNode, type SetStateAction, useId, useRef, useState } from "react";
 import {
   Button,
+  Card,
   CodeBlock,
   CollectionEditor,
   FormRow,
+  InlineNotice,
   Input,
   ModelCatalog,
   type ModelCatalog as ModelCatalogEnvelope,
@@ -51,14 +53,8 @@ const BOOLEAN_DEFAULT = "(default)";
 
 const CLASS = {
   root: requireClass(styles.root, "advancedOptions.module.css", "root"),
-  fieldBlock: requireClass(styles.fieldBlock, "advancedOptions.module.css", "fieldBlock"),
-  fieldLabel: requireClass(styles.fieldLabel, "advancedOptions.module.css", "fieldLabel"),
-  fieldHelp: requireClass(styles.fieldHelp, "advancedOptions.module.css", "fieldHelp"),
-  pickerAddRow: requireClass(styles.pickerAddRow, "advancedOptions.module.css", "pickerAddRow"),
-  pickerAddField: requireClass(styles.pickerAddField, "advancedOptions.module.css", "pickerAddField"),
   toggle: requireClass(styles.toggle, "advancedOptions.module.css", "toggle"),
   panel: requireClass(styles.panel, "advancedOptions.module.css", "panel"),
-  error: requireClass(styles.error, "advancedOptions.module.css", "error"),
 };
 
 export interface AdvancedOptionsProps {
@@ -224,40 +220,38 @@ export function AdvancedOptions({
         Advanced options
       </button>
       {open && (
-        <div id={panelId} className={CLASS.panel}>
-          {children}
-          {options.map((opt) => (
-            <Control
-              key={opt.wireField}
-              option={opt}
-              value={values[opt.wireField]}
-              error={errors[opt.wireField]}
-              loadCatalog={loadCatalog}
-              complete={complete}
-              validatePath={validatePath}
-              createDirectory={createDirectory}
-              resolvedDefaults={resolvedDefaults}
-              onScalar={(v) => updateScalar(opt, v)}
-              onValue={(field) => update(opt.wireField, field)}
-            />
-          ))}
-          <div>
-            <Button variant="quiet" size="sm" onClick={() => void showResolved()}>
-              Show resolved config
-            </Button>
-          </div>
-          {resolveError && (
-            <p className={CLASS.error} role="alert">
-              Couldn't resolve: {resolveError}
-            </p>
-          )}
-          {resolved !== null && (
-            // biome-ignore lint/a11y/useSemanticElements: a labeled group is the accessible-name host for the CodeBlock dump, which takes no aria-label of its own
-            <div role="group" aria-label="Resolved config">
-              <CodeBlock text={resolved} language="json" fold={false} />
+        <Card variant="outlined">
+          <div id={panelId} className={CLASS.panel}>
+            {children}
+            {options.map((opt) => (
+              <Control
+                key={opt.wireField}
+                option={opt}
+                value={values[opt.wireField]}
+                error={errors[opt.wireField]}
+                loadCatalog={loadCatalog}
+                complete={complete}
+                validatePath={validatePath}
+                createDirectory={createDirectory}
+                resolvedDefaults={resolvedDefaults}
+                onScalar={(v) => updateScalar(opt, v)}
+                onValue={(field) => update(opt.wireField, field)}
+              />
+            ))}
+            <div>
+              <Button variant="quiet" size="sm" onClick={() => void showResolved()}>
+                Show resolved config
+              </Button>
             </div>
-          )}
-        </div>
+            {resolveError && <InlineNotice tone="danger">Couldn't resolve: {resolveError}</InlineNotice>}
+            {resolved !== null && (
+              // biome-ignore lint/a11y/useSemanticElements: a labeled group is the accessible-name host for the CodeBlock dump, which takes no aria-label of its own
+              <div role="group" aria-label="Resolved config">
+                <CodeBlock text={resolved} language="json" fold={false} />
+              </div>
+            )}
+          </div>
+        </Card>
       )}
     </section>
   );
@@ -464,20 +458,18 @@ function Control({
       );
     }
     case "modelPicker":
-      // A composite widget, not a single labelable control, so the label is a
-      // plain span (mirroring the spawn form's own Model field) - the picker's
-      // inner combobox carries its own accessible name.
+      // A composite widget, not a single labelable control, so the row is a
+      // FormRow group rather than a <label htmlFor> - the picker's inner
+      // combobox carries its own accessible name.
       return (
-        <div className={CLASS.fieldBlock}>
-          <span className={CLASS.fieldLabel}>{option.label}</span>
+        <FormRow label={option.label} help={option.description || undefined}>
           <ModelCatalog
             value={current}
             onChange={onScalar}
             loadCatalog={loadCatalog}
             emptyLabel={stringDefaultLabel(option, resolvedDefaults)}
           />
-          {option.description && <p className={CLASS.fieldHelp}>{option.description}</p>}
-        </div>
+        </FormRow>
       );
     case "modelList":
       return (
@@ -533,15 +525,10 @@ function Control({
 }
 
 function CollectionSection({ option, children }: { option: LaunchOption; children: ReactNode }) {
-  const labelId = useId();
   return (
-    <section className={CLASS.fieldBlock} aria-labelledby={labelId}>
-      <span id={labelId} className={CLASS.fieldLabel}>
-        {option.label}
-      </span>
+    <FormRow label={option.label} help={option.description || undefined}>
       {children}
-      {option.description && <p className={CLASS.fieldHelp}>{option.description}</p>}
-    </section>
+    </FormRow>
   );
 }
 
@@ -602,30 +589,23 @@ function PathListControl({
         pathKind === null
           ? undefined
           : ({ value, onChange, disabled }) => (
-              <div className={CLASS.pickerAddRow}>
-                <span className={CLASS.pickerAddField}>
-                  <PathField
-                    directory={{ validatePath, createDirectory }}
-                    value={value}
-                    onChange={onChange}
-                    kind={pathKind}
-                    complete={complete}
-                    disabled={disabled}
-                    // The empty-state face, standing in for the trigger's
-                    // default "(default)": an add row has no default.
-                    placeholder="Add a path"
-                    // Names the trigger after the list it feeds. CollectionEditor
-                    // renders no label of its own in renderAddField mode, and all
-                    // three pathList options sit in one panel, so the placeholder
-                    // alone would name three indistinguishable buttons - the same
-                    // reason collectionFields.tsx's PathAddField passes it.
-                    ariaLabel={option.label}
-                  />
-                </span>
-                <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
-                  Add
-                </Button>
-              </div>
+              <PathField
+                directory={{ validatePath, createDirectory }}
+                value={value}
+                onChange={onChange}
+                kind={pathKind}
+                complete={complete}
+                disabled={disabled}
+                // The empty-state face, standing in for the trigger's
+                // default "(default)": an add row has no default.
+                placeholder="Add a path"
+                // Names the trigger after the list it feeds. CollectionEditor
+                // renders no label of its own in renderAddField mode, and all
+                // three pathList options sit in one panel, so the placeholder
+                // alone would name three indistinguishable buttons - the same
+                // reason collectionFields.tsx's PathAddField passes it.
+                ariaLabel={option.label}
+              />
             )
       }
     />
@@ -666,15 +646,8 @@ function ModelListControl({
         onValue({ value: [...items, entry] });
         return { ok: true };
       }}
-      renderAddField={({ value, onChange, disabled }) => (
-        <div className={CLASS.pickerAddRow}>
-          <span className={CLASS.pickerAddField}>
-            <ModelCatalog value={value} onChange={onChange} loadCatalog={loadCatalog} />
-          </span>
-          <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
-            Add
-          </Button>
-        </div>
+      renderAddField={({ value, onChange }) => (
+        <ModelCatalog value={value} onChange={onChange} loadCatalog={loadCatalog} />
       )}
     />
   );

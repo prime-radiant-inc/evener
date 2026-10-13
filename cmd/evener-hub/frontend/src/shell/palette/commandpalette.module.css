@@ -89,12 +89,6 @@
 
 .sectionHeader {
   padding: var(--space-2) var(--space-2) var(--space-1);
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }
 
 .row {
@@ -192,40 +186,6 @@
   border-radius: var(--radius-control);
 }
 
-.helpRow {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-3);
+.help {
   padding: var(--space-1) var(--space-2);
-}
-
-.helpKeys {
-  flex: none;
-  min-width: 5rem;
-  color: var(--ink-hi);
-  font-size: var(--font-size-caption);
-}
-
-.helpDesc {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
-.empty {
-  padding: var(--space-4) var(--space-2);
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-}
-
-.emptyTitle {
-  color: var(--ink-hi);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  margin: 0 0 var(--space-1);
-}
-
-.emptyBody {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  margin: 0;
 }

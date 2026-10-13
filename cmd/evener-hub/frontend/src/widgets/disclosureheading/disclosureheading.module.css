@@ -1,0 +1,57 @@
+/* Class names are distinct rather than .root/.title/.button: layoutguard
+ * harnesses load module stylesheets unscoped, side by side. */
+
+.disclosureHeading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.headingTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+.headingToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-4);
+  border: none;
+  background: transparent;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  cursor: default;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.headingToggle:hover {
+  background: var(--hover-1);
+}
+
+/* Inset: a heading usually spans a clipping column edge to edge. */
+.headingToggle:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.headingAction {
+  flex: none;
+  padding-right: var(--space-3);
+}
+
+/* Touch target: min-height, so the tap floor only ever grows the heading. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .headingToggle {
+    min-height: var(--tap-min);
+  }
+}

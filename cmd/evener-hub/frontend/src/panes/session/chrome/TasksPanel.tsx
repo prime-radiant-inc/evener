@@ -81,7 +81,16 @@ import {
 } from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
-import { Button, Disclosure, EmptyState, Markdown, Sheet, useToasts, VisuallyHidden } from "../../../widgets";
+import {
+  Button,
+  Disclosure,
+  EmptyState,
+  InlineNotice,
+  Markdown,
+  Sheet,
+  useToasts,
+  VisuallyHidden,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { STATUS_TOUCH, TaskCheck, TOUCH_WORD } from "../transcript/tools/taskCheck";
 import styles from "./taskspanel.module.css";
@@ -123,8 +132,6 @@ const CLASS = {
   latest: requireClass(styles.latest, "taskspanel.module.css", "latest"),
   latestText: requireClass(styles.latestText, "taskspanel.module.css", "latestText"),
   stale: requireClass(styles.stale, "taskspanel.module.css", "stale"),
-  staleMessage: requireClass(styles.staleMessage, "taskspanel.module.css", "staleMessage"),
-  staleHint: requireClass(styles.staleHint, "taskspanel.module.css", "staleHint"),
   expandedBody: requireClass(styles.expandedBody, "taskspanel.module.css", "expandedBody"),
   metaStrip: requireClass(styles.metaStrip, "taskspanel.module.css", "metaStrip"),
   metaKey: requireClass(styles.metaKey, "taskspanel.module.css", "metaKey"),
@@ -453,26 +460,30 @@ export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksP
       );
     }
     if (rows === null) {
-      if (error) return <EmptyState title={error.headline} hint={error.detail} action={retry} reason="failed" />;
+      if (error)
+        return (
+          <InlineNotice tone="danger" live="status" title={error.headline} action={retry} data-reason="failed">
+            {error.detail}
+          </InlineNotice>
+        );
       return <p className={CLASS.state}>Loading tasks…</p>;
     }
     return (
       <>
         {daemonGone && (
           <div className={CLASS.stale} data-testid="tasks-daemon-gone">
-            <p className={CLASS.staleMessage}>This session's daemon has exited.</p>
-            <p className={CLASS.staleHint}>Showing the last list that loaded. It won't update again.</p>
+            <InlineNotice live="off" title="This session's daemon has exited.">
+              Showing the last list that loaded. It won't update again.
+            </InlineNotice>
           </div>
         )}
         {error && (
           <div className={CLASS.stale} data-testid="tasks-stale">
             {/* role=alert: the refresh failed on its own, with the reader
                 mid-list and nothing on screen leading up to it. */}
-            <p role="alert" className={CLASS.staleMessage}>
-              {error.sentence}
-            </p>
-            <p className={CLASS.staleHint}>Showing the last list that loaded.</p>
-            {retry}
+            <InlineNotice live="alert" title={error.sentence} action={retry}>
+              Showing the last list that loaded.
+            </InlineNotice>
           </div>
         )}
         {showSummary && model.tasks && (

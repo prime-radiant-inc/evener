@@ -177,17 +177,18 @@ func TestMemoryWriteQuotesAnUnquotedColonValue(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
 	for name, tc := range map[string]struct{ block, want string }{
-		"inner-colon.md": {"description: like `shop: add Count`\n", "description: 'like `shop: add Count`'\n"},
-		"trailing.md":    {"description: Fix:\n", "description: 'Fix:'\n"},
-		"colon-tab.md":   {"description: a:\tb\n", "description: \"a:\\tb\"\n"},
-		"spaced-key.md":  {"description : a: b\n", "description: 'a: b'\n"},
-		"quoted-key.md":  {"description: d\n\"evidence\": a: b\n", "description: d\nevidence: 'a: b'\n"},
-		"indicator.md":   {"description: d\nevidence: `a.go`: line 3\n", "description: d\nevidence: '`a.go`: line 3'\n"},
+		"inner-colon.md": {"description: like `shop: add Count`\nwhen: w\n", "description: 'like `shop: add Count`'\nwhen: w\n"},
+		"trailing.md":    {"description: Fix:\nwhen: w\n", "description: 'Fix:'\nwhen: w\n"},
+		"colon-tab.md":   {"description: a:\tb\nwhen: w\n", "description: \"a:\\tb\"\nwhen: w\n"},
+		"spaced-key.md":  {"description : a: b\nwhen: w\n", "description: 'a: b'\nwhen: w\n"},
+		"quoted-key.md":  {"description: d\n\"evidence\": a: b\nwhen: w\n", "description: d\nevidence: 'a: b'\nwhen: w\n"},
+		"indicator.md":   {"description: d\nevidence: `a.go`: line 3\nwhen: w\n", "description: d\nevidence: '`a.go`: line 3'\nwhen: w\n"},
 		"both.md": {
-			"description: Fix: use cents\ntags: [money]\nevidence: file: price.go\n",
-			"description: 'Fix: use cents'\ntags: [money]\nevidence: 'file: price.go'\n",
+			"description: Fix: use cents\ntags: [money]\nevidence: file: price.go\nwhen: w\n",
+			"description: 'Fix: use cents'\ntags: [money]\nevidence: 'file: price.go'\nwhen: w\n",
 		},
-		"quoted-kept.md": {"evidence: \"file: a.go\"\ndescription: a: b\n", "evidence: \"file: a.go\"\ndescription: 'a: b'\n"},
+		"when.md":        {"description: d\nwhen: Running `make: test`\n", "description: d\nwhen: 'Running `make: test`'\n"},
+		"quoted-kept.md": {"evidence: \"file: a.go\"\ndescription: a: b\nwhen: w\n", "evidence: \"file: a.go\"\ndescription: 'a: b'\nwhen: w\n"},
 	} {
 		res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": name, "content": "---\n" + tc.block + "---\n# Page\n"})
 		if res.IsError || strings.Contains(res.Output, "\n\n") {
@@ -201,7 +202,7 @@ func TestMemoryWriteQuotesAnUnquotedColonValue(t *testing.T) {
 	if res.IsError || strings.Contains(res.Output, "\n\n") {
 		t.Fatalf("edit: %+v", res)
 	}
-	if raw, _ := os.ReadFile(filepath.Join(scope, "trailing.md")); string(raw) != "---\ndescription: 'Use cents: never floats'\n"+memoryOwnStamps(s)+"---\n# Page\n" {
+	if raw, _ := os.ReadFile(filepath.Join(scope, "trailing.md")); string(raw) != "---\ndescription: 'Use cents: never floats'\nwhen: w\n"+memoryOwnStamps(s)+"---\n# Page\n" {
 		t.Fatalf("edit: got %q", raw)
 	}
 }
@@ -213,8 +214,8 @@ func TestMemoryWriteLeavesUnextendableFrontmatterUnstamped(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
 	for name, body := range map[string]string{
-		"flow.md":  "---\n{description: Flow page}\n---\n# Flow\n",
-		"ended.md": "---\ndescription: Ended page\n...\n---\n# Ended\n",
+		"flow.md":  "---\n{description: Flow page, when: w}\n---\n# Flow\n",
+		"ended.md": "---\ndescription: Ended page\nwhen: w\n...\n---\n# Ended\n",
 	} {
 		res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": name, "content": body})
 		if res.IsError || strings.Contains(res.Output, "\n\n") {
@@ -374,5 +375,25 @@ func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 	}
 	if got := search(map[string]any{"path": "Memory.md"}); got != "" {
 		t.Fatalf("search of a missing root index: %q", got)
+	}
+}
+
+func TestMemoryWriteNotesMissingWhen(t *testing.T) {
+	t.Parallel()
+	s, scope := memoryWritesSession(t)
+	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "---\ndescription: has one\n---\n"})
+	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingWhenNote) {
+		t.Fatalf("%+v", res)
+	}
+	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "b.md", "content": "---\ndescription: has one\nwhen: Writing a commit message\n---\n"})
+	if res.IsError || strings.Contains(res.Output, "\n\n") {
+		t.Fatalf("page with when noted: %+v", res)
+	}
+	if raw, err := os.ReadFile(filepath.Join(scope, "b.md")); err != nil || !strings.Contains(string(raw), "when: Writing a commit message\n") {
+		t.Fatalf("b.md not persisted with its when: %q, %v", raw, err)
+	}
+	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "c.md", "content": "# A heading\n"})
+	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingDescriptionNote) || strings.Contains(res.Output, memoryMissingWhenNote) {
+		t.Fatalf("undescribed page should get only the description note: %q", res.Output)
 	}
 }

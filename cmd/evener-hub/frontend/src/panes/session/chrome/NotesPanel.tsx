@@ -13,7 +13,7 @@ import {
 } from "../../../stores/humanNoteDrafts";
 import { beginUrlRemoval, endUrlRemoval, usePendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Textarea, useToasts } from "../../../widgets";
+import { Button, EmptyState, Eyebrow, InlineNotice, Textarea, useToasts } from "../../../widgets";
 import { isWebHref } from "../../../widgets/contextcard";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
@@ -40,21 +40,18 @@ export interface NotesPanelBodyProps {
 
 const CLASS = {
   section: requireClass(styles.section, "notespanel.module.css", "section"),
-  sectionTitle: requireClass(styles.sectionTitle, "notespanel.module.css", "sectionTitle"),
+  editorGroup: requireClass(styles.editorGroup, "notespanel.module.css", "editorGroup"),
   editor: requireClass(styles.editor, "notespanel.module.css", "editor"),
-  status: requireClass(styles.status, "notespanel.module.css", "status"),
-  statusError: requireClass(styles.statusError, "notespanel.module.css", "statusError"),
   prose: requireClass(styles.prose, "notespanel.module.css", "prose"),
   linkList: requireClass(styles.linkList, "notespanel.module.css", "linkList"),
   linkRow: requireClass(styles.linkRow, "notespanel.module.css", "linkRow"),
   linkUrl: requireClass(styles.linkUrl, "notespanel.module.css", "linkUrl"),
-  dim: requireClass(styles.dim, "notespanel.module.css", "dim"),
 };
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className={CLASS.section}>
-      <h3 className={CLASS.sectionTitle}>{title}</h3>
+      <Eyebrow as="h3">{title}</Eyebrow>
       {children}
     </section>
   );
@@ -77,31 +74,23 @@ function HumanStatus({
   idleWake: boolean;
 }) {
   if (saving) {
-    return (
-      <p className={CLASS.status} data-testid="shared-notes-saving" role="status">
-        Saving…
-      </p>
-    );
+    return <InlineNotice data-testid="shared-notes-saving">Saving…</InlineNotice>;
   }
   if (error !== null) {
     return (
-      <p className={CLASS.statusError} data-testid="shared-notes-error" role="alert">
+      <InlineNotice tone="danger" data-testid="shared-notes-error">
         {error}
-      </p>
+      </InlineNotice>
     );
   }
   if (saved) {
-    return (
-      <p className={CLASS.status} data-testid="shared-notes-saved" role="status">
-        Saved
-      </p>
-    );
+    return <InlineNotice data-testid="shared-notes-saved">Saved</InlineNotice>;
   }
   if (idleWake) {
     return (
-      <p className={CLASS.status} data-testid="shared-notes-idle-wake">
+      <InlineNotice live="off" data-testid="shared-notes-idle-wake">
         Saving will wake the agent.
-      </p>
+      </InlineNotice>
     );
   }
   return null;
@@ -185,7 +174,7 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
     <div data-testid="shared-notes-section">
       <Section title="Your note">
         {live ? (
-          <>
+          <div className={CLASS.editorGroup}>
             <div className={CLASS.editor} data-testid="shared-notes-editor">
               <Textarea
                 ref={editorRef}
@@ -200,7 +189,7 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
               />
             </div>
             <HumanStatus saving={saving} saved={saved} error={error} idleWake={idleWake} />
-          </>
+          </div>
         ) : hasNoteText(model.humanNote) ? (
           <p className={CLASS.prose} data-testid="shared-notes-human">
             {model.humanNote}
@@ -214,9 +203,9 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
               {model.agentNote}
             </p>
           ) : (
-            <p className={CLASS.dim} data-testid="shared-notes-agent-empty">
-              No agent note yet
-            </p>
+            <div data-testid="shared-notes-agent-empty">
+              <EmptyState size="compact" title="No agent note yet" />
+            </div>
           )}
         </Section>
       )}
@@ -272,17 +261,15 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
               ))}
             </ul>
           ) : (
-            <p className={CLASS.dim} data-testid="shared-notes-urls-empty">
-              No links yet
-            </p>
+            <div data-testid="shared-notes-urls-empty">
+              <EmptyState size="compact" title="No links yet" />
+            </div>
           )}
         </Section>
       )}
       {!live && !hasContent && (
         <Section title="Notes">
-          <p className={CLASS.dim} data-testid="shared-notes-empty">
-            No shared notes
-          </p>
+          <EmptyState size="compact" title="No shared notes" />
         </Section>
       )}
     </div>

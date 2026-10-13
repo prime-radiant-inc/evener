@@ -210,7 +210,6 @@ test("keeps feature rules from taking shared Card and overlay chrome", () => {
     new Map([
       [".example", [["background", "var(--surface-canvas)"]]],
       [".inventory", [["background", "var(--surface-inset)"]]],
-      [".error", [["background", "var(--surface-inset)"]]],
     ]),
   );
   expectOnlyAllowedOverflow(cardPath, new Map());
@@ -219,13 +218,13 @@ test("keeps feature rules from taking shared Card and overlay chrome", () => {
     new Map([
       [".example", [["padding", "var(--space-3)"]]],
       [".inventory", [["padding", "var(--space-2) var(--space-3)"]]],
-      [".error", [["padding", "var(--space-2) var(--space-3)"]]],
     ]),
   );
   const sectionPath = "src/panes/settings/sections/transcript.module.css";
-  expectOnlyAllowedChrome(sectionPath, new Map([[".error", [["background", "var(--surface-inset)"]]]]));
+  // Errors here are InlineNotices, which carry no box of their own.
+  expectOnlyAllowedChrome(sectionPath, new Map());
   expectOnlyAllowedOverflow(sectionPath, new Map());
-  expectOnlyAllowedPadding(sectionPath, new Map([[".error", [["padding", "var(--space-2) var(--space-3)"]]]]));
+  expectOnlyAllowedPadding(sectionPath, new Map());
 });
 
 test("keeps width ownership and neutral preview/status surfaces explicit", () => {
@@ -265,9 +264,5 @@ test("keeps width ownership and neutral preview/status surfaces explicit", () =>
   ]);
   const inventoryRule = expectExactlyOneRule(cardPath, ".inventory");
   expect(declarationValues(inventoryRule, "background")).toEqual(["var(--surface-inset)"]);
-  const cardErrorRule = expectExactlyOneRule(cardPath, ".error");
-  expect(declarationValues(cardErrorRule, "background")).toEqual(["var(--surface-inset)"]);
-  const sectionErrorRule = expectExactlyOneRule("src/panes/settings/sections/transcript.module.css", ".error");
-  expect(declarationValues(sectionErrorRule, "background")).toEqual(["var(--surface-inset)"]);
   expect(cardStyles).not.toMatch(/\b(?:border|border-radius|box-shadow|overflow(?:-[xy])?)\s*:/);
 });

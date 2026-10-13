@@ -36,11 +36,14 @@ it("indexes the hub's sign-in statuses by provider", () => {
 	expect(authByProvider(statuses).has("meta")).toBe(false);
 });
 
-it("says how a provider signs in", () => {
-	expect(signInKind({ authModes: ["oauth", "apiKey"] })).toBe("Account");
-	expect(signInKind({ authModes: ["apiKey"] })).toBe("API key");
-	expect(signInKind({ authModes: ["credentialJson"] })).toBe("API key");
-	expect(signInKind({ authModes: [] })).toBe("None");
+it("tells an account sign-in, a key, and no sign-in apart, an account winning over a key", () => {
+	const account = signInKind({ authModes: ["oauth"] });
+	const key = signInKind({ authModes: ["apiKey"] });
+	const none = signInKind({ authModes: [] });
+	expect(new Set([account, key, none]).size).toBe(3);
+	expect(signInKind({ authModes: ["oauth", "apiKey"] })).toBe(account);
+	expect(signInKind({ authModes: ["credentialJson"] })).toBe(key);
+	expect(signInKind({})).toBe(none);
 });
 
 it("says nothing of an account sign-in until the hub's statuses have been read", () => {

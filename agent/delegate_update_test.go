@@ -229,7 +229,7 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			lease := tc.refuse(t, c, delegateLease{delegateID: "dlg_target", generation: 1})
 
 			reg := toolpkg.NewRegistry()
-			registerCommunicateTool(reg, newToolDeps(runtime))
+			_ = registerCommunicateTool(reg, newToolDeps(runtime))
 			ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 			// The refusal the controller gives this lease, which the result's
 			// reason must explain.

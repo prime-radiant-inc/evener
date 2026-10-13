@@ -44,7 +44,7 @@ import {
   schemaPathKind,
 } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, useToasts } from "../../../../widgets";
+import { Button, Eyebrow, InlineNotice, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
@@ -56,7 +56,6 @@ const CLASS = {
   groupHeader: requireClass(styles.groupHeader, "LaunchConfigForm.module.css", "groupHeader"),
   field: requireClass(styles.field, "LaunchConfigForm.module.css", "field"),
   actions: requireClass(styles.actions, "LaunchConfigForm.module.css", "actions"),
-  conflict: requireClass(styles.conflict, "LaunchConfigForm.module.css", "conflict"),
   status: requireClass(styles.status, "LaunchConfigForm.module.css", "status"),
 };
 
@@ -412,7 +411,9 @@ export function LaunchConfigForm({
       {groups.map((group, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: group.group repeats when the legacy header-per-change rule re-opens the same name non-contiguously (see groupOptions) - the segment's position is the only stable identity.
         <div key={`${group.group}-${index}`} className={CLASS.group}>
-          <div className={CLASS.groupHeader}>{group.group}</div>
+          <div className={CLASS.groupHeader}>
+            <Eyebrow>{group.group}</Eyebrow>
+          </div>
           {group.options.map((opt) => (
             <div key={opt.field} className={CLASS.field}>
               {renderOption(opt)}
@@ -421,12 +422,16 @@ export function LaunchConfigForm({
         </div>
       ))}
       {conflict && (
-        <p className={CLASS.conflict} role="status" data-reason="host-changed">
-          These settings changed on the host while you were editing. Saving will overwrite the newer values.{" "}
-          <Button type="button" onClick={() => adoptHostValues()}>
-            Use the host's values
-          </Button>
-        </p>
+        <InlineNotice
+          data-reason="host-changed"
+          action={
+            <Button type="button" onClick={() => adoptHostValues()}>
+              Use the host's values
+            </Button>
+          }
+        >
+          These settings changed on the host while you were editing. Saving will overwrite the newer values.
+        </InlineNotice>
       )}
       <div className={CLASS.actions}>
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>

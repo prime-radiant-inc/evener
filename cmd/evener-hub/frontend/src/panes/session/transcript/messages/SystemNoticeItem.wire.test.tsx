@@ -76,7 +76,7 @@ test.each(["compaction-summary", "compaction-checkpoint"] as const)(
   (name) => {
     render(<TurnBlock turn={oneItemTurn(systemEventWireItem(name))} />);
     const scaffold = screen.getByTestId("system-notice-scaffold");
-    expect(scaffold.dataset.kind).toBe("compaction");
+    expect(scaffold.querySelector<HTMLElement>(":scope > summary [data-chars]")?.dataset.kind).toBe("compaction");
     expect(scaffold.querySelector("summary")?.textContent).not.toContain("# Summary");
   },
 );

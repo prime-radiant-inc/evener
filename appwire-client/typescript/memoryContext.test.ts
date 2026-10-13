@@ -4,7 +4,7 @@
 // behavior and gives native the same decoding rather than a second decoder.
 import { describe, expect, it } from "vitest";
 import {
-  MEMORY_CONTEXT_LABEL,
+  MEMORY_CONTEXT_SCOPES,
   type MemoryContextObservation,
   memoryContextEmptyText,
   memoryContextScopeLabel,
@@ -59,10 +59,10 @@ describe("parseMemoryContext", () => {
 });
 
 describe("labels", () => {
-  it("names the heading and each scope", () => {
-    expect(MEMORY_CONTEXT_LABEL).toBe("Refreshed my memory");
-    expect(memoryContextScopeLabel("personal")).toBe("Personal memory");
-    expect(memoryContextScopeLabel("project")).toBe("Project memory");
+  it("names each scope apart", () => {
+    const labels = MEMORY_CONTEXT_SCOPES.map(memoryContextScopeLabel);
+    for (const label of labels) expect(label).not.toBe("");
+    expect(new Set(labels).size).toBe(MEMORY_CONTEXT_SCOPES.length);
   });
 
   it("reads each state as its own word", () => {

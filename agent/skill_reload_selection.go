@@ -93,6 +93,21 @@ func (s *Session) skillInventorySnapshot() map[string]schema.SkillInventoryEntry
 	return schema.CloneSkillInventory(s.skillLifecycle.Inventory)
 }
 
+// advertisedSkillInventory is the self-compact advertisement view: the loaded
+// inventory minus anything this session cannot load, so the compact
+// elicitation and its nudge never offer an unfollowable skill (gardening-memory
+// without the memory save tools). skillInventorySnapshot still carries every
+// record for resolving a submitted reload_skills selection.
+func (s *Session) advertisedSkillInventory() map[string]schema.SkillInventoryEntry {
+	inventory := s.skillInventorySnapshot()
+	for name := range inventory {
+		if !s.skillAvailableToSession(name) {
+			delete(inventory, name)
+		}
+	}
+	return inventory
+}
+
 // skillInventorySummaries flattens the inventory into deterministic,
 // elicitation-ready loaded-skill metadata sorted by canonical name.
 func skillInventorySummaries(inventory map[string]schema.SkillInventoryEntry) []schema.SkillInventorySummary {

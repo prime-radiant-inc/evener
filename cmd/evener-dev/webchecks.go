@@ -27,7 +27,8 @@ func newWebChecksGate() *webGate {
 }
 
 // webCheckSpec runs check in the frontend with private HOME, TMPDIR and XDG
-// roots under root, its own scratch directory, and Node's compile cache off.
+// roots under root, its own scratch directory, Vite's dep cache inside that
+// root, and Node's compile cache off.
 func webCheckSpec(check, root string) guardSpec {
 	return guardSpec{
 		name: check,
@@ -39,6 +40,11 @@ func webCheckSpec(check, root string) guardSpec {
 			"XDG_CONFIG_HOME=" + filepath.Join(root, "xdg-config"),
 			"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
 			"XDG_STATE_HOME=" + filepath.Join(root, "xdg-state"),
+			// Vite's dep-optimizer cache would otherwise land in the checkout's
+			// .vite-cache, which a read-only checkout denies (issue #4193). The
+			// root already holds a "vite-cache" dir (guardDirs); the browser
+			// guards set BROWSER_GUARD_VITE_CACHE_DIR the same way.
+			"EVENER_FRONTEND_VITE_CACHE_DIR=" + filepath.Join(root, "vite-cache"),
 			"NODE_DISABLE_COMPILE_CACHE=1",
 		},
 		// npm exits on TERM without stopping the script's children (tsc,

@@ -1,4 +1,10 @@
-import type { MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
+import {
+  ConnectionClosedError,
+  friendlyErrorMessage,
+  type MarketplaceEntry,
+  type PluginEntry,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -155,16 +161,23 @@ test("shows a Loader while a marketplace's catalog is loading", async () => {
   await waitFor(() => expect(showsEmptyRow()).toBe(true));
 });
 
-test("shows loading, then error, for a failed browse", async () => {
+// The store caches a failed browse in its friendly form, translated while the
+// error still has its type: a hub's own explanation survives, and the
+// client's connection-state wiring text never reaches the screen.
+test.each([
+  ["a hub-reported WireError", new WireError("catalog clone is locked", -32000)],
+  ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+])("a failed browse from %s shows its friendly form", async (_name, err) => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
   fake.on("evener/marketplace/browse", () => {
-    throw new Error("network down");
+    throw err;
   });
   render(<Harness />);
   await user.click(marketplaceToggle("acme-plugins"));
-  expect(await screen.findByText("Failed to browse: network down")).toBeTruthy();
+  await waitFor(() => expect(document.body.textContent).toContain(friendlyErrorMessage(err)));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
 });
 
 test("an empty catalog shows its own empty message", async () => {

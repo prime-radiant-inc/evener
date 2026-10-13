@@ -17,7 +17,7 @@
 // the current client on each call.
 
 import type { AppwireClient } from "./client";
-import { errorText } from "./errors";
+import { friendlyErrorMessage } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore, type StoreListener } from "./frameworkFreeStore";
 import type { SettingsOverviewResponse } from "./types.gen";
 
@@ -28,8 +28,9 @@ export interface HubOverviewState {
    * was last loaded rather than blanking an already-populated screen. */
   data: SettingsOverviewResponse | null;
   loading: boolean;
-  /** The failed request's own text (errorText), for the host to translate at
-   * render; null once a request succeeds. */
+  /** The failed request's friendlyErrorMessage, translated while the error
+   * still has its type so a hub's own WireError explanation survives; render
+   * it as-is. null once a request succeeds. */
   error: string | null;
   /** Loads once: a no-op while `data` is already populated. */
   fetch(): Promise<void>;
@@ -102,7 +103,7 @@ export function createHubOverviewStore(client: HubOverviewClient): HubOverviewSt
     } catch (err) {
       // `data` is deliberately left out: the shallow merge keeps whatever was
       // there (null, or the last successful load) through a failed request.
-      publish({ loading: false, error: errorText(err) });
+      publish({ loading: false, error: friendlyErrorMessage(err) });
     }
   }
 

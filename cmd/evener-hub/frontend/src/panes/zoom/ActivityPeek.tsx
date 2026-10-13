@@ -2,7 +2,7 @@ import { type ReactElement, useState } from "react";
 import { ACTIVITY_TABS, activityTabSpec } from "../../shell/activitybar/activityTabs";
 import { SIGNAL_STATES } from "../../shell/sessionStatus";
 import type { ActivityScope, ActivityTab } from "../../shell/statusbar/statusScope";
-import { IconButton, Popover, StatusDot } from "../../widgets";
+import { CloseIcon, IconButton, Popover, StatusDot } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { cadenceStateForStatus } from "../session/liveness";
@@ -45,7 +45,7 @@ export function ActivityPeek({
           <strong>
             {spec.label} · {scope.leaf.title}
           </strong>
-          <IconButton label="Close activity peek" icon="×" variant="quiet" size="sm" onClick={onClose} />
+          <IconButton label="Close activity peek" icon={<CloseIcon />} variant="quiet" size="sm" onClick={onClose} />
         </header>
         <div className={CLASS.peekBody}>
           <DisclosurePersistenceContext.Provider value={JSON.stringify(["cascade-peek", paneId, scope.leaf.ref, tab])}>

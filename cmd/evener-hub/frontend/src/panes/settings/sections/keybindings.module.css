@@ -12,19 +12,6 @@
   line-height: var(--line-height-body);
 }
 
-.toggle {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.help {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
-}
-
 .status {
   margin: 0;
   color: var(--ink-mid);
@@ -39,15 +26,6 @@
 .warningList {
   margin: var(--space-1) 0 0;
   padding-left: var(--space-4);
-}
-
-.error {
-  margin: 0;
-  background: var(--surface-inset);
-  padding: var(--space-2) var(--space-3);
-  color: var(--ink-hi);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
 }
 
 .list {
@@ -111,10 +89,6 @@
 
 .rowError {
   flex-basis: 100%;
-  margin: 0;
-  color: var(--danger-ink);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
 }
 
 /* The capture widget plus its inline error, stacked under the row label. */
@@ -157,9 +131,3 @@
   white-space: nowrap;
 }
 
-.captureError {
-  margin: 0;
-  color: var(--danger-ink);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
-}

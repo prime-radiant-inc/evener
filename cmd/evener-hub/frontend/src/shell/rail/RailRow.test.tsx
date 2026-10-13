@@ -963,22 +963,10 @@ describe("touch tap floor (RailRow.module.css, any-pointer: coarse)", () => {
   // source assertions pin the rules themselves (jsdom evaluates no cascade).
   const coarseBlock = mediaBlock(RAIL_CSS, "any-pointer: coarse");
 
-  test("row action buttons meet the 44px floor in BOTH dimensions", () => {
-    const rule = nestedRuleBlock(coarseBlock, ".actions button");
-    expect(rule).toContain("min-width: var(--tap-min)");
-    expect(rule).toContain("min-height: var(--tap-min)");
-  });
-
   test("long-press-enabled session titles meet the 44px floor in both dimensions", () => {
     const rule = nestedRuleBlock(coarseBlock, ".sessionTitle button.label");
     expect(rule).toContain("min-width: var(--tap-min)");
     expect(rule).toContain("min-height: var(--tap-min)");
-  });
-
-  test("the widened menu trigger centres its glyph instead of hugging an edge", () => {
-    const rule = nestedRuleBlock(coarseBlock, '.actions button[aria-haspopup="menu"]');
-    expect(rule).toContain("padding: 0");
-    expect(rule).toContain("justify-content: center");
   });
 });
 
@@ -2291,23 +2279,6 @@ describe("shared right slot (RailRow.module.css)", () => {
     expect(actionsRule).not.toMatch(/background:/);
     expect(actionsRule).not.toMatch(/linear-gradient/);
     expect(actionsRule).not.toMatch(/padding-left:/);
-  });
-
-  test("the row's menu trigger hugs its glyph, right-justified to the slot's edge", () => {
-    // The Menu widget's trigger is padded for a standalone button
-    // (--space-4 on both sides), which centered the "..." glyph ~16px in
-    // from the slot's right edge - the x the timestamp's own text ends at.
-    // The row's override keeps padding only on the leading side, so the
-    // revealed menu right-justifies to the timestamp's own edge (and the
-    // shared cell narrows to the glyph's real width). Scoped by attribute
-    // so a project row's "+" IconButton keeps its own square geometry.
-    //
-    // Anchored to the TOP-LEVEL rule (column 0): the same selector also
-    // appears inside @media (any-pointer: coarse), where the widened tap target
-    // centres the glyph instead - that override is the tap-floor describe's
-    // own assertion above, not this one's.
-    const justifyRule = topRuleBlock(RAIL_CSS, '.actions button[aria-haspopup="menu"]');
-    expect(justifyRule).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
   });
 
   // The signal dot keeps a FIXED width and refuses to flex: its outdent

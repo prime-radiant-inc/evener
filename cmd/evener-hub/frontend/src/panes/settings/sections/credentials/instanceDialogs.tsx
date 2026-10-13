@@ -26,7 +26,16 @@ import {
 } from "@evener/appwire-client";
 import { type FormEvent, useLayoutEffect, useRef, useState } from "react";
 import { credentialsStore, isStaleListingRefusal } from "../../../../stores/credentials";
-import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } from "../../../../widgets";
+import {
+  Button,
+  Dialog,
+  FormRow,
+  InlineNotice,
+  Input,
+  Select,
+  type SelectOption,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { FormError } from "./formError";
 import styles from "./instanceDialogs.module.css";
@@ -38,7 +47,6 @@ import { useEditorLifetime } from "./useEditorLifetime";
 const CLASS = {
   body: requireClass(styles.body, "instanceDialogs.module.css", "body"),
   actions: requireClass(styles.actions, "instanceDialogs.module.css", "actions"),
-  error: requireClass(styles.error, "instanceDialogs.module.css", "error"),
   textarea: requireClass(styles.textarea, "instanceDialogs.module.css", "textarea"),
 };
 
@@ -368,9 +376,9 @@ export function AddInstanceDialog({
           />
         </FormRow>
         {error && (
-          <p className={CLASS.error} role="alert" data-reason={error.reason}>
+          <InlineNotice tone="danger" data-reason={error.reason}>
             {error.message}
-          </p>
+          </InlineNotice>
         )}
         <div className={CLASS.actions}>
           {unconfirmedName ? (
@@ -615,9 +623,9 @@ function CredentialValueDialog({
           )}
         </FormRow>
         {error && (
-          <p className={CLASS.error} role="alert" data-reason={error.reason}>
+          <InlineNotice tone="danger" data-reason={error.reason}>
             {error.message}
-          </p>
+          </InlineNotice>
         )}
         <div className={CLASS.actions}>
           <Button type="submit" disabled={busy}>

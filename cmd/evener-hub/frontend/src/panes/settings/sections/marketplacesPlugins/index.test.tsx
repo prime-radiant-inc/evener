@@ -1,12 +1,12 @@
-import { type MarketplaceEntry, type PluginEntry, WireError } from "@evener/appwire-client";
+import { friendlyErrorMessage, type MarketplaceEntry, type PluginEntry, WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
-import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { alertReasons, statusReasons } from "../reasonTestUtils";
 import { MarketplacesPluginsSection } from "./index";
 import { chipKinds } from "./marketplacesTestUtils";
 
@@ -107,7 +107,7 @@ test("a view whose plugin list failed to load asks the hub for no updates", asyn
     throw new Error("boom");
   });
   render(<MarketplacesPluginsSection />);
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
   expect(fake.calls.some((c) => c.method === "evener/plugin/checkUpdates")).toBe(false);
 });
 
@@ -118,9 +118,11 @@ test("shows one failed-to-load message replacing everything when the marketplace
   });
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
   render(<MarketplacesPluginsSection />);
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
-  // error is converted via friendlyErrorMessage: the raw string never appears
-  expect(screen.queryByText("network down")).toBeNull();
+  await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
+  // A load that fails as the section opens is a polite status, not an alert.
+  expect(alertReasons()).toEqual([]);
+  // friendlyErrorMessage keeps a raw JS error's message off the screen.
+  expect(screen.getByRole("status").textContent).not.toContain("network down");
   expect(screen.queryByRole("radiogroup", { name: "View" })).toBeNull();
 });
 
@@ -131,9 +133,33 @@ test("shows one failed-to-load message when the plugin list fails to load", asyn
     throw new Error("boom");
   });
   render(<MarketplacesPluginsSection />);
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
-  // error is converted via friendlyErrorMessage: the raw string never appears
+  // One failure notice, however many fetches failed; friendlyErrorMessage
+  // keeps the raw string off the screen.
+  await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
   expect(screen.queryByText("boom")).toBeNull();
+});
+
+// The extensions stores translate a list failure while it still has its type,
+// so the notice renders the stored text as-is: a hub-reported explanation or a
+// client-side diagnosis survives instead of collapsing to the generic one.
+test.each([
+  ["marketplace", "a hub-reported WireError", new WireError("marketplace registry is locked", -32000)],
+  ["marketplace", "a client-side failure", new Error("AppwireClient internal detail")],
+  ["plugin", "a hub-reported WireError", new WireError("plugin index is rebuilding", -32000)],
+  ["plugin", "a client-side failure", new Error("AppwireClient internal detail")],
+])("a %s list failure from %s shows that error's friendly form", async (list, _name, err) => {
+  const fake = connectFakeClient();
+  fake.on("evener/marketplace/list", () => {
+    if (list === "marketplace") throw err;
+    return { marketplaces: [] };
+  });
+  fake.on("evener/plugin/list", () => {
+    if (list === "plugin") throw err;
+    return { plugins: [] };
+  });
+  render(<MarketplacesPluginsSection />);
+  await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
+  expect(screen.getByRole("status").textContent).toContain(friendlyErrorMessage(err));
 });
 
 test("the segment control carries the list counts and defaults to Installed", async () => {
@@ -223,7 +249,7 @@ test("keeps an applied removal guard across failed reconciliation and sheet remo
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
   act(() => extensionsStore.setState({ marketplacesError: null }));
   expect(await screen.findByRole("dialog", { name: "acme-plugins" })).toBeTruthy();
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
@@ -255,7 +281,7 @@ test("a later accepted notification publication clears a same-name applied remov
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
 
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
   fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
   await waitFor(() => expect(listCalls).toBe(3), { timeout: 1000 });
   await waitFor(() => expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy());
@@ -327,7 +353,7 @@ test("clears an applied removal guard when the connection client changes", async
   await user.click(
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
 
   const second = new FakeClient("ready");
   second.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
@@ -455,7 +481,7 @@ test("clears an applied removal guard when the selected host changes (same conne
   await user.click(
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
 
   // Same connection, different host: the guard belongs to beta's catalog and
   // must not suppress the reminder for gamma's marketplace of the same name.

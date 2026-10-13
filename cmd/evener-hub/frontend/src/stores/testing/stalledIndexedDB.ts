@@ -26,6 +26,19 @@ export function neverSettlingFactory(): IDBFactory {
   return indexedDB;
 }
 
+// Wedge every open() of `databaseName` on this factory: the request comes back
+// but never fires success, error or blocked. Opens of any other database still
+// reach the real factory, so a probe can open a different one and finish. The
+// returned spy restores the real open() when the test calls mockRestore().
+export function wedgeDatabaseOpens(indexedDB: IDBFactory, databaseName: string) {
+  const open = indexedDB.open.bind(indexedDB);
+  return vi
+    .spyOn(indexedDB, "open")
+    .mockImplementation((name: string, version?: number) =>
+      name === databaseName ? neverSettlingRequest() : open(name, version),
+    );
+}
+
 // Delete the named database between tests, so no row one test seeded survives
 // into the next one. "blocked" is a bed bug — a connection the test left
 // open — not an outcome to wait out, so it rejects like an error.

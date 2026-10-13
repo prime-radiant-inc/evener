@@ -307,12 +307,30 @@ const (
 	failureNudgeText = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 )
 
+// repetitionNudgePrefix is the fixed front of every repetition nudge (the count
+// follows it); IsBreakerNudge matches on it, so a reworded nudge cannot silently
+// stop being recognized as one.
+const repetitionNudgePrefix = "You have now made this same call and received the identical result "
+
 // repetitionNudgeText builds the nudge for a run of consecutive identical
 // results. Repetition is never parked, so count can climb arbitrarily high
 // as a session loops; stating the real count lets a long loop read as
 // escalating rather than repeating the same "twice" wording forever.
 func repetitionNudgeText(count int) string {
-	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+}
+
+// IsBreakerNudge reports whether text is the breaker's intervention text —
+// appendIntervention's failure or repetition nudge — rather than a note about a
+// tool result. A search result lists entries, then its own notes after a blank
+// line, and the registry appends the nudge the same way, so a reader that keeps
+// the notes cannot tell them apart by position when the result wrote none. The
+// compaction summarizer uses this to end a result's notes where the registry's
+// intervention begins (#4223). Every text appendIntervention appends must match
+// here, or a reader reads that intervention as a note again.
+func IsBreakerNudge(text string) bool {
+	text = strings.TrimSpace(text)
+	return text == failureNudgeText || strings.HasPrefix(text, repetitionNudgePrefix)
 }
 
 // failureParkText is the body of a refused call whose signature keeps failing

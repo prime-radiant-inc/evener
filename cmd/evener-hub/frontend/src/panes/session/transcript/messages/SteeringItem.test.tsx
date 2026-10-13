@@ -36,6 +36,12 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "steering", text: "", ...overrides };
 }
 
+// The kind the divider's label names (its label span's data-kind), undefined
+// when the label claims none.
+function steeringKind(divider: HTMLElement = screen.getByTestId("steering-item")): string | undefined {
+  return divider.querySelector<HTMLElement>(":scope > summary [data-kind]")?.dataset.kind;
+}
+
 test('self-registers under the wire\'s steering item type ("steering")', () => {
   expect(itemRendererFor("steering")).toBe(SteeringItem);
 });
@@ -87,7 +93,7 @@ test("a user-sourced human-note steer renders the labeled divider, not a user bu
   );
   expect(screen.getByTestId("steering-item")).toBeTruthy();
   expect(screen.queryByTestId("user-message-item")).toBeNull();
-  expect(screen.getByTestId("steering-item").dataset.kind).toBe("human-note");
+  expect(steeringKind()).toBe("human-note");
 });
 
 // --- daemon-sourced (no source, or any non-"user" source) -> quiet divider --
@@ -102,6 +108,8 @@ test("the divider is collapsed by default and expands to show the verbatim text"
   render(<SteeringItem item={item({ text: "the raw steering body" })} turn={turn} live={false} />);
   const details = screen.getByTestId("steering-item") as HTMLDetailsElement;
   expect(details.open).toBe(false);
+  fireEvent.click(details.querySelector("summary")!);
+  expect(details.open).toBe(true);
   expect(details.textContent).toContain("the raw steering body");
 });
 
@@ -158,6 +166,7 @@ test("a daemon-sourced steering item with BOTH real text and images renders the 
     />,
   );
   const el = screen.getByTestId("steering-item");
+  fireEvent.click(el.querySelector("summary")!);
   expect(el.textContent).toContain("daemon nudge with a picture");
   expect(screen.queryByTestId("user-message-image-placeholder")).toBeNull();
   expect(el.textContent).not.toMatch(/\[\d+ images?\]/);
@@ -178,7 +187,7 @@ test("labels a steer from its wire kind", () => {
       live={false}
     />,
   );
-  expect(screen.getByTestId("steering-item").dataset.kind).toBe("tasks-done");
+  expect(steeringKind()).toBe("tasks-done");
   expect(screen.getByTestId("steering-glyph")).toBeTruthy();
 });
 
@@ -190,7 +199,7 @@ test("labels provider-failure steering from the wire kind", () => {
       live={false}
     />,
   );
-  expect(screen.getByTestId("steering-item").dataset.kind).toBe("provider-failure");
+  expect(steeringKind()).toBe("provider-failure");
 });
 
 test("labels an interrupted salvage draft from the wire kind", () => {
@@ -204,13 +213,13 @@ test("labels an interrupted salvage draft from the wire kind", () => {
       live={false}
     />,
   );
-  expect(screen.getByTestId("steering-item").dataset.kind).toBe("interrupted-salvage");
+  expect(steeringKind()).toBe("interrupted-salvage");
 });
 
 // No kind means the daemon did not say. A colon promises a value.
 test("claims nothing when the wire carries no kind", () => {
   render(<SteeringItem item={item({ text: "unclassifiable" })} turn={turn} live={false} />);
-  expect(screen.getByTestId("steering-item").dataset.kind).toBeUndefined();
+  expect(steeringKind()).toBeUndefined();
 });
 
 // The OTHER half of "no colon": a kind the wire DID send, but this UI has no
@@ -221,7 +230,7 @@ test("claims nothing when the wire carries no kind", () => {
 test("claims nothing when the wire kind is unmapped, not just when it's absent", () => {
   render(<SteeringItem item={item({ text: "x", steeringKind: "some-future-kind" })} turn={turn} live={false} />);
   const divider = screen.getByTestId("steering-item");
-  expect(divider.dataset.kind).toBeUndefined();
+  expect(steeringKind(divider)).toBeUndefined();
   expect(divider.querySelector("summary")?.textContent).not.toContain("some-future-kind");
 });
 
@@ -230,7 +239,7 @@ test("does not infer a kind from the text", () => {
   render(
     <SteeringItem item={item({ text: "You have completed all tasks on your task list." })} turn={turn} live={false} />,
   );
-  expect(screen.getByTestId("steering-item").dataset.kind).toBeUndefined();
+  expect(steeringKind()).toBeUndefined();
 });
 
 // current-task/task-list: the tasks panel + task-update card already own
@@ -247,7 +256,7 @@ test.each([["current-task"], ["task-list"]])("suppresses %s - the tasks panel ow
 // reminders render with their label.
 test("a task-inactive kind renders labeled, not suppressed", () => {
   render(<SteeringItem item={item({ text: "x", steeringKind: "task-inactive" })} turn={turn} live={false} />);
-  expect(screen.getByTestId("steering-item").dataset.kind).toBe("task-inactive");
+  expect(steeringKind()).toBe("task-inactive");
 });
 
 // Ordering pin: the source==="user" check must run BEFORE the SUPPRESSED
@@ -534,8 +543,22 @@ test("a mixed notification steer keeps its wire-kind label on the leftover divid
     />,
   );
   expect(screen.getByTestId("notification-card")).toBeTruthy();
-  expect(screen.getByTestId("steering-item").dataset.kind).toBe("tasks-done");
+  expect(steeringKind()).toBe("tasks-done");
+  const kindLabel = screen.getByTestId("steering-item").querySelector("summary")?.textContent;
+  fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
   expect(screen.getByText("trailing steering prose")).toBeTruthy();
+  cleanup();
+  // The same leftover prose without the wire kind labels differently, so the
+  // kind is what named the divider.
+  render(
+    <SteeringItem
+      item={item({ text: `${JOB_NOTIFICATION_STEERING}\ntrailing steering prose` })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(steeringKind()).toBeUndefined();
+  expect(screen.getByTestId("steering-item").querySelector("summary")?.textContent).not.toBe(kindLabel);
 });
 
 // issue #48: text between two notification blocks used to be stripped out
@@ -557,6 +580,7 @@ Job job_8 failed.
     "steering-item",
     "notification-card",
   ]);
+  fireEvent.click(nodes[1]!.querySelector("summary")!);
   expect(nodes[1]?.textContent).toContain("middle steering text");
 });
 
@@ -588,28 +612,33 @@ test("an observer callback with no steeringKind still renders its notification c
 
 // --- structure: glyph leading, chevron trailing, one ink for the row -------
 
-test("the chevron trails the label, and the diamond leads inside its rail slot", () => {
+test("the diamond leads the summary, then the label, then the Disclosure's own chevron", () => {
   render(<SteeringItem item={item({ text: "x", steeringKind: "loop-detected" })} turn={turn} live={false} />);
   const summary = screen.getByTestId("steering-item").querySelector("summary");
   const kids = Array.from(summary?.children ?? []);
   expect(kids[0]?.getAttribute("data-testid")).toBe("steering-rail-icon");
   expect(kids[0]?.querySelector('[data-testid="steering-glyph"]')).not.toBeNull();
-  expect(kids[kids.length - 1]?.getAttribute("data-testid")).toBe("steering-chevron");
+  expect(kids[1]?.querySelector("svg")).toBeNull();
+  expect(kids[1]?.textContent).not.toBe("");
+  expect(kids[kids.length - 1]?.getAttribute("aria-hidden")).toBe("true");
+  expect(kids[kids.length - 1]?.querySelector("svg")).not.toBeNull();
+  expect(screen.queryByTestId("steering-chevron")).toBeNull();
 });
 
-test("the diamond rails at 50% opacity in the speaker-avatar column, gutter-pulled on the summary above the breakpoint", () => {
+test("a collapsed divider keeps its steered text out of the document until opened", () => {
+  render(<SteeringItem item={item({ text: "the steered note" })} turn={turn} live={false} />);
+  expect(screen.queryByText("the steered note")).toBeNull();
+  fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
+  expect(screen.getByText("the steered note")).toBeTruthy();
+});
+
+test("the diamond sits in the content column at 50% opacity - no gutter pull", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "steeringitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const slot = /\.railIcon\s*\{([^}]*)\}/.exec(css);
   expect(slot).not.toBeNull();
   expect(slot![1]).toContain("opacity: 0.5");
-  expect(slot![1]).toContain("width: var(--speaker-avatar-size)");
-  // slot + margin + the row's own gap = one speaker-gutter, so the label
-  // lands exactly on the content edge (same arithmetic as ToolRow's rail).
-  expect(slot![1]).toContain("margin-right: calc(var(--speaker-gap) - var(--space-2))");
-  const media = /@media \(min-width: 700px\) \{\s*\.summary\s*\{([^}]*)\}/.exec(css);
-  expect(media).not.toBeNull();
-  expect(media![1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+  expect(css).not.toContain("margin-left: calc(-1 * var(--speaker-gutter))");
 });
 
 test("the body opens with the SYSTEM-REMINDER wrapper stripped", () => {

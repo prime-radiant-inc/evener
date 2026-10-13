@@ -236,7 +236,7 @@ func extractOriginalPrompt(history []schema.Turn) string {
 			}
 			continue
 		}
-		if strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
+		if strings.HasPrefix(text, summaryMarkerStart) {
 			continue
 		}
 		return text
