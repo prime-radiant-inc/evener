@@ -914,11 +914,8 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	// by the open turn, and errRebuild covers the rest.
 	x.builder.global = nil
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
-	if testKillAfterRecordWrites != nil {
-		if err := testKillAfterRecordWrites(); err != nil {
-			return err
-		}
-	}
+	// The kill seam lives inside writeMeta, after the record flushes: killing
+	// here instead would exit before anything reached the files.
 	if err := x.writeMeta(); err != nil {
 		return err
 	}
