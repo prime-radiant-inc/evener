@@ -1023,14 +1023,15 @@ async function openCachedEntryTranscript(ref: string, generation: number): Promi
   await opening;
 }
 
-function releaseEntryTranscriptReader(ref: string): void {
+function releaseEntryTranscriptReader(ref: string, releaseDisplay = false): void {
+  if (heldCountsAtStore(ref)) return;
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref) return;
   clearEntryTranscriptLocalOpening(ref);
   fixture.reader?.dispose();
   fixture.reader = undefined;
   const model = threadsStore.getState().threads.get(ref);
-  if (model && isEntryTranscriptBackgroundOnly(ref)) {
+  if (releaseDisplay && model && isEntryTranscriptBackgroundOnly(ref)) {
     putThreadModel(ref, pruneBackgroundHistoryBodies(model));
   }
 }
@@ -1434,6 +1435,8 @@ const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
 const trackedHydrationAttempts = new Map<string, number>();
 const pendingMutationReconciliations = new Map<string, Promise<void>>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
+// Clear retires response ownership, not the mounted owner's need for a read.
+const clearHydrationDemands = new Map<HydrationOwnerKind, Map<string, number>>();
 
 // --- Notification routing index ---------------------------------------------
 //
@@ -2371,6 +2374,7 @@ function getMutationRuntime(): MutationRuntime | null {
           notesUpdateGenerations.get(ref) === generation &&
           notesLatestIntentSequences.get(ref) === record.intentSequence;
         if (current) {
+          entryTranscriptRoute(ref)?.repository?.acceptResponseFields({ humanNote: response.note });
           threadsStore.setState((state) => ({
             threads: replaceThread(state.threads, ref, (model) => ({ ...model, humanNote: response.note })),
             watchedThreads: replaceThread(state.watchedThreads, ref, (model) => ({
@@ -6519,13 +6523,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const retirement = retireEntryTranscriptIfUnowned(ref);
     if (retirement) {
       releaseSubagentRows(ref);
-      releaseEntryTranscriptReader(ref);
+      releaseEntryTranscriptReader(ref, true);
       retireCanonicalThreadIfUnowned(ref);
       return retirement;
     }
     syncThreadSubscription(ref);
     releaseSubagentRows(ref);
-    releaseEntryTranscriptReader(ref);
+    releaseEntryTranscriptReader(ref, true);
     if (canonicalThreadOwnerActive(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
     // retry and wake anything still awaiting its first model.
@@ -7025,6 +7029,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const response = await client.request("goal/set", { ref, objective });
       if (goalUpdateGenerations.get(ref) !== generation) return response;
       const goal = objective === "" ? null : { objective, status: "active", iterations: 0 };
+      entryTranscriptRoute(ref)?.repository?.acceptResponseFields({ goal });
       threadsStore.setState((state) => {
         const threads = replaceThread(state.threads, ref, (model) => ({ ...model, goal }));
         const watchedThreads = replaceThread(state.watchedThreads, ref, (model) => ({ ...model, goal }));
@@ -7484,20 +7489,29 @@ function deleteCachedRefs(refs: string[]): void {
 
 function reconcileClearInput(): void {
   if (threadsStore.getState().clearInFlight !== undefined) return;
+  const tracked = clearHydrationDemands.get("thread") ?? new Map<string, number>();
+  clearHydrationDemands.set("thread", tracked);
   for (const route of entryTranscriptRoutes()) {
     const generation = route.clearRefreshGeneration;
     route.clearRefreshGeneration = undefined;
-    if (
-      generation === undefined ||
-      generation !== hydrationOwnerGeneration("thread", route.ref) ||
-      !canonicalThreadOwnerActive(route.ref) ||
-      threadsStore.getState().deletedRefs.has(route.ref) ||
-      wiredClient?.state !== "ready"
-    )
-      continue;
-    // The ordinary refresh keeps read/publication ownership fences and the
-    // held cache lifetime's suppression. Reconnect owns a non-ready client.
-    void retryTrackedHydration(wiredClient, readyEpoch, route.ref).catch(() => {});
+    if (generation !== undefined) tracked.set(route.ref, generation);
+  }
+  const demands = [...clearHydrationDemands];
+  clearHydrationDemands.clear();
+  for (const [kind, refs] of demands) {
+    for (const [ref, generation] of refs) {
+      if (
+        generation !== hydrationOwnerGeneration(kind, ref) ||
+        !hydrationOwnerActive(kind, ref) ||
+        threadsStore.getState().deletedRefs.has(ref) ||
+        wiredClient?.state !== "ready"
+      )
+        continue;
+      // Ordinary refresh preserves publication fences and the held cache
+      // lifetime's suppression. Reconnect owns a non-ready client.
+      const retry = kind === "watched" ? retryWatchedHydration : retryTrackedHydration;
+      void retry(wiredClient, readyEpoch, ref).catch(() => {});
+    }
   }
 }
 
@@ -7536,11 +7550,14 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // Synchronous logical retirement, before the transaction resolves: a
   // pre-Clear hydration must not publish into the same-tab clear window. Issued
   // reads keep their capacity charge; only their claim to publish is retired.
-  for (const [ref, pending] of [...pendingThreadHydrations]) {
-    retirePendingHydration(ref, pending, pendingThreadHydrations);
-  }
-  for (const [ref, pending] of [...pendingWatchedHydrations]) {
-    retirePendingHydration(ref, pending, pendingWatchedHydrations);
+  for (const kind of ["thread", "watched"] as const) {
+    const pendingHydrations = kind === "thread" ? pendingThreadHydrations : pendingWatchedHydrations;
+    const demands = clearHydrationDemands.get(kind) ?? new Map<string, number>();
+    clearHydrationDemands.set(kind, demands);
+    for (const [ref, pending] of [...pendingHydrations]) {
+      demands.set(ref, hydrationOwnerGeneration(kind, ref));
+      retirePendingHydration(ref, pending, pendingHydrations);
+    }
   }
   residencyIfCreated?.retireClaims();
   // The entry cache is the tab's only durable Clear boundary.
@@ -7669,6 +7686,12 @@ function transcriptResidency(): TranscriptResidency {
 function syncTranscriptResidencyOwners(ref: string): void {
   residencyIfCreated?.connection(readyEpoch, wiredClient?.state === "ready");
   syncCacheLifetimeForeground(ref);
+  const route = entryTranscriptRoute(ref);
+  if (!route?.repository) return;
+  // A history or mutation hold owns repository retention, not the lifetime of
+  // the already-published display. Pane release drops its display separately.
+  if (heldCountsAtStore(ref)) route.reader ??= route.repository.attachReader();
+  else if (route.reader) releaseEntryTranscriptReader(ref);
 }
 
 export async function settleBackgroundTranscriptsForTests(): Promise<void> {
@@ -7899,6 +7922,7 @@ export function resetThreadsStoreForTests(): void {
   inflightWatchHydrateEpochs.clear();
   inflightWatchIncludeTurns.clear();
   pendingWatchedHydrations.clear();
+  clearHydrationDemands.clear();
   watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
