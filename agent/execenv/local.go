@@ -1483,7 +1483,7 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 		// to the returned bytes, so the output is unchanged from the off path.
 		b, err = sfs.readFile("read_file", abs)
 	} else {
-		b, err = afero.ReadFile(e.filesystem(), abs)
+		b, err = readFileCapped(e.filesystem(), abs)
 	}
 	if err != nil {
 		// Best-effort "did you mean" suggestion for a genuine missing-file miss
@@ -1517,11 +1517,27 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 	return NumberLines(string(b), offsetLine, limitLines), b, nil
 }
 
+// eachLine visits the '\n'-separated segments of text in order — including
+// the final (possibly empty) segment after a trailing newline, exactly the
+// segments strings.Split(text, "\n") yields — without materializing them all:
+// a line-heavy file at the whole-file read cap would otherwise hold ~16 bytes
+// of slice header per line at once (issue #4556). The walk stops once visit
+// returns true.
+func eachLine(text string, visit func(line string) bool) {
+	for line := range strings.SplitSeq(text, "\n") {
+		if visit(line) {
+			return
+		}
+	}
+}
+
 // NumberLines presents text as ReadFile presents a text file: CRLF
 // normalized to LF, lines numbered from offsetLine (default 1), at most
-// limitLines lines (default 2000), and "" past the end.
+// limitLines lines (default 2000), and "" past the end. The window is
+// extracted by scanning segments rather than splitting the file, so a
+// line-heavy file at the whole-file read cap does not allocate per line for
+// every line in it (issue #4556).
 func NumberLines(text string, offsetLine, limitLines *int) string {
-	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	start := 1
 	if offsetLine != nil && *offsetLine > 0 {
 		start = *offsetLine
@@ -1530,14 +1546,24 @@ func NumberLines(text string, offsetLine, limitLines *int) string {
 	if limitLines != nil && *limitLines > 0 {
 		limit = *limitLines
 	}
-	if start > len(lines) {
-		return ""
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	// Skip to line start. Running out of newlines first means start is past
+	// the final segment.
+	for i := 1; i < start; i++ {
+		idx := strings.IndexByte(text, '\n')
+		if idx < 0 {
+			return ""
+		}
+		text = text[idx+1:]
 	}
-	end := min(start-1+limit, len(lines))
+	remaining := limit
 	var out strings.Builder
-	for i := start; i <= end; i++ {
-		fmt.Fprintf(&out, "%4d\t%s\n", i, lines[i-1])
-	}
+	eachLine(text, func(line string) bool {
+		fmt.Fprintf(&out, "%4d\t%s\n", start, line)
+		start++
+		remaining--
+		return remaining == 0
+	})
 	return out.String()
 }
 
@@ -1660,7 +1686,7 @@ func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, 
 		if err != nil {
 			return "", err
 		}
-		b, err = afero.ReadFile(e.filesystem(), abs)
+		b, err = readFileCapped(e.filesystem(), abs)
 	}
 	if err != nil {
 		return "", err
@@ -1709,29 +1735,49 @@ func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, 
 
 // findFuzzyMatch scans the file content for a substring that matches
 // oldString when whitespace is normalized. Returns the actual substring from
-// the file, or "" if no match.
+// the file, or "" if no match. The content is scanned segment by segment: a
+// line-heavy file at the whole-file read cap would otherwise allocate ~16
+// bytes of slice header per line for every line in it (issue #4556).
 func findFuzzyMatch(content, oldString string) string {
 	normOld := normalizeWS(oldString)
 	if normOld == "" {
 		return ""
 	}
 	// Scan lines for single-line matches.
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
+	var match string
+	eachLine(content, func(line string) bool {
 		if normalizeWS(line) == normOld {
-			return line
+			match = line
+			return true
 		}
+		return false
+	})
+	if match != "" {
+		return match
 	}
 	// Multi-line: try sliding window of the same line count.
 	oldLines := strings.Split(oldString, "\n")
 	wSize := len(oldLines)
-	if wSize > 1 && wSize <= len(lines) {
-		for i := 0; i <= len(lines)-wSize; i++ {
-			candidate := strings.Join(lines[i:i+wSize], "\n")
-			if normalizeWS(candidate) == normOld {
-				return candidate
-			}
+	if wSize < 2 {
+		return ""
+	}
+	window := make([]string, 0, wSize)
+	found := false
+	eachLine(content, func(line string) bool {
+		if len(window) == wSize {
+			copy(window, window[1:])
+			window[wSize-1] = line
+		} else {
+			window = append(window, line)
 		}
+		if len(window) == wSize && normalizeWS(strings.Join(window, "\n")) == normOld {
+			found = true
+			return true
+		}
+		return false
+	})
+	if found {
+		return strings.Join(window, "\n")
 	}
 	return ""
 }
@@ -1755,18 +1801,34 @@ func nearestFileRegion(content, oldString string) string {
 	if target == "" {
 		return ""
 	}
-	lines := strings.Split(content, "\n")
+	// Score every segment, then re-walk to collect the best window: two
+	// streamed passes instead of a whole-file split, which would hold ~16
+	// bytes of slice header per line at once (issue #4556).
 	best, bestScore := -1, 0.0
-	for i, line := range lines {
+	lineNo := 0
+	eachLine(content, func(line string) bool {
 		if score := lineSimilarity(normalizeWS(line), target); score > bestScore {
-			best, bestScore = i, score
+			best, bestScore = lineNo, score
 		}
-	}
+		lineNo++
+		return false
+	})
 	if best < 0 || bestScore < 0.5 {
 		return ""
 	}
-	end := min(best+len(oldLines), len(lines))
-	return strings.Join(lines[best:end], "\n")
+	window := make([]string, 0, len(oldLines))
+	lineNo = 0
+	eachLine(content, func(line string) bool {
+		if lineNo >= best && lineNo < best+len(oldLines) {
+			window = append(window, line)
+			if len(window) == len(oldLines) {
+				return true
+			}
+		}
+		lineNo++
+		return false
+	})
+	return strings.Join(window, "\n")
 }
 
 // lineSimilarity scores two whitespace-normalized lines in [0,1]: 1.0 when one

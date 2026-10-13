@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -409,10 +408,6 @@ func (s *sandboxFS) grantedWriteParent(tool, abs string) (int, string, error) {
 	return parentFd, leaf, nil
 }
 
-// errNotRegularFile is the refusal for an admitted path that is neither a
-// regular file nor (where allowed) a directory.
-var errNotRegularFile = errors.New("not a regular file")
-
 // admitReadFD turns a descriptor opened with O_NONBLOCK into an *os.File whose
 // type is confirmed before any read: a regular file, or — when allowDir — a
 // directory (the fs.FS Open contract admits directories). The nonblocking open
@@ -452,7 +447,10 @@ func admitReadFD(fd int, name string, allowDir bool) (*os.File, error) {
 
 // readFile reads the whole file at abs through a race-safe fd, admitted by
 // admitReadFD: a FIFO would otherwise block at open and a never-ending special
-// file would allocate without bound.
+// file would allocate without bound. The read is capped at
+// MaxWholeFileReadBytes, so an oversized or hostile regular file — procfs
+// specials stat regular at terabyte sizes — fails fast instead of loading
+// (issue #4556).
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
@@ -463,7 +461,17 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
 	defer func() { _ = f.Close() }()
-	return io.ReadAll(f)
+	// Refuse at the stat size before reading a byte, matching the off arm's
+	// fstat refusal; readAllCapped still bounds the read for a file that grows
+	// past the cap after this check.
+	info, serr := f.Stat()
+	if serr != nil {
+		return nil, fmt.Errorf("read %q: %w", abs, serr)
+	}
+	if info.Size() > MaxWholeFileReadBytes {
+		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
+	}
+	return readAllCapped(f, MaxWholeFileReadBytes)
 }
 
 // writeFile atomically writes data to abs: it resolves the parent beneath a
