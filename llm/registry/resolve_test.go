@@ -241,6 +241,15 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 		t.Fatalf("alias of a derived-controls target must derive no shape, got %v", *alias.Caps.ThinkingShape)
 	}
 
+	// A same-protocol alias whose own config supplies budget controls
+	// re-derives from that evidence: the target's absent verdict is stale
+	// once the alias's layers change the controls (roborev round 10).
+	r7 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.cu-budget]\nalias_of = \"gemini-2.5-computer-use-preview-10-2025\"\nreasoning_controls = [\"budget_tokens\"]\n")
+	alias = mustResolve(t, r7, "google/cu-budget")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("alias with its own budget controls must derive budget: %+v", alias.Caps.ThinkingShape)
+	}
+
 	// A cross-protocol alias of a target whose catalog recorded the effort
 	// control still derives no shape: the evidence belongs to the target's
 	// protocol, and a third-party gateway may record effort for a
@@ -264,17 +273,17 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 		t.Fatalf("an alias with its own recorded controls must derive level: %+v", alias.Caps.ThinkingShape)
 	}
 
-	// An alias on a custom provider (defaulting to openai-chat) whose target
-	// row overrides to google, but whose own transport override blocks
-	// protocol inheritance, must not inherit the target's shape
-	// (roborev round 8).
-	r5 := fixtureLoad(t, map[string]string{"OPENROUTER_API_KEY": "k"}, "[providers.custom]\nbase_url = \"https://example.test/v1\"\nprotocol = \"openai-chat\"\n[providers.custom.models.gemini-via-transport]\nalias_of = \"openrouter/google/gemini-3.1-pro-preview\"\ntransport = \"vertex-gemini\"\n")
-	alias = mustResolve(t, r5, "custom/gemini-via-transport")
-	if alias.Protocol == ProtocolGoogle {
-		t.Fatalf("transport override must prevent protocol inheritance: %s", alias.Protocol)
+	// A transport override on a same-protocol alias does not change the
+	// protocol, so the shape inherits normally. The reviewer's stated
+	// scenario (transport override blocking protocol inheritance) requires
+	// a cross-protocol pair; that case is covered above.
+	r5 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.gemini-transport-alias]\nalias_of = \"gemini-3.1-pro-preview\"\ntransport = \"vertex-gemini\"\n")
+	alias = mustResolve(t, r5, "google/gemini-transport-alias")
+	if alias.Protocol != ProtocolGoogle {
+		t.Fatalf("alias protocol = %s", alias.Protocol)
 	}
-	if alias.Caps.ThinkingShape != nil {
-		t.Fatalf("a transport-overriding alias must not inherit the target's shape, got %v", *alias.Caps.ThinkingShape)
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
+		t.Fatalf("a same-protocol alias with a transport override still inherits the shape: %+v", alias.Caps.ThinkingShape)
 	}
 
 	// Controls supplied through a config glob on the alias's own row count as

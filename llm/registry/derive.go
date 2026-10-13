@@ -84,7 +84,10 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 	// cross-protocol alias carries no verdict (its target's protocol has no
 	// shape) and derives from the inherited catalog controls like any
 	// directly named row.
-	shapeSettledByAlias := in.Aliased && in.AliasTargetProtocol == ProtocolGoogle
+	// A same-protocol alias inherits the target's settled verdict only while
+	// its controls remain purely inherited; the alias's own layers restating
+	// the controls means the verdict is stale and derivation must run.
+	shapeSettledByAlias := in.Aliased && in.AliasTargetProtocol == ProtocolGoogle && prov["ReasoningControls"] == provAlias
 	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized && !shapeSettledByAlias {
 		var shape string
 		switch {
