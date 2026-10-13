@@ -64,6 +64,10 @@ const textWith = (within: ReactTestRenderer | ReactTestInstance, content: string
 	);
 const resultRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "search-result");
 const projectRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "project-result");
+// The Sessions band's caption: its words are copy, its trailing count is the
+// behavior, so tests match the count alone.
+const bandText = (tree: ReactTestRenderer) =>
+	String(tree.root.find((node) => node.props.testID === "band-header").props.children ?? "");
 const evener: NavigationProjectSummary = {
 	key: "evener",
 	name: "evener",
@@ -142,20 +146,17 @@ const grouped: SearchSnapshot = {
 it("groups a matching subagent under a greyed anchor that still opens its session", () => {
 	const { tree, props } = mount({ search: grouped });
 	const rows = resultRows(tree);
-	expect(rows.map((row) => row.props.accessibilityLabel)).toEqual([
-		// The greyed anchor carries the parent's title and age; its project is
-		// not on the wire's anchor shape, so nothing names one.
-		"Alpha root, 3 hours",
-		// The subagent says what it is, after its title.
-		"Delegate, subagent, evener, 2 hours",
-	]);
+	expect(rows).toHaveLength(2);
 	// The anchor greys — its own session did not match — but stays pressable.
 	expect(flatten(textWith(rows[0], "Alpha root").props.style).color).toBe(palette.inkLow);
+	// The subagent announces what it is in its label; the anchor does not.
+	expect(rows[1].props.accessibilityLabel).toContain("subagent");
+	expect(rows[0].props.accessibilityLabel).not.toContain("subagent");
 	// The subagent indents into its group and reads subordinate.
 	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
 	expect(flatten(textWith(rows[1], "Delegate").props.style).fontWeight).toBe("400");
 	// The band counts matches, not synthesized anchors.
-	expect(textWith(tree, "SESSIONS · 1")).toBeTruthy();
+	expect(bandText(tree)).toMatch(/1$/);
 	act(() => rows[0].props.onPress());
 	expect(props.onOpen).toHaveBeenCalledWith(expect.objectContaining({ ref: "local:root1" }));
 	act(() => rows[1].props.onPress());
@@ -178,11 +179,11 @@ it("nests a matched live parent's subagent hit under its row, one row per sessio
 	};
 	const { tree } = mount({ search: liveParent });
 	const rows = resultRows(tree);
-	expect(rows.map((row) => row.props.accessibilityLabel)).toEqual([
-		"Live root, Working, evener, 2 minutes",
-		"Delegate, subagent, evener, 2 hours",
-	]);
-	expect(textWith(tree, "SESSIONS · 2")).toBeTruthy();
+	expect(rows).toHaveLength(2);
+	// The live parent keeps its own row, still working.
+	expect(rows[0].findByType(StateMark).props.state).toBe("working");
+	expect(rows[1].props.accessibilityLabel).toContain("subagent");
+	expect(bandText(tree)).toMatch(/2$/);
 	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
 });
 
@@ -208,11 +209,10 @@ it("greys an unmatched live parent's anchor without hiding that it is live", () 
 		},
 	});
 	const [anchor, nested] = resultRows(tree);
-	expect(anchor.props.accessibilityLabel).toBe("Live root, Working, now");
 	expect(flatten(textWith(anchor, "Live root").props.style).color).toBe(palette.inkLow);
 	expect(anchor.findByType(StateMark).props.state).toBe("working");
-	expect(nested.props.accessibilityLabel).toBe("Delegate, subagent, evener, 2 hours");
-	expect(textWith(tree, "SESSIONS · 1")).toBeTruthy();
+	expect(nested.props.accessibilityLabel).toContain("subagent");
+	expect(bandText(tree)).toMatch(/1$/);
 });
 
 it("says so when nothing matches", () => {

@@ -213,6 +213,30 @@ func TestHubSearchKeepsMatchingParentUnannotatedBesideAnnotatedChild(t *testing.
 	}
 }
 
+// An indexed descendant of a live delegate whose meta the index has not
+// folded in yet anchors through the roster's report to the session the
+// delegate runs under: the delegate is a subagent with no row of its own,
+// not its group's anchor.
+func TestHubSearchAnchorsThroughRosterReportedLineage(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	rootID, delegateID, childID := hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t)
+	resp := searchSubagentCase(t, []schema.SessionMeta{
+		{ID: childID, UpdatedAt: now.Add(-time.Hour), Name: "delegate frobnitz", IsSubagent: true, ParentSessionID: delegateID, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+	}, []hubcore.LiveEntry{
+		{PID: 1, SessionID: rootID, WorkingDir: "/projects/alpha", Status: appwire.ThreadStatusActive, RunningSubagentIDs: []string{delegateID}},
+		{PID: 2, SessionID: delegateID, WorkingDir: "/projects/alpha", Status: appwire.ThreadStatusActive},
+	}, "frobnitz", now)
+
+	if got := searchIDs(resp.Past); !reflect.DeepEqual(got, []string{childID}) {
+		t.Fatalf("past=%v, want only the matching descendant", got)
+	}
+	tl := resp.Past[0].TopLevel
+	if tl == nil || tl.ID != rootID {
+		t.Fatalf("topLevel=%+v, want the root the roster reports the delegate under", tl)
+	}
+}
+
 // The real search rules and the tree's rollup agree on one corpus: the same
 // metas, disk index and roster drive hubSearch's annotations and
 // BuildTreeAt's attribution, so the two lineage views cannot drift apart.

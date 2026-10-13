@@ -66,6 +66,28 @@ func RunningSubagentIDs(live []LiveEntry) map[string]bool {
 	return running
 }
 
+// RunningSubagentParents names, for each session live entries report as an
+// in-process child, the live session that lists it — the only parent link a
+// child has before its meta reaches the past index. The tree's rollup walk
+// builds the same map fused with its other live indexes; search resolves
+// grouped subagents' anchors through it too, so both views pass through a
+// live delegate with no meta to the session it runs under. A crash-retained
+// record runs nothing, so its children are skipped as in RunningSubagentIDs.
+func RunningSubagentParents(live []LiveEntry) map[string]string {
+	parents := make(map[string]string)
+	for _, le := range live {
+		if le.Crashed {
+			continue
+		}
+		for _, childID := range le.RunningSubagentIDs {
+			if childID != "" {
+				parents[childID] = le.SessionID
+			}
+		}
+	}
+	return parents
+}
+
 // TopLevelWalk is RootIndex.WalkToTopLevel's answer: the subagent ancestry a
 // session renders under. Chain runs from the walked id up through its
 // subagent ancestors; Ancestor is the first non-subagent parent the chain

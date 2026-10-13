@@ -654,7 +654,8 @@ describe("remote search results", () => {
     await user.type(screen.getByRole("combobox"), "frobnitz");
 
     await waitFor(() => expect(paletteSection("past")).not.toBeNull());
-    expect(paletteSection("past")?.textContent).toContain("Past · 1");
+    // The header's words are copy; its trailing count is the behavior.
+    expect(paletteSection("past")?.textContent).toMatch(/1$/);
     const indirect = paletteIndirectRows();
     const nested = paletteNestedRows();
     expect(indirect).toHaveLength(1);
@@ -760,7 +761,7 @@ describe("remote search results", () => {
     await user.type(screen.getByRole("combobox"), "frobnitz");
 
     await waitFor(() => expect(paletteSection("past")).not.toBeNull());
-    expect(paletteSection("past")?.textContent).toContain("Past · 2");
+    expect(paletteSection("past")?.textContent).toMatch(/2$/);
     expect(paletteRowsOfKind("past")).toHaveLength(2);
     expect(paletteNestedRows()).toHaveLength(0);
     expect(paletteIndirectRows()).toHaveLength(0);
