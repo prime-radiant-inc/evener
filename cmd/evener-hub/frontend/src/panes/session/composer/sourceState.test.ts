@@ -1287,6 +1287,44 @@ test("a rejected initialization retries in the same dirty source before one expl
   }
 });
 
+// A strict submission is a preparation whose failure must dispatch nothing:
+// built-in commands and recovery resends rewrite durable state. Readiness
+// failing while the drafts store itself stays readable is exactly that
+// failure, and the strict path must refuse instead of resolving with an
+// empty authority token that runs the command but cannot durably clear its
+// text.
+test("a strict submission refuses when readiness failed instead of resolving with an empty authority token", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `source-state-strict-readiness-${crypto.randomUUID()}`;
+  const key = browserDraftKey("root");
+  const storage = new MemoryStorage();
+  storage.setItem(draftStorageKey("root"), '{"text":"legacy"}');
+  const repository = createBrowserDraftRepository({
+    indexedDB: factory,
+    databaseName,
+    storage,
+    beforeCommit(operation) {
+      if (operation === "transferSupportedDrafts") throw new Error("transfer aborted");
+    },
+  });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const source = createComposerSourceState("root", { repository, key, outbox });
+  sourceCleanups.push(() => closeSourceFixture({ sources: [source], outbox, repositories: [repository] }));
+  const value: SkillEditorValue = {
+    text: "/plan",
+    skillNames: [],
+    commandNames: ["plan"],
+    mentions: [{ kind: "command", name: "plan", offset: 0 }],
+  };
+  source.acceptEdit(value);
+  // Readiness genuinely failed: the legacy transfer cannot commit, so the
+  // drafts store was never seeded either.
+  await expect(source.ready()).rejects.toThrow("Draft transfer is pending. Try again.");
+  // The strict submission refuses on that failed preparation instead of
+  // resolving with the empty token.
+  await expect(source.submissionDraft(value)).rejects.toThrow("Draft transfer is pending. Try again.");
+});
+
 // 5. A real storage abort - a SYNCHRONOUS commit-boundary fault, not an
 // asynchronous request failure - keeps the SAME accepted entry for a bounded
 // retry and leaves the source useful.
