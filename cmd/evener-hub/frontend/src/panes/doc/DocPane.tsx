@@ -395,7 +395,18 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         return;
       }
       if (cancelled) return;
-      if (accepted.state === "stale-ticket") return;
+      if (accepted.state === "stale-ticket") {
+        // A concurrently mounted pane's ticket can be superseded by another
+        // pane's issuance alone; this read was honest work against a dead
+        // ticket. A leaseless pane with no retained operation has nothing to
+        // lose: one fresh reread whose ticket is the newest issued recovers it
+        // instead of leaving it on its loading skeleton forever. A pane holding
+        // a lease keeps its rendered authority - its stale foreground rereads
+        // stay rendered and the next current acceptance adopts or retires them
+        // - so it never retries from here and two panes cannot ping-pong.
+        if (work.lease === null && work.attempted === null) setReadNonce((value) => value + 1);
+        return;
+      }
       setState({ status: "ok", content });
       if (accepted.state === "accepted") {
         // A durable difference from the retained authority proves this reader's
