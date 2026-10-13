@@ -6534,8 +6534,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
+      if (count > 0) {
+        // Reuse the mounted reader, but preserve explicit-open migration retries.
+        const route = entryTranscriptRoute(ref);
+        if (route) startProductionEntryMigration(route);
+        return;
+      }
       if (!usesEntryTranscripts(ref) || (await openEntryTranscript(ref))) return;
-      if (count > 0) return; // Another mounted reader already owns the live bodies.
       if (ensureGenerations.get(ref) !== generation || (refCounts.get(ref) ?? 0) <= 0) return;
       // Missing or unwritten backing rows cannot establish the captured view.
       // Retire the held source proof so recovery asks for a complete baseline.

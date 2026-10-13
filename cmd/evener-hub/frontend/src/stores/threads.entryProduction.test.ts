@@ -405,6 +405,36 @@ it.each(["evicted", "failed-write"] as const)(
   },
 );
 
+it("a second foreground claim preserves its established reader without another local opening", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const released = deferred<void>();
+  const original = storage.getLatestWindow.bind(storage);
+  const lookup = vi.spyOn(storage, "getLatestWindow").mockImplementation(async (...args) => {
+    await released.promise;
+    return original(...args);
+  });
+  try {
+    await threadsStore.getState().ensureThread("local:a");
+    expect(lookup).not.toHaveBeenCalled();
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["recorded"]);
+  } finally {
+    released.resolve();
+    await Promise.all(lookup.mock.results.map((result) => result.value));
+    threadsStore.getState().releaseThread("local:a");
+    threadsStore.getState().releaseThread("local:a");
+  }
+});
+
 it("existing background opening deadline releases paging hold and fences a late local result", async () => {
   const storage = cache();
   setProductionEntryCacheForTests(storage);
