@@ -370,7 +370,9 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      after a newer navigation — a second pick, a cycling press, a
      reconnect — is discarded whole, entering nothing and arming nothing,
      with the displayed session's subscription re-established when one is
-     displayed. A hub reconnect is not a departure: the pending retry
+     displayed: deferred while a newer navigation read is still in
+     flight, so the reconciliation never races the newer read's own
+     replacement, and settling with that navigation's landing. A hub reconnect is not a departure: the pending retry
      survives it, rebound to the replacement connection's generation, so
      its paced read resumes on the new connection while the dead
      connection's late responses land as superseded. The TUI's
