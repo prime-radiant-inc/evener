@@ -17,7 +17,7 @@ import {
 import * as docContentModule from "@evener/appwire-client/docContent";
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
 import { IDBObjectStore as FDBObjectStore } from "fake-indexeddb";
@@ -1506,6 +1506,59 @@ test("a peer fence and save keeps foreign offsets off the retained display, then
   await waitFor(() =>
     expect(highlightBands().map((band) => band.getAttribute("data-operation-id"))).toEqual(["peer-op"]),
   );
+});
+
+test("two leaseless readers with interleaved fetches stop superseding each other and both render the document", async () => {
+  const f = await fixture("reader-two-leaseless");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  // Every raw read is held until the test releases it, so each reader's
+  // response can arrive after the other reader has issued its next ticket.
+  const held: Array<(content: DocFileContent) => void> = [];
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((resolve) => {
+        held.push(resolve);
+      }),
+  );
+  const beginReads = vi.spyOn(f.repo, "beginRead");
+  const paneA = mountAnnotated(f, ports, client, "doc-two-a");
+  const paneB = mountAnnotated(f, ports, client, "doc-two-b");
+  const workA = documentReaderWork("doc-two-a", f.document, ports);
+  const workB = documentReaderWork("doc-two-b", f.document, ports);
+  await waitFor(() => expect(held.length).toBe(2));
+
+  const release = async (index: number): Promise<void> => {
+    await act(async () => {
+      held[index]?.(docContent(SOURCE, "rev-A"));
+    });
+  };
+  // Staggered releases: every acceptance lands on a ticket the OTHER reader
+  // already superseded, first for one reader and then the other.
+  await release(0); // stale: the other reader issued meanwhile -> its retry issues
+  await waitFor(() => expect(held.length).toBe(3));
+  await release(1); // stale: the first reader's retry superseded it -> its retry issues
+  await waitFor(() => expect(held.length).toBe(4));
+  await release(2); // stale again for the first reader
+  await release(3); // the other reader's ticket is now the newest: it accepts
+
+  // BOTH readers render the real document: unfixed, the interleave either
+  // loops with both readers on their skeletons or strands one reader's
+  // retry forever while the other renders.
+  await waitFor(() => {
+    expect(within(paneA.container).getByText("First occurrence: same")).toBeTruthy();
+    expect(within(paneB.container).getByText("First occurrence: same")).toBeTruthy();
+  });
+  await waitFor(() => expect([workA.lease, workB.lease].filter((lease) => lease !== null)).toHaveLength(1));
+  // Exactly one lease was adopted: the reader whose second acceptance went
+  // stale rendered its fetched content with suspended authority and issued
+  // nothing further, so the interleaving stopped instead of repeating forever.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(held.length).toBe(4);
+  expect(beginReads.mock.calls.length).toBe(4);
 });
 
 test("a failed expiry fence keeps the pending phase, suppresses the stale highlight and old-lease Send, then recovers on a current read", async () => {

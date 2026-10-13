@@ -240,6 +240,11 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // acceptance proves the fence settled and completes the expired epoch's
   // deletion then. A fault leaves the persisted receipt for the retry sweep.
   const expiryReceiptRef = useRef<ExpiryReceipt | null>(null);
+  // Consecutive stale-ticket acceptances while this reader stayed leaseless.
+  // One retry recovers a reader whose ticket a COMPLETED read superseded; a
+  // second consecutive stale is the two-reader interleave whose retry the raw
+  // render below replaces.
+  const leaselessStaleRef = useRef(0);
 
   const key: DocumentKey = useMemo(
     () => ({ namespace: { kind: "browser", origin: location.origin }, sessionRef: session, path }),
@@ -465,12 +470,29 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // instead of leaving it on its loading skeleton forever. A pane holding
         // a lease keeps its rendered authority - its stale foreground rereads
         // stay rendered and the next current acceptance adopts or retires them
-        // - so it never retries from here and two panes cannot ping-pong.
-        if (work.lease === null && work.attempted === null) setReadNonce((value) => value + 1);
+        // - so it never retries from here.
+        if (work.lease !== null || work.attempted !== null) return;
+        if (leaselessStaleRef.current === 0) {
+          leaselessStaleRef.current = 1;
+          setReadNonce((value) => value + 1);
+          return;
+        }
+        // A SECOND consecutive stale acceptance means another reader's
+        // in-flight issuance keeps superseding ours; re-issuing would only
+        // supersede theirs back, and two leaseless readers would fetch and
+        // write read generations forever. The fetch itself succeeded: render
+        // its real raw content with suspended authority - the same honest
+        // display a failed beginRead produces - and stop issuing. The other
+        // reader's ticket then settles, and a foreground reread, a reopen or
+        // a later committed wake revalidates this pane.
+        leaselessStaleRef.current = 0;
+        setState({ status: "ok", content });
+        setAuthoritySuspended(true);
         return;
       }
       setState({ status: "ok", content });
       if (accepted.state === "accepted") {
+        leaselessStaleRef.current = 0;
         // A durable difference from the retained authority proves this reader's
         // captured work is stale: a namespace reset changes the incarnation, and
         // another reader's fence of a changed source replaces the epoch under the
@@ -508,6 +530,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       // fence commit is still pending: retire the stale capture/attempt but keep
       // the exact note, then adopt the replacement epoch when the fence commits.
       enterExpiryPending();
+      leaselessStaleRef.current = 0;
       if (accepted.receipt) {
         // Retain the receipt: the reread's acceptance settles the fence and
         // completes the expired epoch's deletion there.
