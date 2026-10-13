@@ -398,12 +398,18 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       if (accepted.state === "stale-ticket") return;
       setState({ status: "ok", content });
       if (accepted.state === "accepted") {
-        // A durable incarnation that differs from the retained authority proves a
-        // namespace reset: retire the old attempt/capture before adopting the new
-        // authority, keeping the exact editable note. A source change keeps the
-        // incarnation and is handled by the fence above.
+        // A durable difference from the retained authority proves this reader's
+        // captured work is stale: a namespace reset changes the incarnation, and
+        // another reader's fence of a changed source replaces the epoch under the
+        // same incarnation. Retire the old attempt/capture before adopting the
+        // new authority, keeping the exact editable note; a source change THIS
+        // reader fences itself is handled by the expiry-pending path above.
         const priorAuthority = work.lease ?? work.attempted?.lease ?? null;
-        if (priorAuthority !== null && priorAuthority.namespaceIncarnation !== accepted.lease.namespaceIncarnation) {
+        if (
+          priorAuthority !== null &&
+          (priorAuthority.namespaceIncarnation !== accepted.lease.namespaceIncarnation ||
+            priorAuthority.epoch !== accepted.lease.epoch)
+        ) {
           work.attempted = null;
           work.attemptedComment = null;
           work.comment = invalidateCommentCapture(work.comment);
