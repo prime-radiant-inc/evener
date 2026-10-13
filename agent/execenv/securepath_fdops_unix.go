@@ -408,47 +408,12 @@ func (s *sandboxFS) grantedWriteParent(tool, abs string) (int, string, error) {
 	return parentFd, leaf, nil
 }
 
-// admitReadFD turns a descriptor opened with O_NONBLOCK into an *os.File whose
-// type is confirmed before any read: a regular file, or — when allowDir — a
-// directory (the fs.FS Open contract admits directories). The nonblocking open
-// keeps an allowed FIFO or device from blocking at open; the type is then
-// fstat'd on the same descriptor, so it cannot be swapped between the check and
-// the bytes. O_NONBLOCK is cleared once the type is admitted, so callers get the
-// ordinary blocking descriptor they expect — except a regular file with
-// streamed set: one whose path names pseudo-filesystem content can block in
-// read(2) although it stats regular (/proc/kmsg), so it keeps the flag and
-// the runtime poller, letting a read deadline interrupt it (#4574 round 4).
-// On a non-nil error the caller owns nothing (the file, and its fd, are
-// closed); on success the returned *os.File owns fd.
+// admitReadFD is the sandboxed arm's entry to admitOpenedFD, the single
+// admission constructor (open_regular_unix.go). It is a variable so a test can
+// swap the admission seam; production wires it straight to the core, so both
+// arms classify the opened descriptor identically.
 var admitReadFD = func(fd int, name string, allowDir, streamed bool) (*os.File, error) {
-	file := os.NewFile(uintptr(fd), name)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("open %q: no file for descriptor", name)
-	}
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	admitted := info.Mode().IsRegular() || (allowDir && info.IsDir())
-	if !admitted {
-		_ = file.Close()
-		return nil, errNotRegularFile
-	}
-	if info.Mode().IsRegular() && streamed {
-		return file, nil
-	}
-	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
-	if err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags&^unix.O_NONBLOCK); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	return file, nil
+	return admitOpenedFD(fd, name, admitOptions{allowDir: allowDir}, streamed)
 }
 
 // readFile reads the whole file at abs through a race-safe fd, admitted by
