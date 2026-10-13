@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -656,6 +657,9 @@ func TestTimed(t *testing.T) {}
 // so the plant is provably before the export rather than racing it: a test that
 // only hoped to win the race could pass against the vulnerable implementation.
 func TestModuleRunnerDoesNotWriteThroughASiblingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the module runner is a bash script")
+	}
 	root, modules, ctrl := newRunnerFixture(t)
 	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
 
@@ -728,6 +732,13 @@ func TestTimed(t *testing.T) {
 		t.Fatalf("starting the runner: %v", err)
 	}
 	abort := func() {
+		// bash's group is not the whole tree: run_bounded enables job control, so
+		// its monitored commands and their builds sit in process groups of their
+		// own. Walk the tree and KILL each descendant, deepest first, before
+		// reaping bash — a signal aimed only at bash's group would orphan them.
+		_ = exec.Command("bash", "-c",
+			`walk() { for c in $(pgrep -P "$1" 2>/dev/null); do walk "$c"; done; kill -9 "$1" 2>/dev/null; }; walk "$1"`,
+			"bash", strconv.Itoa(cmd.Process.Pid)).Run()
 		procgroup.Kill(cmd.Process.Pid)
 		_ = cmd.Wait()
 		_ = outFile.Close()
