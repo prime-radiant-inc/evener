@@ -214,6 +214,23 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		meta = &m
 	}
+	// An implicit --resume-last that lands on a delegate resolves to the newest
+	// resumable root, so a recently-touched delegate does not make it useless; an
+	// explicit id is still refused below.
+	if meta != nil && meta.IsSubagent && cfg.resume == "" && cfg.resumeWith == "" && cfg.resumeLast {
+		if root, ok := latestResumableRootMeta(stateDir); ok {
+			meta = &root
+		}
+	}
+	// Refuse a bare delegate resume before anything is loaded or reserved
+	// (#4442); refuseBareDelegateResume carries the rationale. --resume-with
+	// forks the source into a new session, so its meta is not the resumed
+	// delegate and is not refused.
+	if meta != nil && cfg.resumeWith == "" {
+		if err := refuseBareDelegateResume(*meta, stateDir); err != nil {
+			return err
+		}
+	}
 
 	// Determine prompt.
 	prompt := strings.TrimSpace(cfg.prompt)

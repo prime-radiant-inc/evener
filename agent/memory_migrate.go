@@ -318,8 +318,8 @@ var (
 	// A link's destination is bare, holding parentheses only in balanced
 	// pairs one deep ("a(b).md"), or in angle brackets (memoryLinkTarget's
 	// form for a path with spaces or parentheses) with backslash escapes.
-	// The title may hold backslash escapes, such as the "\]" memoryIndexLine
-	// writes for a "]" in a title.
+	// The link text may hold backslash escapes, such as the "\]" memoryIndexLine
+	// writes for a "]" in a path.
 	legacyIndexLink     = regexp.MustCompile(`\[((?:[^\]\\]|\\.)*)\]\((?:<((?:[^<>\\\n]|\\.)*)>|((?:[^()\s]|\([^()\s]*\))+))\)`)
 	legacyIndexEscape   = regexp.MustCompile(`\\([[:punct:]])`)
 	legacyIndexBarePage = regexp.MustCompile(`[` + "`" + `*]*([^\s\[\]()` + "`" + `*]+\.md)[` + "`" + `*]*`)
