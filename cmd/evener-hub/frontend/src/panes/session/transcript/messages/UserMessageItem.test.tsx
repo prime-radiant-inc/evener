@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, Thread, ThreadCapabilities, TurnModel } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
@@ -18,6 +18,8 @@ import {
   resetBrowserDraftRepositoryForTests,
 } from "../../../../stores/browserDraftRepository";
 import { connectionStore } from "../../../../stores/connection";
+import { ANNOTATION_NAMESPACES_STORE, COMPOSER_DRAFTS_STORE } from "../../../../stores/localCompositionSchema";
+import { holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { getToasts } from "../../../../widgets/toast/store";
@@ -523,6 +525,74 @@ describe("per-message fork affordance", () => {
       expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
     } finally {
       faultArmed = false;
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
+  });
+
+  test("an uncertain seed that actually committed completes navigation on the retry", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return {
+        thread: forkWireThread({
+          id: `child_${forkCalls}`,
+          sessionId: `child_${forkCalls}`,
+          evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+        }),
+        originalInput: "literal /same\nsecond line",
+      };
+    });
+    const repository = createBrowserDraftRepository({});
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    try {
+      render(
+        <UserMessageItem
+          item={item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+          turn={turn}
+          live={false}
+          sessionRef="ref_a"
+        />,
+      );
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      // The seed transaction commits while its completion event stalls: the
+      // transaction watchdog settles the press with the honest unavailable
+      // outcome, and the draft is durable anyway.
+      const hold = holdNextWriteTransaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE]);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await act(async () => {
+        fireEvent.click(button);
+        await hold.reached;
+        await vi.advanceTimersByTimeAsync(10_001);
+      });
+      vi.useRealTimers();
+      hold.release();
+      expect(forkCalls).toBe(1);
+      expect(workspaceStore.getState().panes).toEqual([]);
+      expect(
+        getToasts().some(
+          (toast) =>
+            toast.kind === "error" &&
+            toast.text ===
+              "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
+        ),
+      ).toBe(true);
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+
+      // The retry finds the committed row and must complete the navigation:
+      // the retained child's durable draft is exactly the message being
+      // forked, so the child opens instead of stranding behind a conflict.
+      await waitFor(() => expect(button.disabled).toBe(false));
+      await userEvent.setup().click(button);
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the retained fork child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+    } finally {
+      vi.useRealTimers();
       repositoryAccessor.mockRestore();
       repository.close();
     }

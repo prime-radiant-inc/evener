@@ -101,6 +101,18 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
         skillNames: [],
       });
       if (seeded.state === "conflict") {
+        // A conflict can be this fork's own uncertain seed: the transaction
+        // committed while its completion event stalled, the watchdog settled
+        // the press as unavailable, and the retained child's retry now finds
+        // the row it itself wrote. Load it - when the child carries exactly
+        // the message being forked, the seeding succeeded and the navigation
+        // completes instead of stranding the child behind a failure toast.
+        const existing = await getBrowserDraftRepository().load(browserDraftKey(ref));
+        if (existing?.text === originalInput) {
+          unseededForks.delete(retentionKey);
+          workspaceStore.getState().openPane("session", { ref });
+          return;
+        }
         // The child already carries a draft another surface seeded; that draft
         // wins, and a retry would only re-conflict.
         unseededForks.delete(retentionKey);
