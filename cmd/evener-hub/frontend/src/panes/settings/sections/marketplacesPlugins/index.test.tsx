@@ -1,4 +1,4 @@
-import { type MarketplaceEntry, type PluginEntry, WireError } from "@evener/appwire-client";
+import { friendlyErrorMessage, type MarketplaceEntry, type PluginEntry, WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -137,6 +137,29 @@ test("shows one failed-to-load message when the plugin list fails to load", asyn
   // keeps the raw string off the screen.
   await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
   expect(screen.queryByText("boom")).toBeNull();
+});
+
+// The extensions stores translate a list failure while it still has its type,
+// so the notice renders the stored text as-is: a hub-reported explanation or a
+// client-side diagnosis survives instead of collapsing to the generic one.
+test.each([
+  ["marketplace", "a hub-reported WireError", new WireError("marketplace registry is locked", -32000)],
+  ["marketplace", "a client-side failure", new Error("AppwireClient internal detail")],
+  ["plugin", "a hub-reported WireError", new WireError("plugin index is rebuilding", -32000)],
+  ["plugin", "a client-side failure", new Error("AppwireClient internal detail")],
+])("a %s list failure from %s shows that error's friendly form", async (list, _name, err) => {
+  const fake = connectFakeClient();
+  fake.on("evener/marketplace/list", () => {
+    if (list === "marketplace") throw err;
+    return { marketplaces: [] };
+  });
+  fake.on("evener/plugin/list", () => {
+    if (list === "plugin") throw err;
+    return { plugins: [] };
+  });
+  render(<MarketplacesPluginsSection />);
+  await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
+  expect(screen.getByRole("status").textContent).toContain(friendlyErrorMessage(err));
 });
 
 test("the segment control carries the list counts and defaults to Installed", async () => {

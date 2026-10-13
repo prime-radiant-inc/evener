@@ -1498,7 +1498,7 @@ async function inspectIntentColumn(): Promise<IntentColumnMeasurement> {
     );
     await twoPaintedFrames();
     // The row box is the Disclosure's wrapper (it carries the virtual row's
-    // data-transcript-row-id); the Disclosure inside it is inset by the gutter.
+    // data-transcript-row-id); only the group's members inside it take the gutter.
     const row = group.closest<HTMLElement>("[data-transcript-row-id]") ?? group;
     const groupRect = row.getBoundingClientRect();
     const turnRect = turn.getBoundingClientRect();

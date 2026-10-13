@@ -16,7 +16,7 @@
 // the current client on each call.
 
 import type { AppwireClientLike, RequestPort } from "../../clientLike";
-import { ErrorMarketplaceRemoveApplied, errorText, WireError } from "../../errors";
+import { ErrorMarketplaceRemoveApplied, errorText, friendlyErrorMessage, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
   HostRequestMethod,
@@ -46,8 +46,9 @@ export type MarketplaceCatalogEntry =
 export interface MarketplacesState {
   marketplaces: MarketplaceEntry[] | null;
   marketplacesLoading: boolean;
-  /** The failed list request's own text (errorText), for the host to
-   * translate at render; null once a list succeeds. */
+  /** The failed list request's friendlyErrorMessage, translated while the
+   * error still has its type so a hub's own WireError explanation survives;
+   * render it as-is. null once a list succeeds. */
   marketplacesError: string | null;
   /** Advances only when an accepted whole-list writer publishes a snapshot. */
   marketplacesPublicationVersion: number;
@@ -349,7 +350,7 @@ export function createMarketplacesStore(client: MarketplacesClient, gate: HubWri
               ...publishMarketplaceSnapshot(resp.marketplaces),
               browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
             })),
-          onFailure: (err) => () => set({ marketplacesLoading: false, marketplacesError: errorText(err) }),
+          onFailure: (err) => () => set({ marketplacesLoading: false, marketplacesError: friendlyErrorMessage(err) }),
         });
       },
 

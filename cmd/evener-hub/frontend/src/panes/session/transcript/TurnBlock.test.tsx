@@ -824,6 +824,15 @@ test("the gutter indent is one media query at exactly 700px with padding-left: v
   );
 });
 
+test("an intent group's rule spans the turn column while its members take the gutter indent", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "..", "session.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(
+    /@media\s*\(min-width:\s*700px\)\s*\{\s*\.intentGroupItems\s*\{\s*padding-left:\s*var\(--speaker-gutter\);\s*\}\s*\}/,
+  );
+  expect(css).not.toMatch(/\.intentGroup\s*\{[^}]*padding/);
+});
+
 test("the speaker geometry is declared once on .turn: 34px gutter = 24px avatar + 10px gap", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");

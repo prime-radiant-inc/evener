@@ -565,7 +565,7 @@ export function CredentialsSection({
       {loading && instances.length === 0 && <Skeleton />}
       {error && (
         <InlineNotice tone="danger" live="status" data-testid="load-error">
-          Failed to load: {friendlyErrorMessage(error)}
+          Failed to load: {error}
         </InlineNotice>
       )}
       {!loading && !error && instances.length === 0 && (

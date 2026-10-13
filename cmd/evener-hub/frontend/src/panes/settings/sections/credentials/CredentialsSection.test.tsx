@@ -9,6 +9,7 @@ import {
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
+  friendlyErrorMessage,
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -227,6 +228,22 @@ describe("initial load", () => {
     expect(notice.getAttribute("role")).toBe("status");
     // Assert the raw string no longer appears
     expect(screen.queryByText(/network down/)).toBeNull();
+  });
+
+  // The credentials store translates a failure while it still has its type, so
+  // the notice renders the stored text as-is: a hub-reported explanation or a
+  // client-side diagnosis survives instead of collapsing to the generic one.
+  test.each([
+    ["a hub-reported WireError", new WireError("providers.toml is being rewritten", -32000)],
+    ["a client-side failure", new Error("AppwireClient internal detail")],
+  ])("a load failure from %s shows that error's friendly form", async (_name, err) => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => {
+      throw err;
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    const notice = await screen.findByTestId("load-error");
+    expect(notice.textContent).toContain(friendlyErrorMessage(err));
   });
 
   // The integration-level proof of useConnectedEffect: a direct deep link

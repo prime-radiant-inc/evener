@@ -1,4 +1,9 @@
-import type { MarketplaceCatalogPlugin, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
+import {
+  friendlyErrorMessage,
+  type MarketplaceCatalogPlugin,
+  type MarketplaceEntry,
+  type PluginEntry,
+} from "@evener/appwire-client";
 import { HubWriteBusyError } from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
@@ -155,7 +160,7 @@ describe("fetchMarketplaces", () => {
     });
     await expect(extensionsStore.getState().fetchMarketplaces()).resolves.toBeUndefined();
     expect(extensionsStore.getState().marketplaces).toBeNull();
-    expect(extensionsStore.getState().marketplacesError).toBe("boom");
+    expect(extensionsStore.getState().marketplacesError).toBe(friendlyErrorMessage(new Error("boom")));
   });
 
   test("a later successful fetch clears a previous error", async () => {
@@ -164,7 +169,7 @@ describe("fetchMarketplaces", () => {
       throw new Error("boom");
     });
     await extensionsStore.getState().fetchMarketplaces();
-    expect(extensionsStore.getState().marketplacesError).toBe("boom");
+    expect(extensionsStore.getState().marketplacesError).toBe(friendlyErrorMessage(new Error("boom")));
 
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
     await extensionsStore.getState().fetchMarketplaces();
@@ -514,11 +519,11 @@ describe("marketplace mutation ordering", () => {
       throw new Error("list failed");
     });
     await extensionsStore.getState().fetchMarketplaces();
-    expect(extensionsStore.getState().marketplacesError).toBe("list failed");
+    expect(extensionsStore.getState().marketplacesError).toBe(friendlyErrorMessage(new Error("list failed")));
 
     resolveList({ marketplaces: [MARKETPLACE_A] });
     await stale;
-    expect(extensionsStore.getState().marketplacesError).toBe("list failed");
+    expect(extensionsStore.getState().marketplacesError).toBe(friendlyErrorMessage(new Error("list failed")));
     expect(extensionsStore.getState().marketplaces).toBeNull();
   });
 
@@ -528,7 +533,7 @@ describe("marketplace mutation ordering", () => {
       throw new Error("list failed");
     });
     await extensionsStore.getState().fetchMarketplaces();
-    expect(extensionsStore.getState().marketplacesError).toBe("list failed");
+    expect(extensionsStore.getState().marketplacesError).toBe(friendlyErrorMessage(new Error("list failed")));
     expect(extensionsStore.getState().marketplacesLoading).toBe(false);
 
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
@@ -783,7 +788,7 @@ describe("fetchPlugins", () => {
       throw new Error("boom");
     });
     await expect(extensionsStore.getState().fetchPlugins()).resolves.toBeUndefined();
-    expect(extensionsStore.getState().pluginsError).toBe("boom");
+    expect(extensionsStore.getState().pluginsError).toBe(friendlyErrorMessage(new Error("boom")));
   });
 });
 

@@ -22,6 +22,15 @@
   background: var(--hover-1);
 }
 
+/* Every variant's ring. Inset because quiet and rule summaries sit flush with
+ * the column inside the transcript's clipping scroll port, where an outset
+ * ring would lose its sides (topnotespanel.module.css insets for the same
+ * reason). */
+.summary:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
 .summary[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.5;
@@ -56,6 +65,37 @@
 }
 
 .details[data-variant="quiet"][open] > .summary {
+  background: none;
+}
+
+/* The rule variant: the summary is an italic caption centred between two
+ * hairlines that stretch to the column's edges, a quiet divider over a folded
+ * run of transcript actions. The caption itself is the affordance, so there is
+ * no chevron (index.tsx omits it), no hover fill and no open wash; the summary
+ * keeps the shared token focus ring so keyboard focus still shows. */
+.details[data-variant="rule"] > .summary {
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-style: italic;
+  text-align: center;
+}
+
+.details[data-variant="rule"] > .summary::before,
+.details[data-variant="rule"] > .summary::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--edge);
+}
+
+.details[data-variant="rule"] > .summary:hover:not([aria-disabled="true"]) {
+  background: none;
+}
+
+.details[data-variant="rule"][open] > .summary {
   background: none;
 }
 

@@ -2614,6 +2614,16 @@ export interface NavigationSessionSummary {
    * has never run, and an offline row that ran must not read as "Not started".
    */
   offline?: boolean;
+  /**
+   * Archived says the rail files the session as archived: its own archive
+   * decision, its project's, or two weeks without activity (S14, the rule
+   * appwire.SearchResult.Archived reports for a live hit). It sits BESIDE Live
+   * rather than replacing it: a session archived while it is still running
+   * stays reachable through a pin, and this flag lets a client suppress the
+   * row's unread dot for it (#4199). Absent when it is not, and from an
+   * older hub.
+   */
+  archived?: boolean;
   updated_at?: string;
   more_subagents?: number;
   /**
