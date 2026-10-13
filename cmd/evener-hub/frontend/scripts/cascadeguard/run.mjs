@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
-import { evaluate, navigateTo, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
+import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -643,12 +643,12 @@ async function openPeek(ref, kind) {
   await wait('document.querySelector("[data-testid=activity-peek]") !== null', `${kind} ancestor peek`);
 }
 
-// Each runtime state's exact hover and screen-reader text and its
-// session-list signal in the compact spine.
+// Each runtime state's exact hover and screen-reader text and the shared
+// session-list signal glyph it must keep rendering, named by its data-state.
 const spineStatus = {
-  active: { text: "Active", signalLabel: "Working" },
-  idle: { text: "Idle", signalLabel: null },
-  awaiting: { text: "Awaiting", signalLabel: "Needs you" },
+  active: { text: "Active", glyphState: "working" },
+  idle: { text: "Idle", glyphState: null },
+  awaiting: { text: "Awaiting", glyphState: "needs-you" },
 };
 
 async function assertSpineStatus(ref, ...states) {
@@ -657,26 +657,39 @@ async function assertSpineStatus(ref, ...states) {
     const runtime = spine?.querySelector('[data-runtime-state]');
     if (!runtime || !${q(states)}.includes(runtime.dataset.runtimeState)) return null;
     const label = runtime.querySelector('[data-runtime-label]');
-    const signal = runtime.querySelector('[role="img"]');
+    const glyph = runtime.querySelector('[data-state]');
     const box = runtime.getBoundingClientRect();
     const labelBox = label?.getBoundingClientRect();
     return { state: runtime.dataset.runtimeState, width: box.width, height: box.height, title: runtime.title,
       text: label?.textContent, hiddenFromAT: label?.getAttribute('aria-hidden'),
       labelWidth: labelBox?.width, labelHeight: labelBox?.height,
-      signalLabel: signal?.getAttribute('aria-label') ?? null,
-      animation: signal ? getComputedStyle(signal).animationName : null,
+      glyphState: glyph?.dataset.state ?? null, glyphHidden: glyph?.getAttribute('aria-hidden') ?? null,
+      exposedImage: runtime.querySelector('[role="img"]') !== null,
+      animation: glyph ? getComputedStyle(glyph).animationName : null,
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches };
   })()`, `actual ${states.join(" or ")} ancestor status`);
-  const { text, signalLabel } = spineStatus[status.state];
+  const { text, glyphState } = spineStatus[status.state];
   assert.ok(status.width <= 8.5 && status.height <= 8.5, `compact status must fit an 8px indicator, got ${status.width}x${status.height}`);
   assert.equal(status.title, text, "exact runtime state remains available on hover");
   assert.equal(status.text, text, "exact runtime state remains available to screen readers");
   assert.notEqual(status.hiddenFromAT, "true");
   assert.ok(status.labelWidth <= 1 && status.labelHeight <= 1, "runtime text does not paint horizontally in the spine");
-  assert.equal(status.signalLabel, signalLabel, "ancestor uses the session-list signal family");
-  if (signalLabel === "Working" && reducedMotion) {
+  assert.equal(status.glyphState, glyphState, "ancestor keeps the session-list signal family glyph");
+  // The compact status exposes ONE accessible label: its exact runtime text.
+  // The shared glyph is decorative, so its own family name never joins it, and
+  // the REAL browser accessibility tree must agree - not just the DOM attrs.
+  assert.equal(status.exposedImage, false, "the signal glyph adds no second accessible name");
+  if (glyphState) assert.equal(status.glyphHidden, "true", "the signal glyph is hidden from assistive tech");
+  if (glyphState === "working" && reducedMotion) {
     assert.equal(status.animation, "none", "reduced motion keeps the running indicator still");
   }
+  const axNodes = await queryAccessibilityTree(driver.send, `${scope(ref)} [data-runtime-state]`);
+  const axNames = (axNodes ?? []).filter((node) => !node.ignored && node.name?.value).map((node) => node.name.value);
+  assert.ok(axNames.length > 0, "the compact status exposes an accessible label in the real tree");
+  assert.ok(
+    axNames.every((name) => name === text),
+    `the real accessibility tree names the status only with its exact runtime text ${q(text)}, got ${q(axNames)}`,
+  );
   driver.milestone("compact-spine-status", { ref, ...status });
 }
 

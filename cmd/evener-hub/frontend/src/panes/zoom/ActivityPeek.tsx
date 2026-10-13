@@ -100,9 +100,14 @@ export function ScopeRuntimeState({ scope, compact = false }: { scope: ActivityS
   const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : "State unknown";
   if (compact) {
     const signal = cadenceStateForStatus(state ?? "");
+    // The compact spine's own exact runtime label is the single status name
+    // assistive tech should hear: the shared session-list glyph stays for its
+    // shape and motion, but it renders decoratively so a screen reader never
+    // gets its family label (e.g. "Working") in addition to the runtime text
+    // (e.g. "Active"). See docs/web-ui/design-system.md's cascade-spine rules.
     return (
       <span className={CLASS.stateIndicator} data-runtime-state={state ?? "unknown"} title={label}>
-        {SIGNAL_STATES.has(signal) && <StatusDot state={signal} />}
+        {SIGNAL_STATES.has(signal) && <StatusDot state={signal} decorative />}
         <span className={CLASS.stateLabel} data-runtime-label>
           {label}
         </span>

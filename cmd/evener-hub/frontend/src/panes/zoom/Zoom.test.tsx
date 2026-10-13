@@ -6,6 +6,7 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
+import { accessibleName } from "../../accessibleNameTestUtils";
 import { chromeStore } from "../../shell/chromeStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -640,18 +641,18 @@ test.each<{ name: string; before?: TrackStep; change: Partial<Geometry>; want: n
 });
 
 test.each([
-  ["active", "Active", "Working"],
-  ["awaiting", "Awaiting", "Needs you"],
-  ["warning", "Warning", "Needs you"],
-  ["restartRequired", "RestartRequired", "Needs you"],
-  ["systemError", "SystemError", "Failed"],
+  ["active", "Active", "working"],
+  ["awaiting", "Awaiting", "needs-you"],
+  ["warning", "Warning", "needs-you"],
+  ["restartRequired", "RestartRequired", "needs-you"],
+  ["systemError", "SystemError", "failed"],
   ["idle", "Idle", null],
   ["closed", "Closed", null],
   ["notLoaded", "NotLoaded", null],
   ["futureState", "FutureState", null],
 ] as const)(
-  "a %s ancestor uses the session-list signal and keeps its exact runtime text available",
-  async (state, runtimeText, signalLabel) => {
+  "a %s ancestor keeps the session-list signal glyph but hides its own family label from assistive tech",
+  async (state, runtimeText, glyphState) => {
     const { fake, statuses } = fixture();
     statuses.set("root", state);
     mount(fake);
@@ -664,8 +665,17 @@ test.each([
     const runtime = within(spine).getByTitle(runtimeText);
     expect(runtime.getAttribute("data-runtime-state")).toBe(state);
     expect(within(runtime).getByText(runtimeText).getAttribute("aria-hidden")).not.toBe("true");
-    if (signalLabel) expect(within(runtime).getByRole("img", { name: signalLabel })).toBeTruthy();
-    else expect(within(runtime).queryByRole("img")).toBeNull();
+    // The shared session-list glyph is still rendered and still carries the
+    // same signal family, but it is decorative: the compact ancestor status
+    // exposes no second, family-labelled node beside its runtime text.
+    expect(within(runtime).queryByRole("img")).toBeNull();
+    const glyph = runtime.querySelector("[data-state]");
+    if (glyphState) {
+      expect(glyph?.getAttribute("data-state")).toBe(glyphState);
+      expect(glyph?.getAttribute("aria-hidden")).toBe("true");
+    } else {
+      expect(glyph).toBeNull();
+    }
     expect(columnRefs()).toEqual(["child", "grandchild"]);
     act(() => fireEvent.click(within(spine).getByRole("button", { name: "Show root" })));
     await screen.findByText("root content old-root");
@@ -686,10 +696,12 @@ test("a paused ancestor updates its signal through runtime changes without repla
   await screen.findByText("grandchild content grandchild-id");
   const spine = screen.getByTestId("cascade-spine");
   const branch = currentPane();
-  expect(within(spine).getByRole("img", { name: "Working" })).toBeTruthy();
-  for (const [state, text, label] of [
-    ["awaiting", "Awaiting", "Needs you"],
-    ["systemError", "SystemError", "Failed"],
+  const active = within(spine).getByTitle("Active");
+  expect(active.querySelector("[data-state]")?.getAttribute("data-state")).toBe("working");
+  expect(within(active).queryByRole("img")).toBeNull();
+  for (const [state, text, glyphState] of [
+    ["awaiting", "Awaiting", "needs-you"],
+    ["systemError", "SystemError", "failed"],
     ["idle", "Idle", null],
   ] as const) {
     act(() =>
@@ -699,8 +711,10 @@ test("a paused ancestor updates its signal through runtime changes without repla
       }),
     );
     const runtime = within(spine).getByTitle(text);
-    if (label) expect(within(runtime).getByRole("img", { name: label })).toBeTruthy();
-    else expect(within(runtime).queryByRole("img")).toBeNull();
+    expect(within(runtime).queryByRole("img")).toBeNull();
+    const glyph = runtime.querySelector("[data-state]");
+    if (glyphState) expect(glyph?.getAttribute("data-state")).toBe(glyphState);
+    else expect(glyph).toBeNull();
     expect(currentPane()).toBe(branch);
     expect(columnRefs()).toEqual(["child", "grandchild"]);
   }
@@ -728,6 +742,9 @@ test("an ancestor with pending runtime metadata stays explicitly unknown until i
     const label = runtime.querySelector("[data-runtime-label]");
     expect(label).not.toBeNull();
     expect(label?.textContent?.trim()).not.toBe("");
+    // The unknown state names itself exactly as the runtime label it renders -
+    // read off the element, so no literal copy is pinned - and carries no glyph.
+    expect(accessibleName(runtime)).toBe(label?.textContent?.trim());
     expect(within(runtime).queryByRole("img")).toBeNull();
   } finally {
     await act(async () => held.resolve(response("root")));
