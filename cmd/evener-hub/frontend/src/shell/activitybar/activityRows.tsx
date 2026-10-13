@@ -62,7 +62,7 @@ function useDotFlip(sub: SessionDelegate): number {
   // The state's value is never read - only the re-render it forces matters -
   // so it must change on every flip: a row that goes quiet twice must flip
   // twice, and a repeated value would let the second flip pass unnoticed.
-  const [, setFlippedAt] = useState(() => Date.now());
+  const [, setFlippedAt] = useState(0);
   useEffect(() => {
     if (sub.terminal === true) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -75,7 +75,14 @@ function useDotFlip(sub: SessionDelegate): number {
       // forever without ever flipping the dot, the native wake's own guard.
       if (!timing.quietLive || timing.quietForMs === undefined) return;
       const remaining = DELEGATE_QUIET_AFTER_MS - timing.quietForMs;
-      if (remaining <= 0) return; // the dot already renders quiet
+      if (remaining <= 0) {
+        // The threshold crossed between this row's render and its effect:
+        // the rendered dot still says fresh, and a quiet row gets no publish
+        // that would ever re-render it. The one render this forces retells
+        // the dot.
+        setFlippedAt(Date.now());
+        return;
+      }
       timer = setTimeout(() => {
         setFlippedAt(Date.now());
         arm();
