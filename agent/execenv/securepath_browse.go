@@ -513,6 +513,7 @@ func grepOversizeNote(n int) string {
 	return fmt.Sprintf("%d file(s) larger than the %d-byte read cap were left out; name one directly to search it", n, grepMaxFileBytes)
 }
 
+
 // pseudoFsRoots are the pseudo-filesystem mount points a file-tree walk must
 // not descend into from outside: their contents are runtime state — process
 // tables, kernel parameters, device streams — rather than files to search,
@@ -689,6 +690,28 @@ func armStreamDeadline(ctx context.Context, f *os.File) (disarm func()) {
 		_ = f.SetReadDeadline(time.Time{})
 		close(watched)
 	}
+}
+
+// readIgnoreFileBytes reads up to limit bytes of an ignore file with the
+// same deadline-and-cancellation treatment the search reads have: an
+// admitted regular stream that never becomes readable — /proc/kmsg behind a
+// .gitignore symlink — would otherwise park the read on the runtime poller
+// with nothing bounding the wait (#4574 round 8). A stall surfaces as
+// errGrepStreamStalled, which readIgnoreFile's unreadable-skip class
+// already answers; a cancellation maps to itself there.
+func readIgnoreFileBytes(f fs.File, limit int64) ([]byte, error) {
+	if cf, ok := f.(*grepCtxFile); ok {
+		disarm := armStreamDeadline(cf.ctx, cf.File)
+		defer disarm()
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit))
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, errGrepStreamStalled
+		}
+		return nil, err
+	}
+	return data, nil
 }
 
 // grepReadFileCapped reads one file of a grep walk through fsys, bounded by

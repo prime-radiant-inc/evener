@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"io/fs"
 	"path"
 	"strings"
@@ -255,7 +254,7 @@ func readIgnoreFile(ctx context.Context, fsys fs.FS, path string, budget *GlobBu
 		return nil, false, nil //nolint:nilerr // best-effort: skip a missing or unreadable .gitignore
 	}
 	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, int64(maxGlobIgnoreFileBytes)+1))
+	data, err := readIgnoreFileBytes(f, int64(maxGlobIgnoreFileBytes)+1)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, false, cerr
