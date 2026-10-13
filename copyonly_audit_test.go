@@ -11,12 +11,13 @@ import (
 const copyOnlyAllowlist = "internal/devtool/copyonly/allowlist.tsv"
 
 // TestNoNewCopyOnlyTests is the ratchet behind the testing doc's "Copy Is Not
-// a Test Oracle": a test that exists only to check wording (its name says it
-// shows, renders or says something, and its every check compares output with
-// production copy) may not land unless the allowlist names it with a reason.
-// The allowlist should only shrink: an entry whose test is converted, deleted
-// or renamed is stale and must go, so the list stays a true record of what is
-// still kept and why.
+// a Test Oracle" for Go: a test that exists only to check wording (its name
+// says it shows, renders or says something, and its every check compares
+// output with production copy) may not land unless the allowlist names it with
+// a reason. The allowlist should only shrink: an entry whose test is
+// converted, deleted or renamed is stale and must go, so the list stays a true
+// record of what is still kept and why. TypeScript tests have the same audit
+// in cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts.
 func TestNoNewCopyOnlyTests(t *testing.T) {
 	t.Parallel()
 	targets, err := copyonly.Scan(".")

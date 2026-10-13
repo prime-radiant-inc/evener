@@ -1127,6 +1127,21 @@ func TestApplyLive_FactsOnlyAndNonChatDropped(t *testing.T) {
 	}
 }
 
+// A live listing's advertised image input reaches the resolved row: the
+// gateway's own capability (the chat lister's capabilities.vision mapping) is
+// what model selection and the native-vision decisions read.
+func TestResolve_LiveInputModalitiesReachCaps(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	r.ApplyLive("openrouter", []Model{{
+		ID:   "anthropic/claude-opus-4.6",
+		Caps: Caps{InputModalities: []string{"text", "image"}},
+	}})
+	res := mustResolve(t, r, "openrouter/anthropic/claude-opus-4.6")
+	if !res.Caps.AcceptsModality("image") || res.Provenance["InputModalities"] != "live" {
+		t.Fatalf("live image input must reach Caps: %v (%s)", res.Caps.InputModalities, res.Provenance["InputModalities"])
+	}
+}
+
 var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
 
 func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {

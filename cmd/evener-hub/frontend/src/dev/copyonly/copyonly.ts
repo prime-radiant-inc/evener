@@ -1,0 +1,421 @@
+// Finds TypeScript tests that exist only to check wording, the ratchet behind
+// docs/developing-evener/testing.md's "Copy Is Not a Test Oracle".
+// copyonlyAudit.test.ts runs scanRepo over the repository and fails on any
+// target missing from allowlist.tsv. Go tests have their own scanner and
+// allowlist in internal/devtool/copyonly.
+//
+// A target is a test whose name says its subject is wording (it shows,
+// renders, labels, says, ...) and whose every check is a copy claim. A check
+// is an expect(...) chain or a getBy*/findBy* query. It is a copy claim when
+// it compares output with a copy literal and with nothing else: a count, an
+// attribute or state read, a spy assertion or a role query makes it a behavior
+// check. A copy literal also appears in production TypeScript source, is not
+// shaped like an identifier, code or markup, and is not text the test itself
+// supplied: seeing a test's own fixture come back out is a real behavioral
+// check.
+//
+// Tests are read with the TypeScript compiler, so comments, strings, regex
+// literals, JSX text, multi-line and typed declarations can't blur a test's
+// boundaries or fake a check.
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import * as ts from "typescript";
+
+/** A test that exists only to check wording. */
+export interface Target {
+  /** Slash-separated, relative to the scanned root. */
+  file: string;
+  test: string;
+  line: number;
+}
+
+/**
+ * The TypeScript trees: tests in them are scanned, and their non-test sources
+ * are the production corpus. mobile/src is the shared tree mobile-native
+ * typechecks and tests.
+ */
+const TS_TREES = ["cmd/evener-hub/frontend/src/", "mobile-native/", "mobile/src/", "appwire-client/typescript/"];
+const TS_SOURCE = /\.(ts|tsx|mts)$/;
+const TEST_FILE = /\.(test|spec)\./;
+/** Test support: never production copy. */
+const TEST_SUPPORT = /(\/__tests__\/|TestUtils\.|\/testing\/|\/src\/dev\/)/;
+
+/**
+ * Every target among the TypeScript tests git tracks under root, sorted by
+ * file and line. Tracked files are read as they are in the working tree;
+ * untracked files are left out, so a scratch file can't change the answer.
+ */
+export function scanRepo(root: string): Target[] {
+  const files = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 1 << 28 })
+    .split("\0")
+    .filter(
+      (f) =>
+        f !== "" &&
+        !f.includes("node_modules/") &&
+        TS_TREES.some((tree) => f.startsWith(tree)) &&
+        TS_SOURCE.test(f) &&
+        !f.endsWith(".d.ts"),
+    );
+  const read = (f: string): string | null => {
+    try {
+      return readFileSync(join(root, f), "utf8");
+    } catch (err) {
+      if ((err as { code?: string }).code === "ENOENT") return null; // tracked but deleted
+      throw err;
+    }
+  };
+  const prod = files
+    .filter((f) => !TEST_FILE.test(f) && !TEST_SUPPORT.test(f))
+    .map(read)
+    .join("\n");
+  const scanner = new Scanner(prod);
+  const targets: Target[] = [];
+  for (const f of files.filter((f) => TEST_FILE.test(f))) {
+    const text = read(f);
+    if (text !== null) targets.push(...scanner.scanFile(f, text));
+  }
+  return targets.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1));
+}
+
+/** A test name that says its subject is wording. */
+const COPY_PURPOSE_NAME =
+  /show|display|render|label|title|text|copy|message|word|say|mention|hint|placeholder|tooltip|caption|usage|help|heading|banner|describ|phrase|string/i;
+/** An identifier named like copy (*_MESSAGE, *Label, ...). */
+const COPY_IDENT =
+  /(MESSAGE|LABEL|COPY|TEXT|TITLE|HINT|ERROR|PROMPT|USAGE|PLACEHOLDER|Message|Label|Copy|Text|Title|Hint|Error|Prompt|Usage|Placeholder)S?$/;
+
+const TEST_MODIFIERS = new Set(["only", "skip", "concurrent"]);
+const CHECK_QUERY = /^(get|find)(All)?By\w+$/;
+const TEXT_QUERY = /^(get|find|query)(All)?By(Text|Title)$/;
+const ROLE_QUERY = /^(get|find|query)(All)?ByRole$/;
+const TEXT_MATCHERS = new Set(["toContain", "toBe", "toEqual", "toMatch", "toHaveTextContent", "toStrictEqual"]);
+const NUMERIC_MATCHERS = new Set(["toBe", "toEqual", "toStrictEqual"]);
+/** Reads of structure or state: a check through one of these is about the element, not its words. */
+const BEHAVIOR_PROPERTIES = new Set(["length", "tagName", "dataset", "checked", "disabled", "className", "classList"]);
+const BEHAVIOR_CALLS = new Set(["getAttribute", "hasAttribute", "toHaveAttribute", "toHaveLength"]);
+const BEHAVIOR_CALL_PREFIXES = ["toHaveBeenCalled", "toBeGreaterThan", "toBeLessThan"];
+const COMPARISONS = new Set([
+  ts.SyntaxKind.EqualsEqualsToken,
+  ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsEqualsToken,
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.LessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.GreaterThanEqualsToken,
+]);
+
+/** A test(...) call: its name literal and the call node. */
+interface TestDeclaration {
+  name: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral;
+  call: ts.CallExpression;
+}
+
+/** Looks literals up in the production corpus; a miss scans all of it, so answers are memoized. */
+export class Scanner {
+  private readonly memo = new Map<string, boolean>();
+
+  constructor(private readonly prod: string) {}
+
+  scanFile(file: string, text: string): Target[] {
+    const kind = file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+    const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind);
+    const imported = copyImports(sf);
+    const targets: Target[] = [];
+    const visit = (node: ts.Node): void => {
+      const decl = testDeclaration(node);
+      if (decl === null) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+      const name = rawText(decl.name, sf);
+      if (COPY_PURPOSE_NAME.test(name) && this.isCopyOnly(decl, sf, imported)) {
+        targets.push({ file, test: name, line: sf.getLineAndCharacterOfPosition(decl.call.getStart(sf)).line + 1 });
+      }
+    };
+    visit(sf);
+    return targets;
+  }
+
+  private isCopyOnly(decl: TestDeclaration, sf: ts.SourceFile, imported: Set<string>): boolean {
+    const checks = findChecks(decl.call);
+    if (checks.length === 0 || checks.some(checksBehavior)) return false;
+    const supplied = suppliedText(decl, checks, sf);
+    return checks.every((check) => this.isCopyClaim(check, supplied, sf, imported));
+  }
+
+  /**
+   * A check (already known not to check behavior) that claims only that some
+   * copy appears: none of its literals is text the test supplied, and it
+   * compares output with production copy.
+   */
+  private isCopyClaim(check: ts.Node, supplied: string, sf: ts.SourceFile, imported: Set<string>): boolean {
+    const isSupplied = (raw: string) => runeLength(raw) >= 3 && supplied.includes(raw);
+    if (stringLiterals(check).some((lit) => isSupplied(rawText(lit, sf)))) return false;
+    return copyProbes(check, sf, imported).some(
+      (probe) => probe === IMPORTED_COPY || (!contractShaped(probe) && this.inProd(probe)),
+    );
+  }
+
+  private inProd(lit: string): boolean {
+    let found = this.memo.get(lit);
+    if (found === undefined) {
+      found = this.prod.includes(lit);
+      this.memo.set(lit, found);
+    }
+    return found;
+  }
+}
+
+/**
+ * The test(...) call node is a test declaration: test or it, with any of
+ * .only/.skip/.concurrent, called directly or through .each(table) (typed or
+ * not, or with a tagged-template table), with a literal name.
+ */
+function testDeclaration(node: ts.Node): TestDeclaration | null {
+  if (!ts.isCallExpression(node)) return null;
+  const callee = node.expression;
+  const isEachTable =
+    (ts.isCallExpression(callee) && isEach(callee.expression)) ||
+    (ts.isTaggedTemplateExpression(callee) && isEach(callee.tag));
+  if (!isEachTable && !isTestFunction(callee)) return null;
+  const name = node.arguments[0];
+  if (name === undefined || !(ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name))) return null;
+  return { name, call: node };
+}
+
+function isEach(e: ts.Expression): boolean {
+  return ts.isPropertyAccessExpression(e) && e.name.text === "each" && isTestFunction(e.expression);
+}
+
+function isTestFunction(e: ts.Expression): boolean {
+  if (ts.isIdentifier(e)) return e.text === "test" || e.text === "it";
+  return ts.isPropertyAccessExpression(e) && TEST_MODIFIERS.has(e.name.text) && isTestFunction(e.expression);
+}
+
+/** The name a call is made through: `f(...)` or `x.f(...)`. */
+function calleeName(call: ts.CallExpression): string | null {
+  const e = call.expression;
+  if (ts.isIdentifier(e)) return e.text;
+  if (ts.isPropertyAccessExpression(e)) return e.name.text;
+  return null;
+}
+
+/**
+ * The checks inside a test: each expect(...), expect.soft(...) or
+ * expect.poll(...) chain, and each getBy or findBy query outside one (a query
+ * throws when nothing matches, so on its own it is a claim). A check nested
+ * inside another belongs to the outer one.
+ */
+function findChecks(call: ts.CallExpression): ts.Node[] {
+  const roots: ts.Node[] = [];
+  for (const arg of call.arguments.slice(1)) {
+    walk(arg, (node) => {
+      if (!ts.isCallExpression(node)) return;
+      const name = calleeName(node);
+      if (startsAssertion(node) || (name !== null && CHECK_QUERY.test(name))) {
+        roots.push(chainTop(node));
+      }
+    });
+  }
+  return roots.filter(
+    (check, i) =>
+      roots.indexOf(check) === i &&
+      !roots.some((outer) => outer !== check && outer.pos <= check.pos && check.end <= outer.end),
+  );
+}
+
+/** Starts an assertion chain on its own: `expect(x)`, `expect.soft(x)`, `expect.poll(fn)`. */
+const EXPECT_CHAIN_VARIANTS = new Set(["soft", "poll"]);
+
+function startsAssertion(call: ts.CallExpression): boolean {
+  const e = call.expression;
+  if (ts.isIdentifier(e)) return e.text === "expect";
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    ts.isIdentifier(e.expression) &&
+    e.expression.text === "expect" &&
+    EXPECT_CHAIN_VARIANTS.has(e.name.text)
+  );
+}
+
+/** The whole member/call chain a call starts: `expect(x).not.toBe(y)` for `expect(x)`. */
+function chainTop(node: ts.Node): ts.Node {
+  let top = node;
+  for (;;) {
+    const p = top.parent;
+    const continues =
+      ((ts.isPropertyAccessExpression(p) || ts.isElementAccessExpression(p) || ts.isCallExpression(p)) &&
+        p.expression === top) ||
+      ts.isNonNullExpression(p);
+    if (!continues) return top;
+    top = p;
+  }
+}
+
+/** A check that reads a count, structure or state, asserts on a spy, or finds by role. */
+function checksBehavior(check: ts.Node): boolean {
+  let found = false;
+  walk(check, (node) => {
+    if (ts.isPropertyAccessExpression(node) && BEHAVIOR_PROPERTIES.has(node.name.text)) found = true;
+    if (ts.isCallExpression(node)) {
+      const name = calleeName(node) ?? "";
+      found ||=
+        BEHAVIOR_CALLS.has(name) ||
+        BEHAVIOR_CALL_PREFIXES.some((prefix) => name.startsWith(prefix)) ||
+        ROLE_QUERY.test(name) ||
+        (NUMERIC_MATCHERS.has(name) && node.arguments[0] !== undefined && isNumber(node.arguments[0]));
+    }
+    if (ts.isBinaryExpression(node) && COMPARISONS.has(node.operatorToken.kind)) {
+      found ||= isNumber(node.left) || isNumber(node.right);
+    }
+    return !found;
+  });
+  return found;
+}
+
+function isNumber(e: ts.Expression): boolean {
+  if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.MinusToken) return isNumber(e.operand);
+  return ts.isNumericLiteral(e);
+}
+
+/** Stands for a copy constant imported from code under test. */
+const IMPORTED_COPY = Symbol("imported copy");
+
+/**
+ * What the check compares with copy: the first argument of a by-text query or
+ * a text matcher, as literal text (a regex's literal core), or IMPORTED_COPY
+ * for an imported copy constant.
+ */
+function copyProbes(check: ts.Node, sf: ts.SourceFile, imported: Set<string>): (string | typeof IMPORTED_COPY)[] {
+  const probes: (string | typeof IMPORTED_COPY)[] = [];
+  walk(check, (node) => {
+    if (!ts.isCallExpression(node)) return;
+    const name = calleeName(node) ?? "";
+    const arg = node.arguments[0];
+    const isMatcher = ts.isPropertyAccessExpression(node.expression) && TEXT_MATCHERS.has(name);
+    if (arg === undefined || !(TEXT_QUERY.test(name) || isMatcher)) return;
+    if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
+      probes.push(rawText(arg, sf).trim());
+    } else if (ts.isRegularExpressionLiteral(arg)) {
+      probes.push(regexCore(arg.text.slice(1, arg.text.lastIndexOf("/"))).trim());
+    } else if (ts.isIdentifier(arg) && imported.has(arg.text)) {
+      probes.push(IMPORTED_COPY);
+    }
+  });
+  return probes;
+}
+
+/**
+ * The text the test supplies: every literal in the declaration outside its
+ * checks, .each table rows included, minus the test's name.
+ */
+function suppliedText(decl: TestDeclaration, checks: ts.Node[], sf: ts.SourceFile): string {
+  const parts: string[] = [];
+  const skip = new Set<ts.Node>([decl.name, ...checks]);
+  walk(decl.call, (node) => {
+    if (skip.has(node)) return false;
+    // Raw source text, escapes as written, the form check literals are
+    // compared in.
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      parts.push(rawText(node, sf));
+    } else if (ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) {
+      parts.push(node.rawText ?? node.text);
+    } else if (ts.isJsxText(node)) {
+      parts.push(node.text);
+    }
+  });
+  return parts.join("\n");
+}
+
+function stringLiterals(root: ts.Node): (ts.StringLiteral | ts.NoSubstitutionTemplateLiteral)[] {
+  const found: (ts.StringLiteral | ts.NoSubstitutionTemplateLiteral)[] = [];
+  walk(root, (node) => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) found.push(node);
+  });
+  return found;
+}
+
+/** Visits root and its descendants depth-first; returning false from visit skips a node's children. */
+function walk(root: ts.Node, visit: (node: ts.Node) => boolean | undefined): void {
+  const step = (node: ts.Node): void => {
+    if (visit(node) !== false) ts.forEachChild(node, step);
+  };
+  step(root);
+}
+
+function runeLength(s: string): number {
+  return [...s].length;
+}
+
+/** A string literal's source text between its quotes, escapes as written. */
+function rawText(lit: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral, sf: ts.SourceFile): string {
+  return lit.getText(sf).slice(1, -1);
+}
+
+/** The identifiers the file imports from code under test (not test support) whose names say they are copy. */
+function copyImports(sf: ts.SourceFile): Set<string> {
+  const names = new Set<string>();
+  for (const stmt of sf.statements) {
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+    const src = stmt.moduleSpecifier.text;
+    if (src.includes("testing") || src.startsWith("vitest") || src.includes("@testing-library")) continue;
+    const bindings = stmt.importClause?.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    for (const el of bindings.elements) {
+      if (COPY_IDENT.test(el.name.text)) names.add(el.name.text);
+    }
+  }
+  return names;
+}
+
+/** An identifier, path, flag or other machine-contract value. */
+const CONTRACT_TOKEN = /^[-\p{L}\p{N}_.:/@#=%+]*$/u;
+/** A capitalized word ("Welcome", "Retry"): a label, not an identifier. */
+const LABEL_WORD = /^[A-Z][a-z]+[.!?…]?$/u;
+/** Shaped like code, shell commands, markup or wire syntax: a format contract even with spaces. */
+const CODE_LIKE =
+  /[{};=<>"`$\\]|^(?:cat|wc|uname|id|mkdir|rm|ls|sh|bash|git|go|npm|npx|test|printf|echo|chmod|mv|cp|tar|export|func|type|package|import|const|var|set|exec|cd|env|sudo|kill|pgrep|ps|tmux|ssh|curl|make)\b/;
+
+/** A literal that is a machine contract (or too short or letterless to be wording), not copy. */
+export function contractShaped(lit: string): boolean {
+  if (runeLength(lit) < 3 || !/[A-Za-z]/.test(lit) || CODE_LIKE.test(lit)) return true;
+  return CONTRACT_TOKEN.test(lit) && !LABEL_WORD.test(lit);
+}
+
+/**
+ * The longest run of literal text in a regex, so it can be looked up as copy.
+ * An escaped character is literal text; a class escape (`\d`) or an
+ * unescaped metacharacter ends the run. Ties go to the first run.
+ */
+export function regexCore(rx: string): string {
+  const runs: string[] = [];
+  let run = "";
+  const chars = [...rx];
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i] ?? "";
+    if (ch === "\\") {
+      i++;
+      const next = chars[i];
+      if (next === undefined) continue;
+      if ("dDsSwWbB".includes(next)) {
+        runs.push(run);
+        run = "";
+      } else {
+        run += next;
+      }
+    } else if ("^$.*+?()[]{}|".includes(ch)) {
+      runs.push(run);
+      run = "";
+    } else {
+      run += ch;
+    }
+  }
+  runs.push(run);
+  let best = runs[0] ?? "";
+  for (const r of runs) {
+    if (runeLength(r) > runeLength(best)) best = r;
+  }
+  return best;
+}

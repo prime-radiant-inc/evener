@@ -752,13 +752,15 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 }
 
 // effectiveImageDetail is the detail the target's adapter puts on the wire for
-// the image: the image's own detail when it carries one, and otherwise the row's
-// configured image_detail for the one builder that injects it. Only the Responses
-// builder applies the row's detail (and a "high" default when the row sets none);
-// the chat builder sends the image's own detail or nothing at all
-// (chatcompletions/messages.go), so a chat row's image_detail never reaches the
-// wire.
+// the image, so the estimate bills what the request sends. The Chat Completions
+// builder normalizes the part's detail together with the row's image_detail
+// (ChatImageDetail); the Responses builder keeps the image's own detail or, when
+// it names none, the row's configured image_detail (its builder defaults that to
+// "high"). Other builders send the image's own detail alone.
 func effectiveImageDetail(t targetInfo, img *ImageData) string {
+	if t.protocol == registry.ProtocolOpenAIChat {
+		return ChatImageDetail(img.Detail, t.imageDetail)
+	}
 	detail := img.Detail
 	if strings.TrimSpace(detail) == "" && t.protocol == registry.ProtocolOpenAIResponses {
 		detail = t.imageDetail

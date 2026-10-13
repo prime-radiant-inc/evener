@@ -11,13 +11,13 @@ func TestReadAllowlist(t *testing.T) {
 	got, err := ReadAllowlist(strings.NewReader("file\ttest\treason\n" +
 		"a_test.go\tTestShowsUsage\tModel-facing text (deferred).\n" +
 		"\n" +
-		"b.test.ts\tshows the title\tFalse positive: fixture text.\n"))
+		"b_test.go\tTestShowsTheTitle\tFalse positive: fixture text.\n"))
 	if err != nil {
 		t.Fatalf("ReadAllowlist: %v", err)
 	}
 	want := []Allowed{
 		{File: "a_test.go", Test: "TestShowsUsage", Reason: "Model-facing text (deferred)."},
-		{File: "b.test.ts", Test: "shows the title", Reason: "False positive: fixture text."},
+		{File: "b_test.go", Test: "TestShowsTheTitle", Reason: "False positive: fixture text."},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ReadAllowlist = %+v, want %+v", got, want)
@@ -45,13 +45,13 @@ func TestCompare(t *testing.T) {
 	t.Parallel()
 	targets := []Target{
 		{File: "a_test.go", Test: "TestShowsUsage", Line: 10},
-		{File: "b.test.ts", Test: "shows the title", Line: 3},
-		{File: "b.test.ts", Test: "shows the title", Line: 30}, // same name in two describe blocks
+		{File: "b_test.go", Test: "TestShowsTheTitle", Line: 3},
+		{File: "b_test.go", Test: "TestShowsTheTitle", Line: 30}, // one test reported twice keeps one entry
 		{File: "c_test.go", Test: "TestNewCopyOnly", Line: 7},
 	}
 	allowed := []Allowed{
 		{File: "a_test.go", Test: "TestShowsUsage", Reason: "deferred"},
-		{File: "b.test.ts", Test: "shows the title", Reason: "false positive"},
+		{File: "b_test.go", Test: "TestShowsTheTitle", Reason: "false positive"},
 		{File: "a_test.go", Test: "TestConvertedSince", Reason: "deferred"},
 		{File: "c_test.go", Test: "TestShowsUsage", Reason: "keyed by file as well as name"},
 	}

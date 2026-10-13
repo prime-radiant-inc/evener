@@ -89,18 +89,27 @@ When the text really is the contract (an enum token, a wire field, a CLI flag,
 a file format), assert it through its structured form, as above. When it is
 copy a person reads, review it in the diff and test the behavior around it.
 
-`copyonly_audit_test.go` enforces the rule against tests whose whole claim is
-that some copy exists. It runs `internal/devtool/copyonly` over every tracked
-Go and TypeScript test and fails on a test whose name says it shows, renders or
-says something and whose every check compares output with production copy. It
-skips expected errors, counts, attributes, machine-contract tokens, and text
-the test supplied itself. When it flags your test, assert the behavior instead.
-If the copy must stay the oracle (model-facing text whose conversion is
-deferred, or a false positive), add a row to
-`internal/devtool/copyonly/allowlist.tsv`: the file, the test name, and the
-reason it is kept, tab-separated. Rows are keyed by file and test name, not
-line. The audit also fails on a row whose test is no longer flagged, so remove
-the row when you convert, delete or rename the test.
+Two audits enforce the rule against tests whose whole claim is that some copy
+exists. Each fails on a test whose name says it shows, renders or says
+something and whose every check compares output with production copy:
+
+- `copyonly_audit_test.go` (part of `go test`) runs `internal/devtool/copyonly`
+  over every tracked Go test. Its allowlist is
+  `internal/devtool/copyonly/allowlist.tsv`.
+- `cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts` (part of
+  `make test-web`) reads every tracked TypeScript test in the frontend,
+  `mobile-native`, `mobile/src` and `appwire-client/typescript` with the
+  TypeScript compiler. Its allowlist is
+  `cmd/evener-hub/frontend/src/dev/copyonly/allowlist.tsv`.
+
+Both skip expected errors, counts, attribute and state reads, spy assertions,
+role queries, machine-contract tokens, and text the test supplied itself. When
+an audit flags your test, assert the behavior instead. If the copy must stay
+the oracle (model-facing text whose conversion is deferred, or a false
+positive), add a row to that language's allowlist: the file, the test name,
+and the reason it is kept, tab-separated. Rows are keyed by file and test name,
+not line. Each audit also fails on a row whose test is no longer flagged, so
+remove the row when you convert, delete or rename the test.
 
 ## Flakes and Timeouts
 
