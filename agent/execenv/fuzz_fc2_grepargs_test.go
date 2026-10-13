@@ -14,6 +14,9 @@ import (
 //   - the fixed no-heading / no-color prefix is always the first three args;
 //   - exactly one output-mode flag is present, at index 3, matching outputMode;
 //   - "--null" follows it at index 4, so paths end in a NUL;
+//   - "--max-filesize" follows at index 5 with grepMaxFileBytes as its value,
+//     mirroring the native reader's per-file cap so an oversized file is
+//     treated the same with and without ripgrep;
 //   - "-i" appears in the option region iff caseInsensitive (at most once);
 //   - "-g" appears iff the glob filter is non-blank, followed immediately by it;
 //   - "-C" appears iff contextLines>0 AND outputMode is content/"", followed by
@@ -41,8 +44,9 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 			}
 		}
 
-		// Minimum shape: 3-arg prefix + 1 mode flag + "--null" + "--" + pattern + dir.
-		if len(args) < 8 {
+		// Minimum shape: 3-arg prefix + 1 mode flag + "--null" +
+		// "--max-filesize" + its value + "--" + pattern + dir.
+		if len(args) < 10 {
 			t.Fatalf("too few args: %v", args)
 		}
 		wantPrefix := []string{"--no-heading", "--color", "never"}
@@ -68,6 +72,12 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 		if args[4] != "--null" {
 			t.Fatalf("arg[4]=%q, want --null: %v", args[4], args)
 		}
+		if args[5] != "--max-filesize" {
+			t.Fatalf("arg[5]=%q, want --max-filesize: %v", args[5], args)
+		}
+		if args[6] != strconv.Itoa(grepMaxFileBytes) {
+			t.Fatalf("arg[6]=%q, want the read cap %d: %v", args[6], grepMaxFileBytes, args)
+		}
 
 		// The final three args are always "--", pattern, dir, in that order — the
 		// "--" guarantees a dash-prefixed pattern is never mistaken for a flag.
@@ -81,9 +91,9 @@ func FuzzFc2BuildRipgrepArgs(f *testing.F) {
 			t.Fatalf("final arg=%q, want dir %q", args[len(args)-1], dir)
 		}
 
-		// The option region between the mode flag and the trailing "--"+pattern+dir
-		// holds only the optional -i, -g<glob>, and -C<n>.
-		mid := args[5 : len(args)-3]
+		// The option region past the fixed --null, --max-filesize, and its
+		// value holds only the optional -i, -g<glob>, and -C<n>.
+		mid := args[7 : len(args)-3]
 		wantI := caseInsensitive
 		wantG := strings.TrimSpace(globFilter) != ""
 		wantC := contextLines > 0 && (outputMode == "" || outputMode == "content")

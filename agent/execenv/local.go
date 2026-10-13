@@ -1355,7 +1355,7 @@ var (
 		return execCommandContext(ctx, name, args...).Output()
 	}
 	shellStat              = os.Stat
-	grepReadFile           = fs.ReadFile
+	grepReadFile           = grepReadFileCapped
 	grepWalk               = fs.WalkDir
 	listReadDir            = os.ReadDir
 	streamBeforeSignalOnce = func(func()) {}
@@ -2176,8 +2176,9 @@ func resolveGrepDir(path, rootDir string) string {
 
 // buildRipgrepArgs builds the ripgrep argument vector for a Grep call. It is the
 // pure arg-construction core: a fixed no-heading / no-color prefix, then exactly
-// one output-mode flag (files-with-matches / count / line-number), then optional
-// case-insensitivity and glob filter, then the trailing pattern and directory.
+// one output-mode flag (files-with-matches / count / line-number), then a NUL
+// path delimiter and the per-file size cap, then optional case-insensitivity
+// and glob filter, then the trailing pattern and directory.
 func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string, contextLines int) []string {
 	filters := []string(nil)
 	if strings.TrimSpace(globFilter) != "" {
@@ -2199,7 +2200,11 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 	// --null ends each path with a NUL in place of its ":" or "-" (or line
 	// ending), so ripgrepOutputLines can find the whole path even when the
 	// name holds a newline.
-	args = append(args, "--null")
+	// --max-filesize mirrors the native reader's per-file cap: rg skips a
+	// file whose size already exceeds it, exactly as grepCappedRead stops and
+	// the walk skips the file, so an oversized file is treated the same with
+	// and without ripgrep.
+	args = append(args, "--null", "--max-filesize", strconv.Itoa(grepMaxFileBytes))
 	if caseInsensitive {
 		args = append(args, "-i")
 	}
@@ -2264,6 +2269,11 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	if skip != nil {
 		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
 	}
+	// Targets ripgrep cannot bound never reach it (see grepTakesNativeArm);
+	// the native walk applies the pseudo-root skip and the per-file read cap.
+	if grepTakesNativeArm(dir) {
+		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
+	}
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
@@ -2292,16 +2302,131 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
 		// context_lines a cut can fall inside a match's context.
 		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir), outputMode == "files_with_matches")
+		var notes []string
 		if len(lines) > maxResults {
-			return searchresult.WithNotes(strings.Join(lines[:maxResults], "\n"), grepTruncationNote(maxResults)), nil
+			notes = append(notes, grepTruncationNote(maxResults))
+		}
+		// rg skips over-cap files by --max-filesize without a trace in its
+		// output, so the same omission note the native walk's finishWalk
+		// composes is composed here, from ripgrep's own views of the tree.
+		oversized, cerr := e.grepRgOversizeCount(ctx, rg, dir, globFilters)
+		if cerr != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
+			// A listing that failed another way is no note: the disclosure
+			// is best-effort and must not assert a count it could not
+			// obtain — a failed listing is not an empty one.
+			oversized = 0
+		}
+		if oversized > 0 {
+			notes = append(notes, grepOversizeNote(oversized))
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if len(notes) > 0 {
+			return searchresult.WithNotes(strings.Join(lines[:min(len(lines), maxResults)], "\n"), notes...), nil
 		}
 		return strings.Join(lines, "\n"), nil
 	}
 	// Exit code 1 means "no matches" for rg.
 	if res.ExitCode == 1 {
+		// A directory whose only matching files were over-cap was not
+		// searched to its end: the empty says so rather than reading as
+		// "genuinely no matches".
+		oversized, cerr := e.grepRgOversizeCount(ctx, rg, dir, globFilters)
+		if cerr != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
+			oversized = 0
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if oversized > 0 {
+			return searchresult.WithNotes("", grepOversizeNote(oversized)), nil
+		}
 		return "", nil
 	}
 	return res.Stdout + res.Stderr, err
+}
+
+// grepRgOversizeCount reports how many candidate files ripgrep leaves out of
+// a directory search by --max-filesize, so the rg arm can disclose the same
+// omissions the native walk's finishWalk does: the difference between the
+// files rg lists without the size filter and with it. Both listings run
+// through the same ripgrep with the same glob filters, so the count is rg's
+// own view of the tree — its ignore rules included — not a guess about which
+// files it would search. A named file never needs the count (an over-cap one
+// routes to the native arm), a cancelled search reports its cancellation,
+// and any listing that fails another way returns none: the disclosure is
+// best-effort and never fails the search it describes.
+func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg, dir string, globFilters []string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if grepTargetsOneFile(dir) {
+		return 0, nil
+	}
+	all, err := e.grepRgListFiles(ctx, rg, dir, globFilters, false)
+	if err != nil {
+		return 0, err
+	}
+	under, err := e.grepRgListFiles(ctx, rg, dir, globFilters, true)
+	if err != nil {
+		return 0, err
+	}
+	if under > all {
+		return 0, nil
+	}
+	return all - under, nil
+}
+
+// grepRgListFiles counts one rg --files listing of dir: --null keeps the
+// paths separable and only their number matters — counted as they stream
+// through, so a listing of any size is never retained — and --max-filesize,
+// when capped, is the same filter the search itself passes. rg exits 1 for
+// a listing that found no file, so both 0 and 1 are a listing's answers;
+// anything else is a failure, which propagates so the caller suppresses the
+// note rather than deriving a count from a half-failed pair of listings,
+// while a cancellation is the search's error to report.
+func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir string, globFilters []string, capped bool) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	args := []string{"--files", "--null"}
+	if capped {
+		args = append(args, "--max-filesize", strconv.Itoa(grepMaxFileBytes))
+	}
+	for _, globFilter := range globFilters {
+		if strings.TrimSpace(globFilter) != "" {
+			args = append(args, "-g", globFilter)
+		}
+	}
+	args = append(args, "--", dir)
+	counter := &nulCounter{}
+	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, counter)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return 0, cerr
+		}
+		if res.ExitCode != 0 && res.ExitCode != 1 {
+			return 0, err
+		}
+	}
+	return int(counter.n), nil
+}
+
+// nulCounter counts the NUL delimiters ripgrep --null ends each path with,
+// retaining nothing: whatever streams through is counted and dropped, so a
+// listing costs its delimiters' count and one pipe block of memory.
+type nulCounter struct{ n int64 }
+
+func (c *nulCounter) Write(p []byte) (int, error) {
+	c.n += int64(bytes.Count(p, []byte{0}))
+	return len(p), nil
 }
 
 // grepTargetsOneFile reports whether a grep's resolved target names a single
@@ -2448,19 +2573,38 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 	// secureDirFS policy on the sandboxed arm while retaining file-symlink
 	// behavior for the unsandboxed fallback.
 	budget := newGlobBudget("grep")
-	fsys := cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget, ctx: ctx}}
+	// Reads go through grepAdmitFS rather than os.DirFS's blocking Open;
+	// cancellation and the listing budgets stay wrapped underneath it. A
+	// named target is the walk root's own file, so only that arm admits a
+	// device (see grepAdmitFS.admitDevice).
+	fsys := grepAdmitFS{
+		FS:          cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget, ctx: ctx}},
+		root:        path,
+		ctx:         ctx,
+		admitDevice: singleFile,
+		rootPseudo:  grepRootIsPseudo(path),
+	}
 	// No masking concept off the sandboxed path: no-op skip.
 	ignoreFS := fsys
 	if singleFile {
 		// Preserve the old single-file behavior: ignore rules are rooted at the
 		// file argument, which cannot contain a .gitignore tree of its own.
-		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}}
+		ignoreFS = grepAdmitFS{
+			FS:          cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}},
+			root:        filepath.Join(path, walkRoot),
+			ctx:         ctx,
+			admitDevice: true,
+			rootPseudo:  grepRootIsPseudo(filepath.Join(path, walkRoot)),
+		}
 	}
-	ignores, err := loadIgnoreSet(ctx, ignoreFS, nil, budget, wholeBaseIgnoreScope())
+	ignores, err := loadIgnoreSet(ctx, ignoreFS, func(rel string) bool {
+		return walkSkipsPseudoDir(path, filepath.Join(path, rel))
+	}, budget, wholeBaseIgnoreScope())
 	if err != nil {
 		return "", err
 	}
 	excludedByIgnore := 0
+	oversized := 0
 
 	err = grepWalk(fsys, walkRoot, func(p string, d fs.DirEntry, err error) error {
 		if cancelErr := ctx.Err(); cancelErr != nil {
@@ -2496,6 +2640,9 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 					excludedByIgnore++
 					return filepath.SkipDir
 				}
+				if walkSkipsPseudoDir(path, filepath.Join(path, p)) {
+					return filepath.SkipDir
+				}
 			}
 			// fs.WalkDir never follows a directory symlink, so this walk
 			// cannot cycle back into itself the way the glob pattern walk's
@@ -2525,6 +2672,33 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				return cancelErr
 			}
+			if singleFile && errors.Is(err, errGrepFileTooLarge) {
+				// A file named as the target is a deliberate request: search
+				// the over-cap regular behind it in bounded windows. A device
+				// keeps the capped skip — its stream never ends, so bounding
+				// it is the cap's job, not the window's.
+				if opened, oerr := fsys.Open(p); oerr == nil {
+					if cf, ok := opened.(*grepCtxFile); ok {
+						if info, ierr := cf.Stat(); ierr == nil && info.Mode().IsRegular() {
+							stop, serr := a.feedLargeFile(cf.ctx, cf.File)
+							_ = cf.Close()
+							if serr != nil {
+								if cancelErr := ctx.Err(); cancelErr != nil {
+									return cancelErr
+								}
+								return nil //nolint:nilerr // best-effort grep: a stalled or failed stream is skipped, like an unreadable file
+							}
+							if stop {
+								return filepath.SkipAll
+							}
+							return nil
+						}
+					}
+					_ = opened.Close()
+				}
+			} else if errors.Is(err, errGrepFileTooLarge) {
+				oversized++
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
 		}
 		if a.feed(relPath, data) {
@@ -2538,7 +2712,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return a.finishWalk(excludedByIgnore), nil
+	return a.finishWalk(excludedByIgnore, oversized), nil
 }
 
 // ExecCommand runs command through the platform shell in its own process group,
@@ -2576,6 +2750,17 @@ func (e *LocalExecutionEnvironment) resolveCommandWorkingDir(workingDir string) 
 }
 
 func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
+	return e.execPreparedCommandStdout(ctx, cmd, timeoutMS, workingDir, envVars, nil)
+}
+
+// execPreparedCommandStdout is execPreparedCommand with stdout, when sink is
+// not nil, streamed to sink as it arrives instead of captured: a caller that
+// only counts or scans the stream lets any volume flow through without any
+// of it being retained. The same lifecycle owns the run — cancellation, the
+// timeout, process-group termination, the drain barrier, exit-code mapping —
+// and Stdout stays empty on the result, since the buffer nothing streamed
+// into is never read.
+func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string, sink io.Writer) (ExecResult, error) {
 	if timeoutMS <= 0 {
 		timeoutMS = 10_000
 	}
@@ -2594,6 +2779,9 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 		Stderr:           &stderr,
 		Wrapper:          e.Wrapper,
 		TerminationGrace: e.terminationGraceDuration(),
+	}
+	if sink != nil {
+		config.Stdout = sink
 	}
 	if args := cmd.Args(); len(args) > 0 {
 		if resolved, ok := lookPathInEnv(args[0], env); ok {

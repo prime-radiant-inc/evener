@@ -107,6 +107,8 @@ export interface EntryBatch {
   historyGeneration?: number;
   items: readonly TranscriptItemRow<unknown>[];
   turns?: readonly TurnModel[];
+  // Accepted authoritative read replaces this position through history's end.
+  replacement?: { from: ThreadItemPosition };
   coverage?: EntryCoverageInput;
   sessionMetadata?: TranscriptSessionMetadata;
 }
@@ -689,6 +691,11 @@ export class SessionEntryCache {
         )) ?? { historyKey: AGGREGATE_META_KEY, encodedBytes: 0 };
         let historyBytes = historyMeta.encodedBytes;
         let aggregateBytes = aggregateMeta.encodedBytes;
+        const removed = batch.replacement
+          ? await this.#removeReplacementScope(transaction, batch.historyKey, batch.replacement.from)
+          : { bytes: 0, items: 0 };
+        historyBytes -= removed.bytes;
+        aggregateBytes -= removed.bytes;
         const written = await applyEntryRows(itemStore, turnStore, batch.historyKey, batch.items, batch.turns ?? []);
         historyBytes += written.byteDelta;
         aggregateBytes += written.byteDelta;
@@ -710,7 +717,7 @@ export class SessionEntryCache {
           ...batch.sessionMetadata,
           historyKey: batch.historyKey,
           encodedBytes: historyBytes,
-          itemCount: historyMeta.itemCount + changedItems,
+          itemCount: historyMeta.itemCount - removed.items + changedItems,
         });
         metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: aggregateBytes });
         const policy = await this.#enforcePolicy(transaction, { kind: "entry", historyKey: batch.historyKey });
@@ -733,6 +740,63 @@ export class SessionEntryCache {
     } catch (error) {
       return { outcome: "failed", error };
     }
+  }
+
+  async #removeReplacementScope(
+    transaction: IDBTransaction,
+    historyKey: string,
+    from: ThreadItemPosition,
+  ): Promise<{ bytes: number; items: number }> {
+    const itemStore = transaction.objectStore(ENTRY_ITEM_STORE);
+    const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
+    const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
+    const removed = { bytes: 0, items: 0 };
+    const keptTurns = new Set<string>();
+    const removedTurns = new Set<string>();
+    // Stream the rows, retaining only turn identities, not a second history body.
+    await new Promise<void>((resolve, reject) => {
+      const request = itemStore.index("historyKey").openCursor(historyKey);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return resolve();
+        const row = cursor.value as TranscriptItemRow<CachedSessionItem>;
+        if (comparePosition(row.position, from) >= 0) {
+          removed.bytes += encodedBytes(row);
+          removed.items++;
+          removedTurns.add(row.item.turnId);
+          itemStore.delete(cursor.primaryKey);
+        } else {
+          keptTurns.add(row.item.turnId);
+        }
+        cursor.continue();
+      };
+    });
+    for (const turnId of removedTurns) {
+      if (keptTurns.has(turnId)) continue;
+      const row = await requestResult(turnStore.get([historyKey, turnId]) as IDBRequest<TranscriptTurnRow | undefined>);
+      if (!row) continue;
+      removed.bytes += encodedBytes(row);
+      turnStore.delete([historyKey, turnId]);
+    }
+    const range = this.#keyRange.bound([historyKey, ""], [historyKey, "\uffff"]);
+    await new Promise<void>((resolve, reject) => {
+      const request = coverageStore.openCursor(range);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return resolve();
+        const row = cursor.value as TranscriptCoverageRow;
+        // Retain wholly older certificates, never a certificate spanning removed
+        // content. Empty certificates have no retained interval to certify.
+        if (row.end === null || comparePosition(row.end, from) >= 0) {
+          removed.bytes += encodedBytes(row);
+          coverageStore.delete(cursor.primaryKey);
+        }
+        cursor.continue();
+      };
+    });
+    return removed;
   }
 
   async #runWriteTransaction(

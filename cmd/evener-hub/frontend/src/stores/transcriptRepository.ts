@@ -16,6 +16,7 @@ import {
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
   pruneBackgroundHistoryBodies,
+  readDisposition,
   type SnapshotIdentity,
   type ThreadItem,
   type ThreadItemPosition,
@@ -300,6 +301,8 @@ export class TranscriptRepository {
   #model: ThreadModel | undefined;
   #boundary = 0;
   #sourceRevision = 0;
+  #replacementRevision = 0;
+  #uncommittedReplacementFrom: ThreadItemPosition | undefined;
   #baselineIdentity = "";
   #readerCount = 0;
   #coverageBoundary: string | undefined;
@@ -656,8 +659,62 @@ export class TranscriptRepository {
     this.#recoveryNeeded = candidate.history?.invalidatedAtGeneration !== undefined;
     this.#seedAuthorityInvalid = false;
     this.#seedSnapshot = undefined;
-    const rows = this.#rowsFromRead(response, candidate);
+    let rows = this.#rowsFromRead(response, candidate);
+    let turns = this.#readTurns(response, candidate);
     const coverageRows = this.#rowsFromWindow(response);
+    const replacesHistory = before?.history && readDisposition(before.history, response) === "replace";
+    const replacement =
+      replacesHistory || response.authoritative
+        ? {
+            from: replacesHistory
+              ? { entry: 0, item: 0 }
+              : ((response.thread.turns ?? [])
+                  .flatMap((turn) => (turn.items ?? []).flatMap((item) => (item.position ? [item.position] : [])))
+                  .sort(comparePosition)[0] ?? { entry: 0, item: 0 }),
+          }
+        : undefined;
+    if (replacement) {
+      const outstanding = this.#uncommittedReplacementFrom;
+      if (outstanding && comparePosition(outstanding, replacement.from) < 0) {
+        // Retiring an earlier queued replacement must not lose its deletions or
+        // the accepted rows below this new window. Carry that still-uncommitted
+        // interval forward from the reducer's current model, not the old batch.
+        const inherited =
+          candidate.history?.turns.filter((turn) =>
+            turn.items.some(
+              (item) =>
+                item.position &&
+                comparePosition(item.position, outstanding) >= 0 &&
+                comparePosition(item.position, replacement.from) < 0,
+            ),
+          ) ?? [];
+        const currentKeys = new Set(rows.map((row) => row.transcriptKey));
+        rows = [
+          ...inherited.flatMap((turn) =>
+            turn.items.flatMap((item) => {
+              if (
+                !item.position ||
+                comparePosition(item.position, outstanding) < 0 ||
+                comparePosition(item.position, replacement.from) >= 0 ||
+                (item.transcriptKey && currentKeys.has(item.transcriptKey))
+              )
+                return [];
+              const row = this.#row(item);
+              return row ? [row] : [];
+            }),
+          ),
+          ...rows,
+        ];
+        turns = [...inherited.filter((turn) => !turns.some((current) => current.id === turn.id)), ...turns];
+        replacement.from = outstanding;
+      }
+      this.#uncommittedReplacementFrom = replacement.from;
+      this.#replacementRevision = this.#sourceRevision;
+      // Pending opening bodies must obey the same removal as durable rows.
+      for (const [key, row] of this.#pending) {
+        if (comparePosition(row.position, replacement.from) >= 0) this.#pending.delete(key);
+      }
+    }
     const positions = coverageRows.map((row) => row.position);
     const orderedPositions = [...positions].sort(comparePosition);
     this.#coverageStart = orderedPositions[0] ?? null;
@@ -678,7 +735,8 @@ export class TranscriptRepository {
       clearEpoch: this.#binding.clearEpoch,
       historyGeneration: this.#binding.historyGeneration,
       items: rows,
-      turns: this.#readTurns(response, candidate).map((turn) => ({ ...turn, items: [] })),
+      turns: turns.map((turn) => ({ ...turn, items: [] })),
+      replacement,
       coverage: {
         kind: "read",
         readId: request.readId,
@@ -1954,6 +2012,14 @@ export class TranscriptRepository {
     isRetry: boolean,
     isExempt: boolean,
   ): Promise<void> {
+    if (issuedRevision < this.#replacementRevision) {
+      this.#admission.release(bodies, this);
+      if (isExempt) this.#admission.releaseExempt(this);
+      for (const row of batch.items) {
+        if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
+      }
+      return Promise.resolve();
+    }
     if (this.#binding.mayPersist?.() === false) {
       this.#admission.release(bodies, this);
       if (isExempt) this.#admission.releaseExempt(this);
@@ -1961,11 +2027,13 @@ export class TranscriptRepository {
     }
     this.#inFlight.set(batch, bodies);
     const write = this.#cache.commitBatch(batch).then((outcome) => {
-      const superseded = isRetry && issuedRevision !== this.#sourceRevision;
+      const superseded =
+        issuedRevision < this.#replacementRevision || (isRetry && issuedRevision !== this.#sourceRevision);
       if (batch.coverage?.boundary === this.#retirementWrite?.boundary && this.#retirementWrite) {
         this.#retirementWrite.persisted = outcome.outcome === "committed" && outcome.coverage !== "not-extended";
       }
       if (outcome.outcome === "committed") {
+        if (batch.replacement && !superseded) this.#uncommittedReplacementFrom = undefined;
         this.#retryAttempt = 0;
         // Restoration is conditioned on the outcome's coverage, not the offered
         // input: only an `extended` certificate actually repairs the chain (an

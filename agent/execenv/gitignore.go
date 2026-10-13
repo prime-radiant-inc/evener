@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"io/fs"
 	"path"
 	"strings"
@@ -255,7 +254,7 @@ func readIgnoreFile(ctx context.Context, fsys fs.FS, path string, budget *GlobBu
 		return nil, false, nil //nolint:nilerr // best-effort: skip a missing or unreadable .gitignore
 	}
 	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, int64(maxGlobIgnoreFileBytes)+1))
+	data, err := readIgnoreFileBytes(f, int64(maxGlobIgnoreFileBytes)+1)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, false, cerr
@@ -646,7 +645,9 @@ func eachIgnoreLine(data []byte, visit func(line []byte)) {
 // masked directory's contents or reads a .gitignore inside one — a policy
 // this walk otherwise has no other way to honor, since fsys itself (a
 // symlink-refusing, root-confined secureDirFS) enforces confinement but not
-// masking. The off-path caller (no masking concept) passes a no-op skip.
+// masking. The off-path glob caller (no masking concept) passes a no-op
+// skip; the off-path grep caller passes the pseudo-filesystem skip so rule
+// discovery never lists the trees its own walk refuses to enter.
 //
 // budget is the same one the caller's glob walk spends listings from, so
 // ignore discovery and pattern matching together are bounded as one call's

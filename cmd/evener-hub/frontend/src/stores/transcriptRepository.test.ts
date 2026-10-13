@@ -9,9 +9,12 @@ import {
 } from "@evener/appwire-client";
 import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
+import { entryWriteAdmissionFor } from "./entryWriteAdmission";
+import { requestResult, transactionCompletion } from "./idbConnection";
 import {
   ENTRY_COVERAGE_STORE,
   ENTRY_ITEM_STORE,
+  ENTRY_META_STORE,
   ENTRY_TURN_STORE,
   entryHistoryKey,
   type TranscriptResolvedIdentity,
@@ -866,6 +869,138 @@ it("opens the latest window after repeated committed live appends pass the initi
     end: { entry: 90 },
   });
   reader.dispose();
+  owner.dispose();
+});
+
+it.each([false, true])("authoritative durable replacement reopens without superseded keys, empty=%s", async (empty) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const reader = owner.attachReader();
+  owner.acceptRead(readMany(3), { lifetime: 1, readId: "old", boundary: "old" });
+  await owner.settled();
+  const replacement = read("B", 3, "B");
+  replacement.authoritative = true;
+  if (empty) replacement.thread.turns = [];
+  else replacement.thread.turns![0]!.items![0]!.position = { entry: 2, item: 0 };
+  expect(owner.acceptRead(replacement, { lifetime: 1, readId: "new", boundary: "new" })).toBe(true);
+  await owner.settled();
+  const keys = (model: ThreadModel | undefined) =>
+    model?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey));
+  const expected = empty ? [] : ["item-1", "B"];
+  expect(keys(owner.getSnapshot())).toEqual(expected);
+  const fresh = owner.attachReader();
+  const opened = await fresh.openLocal(200);
+  expect(opened.status).toBe("current");
+  expect(keys(opened.model)).toEqual(expected);
+  expect((await fixture.cache.getLatest(historyKey, 200)).map((row) => row.transcriptKey)).toEqual(expected);
+  await expect(fixture.cache.getCoverage(historyKey, "read:old")).resolves.toBeUndefined();
+  const database = await requestResult(fixture.indexedDB.open(fixture.name));
+  const stores = [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE, ENTRY_META_STORE];
+  const transaction = database.transaction(stores, "readonly");
+  const complete = transactionCompletion(transaction);
+  const raw = await Promise.all(
+    stores.slice(0, 3).map((name) => requestResult(transaction.objectStore(name).getAll())),
+  );
+  const meta = await requestResult(transaction.objectStore(ENTRY_META_STORE).get(historyKey));
+  await complete;
+  database.close();
+  const metadata = await fixture.cache.getSessionMetadata(historyKey);
+  const bytes = [...raw.flat(), metadata].reduce(
+    (sum, value) => sum + new TextEncoder().encode(JSON.stringify(value)).byteLength,
+    0,
+  );
+  expect(meta.itemCount).toBe(expected.length);
+  expect(await fixture.cache.getByteTotals(historyKey)).toEqual({ historyBytes: bytes, aggregateBytes: bytes });
+  fresh.dispose();
+  reader.dispose();
+  owner.dispose();
+});
+
+it("authoritative durable replacement fences queued pre-replacement work", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(1), { lifetime: 1, readId: "old", boundary: "old" });
+  await owner.settled();
+  const admission = entryWriteAdmissionFor(fixture.cache);
+  const blocker = {};
+  expect(
+    admission.tryAcquireBackground(
+      blocker,
+      () => false,
+      () => {},
+    ),
+  ).toBe(true);
+  owner.accept(historyUpdate("A", 2), { lifetime: 1 });
+  const reader = owner.attachReader();
+  const replacement = { ...read("B", 2, "B"), authoritative: true };
+  owner.acceptRead(replacement, { lifetime: 1, readId: "new", boundary: "new" });
+  admission.releaseBackground(blocker);
+  await owner.settled();
+  expect((await fixture.cache.getLatest(historyKey, 200)).map((row) => row.transcriptKey)).toEqual(["item-1", "B"]);
+  reader.dispose();
+  owner.dispose();
+});
+
+it("authoritative durable replacement carries an uncommitted wider replacement scope", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(3), { lifetime: 1, readId: "old", boundary: "old" });
+  await owner.settled();
+  const admission = entryWriteAdmissionFor(fixture.cache);
+  const blocker = {};
+  expect(
+    admission.tryAcquireBackground(
+      blocker,
+      () => false,
+      () => {},
+    ),
+  ).toBe(true);
+  const first = { ...read("B", 3, "B"), authoritative: true };
+  first.thread.turns![0]!.items![0]!.position = { entry: 2, item: 0 };
+  owner.acceptRead(first, { lifetime: 1, readId: "first", boundary: "first" });
+  const reader = owner.attachReader();
+  owner.acceptRead({ ...read("C", 3, "C"), authoritative: true }, { lifetime: 1, readId: "new", boundary: "new" });
+  admission.releaseBackground(blocker);
+  await owner.settled();
+  expect((await fixture.cache.getLatest(historyKey, 200)).map((row) => row.transcriptKey)).toEqual([
+    "item-1",
+    "B",
+    "C",
+  ]);
+  reader.dispose();
+  owner.dispose();
+});
+
+it("aborted durable replacement rolls back removed rows and coverage together", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(3), { lifetime: 1, readId: "old", boundary: "old" });
+  await owner.settled();
+  const rows = await fixture.cache.getLatest(historyKey, 200);
+  const coverage = await fixture.cache.getCoverage(historyKey, "read:old");
+  const totals = await fixture.cache.getByteTotals(historyKey);
+  const deletes = vi.spyOn(IDBObjectStore.prototype, "delete");
+  const gate = holdNextEntryPut("B");
+  const batch = {
+    historyKey,
+    clearEpoch: 0,
+    replacement: { from: { entry: 2, item: 0 } },
+    items: [{ ...rows[1]!, transcriptKey: "B" }],
+  };
+  const pending = fixture.cache.commitBatch(batch);
+  await gate.reached;
+  const deletedStores = deletes.mock.contexts.map((store) => (store as IDBObjectStore).name);
+  gate.abort();
+  expect((await pending).outcome).toBe("failed");
+  expect(await fixture.cache.getLatest(historyKey, 200)).toEqual(rows);
+  expect(await fixture.cache.getCoverage(historyKey, "read:old")).toEqual(coverage);
+  expect(await fixture.cache.getByteTotals(historyKey)).toEqual(totals);
+  expect(deletedStores).toContain(ENTRY_ITEM_STORE);
+  expect(deletedStores).toContain(ENTRY_COVERAGE_STORE);
   owner.dispose();
 });
 
