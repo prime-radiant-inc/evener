@@ -16,7 +16,7 @@ import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } fr
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
-import { urlToPane } from "../../shell/routing";
+import { refParam, urlToPane } from "../../shell/routing";
 import { openNestedSessionWithOwner } from "../../shell/sessionPlacement";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
@@ -3595,6 +3595,125 @@ test("a newer draft typed before the resume lands follows the pane to the resume
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Adraft-current"));
   await waitFor(() => expect(threadsStore.getState().threads.get(currentRef)?.status.type).toBe("idle"));
   expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("newer draft");
+});
+
+// Review finding (medium) on this branch: the resumed ref can ALREADY be open
+// as an ordinary secondary pane beside its owner when the addressed child
+// resumes onto it. retypePane does not dedupe (openPane/openBeside do), so the
+// old code left TWO session panes for the resumed ref. routePlacementIsApplied's
+// nested single-child check (childPanes.length === 1) can never then pass, and
+// the reconciliation that follows refocuses whichever duplicate came first -
+// here the pre-existing pane, not the resumed run the user is in. The addressed
+// pane is the survivor: it is the record the resume moved, it keeps the
+// opened-from parent edge, and its unsent draft was already carried onto the
+// resumed ref before this callback ran.
+test("resuming a child onto an identity already open beside its owner leaves one pane and keeps the addressed one", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ownerRef = "remote:collision-owner";
+  const stableRef = "remote:collision-stable";
+  const currentRef = "remote:collision-current";
+  const fake = connectFakeClient();
+  let resumeRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    resumeRequested = resolve;
+  });
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const heldResume = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/read", (params) =>
+    params.ref === stableRef
+      ? readResponse(stableRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: stableRef,
+            capabilities: CAPABILITIES,
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        })
+      : readResponse(params.ref ?? "", { status: { type: "idle" } }),
+  );
+  fake.on("thread/resume", () => {
+    resumeRequested();
+    return heldResume;
+  });
+  // Owner holds main; the resumed identity is ALREADY open beside it, and the
+  // addressed child sits beside it too - the collision the finding names. The
+  // pre-existing pane is placed FIRST so the defect's "refocus the first
+  // duplicate" symptom would land on it, not on the addressed pane.
+  const owner: OpenPaneRecord = { id: "owner-pane", type: "session", params: { ref: ownerRef }, slot: "main" };
+  const existing: OpenPaneRecord = {
+    id: "existing-pane",
+    type: "session",
+    params: { ref: currentRef },
+    slot: "secondary",
+  };
+  const addressed: OpenPaneRecord = { id: "p1", type: "session", params: { ref: stableRef }, slot: "secondary" };
+  workspaceStore.setState({ panes: [owner, existing, addressed], focusedPaneId: addressed.id });
+  recordConversationOpenParent(existing, ownerRef);
+  recordConversationOpenParent(addressed, ownerRef);
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(stableRef)}`);
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(stableRef)).toBe(true));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  await act(async () => {
+    await requested;
+  });
+  // Unsent work in the addressed pane, typed while the resume is in flight.
+  const editor = screen.getByRole("textbox", { name: /^message$/i });
+  await user.click(editor);
+  await user.type(editor, "unsent in addressed pane");
+  await act(async () => {
+    resolveResume(readResponse(currentRef, { status: { type: "idle" } }));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(currentRef)}`));
+  await waitFor(() => expect(threadsStore.getState().threads.get(currentRef)?.status.type).toBe("idle"));
+
+  const resumedPanes = () =>
+    workspaceStore.getState().panes.filter((pane) => pane.type === "session" && refParam(pane.params) === currentRef);
+  // Exactly ONE ordinary pane for the resumed ref - the single-child invariant
+  // routePlacementIsApplied requires.
+  expect(resumedPanes()).toHaveLength(1);
+  // The addressed pane survived (retypePane preserves its id); the pre-existing
+  // duplicate is gone.
+  const survivor = resumedPanes()[0];
+  expect(survivor?.id).toBe("p1");
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === "existing-pane")).toBe(false);
+  // The opened-from parent edge carried to the survivor, so Back still walks to
+  // the owner.
+  expect(survivor && conversationOpenParentRef(survivor)).toBe(ownerRef);
+  // The unsent draft followed the addressed pane onto the resumed identity.
+  expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("unsent in addressed pane");
+  // The resume was acknowledged (cleared) only once the workspace reached that
+  // state.
+  expect(threadsStore.getState().resumedIdentities.has(stableRef)).toBe(false);
+  // Reconciliation (what AppShell runs when placement drifts) now finds the
+  // single child and focuses the addressed pane, never the removed duplicate.
+  act(() => {
+    openNestedSessionWithOwner(currentRef, ownerRef);
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe("p1");
 });
 
 // RoboRev finding on the reduced branch: the explicit Resume passed

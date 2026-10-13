@@ -157,6 +157,29 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         const lifetime = conversationPaneLifetime(addressed);
         if (!workspaceStore.getState().retypePane(addressed, "session", { ref: resumedRef })) return false;
         lifetime.adoptResumedSource(resumedRef);
+        // The addressed pane now names the resumed ref, but an ordinary session
+        // pane for that ref may ALREADY sit in the workspace (a sibling opened
+        // beside the owner before the resume). retypePane deliberately does not
+        // dedupe the way openPane/openBeside do, so without this the workspace
+        // would hold two session panes for the resumed ref: routePlacementIsApplied's
+        // nested single-child invariant (childPanes.length === 1) could never
+        // pass, and its reconciliation would refocus whichever duplicate came
+        // first - not necessarily the run the user is in. Keep the addressed
+        // pane: it is the record the resume moved, it carries the opened-from
+        // parent edge, and its unsent draft was already carried onto the
+        // resumed ref by ConversationBody's resume effect (carryComposerDraft)
+        // before this callback ran. Close every OTHER ordinary session pane for
+        // the resumed ref, then promote the survivor into main if a closed
+        // duplicate had emptied that slot. Only after both does the workspace
+        // hold the single pane the acknowledgement below reports.
+        for (const duplicate of workspaceStore
+          .getState()
+          .panes.filter(
+            (record) => record.id !== paneId && record.type === "session" && refParam(record.params) === resumedRef,
+          )) {
+          workspaceStore.getState().closePane(duplicate.id);
+        }
+        if (workspaceStore.getState().mainPane() === null) workspaceStore.getState().promotePane(paneId);
         const url = paneToURL("session", { ref: resumedRef });
         if (url !== null) navigate(url, { replace: true });
         return true;
