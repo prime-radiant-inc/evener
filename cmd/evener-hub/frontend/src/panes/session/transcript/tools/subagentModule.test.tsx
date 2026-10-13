@@ -244,8 +244,8 @@ test("two delegate ToolCallItems each retain their own card and open action", ()
   expect(toolRows).toHaveLength(2);
   expect(within(toolRows[0]!).getAllByTestId("subagent-row")).toHaveLength(1);
   expect(within(toolRows[1]!).getAllByTestId("subagent-row")).toHaveLength(1);
-  expect(within(toolRows[0]!).getByRole("button", { name: "Open transcript" })).toBeTruthy();
-  expect(within(toolRows[1]!).getByRole("button", { name: "Open transcript" })).toBeTruthy();
+  expect(within(toolRows[0]!).getByRole("button", { name: "Open conversation" })).toBeTruthy();
+  expect(within(toolRows[1]!).getByRole("button", { name: "Open conversation" })).toBeTruthy();
 });
 
 // --- row content ----------------------------------------------------------
@@ -363,7 +363,7 @@ function delegateWithTranscriptRef(ref: string): ItemModel {
   });
 }
 
-test("open transcript opens the read-only transcript pane (mobile / no dockview host): plain full-screen open, not a session pane", async () => {
+test("opening the conversation takes the plain full-screen main slot (mobile / no dockview host)", async () => {
   registerDockviewApi(null); // StackHost registers no api - the mobile signal
   const user = userEvent.setup();
   const turn: TurnModel = { id: "turn_open_mobile", status: "completed", items: [] };
@@ -374,26 +374,27 @@ test("open transcript opens the read-only transcript pane (mobile / no dockview 
       live={false}
     />,
   );
-  const button = screen.getByRole("button", { name: "Open transcript" });
+  const button = screen.getByRole("button", { name: "Open conversation" });
   expect(button.textContent).toBe(""); // the one icon-only form: no visible words
   expect(button.querySelector("svg")).toBeTruthy();
   expect(button.getAttribute("aria-label")).toBeTruthy();
   await user.click(button);
   const panes = workspaceStore.getState().panes;
-  // The DISTINCT read-only "transcript" pane (plan §Ambiguities #1 / PIN-A:
-  // reachable via openBeside, never a URL) - opened against the child's own ref.
-  const opened = panes.find((p) => p.type === "transcript");
+  // The row opens the child's live conversation pane - the read-only
+  // transcript surface no longer exists - against the child's own ref.
+  const opened = panes.find((p) => p.type === "session");
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
   // Slots are desktop geometry; StackHost has no groups and shows the focused
   // pane full-screen, so the first-pane-takes-main rule is all that applies.
   expect(opened?.slot).toBe("main");
-  // The row must no longer open a live SESSION pane for the child.
-  expect(panes.some((p) => p.type === "session")).toBe(false);
+  // The read-only pane is gone from the product: nothing opens one.
+  expect(panes.some((p) => p.type === "transcript")).toBe(false);
 });
 
-test("open transcript opens the transcript pane in the secondary group, not the main one (desktop host present)", async () => {
+test("opening the conversation lands in the secondary group, not the main one (desktop host present)", async () => {
   registerDockviewApi(fakeApi());
-  const anchor = workspaceStore.getState().openPane("transcript", { ref: "ref_parent_view" });
+  // The main slot already holds the pane being read.
+  workspaceStore.getState().openPane("session", { ref: "ref_parent_view" });
   const user = userEvent.setup();
   const turn: TurnModel = { id: "turn_open_desktop", status: "completed", items: [] };
   render(
@@ -403,15 +404,17 @@ test("open transcript opens the transcript pane in the secondary group, not the 
       live={false}
     />,
   );
-  await user.click(screen.getByRole("button", { name: /open transcript/i }));
-  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript" && p.id !== anchor);
+  await user.click(screen.getByRole("button", { name: /open conversation/i }));
+  const opened = workspaceStore
+    .getState()
+    .panes.find((p) => p.type === "session" && (p.params as { ref?: unknown }).ref === "ref_child_open");
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
   // The main slot already holds the pane being read, so this lands beside it
-  // rather than replacing it - which is what "open transcript" means here.
+  // rather than replacing it - which is what "open conversation" means here.
   expect(opened?.slot).toBe("secondary");
 });
 
-test("kata 0pzz: open transcript carries the enclosing session ref as parentRef, so the reader can return", async () => {
+test("kata 0pzz: opening the conversation keeps the enclosing session as the reader's return target", async () => {
   registerDockviewApi(fakeApi());
   const user = userEvent.setup();
   const turn: TurnModel = { id: "turn_open_parentref", status: "completed", items: [] };
@@ -423,12 +426,23 @@ test("kata 0pzz: open transcript carries the enclosing session ref as parentRef,
       sessionRef="ref_parent_session"
     />,
   );
-  await user.click(screen.getByRole("button", { name: /open transcript/i }));
-  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript");
-  expect(opened?.params).toEqual({ ref: "ref_child_open", parentRef: "ref_parent_session" });
+  await user.click(screen.getByRole("button", { name: /open conversation/i }));
+  // The conversation pane no longer carries a parentRef param; the return path
+  // lives in the workspace instead: with no main pane to destroy, the funnel
+  // places the enclosing session in main and the child opens beside it, so
+  // the reader always has the enclosing session to go back to.
+  const opened = workspaceStore
+    .getState()
+    .panes.find((p) => p.type === "session" && (p.params as { ref?: unknown }).ref === "ref_child_open");
+  expect(opened?.params).toEqual({ ref: "ref_child_open" });
+  expect(workspaceStore.getState().mainPane()).toMatchObject({
+    type: "session",
+    params: { ref: "ref_parent_session" },
+  });
+  expect(opened?.slot).toBe("secondary");
 });
 
-test("kata 0pzz: with no enclosing session ref available, parentRef is simply absent (no crash, still opens)", async () => {
+test("kata 0pzz: with no enclosing session ref available the conversation still opens (no crash)", async () => {
   registerDockviewApi(fakeApi());
   const user = userEvent.setup();
   const turn: TurnModel = { id: "turn_open_noparent", status: "completed", items: [] };
@@ -439,12 +453,12 @@ test("kata 0pzz: with no enclosing session ref available, parentRef is simply ab
       live={false}
     />,
   );
-  await user.click(screen.getByRole("button", { name: /open transcript/i }));
-  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript");
+  await user.click(screen.getByRole("button", { name: /open conversation/i }));
+  const opened = workspaceStore.getState().panes.find((p) => p.type === "session");
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
 });
 
-test("no open-transcript button when the row has no transcriptRef yet", () => {
+test("no open-conversation button when the row has no transcriptRef yet", () => {
   const noRef = delegateItem({
     id: "d_noref",
     callId: "call_noref",
@@ -453,13 +467,13 @@ test("no open-transcript button when the row has no transcriptRef yet", () => {
   });
   const turn: TurnModel = { id: "turn_noref", status: "completed", items: [] };
   render(<ToolCallItem item={{ ...noRef, turnId: turn.id }} turn={turn} live={false} />);
-  expect(screen.queryByRole("button", { name: /open transcript/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /open conversation/i })).toBeNull();
 });
 
 // yt2q §4.4: the child-transcript link must be available while the subagent is
 // still RUNNING, not gated on the child being done - the opened pane watches
 // the live child thread.
-test("a still-running row (with a transcriptRef) offers Open transcript, not gated on the child being done", () => {
+test("a still-running row (with a transcriptRef) offers Open conversation, not gated on the child being done", () => {
   const running = delegateItem({
     id: "d_run_link",
     callId: "call_run_link",
@@ -470,7 +484,7 @@ test("a still-running row (with a transcriptRef) offers Open transcript, not gat
   render(<ToolCallItem item={{ ...running, turnId: turn.id }} turn={turn} live={true} />);
   const tool = screen.getByTestId("tool-call-item");
   expect(tool.querySelector('[role="img"][data-state="working"]')).not.toBeNull(); // genuinely still running
-  expect(within(tool).getByRole("button", { name: /open transcript/i })).toBeTruthy();
+  expect(within(tool).getByRole("button", { name: /open conversation/i })).toBeTruthy();
 });
 
 // --- expanded card: disclosure + Mandate / Activity / Summary (qb8e, tv5k) -
@@ -1340,7 +1354,7 @@ test("the card is headless: no tag, no open button inside it", () => {
   render(<Body item={running} live={false} />);
   const row = screen.getByTestId("subagent-row");
   expect(within(row).queryByTestId("subagent-tag")).toBeNull();
-  expect(within(row).queryByRole("button", { name: /open transcript/i })).toBeNull();
+  expect(within(row).queryByRole("button", { name: /open conversation/i })).toBeNull();
 });
 
 test("a headless card exposes hidden identity and status, a visible status shape, and a controlled disclosure", async () => {

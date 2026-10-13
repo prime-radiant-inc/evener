@@ -56,6 +56,7 @@ const pushes: Array<{ kind: string; text: string }> = [];
 function runCtx(ref: string): PaletteRunContext {
   return {
     sessionRef: ref,
+    sessionPaneId: null,
     onPage: "session",
     toasts: { push: (kind, text) => pushes.push({ kind, text }) },
     ui: { clearToSearch: vi.fn(), showHelp: vi.fn() },
@@ -123,7 +124,10 @@ test("args text can span multiple lines", () => {
 test("a successful argless command (no self-toast) resolves ok with no toast pushed", async () => {
   const fake = await seedThread("ref_a");
   fake.on("thread/compact/start", () => ({}));
-  const match = matchBuiltinInvocation("/compact", sessionBuiltinCommands({ sessionRef: "ref_a", onPage: "session" }))!;
+  const match = matchBuiltinInvocation(
+    "/compact",
+    sessionBuiltinCommands({ sessionRef: "ref_a", onPage: "session", sessionPaneId: null }),
+  )!;
   const outcome = await runBuiltinCommand(match, runCtx("ref_a"));
   expect(outcome).toEqual({ ok: true });
   expect(pushes).toEqual([]);
@@ -182,7 +186,7 @@ test("an unavailableReason command is refused WITHOUT attempting the RPC", async
   await seedThread("ref_a", {
     evener: { ref: "ref_a", capabilities: { ...CAPS, compact: false }, queue: { revision: 0 } },
   });
-  const builtins = sessionBuiltinCommands({ sessionRef: "ref_a", onPage: "session" });
+  const builtins = sessionBuiltinCommands({ sessionRef: "ref_a", onPage: "session", sessionPaneId: null });
   const match = matchBuiltinInvocation("/compact", builtins)!;
   expect(match.command.unavailableReason).toBeDefined();
   const outcome = await runBuiltinCommand(match, runCtx("ref_a"));

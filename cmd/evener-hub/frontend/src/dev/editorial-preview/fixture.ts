@@ -120,18 +120,13 @@ export function createEditorialClient(): EditorialClient {
         if (!session) throw new Error(`Unknown fixture location: ${params.ref}`);
         let owner = session.ref;
         for (let ancestor = parentRefs[owner]; ancestor; ancestor = parentRefs[owner]) owner = ancestor;
-        const response = wrap({
+        return wrap({
           ref: params.ref,
           top_level_ref: owner,
           top_level: params.ref === owner,
           tier: "current",
           session,
         });
-        // The shared test helper defaults locations to top-level. This fixture
-        // serves real nested locations, so preserve the truthful location metadata.
-        const data = response.data as { metadata: Record<string, unknown> };
-        data.metadata.top_level = params.ref === owner;
-        return response;
       }
       default:
         throw new Error(`Unexpected fixture navigation: ${JSON.stringify(params)}`);

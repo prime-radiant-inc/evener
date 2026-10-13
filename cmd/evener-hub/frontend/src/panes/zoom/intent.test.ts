@@ -82,11 +82,16 @@ test("a cascade without a live origin renders every scope", () => {
 
 test("valid intent retains only requested bindings and exact conversation return params", () => {
   expect(parseZoomParams(deep)).toEqual(deep);
-  const transcript = { ...child, source: { type: "transcript", params: { ref: "root", parentRef: "previous" } } };
-  expect(parseZoomParams(transcript)).toEqual(transcript);
+  // A legacy source naming the read-only transcript reads as the session it
+  // always was: parentRef left the schema with that surface, so parsing keeps
+  // only the conversation ref, whatever parentRef carried.
+  const legacy = { ...child, source: { type: "transcript", params: { ref: "root", parentRef: "previous" } } };
+  expect(parseZoomParams(legacy)).toEqual(child);
+  const junkParent = { ...child, source: { type: "transcript", params: { ref: "root", parentRef: 42 } } };
+  expect(parseZoomParams(junkParent)).toEqual(child);
 });
 
-test("separated inspection retains its locator and owns only a read-only source", () => {
+test("separated inspection retains its locator and owns the conversation source", () => {
   const parsed = parseZoomParams({
     ref: "child",
     source: { type: "session", params: { ref: "root" } },
@@ -95,7 +100,7 @@ test("separated inspection retains its locator and owns only a read-only source"
   });
   expect(parsed).toEqual({
     ref: "child",
-    source: { type: "transcript", params: { ref: "root" } },
+    source: { type: "session", params: { ref: "root" } },
     edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
     inspection: { origin: { paneId: "original-root", type: "session", ref: "root" } },
   });
@@ -115,13 +120,13 @@ test.each([
 ])("separated inspection preserves readable intent with an unusable locator, case %#", (inspection) => {
   expect(parseZoomParams({ ...child, inspection })).toEqual({
     ref: "child",
-    source: { type: "transcript", params: { ref: "root" } },
+    source: { type: "session", params: { ref: "root" } },
     edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
     inspection: { origin: null },
   });
 });
 
-test("separated inspection retains transcript parent context and locator through drill and pop", () => {
+test("separated inspection retains its conversation source and locator through drill and pop", () => {
   const parsed = parseZoomParams({
     ref: "child",
     source: { type: "transcript", params: { ref: "root", parentRef: "previous" } },
@@ -132,18 +137,18 @@ test("separated inspection retains transcript parent context and locator through
   const drilled = drillZoomIntent(parsed, { ownerRef: "child", childRef: "grandchild", delegateId: "d2" });
   expect(drilled).toEqual({
     ref: "grandchild",
-    source: { type: "transcript", params: { ref: "root", parentRef: "previous" } },
+    source: { type: "session", params: { ref: "root" } },
     edges: [
       { ownerRef: "root", childRef: "child", delegateId: "d1" },
       { ownerRef: "child", childRef: "grandchild", delegateId: "d2" },
     ],
-    inspection: { origin: { paneId: "original-root", type: "transcript", ref: "root" } },
+    inspection: { origin: { paneId: "original-root", type: "session", ref: "root" } },
   });
   expect(popZoomIntent(drilled, "root", deriveCascadePath(drilled, null))).toEqual({
     ref: "root",
-    source: { type: "transcript", params: { ref: "root", parentRef: "previous" } },
+    source: { type: "session", params: { ref: "root" } },
     edges: [],
-    inspection: { origin: { paneId: "original-root", type: "transcript", ref: "root" } },
+    inspection: { origin: { paneId: "original-root", type: "session", ref: "root" } },
   });
 });
 
@@ -158,7 +163,6 @@ test.each([
   { ...child, source: { type: "sessionZoom", params: { ref: "root" } } },
   { ...child, source: { type: "session", params: { ref: "job:output" } } },
   { ...child, source: { type: "session", params: { ref: false } } },
-  { ...child, source: { type: "transcript", params: { ref: "root", parentRef: 42 } } },
 ])("invalid base intent is rejected locally, case %#", (value) => {
   expect(parseZoomParams(value)).toBeNull();
 });

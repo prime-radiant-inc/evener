@@ -1,4 +1,9 @@
-import { type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
+import {
+  ConnectionClosedError,
+  friendlyErrorMessage,
+  type SettingsOverviewResponse,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -590,4 +595,21 @@ test("a discovered server's transport sits apart from a long name, and the full 
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
+});
+
+// The launch-layer store translates a failed read while it still has its type:
+// a hub's own explanation survives, and the client's connection-state wiring
+// text never reaches the screen.
+test.each([
+  ["a hub-reported WireError", new WireError("launch.toml is being rewritten", -32000)],
+  ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+])("a launch-layer read failure from %s shows its friendly form", async (_name, err) => {
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => {
+    throw err;
+  });
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await waitFor(() => expect(extensionsStore.getState().launchLayerError).not.toBeNull());
+  expect(document.body.textContent).toContain(friendlyErrorMessage(err));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
 });

@@ -1,7 +1,12 @@
 import type { NavigationSessionLocation } from "@evener/appwire-client";
 import * as paneActions from "../../../shell/paneActions";
 import { openTopLevelSession } from "../../../shell/sessionPlacement";
-import { recordTranscriptOpenOrigin, workspaceStore } from "../../../shell/workspace";
+import {
+  conversationOpenParentRef,
+  recordConversationOpenParent,
+  recordTranscriptOpenOrigin,
+  workspaceStore,
+} from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { navigationStore } from "../../../stores/navigation/store";
 import { OpenButton } from "../../../widgets";
@@ -15,30 +20,36 @@ function sameParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// Follow only retained read-only parent context, not arbitrary focused panes.
-// This also works before a child's navigation location has been fetched.
-function transcriptContextRefs(ref: string): string[] {
+// Follow retained conversation parent context, then any retained read-only
+// parent context that chain carries. A conversation pane keeps its parent
+// beside the pane lifetime instead of in params, so the walk alternates the
+// two records. This also works before a child's navigation location has been
+// fetched.
+function conversationContextRefs(ref: string): string[] {
   const panes = workspaceStore.getState().panes;
   const visited = new Set<string>();
   let current: string | undefined = ref;
   while (current !== undefined && !visited.has(current)) {
     visited.add(current);
-    const pane = panes.find((pane) => pane.type === "transcript" && transcriptRefOf(pane.params) === current);
-    const parentRef = (pane?.params as { parentRef?: unknown } | undefined)?.parentRef;
-    current = typeof parentRef === "string" ? parentRef : undefined;
+    const holder = panes.find(
+      (pane) => (pane.type === "session" || pane.type === "transcript") && transcriptRefOf(pane.params) === current,
+    );
+    if (holder === undefined) break;
+    const parentParam = (holder.params as { parentRef?: unknown }).parentRef;
+    current = conversationOpenParentRef(holder) ?? (typeof parentParam === "string" ? parentParam : undefined);
   }
   return [...visited];
 }
 
-export function transcriptContextIncludes(ref: string, ancestorRef: string): boolean {
-  return transcriptContextRefs(ref).includes(ancestorRef);
+export function conversationContextIncludes(ref: string, ancestorRef: string): boolean {
+  return conversationContextRefs(ref).includes(ancestorRef);
 }
 
 // Workspace deduplication deliberately compares the entire params bag. That
-// is correct for most pane types, but a transcript's identity is its child
-// ref: adding parentRef later should update the navigation context rather than
-// leave two panes showing the same child. Keep one exact canonical pane when
-// possible and close only same-child variants before the normal opener runs.
+// is correct for most pane types, but a job log's identity is its job ref:
+// adding parentRef later should update the navigation context rather than
+// leave two panes showing the same job. Keep one exact canonical pane when
+// possible and close only same-job variants before the normal opener runs.
 function canonicalTranscriptPane(ref: string, params: { ref: string; parentRef?: string }): string | undefined {
   const workspace = workspaceStore.getState();
   const sameChild = workspace.panes.filter(
@@ -51,20 +62,21 @@ function canonicalTranscriptPane(ref: string, params: { ref: string; parentRef?:
   return exact?.id;
 }
 
-// Opens the read-only transcript surface through the workspace action so its
-// desktop beside-placement, mobile fallback, and pane deduplication stay one
-// behavior for every transcript link.
+// Opens the conversation a row points at. A session ref opens the live
+// conversation pane (the read-only transcript surface no longer exists); a
+// "job:" ref keeps the job-log transcript pane. Both go through the
+// workspace action so desktop beside-placement, mobile fallback, and pane
+// deduplication stay one behavior for every link.
 export function openTranscript(ref: string, parentRef?: string): void {
-  // Capture before canonicalization or owner placement changes selection. The
-  // workspace validates this against parentRef and the surviving pane lifetime.
+  // Capture before owner placement changes selection. The workspace validates
+  // this against parentRef and the surviving pane lifetime.
   const workspace = workspaceStore.getState();
   const origin = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
   const params = parentRef === undefined ? { ref } : { ref, parentRef };
-  const exactPaneId = canonicalTranscriptPane(ref, params);
   if (parentRef !== undefined) {
     const main = workspaceStore.getState().mainPane();
     const mainRef = main?.type === "session" ? transcriptRefOf(main.params) : undefined;
-    const context = transcriptContextRefs(parentRef);
+    const context = conversationContextRefs(parentRef);
     // parentRef stays the immediate Back target. It is not necessarily the
     // owner: a retained transcript chain or a routed nested session identifies
     // the real main session without promoting the immediate parent into it.
@@ -100,28 +112,58 @@ export function openTranscript(ref: string, parentRef?: string): void {
       }
     }
   }
-  if (exactPaneId !== undefined) {
-    const retained = workspaceStore.getState().panes.find((pane) => pane.id === exactPaneId);
-    if (retained) {
-      recordTranscriptOpenOrigin(retained, origin);
-      workspaceStore.getState().focusPane(retained.id);
-      return;
+
+  // A job ref is a shell job's output log, not a thread: it keeps the
+  // job-log transcript pane and its owner-context origin recording.
+  if (ref.startsWith("job:")) {
+    const exactPaneId = canonicalTranscriptPane(ref, params);
+    if (exactPaneId !== undefined) {
+      const retained = workspaceStore.getState().panes.find((pane) => pane.id === exactPaneId);
+      if (retained) {
+        recordTranscriptOpenOrigin(retained, origin);
+        workspaceStore.getState().focusPane(retained.id);
+        return;
+      }
     }
+    paneActions.openBeside({
+      type: "transcript",
+      params,
+    });
+    const opened = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "transcript" && sameParams(pane.params, params));
+    if (opened) recordTranscriptOpenOrigin(opened, origin);
+    return;
+  }
+
+  // A session ref opens its live conversation pane: reuse the open one for
+  // this ref, else open it beside the current selection. The conversation
+  // pane's identity is its ref, so no parent-context variants exist to
+  // canonicalize.
+  const existing = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && transcriptRefOf(pane.params) === ref);
+  if (existing) {
+    recordConversationOpenParent(existing, parentRef);
+    workspaceStore.getState().focusPane(existing.id);
+    return;
   }
   paneActions.openBeside({
-    type: "transcript",
-    params,
+    type: "session",
+    params: { ref },
   });
   const opened = workspaceStore
     .getState()
-    .panes.find((pane) => pane.type === "transcript" && sameParams(pane.params, params));
-  if (opened) recordTranscriptOpenOrigin(opened, origin);
+    .panes.find((pane) => pane.type === "session" && transcriptRefOf(pane.params) === ref);
+  if (opened) recordConversationOpenParent(opened, parentRef);
 }
 
+// The row control names the view it opens: the conversation for a session,
+// the transcript for a job log.
 export function OpenTranscriptButton({
   transcriptRef,
   parentRef,
-  label = "Open transcript",
+  label,
   tabIndex,
 }: {
   transcriptRef: string;
@@ -129,5 +171,11 @@ export function OpenTranscriptButton({
   label?: string;
   tabIndex?: number;
 }) {
-  return <OpenButton label={label} tabIndex={tabIndex} onClick={() => openTranscript(transcriptRef, parentRef)} />;
+  return (
+    <OpenButton
+      label={label ?? (transcriptRef.startsWith("job:") ? "Open transcript" : "Open conversation")}
+      tabIndex={tabIndex}
+      onClick={() => openTranscript(transcriptRef, parentRef)}
+    />
+  );
 }

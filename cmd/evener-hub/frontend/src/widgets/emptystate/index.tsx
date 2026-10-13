@@ -41,7 +41,11 @@ export type EmptyStateReason =
   /** The first turn is running and nothing has come back yet. */
   | "awaiting-reply"
   /** The session runs a different Evener version than this app. */
-  | "version-mismatch";
+  | "version-mismatch"
+  /** The workspace has no session open: the welcome pane. */
+  | "no-session"
+  /** The URL matches no route. */
+  | "not-found";
 
 const BASE_CLASS = {
   emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),

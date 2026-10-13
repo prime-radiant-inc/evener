@@ -74,6 +74,14 @@
   border-top: 1px solid var(--edge);
 }
 
+/* The desktop twin of the phone footer bar: the conversation's composer
+ * measure rides below the transcript inside the column. */
+.columnComposerBar {
+  composes: header;
+  border-bottom: 0;
+  border-top: 1px solid var(--edge);
+}
+
 .title {
   overflow: hidden;
   margin: 0;

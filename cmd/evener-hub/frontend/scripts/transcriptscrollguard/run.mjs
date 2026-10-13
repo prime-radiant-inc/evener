@@ -42,6 +42,20 @@ const VIEWPORT = { width: 1400, height: 900 };
 // tolerance the fix's own jsdom suite uses for the same assertion.
 const BOTTOM_TOLERANCE_PX = 1;
 
+// Every post-settle wait, with the setup each needs to reach its own read of the
+// transcript: clickPillAndSettle needs a pill, which only exists once the reader
+// is away from the bottom. Each `wait` is the harness's own name for that wait,
+// so the label asserted below is the label the harness reports. A pane that
+// unmounts under one of these must be named BY it, never surfaced as the
+// internal "scroll element is not mounted" the reads used to throw.
+const MID_PASS_UNMOUNT_WAITS = [
+  { wait: "the scroll-away wait", call: "scrollAwayAndWaitForPill" },
+  { wait: "the append wait", call: "appendLargeTurns" },
+  { wait: "the pill-click wait", call: "clickPillAndSettle", setup: "await window.scrollAwayAndWaitForPill();" },
+  { wait: "the content-growth wait", call: "growContentAndSettle" },
+  { wait: "the scroll-port-shrink wait", call: "shrinkPortAndSettle" },
+];
+
 // The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
 // change can kill the dev-server module burst mid-boot while the page still
 // fires its load event. transcriptscrollguard.html boots through one entry
@@ -58,10 +72,12 @@ const BOOT = {
 // actually overflowing its port (a collapsed pane would otherwise settle
 // trivially at a 0px bottom gap and read as a pass), no older page auto-fetched
 // on open, no jump pill at open, and the landing held at the true bottom across
-// the settle. `paneFooter` is the surface's own DOM marker - the live Session
-// renders its pane-footer/SessionChrome slot, the read-only pane renders none -
-// so a pass that meant to exercise one surface while the other rendered is
-// caught here instead of passing tautologically.
+// the settle. `paneFooter` is the live conversation's own DOM marker: the
+// read-only surface is gone from the product, so every pass - the live Session
+// and the session-ref transcript pane recovered as the conversation - must
+// render the pane footer. A pass that landed on a footer-less view (a
+// regression back to a read-only surface) is caught here instead of passing
+// tautologically.
 function assertPagedOpenContract(failures, label, m, { paneFooter = true } = {}) {
   if (m.errors.length > 0) failures.push(`page errors on ${label} paged open: ${m.errors.join("; ")}`);
   if (m.clientHeight <= 0) {
@@ -324,19 +340,85 @@ async function main() {
       if (scrolled.errors.length > 0) failures.push(`page errors while paging: ${scrolled.errors.join("; ")}`);
       if (scrolled.listCalls < 1) failures.push("scrolling to the top of a paged session fetched no older page");
 
-      // The READ-ONLY transcript pane runs the SAME scroll coordinator (#2963:
-      // it lands on the latest row on open, follows a prepend without stranding
-      // the reader, and never auto-loads an older page just because it opened),
-      // but the guard only ever rendered the live Session. This pass renders
-      // the read-only Transcript and holds it to the same open contract: the
-      // paging row mounted, no older page fetched on open, and the landing
-      // held at the true bottom across the settle.
+      // The session-ref transcript pane has no read-only surface to render
+      // anymore: it recovers as the live conversation, the same
+      // ConversationBody the Session pane renders. This pass renders the
+      // transcript pane for a session ref and holds the recovered conversation
+      // to the SAME open contract (#2963's scroll coordinator is unchanged
+      // machinery): the paging row mounted, no older page fetched on open, the
+      // landing held at the true bottom across the settle, and the live
+      // conversation's pane footer rendered.
       await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?paged=1&readonly=1`, BOOT);
       await waitForFonts(send);
-      const readOnlyOpened = JSON.parse(
+      const recoveredOpened = JSON.parse(
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
-      assertPagedOpenContract(failures, "the read-only transcript pane", readOnlyOpened, { paneFooter: false });
+      assertPagedOpenContract(failures, "the session-ref transcript pane recovered as the live conversation", recoveredOpened);
+      // The dock leg's retained-reader guarantees now run on conversation
+      // panes too: the harness's openTranscript calls open the live
+      // conversation pane for session refs, so the dock group below proves
+      // the same scroll retention against the conversations the entries open.
+      // A pane that unmounts MID-PASS: each post-settle wait must report the
+      // named state, not the internal error its reads used to throw. One page
+      // load per wait, because unmounting the pane is the end of that page -
+      // and every wait is driven, so no wait's change goes untested. Readiness
+      // comes from waitForPagedOpenSettled, not waitForTranscriptSettled: these
+      // pages re-open the session the append pass grew, and a re-opened pane's
+      // model carries those appended turns, which is more than the scripted
+      // count (measured: "the transcript never became ready to drive within
+      // 15000ms - only 45 of 42 scripted turns reached the model"). The
+      // paged-open wait only requires the scripted turns to have ARRIVED, so it
+      // settles that model; the exact-scripted-count wait refuses it forever.
+      // The table is hand-maintained, so a wait the harness no longer exposes is
+      // named here rather than surfacing as an opaque page error below.
+      const missing = JSON.parse(
+        await evaluate(
+          send,
+          `JSON.stringify(${JSON.stringify(MID_PASS_UNMOUNT_WAITS.map(({ call }) => call))}` +
+            `.filter(name => typeof window[name] !== "function"))`,
+        ),
+      );
+      if (missing.length > 0) {
+        failures.push(`the mid-pass unmount probe drives waits the harness does not expose: ${missing.join(", ")}`);
+      }
+      for (const { wait, call, setup } of MID_PASS_UNMOUNT_WAITS) {
+        // A wait the harness no longer exposes was named above; calling it would
+        // throw out of the page's evaluate and lose that failure with everything
+        // collected before it.
+        if (missing.includes(call)) continue;
+        await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`, BOOT);
+        await waitForFonts(send);
+        const unmounted = JSON.parse(await evaluate(send, `(async () => {
+          await window.waitForPagedOpenSettled();
+          ${setup ?? ""}
+          const outcome = window.${call}().then(
+            () => ({ rejected: false, code: null, wait: null, message: null }),
+            error => ({
+              rejected: true,
+              code: error && typeof error.code === "string" ? error.code : null,
+              wait: error && typeof error.wait === "string" ? error.wait : null,
+              message: error && error.message ? error.message : String(error),
+            }),
+          );
+          // Unmount while the wait is suspended at its first frame: waiting a
+          // frame first would race appendLargeTurns' one-frame completion.
+          window.unmountTranscriptScrollGuardPane();
+          const gone = document.querySelector('[data-testid="transcript-virtual-list"] > div') === null;
+          return JSON.stringify({ gone, ...(await outcome) });
+        })()`));
+        if (!unmounted.gone) {
+          failures.push(`unmounting the pane left the transcript mounted (the ${wait})`);
+        } else if (!unmounted.rejected) {
+          failures.push(`the ${wait} completed after its transcript pane unmounted`);
+        } else if (unmounted.code !== "transcript-scroll-unmounted" || unmounted.wait !== wait) {
+          failures.push(
+            `a mid-pass unmount was not reported by the wait itself: expected transcript-scroll-unmounted ` +
+              `during ${wait}, got code=${JSON.stringify(unmounted.code)} wait=${JSON.stringify(unmounted.wait)} ` +
+              `(message: ${unmounted.message})`,
+          );
+        }
+      }
+
       await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?dock=1`, BOOT);
       await waitForFonts(send);
       const dock = JSON.parse(await evaluate(send, `(async () => {
@@ -386,7 +468,8 @@ async function main() {
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
           `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
           `a session opened with older history stayed at the bottom without auto-loading a page; ` +
-          `the read-only transcript pane did the same; deferred hydration waited for the mounted paged viewport`,
+          `the session-ref transcript pane recovered as the live conversation and did the same; deferred hydration waited for the mounted paged viewport; ` +
+          `all ${MID_PASS_UNMOUNT_WAITS.length} post-settle waits named a pane that unmounted under them`,
       );
     } else {
       for (const failure of failures) console.error(`transcriptscrollguard FAIL: ${failure}`);

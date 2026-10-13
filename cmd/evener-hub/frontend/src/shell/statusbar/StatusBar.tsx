@@ -60,7 +60,10 @@ export function StatusBar({ sessionRef, paneId, leading }: StatusBarProps) {
             aria-label={`${tab.chipLabel(counts)} - open Overview`}
             onClick={(event) => {
               workspaceStore.getState().focusPane(paneId);
-              activitySidebarStore.getState().openWith(tab.id, event.currentTarget);
+              // A chip is a focus-based request: it releases any held column
+              // scope and saves against its own conversation, even when
+              // focus does not move.
+              activitySidebarStore.getState().openFor(sessionRef, tab.id, event.currentTarget, paneId);
             }}
           >
             <span className={CLASS.chipGlyph} aria-hidden="true">

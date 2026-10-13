@@ -96,7 +96,7 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 	}
 }
 
-func toResponsesInput(msgs []llm.Message, imageDetail string) (instructions string, items []any, _ error) {
+func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string, items []any, _ error) {
 	var instrParts []string
 	for _, m := range msgs {
 		switch m.Role {
@@ -194,14 +194,8 @@ func toResponsesInput(msgs []llm.Message, imageDetail string) (instructions stri
 								"type":      "input_image",
 								"image_url": url,
 							}
-							// imageDetail == "omit" means the row rejects/mishandles
-							// detail; omit it there even when explicitly set.
-							if imageDetail != "omit" {
-								if p.Image.Detail != "" {
-									img["detail"] = p.Image.Detail
-								} else {
-									img["detail"] = imageDetail
-								}
+							if detail := llm.ResponsesImageDetail(p.Image.Detail, imageCap); detail != "" {
+								img["detail"] = detail
 							}
 							content = append(content, img)
 						}
@@ -319,10 +313,8 @@ func toResponsesInput(msgs []llm.Message, imageDetail string) (instructions stri
 						"type":      "input_image",
 						"image_url": llm.DataURI(mt, data),
 					}
-					// imageDetail == "omit" means the row rejects/mishandles
-					// detail; omit it there.
-					if imageDetail != "omit" {
-						img["detail"] = imageDetail
+					if detail := llm.ResponsesImageDetail("", imageCap); detail != "" {
+						img["detail"] = detail
 					}
 					item["output"] = []any{
 						map[string]any{"type": "input_text", "text": outStr},

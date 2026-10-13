@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
@@ -60,7 +60,12 @@ import {
   flushPendingTurnsProjectionForTests,
   startFlushPastEmptyRoundForTests,
 } from "./queue/testing/flushPendingTurnsProjection";
-import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
+import {
+  consumeQuoteInsert,
+  requestQuoteInsert,
+  resetQuoteInsertStoreForTests,
+  useQuoteInsertRequest,
+} from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
@@ -1319,6 +1324,168 @@ test("a quote-insert request for a DIFFERENT ref never reaches this composer", a
   });
   await flushPendingTurnsProjectionForTests();
   expect(textarea().textContent).toBe("");
+});
+
+// The embedded cascade column put a second composer in the world for the
+// same ref, so a quote request must name the seat it is quoting into: the
+// pane id of the conversation the selection was made in. The routing
+// contract lives in quoteInsert's read side - only the addressed seat's
+// hook may see the request - because in production both composers' merge
+// effects hold the same captured request within one commit and the first
+// composer's consume cannot un-capture it. An unaddressed request keeps
+// the historic any-composer routing for callers that cannot pin a
+// destination.
+test("an addressed quote-insert request is visible only to the addressed seat", async () => {
+  const ref = "ref_addressed_seats";
+  const seatA = renderHook(() => useQuoteInsertRequest(ref, "pane_a"));
+  const seatB = renderHook(() => useQuoteInsertRequest(ref, "pane_b"));
+
+  act(() => {
+    requestQuoteInsert(ref, "> quoted line\n\n", "append", "pane_a");
+  });
+
+  expect(seatA.result.current?.text).toBe("> quoted line\n\n");
+  expect(seatB.result.current).toBeUndefined();
+  act(() => {
+    consumeQuoteInsert(ref);
+  });
+  expect(seatA.result.current).toBeUndefined();
+});
+
+test("an addressed quote-insert request reaches the addressed seat's composer", async () => {
+  const ref = "ref_two_seats";
+  const fakeA = connectFakeClient();
+  fakeA.on("thread/read", () => readResponse(ref));
+  const fakeB = connectFakeClient();
+  fakeB.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  render(
+    <ClientProvider client={fakeA}>
+      <Toast />
+      <Composer ref={ref} paneId="pane_a" source={createTestComposerSource(ref)} focused={false} />
+    </ClientProvider>,
+  );
+  render(
+    <ClientProvider client={fakeB}>
+      <Toast />
+      <Composer ref={ref} paneId="pane_b" source={createTestComposerSource(ref)} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery(ref);
+  await flushPendingTurnsProjectionForTests();
+  const editors = screen.getAllByRole("textbox", { name: /^message$/i });
+  expect(editors).toHaveLength(2);
+  const [seatA, seatB] = editors;
+  if (!seatA || !seatB) throw new Error("Missing one of the two seat composers");
+
+  act(() => {
+    requestQuoteInsert(ref, "> quoted line\n\n", "append", "pane_a");
+  });
+
+  await waitFor(() => expect(seatA.textContent).toBe("> quoted line\n\n"));
+  expect(seatB.textContent).toBe("");
+  expect(document.activeElement).toBe(seatA);
+});
+
+test("goal editing focuses only the requesting seat's composer when two share a ref", async () => {
+  const user = userEvent.setup();
+  const overrides = { evener: currentWorkEvener({ goal: true }) };
+  // Both seats live in ONE tree, like an ordinary pane and its embedded
+  // column do in production: effects run in mount order, so an unaddressed
+  // request deterministically reaches every seat.
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", overrides));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="ref_a" paneId="pane_a" source={createTestComposerSource("ref_a")} focused={false} />
+      <Composer ref="ref_a" paneId="pane_b" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  const editors = screen.getAllByRole("textbox", { name: /^message$/i });
+  expect(editors).toHaveLength(2);
+  const [seatA, seatB] = editors;
+  if (!seatA || !seatB) throw new Error("Missing one of the two seat composers");
+  const seatAFocused = vi.fn();
+  seatA.addEventListener("focus", seatAFocused);
+
+  const editButtons = screen.getAllByRole("button", { name: /Edit goal: Keep the session focused/ });
+  expect(editButtons).toHaveLength(2);
+  await user.click(editButtons[1] ?? seatB);
+
+  await waitFor(() => expect(document.activeElement).toBe(seatB));
+  expect(seatB.textContent).toBe("/goal Keep the session focused");
+  // The request must be addressed: the other seat never takes focus, so
+  // typing lands in the requesting seat's editor alone.
+  expect(seatAFocused).not.toHaveBeenCalled();
+});
+
+test("the composer anchor carries its owning ref and pane id for the hold-hint overlay", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_anchor"));
+  await threadsStore.getState().ensureThread("ref_anchor");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="ref_anchor" paneId="pane_anchor" source={createTestComposerSource("ref_anchor")} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_anchor");
+  await flushPendingTurnsProjectionForTests();
+
+  // The hold-hint resolver (shell/holdhints) matches an anchor by BOTH its ref
+  // and its pane id, so the anchor must expose the owning pane id alongside the
+  // session ref.
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
+  expect(anchor?.getAttribute("data-composer")).toBe("ref_anchor");
+  expect(anchor?.getAttribute("data-composer-pane")).toBe("pane_anchor");
+});
+
+test("the current-task control opens this column's tasks without stealing cascade focus", async () => {
+  const user = userEvent.setup();
+  const overrides = { evener: currentWorkEvener({ task: true }) };
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("remote:parent", overrides));
+  await threadsStore.getState().ensureThread("remote:parent");
+  // An embedded column's composer: the host cascade covers this
+  // conversation, and an ordinary pane for the same conversation sits
+  // beside it.
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: {
+          ref: "remote:leaf",
+          source: { type: "session", params: { ref: "remote:root" } },
+          edges: [{ ownerRef: "remote:parent", childRef: "remote:leaf", delegateId: "d1" }],
+        },
+        slot: "main",
+      },
+      { id: "pane-parent", type: "session", params: { ref: "remote:parent" }, slot: "secondary" },
+    ],
+    focusedPaneId: "zoom",
+  });
+  // The sidebar describes the focused leaf, like the zoom's own scope does.
+  activitySidebarStore.getState().retarget("remote:leaf");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="remote:parent" paneId="zoom" source={createTestComposerSource("remote:parent")} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("remote:parent");
+  await user.click(screen.getByRole("button", { name: /Open tasks: Finish the focused composer test/ }));
+
+  // The request came from the parent column's composer: the sidebar opens
+  // that conversation's Tasks, holding its scope, and the cascade keeps
+  // focus.
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "tasks", ref: "remote:parent" });
+  expect(activitySidebarStore.getState().explicitScopeRef).toBe("remote:parent");
+  expect(workspaceStore.getState().focusedPaneId).toBe("zoom");
 });
 
 test("the composer persists the quote-inserted text as this ref's draft", async () => {

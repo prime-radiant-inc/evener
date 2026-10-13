@@ -504,14 +504,16 @@ test("a notification restores its owning session to main before opening the chil
   const owner = panes.find(
     (pane) => pane.type === "session" && pane.params && (pane.params as { ref?: string }).ref === "local:owner",
   );
-  const child = panes.find((pane) => pane.type === "transcript");
+  const child = panes.find(
+    (pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === "local:ref_x",
+  );
   expect(owner?.slot).toBe("main");
   expect(owner?.params).toEqual({ ref: "local:owner" });
   expect(
     panes.some((pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === "local:unrelated"),
   ).toBe(false);
   expect(child?.slot).toBe("secondary");
-  expect(child?.params).toEqual({ ref: "local:ref_x", parentRef: "local:owner" });
+  expect(child?.params).toEqual({ ref: "local:ref_x" });
 });
 
 test("a notification card always keeps the verbatim block inspectable in a raw disclosure", () => {

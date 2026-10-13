@@ -2677,10 +2677,18 @@ func TestRetirementSafetyUnreadableJobEvidence(t *testing.T) {
 
 func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 	t.Parallel()
+	// The fixture arms a notification retry of its own -- the requeue below --
+	// and then reads eligibility, so it runs on a pinned clock: the fake clock
+	// is what lets that armed one-shot be settled deterministically before the
+	// read, the handshake the sibling retry tests in this file use. On the real
+	// clock that one-shot was armed unjoined and fired mid-body whenever the body
+	// outran the 250ms retry delay (the failing run's body was 2.17s), which is
+	// #4131.
+	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("durable receipt acknowledged") },
 	}}
-	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(adapter))
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
 	jm := root.jobManager
 	rec, err := jm.createShell(createShellOpts{Command: "original-durable-shell"})
@@ -2732,6 +2740,24 @@ func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 	}
 	if claimErr != nil || claim != nil {
 		t.Fatalf("unacknowledged original durable receipt escaped: %+v %v", state, claimErr)
+	}
+	// The requeue above armed a one-shot notification retry on the session clock
+	// (scheduleJobNotificationRetryLocked). Settling the receipt reset the retry
+	// generation but nothing Stops the armed timer, so on a real clock it still
+	// fired later, and its callback registers a "notification" retirement lease
+	// (beginJobNotifyCallback) for its whole run. TryClaim refuses on any live
+	// lease, so a read landing in that window reports exactly the lone
+	// {notification, <root>} blocker #4131 saw. Fire the armed one-shot and wait
+	// for it to settle, so the eligibility read below cannot race it. Within the
+	// 250ms retry delay this is the only one-shot due: the session's other armed
+	// one-shot is the open lane-residue sweep (laneSweepDelay, 10m) and stays
+	// armed across the advance. A count that does not drop means the
+	// fixture stopped firing the retry it arms, so revisit this handshake then.
+	armedBefore := clk.PendingCallbacks()
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if armedAfter := clk.PendingCallbacks(); armedAfter >= armedBefore {
+		t.Fatalf("the fixture's armed notification retry did not fire: armed before=%d after=%d", armedBefore, armedAfter)
 	}
 	assertRetirementEvidenceEligible(t, c)
 }

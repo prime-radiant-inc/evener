@@ -252,7 +252,7 @@ test("Mod+I fires while an input is focused", async () => {
 
   fireEvent.keyDown(input, { key: "i", metaKey: true });
 
-  expect(focusSpy).toHaveBeenCalledWith("local:ref_abc123");
+  expect(focusSpy).toHaveBeenCalledWith("local:ref_abc123", workspaceStore.getState().focusedPaneId);
   remove();
 });
 

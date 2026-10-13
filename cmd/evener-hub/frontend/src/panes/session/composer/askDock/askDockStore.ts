@@ -38,6 +38,21 @@ export function useAskDockPending(ref: string): boolean {
   return useAskDockStore((s) => (s.byRef.get(ref)?.batches.length ?? 0) > 0);
 }
 
+// claimPendingGreeting atomically claims the activation auto-focus for `ref`,
+// returning true only for the ONE caller that actually claimed the current
+// pending set. One conversation can be mounted in two seats at once - an
+// ordinary pane and a cascade column embedding it - so two docks can share a
+// ref and both visibility callbacks can capture pendingGreeted=false before
+// either runs. A bare markPendingGreeted would let the second dock focus its
+// own seat and steal keyboard focus; re-checking the shared flag and marking
+// it in one synchronous turn (no await between the read and the write) makes
+// the claim atomic, so exactly one seat takes the focus.
+export function claimPendingGreeting(ref: string): boolean {
+  if (askDockStore.getState().byRef.get(ref)?.pendingGreeted) return false;
+  askDockStore.markPendingGreeted(ref);
+  return askDockStore.getState().byRef.get(ref)?.pendingGreeted === true;
+}
+
 // resetAskDockStoreForTests resets this module's singleton state between
 // tests - same rationale as threads.ts's resetThreadsStoreForTests (one
 // Map shared by the whole app). No production code should call this.

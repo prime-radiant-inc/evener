@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { WireError } from "./errors";
+import { ConnectionClosedError, friendlyErrorMessage, RequestTimeoutError, WireError } from "./errors";
 import { deferred } from "./testing/deferred";
 import { memoryDraftStorage } from "./testing/draftStorage";
 import { FakeClient } from "./testing/fakeClient";
@@ -418,7 +418,10 @@ describe("hub defaults", () => {
     store.setSupport("supported");
     store.beginReadyGeneration();
     await store.getState().refreshHubDefaults();
-    expect(store.getState()).toMatchObject({ loaded: false, hubError: "hub unreachable" });
+    expect(store.getState()).toMatchObject({
+      loaded: false,
+      hubError: friendlyErrorMessage(new Error("hub unreachable")),
+    });
     client.emitNotification({
       method: changedMethod,
       params: { layout: "mobile", revision: 9, config: toWireConfig(proposed) },
@@ -466,7 +469,7 @@ describe("hub defaults", () => {
       throw new Error("hub unreachable");
     });
     await store.getState().refreshHubDefaults();
-    expect(store.getState().hubError).toBe("hub unreachable");
+    expect(store.getState().hubError).toBe(friendlyErrorMessage(new Error("hub unreachable")));
     store.getState().applyHubChange({ layout: "mobile", revision: 5, config: proposed });
     expect(store.getState().hub.mobile).toEqual(hubDefault(5, proposed));
     expect(store.getState().hubError).toBeNull();
@@ -940,10 +943,10 @@ describe("the direct write", () => {
       throw new Error("hub unreachable");
     });
     await store.getState().refreshHubDefaults();
-    expect(store.getState().hubError).toBe("hub unreachable");
+    expect(store.getState().hubError).toBe(friendlyErrorMessage(new Error("hub unreachable")));
     client.on(patchMethod, () => patchAnswer("desktop", hubDefault(4, desktopConfig)));
     await store.getState().patchHubDefault("desktop", desktopConfig);
-    expect(store.getState().hubError).toBe("hub unreachable");
+    expect(store.getState().hubError).toBe(friendlyErrorMessage(new Error("hub unreachable")));
   });
 
   test("a preview stranded by a support flap clears when the next read confirms the write did not land", async () => {
@@ -2250,5 +2253,33 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toBeNull();
     expect(() => store.getState().discardDraft()).not.toThrow();
     expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
+  });
+});
+
+describe("read failure text", () => {
+  // The store keeps the messages it writes itself (a malformed reply); every
+  // other failure takes its friendly form, so a hub WireError keeps its own
+  // explanation and the client's own failures never show their wiring text.
+  test.each([
+    ["a hub-reported WireError", new WireError("transcript defaults are being rewritten", -32000)],
+    ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+    ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+    ["the client's lost socket", new Error("AppwireClient: socket closed (code 1006)")],
+    ["an unexpected client-side exception", new TypeError("cannot read properties of undefined")],
+  ])("a failed read from %s records its friendly form", async (_label, err) => {
+    const client = new FakeClient("ready");
+    client.on(getMethod, () => {
+      throw err;
+    });
+    const store = await readyStore(client);
+    expect(store.getState().hubError).toBe(friendlyErrorMessage(err));
+  });
+
+  test("a malformed reply keeps the store's own diagnosis rather than the generic sentence", async () => {
+    const client = new FakeClient("ready");
+    client.on(getMethod, () => ({ desktop: "not a default" }) as never);
+    const store = await readyStore(client);
+    expect(store.getState().hubError).not.toBeNull();
+    expect(store.getState().hubError).not.toBe(friendlyErrorMessage(new Error("any client-side failure")));
   });
 });

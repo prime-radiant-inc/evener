@@ -12,9 +12,14 @@ export interface PaneLifetime {
   readonly sourceType: "session" | "transcript";
   readonly alive: boolean;
   readonly composer: ComposerSourceState | null;
+  readonly composers: Map<string, ComposerSourceState>;
   readonly readViews: Map<string, TranscriptReadView>;
   readonly jobOutputReads: Map<string, JobLogReader>;
   readonly resolvedSessions: Map<string, string>;
+  /** A store-driven resume of the source conversation moves retained source
+   * ownership (the Return target, the source read view's role, and the
+   * source composer's ref) to the resumed identity. */
+  adoptResumedSource(resumedRef: string): void;
   dispose(): void;
 }
 let nextSerial = 0;
@@ -24,16 +29,19 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   const existing = lifetimes.get(pane);
   if (existing) return existing;
   const source = pane.type === "sessionZoom" ? parseZoomParams(pane.params)?.source : null;
-  const sourceRef = refParam(source?.params ?? pane.params);
-  if (sourceRef === null) throw new Error("Conversation pane requires a session ref");
+  const initialSourceRef = refParam(source?.params ?? pane.params);
+  if (initialSourceRef === null) throw new Error("Conversation pane requires a session ref");
+  let sourceRef = initialSourceRef;
   const sourceType = source?.type ?? (pane.type === "session" ? "session" : "transcript");
   let alive = true;
-  let composer: ComposerSourceState | null = null;
   const lifetime: PaneLifetime = {
     paneId: pane.id,
     serial: ++nextSerial,
-    sourceRef,
+    get sourceRef() {
+      return sourceRef;
+    },
     sourceType,
+    composers: new Map(),
     readViews: new Map(),
     jobOutputReads: new Map(),
     resolvedSessions: new Map(),
@@ -41,8 +49,25 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       return alive;
     },
     get composer() {
-      if (alive && sourceType === "session" && composer === null) composer = createComposerSourceState(sourceRef);
-      return composer;
+      if (!alive || sourceType !== "session") return null;
+      let state = lifetime.composers.get(sourceRef);
+      if (state === undefined) {
+        state = createComposerSourceState(sourceRef);
+        lifetime.composers.set(sourceRef, state);
+      }
+      return state;
+    },
+    adoptResumedSource(resumedRef: string): void {
+      if (sourceRef === resumedRef) return;
+      // The retained state binds draft persistence, recovery and
+      // submission to the ref it was created with: rekeying the entry
+      // would keep writing under the superseded identity. Retire the old
+      // state; a fresh one for the resumed identity loads the draft the
+      // resume carried, and any state already created for the resumed ref
+      // keeps its newer work.
+      lifetime.composers.get(sourceRef)?.dispose();
+      lifetime.composers.delete(sourceRef);
+      sourceRef = resumedRef;
     },
     dispose() {
       if (!alive) return;
@@ -52,7 +77,8 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       for (const view of lifetime.readViews.values()) view.dispose();
       lifetime.readViews.clear();
       lifetime.resolvedSessions.clear();
-      composer?.dispose();
+      for (const state of lifetime.composers.values()) state.dispose();
+      lifetime.composers.clear();
     },
   };
   lifetimes.set(pane, lifetime);

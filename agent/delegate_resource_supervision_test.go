@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3414,9 +3416,24 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, ad
 // stableSupervisionRefusal is the first stage of stable child supervision
 // still holding sub, as waitForStableSupervisionRun reads them, or "" once
 // all are quiet.
+//
+// Every source is read with TryLock: a source production holds is, by
+// definition, not quiesced, so a busy lock REFUSES (keeps the wait waiting)
+// rather than blocking. waitForCondition calls this inline, so a blocking read
+// would keep the wait's bound from ever being reached; a busy read always
+// returns before the deadline check is skipped again. The predicate returns ""
+// only after positively observing every stage under its own lock, so a busy
+// lock can only add a refusal — it can never turn an unquiesced run into a
+// quiesced one.
 func stableSupervisionRefusal(sub *subagent) string {
-	sub.mu.Lock()
+	// sub.sess is assigned once, at subagent creation, and never reassigned
+	// (delegate_runtime.go's cold restore and subagents.go's start), so an
+	// unlocked read cannot race a writer; stableSupervisionState reads it the
+	// same way.
 	sess := sub.sess
+	if !sub.mu.TryLock() {
+		return "subagent lock busy"
+	}
 	closed := sub.closed
 	sub.mu.Unlock()
 	// Dispatching an armed attention hands the work along a chain of
@@ -3428,30 +3445,13 @@ func stableSupervisionRefusal(sub *subagent) string {
 	// predecessor is left, so reading them in dispatch order means work
 	// that races past one read is caught by a later one.
 	if sess != nil && !closed {
-		if sess.hasPendingDelegateAttentionArmRetry() {
-			return "attention arm retry pending"
-		}
-		if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
-			return fmt.Sprintf("pending attention %v (err %v)", pending, err)
-		}
-		if controller, delegateID := sess.delegateController, sess.owningDelegateID; controller != nil && delegateID != "" {
-			if controller.reservedAttentionID(sess) != "" {
-				return "attention reserved"
-			}
-			controller.mu.Lock()
-			aggregate := controller.durable[delegateID]
-			runOpen := aggregate != nil && aggregate.CurrentRunOpen
-			// A finished generation whose finalize tail hasn't reported
-			// quiescence still holds the delegate: it takes no start yet.
-			live := controller.live[delegateID]
-			finalizing := live != nil && live.finalizing != nil
-			controller.mu.Unlock()
-			if runOpen || finalizing {
-				return fmt.Sprintf("controller runOpen=%t finalizing=%t", runOpen, finalizing)
-			}
+		if refusal := stableSupervisionAttentionRefusal(sess); refusal != "" {
+			return refusal
 		}
 	}
-	sub.mu.Lock()
+	if !sub.mu.TryLock() {
+		return "subagent lock busy"
+	}
 	done := sub.done
 	live := sub.running || sub.driving || sub.finalizing
 	sub.mu.Unlock()
@@ -3467,7 +3467,9 @@ func stableSupervisionRefusal(sub *subagent) string {
 		// The session namer is the last stage: a run launches it and it
 		// can outlive the run, taking the session lock to name and save
 		// the session.
-		sess.mu.Lock()
+		if !sess.mu.TryLock() {
+			return "session lock busy"
+		}
 		naming := sess.naming.pending
 		sess.mu.Unlock()
 		if naming != 0 {
@@ -3477,44 +3479,221 @@ func stableSupervisionRefusal(sub *subagent) string {
 	return ""
 }
 
+// stableSupervisionAttentionRefusal reads sess's attention stages — an arm
+// awaiting retry, attention pending with no reservation yet, a reservation that
+// has consumed the pending id but not yet committed, and the controller's open
+// run — without waiting on any lock, refusing when a source is busy. It mirrors
+// what the predicate read through the Session helpers
+// (hasPendingDelegateAttentionArmRetry, pendingDelegateAttentionIDs ->
+// delegateAttentionFoldLocked) and through delegateTreeController.reservedAttentionID,
+// which take these locks blocking and so could hold the predicate past its bound.
+func stableSupervisionAttentionRefusal(sess *Session) string {
+	// The arm-retry ids and the pending-attention fold are both read under
+	// attentionMu (which also guards the fold cursor); reading them together
+	// under one TryLock is a snapshot at least as strong as the two separate
+	// blocking reads it replaces, so it can never read quiesced where they
+	// would have refused.
+	if !sess.attentionMu.TryLock() {
+		return "attention lock busy"
+	}
+	if len(sess.delegateAttentionArmIDs) != 0 {
+		sess.attentionMu.Unlock()
+		return "attention arm retry pending"
+	}
+	pending, busy, err := stableSupervisionPendingAttentionLocked(sess)
+	sess.attentionMu.Unlock()
+	if busy {
+		return "session lock busy"
+	}
+	if err != nil || len(pending) != 0 {
+		return fmt.Sprintf("pending attention %v (err %v)", pending, err)
+	}
+	controller, delegateID := sess.delegateController, sess.owningDelegateID
+	if controller == nil || delegateID == "" {
+		return ""
+	}
+	if !controller.mu.TryLock() {
+		return "controller lock busy"
+	}
+	reserved := stableSupervisionReservedAttentionIDLocked(controller, sess)
+	aggregate := controller.durable[delegateID]
+	runOpen := aggregate != nil && aggregate.CurrentRunOpen
+	// A finished generation whose finalize tail hasn't reported
+	// quiescence still holds the delegate: it takes no start yet.
+	live := controller.live[delegateID]
+	finalizing := live != nil && live.finalizing != nil
+	controller.mu.Unlock()
+	if reserved != "" {
+		return "attention reserved"
+	}
+	if runOpen || finalizing {
+		return fmt.Sprintf("controller runOpen=%t finalizing=%t", runOpen, finalizing)
+	}
+	return ""
+}
+
+// stableSupervisionPendingAttentionLocked lists sess's durable pending attention
+// ids, mirroring pendingDelegateAttentionIDs -> delegateAttentionFoldLocked. The
+// caller holds sess.attentionMu, which guards the fold cursor
+// (Session.attentionFoldCursor) that readDelegateAttentionFold reads. It keeps
+// delegateAttentionFoldLocked's early return: no ready transcript, session id,
+// or state dir reads as no pending attention. A busy sess.mu — whose fields the
+// fold needs to locate the transcript — is reported busy so the caller refuses
+// rather than reading a path it could not observe.
+func stableSupervisionPendingAttentionLocked(sess *Session) ([]string, bool, error) {
+	if !sess.mu.TryLock() {
+		return nil, true, nil
+	}
+	ready := sess.transcriptReady
+	sessionID := sess.id
+	stateDir := sess.stateDir
+	sess.mu.Unlock()
+	if !ready || sessionID == "" || stateDir == "" {
+		return nil, false, nil
+	}
+	fold, err := sess.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	return fold.pendingIDs(), false, nil
+}
+
+// stableSupervisionReservedAttentionIDLocked mirrors
+// delegateTreeController.reservedAttentionID while c.mu is held: that accessor
+// takes c.mu blocking, so the predicate cannot call it. It routes through
+// runtimeOwnerLocked and keeps the same three guards — the record's delegate id
+// matches, its trigger is TriggerAttention, and its runtime is this session — so
+// a reservation of another kind for the same delegate does not read as reserved.
+func stableSupervisionReservedAttentionIDLocked(c *delegateTreeController, runtime *Session) string {
+	delegateID, _, err := c.runtimeOwnerLocked(runtime)
+	if err != nil || delegateID == "" {
+		return ""
+	}
+	for _, record := range c.reservations {
+		if record != nil && record.delegateID == delegateID && record.trigger == delegatestore.TriggerAttention && record.runtime == runtime {
+			return record.attentionID
+		}
+	}
+	return ""
+}
+
 // stableSupervisionState renders the controller, root and child state a
-// supervision quiescence wait reads, for its timeout report.
+// supervision quiescence wait reads, for its timeout report. The report runs
+// after the wait's bound has already fired, so it must print whatever it can
+// read without waiting: every source is taken with TryLock, a source that is
+// busy renders its "<source>_lock_busy" marker in place of the fields behind it,
+// and each source is taken once, released before the next. This is the same
+// best-effort discipline stableSupervisionFailureSnapshot uses. A report that
+// waits on the lock it reports on turns a did-not-quiesce failure into a hang,
+// which is the opposite of what it exists for.
+//
+// The trailing childGates{...} line cannot call the live gate accessors —
+// childStopGated, childFatalRunGated, childDrainAbandoned, childDrainGracePending
+// and childCommittedSendStart — because the first three take c.mu through
+// directStableDelegateForChildSession, and the fatal-run gate takes the subagent
+// registry's mu through getSub and then sub.mu. Each gate is instead rendered
+// from the TryLocked source that already printed its fields, and each predicate
+// names the accessor it mirrors, so a change there shows up here as a drift.
 func stableSupervisionState(root *Session, sub *subagent) string {
-	sub.mu.Lock()
+	// sub.sess is assigned once, at subagent creation (delegate_runtime.go's cold
+	// restore and subagents.go's start), and never reassigned, so an unlocked read
+	// cannot race a writer; stableSupervisionFailureSnapshot reads it the same way.
 	sess := sub.sess
-	sub.mu.Unlock()
 	if sess == nil || sess.delegateController == nil {
 		return "child has no session or controller"
 	}
 	c := sess.delegateController
-	c.mu.Lock()
-	var b strings.Builder
-	if agg := c.durable[sess.owningDelegateID]; agg != nil {
-		fmt.Fprintf(&b, "aggregate{gen=%d phase=%v open=%v needs=%v} ", agg.Generation, agg.Phase, agg.CurrentRunOpen, agg.NeedsAttention)
-	}
-	if live := c.live[sess.owningDelegateID]; live != nil {
-		fmt.Fprintf(&b, "live{binding=%v finalizing=%v recovery=%v} ", live.binding != nil, live.finalizing != nil, live.recoveryRequired)
-	}
-	if st := c.attention[sess.owningDelegateID]; st != nil {
-		fmt.Fprintf(&b, "attention{wake=%v parked=%v restoreFailures=%d turn=%d} ", st.wakeIDs, st.parked, st.restoreFailures, st.driveTurn)
-	}
-	fmt.Fprintf(&b, "reservations=%d eligible=%v delivery=%v ", len(c.reservations), c.delegateAttentionWakeEligibleLocked(sess.owningDelegateID), c.hasDeliveryWorkForOwnerLocked(sess.owningDelegateID))
-	c.mu.Unlock()
-	root.attentionMu.Lock()
-	fmt.Fprintf(&b, "rootRetry{active=%v delay=%v} ", root.stableAttentionRetry.active, root.stableAttentionRetry.delay)
-	root.attentionMu.Unlock()
-	sub.mu.Lock()
-	fmt.Fprintf(&b, "sub{running=%v driving=%v finalizing=%v dispose=%v closed=%v fatal=%v status=%v} ", sub.running, sub.driving, sub.finalizing, sub.disposeGated, sub.closed, sub.fatalRunGated, sub.status)
-	sub.mu.Unlock()
-	root.mu.Lock()
-	fmt.Fprintf(&b, "root{state=%v} ", root.state)
-	root.mu.Unlock()
-	sess.mu.Lock()
-	fmt.Fprintf(&b, "child{state=%v} ", sess.state)
-	sess.mu.Unlock()
+	owner := sess.owningDelegateID
 	id := sess.id
-	fmt.Fprintf(&b, "childGates{stop=%v fatalRun=%v drainAbandoned=%v drainGrace=%v committedSend=%v}", root.childStopGated(id), root.childFatalRunGated(id), root.childDrainAbandoned(id), root.childDrainGracePending(id), root.childCommittedSendStart(id))
+	stop, drainAbandoned, drainGrace := "controller_lock_busy", "controller_lock_busy", "controller_lock_busy"
+	var b strings.Builder
+	if c.mu.TryLock() {
+		if agg := c.durable[owner]; agg != nil {
+			fmt.Fprintf(&b, "aggregate{gen=%d phase=%v open=%v needs=%v} ", agg.Generation, agg.Phase, agg.CurrentRunOpen, agg.NeedsAttention)
+		}
+		if live := c.live[owner]; live != nil {
+			fmt.Fprintf(&b, "live{binding=%v finalizing=%v recovery=%v} ", live.binding != nil, live.finalizing != nil, live.recoveryRequired)
+		}
+		if st := c.attention[owner]; st != nil {
+			fmt.Fprintf(&b, "attention{wake=%v parked=%v restoreFailures=%d turn=%d} ", st.wakeIDs, st.parked, st.restoreFailures, st.driveTurn)
+		}
+		fmt.Fprintf(&b, "reservations=%d eligible=%v delivery=%v ", len(c.reservations), c.delegateAttentionWakeEligibleLocked(owner), c.hasDeliveryWorkForOwnerLocked(owner))
+		row, ok := stableSupervisionDirectRowLocked(c, root, id)
+		c.mu.Unlock()
+		// childStopGated: ok && delegateRowStopGated(row).
+		stop = strconv.FormatBool(ok && delegateRowStopGated(row))
+		if root.drainAbandonedMu.TryLock() {
+			abandoned, abandonedOK := root.drainAbandonedChildren[id]
+			grace, graceOK := root.drainGraceChildren[id]
+			root.drainAbandonedMu.Unlock()
+			// childDrainAbandoned: exists && abandoned.generation == row.generation.
+			drainAbandoned = strconv.FormatBool(ok && abandonedOK && abandoned.generation == row.generation)
+			// childDrainGracePending: row.currentRunOpen && drainGraceChildForRow(id, row) matched.
+			drainGrace = strconv.FormatBool(ok && row.currentRunOpen && graceOK && grace.delegateID == row.id && grace.generation == row.generation)
+		} else {
+			drainAbandoned, drainGrace = "drain_lock_busy", "drain_lock_busy"
+		}
+	} else {
+		b.WriteString("controller_lock_busy ")
+	}
+	if root.attentionMu.TryLock() {
+		fmt.Fprintf(&b, "rootRetry{active=%v delay=%v} ", root.stableAttentionRetry.active, root.stableAttentionRetry.delay)
+		root.attentionMu.Unlock()
+	} else {
+		b.WriteString("attention_lock_busy ")
+	}
+	fatalRun := "subagent_lock_busy"
+	if sub.mu.TryLock() {
+		fmt.Fprintf(&b, "sub{running=%v driving=%v finalizing=%v dispose=%v closed=%v fatal=%v status=%v} ", sub.running, sub.driving, sub.finalizing, sub.disposeGated, sub.closed, sub.fatalRunGated, sub.status)
+		// childFatalRunGated: getSub(id).fatalRunGated. The report reads the passed
+		// sub, so it never takes the subagent registry's mu.
+		fatalRun = strconv.FormatBool(sub.fatalRunGated)
+		sub.mu.Unlock()
+	} else {
+		b.WriteString("subagent_lock_busy ")
+	}
+	if root.mu.TryLock() {
+		fmt.Fprintf(&b, "root{state=%v} ", root.state)
+		root.mu.Unlock()
+	} else {
+		b.WriteString("root_lock_busy ")
+	}
+	if sess.mu.TryLock() {
+		fmt.Fprintf(&b, "child{state=%v} ", sess.state)
+		sess.mu.Unlock()
+	} else {
+		b.WriteString("session_lock_busy ")
+	}
+	committedSend := "send_start_lock_busy"
+	if root.childCommittedSendMu.TryLock() {
+		// childCommittedSendStart: childCommittedSendChildren[id] present.
+		_, held := root.childCommittedSendChildren[id]
+		root.childCommittedSendMu.Unlock()
+		committedSend = strconv.FormatBool(held)
+	}
+	fmt.Fprintf(&b, "childGates{stop=%s fatalRun=%s drainAbandoned=%s drainGrace=%s committedSend=%s}", stop, fatalRun, drainAbandoned, drainGrace, committedSend)
 	return b.String()
+}
+
+// stableSupervisionDirectRowLocked captures the direct stable delegate row for
+// childSessionID while c.mu is held. It mirrors directStableDelegateForChildSession
+// (job_watch.go) — snapshotsForChildSession's filter over c.durable
+// (delegate_tree_controller.go) plus delegateRowVisibleTo's pick — which the
+// report cannot call because that accessor would re-take c.mu.
+func stableSupervisionDirectRowLocked(c *delegateTreeController, root *Session, childSessionID string) (delegateSnapshot, bool) {
+	ids := make([]string, 0)
+	for id, agg := range c.durable {
+		if agg != nil && agg.Descriptor.ChildSessionID == childSessionID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, row := range c.captureDelegateSnapshotsLocked(ids) {
+		if delegateRowVisibleTo(root, row.parentID, row.descriptor.OwnerSessionID) {
+			return row, true
+		}
+	}
+	return delegateSnapshot{}, false
 }
 
 // TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive pins the

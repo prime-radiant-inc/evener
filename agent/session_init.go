@@ -1681,8 +1681,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// (native worktree tools spec §5 occupancy locks / §5 table row "session
 	// init, launch cwd inside a managed worktree"): apply the idempotent
 	// occupancy-lock rule. A no-op when resumeWorktreeReentry already
-	// established occupancy tracking above.
-	s.applyInitInsideWorktreeLock(ei.IsGitRepo)
+	// established occupancy tracking above. The function decides repo-ness
+	// structurally, not from ei.IsGitRepo (#4132).
+	s.applyInitInsideWorktreeLock()
 
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.
@@ -2378,8 +2379,8 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 //
 // The turn count is conversation only, excluding hook execution records and the
 // harness-injected context turns — environment context saved before the user's
-// first input and shared-notes context projected at turn start — that no user
-// or model utterance produced. It answers
+// first input and the shared-notes and memory projections delivered at a turn
+// boundary — that no user or model utterance produced. It answers
 // "does this session already carry a conversation?" — the question the detector asks — with a number no hook
 // dispatch or context projection can inflate. modelResponses is guarded by the
 // same mutex (see the field's documentation on Session), and the detector
@@ -2393,7 +2394,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	defer s.mu.Unlock()
 	for _, t := range s.history {
 		switch t.Kind {
-		case schema.TurnHookCompleted, schema.TurnEnvironment, schema.TurnNotesContext:
+		case schema.TurnHookCompleted, schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
 			continue
 		}
 		if t.Kind.TranscriptOnly() {

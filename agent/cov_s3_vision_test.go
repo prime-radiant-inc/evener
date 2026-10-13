@@ -166,3 +166,29 @@ func TestS3Cov_DescribeImage_ErrorReturnsEmpty(t *testing.T) {
 		t.Fatalf("expected empty on API error, got %q", got)
 	}
 }
+
+// TestS3Cov_DescribeImage_DoesNotPinDetail pins that the side-channel's image
+// part names no wire detail: the row's image_detail cap (and each protocol
+// builder's own default) governs instead. The literal "original" it used to
+// pin is not a valid OpenAI detail, so strict OpenAI-compatible endpoints
+// rejected the whole vision request with HTTP 400 (#4489).
+func TestS3Cov_DescribeImage_DoesNotPinDetail(t *testing.T) {
+	t.Parallel()
+	var detail string
+	sess := s3cov_visionSession(t, SessionConfig{}, func(req llm.Request) llm.Response {
+		for _, m := range req.Messages {
+			for _, p := range m.Content {
+				if p.Kind == llm.ContentImage && p.Image != nil {
+					detail = p.Image.Detail
+				}
+			}
+		}
+		return llm.Response{Message: llm.Assistant("x")}
+	})
+	if got := sess.describeImage(context.Background(), tool.ExecResult{ImageData: []byte("png"), ImageMediaType: "image/png"}); got != "x" {
+		t.Fatalf("description = %q", got)
+	}
+	if detail != "" {
+		t.Fatalf(`side-channel image detail = %q, want empty`, detail)
+	}
+}

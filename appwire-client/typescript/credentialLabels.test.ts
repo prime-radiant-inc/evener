@@ -468,17 +468,14 @@ describe("unconfiguredLabel", () => {
   });
 
   test("mirrors activeSourceLabel when nothing is active", () => {
-    expect(
-      unconfiguredLabel(
-        instance({
-          name: "a",
-          providerId: "anthropic",
-          auth: "bearer",
-          activeSource: "none",
-          credentialRequired: true,
-        }),
-      ),
-    ).toBe("Not configured");
+    const unconfigured = instance({
+      name: "a",
+      providerId: "anthropic",
+      auth: "bearer",
+      activeSource: "none",
+      credentialRequired: true,
+    });
+    expect(unconfiguredLabel(unconfigured)).toBe(activeSourceLabel(unconfigured));
   });
 });
 

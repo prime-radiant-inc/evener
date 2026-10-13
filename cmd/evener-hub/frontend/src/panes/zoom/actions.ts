@@ -5,10 +5,10 @@ import { cancelPaneFocus, type OpenPaneRecord, requestPaneFocus, workspaceStore 
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
-import type { TranscriptParams } from "../transcript/Transcript";
 import { associatedCascade, cascadeOrigin, cascadeOriginRef, recordCascadeOrigin } from "./inspectionOrigin";
 import {
   type CascadePath,
+  type DelegateEdgeIntent,
   deriveCascadePath,
   drillZoomIntent,
   parseZoomParams,
@@ -43,6 +43,35 @@ function intentFor(pane: OpenPaneRecord): SessionZoomParams | null {
 }
 function pathFor(params: SessionZoomParams): CascadePath {
   return deriveCascadePath(params, contextFor(params.ref));
+}
+
+/** The recorded edge chain that pins an authoritative ancestry to the refs the
+ * path should render. deriveCascadePath honours an edge alias only through the
+ * child node's delegate identity, so a scope the ancestry alone supplies — one
+ * no recorded edge names — is persisted by re-encoding the whole path from the
+ * ancestry, not just the recorded segment. Returns null when the ancestry
+ * cannot express the chain (a node with no delegate identity), so the caller
+ * reports the resume unapplied instead of a false success. */
+function ancestryEdges(
+  context: SessionActivityContext,
+  leafRef: string,
+  requested: readonly string[],
+): DelegateEdgeIntent[] | null {
+  const nodes: { ref: string; delegateId?: string }[] = [
+    ...context.ancestors,
+    { ref: leafRef, delegateId: context.delegateId },
+  ];
+  if (nodes.length !== requested.length) return null;
+  const edges: DelegateEdgeIntent[] = [];
+  for (let index = 1; index < nodes.length; index += 1) {
+    const delegateId = nodes[index]?.delegateId;
+    const ownerRef = requested[index - 1];
+    const childRef = requested[index];
+    if (typeof delegateId !== "string" || delegateId.trim() === "" || ownerRef === undefined || childRef === undefined)
+      return null;
+    edges.push({ ownerRef, childRef, delegateId });
+  }
+  return edges;
 }
 function requestedOwner(ref: string, ownerRef: string): boolean {
   return ref === ownerRef || contextFor(ref)?.ref === ownerRef;
@@ -79,11 +108,7 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
       }
     }
     const ref = refParam(source.params);
-    if (
-      ref &&
-      (source.type === "session" || (source.type === "transcript" && !ref.startsWith("job:"))) &&
-      requestedOwner(ref, sub.ownerRef)
-    ) {
+    if (ref && source.type === "session" && requestedOwner(ref, sub.ownerRef)) {
       const existing = associatedCascade(source);
       if (existing) {
         const intent = intentFor(existing);
@@ -92,20 +117,11 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
         workspaceStore.getState().focusPane(existing.id);
         return existing.id;
       }
-      const sourceParams = source.params as TranscriptParams;
       const params: SessionZoomParams = {
         ref: sub.childRef,
-        source: {
-          type: "transcript",
-          params: {
-            ref,
-            ...(source.type === "transcript" && sourceParams.parentRef !== undefined
-              ? { parentRef: sourceParams.parentRef }
-              : {}),
-          },
-        },
+        source: { type: "session", params: { ref } },
         edges: [{ ...edge, ownerRef: ref }],
-        inspection: { origin: { paneId: source.id, type: source.type, ref } },
+        inspection: { origin: { paneId: source.id, type: "session", ref } },
       };
       userTransitions.add(params);
       const id = workspace.openPane("sessionZoom", params, { slot: "secondary" });
@@ -117,7 +133,7 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
   }
   const params: SessionZoomParams = {
     ref: sub.childRef,
-    source: { type: "transcript", params: { ref: sub.ownerRef } },
+    source: { type: "session", params: { ref: sub.ownerRef } },
     edges: [edge],
     inspection: { origin: null },
   };
@@ -159,29 +175,6 @@ export function returnFromAgentCascade(paneId: string): void {
   retainedTranscriptReadView(lifetime, lifetime.sourceRef, lifetime.sourceType).setReadable(true);
   workspace.retypePane(pane, params.source.type, params.source.params);
 }
-export function openCascadeConversation(paneId: string, ref: string): void {
-  const workspace = workspaceStore.getState();
-  const pane = workspace.panes.find((record) => record.id === paneId);
-  if (!pane) return;
-  const params = intentFor(pane);
-  if (!params) return;
-  const origin = params.inspection ? cascadeOrigin(pane) : null;
-  if (origin?.type === "session" && refParam(origin.params) === ref) {
-    returnFromAgentCascade(paneId);
-    return;
-  }
-  if (params.source.type === "session" && params.source.params.ref === ref) {
-    returnFromAgentCascade(paneId);
-    workspace.focusPane(paneId);
-    requestPaneFocus(paneId);
-    return;
-  }
-  const existing = workspace.panes.find((record) => record.type === "session" && refParam(record.params) === ref);
-  const id = existing?.id ?? workspace.openPane("session", { ref }, { slot: "secondary" });
-  workspace.focusPane(id);
-  requestPaneFocus(id);
-}
-
 /** Only a committed scope can fence identity. An abandoned result holds an old
  * record and cannot publish intent, even if its pane ID has been reused. */
 export function reconcileCascadeBinding(expected: OpenPaneRecord, ref: string, sessionId: string): void {
@@ -201,4 +194,72 @@ export function reconcileCascadeBinding(expected: OpenPaneRecord, ref: string, s
     updateIntent(expected, { ...next });
   }
   lifetime.resolvedSessions.set(ref, sessionId);
+}
+
+/** A store-driven resume returned a new ref for the conversation shown at
+ * `ref` in this cascade. Replace the path entry in place — the resumed
+ * conversation keeps its position and its drilled descendants, whose parent
+ * edges follow the resumed identity — so the column re-renders on the
+ * resumed ref with a fresh retained reader and the carried draft. The
+ * resume driver has already hydrated the resumed ref before it publishes
+ * the identity this answers.
+ *
+ * The retained lifetime is the frame's identity: a same-commit pair of
+ * resumes (whichever applies first retypes the pane record the other
+ * captured) still resolves the current record through it, while a wholesale
+ * replacement (a closed pane, a reused pane id) cannot inherit the resume.
+ * The whole rendered path is re-encoded, so a scope the authoritative
+ * ancestry alone supplies — one no recorded edge names, as after popping
+ * above the recorded segment — is pinned to the resumed ref too, and the
+ * change is reported applied only once the derived path follows it.
+ * Returns whether the frame applied the change, so the caller acknowledges
+ * the resume only then. A resumed source conversation also moves the source
+ * descriptor and the lifetime's retained source ownership, so Return
+ * reopens the resumed identity instead of the superseded one. */
+export function resumeCascadeScope(lifetime: PaneLifetime, ref: string, resumedRef: string): boolean {
+  if (ref === resumedRef) return true;
+  if (!lifetime.alive) return false;
+  const current = workspaceStore.getState().panes.find((record) => record.id === lifetime.paneId);
+  if (!current || conversationPaneLifetime(current) !== lifetime) return false;
+  const params = intentFor(current);
+  if (!params) return false;
+  const context = contextFor(params.ref);
+  const path = deriveCascadePath(params, context);
+  const index = path.scopes.findIndex((scope) => scope.requestedRef === ref);
+  if (index < 0) return false;
+  // The scope keeps its position: only the rendered ref it names changes.
+  const leaf = index === path.scopes.length - 1;
+  const requested = path.scopes.map((scope, scopeIndex) => (scopeIndex === index ? resumedRef : scope.requestedRef));
+  // An authoritative ancestry renders scopes no recorded edge names, so pin
+  // them by re-encoding the whole path through the ancestry's delegate
+  // identities; without a known ancestry, or when the ancestry cannot express
+  // the chain, the remapped recorded edges carry every scope they name.
+  const remapped = params.edges.map((edge) => ({
+    ...edge,
+    ownerRef: edge.ownerRef === ref ? resumedRef : edge.ownerRef,
+    childRef: edge.childRef === ref ? resumedRef : edge.childRef,
+  }));
+  const edges = (context?.ancestryKnown ? ancestryEdges(context, params.ref, requested) : null) ?? remapped;
+  const sourceResumed = params.source.type === "session" && refParam(params.source.params) === ref;
+  const next: SessionZoomParams = {
+    ...params,
+    ref: leaf ? resumedRef : params.ref,
+    // The rendered source conversation keeps rendering through its resumed
+    // identity: the descriptor follows, so Return reopens the resumed
+    // conversation instead of the superseded one.
+    source: sourceResumed ? { ...params.source, params: { ...params.source.params, ref: resumedRef } } : params.source,
+    edges,
+  };
+  // The acknowledgement is truthful only if the rendered path follows. A
+  // rebuilt chain the derivation rejects would leave the column on the
+  // superseded ref, so report the resume unapplied and let the caller retry
+  // rather than clear it against a frame that never moved.
+  const after = deriveCascadePath(next, contextFor(next.ref));
+  const followed = leaf
+    ? after.scopes[after.scopes.length - 1]?.requestedRef === resumedRef
+    : after.scopes[index]?.requestedRef === resumedRef;
+  if (!followed) return false;
+  updateIntent(current, next);
+  if (sourceResumed) lifetime.adoptResumedSource(resumedRef);
+  return true;
 }

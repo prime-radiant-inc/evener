@@ -2,7 +2,7 @@
 // whichever client connectionStore holds, and a replaced or recovered
 // connection drops every list. The store's paging and overtaking rules are
 // tested in the package (appwire-client/typescript/archivedListStore.test.ts).
-import type { ArchivedListParams, ArchivedListResponse } from "@evener/appwire-client";
+import { type ArchivedListParams, type ArchivedListResponse, friendlyErrorMessage } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession } from "@evener/appwire-client/testing/navigation";
@@ -14,7 +14,7 @@ import {
   refreshArchivedList,
   resetArchivedListStoreForTests,
 } from "./archivedList";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore } from "./connection";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -50,10 +50,17 @@ describe("the web's archived lists", () => {
     expect(list("proj")?.rows.map((r) => r.ref)).toEqual(["local:a"]);
   });
 
-  test("record a read with no client connected as the list's error", async () => {
+  test("record a read with no client connected as the list's error, in its friendly form", async () => {
     await refreshArchivedList("projects", "proj");
 
-    expect(list("proj")?.error).toContain("archivedList store: no client connected");
+    let portError: unknown;
+    try {
+      connectedClientPort("archivedList").requireClient();
+    } catch (err) {
+      portError = err;
+    }
+    expect(portError).toBeInstanceOf(Error);
+    expect(list("proj")?.error).toBe(friendlyErrorMessage(portError));
   });
 
   test("drop every loaded list and the answer the old connection still owes when it is replaced", async () => {

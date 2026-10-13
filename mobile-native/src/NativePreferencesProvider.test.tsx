@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AnyNotification, AppwireClient, InitializeResponse } from "@evener/appwire-client";
+import { type AnyNotification, type AppwireClient, type InitializeResponse, WireError } from "@evener/appwire-client";
 import { NativePreferencesProvider, useNativePreferences } from "./NativePreferencesProvider";
 import { render, unmountMountedTrees } from "./renderNative.testkit";
 
@@ -80,7 +80,7 @@ function clientFixture({ deferred = false, failed = false, keybindingsError = fa
 		request: async (method: string) => {
 			requests.push(method);
 			if (method === "evener/settings/keybindings/get") {
-				if (shouldFailKeybindings) throw new Error("hub request failed");
+				if (shouldFailKeybindings) throw new WireError("hub request failed", -32000);
 				return { version: 1, revision: 1, rules: [] };
 			}
 			throw new Error(`Unexpected request: ${method}`);

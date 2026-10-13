@@ -3193,11 +3193,36 @@ export interface SearchResult {
    */
   hits?: SearchHit[];
   hitCount?: number;
+  /**
+   * TopLevel names the top-level session this hit groups under when the
+   * hit is a subagent session: its first non-subagent ancestor, then
+   * through fork supersessions to the row the navigation tree would show.
+   * Present only on a Past result whose session is a subagent and whose
+   * ancestry resolves; absent from an older hub and from every Live
+   * result, and ignored by clients that do not group.
+   */
+  topLevel?: SearchTopLevel;
 }
 
 export interface SearchSnippetPart {
   text: string;
   match?: boolean;
+}
+
+export interface SearchTopLevel {
+  id: string;
+  ref: string;
+  title: string;
+  project?: string;
+  state: string;
+  age?: string;
+  /**
+   * AskPending and ApprovalPending carry the flags of the anchor's own
+   * navigation row, so a live anchor renders its real marks. Absent from
+   * an older hub and from an ended anchor.
+   */
+  askPending?: boolean;
+  approvalPending?: boolean;
 }
 
 export interface ServerInfo {

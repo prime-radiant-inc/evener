@@ -295,12 +295,14 @@ function emptySnapshot(key: ResourceKey) {
       slot = "sessions";
       break;
     case "location":
+      // The overview child is a real nested session in the world this guard
+      // walks; every other ref stands alone as before.
       metadata = {
         generation_id: "shellguard-generation",
         revision: mutationRevision,
         ref: key.ref,
-        top_level_ref: key.ref,
-        top_level: true,
+        top_level_ref: key.ref === OVERVIEW_CHILD ? "local:p0-s0" : key.ref,
+        top_level: key.ref !== OVERVIEW_CHILD,
       };
       slot = "session";
       break;
