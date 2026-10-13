@@ -33,7 +33,7 @@ func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return afero.ReadFile(e.filesystem(), abs)
+	return readFileCapped(e.filesystem(), abs)
 }
 
 // WriteFileRaw writes data to path, creating missing parents, confined to the
