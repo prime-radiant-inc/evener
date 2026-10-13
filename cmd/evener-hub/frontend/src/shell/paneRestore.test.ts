@@ -295,3 +295,50 @@ test("a layout holding both a session pane and a legacy transcript pane for one 
   if (!child) throw new Error("child pane missing");
   expect(conversationOpenParentRef(child)).toBe("local:owner");
 });
+
+test("a removed legacy duplicate keeps the saved conversation focused", () => {
+  const fake = new FakeDockviewApi();
+  const saved = {
+    grid: {
+      root: { type: "branch", data: [{ type: "leaf", data: { views: ["p1", "p2", "p3", "p4"] } }] },
+      activeGroup: "group-1",
+    },
+    panels: {
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "local:owner" } },
+      },
+      p2: {
+        id: "p2",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "local:child" } },
+      },
+      p3: {
+        id: "p3",
+        contentComponent: "default",
+        params: { paneType: "transcript", paneParams: { ref: "local:child", parentRef: "local:owner" } },
+      },
+      p4: {
+        id: "p4",
+        contentComponent: "default",
+        params: { paneType: "doc", paneParams: { session: "local:owner", path: "notes.md", kind: "file" } },
+      },
+    },
+    activeGroup: "group-1",
+  };
+  fake.serialized = saved;
+  fake.fromJSONBehavior = (data) => {
+    const layout = data as { panels?: Record<string, { params?: unknown }> };
+    fake.panels = Object.entries(layout.panels ?? {}).map(([id, panel]) => ({ id, params: panel.params }));
+    // The saved focus was the legacy transcript pane the reconciliation drops.
+    fake.activePanel = { id: "p3" };
+  };
+  registerDockviewApi(asDockviewApi(fake));
+
+  expect(workspaceStore.getState().restoreLayout(saved)).toBe(true);
+
+  // Focus follows the conversation that pane became, not whatever unrelated
+  // panel the removal left selected.
+  expect(workspaceStore.getState().focusedPaneId).toBe("p2");
+});

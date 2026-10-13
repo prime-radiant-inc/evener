@@ -720,6 +720,11 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // readPanelParams skips (an unregistered/removed pane type) drop out
       // BEFORE the slot assignment, so the first SURVIVING panel is main.
       const entries = dockviewApi.panels.map((panel) => ({ panel, params: readPanelParams(panel) }));
+      // The saved selection is read BEFORE any panel leaves the api: removing
+      // the active panel makes dockview select an unrelated neighbor, and
+      // reading it afterwards would restore that neighbor instead of the
+      // conversation the removed pane became.
+      const savedActiveId = dockviewApi.activePanel?.id;
       // A panel this build cannot render must leave the live api NOW, not in
       // DockHost's later structural reconciliation: the commit between this
       // restore and that reconciliation renders every api panel through
@@ -747,12 +752,14 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       }));
       for (const listener of workspaceRestoreListeners) listener(panes);
       bumpPastRestoredIds(panes);
-      // The api's active panel may be one the skip dropped; focus only an id
-      // that actually survived, else the first survivor.
-      const activeId = dockviewApi.activePanel?.id;
+      // The saved active panel may be one the skip dropped - or the duplicate
+      // this restore reconciled, in which case focus follows the conversation
+      // that survived. Focus only an id that actually survived, else the
+      // first survivor.
+      const wantedId = savedActiveId === undefined ? undefined : (duplicates.get(savedActiveId) ?? savedActiveId);
       set({
         panes,
-        focusedPaneId: panes.find((p) => p.id === activeId)?.id ?? panes[0]?.id ?? null,
+        focusedPaneId: panes.find((p) => p.id === wantedId)?.id ?? panes[0]?.id ?? null,
       });
       const conversationParents = migrated.conversationParents ?? {};
       for (const pane of panes) {

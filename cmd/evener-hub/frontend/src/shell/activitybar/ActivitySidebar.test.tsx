@@ -767,3 +767,91 @@ test("pending ancestry becomes useful parent navigation only after the domain pr
   await screen.findByRole("button", { name: "Proven root" });
   expect(screen.queryByText("Finding session context…")).toBeNull();
 });
+
+test("an embedded parent column's Overview rebases its ancestor crumb onto the cascade's requested alias", async () => {
+  const user = userEvent.setup();
+  // The activity context names canonical refs while the cascade's source and
+  // edges use "root-alias": only the cascade's requested refs can move it.
+  const context = (value: string) =>
+    value === "grandchild"
+      ? {
+          ...activityContext(value),
+          ref: "canonical-grandchild",
+          sessionId: "grandchild-id",
+          rootRef: "canonical-root",
+          parentRef: "canonical-child",
+          delegateId: "d2",
+          ancestors: [
+            { ref: "canonical-root", sessionId: "root-id", title: "Root" },
+            { ref: "canonical-child", sessionId: "child-id", title: "Child", delegateId: "d1" },
+          ],
+        }
+      : value === "child"
+        ? {
+            ...activityContext(value),
+            ref: "canonical-child",
+            sessionId: "child-id",
+            rootRef: "canonical-root",
+            parentRef: "canonical-root",
+            delegateId: "d1",
+            ancestors: [{ ref: "canonical-root", sessionId: "root-id", title: "Root" }],
+          }
+        : { ...activityContext(value), ref: "canonical-root", sessionId: "root-id" };
+  const client = cascadeClient(context);
+  client.on("evener/thread/delegates/list", ({ ref: asked, scope }) => ({
+    context: context(asked),
+    scope: scope ?? "session",
+    delegates: [activityDelegate({ ownerRef: asked, description: `delegate owned by ${asked}` })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope("grandchild");
+  const source = { type: "session" as const, params: { ref: "root-alias" } };
+  const params: SessionZoomParams = {
+    ref: "grandchild",
+    source,
+    edges: [
+      { ownerRef: "root-alias", childRef: "child", delegateId: "d1" },
+      { ownerRef: "child", childRef: "grandchild", delegateId: "d2" },
+    ],
+  };
+  workspaceStore.setState({
+    panes: [
+      { id: "zoom", type: "sessionZoom", params, slot: "main" },
+      // An ordinary conversation pane for the held column's ref sits beside
+      // the cascade, exactly like the embedded column's own Overview.
+      { id: "ordinary-child", type: "session", params: { ref: "child" }, slot: "secondary" },
+    ],
+    focusedPaneId: "zoom",
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread("child");
+  });
+  const mounted = render(
+    <ClientProvider client={client}>
+      <MotionProvider>
+        <SessionChrome ref="child" paneId="zoom" discoverActivity />
+        <ActivitySidebar />
+      </MotionProvider>
+    </ClientProvider>,
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
+    const sidebar = within(screen.getByTestId("activity-sidebar"));
+    // The held scope is the parent column "child", whose own ancestry is
+    // proven against the canonical refs.
+    await sidebar.findByRole("button", { name: /delegate owned by child/ });
+    // Its root crumb must carry the cascade's requested alias, so clicking it
+    // pops the whole cascade onto the alias instead of doing nothing.
+    const rootCrumb = await sidebar.findByRole("button", { name: "Root" });
+    await act(async () => fireEvent.click(rootCrumb));
+    const pane = workspaceStore.getState().panes.find((item) => item.id === "zoom");
+    if (!pane) throw new Error("Missing zoom pane after breadcrumb pop");
+    expect((pane.params as SessionZoomParams).ref).toBe("root-alias");
+    expect((pane.params as SessionZoomParams).edges).toEqual([]);
+    expect((pane.params as SessionZoomParams).source).toBe(source);
+  } finally {
+    mounted.unmount();
+  }
+});
