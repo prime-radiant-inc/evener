@@ -23,10 +23,11 @@
 #     3s; 2s when a budget file does not name one at all):
 #     any single test or subtest over the ceiling is flagged regardless of its
 #     package's budget — one runaway test is a defect on its own. It is WARN-ONLY
-#     in every mode, --strict included, until #4601 clears the ceiling's backlog
-#     of pre-existing breaches (ruling, 2026-10-13): the ceiling has never run in
-#     CI, so enforcing it today would red the gate on tests that were always over
-#     it. #144's "done when" is strict enforcement, so the issue stays open.
+#     in every mode, --strict included, until the ceiling is segmented by test
+#     class (#4601) and enforcement follows (ruling, 2026-10-13): the ceiling has
+#     never run in CI, so enforcing the flat 3s today would red the gate on tests
+#     that were always over it. #144's "done when" is strict enforcement, so the
+#     issue stays open.
 #
 # A package the budget file does not mention is a WARN, not silently skipped —
 # see kata b6rv's stop condition. When the budget file is missing or its
@@ -68,8 +69,8 @@
 # --check's exit policy: CI is strict (a $CI-set environment, or --strict);
 # everywhere else is warn-only (--local, or --check with $CI unset). Strict
 # fails on a per-package ratio over 1.5x and on a broken measurement; the
-# per-test ceiling is warn-only in every mode until #4601 clears (see above).
-# Warn-only prints the identical diagnostics, labeled, and always exits 0 except
+# per-test ceiling is warn-only in every mode until it is segmented by test class
+# and enforced (#4601, see above). Warn-only prints the identical diagnostics, labeled, and always exits 0 except
 # for a broken measurement. Bare measurement (no --check) fails only on a broken
 # measurement; its ratio and ceiling verdicts are a report, like `evener dev
 # coverage-floor` with neither --check nor --bless.
@@ -376,10 +377,11 @@ for pkg, name, secs in tests:
 	if secs > ceiling:
 		# The flat per-test ceiling is warn-only in EVERY mode, --strict
 		# included (ruling, 2026-10-13): it has never run in CI, #4601 records
-		# the pre-existing breaches, and enforcing it today would red the gate
-		# for everyone on tests that were always over it. The breaches stay
-		# reported and named until that backlog clears.
-		lines.append(f"WARN  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling (warn-only until #4601 clears)")
+		# the pre-existing breaches, and enforcing the flat 3s today would red
+		# the gate for everyone on tests that were always over it. Segmentation
+		# by test class lands first, then enforcement; the breaches stay
+		# reported and named until then.
+		lines.append(f"WARN  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling (warn-only until #4601 segments it)")
 		raise_worst("warn")
 
 # no_baseline is the ONE place the "tree must stay green" rule is enforced
