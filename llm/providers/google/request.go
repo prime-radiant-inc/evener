@@ -149,13 +149,15 @@ func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 	// The wire enum is uppercase (the Discovery document's
 	// ThinkingConfig.thinkingLevel: MINIMAL | LOW | MEDIUM | HIGH); catalogs
 	// and flags spell it lowercase. Evener's xhigh and max rank above the
-	// enum's ceiling, so a ladderless request clamps down to HIGH rather than
-	// spell a value the API rejects.
+	// enum's ceiling, so they clamp down to HIGH; anything else unrecognized
+	// sends no thinking object at all.
 	wire := strings.ToUpper(level)
 	switch wire {
 	case "MINIMAL", "LOW", "MEDIUM", "HIGH":
-	default:
+	case "XHIGH", "MAX":
 		wire = "HIGH"
+	default:
+		return nil
 	}
 	thinking["thinkingLevel"] = wire
 	return thinking

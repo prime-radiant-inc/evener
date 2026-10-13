@@ -242,16 +242,17 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 	}
 
 	// A cross-protocol alias of a target whose catalog recorded the effort
-	// control inherits real evidence: the alias derives the level shape from
-	// it, exactly as if the row had been named directly (roborev round 7).
+	// control still derives no shape: the evidence belongs to the target's
+	// protocol, and a third-party gateway may record effort for a
+	// budget-shaped model (roborev round 9).
 	r3 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.or-31pro]\nalias_of = \"openrouter/google/gemini-3.1-pro-preview\"\n")
 	target = mustResolve(t, r3, "openrouter/google/gemini-3.1-pro-preview")
 	if target.Provenance["ReasoningControls"] != "snapshot/row" {
 		t.Fatalf("the target's effort control must be catalog-recorded: %v", target.Provenance)
 	}
 	alias = mustResolve(t, r3, "google/or-31pro")
-	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
-		t.Fatalf("alias of a recorded-effort target must derive level: %+v", alias.Caps.ThinkingShape)
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("cross-protocol alias must not derive a shape from inherited controls, got %v", *alias.Caps.ThinkingShape)
 	}
 
 	// An alias whose own config supplies the effort control and a ladder
@@ -276,17 +277,12 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 		t.Fatalf("a transport-overriding alias must not inherit the target's shape, got %v", *alias.Caps.ThinkingShape)
 	}
 
-	// Controls supplied through a config glob on the target count as
-	// recorded evidence: the glob layer is a real configuration layer, not
-	// derivation (roborev round 8).
-	r6 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.openrouter.models.\"google/gemini-3-pro-image\"]\nreasoning_controls = [\"effort\"]\n[providers.google.models.img-glob-alias]\nalias_of = \"openrouter/google/gemini-3-pro-image\"\n")
-	target = mustResolve(t, r6, "openrouter/google/gemini-3-pro-image")
-	if target.Provenance["ReasoningControls"] == "derived" {
-		t.Fatalf("the glob must record the control, not derivation: %v", target.Provenance)
-	}
+	// Controls supplied through a config glob on the alias's own row count as
+	// evidence: the alias's own layer restated them (roborev round 8).
+	r6 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.img-glob-alias]\nalias_of = \"openrouter/google/gemini-3-pro-image\"\nreasoning_controls = [\"effort\"]\n")
 	alias = mustResolve(t, r6, "google/img-glob-alias")
 	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
-		t.Fatalf("alias of a glob-configured target must derive level: %+v", alias.Caps.ThinkingShape)
+		t.Fatalf("alias with its own config controls must derive level: %+v", alias.Caps.ThinkingShape)
 	}
 }
 

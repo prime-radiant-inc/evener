@@ -144,6 +144,14 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 			t.Fatalf("ladderless %q must clamp to HIGH, got %v", effort, got)
 		}
 	}
+	// An unrecognized effort on a ladderless row sends no thinking object:
+	// the row vouches the shape but not the value.
+	for _, effort := range []string{"unknown", "extreme"} {
+		body := protoBuild(t, protoReq(effort), levelRow(nil))
+		if _, has := body["generationConfig"].(map[string]any)["thinkingConfig"]; has {
+			t.Fatalf("unrecognized effort %q must not send thinkingConfig: %v", effort, body["generationConfig"])
+		}
+	}
 
 	// A configured model can vouch the level shape itself, with its own
 	// ladder, without a cataloged Reasoning verdict.
