@@ -1036,6 +1036,73 @@ func TestForwardedDaemonControlAdmitsOnlyDaemonRetire(t *testing.T) {
 	}
 }
 
+// A retire that has passed its hub-side check still stands when an archive
+// decision lands while the retire waits in the daemon: archivedRetireRefusal
+// is a revalidation, not a lock, so nothing re-reads the archive after the
+// retire has forwarded (#3921, #4052). The daemon's answer is gated here, so
+// waiting for entered is proof the retire is past its check. The end-to-end
+// archive overlap cannot pin this — its outcome turns on which of two
+// connections wins the session's alias lock — so it is pinned here instead.
+func TestDaemonRetireCheckedBeforeAnOverlappingArchive(t *testing.T) {
+	runDir := t.TempDir()
+	entry := residentEntryForTest(t, 4204)
+	entered, answer := make(chan struct{}), make(chan struct{})
+	answerRetire := sync.OnceFunc(func() { close(answer) })
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonRetire, func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
+		close(entered)
+		<-answer // the daemon waits on its session namer
+		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: appwire.DaemonLifecycle{Phase: "retiring", Blockers: []appwire.DaemonBlocker{}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
+	writeRendezvous(t, runDir, entry)
+	prober := forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: "idle", Lifecycle: residentLifecycleForTest(), LifecycleFresh: true}
+	})
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), Roster: roster, Archive: archive, DaemonIdleTimeout: time.Hour}
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	// Deferred last so it runs first: a failed check still answers the daemon
+	// before the hub and client close.
+	defer answerRetire()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := client.DaemonList(t.Context(), appwire.DaemonListParams{})
+	if err != nil || len(list.Daemons) != 1 {
+		t.Fatalf("daemon list = %+v, %v", list, err)
+	}
+	retired := make(chan appwire.DaemonRetireResponse, 1)
+	go func() {
+		resp, err := client.DaemonRetire(t.Context(), appwire.DaemonRetireParams{Identity: list.Daemons[0].Identity})
+		if err != nil {
+			t.Errorf("retire: %v", err)
+		}
+		retired <- resp
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retire never reached the daemon")
+	}
+	// The retire is past archivedRetireRefusal and parked in the daemon, so an
+	// archive decision landing now must not cancel it.
+	if err := archive.Set("", "session", entry.SessionID, true, time.Now()); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	answerRetire()
+	if resp := <-retired; !resp.Accepted {
+		t.Fatalf("a retire checked before an overlapping archive = accepted=%t, want it to stand", resp.Accepted)
+	}
+}
+
 // TestDaemonArchivedRowDisablesRetire proves the documented contract that an
 // archived session's resident daemon stays visible with retirement disabled:
 // the rendered row reports CanRetire:false even with a fresh compatible
