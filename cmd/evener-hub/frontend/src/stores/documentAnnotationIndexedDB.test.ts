@@ -14,7 +14,7 @@ import {
   type PreparedAnnotation,
   type ReadTicket,
 } from "@evener/appwire-client";
-import { IDBDatabase } from "fake-indexeddb";
+import { IDBObjectStore as FDBObjectStore, IDBDatabase } from "fake-indexeddb";
 import { expect, it, vi } from "vitest";
 import { REFERENCE, SOURCE } from "../panes/doc/testing/annotationFixtures";
 import {
@@ -28,7 +28,7 @@ import {
   rowsForTests,
 } from "../panes/doc/testing/annotationRepositoryFixtures";
 import { createComposerSourceState } from "../panes/session/composer/sourceState";
-import { browserDraftKey } from "../stores/browserDraftRepository";
+import { type BrowserDraftKey, browserDraftKey, type StoredComposerDraft } from "../stores/browserDraftRepository";
 import { type NamespaceRow, serializeSessionKey } from "../stores/compositionRevision";
 import { createDocumentAnnotationRepository } from "../stores/documentAnnotationIndexedDB";
 import {
@@ -361,9 +361,12 @@ it.each(["draft", "recovery"] as const)(
     if (!recoveryAfter) throw new Error("post-retry recovery row missing");
     expect(ordinaryAfter).toEqual({
       ...ordinaryBefore,
-      ...(backing === "draft" ? { text: expectedText } : {}),
+      ...(backing === "draft" ? { text: expectedText, editedAt: expect.any(Number) } : {}),
       token: advancedToken,
     });
+    // A committed draft-backed append stamps its actual edit time; a
+    // recovery-backed append leaves the ordinary stamp untouched.
+    if (backing === "draft") expectStampedNoEarlierThan(ordinaryAfter, ordinaryBefore);
     if (backing === "draft") {
       expect(recoveryAfter).toEqual(recoveryBefore);
     } else {
@@ -565,7 +568,9 @@ it.each([
         ...ordinaryBefore,
         text: `ordinary /same\n\n${REFERENCE}`,
         token: advancedToken,
+        editedAt: expect.any(Number),
       });
+      expectStampedNoEarlierThan(ordinary, ordinaryBefore);
       // Exactly one append to the selected backing.
       expect(ordinary.text.split(REFERENCE)).toHaveLength(2);
       expect(recovery).toEqual(recoveryBefore);
@@ -653,7 +658,9 @@ it("rejects a genuinely stale ticket from a second adapter without changing dura
     ...ordinaryBefore,
     text: `ordinary /same\n\n${REFERENCE}`,
     token: { ...ordinaryBefore.token, sessionRevision: ordinaryBefore.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(ordinaryAfter, ordinaryBefore);
   expect(await f.outbox.getRecovery("rec-1")).toEqual(recoveryBefore);
   expect((await f.repo.handoff(f.document, "op-1")).state).toBe("already-applied");
   expect(enqueue).not.toHaveBeenCalled();
@@ -715,7 +722,9 @@ it("an unchanged re-read keeps the accepted lease, payload and pending operation
     ...ordinaryBefore,
     text: expectedText,
     token: { ...ordinaryBefore.token, sessionRevision: ordinaryBefore.token.sessionRevision + 2 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(ordinaryAfter, ordinaryBefore);
   expect(ordinaryAfter?.text.split(REFERENCE)).toHaveLength(2);
   expect(ordinaryAfter?.text.split(secondReference)).toHaveLength(2);
   // No recovery mutation from either ordinary append.
@@ -843,7 +852,9 @@ it("fences a pending note before deletion and resumes useful work afterward", as
     ...ordinaryBefore,
     text: `ordinary /same\n\n${bReference}`,
     token: { ...ordinaryBefore.token, sessionRevision: ordinaryBefore.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(ordinaryAfterB, ordinaryBefore);
   const recoveryAfterB = await f.outbox.getRecovery("rec-1");
   expect(recoveryAfterB).toEqual(recoveryBefore);
   const rereadAttachment = recoveryAfterB?.attachments[0];
@@ -921,7 +932,9 @@ it("applied text survives a failed expiry deletion, stale cleanup and reversion"
     ...ordinaryApplied,
     text: `ordinary /same\n\n${REFERENCE}\n\n${bReference}`,
     token: { ...ordinaryApplied.token, sessionRevision: ordinaryApplied.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(ordinaryAfterB, ordinaryApplied);
   const recoveryAfterB = await f.outbox.getRecovery("rec-1");
   expect(recoveryAfterB).toEqual(recoveryApplied);
   const attachmentAfterB = recoveryAfterB?.attachments[0];
@@ -1135,6 +1148,17 @@ function expectResolvedRead(outcome: ReadOutcome): AcceptedReadResult {
 }
 
 type PendingOperationRow = Extract<AnnotationOperationRow, { state: "pending" }>;
+
+// `editedAt` is optional on rows an older build wrote, so even a narrowed row
+// types its stamp as `number | undefined`. The full-row comparison preceding
+// every call site proved both stamps exist; narrow them for the ordering check
+// and fail loudly if one is missing.
+function expectStampedNoEarlierThan(stamped: StoredComposerDraft | null, baseline: StoredComposerDraft | null): void {
+  if (stamped?.editedAt === undefined || baseline?.editedAt === undefined) {
+    throw new Error("edit stamp missing for ordering comparison");
+  }
+  expect(stamped.editedAt).toBeGreaterThanOrEqual(baseline.editedAt);
+}
 
 // The terminal applied receipt is the pending row with its payload binding
 // stripped and the draft revision advanced once, matching the adapter's applied
@@ -1508,7 +1532,9 @@ it.each(["draft", "recovery"] as const)(
         ...ordinary,
         text: `ordinary /same\n\n${REFERENCE}`,
         token: advancedToken,
+        editedAt: expect.any(Number),
       });
+      expectStampedNoEarlierThan(afterOrdinary, ordinary);
       expect(afterRecovery).toEqual(recovery);
     } else {
       // The ordinary row is untouched apart from the session token advance, derived
@@ -1870,7 +1896,9 @@ it.each(["live", "closed-draft", "closed-recovery"] as const)(
         ...freshOrdinaryBefore,
         text: `fresh\n\n${REFERENCE}`,
         token: { ...freshOrdinaryBefore.token, sessionRevision: freshOrdinaryBefore.token.sessionRevision + 1 },
+        editedAt: expect.any(Number),
       });
+      expectStampedNoEarlierThan(freshOrdinaryAfter, freshOrdinaryBefore);
       expect(await f.outbox.getRecovery("rec-1")).toEqual(freshRecoveryBefore);
     }
     source.dispose();
@@ -2100,7 +2128,9 @@ it("retry visits persisted pending work in save order and leaves another session
     ...ordinaryBefore,
     text: expectedText,
     token: { ...ordinaryBefore.token, sessionRevision: ordinaryBefore.token.sessionRevision + 2 },
+    editedAt: expect.any(Number),
   });
+  expectStampedNoEarlierThan(ordinaryAfter, ordinaryBefore);
   expect(recoveryAfter).toEqual(recoveryBefore);
   const recoveryAttachmentAfter = recoveryAfter.attachments[0];
   if (!recoveryAttachmentAfter) throw new Error("post-retry recovery attachment missing");
@@ -3076,6 +3106,90 @@ it("hides the expired epoch from listing and handoff when a fresh adapter's chan
   expect(await f.drafts.load(f.key)).toEqual(ordinary);
 });
 
+// A validation fault after the changed read installed its provisional
+// suppression must release that unconfirmed entry on the way out: the
+// unchanged epoch's annotations stay visible and handoff-eligible, and the
+// later successful unchanged read finds the world exactly as it left it.
+it("releases an unconfirmed suppression when validation faults", async () => {
+  let failValidation = false;
+  const f = await fixture("validation-fault-suppression-release");
+  // A storage fault scoped to the validation transaction's exact store set: the
+  // first read inside it rejects the real transaction while every other real
+  // transaction runs its real code. One-shot: later transactions fault never.
+  const acceptScope = [
+    ANNOTATION_NAMESPACES_STORE,
+    ANNOTATION_HEADS_STORE,
+    ANNOTATION_EVIDENCE_STORE,
+    ANNOTATION_OPERATIONS_STORE,
+    ANNOTATION_EXPIRY_STORE,
+  ]
+    .sort()
+    .join("|");
+  const realGet = FDBObjectStore.prototype.get;
+  const getSpy = vi.spyOn(FDBObjectStore.prototype, "get").mockImplementation(function (
+    this: IDBObjectStore,
+    query: IDBValidKey | IDBKeyRange,
+  ) {
+    const scope = [...this.transaction.objectStoreNames].sort().join("|");
+    if (failValidation && this.transaction.mode === "readwrite" && scope === acceptScope) {
+      failValidation = false;
+      throw new Error("annotation validation storage fault");
+    }
+    return realGet.call(this, query);
+  });
+  cleanupAfterTest(() => getSpy.mockRestore());
+  const accepted = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-A"));
+  expect(accepted.state).toBe("accepted");
+  if (accepted.state !== "accepted") throw new Error("baseline read not accepted");
+
+  // The changed read installs its provisional suppression, then validation
+  // faults: the rejection must not leave the unconfirmed entry behind.
+  failValidation = true;
+  const faulted = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-B")).then(
+    (result) => ({ ok: true as const, result }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  expect(faulted.ok).toBe(false);
+  if (faulted.ok) throw new Error("changed read resolved despite the validation fault");
+
+  // The unchanged epoch's annotation is still visible and handoff-eligible.
+  expect((await f.repo.listAnnotations(f.document)).map((view) => view.operation.operationId)).toContain("op-1");
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+
+  // The successful unchanged read afterwards accepts cleanly.
+  failValidation = false;
+  const unchanged = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-A"));
+  expect(unchanged.state).toBe("accepted");
+  expect((await f.repo.listAnnotations(f.document)).map((view) => view.operation.operationId)).toContain("op-1");
+});
+
+// An applied annotation's ordinary append changes the draft's text, so it must
+// stamp its actual edit time: the resume carry orders drafts by that stamp, and
+// an append keeping the pre-annotation stamp would let an older-edited
+// destination drop the new reference on resume.
+it("an applied annotation's append stamps its edit time so a later carry keeps the annotated draft", async () => {
+  const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+  const f = await fixture("append-stamp-carry");
+  const destination: BrowserDraftKey = { namespace: { ...f.key.namespace }, sessionRef: "carry-dst" };
+  now.mockReturnValue(2_000);
+  expect((await f.drafts.seedDraft(destination, { text: "older destination work", skillNames: [] })).state).toBe(
+    "committed",
+  );
+  now.mockReturnValue(3_000);
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  const annotated = await f.drafts.load(f.key);
+  if (!annotated) throw new Error("annotated source draft missing");
+  expect(annotated.text).toContain(REFERENCE);
+  expect(annotated.editedAt).toBe(3_000);
+  // The carry orders by the stamp: the freshly annotated source is the newer
+  // edit, so the destination adopts it instead of dropping the reference.
+  await f.drafts.carryDraft(f.key, destination);
+  const carried = await f.drafts.load(destination);
+  if (!carried) throw new Error("carried destination draft missing");
+  expect(carried.text).toContain(REFERENCE);
+  now.mockRestore();
+});
+
 // A failed FIRST save must stay retryable through a genuine identical reread:
 // the immutable operation captured from the first accepted lease is reused
 // verbatim, and an exactly identical acceptance preserves the accepted head
@@ -3202,7 +3316,9 @@ it.each(["same-adapter", "second-adapter"] as const)(
       ...ordinaryBefore,
       text: expectedText,
       token: { ...ordinaryBefore.token, sessionRevision: ordinaryBefore.token.sessionRevision + 1 },
+      editedAt: expect.any(Number),
     });
+    expectStampedNoEarlierThan(ordinaryAfter, ordinaryBefore);
     expect(f.source.getSnapshot()).toEqual({ ...sourceBefore, text: expectedText });
     const recoveryAfter = await f.outbox.getRecovery("rec-1");
     expect(recoveryAfter).toEqual(recoveryBefore);
