@@ -37,6 +37,16 @@ export function paletteRowsOfKind(kind: string): HTMLElement[] {
   return screen.queryAllByRole("option").filter((option) => option.getAttribute("data-kind") === kind);
 }
 
+// Grouped search rows: a matching subagent nested under its group's anchor,
+// and an anchor greyed because only its subagents matched.
+export function paletteNestedRows(): HTMLElement[] {
+  return screen.queryAllByRole("option").filter((option) => option.hasAttribute("data-nested"));
+}
+
+export function paletteIndirectRows(): HTMLElement[] {
+  return screen.queryAllByRole("option").filter((option) => option.hasAttribute("data-indirect"));
+}
+
 export function paletteEmptyReason(): string | null {
   return document.querySelector("[data-reason]")?.getAttribute("data-reason") ?? null;
 }

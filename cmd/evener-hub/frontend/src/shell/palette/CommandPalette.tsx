@@ -8,7 +8,7 @@
 // imperative innerHTML.
 
 import type { CommandDescriptor, NavigationSessionSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
-import { errorText, isHubLaunchError, sessionPluginNames } from "@evener/appwire-client";
+import { errorText, groupSearchResults, isHubLaunchError, sessionPluginNames } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
@@ -57,6 +57,8 @@ const CLASS = {
   sectionHeader: requireClass(styles.sectionHeader, "commandpalette.module.css", "sectionHeader"),
   row: requireClass(styles.row, "commandpalette.module.css", "row"),
   rowUnavailable: requireClass(styles.rowUnavailable, "commandpalette.module.css", "rowUnavailable"),
+  rowNested: requireClass(styles.rowNested, "commandpalette.module.css", "rowNested"),
+  rowIndirect: requireClass(styles.rowIndirect, "commandpalette.module.css", "rowIndirect"),
   unavailable: requireClass(styles.unavailable, "commandpalette.module.css", "unavailable"),
   glyph: requireClass(styles.glyph, "commandpalette.module.css", "glyph"),
   title: requireClass(styles.title, "commandpalette.module.css", "title"),
@@ -138,7 +140,10 @@ const HELP_ROWS: HelpRow[] = [
 // A single navigable row in the results list.
 type PaletteItem =
   | { kind: "live"; result: SearchResult }
-  | { kind: "past"; result: SearchResult }
+  // nested marks a matching subagent rendering indented under its group's
+  // anchor; indirect marks a synthesized anchor whose own session has no row
+  // in the response, greyed but still a normal activatable row.
+  | { kind: "past"; result: SearchResult; nested?: boolean; indirect?: boolean }
   | { kind: "insession"; match: InSessionMatch }
   | { kind: "command"; command: ScopedCommand }
   | { kind: "arg"; item: CommandArgsEnumItem }
@@ -765,17 +770,31 @@ function buildView(args: {
       for (const node of needsYouNodes) push({ kind: "needsYou", node });
       return { entries, items };
     }
-    const live = searchResp?.live ?? [];
-    const past = searchResp?.past ?? [];
+    // Subagent hits group under their top-level session (shared client
+    // rule): a matched live anchor nests its family inline, an absent anchor
+    // arrives greyed, and a topLevel-less (older-hub) response stays flat.
+    const grouped = groupSearchResults(searchResp?.live ?? [], searchResp?.past ?? []);
     const model = focusedModel(ctx.sessionRef);
     const inSession = model && query.trim() ? findInSessionMatches(model, query.trim()) : [];
-    if (live.length) {
+    if (grouped.live.length) {
       entries.push({ type: "header", section: "live", label: "Live" });
-      for (const result of live) push({ kind: "live", result });
+      for (const row of grouped.live) {
+        push(row.nested ? { kind: "past", result: row.result, nested: true } : { kind: "live", result: row.result });
+      }
     }
-    if (past.length) {
-      entries.push({ type: "header", section: "past", label: `Past · ${past.length}` });
-      for (const result of past) push({ kind: "past", result });
+    if (grouped.past.length) {
+      // The count answers "how many sessions matched" — synthesized anchors
+      // are context for their subagents' matches, not matches themselves.
+      const matches = grouped.past.filter((row) => !row.indirect).length;
+      entries.push({ type: "header", section: "past", label: `Past · ${matches}` });
+      for (const row of grouped.past) {
+        push({
+          kind: "past",
+          result: row.result,
+          nested: row.nested || undefined,
+          indirect: row.indirect || undefined,
+        });
+      }
     }
     if (inSession.length) {
       entries.push({ type: "header", section: "in-session", label: `In session · ${inSession.length}` });
@@ -938,13 +957,23 @@ function Row({
   const unavailable =
     (item.kind === "command" && item.command.unavailableReason !== undefined) ||
     (item.kind === "handoff" && !item.hasFocusedSession);
+  // Grouped search rows: a nested subagent indents into its group; an
+  // indirect anchor recedes because its own session did not match. Both stay
+  // ordinary activatable rows.
+  const nested = item.kind === "past" && item.nested === true;
+  const indirect = item.kind === "past" && item.indirect === true;
+  let className = CLASS.row;
+  if (nested) className += ` ${CLASS.rowNested}`;
+  if (indirect) className += ` ${CLASS.rowIndirect}`;
   return (
     <button
       type="button"
       id={`palette-row-${index}`}
-      className={unavailable ? `${CLASS.row} ${CLASS.rowUnavailable}` : CLASS.row}
+      className={unavailable ? `${CLASS.row} ${CLASS.rowUnavailable}` : className}
       role="option"
       data-kind={item.kind}
+      data-nested={nested || undefined}
+      data-indirect={indirect || undefined}
       aria-selected={active}
       aria-disabled={unavailable || undefined}
       onClick={() => onActivate(index)}
@@ -1020,6 +1049,23 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
           <Highlighted parts={item.match.snippet} />
         </span>
         <span className={CLASS.age}>turn {item.match.turn}</span>
+      </>
+    );
+  }
+  if (item.kind === "past" && item.nested) {
+    // A matching subagent: indented under its group's anchor, labelled so the
+    // family reads at a glance. Its state dot would always be the neutral
+    // ended one, so the nesting glyph speaks instead.
+    return (
+      <>
+        <span className={CLASS.glyph} aria-hidden="true">
+          ↳
+        </span>
+        <span className={CLASS.title}>
+          <Highlighted parts={highlightParts(item.result.title, query)} />
+        </span>
+        <span className={CLASS.hint}>subagent</span>
+        {item.result.age && <span className={CLASS.age}>{item.result.age}</span>}
       </>
     );
   }
