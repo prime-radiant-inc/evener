@@ -25,6 +25,12 @@ const transcriptRepairBudget = 3
 // after cycle. A variable only so tests can shrink it.
 var transcriptRepairLaneExhaustedInterval = 10 * time.Minute
 
+// transcriptIndexRepairNow is the registry's clock, so pacing tests advance
+// it explicitly instead of sleeping past a real interval: a scheduling pause
+// must never decide whether an ask is inside or past one. Defaults to the
+// real clock; a variable for tests.
+var transcriptIndexRepairNow = time.Now
+
 // transcriptIndexRepairLog is the repair registry's advisory log line, in the
 // established [hub] style, naming the session's transcript. A package
 // variable so tests can capture the lines.
@@ -244,7 +250,7 @@ func (r *transcriptIndexRepairRegistry) askFromRefresher(path string) {
 	// re-arms it now rather than against another state of the file.
 	// exhaustedLocked holds the budget and stamp checks itself, before its
 	// stat, so nothing repeats here.
-	if e != nil && time.Since(e.lastLaneRearm) < transcriptRepairLaneExhaustedInterval && r.exhaustedLocked(path, e) {
+	if e != nil && transcriptIndexRepairNow().Sub(e.lastLaneRearm) < transcriptRepairLaneExhaustedInterval && r.exhaustedLocked(path, e) {
 		r.mu.Unlock()
 		return
 	}
@@ -255,7 +261,7 @@ func (r *transcriptIndexRepairRegistry) askFromRefresher(path string) {
 	e.inFlight = true
 	r.laneBusy = true
 	if e.failures >= transcriptRepairBudget && e.stamp != nil {
-		e.lastLaneRearm = time.Now()
+		e.lastLaneRearm = transcriptIndexRepairNow()
 	}
 	r.mu.Unlock()
 	transcriptIndexRepairLog("transcript index repair started (%s)", base)

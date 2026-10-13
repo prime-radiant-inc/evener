@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -188,6 +189,10 @@ func requireTranscriptIndexRebuilding(t testing.TB, err error) {
 	}
 }
 
+// digitsAtEnd extracts the trailing integer an answer's message carries, so
+// tests can pin the number without pinning the sentence around it.
+var digitsAtEnd = regexp.MustCompile(`(\d+)\s*$`)
+
 // requireTranscriptHistoryFailed pins the history-failed answer, including
 // the ordinal its message names.
 // requireTranscriptHistoryFailedWithoutIdentity asserts the history-failed
@@ -213,14 +218,13 @@ func requireTranscriptHistoryFailedWithoutIdentity(t testing.TB, err error, ordi
 	if info != appwire.ErrorTranscriptHistoryFailed {
 		t.Fatalf("history-failed data = %#v, want transcriptHistoryFailed", wire.Data)
 	}
-	// The ordinal is the machine value the message carries; match it without
-	// pinning the wording around it (Copy Is Not a Test Oracle).
-	i := strings.LastIndex(wire.Message, "entry ")
-	if i < 0 {
-		t.Fatalf("history-failed message = %q, want one naming an entry ordinal", wire.Message)
+	// The trailing number is the machine value the answer carries; match it
+	// without pinning any of the words around it (Copy Is Not a Test Oracle).
+	tail := digitsAtEnd.FindStringSubmatch(wire.Message)
+	if tail == nil {
+		t.Fatalf("history-failed message = %q, want one ending in the refusal's entry ordinal", wire.Message)
 	}
-	got, err := strconv.ParseUint(wire.Message[i+len("entry "):], 10, 64)
-	if err != nil || got != ordinal {
+	if got, err := strconv.ParseUint(tail[1], 10, 64); err != nil || got != ordinal {
 		t.Fatalf("history-failed message = %q, want the refusal's entry %d named", wire.Message, ordinal)
 	}
 }
@@ -285,12 +289,18 @@ func TestAStaleSidecarAnswersRebuildingAndRepairsInBackground(t *testing.T) {
 		t.Fatalf("repairs = %d, want 1", got)
 	}
 	logs := logged()
-	want := []string{
-		fmt.Sprintf("transcript index repair started (%s)", filepath.Base(path)),
-		fmt.Sprintf("transcript index repair finished (%s)", filepath.Base(path)),
+	// Exactly two lines for this repair, each naming this transcript — the
+	// count is the behavior; the name is data. The calls counter above
+	// already pins that exactly one repair ran (Copy Is Not a Test Oracle:
+	// no assertion pins the sentences).
+	base := filepath.Base(path)
+	if len(logs) != 2 {
+		t.Fatalf("repair log = %q, want exactly two lines for one repair", logs)
 	}
-	if len(logs) != 2 || logs[0] != want[0] || logs[1] != want[1] {
-		t.Fatalf("repair log = %q, want %q", logs, want)
+	for _, line := range logs {
+		if !strings.Contains(line, base) {
+			t.Fatalf("repair log = %q, want every line naming %s", logs, base)
+		}
 	}
 
 	// The retry after the repair returns correct data with today's shape.
@@ -443,8 +453,53 @@ func TestTheRepairRebuildsRatherThanCatchingUp(t *testing.T) {
 		t.Fatalf("read after the repair: %v", err)
 	}
 	items := flattenTestItems(response.Thread.Turns)
-	if len(items) != 6 || items[0].ID != "item_unreadable_0" || items[0].Description != "Unreadable transcript entry" {
-		t.Fatalf("post-repair items = %+v, want the quarantine leading five intact items", items)
+	// The quarantine's structure, not its copy: the stub item — identified
+	// by its machine ID, the API's own contract value — leads, and the five
+	// real entries follow with their seeded payloads intact.
+	if len(items) != 6 || items[0].ID != "item_unreadable_0" {
+		t.Fatalf("post-repair items = %+v, want the quarantine stub leading five intact items", items)
+	}
+	for i, want := range []string{"word 1", "word 2", "word 3", "word 4", "word 5"} {
+		got := items[i+1]
+		if got.ID == "item_unreadable_"+strconv.Itoa(i) || !strings.HasSuffix(got.Text, want) {
+			t.Fatalf("post-repair item %d = %+v, want the real entry %q", i+1, got, want)
+		}
+	}
+}
+
+// TestAVanishedBuildAnswersRebuildingAndHeals pins the read side of a
+// sidecar whose build files disappeared out from under the CURRENT pointer
+// that still names them: the read refuses as rebuild-required — a missing
+// build is rebuild-fixable, not an access problem — the hub arms exactly one
+// repair, and the rebuilt sidecar reads normally.
+func TestAVanishedBuildAnswersRebuildingAndHeals(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, calls := installRepairSeam(t)
+	cfg, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	dir := transcriptindex.DirFor(path)
+	name, err := os.ReadFile(filepath.Join(dir, "CURRENT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, strings.TrimSpace(string(name)))); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = readStaleSession(t, cfg, entry)
+	requireTranscriptIndexRebuilding(t, err)
+	feed(repairTranscriptIndex)
+	<-completions
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("repairs = %d, want exactly one for the vanished build", got)
+	}
+	response, err := readStaleSession(t, cfg, entry)
+	if err != nil {
+		t.Fatalf("read after the repair: %v", err)
+	}
+	if items := flattenTestItems(response.Thread.Turns); len(items) != 1 || items[0].Text != "question" {
+		t.Fatalf("post-repair items = %+v, want the transcript's one", items)
 	}
 }
 
@@ -766,6 +821,7 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 	wireRepairsForTest(t)
 	feed, completions, calls := installRepairSeam(t)
 	shrinkTranscriptRepairLaneIntervalForTest(t, 50*time.Millisecond)
+	advance := freezeTranscriptRepairLaneClockForTest(t)
 	_, _, path := seedIndexedPastSession(t,
 		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
 	)
@@ -778,10 +834,11 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 		t.Fatalf("repairs = %d, want the first exhausted re-arm taken", got)
 	}
 
-	// Within the interval, the lane skips the path without recording
-	// anything. askFromRefresher decides take-or-skip synchronously under
-	// the registry's mutex, so the entry's in-flight flag is settled the
-	// moment the ask returns — no sleep races a late take.
+	// Within the interval — the frozen clock guarantees it against any
+	// scheduling pause — the lane skips the path without recording anything.
+	// askFromRefresher decides take-or-skip synchronously under the
+	// registry's mutex, so the entry's in-flight flag is settled the moment
+	// the ask returns.
 	transcriptIndexRepairs.askFromRefresher(path)
 	if transcriptIndexRepairs.inFlight(path) {
 		t.Fatal("the lane took an exhausted path within the interval, want a skip")
@@ -790,9 +847,9 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 		t.Fatalf("repairs = %d, want the lane to skip an exhausted path within the interval", got)
 	}
 
-	// Once the interval has passed since the re-arm, the lane takes it
-	// again.
-	time.Sleep(60 * time.Millisecond)
+	// Once the interval has passed since the re-arm — advanced explicitly,
+	// never slept past — the lane takes it again.
+	advance(60 * time.Millisecond)
 	transcriptIndexRepairs.askFromRefresher(path)
 	feed(repairTranscriptIndex)
 	<-completions
@@ -809,10 +866,11 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 func TestTheLanePacesAnExhaustedPathOnlyWhileItsStampStands(t *testing.T) {
 	wireRepairsForTest(t)
 	feed, completions, calls := installRepairSeam(t)
-	// The interval is wide enough that the two adjacent asks below cannot
-	// straddle its expiry: the skip proves the interval stands when the
-	// stamp changes, so the take that follows can only be the stamp's.
+	// The frozen clock makes the adjacent asks below exactly within the
+	// interval: the skip proves the interval stands when the stamp changes,
+	// so the take that follows can only be the stamp's.
 	shrinkTranscriptRepairLaneIntervalForTest(t, 500*time.Millisecond)
+	_ = freezeTranscriptRepairLaneClockForTest(t)
 	_, _, path := seedIndexedPastSession(t,
 		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
 	)
@@ -1143,4 +1201,16 @@ func shrinkTranscriptRepairLaneIntervalForTest(t *testing.T, d time.Duration) {
 	old := transcriptRepairLaneExhaustedInterval
 	transcriptRepairLaneExhaustedInterval = d
 	t.Cleanup(func() { transcriptRepairLaneExhaustedInterval = old })
+}
+
+// freezeTranscriptRepairLaneClockForTest parks the registry's clock and
+// returns the only way it advances: the test's explicit calls. Pacing
+// boundaries then cannot be crossed by a scheduling pause.
+func freezeTranscriptRepairLaneClockForTest(t *testing.T) func(time.Duration) {
+	t.Helper()
+	now := time.Now()
+	old := transcriptIndexRepairNow
+	transcriptIndexRepairNow = func() time.Time { return now }
+	t.Cleanup(func() { transcriptIndexRepairNow = old })
+	return func(advance time.Duration) { now = now.Add(advance) }
 }
