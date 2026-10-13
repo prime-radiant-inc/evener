@@ -5788,19 +5788,26 @@ async function refreshTrackedThread(
   let attempt: number | undefined;
   const residency = transcriptResidency();
   residency.connection(readyEpoch, wiredClient?.state === "ready");
-  await residency.scheduleHydration(ref, intent, async (signal) => {
-    attempt = await refreshTrackedThreadNow(
-      client,
-      epoch,
-      ref,
-      targetedResync,
-      reportFailure,
-      beforePublish,
-      reopenOnlyClientMutationId,
-      intent,
-      signal,
-    );
-  });
+  await residency.scheduleHydration(
+    ref,
+    intent,
+    async (signal) => {
+      attempt = await refreshTrackedThreadNow(
+        client,
+        epoch,
+        ref,
+        targetedResync,
+        reportFailure,
+        beforePublish,
+        reopenOnlyClientMutationId,
+        intent,
+        signal,
+      );
+    },
+    // Recovery needs a fresh read, even when its pending publication claim was
+    // retired before the scheduler's issued predecessor has settled.
+    targetedResync ? "replace" : "join",
+  );
   return attempt;
 }
 
