@@ -565,6 +565,23 @@ func TestRetirementDelegateReclaimOwnsExactRuntime(t *testing.T) {
 	}
 }
 
+// retirementColdClaimTripwire bounds each blocking wait in
+// retirementPauseColdClaim. The reach wait it bounds is NOT the rendezvous the
+// old inline comment claimed: it spans the claim's whole path to the target
+// member's metadata read — the controller lock, setRetirementFence and the tree
+// owner scan, the transcript folds and cold evidence of every member ordered
+// before the target, and the read itself — and the claim can instead return
+// before it ever reads. That early return is a state this barrier must name, not
+// time out: TryClaim refuses early while a lease is held or the controller is
+// not resident (retirement.go:529,534), setRetirementFence refuses on a leftover
+// fence, and retirementEvidence returns early when a cold member's evidence read
+// errors (delegate_tree_retirement.go:97). At rest the read is reached in well
+// under a millisecond, so this is a hang guard, never a speed assertion, and 30s
+// matches this package's standing whole-operation tripwire for in-process work
+// (stallHandshakeTimeout, retirementCreateBarrierTripwire, stalledRefreshTripwire,
+// idleReleaseFirstGenerationTripwire).
+const retirementColdClaimTripwire = 30 * time.Second
+
 // A FIFO pauses the real cold metadata read after outer admission has closed.
 // No controller phase, scheduler or claim is forged by this barrier.
 func retirementPauseColdClaim(t *testing.T, c *RetirementController, path string) func() {
@@ -579,13 +596,16 @@ func retirementPauseColdClaim(t *testing.T, c *RetirementController, path string
 	if err := os.Rename(path, path+".original"); err != nil {
 		t.Fatal(err)
 	}
+	var restoreOnce sync.Once
 	restore := func() {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			t.Error(err)
-		}
-		if err := os.Rename(path+".original", path); err != nil {
-			t.Error(err)
-		}
+		restoreOnce.Do(func() {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				t.Error(err)
+			}
+			if err := os.Rename(path+".original", path); err != nil {
+				t.Error(err)
+			}
+		})
 	}
 	if output, err := exec.Command("mkfifo", path).CombinedOutput(); err != nil {
 		restore()
@@ -593,32 +613,59 @@ func retirementPauseColdClaim(t *testing.T, c *RetirementController, path string
 	}
 	type result struct {
 		claim *RetirementClaim
+		state RetirementSnapshot
 		err   error
 	}
 	done := make(chan result, 1)
-	go func() { claim, _, err := c.TryClaim(true); done <- result{claim, err} }()
+	go func() { claim, state, err := c.TryClaim(true); done <- result{claim, state, err} }()
 	type opened struct {
 		f   *os.File
 		err error
 	}
 	writer := make(chan opened, 1)
 	go func() { f, err := os.OpenFile(path, os.O_WRONLY, 0600); writer <- opened{f, err} }()
-	var out opened
-	// TRIPWIRE: FIFO open pairs with the actual read; timeout only bounds a
-	// broken entry path, never decides which contender won the race.
-	select {
-	case out = <-writer:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
-		guard, _ := os.OpenFile(path, os.O_RDWR, 0600)
-		out = <-writer
-		if out.f != nil {
-			out.f.Close()
+	// abandon releases the writer goroutine (so a failing wait leaks neither it
+	// nor the FIFO) and puts the real metadata file back.
+	abandon := func() {
+		guard, err := os.OpenFile(path, os.O_RDWR, 0600)
+		if err != nil {
+			// The FIFO is still linked here, so this is not a missing-file race:
+			// report it rather than leaving the writer goroutine parked.
+			t.Error(err)
+			restore()
+			return
 		}
-		if guard != nil {
-			guard.Close()
+		select {
+		case w := <-writer:
+			if w.f != nil {
+				w.f.Close()
+			}
+		case <-time.After(retirementColdClaimTripwire):
+			t.Error("cold claim writer never paired with the guard reader")
+		}
+		if err := guard.Close(); err != nil {
+			t.Error(err)
 		}
 		restore()
-		t.Fatal("cold claim did not reach metadata read")
+	}
+	var out opened
+	// Each arm names its state: the FIFO pairing means the claim reached the
+	// metadata read; the claim's own return means it never will; the tripwire
+	// means it has done neither.
+	select {
+	case out = <-writer:
+	case returned := <-done:
+		abandon()
+		if returned.claim != nil {
+			// The claim can only reach the read by opening the FIFO, so an
+			// admitted claim here means the read was skipped; abort it rather
+			// than leave the controller preparing.
+			c.Abort(returned.claim, "")
+		}
+		t.Fatalf("cold claim returned before reaching its metadata read (claim=%v err=%v phase=%q blockers=%+v): the fixture's FIFO never paired, so the claim did not read the cold member's metadata", returned.claim != nil, returned.err, returned.state.Phase, returned.state.Blockers)
+	case <-time.After(retirementColdClaimTripwire):
+		abandon()
+		t.Fatalf("cold claim did not reach metadata read within %s and has not returned: it is still inside its pre-read path", retirementColdClaimTripwire)
 	}
 	if out.err != nil {
 		restore()
@@ -630,6 +677,12 @@ func retirementPauseColdClaim(t *testing.T, c *RetirementController, path string
 			return
 		}
 		finished = true
+		// Every path that reaches this cleanup has a paired writer: the failing
+		// wait arms above Fatal before t.Cleanup(finish) is registered, and the
+		// callers only reach finish after the writer arm. The guard is defensive.
+		if out.f == nil {
+			return
+		}
 		if _, err := out.f.Write(data); err != nil {
 			t.Error(err)
 		}
@@ -645,7 +698,7 @@ func retirementPauseColdClaim(t *testing.T, c *RetirementController, path string
 			if got.err != nil && !errors.Is(got.err, errDelegateTargetBusy) {
 				t.Error(got.err)
 			}
-		case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		case <-time.After(retirementColdClaimTripwire):
 			t.Error("cold claim did not finish")
 		}
 		restore()

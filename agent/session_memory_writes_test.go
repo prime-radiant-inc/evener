@@ -135,16 +135,29 @@ func TestMemoryWriteStampsThePage(t *testing.T) {
 	}
 }
 
+// readMemoryPage reads back the page a tool wrote at name in scope and parses
+// it the way the index does.
+func readMemoryPage(t *testing.T, scope, name string) memoryPage {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(scope, name))
+	if err != nil {
+		t.Fatalf("%s not persisted: %v", name, err)
+	}
+	return parseMemoryPage(name, raw, time.Time{})
+}
+
+// A page with no description is saved anyway and its index entry has none;
+// the note's exact wording is pinned by TestMemoryWriteNotesGoldens.
 func TestMemoryWriteNotesMissingDescription(t *testing.T) {
 	t.Parallel()
-	s, _ := memoryWritesSession(t)
+	s, scope := memoryWritesSession(t)
 	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "# A heading\n"})
-	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingDescriptionNote) {
+	if res.IsError || readMemoryPage(t, scope, "a.md").HasDescription {
 		t.Fatalf("%+v", res)
 	}
 	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "b.md", "content": "---\ndescription: has one\n---\n"})
-	if strings.Contains(res.Output, "no description") {
-		t.Fatalf("described page noted: %q", res.Output)
+	if res.IsError || !readMemoryPage(t, scope, "b.md").HasDescription {
+		t.Fatalf("%+v", res)
 	}
 }
 
@@ -160,7 +173,7 @@ func TestMemoryWriteNotesUnreadableFrontmatter(t *testing.T) {
 		"indented.md":  "description: Fix: use cents\n  continued: here\n",
 	} {
 		res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": name, "content": "---\n" + block + "---\n# Cents\n"})
-		if res.IsError || !strings.HasSuffix(res.Output, memoryUnreadableFrontmatterNote) {
+		if res.IsError || !readMemoryPage(t, scope, name).Unreadable {
 			t.Fatalf("%s: %+v", name, res)
 		}
 		if raw, _ := os.ReadFile(filepath.Join(scope, name)); string(raw) != "---\n"+block+memoryOwnStamps(s)+"---\n# Cents\n" {
@@ -279,7 +292,7 @@ func TestMemoryEditStampsInItsOwnWrite(t *testing.T) {
 		t.Fatalf("got %q\nwant %q", raw, want)
 	}
 	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "personal", "file_path": "a.md", "old_string": "description: new fact\n", "new_string": ""})
-	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingDescriptionNote) {
+	if res.IsError || readMemoryPage(t, scope, "a.md").HasDescription {
 		t.Fatalf("%+v", res)
 	}
 }
@@ -382,18 +395,42 @@ func TestMemoryWriteNotesMissingWhen(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
 	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "---\ndescription: has one\n---\n"})
-	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingWhenNote) {
-		t.Fatalf("%+v", res)
+	if page := readMemoryPage(t, scope, "a.md"); res.IsError || !page.HasDescription || page.When != "" {
+		t.Fatalf("%+v %+v", res, page)
 	}
 	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "b.md", "content": "---\ndescription: has one\nwhen: Writing a commit message\n---\n"})
-	if res.IsError || strings.Contains(res.Output, "\n\n") {
-		t.Fatalf("page with when noted: %+v", res)
-	}
-	if raw, err := os.ReadFile(filepath.Join(scope, "b.md")); err != nil || !strings.Contains(string(raw), "when: Writing a commit message\n") {
-		t.Fatalf("b.md not persisted with its when: %q, %v", raw, err)
+	if page := readMemoryPage(t, scope, "b.md"); res.IsError || page.When != "Writing a commit message" {
+		t.Fatalf("%+v %+v", res, page)
 	}
 	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "c.md", "content": "# A heading\n"})
-	if res.IsError || !strings.HasSuffix(res.Output, memoryMissingDescriptionNote) || strings.Contains(res.Output, memoryMissingWhenNote) {
-		t.Fatalf("undescribed page should get only the description note: %q", res.Output)
+	if page := readMemoryPage(t, scope, "c.md"); res.IsError || page.HasDescription {
+		t.Fatalf("%+v %+v", res, page)
+	}
+}
+
+// What a memory write tells the model about its page is prompt-facing text,
+// pinned whole per case in testdata/memorywritenotes; regenerate after an
+// intended wording change with
+//
+//	go test ./agent -run 'TestMemoryWriteNotesGoldens$' -count=1 -update-prompt
+func TestMemoryWriteNotesGoldens(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, content string }{
+		{"complete", "---\ndescription: has one\nwhen: Writing a commit message\n---\n"},
+		{"missing-description", "# A heading\n"},
+		{"missing-when", "---\ndescription: has one\n---\n"},
+		{"unreadable-frontmatter", "---\ndescription: Fix: use cents\ntags: [money\n---\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, _ := memoryWritesSession(t)
+			res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "page.md", "content": tc.content})
+			if res.IsError {
+				t.Fatalf("%+v", res)
+			}
+			agenttest.CheckGolden(t, filepath.Join("testdata", "memorywritenotes", tc.name+".md"), []byte(res.Output+"\n"), *updatePromptGoldens,
+				"Regenerate with `go test ./agent -run 'TestMemoryWriteNotesGoldens$' -count=1 -update-prompt` and read the diff.")
+		})
 	}
 }

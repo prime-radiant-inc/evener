@@ -204,8 +204,15 @@ type stubProbeSystem struct {
 	env            map[string]string
 }
 
-func (stubProbeSystem) goos() string                                 { return "darwin" }
-func (s stubProbeSystem) getenv(name string) string                  { return s.env[name] }
+func (stubProbeSystem) goos() string                { return "darwin" }
+func (s stubProbeSystem) getenv(name string) string { return s.env[name] }
+func (s stubProbeSystem) environ() []string {
+	out := make([]string, 0, len(s.env))
+	for name, value := range s.env {
+		out = append(out, name+"="+value)
+	}
+	return out
+}
 func (stubProbeSystem) userHomeDir() (string, error)                 { return "/Users/tester", nil }
 func (stubProbeSystem) lookPath(string) (string, error)              { return "", errors.New("not found") }
 func (stubProbeSystem) nonDirectoryFile(string) bool                 { return false }
