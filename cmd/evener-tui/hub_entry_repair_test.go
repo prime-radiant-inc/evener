@@ -1166,3 +1166,105 @@ func TestASpawnLandingEntryMayRetryWhileTheFormStands(t *testing.T) {
 		t.Fatal("the entered spawn's retry stayed armed")
 	}
 }
+
+// A picked read supersedes an in-flight cycle: the obsolete pending target
+// retires at issuance, so a stale cycling response reconciles the displayed
+// session's subscription instead of deferring forever on it, and the next
+// press steps from the session actually displayed.
+func TestAPickedReadRetiresTheSupersededCyclingTarget(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m, _, cleanup := newLiveCycleModel(t, "local:01C", liveCycleTree())
+	defer cleanup()
+	refB := mustParseRef(t, "local:01B")
+
+	// A cycling press is in flight for its adjacent target when the user
+	// palette-picks another session.
+	afterPress, _ := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	pressed := afterPress.(hubModel)
+	if pressed.liveNavPendingRef == "" {
+		t.Fatal("setup: the cycling press set no pending target")
+	}
+	cycleSeq := pressed.liveNavSeq
+	cycleTarget := pressed.liveNavPendingRef
+
+	// The pick supersedes the cycle: its pending target retires with the
+	// issuance.
+	picked := pressed
+	picked.issuePickedSessionRead(refB)
+	if picked.liveNavPendingRef != "" {
+		t.Fatalf("the pick left the superseded cycling target %q as the stepping base", picked.liveNavPendingRef)
+	}
+
+	// The picked read answers rebuilding while the stale cycling response
+	// is still in flight: the stale response must reconcile the displayed
+	// session's subscription — not defer on the retired target forever.
+	afterPick, _ := picked.Update(hubSessionMsg{ref: refB.String(), err: rebuildingEntryError(t)})
+	armed := afterPick.(hubModel)
+	staleCycle := hubSessionMsg{
+		ref:        cycleTarget,
+		detail:     hubSessionDetail{Ref: cycleTarget, SessionID: "sess_cycle", State: appwire.ThreadStatusIdle},
+		liveNavSeq: cycleSeq,
+	}
+	afterStale, reconcile := armed.Update(staleCycle)
+	stale := afterStale.(hubModel)
+	if stale.detail.Ref != "local:01C" {
+		t.Fatalf("the stale cycling response entered abandoned navigation: detail = %v", stale.detail.Ref)
+	}
+	if reconcile == nil {
+		t.Fatal("the stale cycling response deferred reconciliation on the retired pending target")
+	}
+}
+
+// An open overlay is the user's newer interaction with the displayed
+// session: the automatic completion holds for it exactly as the focus trap
+// holds navigation — the panel or picker survives, the retry retires, and
+// the re-pointed subscription is restored.
+func TestASuccessfulRetryReadHoldsForAnOpenOverlay(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session A is displayed with its /details panel open when the user
+	// palette-picked B and its entry went into repair.
+	enteredA, _ := m.Update(hubSessionMsg{
+		ref:    refA.String(),
+		detail: hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	shown := enteredA.(hubModel)
+	panel := hubSessionPanel{Body: "the details the user is reading"}
+	shown.sessionPanel = &panel
+	updated, cmd := shown.Update(hubSessionMsg{ref: refB.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	armedSeq := armed.entryRepairSeq
+	armed.Update(executeEntryRepairCmd(t, cmd)) // B's re-read in flight
+
+	// B's re-read succeeds while the panel stands: the hold fires.
+	late := hubSessionMsg{
+		ref:           refB.String(),
+		detail:        hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	}
+	afterLate, reestablish := armed.Update(late)
+	held := afterLate.(hubModel)
+	if held.mode != hubModeSession || held.detail.Ref != refA.String() {
+		t.Fatalf("the automatic entry switched away from an open overlay: mode = %v detail = %v", held.mode, held.detail.Ref)
+	}
+	if held.sessionPanel == nil {
+		t.Fatal("the automatic entry cleared the panel the user was reading")
+	}
+	if held.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the held entry retry stayed armed after declining the switch")
+	}
+	if reestablish == nil {
+		t.Fatal("the declined read re-pointed the subscription but re-established nothing")
+	}
+}

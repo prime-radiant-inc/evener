@@ -57,6 +57,13 @@ func adjacentLiveRef(refs []appwire.Ref, current string, step int) (appwire.Ref,
 // its own flavor.
 func (m *hubModel) issuePickedSessionRead(ref appwire.Ref) tea.Cmd {
 	m.liveNavSeq++
+	// The pick supersedes any cycle still in flight: its pending target is
+	// retired here, at the supersession — waiting for the pick's landing
+	// would leave the dead target as the stepping base for the next press
+	// and as a nonempty pending ref a stale cycling response defers
+	// reconciliation on forever, stranding the displayed session's
+	// subscription (round-15 medium 1).
+	m.liveNavPendingRef = ""
 	seq := m.liveNavSeq
 	read := fetchHubSession(m.frames, m.client, ref)
 	return func() tea.Msg {

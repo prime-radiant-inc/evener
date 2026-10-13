@@ -87,17 +87,20 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The landed re-read's retry is current, but a SUCCESS
 			// completes the pick automatically — the user has not
 			// confirmed the switch since pressing it. The displayed
-			// session's unsent work outranks the completion: the same hold
-			// the cycling switch applies to a draft
-			// (switchToAdjacentLiveSession) holds here. Retire the retry,
-			// restore the displayed session's subscription (this read
-			// re-pointed it at the retry's target), and drop the success —
-			// the different-ref entry below would otherwise clear the draft
-			// and delete its pending attachment files. The user re-picks
+			// session's unsent work and open overlays outrank the
+			// completion: the draft hold the cycling switch applies
+			// (switchToAdjacentLiveSession) and the focus trap's overlay
+			// surfaces both hold here. Retire the retry, restore the
+			// displayed session's subscription (this read re-pointed it
+			// at the retry's target), and drop the success — the
+			// different-ref entry below would otherwise clear the draft,
+			// delete its pending attachment files, and dismiss the panel
+			// or picker the user is interacting with. The user re-picks
 			// when they are ready. A rejected re-read keeps the retry
 			// armed: the ordinary-transient contract below stands.
 			if msg.err == nil && m.mode == hubModeSession && m.detail.Ref != msg.ref &&
-				(m.session.input.Value() != "" || len(m.pendingAttachments) > 0 || m.forkDraft != nil) {
+				(m.session.input.Value() != "" || len(m.pendingAttachments) > 0 || m.forkDraft != nil ||
+					topmostOverlayName(m) != "") {
 				m.entryRepairRetire()
 				return m.discardSupersededSessionRead()
 			}
