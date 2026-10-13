@@ -13,8 +13,12 @@ import {
   type PreparedAnnotation,
 } from "@evener/appwire-client";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, vi } from "vitest";
-import { browserDraftKey, createBrowserDraftRepository } from "../../../stores/browserDraftRepository";
+import { afterEach, expect, vi } from "vitest";
+import {
+  browserDraftKey,
+  createBrowserDraftRepository,
+  type StoredComposerDraft,
+} from "../../../stores/browserDraftRepository";
 import {
   annotationOperationKey,
   createDocumentAnnotationRepository,
@@ -87,6 +91,20 @@ export async function rowsForTests<T>(factory: IDBFactory, databaseName: string,
   } finally {
     database.close();
   }
+}
+
+// `editedAt` is optional on rows an older build wrote, so even a narrowed row
+// types its stamp as `number | undefined`. The full-row comparison preceding
+// every call site proved both stamps exist; narrow them for the ordering check
+// and fail loudly if one is missing.
+export function expectStampedNoEarlierThan(
+  stamped: StoredComposerDraft | null,
+  baseline: StoredComposerDraft | null,
+): void {
+  if (stamped?.editedAt === undefined || baseline?.editedAt === undefined) {
+    throw new Error("edit stamp missing for ordering comparison");
+  }
+  expect(stamped.editedAt).toBeGreaterThanOrEqual(baseline.editedAt);
 }
 
 // The one literal capture/operation builder both test helpers share: no

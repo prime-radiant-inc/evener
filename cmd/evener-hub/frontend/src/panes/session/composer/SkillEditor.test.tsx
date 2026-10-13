@@ -25,6 +25,7 @@ import {
   blobBytes,
   cleanupAfterTest,
   docContent,
+  expectStampedNoEarlierThan,
   fixture,
   rowsForTests,
 } from "../../doc/testing/annotationRepositoryFixtures";
@@ -590,7 +591,13 @@ describe("SkillEditor annotation reference through remount and persisted reload"
       const recoveryBeforeReplay = await reopenedOutbox.getRecovery("rec-1");
       if (!ordinaryBeforeReplay || !recoveryBeforeReplay) throw new Error("prereplay rows missing");
       if (backing === "draft") {
-        expect(ordinaryBeforeReplay).toEqual({ ...ordinaryBefore, text: expectedText, token: advancedToken });
+        expect(ordinaryBeforeReplay).toEqual({
+          ...ordinaryBefore,
+          text: expectedText,
+          token: advancedToken,
+          editedAt: expect.any(Number),
+        });
+        expectStampedNoEarlierThan(ordinaryBeforeReplay, ordinaryBefore);
         expect(recoveryBeforeReplay).toEqual(recoveryBefore);
       } else {
         expect(ordinaryBeforeReplay).toEqual({ ...ordinaryBefore, token: advancedToken });
