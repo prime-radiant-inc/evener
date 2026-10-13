@@ -1365,7 +1365,11 @@ var (
 	execCommand        = exec.Command
 	runtimeGOOS        = runtime.GOOS
 	osVersionOutput    = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return execCommandContext(ctx, name, args...).Output()
+		cmd := execCommandContext(ctx, name, args...)
+		out := newCappedOutputBuffer(probeOutputCaptureCap)
+		cmd.Stdout = out
+		err := cmd.Run()
+		return []byte(out.String()), err
 	}
 	shellStat              = os.Stat
 	grepReadFile           = grepReadFileCapped
@@ -1382,8 +1386,10 @@ var (
 	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		cmd := execCommandContext(ctx, name, args...)
 		cmd.WaitDelay = loginShellPATHWaitDelay
-		out, err := cmd.Output()
-		return out, orphanpipe.ChildErr(cmd, err)
+		out := newCappedOutputBuffer(probeOutputCaptureCap)
+		cmd.Stdout = out
+		err := cmd.Run()
+		return []byte(out.String()), orphanpipe.ChildErr(cmd, err)
 	}
 )
 
@@ -1402,6 +1408,15 @@ const loginShellPATHTimeout = 2 * time.Second
 // backgrounds inherits that pipe and is not killed with the shell, so without
 // this bound the timeout would not bound the probe (see orphanpipe).
 const loginShellPATHWaitDelay = time.Second
+
+// probeOutputCaptureCap bounds the stdout a launch probe captures. The probes
+// extract one short line — the login shell's PATH, a uname banner — but the
+// login-shell probe runs the USER'S rc chain, whose emissions the probe
+// timeouts bound only in time: a runaway rc file printing at pipe speed OOMs
+// the agent exactly like an uncapped command capture (#4557). 64KiB is orders
+// of magnitude past any real PATH or banner, so the bound never trips on a
+// well-formed probe answer.
+const probeOutputCaptureCap = 64 * 1024
 
 // LoginShellPATH resolves the PATH the user's login shell would produce
 // ($SHELL -lc 'echo $PATH'), so a session or daemon launched from a context
