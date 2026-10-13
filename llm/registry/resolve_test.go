@@ -240,6 +240,40 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 	if alias.Caps.ThinkingShape != nil {
 		t.Fatalf("alias of a derived-controls target must derive no shape, got %v", *alias.Caps.ThinkingShape)
 	}
+
+	// An alias whose own config supplies the effort control and a ladder
+	// re-establishes evidence: the inherited derived-controls fact must not
+	// suppress the level the alias's own layers vouch for.
+	r3 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.img-explicit]\nalias_of = \"openrouter/google/gemini-3-pro-image\"\nreasoning_controls = [\"effort\"]\neffort_values = [\"low\", \"high\"]\n")
+	alias = mustResolve(t, r3, "google/img-explicit")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
+		t.Fatalf("an alias with its own recorded controls must derive level: %+v", alias.Caps.ThinkingShape)
+	}
+}
+
+// A shape verdict is protocol-specific: a cross-protocol target's shape is
+// never inherited, because the alias's protocol reads it differently — a
+// google row handed anthropic's derived "budget" would emit a thinkingBudget
+// no catalog evidence vouches for (roborev round 6).
+func TestResolve_CrossProtocolAliasNeverInheritsShape(t *testing.T) {
+	// The anthropic target derives "budget" from its cataloged
+	// budget_tokens control; a google alias of it must not inherit that
+	// verdict — the shape belongs to the target's protocol.
+	// The anthropic provider's own row derives "adaptive" from its cataloged
+	// effort control; a google alias of it must not inherit that verdict —
+	// the shape belongs to the target's protocol.
+	r := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "ANTHROPIC_API_KEY": "k"}, "[providers.google.models.an-alias]\nalias_of = \"anthropic/claude-opus-4-7\"\n")
+	target := mustResolve(t, r, "anthropic/claude-opus-4-7")
+	if target.Protocol != ProtocolAnthropic || target.Caps.ThinkingShape == nil || *target.Caps.ThinkingShape != "adaptive" {
+		t.Fatalf("the anthropic target must derive adaptive: %+v", target.Caps.ThinkingShape)
+	}
+	alias := mustResolve(t, r, "google/an-alias")
+	if alias.Protocol != ProtocolGoogle {
+		t.Fatalf("alias protocol = %s", alias.Protocol)
+	}
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("a google alias must not inherit an anthropic shape, got %v", *alias.Caps.ThinkingShape)
+	}
 }
 
 // TestResolve_Opus45OneMStillBeta pins Opus 4.5's [1m] rows as beta-gated,

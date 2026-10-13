@@ -147,8 +147,10 @@ func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 		}
 	}
 	// A level row with no ladder spells the requested effort as-is: there is
-	// no ladder to clamp against and the row vouches the shape.
-	thinking["thinkingLevel"] = level
+	// no ladder to clamp against and the row vouches the shape. The wire enum
+	// is uppercase (the Discovery document's ThinkingConfig.thinkingLevel:
+	// MINIMAL | LOW | MEDIUM | HIGH); catalogs and flags spell it lowercase.
+	thinking["thinkingLevel"] = strings.ToUpper(level)
 	return thinking
 }
 

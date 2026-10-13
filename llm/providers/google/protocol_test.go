@@ -60,8 +60,9 @@ func TestProtocolBuildBody(t *testing.T) {
 	gen := body["generationConfig"].(map[string]any)
 	thinking := gen["thinkingConfig"].(map[string]any)
 	// The row is level-shaped with no ladder, so the builder spells the
-	// requested effort as a thinkingLevel, not a budget.
-	if gen["temperature"] != 0.2 || thinking["thinkingLevel"] != "high" {
+	// requested effort as a thinkingLevel, not a budget — in the wire's
+	// uppercase enum spelling (the Discovery document's ThinkingConfig).
+	if gen["temperature"] != 0.2 || thinking["thinkingLevel"] != "HIGH" {
 		t.Fatalf("generationConfig = %v", gen)
 	}
 	if _, has := thinking["thinkingBudget"]; has {
@@ -122,17 +123,17 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 	// clamps the request to the ladder first, so the builder spells what the
 	// row lists.
 	row := levelRow(func(c *registry.Caps) { c.EffortValues = []string{"low", "medium", "high"} })
-	if got := level(t, protoBuild(t, protoReq("medium"), row)); got != "medium" {
+	if got := level(t, protoBuild(t, protoReq("medium"), row)); got != "MEDIUM" {
 		t.Fatalf("thinkingLevel = %v", got)
 	}
-	if got := level(t, protoBuild(t, protoReq("xhigh"), row)); got != "high" {
+	if got := level(t, protoBuild(t, protoReq("xhigh"), row)); got != "HIGH" {
 		t.Fatalf("xhigh must clamp down to the ladder's top level, got %v", got)
 	}
 
 	// A cataloged level-shaped row with no ladder spells the requested effort
 	// as-is: there is no ladder to clamp against and the row vouches the
 	// shape.
-	if got := level(t, protoBuild(t, protoReq("high"), levelRow(nil))); got != "high" {
+	if got := level(t, protoBuild(t, protoReq("high"), levelRow(nil))); got != "HIGH" {
 		t.Fatalf("level row without a ladder thinkingLevel = %v", got)
 	}
 
@@ -143,7 +144,7 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 		c.ThinkingShape = new("level")
 		c.EffortValues = []string{"low", "high"}
 	})
-	if got := level(t, protoBuild(t, protoReq("high"), configured)); got != "high" {
+	if got := level(t, protoBuild(t, protoReq("high"), configured)); got != "HIGH" {
 		t.Fatalf("configured level row thinkingLevel = %v", got)
 	}
 
@@ -205,7 +206,7 @@ func TestProtocolBuildBody_CatalogRowThinkingShape(t *testing.T) {
 				t.Fatalf("%s thinkingBudget = %v", ref, thinking)
 			}
 		case "google/gemini-3.1-pro-preview":
-			if thinking["thinkingLevel"] != "high" {
+			if thinking["thinkingLevel"] != "HIGH" {
 				t.Fatalf("%s thinkingLevel = %v", ref, thinking)
 			}
 		}

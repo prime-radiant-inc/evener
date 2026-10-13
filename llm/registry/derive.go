@@ -12,19 +12,15 @@ type deriveInput struct {
 	ProviderSurface string
 	ProviderFamily  string
 	// Aliased marks a row seeded from an alias target. AliasTargetProtocol is
-	// the protocol that target resolved under: a same-protocol alias's target
-	// already settled the thinking-shape question (even when the verdict was
-	// "no shape"), so the alias inherits it through the seeded ThinkingShape
-	// and never re-derives one from copied controls — a copied effort control
-	// the target's own derivation invented would otherwise read as catalog
-	// evidence. A cross-protocol alias's target never asked the question
-	// (its protocol has no shape), so the alias derives from the inherited
-	// catalog controls like any directly named row — except controls the
-	// target's derivation invented, which AliasControlsDerived flags so they
-	// are not mistaken for catalog evidence on this side either.
-	Aliased              bool
-	AliasTargetProtocol  string
-	AliasControlsDerived bool
+	// the protocol that target resolved under. A same-protocol alias inherits
+	// the target's settled ThinkingShape verdict (even when the verdict was
+	// "no shape") and never re-derives one. A cross-protocol alias carries no
+	// verdict — the shape belongs to the target's protocol — and derives from
+	// whatever its own replay leaves: controls still tagged "alias" were
+	// inherited from a target whose own derivation may have invented them, so
+	// they are no evidence; controls any real layer restated are.
+	Aliased             bool
+	AliasTargetProtocol string
 }
 
 const provDerived = "derived"
@@ -88,11 +84,15 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 	// directly named row.
 	shapeSettledByAlias := in.Aliased && in.AliasTargetProtocol == ProtocolGoogle
 	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized && !shapeSettledByAlias {
+		// Controls still tagged "alias" were inherited from a target whose own
+		// derivation may have invented them; only controls a real layer
+		// restated count as evidence on this side of the seam.
+		inheritedControls := in.Aliased && prov["ReasoningControls"] == provAlias
 		var shape string
 		switch {
 		case slices.Contains(c.ReasoningControls, "budget_tokens"):
 			shape = "budget"
-		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty && !in.AliasControlsDerived:
+		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty && !inheritedControls:
 			// The effort control must be recorded evidence: one derivation
 			// invented for an empty list, here or on the alias's target, says
 			// nothing about what the model accepts.
