@@ -1,7 +1,10 @@
 package sandbox
 
 import (
+	"context"
+	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
@@ -19,6 +22,169 @@ func TestBwrapProbeExercisesWrapFlags(t *testing.T) {
 		if !slices.Contains(args, want) {
 			t.Errorf("probe argv must exercise %q (Wrap emits it), got %v", want, args)
 		}
+	}
+}
+
+// The per-root overlay probe runs the same namespaced base as the capability
+// probe, plus the exact overlay flag pair buildBwrapArgv emits for the root, so
+// its verdict is whether that root can be an unprivileged overlay lower (#4220).
+func TestBwrapOverlayProbeArgsUseTheEmittedOverlayFlags(t *testing.T) {
+	t.Parallel()
+	home := overlayFixtureDir(t)
+	cache := filepath.Join(home, "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	emitted := buildBwrapArgv(ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, Backend: BackendBwrap, CacheStrategy: CacheOverlay,
+		CacheRoots: []string{cache}, Spawned: AccessScope{Read: ReadAnywhere},
+		resolveHost: HostFacts{OS: "linux", Home: home},
+	}, "", "/work")
+	i := slices.Index(emitted, "--overlay-src")
+	if i < 0 || i+4 > len(emitted) {
+		t.Fatalf("buildBwrapArgv emitted no overlay for %q: %v", cache, emitted)
+	}
+	want := emitted[i : i+4]
+
+	args := bwrapOverlayProbeArgs("/usr/bin/bwrap", cache)
+	for _, want := range []string{"--unshare-user", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("overlay probe argv must keep the base flag %q, got %v", want, args)
+		}
+	}
+	j := slices.Index(args, "--overlay-src")
+	if j < 0 || !slices.Equal(args[j:j+4], want) {
+		t.Errorf("overlay probe argv must emit the pair buildBwrapArgv does %v, got %v", want, args)
+	}
+}
+
+// The probe reports a root the trivial overlay mount cannot be made on as
+// un-overlayable, and a root it can as fine (#4220).
+func TestBwrapOverlayLowerWorksReportsTheProbeResult(t *testing.T) {
+	t.Parallel()
+	if bwrapOverlayLowerWorks(overlayProbeSystem{runErr: errors.New("EINVAL")}, "/usr/bin/bwrap", "/cache/root") {
+		t.Error("a failing trivial overlay mount must report the root un-overlayable")
+	}
+	if !bwrapOverlayLowerWorks(overlayProbeSystem{}, "/usr/bin/bwrap", "/cache/root") {
+		t.Error("a succeeding trivial overlay mount must report the root overlaid")
+	}
+}
+
+// scriptedOverlaySystem answers every command with the error its hook returns,
+// so a test can change what the host can overlay between probes.
+type scriptedOverlaySystem struct {
+	stubProbeSystem
+	runErr func() error
+}
+
+func (s scriptedOverlaySystem) run(context.Context, string, ...string) error { return s.runErr() }
+
+// A cache root can be retargeted under a session (a symlinked parent moved onto
+// another filesystem), so a remembered verdict is keyed by the root's resolved
+// location: a retarget is a new key and is probed again. A stale "fine" would
+// put the bad overlay back in the argv and abort every spawn (#4220).
+func TestOverlayLowerProbeReJudgesARetargetedRoot(t *testing.T) {
+	t.Parallel()
+	dir := overlayFixtureDir(t)
+	first, second := filepath.Join(dir, "first"), filepath.Join(dir, "second")
+	for _, d := range []string{first, second} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(first, link); err != nil {
+		t.Fatal(err)
+	}
+	unoverlayable := false
+	probe := memoizedOverlayLower(scriptedOverlaySystem{runErr: func() error {
+		if unoverlayable {
+			return errors.New("EINVAL")
+		}
+		return nil
+	}}, "/usr/bin/bwrap")
+	if !probe(link) {
+		t.Fatal("a symlinked root on a filesystem the overlay takes must probe fine")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(second, link); err != nil {
+		t.Fatal(err)
+	}
+	unoverlayable = true
+	if probe(link) {
+		t.Error("a root retargeted onto an un-overlayable filesystem must be probed again")
+	}
+}
+
+// A root that is not a directory yet is not overlaid, and its failure must not
+// be remembered: once its storage appears on a filesystem the overlay takes, it
+// is judged afresh and served (#4220).
+func TestOverlayLowerProbeDoesNotMemoizeAnUnavailableRoot(t *testing.T) {
+	t.Parallel()
+	dir := overlayFixtureDir(t)
+	drive := filepath.Join(dir, "unmounted", "drive")
+	link := filepath.Join(dir, "cache")
+	if err := os.Symlink(drive, link); err != nil {
+		t.Fatal(err)
+	}
+	unoverlayable := true
+	probe := memoizedOverlayLower(scriptedOverlaySystem{runErr: func() error {
+		if unoverlayable {
+			return errors.New("EINVAL")
+		}
+		return nil
+	}}, "/usr/bin/bwrap")
+	if probe(link) {
+		t.Fatal("a root that is not a directory must probe as un-overlayable")
+	}
+	if err := os.MkdirAll(drive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unoverlayable = false
+	if !probe(link) {
+		t.Error("a root that appears after being unavailable must be judged afresh, not answered from the memo")
+	}
+}
+
+// overlayProbeSystem is stubProbeSystem whose bwrap reports (or does not report)
+// overlay support, with a settable per-command result.
+type overlayProbeSystem struct {
+	stubProbeSystem
+	help   []byte
+	runErr error
+}
+
+func (s overlayProbeSystem) lookPath(name string) (string, error) {
+	if name == "bwrap" {
+		return "/usr/bin/bwrap", nil
+	}
+	return "", errors.New("not found")
+}
+
+func (s overlayProbeSystem) combinedOutput(context.Context, string, ...string) ([]byte, error) {
+	return s.help, nil
+}
+
+func (s overlayProbeSystem) run(context.Context, string, ...string) error { return s.runErr }
+
+// The per-root overlay probe is wired only on a host whose bwrap supports
+// overlay: without support every root would report un-overlayable, and the
+// overlay strategy would be lost on a build that cannot emit the flags at all
+// (#4220).
+func TestProbeHostWiresTheOverlayLowerProbeOnlyWithOverlaySupport(t *testing.T) {
+	t.Parallel()
+	supported := probeHost(overlayProbeSystem{help: []byte("--overlay-src")})
+	if supported.OverlayLowerOK == nil {
+		t.Fatal("an overlay-capable bwrap must supply the per-root overlay probe")
+	}
+	if !supported.OverlayLowerOK("/cache") {
+		t.Error("the probe must report a succeeding trivial overlay mount as fine")
+	}
+	unsupported := probeHost(overlayProbeSystem{help: []byte("no overlay here")})
+	if unsupported.OverlayLowerOK != nil {
+		t.Error("a bwrap without overlay support must supply no per-root overlay probe")
 	}
 }
 
@@ -113,6 +279,17 @@ func TestProbeReadsNpmAndCargoCacheEnv(t *testing.T) {
 	unset := probeHost(stubProbeSystem{})
 	if unset.CargoHome != "" || unset.NpmConfigCache != "" {
 		t.Errorf("unset CARGO_HOME and npm_config_cache must leave the facts empty, got %q and %q", unset.CargoHome, unset.NpmConfigCache)
+	}
+}
+
+// The login user's home comes from the user database, not this process's HOME:
+// a child with no HOME of its own resolves "~" to the former, so the env floor
+// must judge that directory (#4220).
+func TestProbeReadsTheLoginHome(t *testing.T) {
+	t.Parallel()
+	facts := probeHost(stubProbeSystem{loginHome: "/home/login"})
+	if facts.LoginHome != "/home/login" {
+		t.Errorf("probeHost LoginHome=%q, want the user database's home", facts.LoginHome)
 	}
 }
 

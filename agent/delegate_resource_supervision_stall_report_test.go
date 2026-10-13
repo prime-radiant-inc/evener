@@ -206,12 +206,25 @@ func TestStableSupervisionRefusalNeverBlocksWhileASourceLockIsHeld(t *testing.T)
 // TestStableSupervisionRefusalReturnsQuiescentWhenEverySourceIsFree pins the
 // other half of the mapping: with no source busy the predicate still reaches
 // quiesced promptly, so marking a busy source "not yet quiesced" does not keep
-// a genuinely quiet run waiting.
+// a genuinely quiet run waiting. The fixture's quiescence wait does not join
+// every background consumer (the root wake consumer, a namer or watchdog tail),
+// so a source can be held for a tick right after it returns and the predicate
+// then correctly refuses; the test retries so it pins "free reads quiesced"
+// rather than "no consumer ran during one read".
 func TestStableSupervisionRefusalReturnsQuiescentWhenEverySourceIsFree(t *testing.T) {
 	t.Parallel()
 	_, sub := stableSupervisionReportFixture(t)
-	if got := stableSupervisionRefusalWithin(t, sub); got != "" {
-		t.Fatalf("predicate with every source free = %q, want quiesced", got)
+	// TRIPWIRE: the fixture is quiesced, so a free source reads quiesced at
+	// once; this only bounds a regression that never reads quiesced.
+	deadline := time.Now().Add(stableSupervisionRefusalDeadline)
+	for {
+		if got := stableSupervisionRefusalWithin(t, sub); got == "" {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatal("predicate never read quiesced with every source free")
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
