@@ -124,12 +124,17 @@ def seed_problems(seed_dirs):
     return problems
 
 
+def index_text(page):
+    """The part of a page's index line the model writes: its when line, which the index shows in place of
+    the description, else its description, else "" (the fallback is evener's, not the model's)."""
+    return page["when"] or (page["description"] if page["has_description"] else "")
+
+
 def index_lines_ok(root):
     for scope, pages in scope_pages(scope_dirs(root, PERSONAL_AND_PROJECT_SCOPES)).items():
         index = root_index(scope)
         lines = [(index, line) for line in read(index).split("\n")] if index else []
-        # The index shows a page's when line in place of its description.
-        lines += [(os.path.join(scope, p["path"]), p["when"] or p["description"]) for p in pages if p["when"] or p["has_description"]]
+        lines += [(os.path.join(scope, p["path"]), text) for p in pages if (text := index_text(p))]
         for path, line in lines:
             if len(line) > MAX_INDEX_LINE:
                 print(f"{path}: index line is {len(line)} characters", file=sys.stderr)
