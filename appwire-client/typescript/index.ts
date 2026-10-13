@@ -504,6 +504,8 @@ export {
   resolvePendingEscalation,
   threadModelFromCache,
 } from "./reducer";
+export type { GroupedSearch, GroupedSearchRow } from "./searchGrouping";
+export { groupSearchResults } from "./searchGrouping";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export type { QuietState } from "./sessionActivity";
@@ -780,7 +782,6 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
-
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,
