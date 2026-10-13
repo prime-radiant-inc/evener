@@ -188,8 +188,8 @@ func TestSandboxedGrepWalkSkipsPseudoFsDirectories(t *testing.T) {
 // A search root that reaches a pseudo-filesystem root is never handed to
 // ripgrep: rg has no per-file read bound, so /proc/kcore streams into it and
 // its match output grows without bound (#4480). The native walk runs instead
-// and skips those roots; a root that reaches nothing pseudo, and a named
-// file, still go to rg.
+// and skips those roots; a root that reaches nothing pseudo still goes to
+// rg.
 func TestGrepNeverHandsAPseudoFsReachingRootToRipgrep(t *testing.T) {
 	// Not parallel: stubPseudoFsRoots swaps the package's root list.
 	root := t.TempDir()
@@ -220,10 +220,18 @@ func TestGrepNeverHandsAPseudoFsReachingRootToRipgrep(t *testing.T) {
 		t.Fatalf("a root reaching no pseudo root must use ripgrep: argv calls = %d, want 1", rec.argvCalls)
 	}
 
-	if _, err := env.Grep(t.Context(), "needle", filepath.Join(root, "pseudo", "named.txt"), "", false, 100, "content"); err != nil {
+	// A file named inside the pseudo tree is still searched — naming it is a
+	// deliberate request — but by the native arm: ripgrep cannot bound a
+	// named stream that stats small, so nothing inside a pseudo root is handed
+	// to it.
+	got, err = env.Grep(t.Context(), "needle", filepath.Join(root, "pseudo", "named.txt"), "", false, 100, "content")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.argvCalls != 2 {
-		t.Fatalf("a file named inside the pseudo tree must still go to ripgrep: argv calls = %d, want 2", rec.argvCalls)
+	if rec.argvCalls != 1 {
+		t.Fatalf("a file named inside the pseudo tree must not go to ripgrep: argv calls = %d, want 1 (the earlier call only)", rec.argvCalls)
+	}
+	if want := "1:needle"; got != want {
+		t.Fatalf("file named inside the pseudo tree = %q, want %q", got, want)
 	}
 }

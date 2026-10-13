@@ -412,14 +412,25 @@ func (f grepAdmitFS) Stat(name string) (fs.FileInfo, error) {
 	return fs.Stat(f.FS, name)
 }
 
-// grepNamedFileOverReadCap reports whether the resolved grep target names a
-// single file whose size already exceeds the per-file read cap. ripgrep
-// ignores --max-filesize for a file named on its command line, so such a
-// target takes the native arm, which caps the read and skips the file exactly
-// as both arms skip an oversized file found in a walk.
-func grepNamedFileOverReadCap(dir string) bool {
+// grepTakesNativeArm reports whether the resolved grep target must take the
+// native walk rather than ripgrep, whatever rg would do with it. ripgrep has
+// no per-file read bound of its own: --max-filesize is metadata-based, so a
+// stream that stats small (a FIFO, /proc/kmsg) is searched to its end, and rg
+// ignores the flag outright for a file named on its command line. The
+// targets that must not reach it: a search root that reaches or sits inside
+// a pseudo-filesystem root (/proc/kcore alone presents as a ~128TB regular
+// file, #4480), a named non-regular file (rg would block on a FIFO, stream a
+// device), and a named file over the read cap (the native arm skips it, as
+// both arms skip an oversized file found in a walk).
+func grepTakesNativeArm(dir string) bool {
+	if isPseudoFsPath(dir) || grepReachesPseudoRoot(dir) {
+		return true
+	}
 	info, err := os.Stat(dir)
-	return err == nil && !info.IsDir() && info.Size() > int64(grepMaxFileBytes)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return !info.Mode().IsRegular() || info.Size() > int64(grepMaxFileBytes)
 }
 
 // sortPathStat is the stat the glob result ordering runs on; a variable so

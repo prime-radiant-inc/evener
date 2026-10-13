@@ -2177,22 +2177,14 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	if skip != nil {
 		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
 	}
-	// A search root that reaches a pseudo-filesystem root — / itself, in
-	// practice — is never handed to ripgrep: rg has no per-file read bound,
-	// so /proc/kcore, a regular file of ~128TB, streams into it and its match
-	// output grows without bound (#4480). The native walk skips those roots.
-	if grepReachesPseudoRoot(dir) {
+	// Targets ripgrep cannot bound never reach it (see grepTakesNativeArm);
+	// the native walk applies the pseudo-root skip and the per-file read cap.
+	if grepTakesNativeArm(dir) {
 		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
 	}
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
-		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
-	}
-	// rg applies --max-filesize only to files it finds in a walk, never to
-	// one named on its command line, so a named file past the read cap goes
-	// to the native arm: both arms then skip it.
-	if grepNamedFileOverReadCap(dir) {
 		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
 	}
 
