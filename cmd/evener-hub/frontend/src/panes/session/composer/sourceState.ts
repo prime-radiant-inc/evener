@@ -143,6 +143,7 @@ export interface ComposerSourceState {
   /** Accepts one explicit full editor value as an immutable durable edit. */
   acceptEdit(value: SkillEditorValue): void;
   getDraftToken(): DraftSessionToken;
+  currentDraftToken(): Promise<DraftSessionToken>;
   getLocalGeneration(): number;
   getRuntimeBacking(): DraftBackingIdentity;
   prepareAnnotation(): Promise<ComposerPreparation | null>;
@@ -515,6 +516,22 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   }
   function getDraftToken(): DraftSessionToken {
     return draftToken ?? { namespaceIncarnation: "", sessionRevision: 0 };
+  }
+  async function currentDraftToken(): Promise<DraftSessionToken> {
+    // Guarded recovery actions present CURRENT durable authority: a previous
+    // dismissal advanced the session revision, and a background recovery
+    // transition can have advanced it since this source last loaded its
+    // token. Load the durable row and adopt its token when it is NEWER - the
+    // revision the durable state acknowledges - while never overwriting a
+    // newer local token (a concurrent edit this source has already taken).
+    const repositoryNow = repository;
+    const keyNow = draftKey;
+    if (!repositoryNow || !keyNow) return getDraftToken();
+    const row = await repositoryNow.load(keyNow).catch(() => null);
+    if (row && !disposed && (draftToken === null || row.token.sessionRevision > draftToken.sessionRevision)) {
+      draftToken = { ...row.token };
+    }
+    return getDraftToken();
   }
   function sameBacking(left: DraftBackingIdentity, right: DraftBackingIdentity): boolean {
     if (left.kind !== right.kind) return false;
@@ -1298,6 +1315,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     whenSettled,
     acceptEdit,
     getDraftToken,
+    currentDraftToken,
     getLocalGeneration: () => localGeneration,
     getRuntimeBacking: () => ({ ...runtimeBacking }),
     prepareAnnotation,

@@ -468,31 +468,43 @@ export function QueueStrip({
   // projection unconditionally, so a record another surface already discarded
   // still leaves the strip instead of sitting there being counted as queued.
   async function handleDismiss(record: MutationRecoveryRecord): Promise<void> {
-    // Capture before any yield, never refresh destructive authority after a
-    // competitor commits while the original press is waiting.
-    const token = Object.freeze({ ...source.getDraftToken() });
-    const key = browserDraftKey(source.ref);
-    const generation = source.getLocalGeneration();
-    const backing = source.getRuntimeBacking();
-    const replacementEpoch = source.continuity.recoveryReplacementEpochRef.current;
-    const guard = Object.freeze({
-      key: Object.freeze({ namespace: Object.freeze({ ...key.namespace }), sessionRef: key.sessionRef }),
-      token,
-      stillAuthorized: () => {
-        const currentBacking = source.getRuntimeBacking();
-        return (
-          source.alive &&
-          source.getLocalGeneration() === generation &&
-          source.continuity.recoveryReplacementEpochRef.current === replacementEpoch &&
-          currentBacking.kind === backing.kind &&
-          (backing.kind !== "recovery" ||
-            (currentBacking.kind === "recovery" && currentBacking.recoveryId === backing.recoveryId))
-        );
-      },
-    });
+    // Lock the row at the press, before any yield.
     setRowBusy(record.clientMutationId, true);
     try {
-      await discardRecoveryPendingTurn(record.clientMutationId, sessionRef, undefined, guard);
+      // Capture before any yield, never refresh destructive authority after a
+      // competitor commits while the original press is waiting.
+      const key = browserDraftKey(source.ref);
+      const generation = source.getLocalGeneration();
+      const backing = source.getRuntimeBacking();
+      const replacementEpoch = source.continuity.recoveryReplacementEpochRef.current;
+      const guard = Object.freeze({
+        key: Object.freeze({ namespace: Object.freeze({ ...key.namespace }), sessionRef: key.sessionRef }),
+        token: Object.freeze({ ...source.getDraftToken() }),
+        stillAuthorized: () => {
+          const currentBacking = source.getRuntimeBacking();
+          return (
+            source.alive &&
+            source.getLocalGeneration() === generation &&
+            source.continuity.recoveryReplacementEpochRef.current === replacementEpoch &&
+            currentBacking.kind === backing.kind &&
+            (backing.kind !== "recovery" ||
+              (currentBacking.kind === "recovery" && currentBacking.recoveryId === backing.recoveryId))
+          );
+        },
+      });
+      const discarded = await discardRecoveryPendingTurn(record.clientMutationId, sessionRef, undefined, guard);
+      if (!discarded) {
+        // A refusal means the durable state moved past this press's authority
+        // (a competitor's commit or a transition this press must not adopt).
+        // The row stays visible for a conscious retry; do NOT re-establish
+        // authority and retry here.
+        return;
+      }
+      // Our own successful discard advanced the durable session revision.
+      // Adopt current durable authority before releasing the row's lock, so
+      // the next dismissal presses with a current token instead of one the
+      // storage must refuse.
+      await source.currentDraftToken();
     } catch (error) {
       toasts.push("error", `Couldn't dismiss this row: ${errorText(error)}`);
     } finally {
