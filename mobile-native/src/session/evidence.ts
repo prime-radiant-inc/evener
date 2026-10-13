@@ -238,16 +238,16 @@ function jsonEvidence(detail: ActivityDetail, text: string): Evidence[] {
 	return evidence;
 }
 
-// A memory write's content is the page the person asked to save; an edit is
+// A memory write's body is the page the person asked to save; an edit is
 // the same file diff as edit_file, and other calls read as printed.
 function memoryEvidence(label: string, detail: ActivityDetail): Evidence[] {
 	const text = detail.output ?? "";
 	switch (label) {
 		case "memory_write": {
 			const args = parseArgs(detail.arguments);
-			const content = str(args, "content");
-			if (!content) return jsonEvidence(detail, text);
-			return [{ kind: "markdown", title: memoryFileTarget(args) ?? "Memory page", markdown: content }];
+			const body = str(args, "body");
+			if (!body) return jsonEvidence(detail, text);
+			return [{ kind: "markdown", title: memoryFileTarget(args) ?? "Memory page", markdown: body }];
 		}
 		case "memory_edit": {
 			const args = parseArgs(detail.arguments);

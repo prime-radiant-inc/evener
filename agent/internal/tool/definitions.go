@@ -9,7 +9,7 @@ import (
 
 // MemoryIndexGenerated is the refusal of a write, edit or delete of MEMORY.md
 // at a memory scope's root, which Evener generates from the pages.
-const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead"
+const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's when line or tags instead"
 
 // MemoryDefinition preserves the ordinary tool schema and adds trusted-scope
 // selection. Its path parameter is described as relative to the scope root,
@@ -45,6 +45,24 @@ func DefMemoryDelete() llm.ToolDefinition {
 			"required":   []string{"file_path"},
 		},
 	}, "memory_delete")
+}
+
+// DefMemoryWrite is memory_write: the page's when line and body. Evener writes
+// the frontmatter from when.
+func DefMemoryWrite() llm.ToolDefinition {
+	return MemoryDefinition(llm.ToolDefinition{
+		Description: "Write one memory page. Evener writes the page's frontmatter from when, followed by body, and replaces the whole page when it already exists.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"file_path": map[string]any{"type": "string"},
+				"when":      map[string]any{"type": "string", "description": "One line saying when a future session needs the page: the moments it would otherwise get this wrong, at the level that covers all of them (\"When a log line could include a customer's street address\"). If those moments call for different facts, the page holds several facts, so give each its own page, even facts your partner told you in one breath."},
+				"body":      map[string]any{"type": "string", "description": "The page's Markdown, without frontmatter: a first heading naming what the page is about, such as \"Customer addresses in logs\" rather than the rule itself, which becomes the page's title; then one durable fact, led by the fact or rule, a one-line **Why:** (with where the fact came from, when that matters) and a one-line **How to apply:** saying when it bears on work, with absolute dates."},
+			},
+			"required": []string{"file_path", "when", "body"},
+		},
+	}, "memory_write")
 }
 
 func DefReadFile() llm.ToolDefinition {

@@ -690,7 +690,7 @@ func main() {}
 		}
 		steps = append(steps, memoryEvalCall("write_file", map[string]any{"file_path": "main.go", "content": source}), shell(checker))
 		if !disabled && stage.name == "A" {
-			steps = append(steps, memoryEvalCall("memory_write", map[string]any{"scope": "project", "file_path": "check.md", "content": "---\ndescription: From the repository root run sh scripts/check.sh\n---\nFrom the repository root run sh scripts/check.sh\n"}))
+			steps = append(steps, memoryEvalCall("memory_write", map[string]any{"scope": "project", "file_path": "check.md", "when": "When running the repository checker", "body": "From the repository root run sh scripts/check.sh\n"}))
 		}
 		if !disabled && pair == "correction" && stage.name == "B" {
 			steps = append(steps, memoryEvalCall("memory_edit", map[string]any{"scope": "project", "file_path": "check.md", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current", "replace_all": true}))
@@ -1140,7 +1140,7 @@ func TestMemoryEvalGradeFalsePositives(t *testing.T) {
 		return toolEvent("memory_read", map[string]any{"scope": "project", "file_path": "MEMORY.md"}, output, 0)
 	}
 	write := func(path, body string) events.SessionEvent {
-		return toolEvent("memory_write", map[string]any{"scope": "project", "file_path": path, "content": body}, "", 0)
+		return toolEvent("memory_write", map[string]any{"scope": "project", "file_path": path, "when": "w", "body": body}, "", 0)
 	}
 	shell := func(command, output string, exit int) events.SessionEvent {
 		return toolEvent("shell", map[string]any{"command": command, "cwd": "/fixture"}, output, exit)
@@ -1177,7 +1177,7 @@ func TestMemoryEvalGradeFalsePositives(t *testing.T) {
 					obs.Checker = memoryEvalCheckerSource(tc.current)
 				}
 				if d.ToolName == "memory_write" {
-					obs.After, _ = args["content"].(string)
+					obs.After, _ = args["body"].(string)
 					if args["file_path"] == "check.md" {
 						obs.Before = body
 						body = obs.After

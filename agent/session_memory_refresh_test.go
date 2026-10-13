@@ -203,10 +203,10 @@ func TestMemoryRefreshNoPagesThenAPageDeliversFullIndex(t *testing.T) {
 func TestMemoryRefreshIgnoresOwnPageWriteWithoutPages(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	const page = "---\ndescription: opaque-own-page-1\n---\n"
+	const when = "opaque-own-page-1"
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "content": page})
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "when": when, "body": ""})
 		},
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 0 {
@@ -227,7 +227,7 @@ func TestMemoryRefreshIgnoresOwnPageWriteWithoutPages(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "next", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(filepath.Join(root, "memory", "fact.md")); err != nil || string(got) != strings.TrimSuffix(page, "---\n")+memoryOwnStamps(s)+"---\n" {
+	if got, err := os.ReadFile(filepath.Join(root, "memory", "fact.md")); err != nil || string(got) != "---\nwhen: "+when+"\n"+memoryOwnStamps(s)+"---\n\n" {
 		t.Fatalf("page=%q err=%v, want the write applied", got, err)
 	}
 }
@@ -490,7 +490,7 @@ func TestMemoryRefreshOwnPageWriteDuringStalledReadIsNotEchoed(t *testing.T) {
 	r := newStalledMemoryRefresh(t, root)
 	r.boundary()
 	flight := r.stalledBoundary(t)
-	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "content": "---\ndescription: opaque-own-write-2\n---\n"}); res.IsError {
+	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "when": "opaque-own-write-2", "body": ""}); res.IsError {
 		t.Fatal(res.Output)
 	}
 	// The next boundary meets the read the write made stale and lets it
@@ -972,7 +972,7 @@ func TestMemoryRefreshDiscardsAStaleReadEvenWhenComplete(t *testing.T) {
 	r := newStalledMemoryRefresh(t, root)
 	r.boundary()
 	flight := r.stalledBoundary(t)
-	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "content": "---\ndescription: opaque-stale-own-2\n---\n"}); res.IsError {
+	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "when": "opaque-stale-own-2", "body": ""}); res.IsError {
 		t.Fatal(res.Output)
 	}
 	r.finish(t, flight)
@@ -1400,7 +1400,7 @@ func TestMemoryRefreshIgnoresOwnPageWriteOfAnyPage(t *testing.T) {
 	memorySeedPage(t, root, "memory", "kept.md", "opaque-kept")
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "new.md", "content": "---\ndescription: opaque-own-page\n---\n"})
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "new.md", "when": "opaque-own-page", "body": ""})
 		},
 		func(llm.Request) llm.Response { return finalResponse("wrote") },
 		func(req llm.Request) llm.Response {
@@ -1429,7 +1429,7 @@ func TestMemoryRefreshOwnPageWriteAfterUnavailableDeliversFullIndex(t *testing.T
 	if got := memoryContextCount(r.s); got != 1 {
 		t.Fatalf("stalled first boundary appended %d contexts, want the unavailable projection", got)
 	}
-	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "content": "---\ndescription: opaque-mine-page\n---\n"}); res.IsError {
+	if res := memoryExec(t, r.s, "memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "when": "opaque-mine-page", "body": ""}); res.IsError {
 		t.Fatal(res.Output)
 	}
 	r.finish(t, flight)
@@ -1459,7 +1459,7 @@ func TestMemoryRefreshOwnPageWriteKeepsOtherSessionsChanges(t *testing.T) {
 			if err := os.Remove(gone); err != nil {
 				t.Fatal(err)
 			}
-			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "content": "---\ndescription: opaque-mine\n---\n"})
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "mine.md", "when": "opaque-mine", "body": ""})
 		},
 		func(llm.Request) llm.Response { return finalResponse("wrote") },
 		func(req llm.Request) llm.Response {
@@ -1543,7 +1543,7 @@ func TestMemoryRefreshIgnoresOwnPageWriteInAnotherCase(t *testing.T) {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "Fact.md"})
 		},
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Fact.md", "content": "---\ndescription: opaque-cased-2\n---\n"})
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Fact.md", "when": "opaque-cased-2", "body": ""})
 		},
 		func(llm.Request) llm.Response { return finalResponse("wrote") },
 		nextTurn("write"),
@@ -1569,7 +1569,7 @@ func TestMemoryRefreshIgnoresOwnRewriteOfPageTitledWithALink(t *testing.T) {
 	memorySeedPage(t, root, "memory", "kept.md", "opaque-kept")
 	write := func(description string) func(llm.Request) llm.Response {
 		return func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "content": "---\ndescription: " + description + "\n---\n# Use [Cents](money.md) ) — here\n"})
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "a.md", "when": description, "body": "# Use [Cents](money.md) ) — here\n"})
 		}
 	}
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
@@ -1607,7 +1607,7 @@ func TestMemoryRefreshOwnWriteMatchesPageReadInAnotherCase(t *testing.T) {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "notes/fact.md"})
 		},
 		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Notes/Fact.md", "content": "---\ndescription: opaque-nested-2\n---\n"})
+			return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "Notes/Fact.md", "when": "opaque-nested-2", "body": ""})
 		},
 		func(llm.Request) llm.Response { return finalResponse("wrote") },
 		func(req llm.Request) llm.Response {

@@ -20,10 +20,10 @@ import {
 
 function MemoryWriteBody({ item, live }: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
-  const content = str(args, "content");
+  const body = str(args, "body");
   // An empty page renders the confirmation, not an empty markdown block -
-  // the same empty-content guard the native evidence applies.
-  if (content) return <Markdown source={clip(content, TOOL_BODY_MAX_CHARS)} />;
+  // the same empty-body guard the native evidence applies.
+  if (body) return <Markdown source={clip(body, TOOL_BODY_MAX_CHARS)} />;
 
   return <WriteFileBody item={item} live={live} />;
 }
