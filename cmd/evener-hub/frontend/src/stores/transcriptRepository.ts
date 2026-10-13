@@ -312,6 +312,7 @@ export class TranscriptRepository {
   #committedCoverageSnapshot: number | undefined;
   #committedCoverageReadId: string | undefined;
   #committedCoverageContinuityId: string | undefined;
+  #committedCoverage: { coverage: EntryCoverageInput; revision: number } | undefined;
   #retirementWrite: { boundary: string; persisted: boolean } | undefined;
   #seedSnapshot: number | undefined;
   #seedAuthorityInvalid = false;
@@ -1967,6 +1968,7 @@ export class TranscriptRepository {
           }
         }
         if (!superseded && batch.coverage && outcome.coverage !== "not-extended") {
+          this.#committedCoverage = { coverage: batch.coverage, revision: issuedRevision };
           this.#committedCoverageBoundary = batch.coverage.boundary;
           this.#committedCoverageSnapshot = batch.coverage.representedSnapshot;
           this.#committedCoverageReadId = batch.coverage.readId;
@@ -1976,6 +1978,27 @@ export class TranscriptRepository {
         this.#admission.release(bodies, this);
         for (const row of batch.items) {
           if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
+        }
+        if (!superseded && batch.coverage && outcome.coverage === "not-extended") {
+          // A committed row is not a durable certificate. In particular, an
+          // overlapping suffix can block its baseline until an authoritative
+          // read replaces it. Reuse the bounded, reach-deduplicated repair path.
+          // A retry may finish after that replacement. Its old blocked chain
+          // cannot invalidate a current certificate that already covers its
+          // complete range and snapshot.
+          const committed = this.#committedCoverage;
+          const alreadyCovered =
+            !this.#cacheContinuityLost &&
+            committed?.revision === this.#sourceRevision &&
+            committed.coverage.readId === this.#coverageReadId &&
+            committed.coverage.readId !== batch.coverage.readId &&
+            commitCarriesCoverage(committed.coverage, coverageReach(batch.coverage));
+          if (!alreadyCovered) {
+            this.#cacheContinuityLost = true;
+            this.#recoveryNeeded = true;
+            this.#recordAbandonment("failed", [batch.coverage]);
+            this.#scheduleReconcile();
+          }
         }
       } else {
         this.#cacheContinuityLost = true;
