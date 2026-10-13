@@ -37,10 +37,10 @@ func TestMemoryPreservation(t *testing.T) {
 			return nil
 		}}}), withSteps(
 			func(llm.Request) llm.Response {
-				return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "page", "content": "opaque-page-202"})
+				return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "page", "when": "w", "body": "opaque-page-202"})
 			},
 			func(llm.Request) llm.Response {
-				return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "content": "opaque-page-replacement-203"})
+				return memoryCallResponse("memory_write", map[string]any{"scope": "personal", "file_path": "fact.md", "when": "w", "body": "opaque-page-replacement-203"})
 			},
 		))
 		_, err = s.ProcessInput(ctx, "write one page then another", nil)
@@ -59,13 +59,13 @@ func TestMemoryPreservation(t *testing.T) {
 
 		// Drop the returned response after the ordinary single-file executor
 		// committed. Reconciliation uses a fresh read, not a replay receipt.
-		if _, err := s.reg.Get("memory_write").Exec(context.Background(), s.currentEnv(), map[string]any{"scope": "personal", "file_path": "uncertain", "content": "opaque-committed-204"}); err != nil {
+		if _, err := s.reg.Get("memory_write").Exec(context.Background(), s.currentEnv(), map[string]any{"scope": "personal", "file_path": "uncertain", "when": "w", "body": "opaque-committed-204"}); err != nil {
 			t.Fatal(err)
 		}
 		if res := memoryExec(t, s, "memory_read", map[string]any{"scope": "personal", "file_path": "uncertain"}); res.IsError || strings.Count(res.Output, "opaque-committed-204") != 1 {
 			t.Fatalf("reconciled=%+v", res)
 		}
-		if got, err := os.ReadFile(filepath.Join(filepath.Dir(index), "uncertain")); err != nil || string(got) != "opaque-committed-204" {
+		if got, err := os.ReadFile(filepath.Join(filepath.Dir(index), "uncertain")); err != nil || string(got) != memoryWhenBlock+"opaque-committed-204" {
 			t.Fatalf("committed=%q err=%v", got, err)
 		}
 	})
@@ -102,7 +102,7 @@ func TestMemoryPreservation(t *testing.T) {
 				}
 			}
 		}
-		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "denied", "content": "bad"}); !res.IsError {
+		if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "denied", "when": "w", "body": "bad"}); !res.IsError {
 			t.Fatal("denied bytes replaced")
 		}
 		if got, err := os.ReadFile(target); err != nil || string(got) != "opaque-denied-206" {

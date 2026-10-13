@@ -315,6 +315,108 @@ func TestDrainStallWatchdogSparePendingDelegateDelivery(t *testing.T) {
 	assertDrainNotCut(t, sess, clk)
 }
 
+// TestDrainStallWatchdogSparePendingDelegateAttentionArmRetry verifies a
+// delegate attention arm awaiting its retry (hasPendingDelegateAttentionArmRetry)
+// keeps the drain alive past the timeout. The failure that arms the retry wakes
+// the root runtime, not necessarily this session, so this test deliberately
+// never calls notify(): the session reads the retry set directly and its own
+// drain loop rechecks on the unconditional drainRecheckInterval ticker, so the
+// drain must classify itself live and keep waiting regardless of the wake
+// routing (issue #179 item a).
+func TestDrainStallWatchdogSparePendingDelegateAttentionArmRetry(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
+
+	// Seed the retry set the way armDelegateAttention's entering-retry
+	// transition does, without ever delivering the (misrouted) wake.
+	sess.attentionMu.Lock()
+	sess.delegateAttentionArmIDs = map[string]struct{}{"quiet:dlg_child:1:1": {}}
+	sess.attentionMu.Unlock()
+	defer func() {
+		sess.attentionMu.Lock()
+		sess.delegateAttentionArmIDs = nil
+		sess.attentionMu.Unlock()
+	}()
+
+	if !sess.hasPendingDelegateAttentionArmRetry() {
+		t.Fatal("precondition: expected a pending delegate attention arm retry")
+	}
+	if stalled, err := sess.drainSubtreeIsStalled(); err != nil || stalled {
+		t.Fatalf("a pending delegate attention arm retry must not be a stall, got stalled=%v err=%v", stalled, err)
+	}
+	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || !outstanding {
+		t.Fatalf("a pending delegate attention arm retry must keep the tree outstanding, got outstanding=%v err=%v", outstanding, err)
+	}
+	assertDrainNotCut(t, sess, clk)
+}
+
+// TestDrainCountsStrandedDelegateFinalizationRecoveryAsOutstanding pins issue
+// #179 item (b): after a FinishGeneration append failure the delegate's own run
+// flags read quiet (not running/finalizing/driving), but the controller still
+// holds the open generation behind finalizationRecoveryRequired. Drain must
+// report that as outstanding work — a stall the watchdog can give up on — not
+// quiescence, or the drain and Close() proceed with the generation unsettled.
+func TestDrainCountsStrandedDelegateFinalizationRecoveryAsOutstanding(t *testing.T) {
+	t.Parallel()
+	const delegateID = "dlg_stranded_recovery"
+	for _, tt := range []struct {
+		name string
+		live *delegateLiveState
+		want bool
+	}{
+		{name: "recovery latched", live: &delegateLiveState{recoveryRequired: true, finalizationRecoveryRequired: true}, want: true},
+		{name: "no recovery", live: &delegateLiveState{}, want: false},
+		{name: "delegate unknown", want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			clk := agenttest.NewFakeClock()
+			root := newSession(t, withConfig(SessionConfig{clock: clk}))
+			child := newSession(t, withConfig(SessionConfig{}))
+			child.owningDelegateID = delegateID
+			childID := child.ID()
+
+			// Seed the session's own controller, the way a failed finish append
+			// leaves it: the delegate is in live with the recovery latch set, or
+			// indistinguishable from a delegate the controller never heard of.
+			// This is the minimal latch drain reads — a real append failure also
+			// leaves live.binding and recoveryRunnerPending set, neither of which
+			// the drain signal consults (see
+			// TestDelegateControllerFinishNoActionAppendFailureRetainsRecoveryState
+			// for the full post-failure state).
+			controller := root.delegateController
+			if controller == nil {
+				t.Fatal("precondition: a session must own a delegate controller")
+			}
+			controller.mu.Lock()
+			if tt.live != nil {
+				controller.live[delegateID] = tt.live
+			}
+			controller.mu.Unlock()
+			t.Cleanup(func() {
+				controller.mu.Lock()
+				delete(controller.live, delegateID)
+				controller.mu.Unlock()
+			})
+
+			root.subagents.mu.Lock()
+			root.subagents.subs[childID] = &subagent{id: childID, sess: child}
+			root.subagents.mu.Unlock()
+
+			outstanding, err := root.treeHasOutstandingWork()
+			if err != nil || outstanding != tt.want {
+				t.Fatalf("treeHasOutstandingWork (%s) = %v err=%v, want %v", tt.name, outstanding, err, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			if stalled, err := root.drainSubtreeIsStalled(); err != nil || !stalled {
+				t.Fatalf("stranded finalization recovery must be outstanding-but-stalled, got stalled=%v err=%v", stalled, err)
+			}
+		})
+	}
+}
+
 // assertDrainNotCut drives the drain well past DrainStallTimeout and asserts it
 // keeps blocking (does not return, emits no stall warning). Live work must never
 // be cut. It then cancels the context to let the drain goroutine exit cleanly.

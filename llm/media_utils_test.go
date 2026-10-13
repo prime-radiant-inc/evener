@@ -5,6 +5,8 @@ import (
 	"image"
 	pngenc "image/png"
 	"testing"
+
+	"golang.org/x/image/bmp"
 )
 
 func TestRasterMediaTypeDecodesFullyAndRejectsTruncatedImages(t *testing.T) {
@@ -58,6 +60,44 @@ func TestIsImageFile(t *testing.T) {
 		got := IsImageFile(tt.path)
 		if got != tt.want {
 			t.Errorf("IsImageFile(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+// NormalizeImageBlock keeps a supported raster's bytes and media type, turns a
+// raster the image blocks reject (BMP, TIFF) into a PNG, and errors on bytes
+// that are not a decodable raster. The Anthropic and OpenAI builders both rely
+// on it (#4464).
+func TestNormalizeImageBlock(t *testing.T) {
+	var png bytes.Buffer
+	if err := pngenc.Encode(&png, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	if got, mt, err := NormalizeImageBlock(png.Bytes()); err != nil || mt != "image/png" || !bytes.Equal(got, png.Bytes()) {
+		t.Fatalf("NormalizeImageBlock(png) = (%d bytes, %q, %v), want the png unchanged", len(got), mt, err)
+	}
+
+	var bitmap bytes.Buffer
+	if err := bmp.Encode(&bitmap, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	got, mt, err := NormalizeImageBlock(bitmap.Bytes())
+	if err != nil {
+		t.Fatalf("NormalizeImageBlock(bmp): %v", err)
+	}
+	if mt != "image/png" {
+		t.Fatalf("NormalizeImageBlock(bmp) media type = %q, want image/png", mt)
+	}
+	if _, format, err := image.Decode(bytes.NewReader(got)); err != nil || format != "png" {
+		t.Fatalf("NormalizeImageBlock(bmp) bytes decode as (%q, %v), want png", format, err)
+	}
+
+	for name, data := range map[string][]byte{
+		"empty":     nil,
+		"not-image": []byte("this is not an image at all"),
+	} {
+		if _, _, err := NormalizeImageBlock(data); err == nil {
+			t.Errorf("NormalizeImageBlock(%s) accepted non-raster bytes", name)
 		}
 	}
 }

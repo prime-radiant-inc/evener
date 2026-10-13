@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 
@@ -146,6 +147,35 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+// restoreBareResumeSubagent restores the session that meta names with an empty
+// spawn carrier: spawn is never persisted (json:"-"), so only the persisted
+// meta.IsSubagent flag reports the session kind. It is the unit-level shape a
+// bare `serve --resume <delegate-id>` produces today (#4196, spec §7.1), built
+// by restoring from meta rather than by driving the resume command. meta
+// supplies the persisted identity and config snapshot; restoreCfg configures
+// the restore.
+//
+// It asserts the premise every caller depends on: a live spawn parent would let
+// isSubagentSession() answer true from the carrier alone, and a non-zero depth
+// would let the pre-#4190 `s.depth > 0` line answer true, so either would let a
+// caller's check pass without exercising the persisted flag.
+func restoreBareResumeSubagent(t *testing.T, meta schema.SessionMeta, restoreCfg RestoreSessionConfig) *Session {
+	t.Helper()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile(meta.Model),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, restoreCfg)
+	if err != nil {
+		t.Fatalf("restore bare-resume subagent: %v", err)
+	}
+	t.Cleanup(restored.Close)
+	if restored.cfg.spawn.parentSessionID != "" || restored.depth != 0 {
+		t.Fatalf("test setup: restore carrier is not the bare-resume shape (spawn parent %q, depth %d)",
+			restored.cfg.spawn.parentSessionID, restored.depth)
+	}
+	return restored
 }
 
 // registryClient builds a client whose resolutions come from the fixture
