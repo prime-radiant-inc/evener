@@ -88,17 +88,44 @@ export interface ConversationParts {
   cadence: React.ReactNode;
 }
 
-// Whether a workspace view other than `exceptPaneId` still retains `ref` and so
-// still has to follow a resume published for it: a session pane naming the ref
-// in its params, or a cascade pane whose path covers it. The seat's own hosting
-// pane is excluded — a cascade column replaces its whole path in place, so its
-// interior scopes are handled with it — and a ref left with no other view is the
-// ordinary single-view case, cleared as before.
+// Whether a workspace view other than `exceptPaneId` still has to follow a
+// resume published for `ref`: a session pane naming a ref whose resume chain
+// reaches `ref` in its params, or a cascade pane whose path covers such a ref.
+// A view can retain an EARLIER identity on a chain: an inactive cascade still on
+// `A` when the mounted view resumed `A -> B` and then `B -> C` has to walk
+// through `B`, so `B -> C` must survive for it even though no mounted view names
+// `B`. The seat's own hosting pane is excluded — a cascade column replaces its
+// whole path in place, so its interior scopes are handled with it — and a ref
+// left with no other view is the ordinary single-view case, cleared as before.
 function otherRetainedViewOf(ref: string, exceptPaneId: string): boolean {
+  const resumedIdentities = threadsStore.getState().resumedIdentities;
+  // Whether following the resume chain from `from` ever names `ref`; `ref`
+  // itself reaches directly. `seen` bounds a map that should never cycle.
+  const chainReachesRef = (from: string): boolean => {
+    let cursor: string | undefined = from;
+    const seen = new Set<string>();
+    while (cursor !== undefined && !seen.has(cursor)) {
+      if (cursor === ref) return true;
+      seen.add(cursor);
+      cursor = resumedIdentities.get(cursor);
+    }
+    return false;
+  };
+  // A cascade pane's covered refs are its derived path's scopes; test the ref
+  // and every chain source (a covered ref that is not a chain source needs
+  // nothing). The effect runs only while the map holds `ref`, so `ref` is one of
+  // those sources, and seeding with it keeps the direct-name case covered.
+  const candidates = new Set<string>([ref, ...resumedIdentities.keys()]);
   return workspaceStore.getState().panes.some((pane) => {
     if (pane.id === exceptPaneId) return false;
-    if (pane.type === "session") return refParam(pane.params) === ref;
-    return zoomPaneCoversConversation(pane, ref);
+    if (pane.type === "session") {
+      const held = refParam(pane.params);
+      return held !== null && chainReachesRef(held);
+    }
+    for (const earlier of candidates) {
+      if (chainReachesRef(earlier) && zoomPaneCoversConversation(pane, earlier)) return true;
+    }
+    return false;
   });
 }
 

@@ -16,10 +16,17 @@ import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } fr
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
-import { urlToPane } from "../../shell/routing";
+import { refParam, urlToPane } from "../../shell/routing";
+import { openNestedSessionWithOwner } from "../../shell/sessionPlacement";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
-import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import {
+  conversationOpenParentRef,
+  type OpenPaneRecord,
+  recordConversationOpenParent,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
@@ -53,7 +60,7 @@ import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
-import { readDraft, writeDraft } from "./composer/draft";
+import { composerDraftStorageKey, readDraft, writeDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
@@ -485,8 +492,12 @@ test.each(["closed", "ended", "notLoaded"] as const)(
 
 test("shows a loading placeholder before the thread hydrates", async () => {
   const fake = connectFakeClient();
+  // The conversation pane's hydration and the shared session-activity
+  // subscription both read this ref; both wait on the one pending read so the
+  // placeholder clears when it settles.
   const box: { resolve: ((r: ThreadReadResponse) => void) | null } = { resolve: null };
-  fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (box.resolve = resolve)));
+  const pending = new Promise<ThreadReadResponse>((resolve) => (box.resolve = resolve));
+  fake.on("thread/read", () => pending);
 
   render(
     <ClientProvider client={fake}>
@@ -496,9 +507,6 @@ test("shows a loading placeholder before the thread hydrates", async () => {
 
   expect(screen.getByText(/loading/i)).toBeTruthy();
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
-  // request()'s handler invocation (which captures the resolver) is
-  // deferred a microtask behind the synchronous render() above.
-  await flushUntil(() => box.resolve !== null);
   box.resolve?.(readResponse("ref_a"));
   await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
@@ -1387,7 +1395,18 @@ test("ensureThread fires exactly once when the client is already ready at mount 
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1));
+  // The pane also observes the shared session-activity availability state,
+  // whose subscription acquisition reads the same ref with includeTurns:false.
+  // Exactly two thread/reads total: one hydration read (includeTurns:true) and
+  // that one shared subscription metadata read.
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2));
+  await waitFor(() =>
+    expect(
+      fake.calls.filter(
+        (call) => call.method === "thread/read" && (call.params as { includeTurns?: boolean }).includeTurns === true,
+      ),
+    ).toHaveLength(1),
+  );
 });
 
 test("ensureThread is deferred until the client becomes ready, not attempted while merely connecting", async () => {
@@ -1411,8 +1430,16 @@ test("ensureThread is deferred until the client becomes ready, not attempted whi
   // The connection-store ready notification lets Session claim the ref just
   // before the client's onReady callback advances the hydration epoch. The
   // epoch-current replacement read is intentional; only a matching client
-  // and epoch may share the pending hydration.
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(2));
+  // and epoch may share the pending hydration. Count the hydration reads their
+  // own way (includeTurns:true); the session-activity subscription adds one
+  // includeTurns:false metadata read of its own.
+  await waitFor(() =>
+    expect(
+      fake.calls.filter(
+        (call) => call.method === "thread/read" && (call.params as { includeTurns?: boolean }).includeTurns === true,
+      ),
+    ).toHaveLength(2),
+  );
 });
 
 test("unmounting before the client ever becomes ready calls neither ensureThread nor releaseThread", async () => {
@@ -2090,7 +2117,10 @@ test("replaces stale item cursor content with a fresh read without a retry row",
   fake.on("thread/turns/list", () => {
     throw new WireError("cursor was replaced", -32001, { evenerErrorInfo: "transcriptItemCursorStale" });
   });
-  fake.on("thread/read", () => {
+  fake.on("thread/read", ({ includeTurns }) => {
+    // The session-activity subscription's shared metadata read carries no
+    // turns; answer it benignly and only alternate the hydration reads.
+    if (includeTurns === false) return readResponse("ref_a");
     reads += 1;
     return {
       ...readResponse("ref_a", {
@@ -3567,6 +3597,125 @@ test("a newer draft typed before the resume lands follows the pane to the resume
   expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("newer draft");
 });
 
+// Review finding (medium) on this branch: the resumed ref can ALREADY be open
+// as an ordinary secondary pane beside its owner when the addressed child
+// resumes onto it. retypePane does not dedupe (openPane/openBeside do), so the
+// old code left TWO session panes for the resumed ref. routePlacementIsApplied's
+// nested single-child check (childPanes.length === 1) can never then pass, and
+// the reconciliation that follows refocuses whichever duplicate came first -
+// here the pre-existing pane, not the resumed run the user is in. The addressed
+// pane is the survivor: it is the record the resume moved, it keeps the
+// opened-from parent edge, and its unsent draft was already carried onto the
+// resumed ref before this callback ran.
+test("resuming a child onto an identity already open beside its owner leaves one pane and keeps the addressed one", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ownerRef = "remote:collision-owner";
+  const stableRef = "remote:collision-stable";
+  const currentRef = "remote:collision-current";
+  const fake = connectFakeClient();
+  let resumeRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    resumeRequested = resolve;
+  });
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const heldResume = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/read", (params) =>
+    params.ref === stableRef
+      ? readResponse(stableRef, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref: stableRef,
+            capabilities: CAPABILITIES,
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        })
+      : readResponse(params.ref ?? "", { status: { type: "idle" } }),
+  );
+  fake.on("thread/resume", () => {
+    resumeRequested();
+    return heldResume;
+  });
+  // Owner holds main; the resumed identity is ALREADY open beside it, and the
+  // addressed child sits beside it too - the collision the finding names. The
+  // pre-existing pane is placed FIRST so the defect's "refocus the first
+  // duplicate" symptom would land on it, not on the addressed pane.
+  const owner: OpenPaneRecord = { id: "owner-pane", type: "session", params: { ref: ownerRef }, slot: "main" };
+  const existing: OpenPaneRecord = {
+    id: "existing-pane",
+    type: "session",
+    params: { ref: currentRef },
+    slot: "secondary",
+  };
+  const addressed: OpenPaneRecord = { id: "p1", type: "session", params: { ref: stableRef }, slot: "secondary" };
+  workspaceStore.setState({ panes: [owner, existing, addressed], focusedPaneId: addressed.id });
+  recordConversationOpenParent(existing, ownerRef);
+  recordConversationOpenParent(addressed, ownerRef);
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(stableRef)}`);
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(stableRef)).toBe(true));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  await act(async () => {
+    await requested;
+  });
+  // Unsent work in the addressed pane, typed while the resume is in flight.
+  const editor = screen.getByRole("textbox", { name: /^message$/i });
+  await user.click(editor);
+  await user.type(editor, "unsent in addressed pane");
+  await act(async () => {
+    resolveResume(readResponse(currentRef, { status: { type: "idle" } }));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(currentRef)}`));
+  await waitFor(() => expect(threadsStore.getState().threads.get(currentRef)?.status.type).toBe("idle"));
+
+  const resumedPanes = () =>
+    workspaceStore.getState().panes.filter((pane) => pane.type === "session" && refParam(pane.params) === currentRef);
+  // Exactly ONE ordinary pane for the resumed ref - the single-child invariant
+  // routePlacementIsApplied requires.
+  expect(resumedPanes()).toHaveLength(1);
+  // The addressed pane survived (retypePane preserves its id); the pre-existing
+  // duplicate is gone.
+  const survivor = resumedPanes()[0];
+  expect(survivor?.id).toBe("p1");
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === "existing-pane")).toBe(false);
+  // The opened-from parent edge carried to the survivor, so Back still walks to
+  // the owner.
+  expect(survivor && conversationOpenParentRef(survivor)).toBe(ownerRef);
+  // The unsent draft followed the addressed pane onto the resumed identity.
+  expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("unsent in addressed pane");
+  // The resume was acknowledged (cleared) only once the workspace reached that
+  // state.
+  expect(threadsStore.getState().resumedIdentities.has(stableRef)).toBe(false);
+  // Reconciliation (what AppShell runs when placement drifts) now finds the
+  // single child and focuses the addressed pane, never the removed duplicate.
+  act(() => {
+    openNestedSessionWithOwner(currentRef, ownerRef);
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe("p1");
+});
+
 // RoboRev finding on the reduced branch: the explicit Resume passed
 // resumeStopFence(sessionRef) to refreshThread(refreshedRef) even though resume
 // can return a different identity (the line below the call already handles
@@ -4720,7 +4869,11 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     </ClientProvider>,
   );
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
-  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
+  // The pane itself now observes the shared session-activity availability
+  // state, so the session scope's store exists from the first render - its
+  // summary is still loading, not yet absent. Exactly one session read and one
+  // subtree read follow, however many surfaces show a count (below).
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeNull();
   // The fence must not hide the editor or its force-stop menu.
   const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
@@ -5066,4 +5219,169 @@ test("a resume survives a collapsed column in another cascade until that cascade
   );
   await act(async () => {});
   expect(threadsStore.getState().resumedIdentities.has(ref)).toBe(false);
+});
+
+// Finding A: session links now open this conversation pane, but its loading
+// branch ignored permanent unavailability. A child whose thread and activity
+// reads both answer sessionUnavailable stayed on the loading spinner forever,
+// while a cascade column (Zoom.tsx) showed the shared terminal explanation for
+// the same snapshot. The pane now observes that shared activity availability
+// state and shows the same explanation, and keeps recovering if it clears.
+test("a child whose reads are permanently unavailable shows the shared terminal explanation", async () => {
+  const fake = connectFakeClient();
+  const ref = "local:gone-child";
+  const unavailable = new WireError("thread not found: gone", -32001, { evenerErrorInfo: "sessionUnavailable" });
+  fake.on("thread/read", ({ ref: readRef }) => {
+    if (readRef === ref) throw unavailable;
+    return readResponse(readRef ?? ref);
+  });
+  fake.on("evener/thread/activity/read", ({ ref: readRef, scope }) => {
+    if (readRef === ref) throw unavailable;
+    return activitySummary(readRef ?? ref, scope);
+  });
+  workspaceStore.setState({
+    panes: [{ id: "gone-pane", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "gone-pane",
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="gone-pane" focused />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+  expect(screen.queryByText("Loading transcript")).toBeNull();
+});
+
+// Finding B: resume acknowledgement changed the URL without updating the
+// addressed pane's own workspace record. When an ordinary child conversation
+// sits in secondary beside its owner, routing to the resumed child calls
+// openNestedSessionWithOwner, which opened a second pane and left the original
+// on its superseded ref; the notification was cleared all the same. Cover the
+// addressed pane following the resume in place through real workspace records.
+//
+// The retype preserves the pane's lifetime, so the resume must also move the
+// lifetime's retained SOURCE ownership onto the resumed ref (Session's
+// onResumedIdentity calls adoptResumedSource). The REAL composer proves it:
+// after A -> B the editor restores B's own stored draft, never A's, and an
+// edit made after the resume persists under B so a reload of B keeps it. The
+// stubbed composer this test used to mount read no source and persisted
+// nothing, which is why the regression slipped past it.
+test("a resumed secondary child replaces its own pane record in place, preserving its owner and adopting the resumed composer", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  const owner = "local:owner";
+  const child = "local:child";
+  const resumed = "local:child-resumed";
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref }) => readResponse(ref ?? owner));
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => activitySummary(ref ?? owner, scope));
+
+  const ownerPane: OpenPaneRecord = { id: "owner-pane", type: "session", slot: "main", params: { ref: owner } };
+  const childPane: OpenPaneRecord = { id: "child-pane", type: "session", slot: "secondary", params: { ref: child } };
+  workspaceStore.setState({ panes: [ownerPane, childPane], focusedPaneId: childPane.id });
+  recordConversationOpenParent(childPane, owner);
+
+  // Two persisted drafts: the superseded ref's older one, and a NEWER one
+  // already stored under the resumed ref. The carry keeps the newer
+  // destination, and the resumed composer must load it rather than the old
+  // ref's text.
+  localStorage.setItem(
+    composerDraftStorageKey(child),
+    JSON.stringify({ text: "from superseded A", skillNames: [], editedAt: 1000 }),
+  );
+  localStorage.setItem(
+    composerDraftStorageKey(resumed),
+    JSON.stringify({ text: "destination B draft", skillNames: [], editedAt: 2000 }),
+  );
+
+  // The real shell renders a pane from its workspace record; this harness does
+  // the same, so a resume that never moves the record cannot pass by only
+  // moving the URL.
+  function WorkspacePane({ paneId, focused }: { paneId: string; focused: boolean }) {
+    const pane = useSyncExternalStore(
+      (notify) => workspaceStore.subscribe(notify),
+      () => workspaceStore.getState().panes.find((record) => record.id === paneId),
+    );
+    if (pane?.type !== "session") return null;
+    return <Session params={pane.params as { ref: string }} paneId={paneId} focused={focused} />;
+  }
+
+  // The REAL composer carries the pane's source and keys draft persistence by
+  // it, so address each pane's editor by the composer ref it renders under.
+  function composerEditor(ref: string): HTMLElement {
+    const anchor = document.querySelector(`[data-composer="${ref}"]`);
+    if (!(anchor instanceof HTMLElement)) throw new Error(`no composer anchored for ${ref}`);
+    return within(anchor).getByRole("textbox", { name: /^message$/i });
+  }
+
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(child)}`);
+  const user = userEvent.setup();
+  const app = render(
+    <ClientProvider client={fake}>
+      <WorkspacePane paneId={ownerPane.id} focused={false} />
+      <WorkspacePane paneId={childPane.id} focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(document.querySelector(`[data-pane-scaffold="session:${child}"]`)).not.toBeNull());
+  // The addressed pane's real composer mounts on the superseded ref and shows
+  // that ref's own persisted draft.
+  await waitFor(() => expect(composerEditor(child).textContent).toBe("from superseded A"));
+
+  act(() => {
+    threadsStore.setState((state) => ({ resumedIdentities: new Map(state.resumedIdentities).set(child, resumed) }));
+  });
+  await act(async () => {});
+
+  // The addressed pane's own record follows the resume in place...
+  const followed = workspaceStore.getState().panes.find((pane) => pane.id === childPane.id);
+  expect(followed?.params).toEqual({ ref: resumed });
+  // ...no second pane was opened, and the child kept its owner context...
+  expect(workspaceStore.getState().panes).toHaveLength(2);
+  expect(conversationOpenParentRef(followed as OpenPaneRecord)).toBe(owner);
+  // ...the pane renders the resumed identity...
+  await waitFor(() => expect(document.querySelector(`[data-pane-scaffold="session:${resumed}"]`)).not.toBeNull());
+  // ...and the resume is acknowledged only once the record moved.
+  expect(threadsStore.getState().resumedIdentities.has(child)).toBe(false);
+  expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumed)}`);
+
+  // The pane's retained composer moved onto the resumed ref: the editor
+  // restores the resumed ref's own newer stored draft, never the superseded
+  // ref's. Before the fix the pane still supplied A's composer here and this
+  // read A's text.
+  await waitFor(() => expect(composerEditor(resumed).textContent).toBe("destination B draft"));
+
+  // An edit made now persists under the RESUMED ref, not the superseded one.
+  await user.click(composerEditor(resumed));
+  await user.type(composerEditor(resumed), "EDIT");
+  await waitFor(() => expect(readDraft(resumed)).toContain("EDIT"));
+  const editedText = readDraft(resumed);
+  expect(readDraft(child)).toBe("from superseded A");
+
+  // The route placement the shell runs for a nested session reuses this pane
+  // instead of opening a second child beside the owner.
+  act(() => {
+    openNestedSessionWithOwner(resumed, owner);
+  });
+  expect(workspaceStore.getState().panes).toHaveLength(2);
+  const childPanes = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" && (pane.params as { ref: string }).ref === resumed);
+  expect(childPanes).toHaveLength(1);
+  expect(childPanes[0]?.id).toBe(childPane.id);
+
+  // Reloading the resumed conversation keeps the edit: a fresh mount reads the
+  // draft the composer persisted under B.
+  app.unmount();
+  const reloaded = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: resumed }} paneId="reloaded-pane" focused />
+    </ClientProvider>,
+  );
+  const reloadedEditor = await within(reloaded.container).findByRole("textbox", { name: /^message$/i });
+  expect(reloadedEditor.textContent).toBe(editedText);
 });
