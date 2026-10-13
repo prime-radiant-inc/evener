@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/gif"
+	"image/png"
 
 	// Registered for image.Decode side effects so raster validation accepts JPEG.
 	_ "image/jpeg"
@@ -92,6 +93,53 @@ func RasterMediaType(data []byte) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported raster format %q", format)
 	}
+}
+
+// ImageBlockMediaType returns the canonical media type an Anthropic or OpenAI
+// image content block accepts on the wire for v, or "" when v is not one of
+// them. v may be an image.Decode format name ("png") or a media type
+// ("image/png"); case and surrounding whitespace are ignored. The two builders
+// use it to decide which bytes they may carry verbatim and which they must
+// re-encode.
+func ImageBlockMediaType(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "png", "image/png":
+		return "image/png"
+	case "jpeg", "image/jpeg":
+		return "image/jpeg"
+	case "gif", "image/gif":
+		return "image/gif"
+	case "webp", "image/webp":
+		return "image/webp"
+	default:
+		return ""
+	}
+}
+
+// NormalizeImageBlock returns image bytes and a media type an Anthropic or
+// OpenAI image content block accepts on the wire: image/png, image/jpeg,
+// image/gif, or image/webp. Bytes already in one of those formats are returned
+// unchanged with their canonical media type; any other decodable raster
+// (image/bmp, image/tiff) is re-encoded as PNG. Bytes that are not a decodable
+// raster return an error.
+//
+// Both builders enforce this set because the providers do: an image block
+// carrying image/bmp or image/tiff is rejected and fails the whole turn
+// (#4464). Converting rather than refusing keeps a BMP or TIFF readable on
+// every route, matching the Responses builder's existing contract.
+func NormalizeImageBlock(data []byte) ([]byte, string, error) {
+	img, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", err
+	}
+	if mt := ImageBlockMediaType(format); mt != "" {
+		return data, mt, nil
+	}
+	var normalized bytes.Buffer
+	if err := png.Encode(&normalized, img); err != nil {
+		return nil, "", fmt.Errorf("re-encode %s image as PNG: %w", format, err)
+	}
+	return normalized.Bytes(), "image/png", nil
 }
 
 // DataURI encodes data as a base64 data URI with the given MIME type. If
