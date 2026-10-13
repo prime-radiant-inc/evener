@@ -398,6 +398,9 @@ describe("counts, structure and state are behavior", () => {
     `expect.soft(screen.getAllByText("Recommended")).toHaveLength(2);`,
     `await expect.poll(() => screen.queryAllByText("Recommended")).toHaveLength(2);`,
     `await expect.poll(() => screen.queryAllByText("Recommended").length).toBe(2);`,
+    `(expect(screen.getAllByText("Recommended"))).toHaveLength(2);`,
+    `(expect(screen.getAllByText("Recommended")) as Assertion<HTMLElement[]>).toHaveLength(2);`,
+    `(expect(screen.getAllByText("Recommended")) satisfies unknown as Assertion<HTMLElement[]>).toHaveLength(2);`,
   ])("%s", (check) => {
     const src = `test("renders Recommended in both themes", () => {\n  render(<Specimen />);\n  ${check}\n});\n`;
     expect(targetNames(src, ["Recommended"])).toEqual([]);

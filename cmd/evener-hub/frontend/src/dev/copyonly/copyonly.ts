@@ -240,7 +240,11 @@ function startsAssertion(call: ts.CallExpression): boolean {
   );
 }
 
-/** The whole member/call chain a call starts: `expect(x).not.toBe(y)` for `expect(x)`. */
+/**
+ * The whole member/call chain a call starts: `expect(x).not.toBe(y)` for
+ * `expect(x)`, looking through the parentheses, `as`, `satisfies` and `!`
+ * wrappers that leave the chain unchanged: `(expect(x) as T).toBe(y)`.
+ */
 function chainTop(node: ts.Node): ts.Node {
   let top = node;
   for (;;) {
@@ -248,7 +252,11 @@ function chainTop(node: ts.Node): ts.Node {
     const continues =
       ((ts.isPropertyAccessExpression(p) || ts.isElementAccessExpression(p) || ts.isCallExpression(p)) &&
         p.expression === top) ||
-      ts.isNonNullExpression(p);
+      ts.isNonNullExpression(p) ||
+      ts.isParenthesizedExpression(p) ||
+      ts.isAsExpression(p) ||
+      ts.isSatisfiesExpression(p) ||
+      ts.isTypeAssertionExpression(p);
     if (!continues) return top;
     top = p;
   }
