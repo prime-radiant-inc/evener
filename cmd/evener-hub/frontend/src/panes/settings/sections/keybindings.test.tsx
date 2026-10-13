@@ -6,6 +6,7 @@ import {
   DEFAULT_BINDINGS,
   friendlyErrorMessage,
   parseChord,
+  RequestTimeoutError,
   registerDefaultBindings,
   SETTINGS_SCOPE,
   serializeChord,
@@ -201,7 +202,7 @@ test("a hub load failure surfaces the error honestly and keeps the defaults visi
   await wireClient(client, true);
   render(<KeybindingsSection />);
 
-  expect(screen.getByRole("alert").textContent).toContain("socket went away");
+  expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(new Error("socket went away")));
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
 });
 
@@ -315,7 +316,7 @@ test("a refresh error leaves the section read-only with a truthful status", asyn
   render(<KeybindingsSection />);
 
   expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
-  expect(screen.getByRole("alert").textContent).toContain("socket went away");
+  expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(new Error("socket went away")));
   expect(readOnlyReason()).toBe("load-failed");
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
 });
@@ -1363,7 +1364,9 @@ test("a failed patch locks editing and shows a Retry that re-drives the refresh 
   // A transient server error: the PATCH rejects on the live generation, so
   // hubError surfaces and editing locks behind the round-3 gate.
   await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
-  await waitFor(() => expect(keybindingsStore.getState().hubError).toBe("hub exploded"));
+  await waitFor(() =>
+    expect(keybindingsStore.getState().hubError).toBe(friendlyErrorMessage(new Error("hub exploded"))),
+  );
   expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
   const retry = screen.getByRole("button", { name: "Retry" });
 
@@ -1477,6 +1480,7 @@ test("Retry is disabled while a refresh is in flight through the rollback window
 test.each([
   ["a hub-reported WireError", new WireError("keybindings.toml is being rewritten", -32000)],
   ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+  ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
 ])("a hub load failure from %s shows its friendly form", async (_name, err) => {
   const client = new FakeClient("ready");
   client.on("evener/settings/keybindings/get", () => {

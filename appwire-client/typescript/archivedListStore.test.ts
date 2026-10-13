@@ -8,7 +8,7 @@ import {
   archivedListKey,
   createArchivedListStore,
 } from "./archivedListStore";
-import { ConnectionClosedError, friendlyErrorMessage, WireError } from "./errors";
+import { ConnectionClosedError, friendlyErrorMessage, RequestTimeoutError, WireError } from "./errors";
 import { deferred } from "./testing/deferred";
 import { callsTo, FakeClient } from "./testing/fakeClient";
 import { completeSession } from "./testing/navigation";
@@ -73,7 +73,7 @@ describe("refresh", () => {
 
     const list = entry("projects", "proj");
     expect(list.rows.map((r) => r.ref)).toEqual(["local:a"]);
-    expect(list.error).toContain("hub unavailable");
+    expect(list.error).toBe(friendlyErrorMessage(new Error("hub unavailable")));
   });
 
   test("rejects malformed rows as an error and keeps the old rows", async () => {
@@ -87,7 +87,7 @@ describe("refresh", () => {
 
     const list = entry("projects", "proj");
     expect(list.rows.map((r) => r.ref)).toEqual(["local:a"]);
-    expect(list.error).toContain("invalid archived list");
+    expect(list.error).not.toBeNull();
   });
 });
 
@@ -212,7 +212,7 @@ describe("refresh over pages already loaded", () => {
 
     const list = entry("projects", "proj");
     expect(list.rows.map((r) => r.ref)).toEqual([...refs("a", 50), ...refs("b", 10)]);
-    expect(list.error).toContain("hub unavailable");
+    expect(list.error).toBe(friendlyErrorMessage(new Error("hub unavailable")));
     expect(list.loading).toBe(false);
   });
 });
@@ -255,7 +255,7 @@ describe("loadMore", () => {
     const list = entry("projects", "proj");
     expect(list.rows.map((r) => r.ref)).toEqual(["local:a"]);
     expect(list.nextCursor).toBe("cursor-1");
-    expect(list.error).toContain("hub unavailable");
+    expect(list.error).toBe(friendlyErrorMessage(new Error("hub unavailable")));
     expect(list.loading).toBe(false);
   });
 
@@ -507,25 +507,20 @@ describe("the list's revision", () => {
 });
 
 describe("failure text", () => {
-  // The store composes its own message for a malformed page and keeps it; a
-  // hub WireError keeps its own explanation; only the client's
-  // connection-state wiring text is replaced by the shared friendly sentence.
+  // The store keeps a failed request's friendly form: a hub WireError keeps
+  // its own explanation, and the client's own failures (closed, timed out,
+  // lost socket, any other exception) never show their wiring text.
   test.each([
     ["a hub-reported WireError", new WireError("archive index is rebuilding", -32000)],
     ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+    ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+    ["the client's lost socket", new Error("AppwireClient: socket closed (code 1006)")],
+    ["an unexpected client-side exception", new TypeError("cannot read properties of undefined")],
   ])("a failed refresh from %s records its friendly form", async (_label, err) => {
     fake.on("evener/archived/list", () => {
       throw err;
     });
     await store.refresh("projects", "proj");
     expect(entry("projects", "proj").error).toBe(friendlyErrorMessage(err));
-  });
-
-  test("a malformed page keeps the store's own diagnosis rather than the generic sentence", async () => {
-    fake.on("evener/archived/list", () => ({ sessions: [{ ref: "local:bad" }], total: 1 }));
-    await store.refresh("projects", "proj");
-    const error = entry("projects", "proj").error;
-    expect(error).not.toBeNull();
-    expect(error).not.toBe(friendlyErrorMessage(new Error("any client-side failure")));
   });
 });

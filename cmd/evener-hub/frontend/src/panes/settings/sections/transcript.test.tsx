@@ -3,6 +3,7 @@ import {
   ConnectionClosedError,
   friendlyErrorMessage,
   makeTranscriptDisplayConfig,
+  RequestTimeoutError,
   shippedDefault,
   toWireConfig,
   WireError,
@@ -587,6 +588,7 @@ test("reports a conflict instead of acknowledging two patches with one expected 
 test.each([
   ["a hub-reported WireError", new WireError("transcript defaults are being rewritten", -32000)],
   ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+  ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
 ])("a hub read failure from %s shows its friendly form", async (_name, err) => {
   const client = new FakeClient("ready");
   client.on("evener/settings/transcriptDisplay/get", () => {

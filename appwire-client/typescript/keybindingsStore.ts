@@ -36,7 +36,7 @@ import {
   discardStoredDraft,
   UnreadableDraftError,
 } from "./draftCheckpointPort";
-import { storeErrorText, wireRejectionPayload } from "./errors";
+import { StoreMessageError, storeErrorText, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
@@ -1125,7 +1125,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       const result = await client.request("evener/settings/keybindings/get", {});
       if (!stillMine()) return;
       const payload = fromWireOverrides(result);
-      if (payload === undefined) throw new Error(MALFORMED_MESSAGE);
+      if (payload === undefined) throw new StoreMessageError(MALFORMED_MESSAGE);
       // hubLoading clears in the same publish whether the payload applies or
       // is ignored (`extra`); settledWrite's checkpoint reclassification
       // (`settle`) runs only once the reconcile has actually succeeded.
@@ -1290,7 +1290,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
             return { version: 1, revision: current.revision, rules: [...current.rawOverrides] };
           }
           const payload = fromWireOverrides(result);
-          if (payload === undefined) throw new Error("Hub returned malformed keybindings PATCH response");
+          if (payload === undefined) throw new StoreMessageError("Hub returned malformed keybindings PATCH response");
           applyHubOverrides(payload);
           return payload;
         } catch (error) {
@@ -1559,7 +1559,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const value = fromWireOverrides(result);
     if (value === undefined || value.loadError !== undefined || value.revision < revision) {
       setState({ saving: false, draftConflict: true, writeUncertain: true, hubError: MALFORMED_MESSAGE });
-      throw new Error(MALFORMED_MESSAGE);
+      throw new StoreMessageError(MALFORMED_MESSAGE);
     }
     const newerExternal = getState().revision > value.revision;
     const applyFailure = settleWrite(newerExternal ? null : value, checkpoint, newerExternal ? "remark" : "remove", {

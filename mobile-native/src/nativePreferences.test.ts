@@ -330,7 +330,7 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 it("preserves the hub diagnostic when draft recovery clears its own error", async () => {
 	const client = fakeClient();
 	client.handlers.set("evener/settings/keybindings/get", () => {
-		throw new Error("hub request failed");
+		throw new WireError("hub request failed", -32000);
 	});
 	const backend = fakeDraftBackend();
 	backend.store.set("evener.native.keybinding-draft.hub", "{not json");

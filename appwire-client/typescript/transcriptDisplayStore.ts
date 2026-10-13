@@ -12,7 +12,7 @@
 import { assertDraftDiscardable, discardCheckpointedDraft, persistCheckpointedDraft } from "./checkpointedDraftEditor";
 import type { AppwireClient } from "./client";
 import { canonicalJson, createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
-import { storeErrorText, WireError, wireRejectionPayload } from "./errors";
+import { StoreMessageError, storeErrorText, WireError, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { isPlainObject } from "./plainObject";
 import { createReadyGenerationFence, type ReadyGenerationFence } from "./readyGenerationFence";
@@ -210,7 +210,7 @@ const DRAFT_REVIEW_BEFORE_SAVE_MESSAGE = "Review the current transcript settings
 const DRAFT_REVIEW_AGAIN_MESSAGE = "Transcript display settings changed again. Review the current values.";
 const SAVE_CANCELLED_MESSAGE = "Transcript preference save was cancelled.";
 
-class InvalidPatchResponseError extends Error {}
+class InvalidPatchResponseError extends StoreMessageError {}
 
 function isRevision(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -866,7 +866,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       const result = await client.request("evener/settings/transcriptDisplay/get", {});
       if (!stillMine()) return;
       const defaults = fromWireDefaults(result);
-      if (defaults === undefined) throw new Error(MALFORMED_DEFAULTS_MESSAGE);
+      if (defaults === undefined) throw new StoreMessageError(MALFORMED_DEFAULTS_MESSAGE);
       applyHubDefaults(defaults, (hub) => settledWrite(writeSerialAtStart, savingAtReadStart, draftAtReadStart, hub));
       if (!stillMine()) return;
       successfulHubReads += 1;

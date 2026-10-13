@@ -332,16 +332,19 @@ export function friendlyErrorMessage(error: unknown): string {
   return GENERIC_ERROR_MESSAGE;
 }
 
+// StoreMessageError is a failure a store throws itself with a message written
+// for the user (a malformed hub reply), so storeErrorText keeps its text.
+export class StoreMessageError extends Error {}
+
 // storeErrorText is the stored failure text for a store whose catch sees both
-// request rejections and failures it threw itself with a message written for
-// the user (a malformed reply, an unavailable hub). Those keep their text. A
-// hub WireError and the client-unreachable family take friendlyErrorMessage's
-// form, so the client's connection-state wiring text never reaches the
+// request rejections and StoreMessageErrors it threw itself. A
+// StoreMessageError keeps its message; everything else - a hub WireError, the
+// client's own timeout, closed or lost socket, any other exception - takes
+// friendlyErrorMessage's form, so the client's wiring text never reaches the
 // screen. A store whose catch sees only request rejections stores
 // friendlyErrorMessage(err) instead.
 export function storeErrorText(error: unknown): string {
-  if (error instanceof WireError || isClientUnreachableError(error)) return friendlyErrorMessage(error);
-  return errorText(error);
+  return error instanceof StoreMessageError ? error.message : friendlyErrorMessage(error);
 }
 
 // DAEMON_MISSING_MESSAGE is what friendlyLaunchErrorMessage shows for the

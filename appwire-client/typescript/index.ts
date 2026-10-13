@@ -236,6 +236,7 @@ export {
   isUpgradeRequiredError,
   mutationErrorData,
   RequestTimeoutError,
+  StoreMessageError,
   sessionActionError,
   sessionActionHeadline,
   WireError,

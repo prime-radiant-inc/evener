@@ -7,6 +7,7 @@ import {
   normalizeConfig,
   type TranscriptDisplayStoreState as PackageStoreState,
   resolveEffectiveConfig,
+  StoreMessageError,
   type TranscriptDisplayConfigV1,
   type TranscriptDisplayStore,
   type TranscriptDraft,
@@ -154,10 +155,10 @@ let storeEpoch = 0;
 // reply must not commit). The package's decoder deliberately tolerates extra
 // keys so future hub fields keep decoding, so the adapter enforces the web's
 // exact-shape rule at the client seam it hands the package - rejecting the
-// reply before the package can accept it. The thrown message is the same one
-// the old decoder used, so the package's own generic-error handling and the
-// adapter's preview restore below treat it exactly like the package's own
-// malformed-decode rejections.
+// reply before the package can accept it. It throws the package's own
+// malformed-reply StoreMessageError, so the package stores that message (not
+// the generic sentence) and the adapter's preview restore below treats it
+// exactly like the package's own malformed-decode rejections.
 const MALFORMED_PATCH_MESSAGE = "Hub returned malformed transcript display PATCH response";
 // The package's own gate words, thrown by the adapter's draft actions when no
 // package store exists to forward to - the same refusal shape the package's
@@ -179,7 +180,7 @@ function strictPatchReplyClient(client: AppwireClientLike): PackageClient {
   const request: AppwireClientLike["request"] = async (method, params, opts) => {
     const result = await client.request(method, params, opts);
     if (method === "evener/settings/transcriptDisplay/patch" && !isExactPatchReply(result)) {
-      throw new Error(MALFORMED_PATCH_MESSAGE);
+      throw new StoreMessageError(MALFORMED_PATCH_MESSAGE);
     }
     return result;
   };
