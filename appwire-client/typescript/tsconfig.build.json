@@ -43,6 +43,7 @@
     "watchText.ts",
     "steeringLabels.ts",
     "approvalDecision.ts",
+    "searchGrouping.ts",
     "systemEventCopy.ts",
     "toolEvidence.ts",
     "stepWords.ts",
