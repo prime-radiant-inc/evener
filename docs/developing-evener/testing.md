@@ -1285,7 +1285,9 @@ IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
   scroll port itself shrinks (the pane header growing). Paged-open readiness
   waits through asynchronous cache/read admission until the actual scroll port
   mounts and its geometry settles. An explicitly deferred read exercises those
-  pre-mount frames without a fixed delay or a wider readiness deadline.
+  pre-mount frames without a fixed delay or a wider readiness deadline. A pane
+  that unmounts under any post-settle wait must report it by name ("unmounted
+  during the scroll-away wait"), never as the harness's own mount error.
 - **`node scripts/sessioncacheguard/run.mjs`** drives TWO REAL TABS through the
   real session-cache store, native BroadcastChannel and IndexedDB, with only
   AppWire scripted. It proves sibling deletion suppression and refusal to
