@@ -264,21 +264,16 @@ func worktreeGitEntryExists(path string) bool {
 // spawn.
 //
 // The function decides repo-ness from its own structural facts —
-// ResolveProjectWith (which resolves a managed-lane root from its
-// linked-worktree `.git` pointer without forking git) and projectIsGitCheckout
-// (a stat of <root>/.git) — NOT from the caller's session-start git snapshot.
-// The snapshot's IsGitRepo comes from snapshotGit, whose every git exec is
-// bounded by gitExecTimeout (2s), and snapshotGit reports a probe that timed
-// out or failed as "not a repo", indistinguishable from a genuine non-repo.
-// Gating this function on that value let a starved probe silently disable the
-// whole occupancy lock — no co-occupying warning and no tracked worktree —
-// which is #4132. The old isGitRepo parameter was documented as an
-// optimization to skip ResolveMainRepoRoot's git fork for the common non-repo
-// case; that rationale does not hold here, because a managed-lane root never
-// needs that fork (its `.git` is a linked-worktree pointer; only a submodule
-// `.git` pointer reaches the git-binary fallback, and that is not a managed
-// lane) and the function returns for every non-local env below, so the
-// parameter could only ever subtract correctness.
+// ResolveProjectWith (a managed-lane root resolves from its linked-worktree
+// `.git` pointer) and projectIsGitCheckout — NOT from the caller's
+// session-start git snapshot. That snapshot's IsGitRepo comes from snapshotGit,
+// which reports a probe that timed out or failed as "not a repo"; gating this
+// function on it let a starved probe silently disable the occupancy lock
+// (#4132). The old parameter was documented as an optimization to skip a git
+// fork for the common non-repo case, but the function returns for every
+// non-local env and a managed-lane root never needs that fork, so the
+// parameter could only ever subtract correctness. See #4138 for the probe
+// conflation itself.
 //
 // Invariant carried from Task 18 into Task 21: this scoping was sound when
 // every spawn path hardcoded workingDir="" (a child always inherited

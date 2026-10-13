@@ -80,7 +80,10 @@ func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) string {
 
 // snapshotGit reads the launch/refresh git summary for cwd. ctx is the
 // caller's work context: each exec is additionally bounded by gitExecTimeout,
-// and cancelling ctx stops the forks in flight and the ones still to come.
+// and cancelling ctx stops the forks in flight and the ones still to come. A
+// failed or timed-out exec is reported as not-in-a-repo — indistinguishable
+// from a genuine non-repo — so a caller that must tell the two apart has to
+// probe structurally rather than read IsGitRepo (see #4138).
 func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string) {
 	if env == nil {
 		return false, "", 0, 0, nil

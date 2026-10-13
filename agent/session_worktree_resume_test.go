@@ -983,15 +983,13 @@ func TestInitInside_RelockFailsWarns(t *testing.T) {
 	}
 }
 
-// TestInitInside_ForeignBareLockUnknownOwnerWarns: a bare `git worktree lock`
-// (no --reason) is a reasonless, unparseable lock — Foreign with an empty
-// reason — so the co-occupying warning must fall back to "an unknown owner"
-// rather than naming an empty occupant.
-//
-// REAL git: only real git emits the reasonless `locked` porcelain line the empty
-// occupant is parsed from.
-func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
-	t.Parallel()
+// newForeignBareLockedLane creates a managed lane and leaves it held by a bare
+// `git worktree lock` (no --reason): a reasonless, unparseable lock — Foreign
+// with an empty reason — that the co-occupying notice must fall back to
+// "an unknown owner" for. REAL git: only real git emits the reasonless `locked`
+// porcelain line the empty occupant is parsed from.
+func newForeignBareLockedLane(t *testing.T) (*wtRepo, string) {
+	t.Helper()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -1000,9 +998,13 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	path := res["path"].(string)
 	wtGit(t, r.mainRoot, "worktree", "unlock", path)
 	wtGit(t, r.mainRoot, "worktree", "lock", path) // bare lock: no --reason
+	return r, path
+}
 
-	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
-
+// assertCoOccupyingUnknownOwnerTracked asserts the session warned about the
+// foreign bare lock naming an unknown owner and kept tracking the lane.
+func assertCoOccupyingUnknownOwnerTracked(t *testing.T, sess *Session, path string) {
+	t.Helper()
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
 		t.Errorf("no co-occupying notice naming an unknown owner: %v", msgs)
@@ -1010,70 +1012,40 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	if got := sess.Meta().WorktreePath; got != path {
 		t.Errorf("Meta().WorktreePath = %q, want %q (co-occupying still tracked)", got, path)
 	}
+}
+
+// TestInitInside_ForeignBareLockUnknownOwnerWarns: a foreign bare lock warns
+// and the session continues co-occupying it.
+func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
+	t.Parallel()
+	r, path := newForeignBareLockedLane(t)
+	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	assertCoOccupyingUnknownOwnerTracked(t, sess, path)
 }
 
 // TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot: the
-// occupancy lock must not be disabled by the session-start git snapshot saying
-// "not a repo". That answer comes from snapshotGit, whose every git exec is
-// bounded by gitExecTimeout (2s) and which reports a probe that timed out or
-// failed as inRepo=false — indistinguishable from a genuine non-repo. Gating
-// applyInitInsideWorktreeLock on it let a starved probe silently drop both the
-// co-occupying warning and the tracked worktree path (#4132). Launching with
-// the snapshot reporting not-a-repo (withoutGitSnapshot, the same value a
-// starved probe yields) while the cwd is a real, foreign-bare-locked managed
-// lane reproduces that condition deterministically: the function's own
-// structural checks must still warn and track.
-//
-// REAL git: only real git emits the reasonless `locked` porcelain line the
-// empty occupant is parsed from.
+// snapshot reporting not-a-repo (withoutGitSnapshot) must not disable the
+// occupancy lock on a real, foreign-bare-locked managed lane.
 func TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
-	wtGit(t, r.mainRoot, "worktree", "lock", path) // bare lock: no --reason
-
+	r, path := newForeignBareLockedLane(t)
 	sess := newSession(t, withDir(path), withoutGitSnapshot(),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
-
-	msgs := warningMessages(sess)
-	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
-		t.Errorf("no co-occupying notice naming an unknown owner: %v", msgs)
-	}
-	if got := sess.Meta().WorktreePath; got != path {
-		t.Errorf("Meta().WorktreePath = %q, want %q (co-occupying still tracked)", got, path)
-	}
+	assertCoOccupyingUnknownOwnerTracked(t, sess, path)
 }
 
-// TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe is the
-// faithful reproducer for #4132: it drives the REAL session-start git probe
-// past its deadline — gitExecTimeout, the same bound that starved under
-// full-suite load — so snapshotGit reports the launch cwd as "not a repo"
-// while the cwd really is a foreign-bare-locked managed lane. Before the fix
-// the session silently neither warned nor tracked; the structural checks must
-// now still warn and track.
+// TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe reproduces
+// #4132: it drives the REAL session-start git probe past its deadline
+// (gitExecTimeout), so snapshotGit reports the launch cwd as "not a repo" while
+// the cwd really is a foreign-bare-locked managed lane. Before the fix the
+// session silently neither warned nor tracked.
 //
-// Not parallel: it shrinks the package-wide gitExecTimeout for the duration of
-// one session's construction (restored before this session's Close runs), and
-// docs/developing-evener/testing.md requires a test that changes a package-level
-// var to stay serial. A one-nanosecond deadline deterministically fails every
-// probe exec, so no load is produced.
-//
-// REAL git: only real git emits the reasonless `locked` porcelain line the
-// empty occupant is parsed from.
+// Not parallel: it shrinks the package-wide gitExecTimeout for one session's
+// construction, and a test that changes a package-level var stays serial
+// (docs/developing-evener/testing.md). A one-nanosecond deadline fails every
+// probe exec deterministically, so no load is produced.
 func TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe(t *testing.T) {
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
-	wtGit(t, r.mainRoot, "worktree", "lock", path) // bare lock: no --reason
+	r, path := newForeignBareLockedLane(t)
 
 	orig := gitExecTimeout
 	gitExecTimeout = time.Nanosecond
@@ -1085,13 +1057,7 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe(t *testi
 	// the real deadline; the cleanup above is idempotent.
 	gitExecTimeout = orig
 
-	msgs := warningMessages(sess)
-	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
-		t.Errorf("no co-occupying notice naming an unknown owner: %v", msgs)
-	}
-	if got := sess.Meta().WorktreePath; got != path {
-		t.Errorf("Meta().WorktreePath = %q, want %q (co-occupying still tracked)", got, path)
-	}
+	assertCoOccupyingUnknownOwnerTracked(t, sess, path)
 }
 
 // TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey: a session

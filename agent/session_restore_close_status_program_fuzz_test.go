@@ -230,10 +230,7 @@ func srspCloseWorktree(t *testing.T) {
 // srspInitWorktree drives one applyInitInsideWorktreeLock shape. mode 0 is the
 // containment no-op (a Git checkout not under a managed lane); 1 the subagent
 // return; 2 a non-local env; 3 a lock-listing failure; 4 a lock failure; 5 the
-// own-marker adoption; 6 a foreign lock; 7 already-tracked re-entry. Mode 0
-// used to exercise the `!isGitRepo` gate removed in #4132, where a starved
-// session-start git probe reads as "not a repo"; the occupancy rule now
-// decides repo-ness structurally, so mode 0 no longer depends on the snapshot.
+// own-marker adoption; 6 a foreign lock; 7 already-tracked re-entry.
 func srspInitWorktree(t *testing.T, mode byte) {
 	t.Helper()
 	h, faults := newWorktreeFaultSession(t)
