@@ -96,35 +96,51 @@ func TestRunResumeOfDelegateIsRefused(t *testing.T) {
 // ParentSessionID with IsSubagent false (fork lineage is a different concept
 // from is_subagent, agent/session_tools_ask.go).
 func TestRefuseBareDelegateResumeAllowsRootAndFork(t *testing.T) {
-	root := schema.SessionMeta{ID: "01JROOTSESSION00000000"}
-	if err := refuseBareDelegateResume(root); err != nil {
+	root := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB"}
+	if err := refuseBareDelegateResume(root, ""); err != nil {
 		t.Errorf("root resume refused: %v", err)
 	}
-	fork := schema.SessionMeta{ID: "01JFORK000000000000000", ParentSessionID: root.ID}
-	if err := refuseBareDelegateResume(fork); err != nil {
+	fork := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeC", ParentSessionID: root.ID}
+	if err := refuseBareDelegateResume(fork, ""); err != nil {
 		t.Errorf("fork resume refused: %v", err)
 	}
 }
 
 // TestRefuseBareDelegateResumeMessage pins the whole error text, not a
-// substring (docs/developing-evener/testing.md). The message is prose and must
-// name the session and the proper route home.
+// substring (docs/developing-evener/testing.md). A delegate's parent may itself
+// be a delegate (also refused), so the message must name the ROOT session to
+// resume — the top of the persisted owner chain — and route follow-up through
+// the delegate's owner rather than promise a bare delegate_send (roborev, PR
+// #4589).
 func TestRefuseBareDelegateResumeMessage(t *testing.T) {
-	withParent := refuseBareDelegateResume(schema.SessionMeta{
-		ID: "01JDELEGATE000000000000", ParentSessionID: "01JROOT0000000000000000", IsSubagent: true,
-	})
-	if withParent == nil {
-		t.Fatal("delegate with a persisted parent was not refused")
+	stateDir := resolvedTempDir(t)
+	// A three-hop chain: root (not a delegate) <- mid delegate <- leaf delegate.
+	const root, mid, leaf = "02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv1C3Hut0M8GCeC", "02wMz5Txv1C3Hut0M8GCeD"
+	save := func(id, parent string, isSubagent bool) {
+		t.Helper()
+		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+			ID: id, ProfileID: "openai", Model: "gpt-test", IsSubagent: isSubagent, ParentSessionID: parent,
+		}); err != nil {
+			t.Fatalf("save meta %s: %v", id, err)
+		}
 	}
-	checkResumeGuardGolden(t, "resume_guard_delegate_with_parent.golden", withParent.Error())
+	save(root, "", false)
+	save(mid, root, true)
+	save(leaf, mid, true)
 
-	noParent := refuseBareDelegateResume(schema.SessionMeta{
-		ID: "01JDELEGATE000000000001", IsSubagent: true,
-	})
-	if noParent == nil {
-		t.Fatal("delegate with no parent id was not refused")
+	nested := refuseBareDelegateResume(schema.SessionMeta{ID: leaf, IsSubagent: true, ParentSessionID: mid}, stateDir)
+	if nested == nil {
+		t.Fatal("nested delegate was not refused")
 	}
-	checkResumeGuardGolden(t, "resume_guard_delegate_without_parent.golden", noParent.Error())
+	checkResumeGuardGolden(t, "resume_guard_delegate_with_root.golden", nested.Error())
+
+	orphan := refuseBareDelegateResume(schema.SessionMeta{
+		ID: "02wMz5Txv1C3Hut0M8GCeE", ProfileID: "openai", Model: "gpt-test", IsSubagent: true,
+	}, stateDir)
+	if orphan == nil {
+		t.Fatal("delegate with no owner chain was not refused")
+	}
+	checkResumeGuardGolden(t, "resume_guard_delegate_without_root.golden", orphan.Error())
 }
 
 // updateResumeGuardGolden rewrites the goldens under testdata/, the same

@@ -219,7 +219,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// forks the source into a new session, so its meta is not the resumed
 	// delegate and is not refused.
 	if meta != nil && cfg.resumeWith == "" {
-		if err := refuseBareDelegateResume(*meta); err != nil {
+		if err := refuseBareDelegateResume(*meta, stateDir); err != nil {
 			return err
 		}
 	}

@@ -12,6 +12,10 @@ import (
 // whole-output by the resume_guard_*.golden files under testdata/.
 var errBareDelegateResume = errors.New("bare delegate resume refused")
 
+// delegateOwnerHopLimit caps the owner-chain walk so a malformed or cyclic
+// chain cannot spin.
+const delegateOwnerHopLimit = 64
+
 // refuseBareDelegateResume returns nil for a root session or a fork, and
 // errBareDelegateResume for a delegate resumed on its own.
 //
@@ -24,16 +28,48 @@ var errBareDelegateResume = errors.New("bare delegate resume refused")
 // a subagent — a contradiction Jesse refused the operation over (#4442), rather
 // than inventing an allowance for a state the user did not mean to create.
 //
-// A root session (IsSubagent false) and a fork (ParentSessionID set with
-// IsSubagent false) are untouched: only a delegate carries the flag.
-func refuseBareDelegateResume(meta schema.SessionMeta) error {
+// The message names the root of the delegate's persisted owner chain to resume,
+// not meta.ParentSessionID: a nested delegate's parent is itself a delegate,
+// which the same guard would refuse, and a bare delegate_send reaches only the
+// caller's own delegates. A root session (IsSubagent false) and a fork
+// (ParentSessionID set with IsSubagent false) are untouched: only a delegate
+// carries the flag.
+func refuseBareDelegateResume(meta schema.SessionMeta, stateDir string) error {
 	if !meta.IsSubagent {
 		return nil
 	}
-	route := "the root session that spawned it"
-	if meta.ParentSessionID != "" {
-		route = "its parent session " + meta.ParentSessionID
+	route := "the root session that owns this tree"
+	if owner := delegateRootOwner(meta, stateDir); owner != "" {
+		route = "the root session " + owner
 	}
-	return fmt.Errorf("%w: session %s is a delegate (is_subagent) whose parent carrier is not persisted, so resuming it on its own would restore it as a root runtime with a root delegation allowance and the delegate tool. Resume %s instead, then reach this delegate with delegate_send from that session",
+	return fmt.Errorf("%w: session %s is a delegate (is_subagent) whose parent carrier is not persisted, so resuming it on its own would restore it as a root runtime with a root delegation allowance and the delegate tool. Resume %s instead, then reach this delegate through its owner",
 		errBareDelegateResume, meta.ID, route)
+}
+
+// delegateRootOwner walks the persisted owner chain from meta to the first
+// ancestor that is not itself a delegate. meta.ParentSessionID names the
+// spawning session, so the chain can be longer than two hops when a delegate
+// spawned a delegate; the first non-delegate is the session that can be
+// resumed. It stops at a fork too, because a fork's ParentSessionID is fork
+// lineage, not ownership.
+//
+// It returns "" when the chain cannot be resolved (a missing ancestor meta, an
+// empty parent id, a cycle past delegateOwnerHopLimit), so the message falls
+// back to generic wording rather than naming a session it cannot vouch for.
+func delegateRootOwner(meta schema.SessionMeta, stateDir string) string {
+	if stateDir == "" {
+		return ""
+	}
+	owner := meta.ParentSessionID
+	for hop := 0; hop < delegateOwnerHopLimit && owner != ""; hop++ {
+		parent, err := schema.LoadSessionMeta(stateDir, owner)
+		if err != nil {
+			return ""
+		}
+		if !parent.IsSubagent {
+			return owner
+		}
+		owner = parent.ParentSessionID
+	}
+	return ""
 }

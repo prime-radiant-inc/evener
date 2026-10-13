@@ -1,0 +1,1 @@
+bare delegate resume refused: session 02wMz5Txv1C3Hut0M8GCeE is a delegate (is_subagent) whose parent carrier is not persisted, so resuming it on its own would restore it as a root runtime with a root delegation allowance and the delegate tool. Resume the root session that owns this tree instead, then reach this delegate through its owner

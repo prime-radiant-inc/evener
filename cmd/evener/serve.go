@@ -585,7 +585,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		// Refuse a bare delegate resume before any session is reserved (#4442);
 		// refuseBareDelegateResume carries the rationale.
-		if err := refuseBareDelegateResume(resumedMeta); err != nil {
+		if err := refuseBareDelegateResume(resumedMeta, sd); err != nil {
 			return err
 		}
 	}
