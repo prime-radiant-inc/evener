@@ -9481,6 +9481,44 @@ describe("retry-safe mutation outbox integration", () => {
     expect(readAttempts).toBe(2);
   });
 
+  // The drain's bookkeeping obligations: the inflight hydration it leaves
+  // behind must not be adoptable. A pane that reopens while the drained
+  // read is still on the wire must hydrate from its own fresh read, not
+  // adopt a retired promise whose rejection can no longer schedule a retry.
+  test("a pane reopening after the pin drains hydrates from its own read, not the retired one", async () => {
+    await seedPinnedIntent("ref_a", "mutation-a");
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => {
+      const read = deferred<ThreadReadResponse>();
+      reads.push(read);
+      return read.promise;
+    });
+    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+
+    // The ready transition rejoins the discovered pinned ref; its read hangs.
+    fake.emitReady();
+    await flushIndexedDBUntil(() => reads.length === 1);
+
+    // The record settles: the drain retires the pinned lifetime while the
+    // rejoin read is still on the wire.
+    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
+    await flushIndexedDBUntil(() => scheduledHydrationRetries[0]?.cancelled === true);
+
+    // A pane opens. Its own read must hydrate it — the retired rejoin read
+    // is not a promise it can adopt.
+    fake.on("thread/read", () => readResponse("ref_a", { name: "Fresh" }));
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    reads[0]!.reject(new RequestTimeoutError("the drained rejoin read timed out"));
+    await ensuring;
+    expect(threadsStore.getState().threads.get("ref_a")?.name).toBe("Fresh");
+
+    threadsStore.getState().releaseThread("ref_a");
+  });
+
   // The drain's repair-status obligations (#4343): the flag a pinned ref's
   // read set cannot outlive the pin, and a read still on the wire when the
   // pin leaves cannot recreate it for a lifetime that just ended.

@@ -1259,10 +1259,15 @@ function dropUnpinnedModel(ref: string): void {
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
   // A read still on the wire when the pin left belongs to the lifetime this
-  // drain just ended: retire its pending entry the way releaseThread does,
-  // so its late resolution — a model or #4343's repair flag — finds the
-  // publication fence closed.
+  // drain just ended: retire its pending entry and its inflight bookkeeping
+  // the way releaseThread does, so a late resolution finds the publication
+  // fence closed — and a pane reopening here starts its own fresh
+  // hydration instead of adopting a promise whose rejection can no longer
+  // schedule a retry.
   pendingThreadHydrations.delete(ref);
+  inflightHydrates.delete(ref);
+  inflightHydrateClients.delete(ref);
+  inflightHydrateEpochs.delete(ref);
   // The model is leaving `threads` here, so its index membership leaves with
   // it (see putThreadModel/removeThreadModel — the membership paths).
   const dropped = threadsStore.getState().threads.get(ref);
