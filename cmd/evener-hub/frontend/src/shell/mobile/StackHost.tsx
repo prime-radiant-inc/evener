@@ -391,7 +391,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         // A host swap discards local history, not the retained parent pane.
         // Focus that exact pane: reopening a session could promote a nested
         // parent into main and discard the real owner and remaining context.
-        const ancestor =
+        let ancestor =
           panes.find(
             (pane) =>
               pane.id !== focusedPaneId &&
@@ -405,6 +405,28 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
               (pane.params as { ref?: unknown }).ref === parentRef,
           );
         target = ancestor?.id;
+        // Reject cycles, not incomplete context: an absent farther ancestor
+        // must not prevent returning to the retained immediate parent. A
+        // conversation records each open as a parent edge, so opening `a`
+        // from `b` and then `b` from `a` makes both edges reachable; without
+        // this a repeated Back ping-pongs instead of reaching Welcome.
+        const visited = new Set([focusedPaneId]);
+        while (ancestor?.type === "session" || ancestor?.type === "transcript") {
+          if (visited.has(ancestor.id)) {
+            target = undefined;
+            break;
+          }
+          visited.add(ancestor.id);
+          const nextRef =
+            ancestor.type === "session"
+              ? conversationOpenParentRef(ancestor)
+              : (ancestor.params as { parentRef?: unknown }).parentRef;
+          ancestor =
+            typeof nextRef === "string" && nextRef !== ""
+              ? (panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === nextRef) ??
+                panes.find((pane) => pane.type === "transcript" && (pane.params as { ref?: unknown }).ref === nextRef))
+              : undefined;
+        }
       }
     }
     wentBackRef.current = true;

@@ -1,7 +1,7 @@
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { render, screen } from "@testing-library/react";
 import { beforeAll, beforeEach, expect, test } from "vitest";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { recordConversationOpenParent, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
 import { OpenTranscriptButton, openTranscript } from "./openTranscript";
 
@@ -164,6 +164,35 @@ test("promotes the proven top-level owner from a loaded navigation location", ()
   const child = sessionPane("local:child");
   expect(child).toBeDefined();
   expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+});
+
+test("keeps the retained main session when the parent's conversation chain reaches it", () => {
+  // The parent's ancestry runs through the RECORDED conversation parent
+  // edges: the retained main session is an ancestor of the immediate parent,
+  // so ownership is already satisfied and nothing may be promoted. The
+  // parent's location names a different canonical owner (a continuation);
+  // trusting it would replace the retained workspace and discard every
+  // secondary pane.
+  const workspace = workspaceStore.getState();
+  const rootId = workspace.replacePrimary("session", { ref: "local:root" });
+  const midId = workspace.openPane("session", { ref: "local:mid" });
+  const sideId = workspace.openPane("session", { ref: "local:side" });
+  const mid = workspaceStore.getState().panes.find((pane) => pane.id === midId);
+  if (!mid) throw new Error("mid pane missing");
+  recordConversationOpenParent(mid, "local:root");
+  seedLocation("local:mid", "local:other");
+  workspace.focusPane(midId);
+
+  openTranscript("local:child", "local:mid");
+
+  const state = workspaceStore.getState();
+  expect(state.mainPane()?.id).toBe(rootId);
+  expect(state.panes.some((pane) => pane.id === midId)).toBe(true);
+  expect(state.panes.some((pane) => pane.id === sideId)).toBe(true);
+  expect(sessionPane("local:other")).toBeUndefined();
+  const child = sessionPane("local:child");
+  expect(child).toBeDefined();
+  expect(child?.slot).toBe("secondary");
 });
 
 test("keeps a job ref on the job-log transcript pane with its owner context", () => {

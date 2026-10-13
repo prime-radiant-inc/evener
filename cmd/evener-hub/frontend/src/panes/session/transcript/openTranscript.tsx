@@ -20,30 +20,11 @@ function sameParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// Follow only retained read-only parent context, not arbitrary focused panes.
-// This also works before a child's navigation location has been fetched.
-function transcriptContextRefs(ref: string): string[] {
-  const panes = workspaceStore.getState().panes;
-  const visited = new Set<string>();
-  let current: string | undefined = ref;
-  while (current !== undefined && !visited.has(current)) {
-    visited.add(current);
-    const pane = panes.find((pane) => pane.type === "transcript" && transcriptRefOf(pane.params) === current);
-    const parentRef = (pane?.params as { parentRef?: unknown } | undefined)?.parentRef;
-    current = typeof parentRef === "string" ? parentRef : undefined;
-  }
-  return [...visited];
-}
-
-export function transcriptContextIncludes(ref: string, ancestorRef: string): boolean {
-  return transcriptContextRefs(ref).includes(ancestorRef);
-}
-
 // Follow retained conversation parent context, then any retained read-only
 // parent context that chain carries. A conversation pane keeps its parent
 // beside the pane lifetime instead of in params, so the walk alternates the
-// two records. Like the transcript walk this works before a child's
-// navigation location has been fetched.
+// two records. This also works before a child's navigation location has been
+// fetched.
 function conversationContextRefs(ref: string): string[] {
   const panes = workspaceStore.getState().panes;
   const visited = new Set<string>();
@@ -95,7 +76,7 @@ export function openTranscript(ref: string, parentRef?: string): void {
   if (parentRef !== undefined) {
     const main = workspaceStore.getState().mainPane();
     const mainRef = main?.type === "session" ? transcriptRefOf(main.params) : undefined;
-    const context = transcriptContextRefs(parentRef);
+    const context = conversationContextRefs(parentRef);
     // parentRef stays the immediate Back target. It is not necessarily the
     // owner: a retained transcript chain or a routed nested session identifies
     // the real main session without promoting the immediate parent into it.

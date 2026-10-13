@@ -5,7 +5,12 @@ import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { registerPaneForTests } from "../../shell/paneRegistry";
-import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
+import {
+  conversationOpenParentRef,
+  registerDockviewApi,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -107,6 +112,42 @@ test("a legacy session ref recovers as its live conversation", async () => {
   // that still names one reopens the conversation's content — resolved to
   // its title here — never a dead surface.
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
+});
+
+test("a legacy session-ref transcript pane mounts a usable composer", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  // The pane record migrates from the removed transcript type to the live
+  // session type, so Session resolves the record's lifetime: the conversation
+  // is not just history, it keeps its live composer.
+  await screen.findByRole("textbox", { name: "Message" });
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.type).toBe("session");
+});
+
+test("a legacy transcript pane's parent context survives the migration", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_child"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_child", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  // The migrated conversation records the legacy params' parentRef as its
+  // open-parent edge, so its Back walk still reaches the pane it was opened
+  // from — the same edge the saved-layout migration records.
+  await screen.findByRole("textbox", { name: "Message" });
+  const migrated = workspaceStore.getState().panes.find((pane) => pane.id === "p1");
+  expect(migrated?.type).toBe("session");
+  expect(migrated && conversationOpenParentRef(migrated)).toBe("ref_parent");
 });
 
 // --- "Open this shell transcript in a pane": a "job:<id>" ref is a shell

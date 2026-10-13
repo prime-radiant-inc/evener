@@ -5605,7 +5605,7 @@ test.each([
       expect(workspaceStore.getState().panes.some((pane) => pane.id === historyPane)).toBe(true);
       if (retained)
         act(() => {
-          workspaceStore.getState().openPane("transcript", { ref: "local:child" }, { slot: "secondary" });
+          workspaceStore.getState().openPane("session", { ref: "local:child" }, { slot: "secondary" });
           workspaceStore.getState().focusPane(sourceId ?? "");
         });
       act(() => activitySidebarStore.getState().openWith("agents"));
@@ -5657,7 +5657,9 @@ test.each([
       expect(
         workspaceStore
           .getState()
-          .panes.filter((p) => p.type === "transcript" && (p.params as { ref?: string }).ref === "local:child"),
+          .panes.filter(
+            (p) => p.type === "session" && p.id !== sourceId && (p.params as { ref?: string }).ref === "local:child",
+          ),
       ).toHaveLength(retained ? 1 : 0);
       // The cascade column's "Open conversation" link is gone - the column
       // embeds the conversation directly - so the click flow that opened a

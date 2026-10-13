@@ -28,7 +28,13 @@ import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { usePaneVisible } from "../paneVisibility";
 import { openTopLevelSession } from "../sessionPlacement";
-import { documentPaneState, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import {
+  documentPaneState,
+  recordConversationOpenParent,
+  registerDockviewApi,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
 
 // Fixture pane type for the bulk of this file's tests - non-singleton, so
@@ -56,6 +62,19 @@ function DocFixture({ params, paneId, focused }: PaneProps<{ ref?: string; path?
 
 function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
   return <div>settings pane: {params.section ?? "none"}</div>;
+}
+
+// The product opens a conversation as a session pane and keeps its parent
+// context beside the pane (workspace.ts's recordConversationOpenParent),
+// never in the pane params, so a retained-parent fixture must build that
+// shape. An absent, empty, self, or non-string parent records no edge - the
+// same rejection the product's legacy fallback applies before it stores one.
+function openConversation(ref: string, parentRef?: unknown): string {
+  const id = workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.id === id);
+  if (!pane) throw new Error(`fixture did not open the ${ref} conversation`);
+  recordConversationOpenParent(pane, parentRef as string | undefined);
+  return id;
 }
 
 class RestoreDockviewApi {
@@ -879,7 +898,7 @@ test.each([
   workspace.openPane("doc", { ref: "local:document" }, { slot: "secondary" });
   const closed = workspace.openPane("session", { ref: "local:closed" }, { slot: "secondary" });
   workspace.closePane(closed);
-  const leaf = workspace.openPane("transcript", { ref: "local:leaf", parentRef }, { slot: "secondary" });
+  const leaf = openConversation("local:leaf", parentRef);
   const retained = workspaceStore.getState().panes;
   render(<StackHost />);
   expect(workspaceStore.getState().focusedPaneId).toBe(leaf);
@@ -908,14 +927,8 @@ test.each([false, true])(
   async (nested) => {
     const workspace = workspaceStore.getState();
     const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
-    const child = workspace.openPane(
-      "transcript",
-      { ref: "local:child", parentRef: "local:owner" },
-      { slot: "secondary" },
-    );
-    if (nested) {
-      workspace.openPane("transcript", { ref: "local:grandchild", parentRef: "local:child" }, { slot: "secondary" });
-    }
+    const child = openConversation("local:child", "local:owner");
+    if (nested) openConversation("local:grandchild", "local:child");
     const retained = workspaceStore.getState().panes;
     render(<StackHost />);
     const user = userEvent.setup();
@@ -984,7 +997,7 @@ test.each([
   async ({ context }) => {
     const workspace = workspaceStore.getState();
     const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
-    for (const params of context) workspace.openPane("transcript", params, { slot: "secondary" });
+    for (const params of context) openConversation(params.ref, params.parentRef);
     const retained = workspaceStore.getState().panes;
     // All context predates this mount: the real host starts with empty history.
     render(<StackHost />);
@@ -1015,9 +1028,9 @@ test.each([false, true])(
     const workspace = workspaceStore.getState();
     const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
     // Paired with the cyclic contexts above: only the final link differs.
-    const a = workspace.openPane("transcript", { ref: "local:a", parentRef: "local:missing" }, { slot: "secondary" });
-    const b = workspace.openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
-    if (longer) workspace.openPane("transcript", { ref: "local:c", parentRef: "local:b" }, { slot: "secondary" });
+    const a = openConversation("local:a", "local:missing");
+    const b = openConversation("local:b", "local:a");
+    if (longer) openConversation("local:c", "local:b");
     const retained = workspaceStore.getState().panes;
     render(<StackHost />);
     const user = userEvent.setup();
@@ -1037,8 +1050,8 @@ test.each([false, true])(
 test("retained-parent cycle safety: valid observed history wins even when retained context is cyclic", async () => {
   const workspace = workspaceStore.getState();
   const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
-  workspace.openPane("transcript", { ref: "local:a", parentRef: "local:b" }, { slot: "secondary" });
-  const b = workspace.openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
+  openConversation("local:a", "local:b");
+  const b = openConversation("local:b", "local:a");
   const previous = workspace.openPane("doc", { ref: "previous" }, { slot: "secondary" });
   const retained = workspaceStore.getState().panes;
   render(<StackHost />);
@@ -1499,14 +1512,22 @@ test("a real session pane's scaffold-published title lands in the top bar", asyn
   await vi.waitFor(() => expect(screen.getByTestId("topbar-title").textContent).toBe("local:ref_titled"));
 });
 
-test.each(["exact cycle", "mixed cycle", "session origin", "missing farther ancestor"])(
+// Only "session origin" remains. Its three retired siblings - "exact cycle",
+// "mixed cycle" and "missing farther ancestor" - each focused a transcript
+// pane whose parentRef also named a session pane, so transcriptOpenOrigin
+// could select that exact pane over the fallback's session preference. A
+// transcript pane is now only ever a job log (PR 4373), whose ref can never
+// also name a session pane, so the origin record cannot be made decisive for
+// them; they were retired rather than re-modelled onto a shape the product
+// no longer produces.
+test.each(["session origin"])(
   "exact Open origin Back: $0 follows the selected edge rather than a same-ref sibling",
   async (shape) => {
     const { recordTranscriptOpenOrigin } = await import("../workspace");
     const workspace = workspaceStore.getState();
     const owner = workspace.openPane("session", { ref: "local:owner" });
     const siblingId = workspace.openPane("session", { ref: "local:b" });
-    const aId = workspace.openPane("transcript", { ref: "local:a", parentRef: "local:b" });
+    const aId = openConversation("local:a", "local:b");
     const bId = workspace.openPane("transcript", {
       ref: "local:b",
       parentRef: shape === "missing farther ancestor" ? "local:missing" : "local:a",

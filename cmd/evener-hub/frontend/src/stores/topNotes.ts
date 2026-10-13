@@ -1,7 +1,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { canWriteHumanNote } from "./humanNoteDrafts";
-import { registerPanelStoreEvictor } from "./panelStoreEviction";
+import { openConversationRefs, registerPanelStoreEvictor } from "./panelStoreEviction";
 import { threadsStore } from "./threads";
 
 // One outstanding "focus the editor" request per ref. A request survives
@@ -98,20 +98,14 @@ export const topNotesStore = createStore<TopNotesStoreState>((set, get) => ({
 
 registerPanelStoreEvictor({
   refs: () => new Set([...topNotesStore.getState().expanded.keys(), ...topNotesStore.getState().pendingFocus.keys()]),
-  // Top-notes state exists only inside the SESSION pane: companion panes
-  // (details/tasks/activity) for the same ref cannot show the notes bar, so
-  // they must not keep its state alive either - an expanded flag that
-  // outlives the session pane is invisible, and the next /notes on the
-  // reopened session would toggle it CLOSED instead of opening.
-  keepAliveRefs: (panes) => {
-    const refs = new Set<string>();
-    for (const pane of panes) {
-      if (pane.type !== "session") continue;
-      const ref = (pane.params as { ref?: unknown } | null | undefined)?.ref;
-      if (typeof ref === "string" && ref !== "") refs.add(ref);
-    }
-    return refs;
-  },
+  // Top-notes state exists only inside the conversation surface: the session
+  // pane's notes bar, or any readable column of a sessionZoom cascade (whose
+  // embedded ConversationBody mounts the same bar per scope ref). Companion
+  // panes (details/tasks/activity) for the same ref cannot show the notes bar,
+  // so they must not keep its state alive either - an expanded flag that
+  // outlives the conversation surface is invisible, and the next /notes on the
+  // reopened conversation would toggle it CLOSED instead of opening.
+  keepAliveRefs: (panes) => openConversationRefs(panes),
   evict: (ref: string) => {
     const state = topNotesStore.getState();
     if (!state.expanded.has(ref) && !state.pendingFocus.has(ref)) return;

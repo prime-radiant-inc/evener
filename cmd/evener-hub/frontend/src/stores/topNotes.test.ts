@@ -244,3 +244,65 @@ test("expanded state survives while the session pane holds the ref", async () =>
   });
   expect(topNotesStore.getState().isExpanded("ref_1")).toBe(true);
 });
+
+test("a cascade column keeps expanded notes through a focus change and a drill", async () => {
+  act(() => {
+    workspaceStore.setState({
+      panes: [
+        {
+          id: "p_zoom",
+          type: "sessionZoom",
+          params: {
+            ref: "ref_child",
+            source: { type: "session", params: { ref: "ref_root" } },
+            edges: [{ ownerRef: "ref_root", childRef: "ref_child", delegateId: "d1" }],
+          },
+          slot: "main",
+        },
+      ],
+      focusedPaneId: "p_zoom",
+    });
+  });
+  act(() => {
+    topNotesStore.getState().openAndFocus("ref_child");
+  });
+  expect(topNotesStore.getState().isExpanded("ref_child")).toBe(true);
+
+  // (a) An unrelated workspace change (a focus change) runs the sweep; the
+  // cascade column still holds the ref, so the expanded state stays.
+  act(() => {
+    workspaceStore.setState({ focusedPaneId: "p_zoom" });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(topNotesStore.getState().isExpanded("ref_child")).toBe(true);
+
+  // (b) A drill moves the pane's own ref to the grandchild while the child
+  // stays a readable parent column of the same cascade; the child's expanded
+  // state must survive even though it is no longer the pane's `params.ref`.
+  act(() => {
+    workspaceStore.setState({
+      panes: [
+        {
+          id: "p_zoom",
+          type: "sessionZoom",
+          params: {
+            ref: "ref_grandchild",
+            source: { type: "session", params: { ref: "ref_root" } },
+            edges: [
+              { ownerRef: "ref_root", childRef: "ref_child", delegateId: "d1" },
+              { ownerRef: "ref_child", childRef: "ref_grandchild", delegateId: "d2" },
+            ],
+          },
+          slot: "main",
+        },
+      ],
+      focusedPaneId: "p_zoom",
+    });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(topNotesStore.getState().isExpanded("ref_child")).toBe(true);
+});
