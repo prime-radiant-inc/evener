@@ -1,4 +1,5 @@
 import type { NavigationProjectSummary, SearchResult } from "@evener/appwire-client";
+import type { GroupedSearchRow } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -128,13 +129,16 @@ function Sessions({ search, scope, connected, onOpen }: SearchResultsProps) {
 	if (search.failed) return <Note reason="failed" text="Couldn't search this hub's sessions." />;
 	if (search.results) {
 		const rows = sessionResults(search.results, scope);
+		// The count answers "how many sessions matched": a synthesized anchor
+		// is context for its subagents' matches, not a match itself.
+		const matches = rows.filter((row) => !row.indirect).length;
 		return rows.length ? (
 			<>
-				<BandHeader text={`SESSIONS · ${rows.length}`} />
+				<BandHeader text={`SESSIONS · ${matches}`} />
 				{rows.map((result, index) => (
-					<View key={result.ref}>
+					<View key={result.result.ref}>
 						{index > 0 ? <Hairline /> : null}
-						<ResultRow result={result} connected={connected} onOpen={onOpen} />
+						<ResultRow row={result} connected={connected} onOpen={onOpen} />
 					</View>
 				))}
 			</>
@@ -187,11 +191,13 @@ function Scopes({ scope, onScope }: { scope: SearchScope; onScope: (scope: Searc
 
 /** The row every search result sits in, session or project. Its height
  * mirrors the Board row it stands in for: a session a signal row (64), a
- * project a quiet row (48). */
-function resultRowStyle(palette: ReturnType<typeof useColors>["palette"], minHeight: number) {
+ * project a quiet row (48). A nested subagent indents one StateMark column
+ * into its group so the top-level session's row reads as the family's head. */
+function resultRowStyle(palette: ReturnType<typeof useColors>["palette"], minHeight: number, indent = false) {
 	return ({ pressed }: { pressed: boolean }) => ({
 		minHeight,
-		paddingHorizontal: 16,
+		paddingLeft: indent ? 44 : 16,
+		paddingRight: 16,
 		paddingVertical: 8,
 		flexDirection: "row" as const,
 		alignItems: "center" as const,
@@ -217,28 +223,31 @@ function ResultDetail({ text }: { text: string }) {
 }
 
 function ResultRow({
-	result,
+	row,
 	connected,
 	onOpen,
 }: {
-	result: SearchResult;
+	row: GroupedSearchRow;
 	connected: boolean;
 	onOpen: (result: SearchResult) => void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const result = row.result;
 	const state = searchResultMark(result);
 	const title = result.title || "Untitled session";
 	// A state that draws no mark (Idle, Shut down) goes unnamed in the label too.
 	const word = markFor(state, false) ? stateWord(state) : null;
-	const label = [title, word, result.project, result.age && spokenAge(result.age)].filter(Boolean).join(", ");
+	const label = [title, ...(row.nested ? ["subagent"] : []), word, result.project, result.age && spokenAge(result.age)]
+		.filter(Boolean)
+		.join(", ");
 	return (
 		<Pressable
 			testID="search-result"
 			accessibilityRole="button"
 			accessibilityLabel={label}
 			onPress={() => onOpen(result)}
-			style={resultRowStyle(palette, 64)}
+			style={resultRowStyle(palette, 64, row.nested)}
 		>
 			<StateMark state={state} connected={connected} />
 			<View style={{ flex: 1, minWidth: 0 }}>
@@ -246,7 +255,16 @@ function ResultRow({
 					<Text
 						allowFontScaling={allowFontScaling}
 						numberOfLines={1}
-						style={{ flex: 1, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
+						// A nested subagent reads subordinate; a greyed anchor — its
+						// own session did not match, only its subagents did — recedes
+						// while staying a normal row that opens the session.
+						style={{
+							flex: 1,
+							fontSize: 17 * scale,
+							lineHeight: 22 * scale,
+							fontWeight: row.nested ? "400" : "600",
+							color: row.indirect ? palette.inkLow : palette.inkHi,
+						}}
 					>
 						{title}
 					</Text>

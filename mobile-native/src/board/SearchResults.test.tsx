@@ -124,6 +124,74 @@ it("opens a result when it's tapped", () => {
 	expect(props.onOpen).toHaveBeenCalledWith(asking);
 });
 
+// --- grouped subagent hits ---
+
+const subagent = result("sub1", {
+	title: "Delegate",
+	state: "ended",
+	age: "2h",
+	topLevel: { id: "root1", ref: "local:root1", title: "Alpha root", state: "ended", age: "3h" },
+});
+const grouped: SearchSnapshot = {
+	query: "fix",
+	results: { live: [], past: [subagent] },
+	searching: false,
+	failed: false,
+};
+
+it("groups a matching subagent under a greyed anchor that still opens its session", () => {
+	const { tree, props } = mount({ search: grouped });
+	const rows = resultRows(tree);
+	expect(rows.map((row) => row.props.accessibilityLabel)).toEqual([
+		// The greyed anchor carries the parent's title and age; its project is
+		// not on the wire's anchor shape, so nothing names one.
+		"Alpha root, 3 hours",
+		// The subagent says what it is, after its title.
+		"Delegate, subagent, evener, 2 hours",
+	]);
+	// The anchor greys — its own session did not match — but stays pressable.
+	expect(flatten(textWith(rows[0], "Alpha root").props.style).color).toBe(palette.inkLow);
+	// The subagent indents into its group and reads subordinate.
+	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
+	expect(flatten(textWith(rows[1], "Delegate").props.style).fontWeight).toBe("400");
+	// The band counts matches, not synthesized anchors.
+	expect(textWith(tree, "SESSIONS · 1")).toBeTruthy();
+	act(() => rows[0].props.onPress());
+	expect(props.onOpen).toHaveBeenCalledWith(expect.objectContaining({ ref: "local:root1" }));
+	act(() => rows[1].props.onPress());
+	expect(props.onOpen).toHaveBeenCalledWith(expect.objectContaining({ ref: "local:sub1" }));
+});
+
+it("nests a matched live parent's subagent hit under its row, one row per session", () => {
+	const parent = result("root1", { title: "Live root", state: "active" });
+	const child = result("sub1", {
+		title: "Delegate",
+		state: "ended",
+		age: "2h",
+		topLevel: { id: "root1", ref: "local:root1", title: "Live root", state: "active", age: "now" },
+	});
+	const liveParent: SearchSnapshot = {
+		query: "fix",
+		results: { live: [parent], past: [child] },
+		searching: false,
+		failed: false,
+	};
+	const { tree } = mount({ search: liveParent });
+	const rows = resultRows(tree);
+	expect(rows.map((row) => row.props.accessibilityLabel)).toEqual([
+		"Live root, Working, evener, 2 minutes",
+		"Delegate, subagent, evener, 2 hours",
+	]);
+	expect(textWith(tree, "SESSIONS · 2")).toBeTruthy();
+	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
+});
+
+it("keeps past children out of the Live scope", () => {
+	const { tree } = mount({ search: { ...grouped, results: { live: [], past: [subagent] } }, scope: "live" });
+	expect(resultRows(tree)).toHaveLength(0);
+	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
+});
+
 it("says so when nothing matches", () => {
 	const { tree } = mount({ search: { ...answered, results: { live: [], past: [past] } }, scope: "live" });
 	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
