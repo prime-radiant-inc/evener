@@ -1,8 +1,11 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
+import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
+import { connectionStore } from "./connection";
 import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
+import { acquireSessionActivity, sessionActivitySnapshot } from "./sessionActivity";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "./topNotes";
 
@@ -74,7 +77,7 @@ test("a writable-origin focus request is dropped when the session loses write ca
     threadsStore.setState({ threads: new Map([["ref_1", makeModel()]]) });
     topNotesStore.getState().openAndFocus("ref_1");
   });
-  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: false });
+  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: false, paneId: null });
 
   act(() => {
     threadsStore.setState({ threads: new Map([["ref_1", makeModel({ status: { type: "ended" } })]]) });
@@ -96,7 +99,7 @@ test("a read-only-origin focus request survives the capability flips", () => {
     threadsStore.setState({ threads: new Map([["ref_1", makeModel({ status: { type: "ended" } })]]) });
     topNotesStore.getState().openAndFocus("ref_1");
   });
-  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: true });
+  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: true, paneId: null });
 
   act(() => {
     threadsStore.setState({ threads: new Map([["ref_1", makeModel()]]) });
@@ -144,6 +147,24 @@ test("openAndFocus expands and leaves exactly one servable focus request", () =>
   expect(topNotesStore.getState().takePendingFocus("ref_1")).toBe(false);
 });
 
+test("an addressed focus request is served only by the pane it names", () => {
+  // One conversation can hold two notes panels (an ordinary session pane and a
+  // cascade column). A request keyed only by ref would let whichever panel's
+  // effect runs first focus its own editor, even when the command came from
+  // the other pane.
+  topNotesStore.getState().openAndFocus("ref_1", "pane_b");
+
+  expect(topNotesStore.getState().takePendingFocus("ref_1", "pane_a")).toBe(false);
+  expect(topNotesStore.getState().hasPendingFocus("ref_1")).toBe(true);
+  expect(topNotesStore.getState().takePendingFocus("ref_1", "pane_b")).toBe(true);
+  expect(topNotesStore.getState().hasPendingFocus("ref_1")).toBe(false);
+});
+
+test("an unaddressed focus request is still served by any pane", () => {
+  topNotesStore.getState().openAndFocus("ref_1");
+  expect(topNotesStore.getState().takePendingFocus("ref_1", "pane_a")).toBe(true);
+});
+
 test("toggleAndFocus opens with a focus request, then collapses without one", () => {
   topNotesStore.getState().toggleAndFocus("ref_1");
   expect(topNotesStore.getState().isExpanded("ref_1")).toBe(true);
@@ -187,7 +208,7 @@ test("useTopNotesExpanded and usePendingTopNotesFocus reflect store updates", ()
 
   expect(exp.current).toBe(true);
   // No thread model exists for ref_1, so the request is born read-only.
-  expect(pending.current).toEqual({ originReadOnly: true });
+  expect(pending.current).toEqual({ originReadOnly: true, paneId: null });
 });
 
 // --- eviction: state lives inside the session pane -------------------------
@@ -243,4 +264,119 @@ test("expanded state survives while the session pane holds the ref", async () =>
     await Promise.resolve();
   });
   expect(topNotesStore.getState().isExpanded("ref_1")).toBe(true);
+});
+
+test("a cascade column keeps expanded notes through a focus change and a drill", async () => {
+  act(() => {
+    workspaceStore.setState({
+      panes: [
+        {
+          id: "p_zoom",
+          type: "sessionZoom",
+          params: {
+            ref: "ref_child",
+            source: { type: "session", params: { ref: "ref_root" } },
+            edges: [{ ownerRef: "ref_root", childRef: "ref_child", delegateId: "d1" }],
+          },
+          slot: "main",
+        },
+      ],
+      focusedPaneId: "p_zoom",
+    });
+  });
+  act(() => {
+    topNotesStore.getState().openAndFocus("ref_child");
+  });
+  expect(topNotesStore.getState().isExpanded("ref_child")).toBe(true);
+
+  // (a) An unrelated workspace change (a focus change) runs the sweep; the
+  // cascade column still holds the ref, so the expanded state stays.
+  act(() => {
+    workspaceStore.setState({ focusedPaneId: "p_zoom" });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(topNotesStore.getState().isExpanded("ref_child")).toBe(true);
+
+  // (b) A drill moves the pane's own ref to the grandchild while the child
+  // stays a readable parent column of the same cascade; the child's expanded
+  // state must survive even though it is no longer the pane's `params.ref`.
+  act(() => {
+    workspaceStore.setState({
+      panes: [
+        {
+          id: "p_zoom",
+          type: "sessionZoom",
+          params: {
+            ref: "ref_grandchild",
+            source: { type: "session", params: { ref: "ref_root" } },
+            edges: [
+              { ownerRef: "ref_root", childRef: "ref_child", delegateId: "d1" },
+              { ownerRef: "ref_child", childRef: "ref_grandchild", delegateId: "d2" },
+            ],
+          },
+          slot: "main",
+        },
+      ],
+      focusedPaneId: "p_zoom",
+    });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(topNotesStore.getState().isExpanded("ref_child")).toBe(true);
+});
+
+// A cascade's readable parent can be absent from its RECORDED edges: after
+// popping above the original source, the ancestry above the source lives only
+// in the authoritative activity context, which is what Zoom renders columns
+// from. The retention sweep must read that same context, or the still-visible
+// parent column's expanded notes are evicted by an unrelated workspace change.
+test("a readable parent known only from the authoritative ancestry keeps expanded notes", async () => {
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "ref_child" ? ["ref_root"] : []));
+  connectionStore.setState({ client });
+  const lease = acquireSessionActivity(client, "ref_child", "session");
+  try {
+    await waitFor(() =>
+      expect(sessionActivitySnapshot(client, "ref_child", "session")?.context?.ancestryKnown).toBe(true),
+    );
+
+    act(() => {
+      workspaceStore.setState({
+        panes: [
+          {
+            id: "p_zoom",
+            type: "sessionZoom",
+            params: {
+              // The edge above the source was trimmed by the pop, so `ref_root`
+              // is a readable parent only the authoritative context names.
+              ref: "ref_child",
+              source: { type: "session", params: { ref: "ref_child" } },
+              edges: [],
+            },
+            slot: "main",
+          },
+        ],
+        focusedPaneId: "p_zoom",
+      });
+    });
+    act(() => {
+      topNotesStore.getState().openAndFocus("ref_root");
+    });
+    expect(topNotesStore.getState().isExpanded("ref_root")).toBe(true);
+
+    // An unrelated workspace change (a focus change) runs the sweep; the parent
+    // column is still rendered, so its expanded state must stay.
+    act(() => {
+      workspaceStore.setState({ focusedPaneId: "p_zoom" });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(topNotesStore.getState().isExpanded("ref_root")).toBe(true);
+  } finally {
+    lease.release();
+    connectionStore.setState({ client: null });
+  }
 });

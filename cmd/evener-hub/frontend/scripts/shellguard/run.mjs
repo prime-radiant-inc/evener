@@ -908,7 +908,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     })()`);
     await clickControl(send, '[data-overview-guard-child]');
     try {
-      await waitForDom(send, `window.overviewGuardState().overview.ref === 'local:overview-child' && !document.querySelector(${JSON.stringify(trigger(pane))})`, "child transcript replaces parent Session");
+      await waitForDom(send, `window.overviewGuardState().overview.ref === 'local:overview-child' && !document.querySelector(${JSON.stringify(trigger(pane))})`, "child conversation takes phone focus");
     } catch (error) {
       const witness = await evaluate(send, `(() => {
         const state = window.overviewGuardState();
@@ -919,14 +919,18 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     await settleOverview(send);
     await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
     await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`, "child About hydrated");
-    await waitForDom(send, `Array.from(document.querySelectorAll('[data-session-navigation-ref="local:p0-s0"]')).some(e => !e.closest(${JSON.stringify(OVERVIEW)}))`, "underlying parent breadcrumb");
+    // The read-only pane's ancestor breadcrumb is gone: the revealed child
+    // conversation owns the return focus through its own actions control.
+    const childPaneId = await evaluate(send, "window.overviewGuardState().focusedPaneId");
+    const childActions = `[data-session-actions-ref="local:overview-child"][data-pane-id="${childPaneId}"]`;
+    await evaluate(send, `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)})?.closest('button') ?? null)`);
+    await waitForDom(send, `window.__overviewExpectedButton?.isConnected === true && !window.__overviewExpectedButton.closest(${JSON.stringify(OVERVIEW)})`, "revealed child conversation owns its actions control");
     const before = await evaluate(send, "window.overviewGuardState()");
-    await evaluate(send, `void (window.__overviewExpectedButton = Array.from(document.querySelectorAll('[data-session-navigation-ref="local:p0-s0"]')).find(e => !e.closest(${JSON.stringify(OVERVIEW)})))`);
     await dismiss(childGesture, pane, true);
     const after = await evaluate(send, "window.overviewGuardState()");
     if (after.focusedPaneId !== before.focusedPaneId || JSON.stringify(after.panes) !== JSON.stringify(before.panes)) throw new Error("child dismissal navigated or changed panes");
-    await pressKey(send, "Enter", "Enter", 13);
-    await waitForDom(send, `window.overviewGuardState().focusedPaneId === ${JSON.stringify(pane)} && document.querySelector(${JSON.stringify(trigger(pane))})`, "returned parent link remains keyboard-usable");
+    await clickControl(send, `button[aria-label="Back"]`);
+    await waitForDom(send, `window.overviewGuardState().focusedPaneId === ${JSON.stringify(pane)} && document.querySelector(${JSON.stringify(trigger(pane))})`, "Back returns to the parent conversation from the revealed child");
     await settleOverview(send);
   }
   return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane };

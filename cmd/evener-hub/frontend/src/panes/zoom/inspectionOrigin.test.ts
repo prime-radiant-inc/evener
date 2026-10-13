@@ -43,7 +43,7 @@ function inspectorFor(origin: OpenPaneRecord): OpenPaneRecord {
       "sessionZoom",
       {
         ref: "child",
-        source: { type: "transcript", params: { ref } },
+        source: { type: "session", params: { ref } },
         edges: [{ ownerRef: ref, childRef: "child", delegateId: "d1" }],
         inspection: { origin: { paneId: origin.id, type: origin.type, ref } },
       },
@@ -60,8 +60,12 @@ test("a separated inspector binds to the exact committed ordinary conversation",
   const inspector = inspectorFor(origin);
   expect(cascadeOrigin(inspector)).toBe(origin);
   expect(associatedCascade(origin)).toBe(inspector);
-  expect(conversationPaneLifetime(inspector)).not.toBe(lifetime);
-  expect(conversationPaneLifetime(inspector).composer).toBeNull();
+  const inspectorLifetime = conversationPaneLifetime(inspector);
+  expect(inspectorLifetime).not.toBe(lifetime);
+  // The inspector lifetime reads its origin as the conversation it always was:
+  // its own composer state, never the origin pane's.
+  expect(inspectorLifetime.composer?.ref).toBe("root");
+  expect(inspectorLifetime.composer).not.toBe(lifetime.composer);
 });
 
 test("removal retires the locator before an identical replacement can claim it", () => {
@@ -80,7 +84,11 @@ test("removal retires the locator before an identical replacement can claim it",
   expect(cascadeOrigin(survivor)).toBeNull();
   expect(associatedCascade(replacement)).toBeNull();
   expect(parseZoomParams(survivor.params)?.inspection).toEqual({ origin: null });
-  expect(conversationPaneLifetime(survivor).composer).toBeNull();
+  // The retired inspector keeps its own conversation state and never claims
+  // the replacement origin's fresh composer.
+  const survivorComposer = conversationPaneLifetime(survivor).composer;
+  expect(survivorComposer?.ref).toBe("root");
+  expect(survivorComposer).not.toBe(conversationPaneLifetime(replacement).composer);
 });
 
 test("a workspace reset retires both owners even when their IDs are reused", () => {
@@ -250,7 +258,11 @@ test("successful restore binds fresh validated owners before publishing the reco
     expect(observed).toEqual([restoredOrigin]);
     expect(cascadeOrigin(restoredInspector)).toBe(restoredOrigin);
     expect(associatedCascade(restoredOrigin)).toBe(restoredInspector);
-    expect(conversationPaneLifetime(restoredInspector).composer).toBeNull();
+    // The restored inspector carries its own conversation state, never the
+    // restored origin pane's.
+    const restoredInspectorComposer = conversationPaneLifetime(restoredInspector).composer;
+    expect(restoredInspectorComposer?.ref).toBe("root");
+    expect(restoredInspectorComposer).not.toBe(conversationPaneLifetime(restoredOrigin).composer);
   } finally {
     unsubscribe();
     host.dispose();

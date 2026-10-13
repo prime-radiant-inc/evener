@@ -15,11 +15,11 @@ import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import type { VirtualListHandle } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
+import Session from "../Session";
 // Registers the tool descriptors (fsTools' read_file is fold: "quiet") the
 // same way the real session pane does - through TurnBlock's side-effect
 // import of ./tools.
 import "./TurnBlock";
-import { ReadOnlyThreadContent } from "../../transcript/ReadOnlyThreadContent";
 import {
   type CapturedTranscriptView,
   captureTranscriptView,
@@ -58,11 +58,11 @@ test.each(["input", "close", "reset", "replacement"] as const)(
     fake.on("thread/unsubscribe", () => ({}));
     fake.on("evener/thread/activity/read", answerActivityRead);
     connectionStore.getState().connect(fake);
-    const a: OpenPaneRecord = { id: "reader-a", type: "transcript", params: { ref: "shared" }, slot: "main" };
-    const b: OpenPaneRecord = { id: "reader-b", type: "transcript", params: { ref: "shared" }, slot: "secondary" };
+    const a: OpenPaneRecord = { id: "reader-a", type: "session", params: { ref: "shared" }, slot: "main" };
+    const b: OpenPaneRecord = { id: "reader-b", type: "session", params: { ref: "shared" }, slot: "secondary" };
     workspaceStore.setState({ panes: [a, b] });
-    const av = retainedTranscriptReadView(conversationPaneLifetime(a), "shared", "transcript");
-    const bv = retainedTranscriptReadView(conversationPaneLifetime(b), "shared", "transcript");
+    const av = retainedTranscriptReadView(conversationPaneLifetime(a), "shared", "session");
+    const bv = retainedTranscriptReadView(conversationPaneLifetime(b), "shared", "session");
     const ag = { width: 152, viewportHeight: 400, rowHeights: [1600, 1000] };
     const bg = { width: 152, viewportHeight: 400, rowHeights: [1600, 1000] };
     const external = installTranscriptGeometry((element) => (element.closest('[data-reader="reader-a"]') ? ag : bg));
@@ -70,12 +70,12 @@ test.each(["input", "close", "reset", "replacement"] as const)(
     function Readers() {
       const panes = useStore(workspaceStore, (state) => state.panes);
       return panes
-        .filter((pane) => pane.type === "transcript")
+        .filter((pane) => pane.type === "session")
         .map((pane) => {
-          const view = retainedTranscriptReadView(conversationPaneLifetime(pane), "shared", "transcript");
+          const view = retainedTranscriptReadView(conversationPaneLifetime(pane), "shared", "session");
           return (
             <div key={view.id} data-reader={pane.id}>
-              <ReadOnlyThreadContent ref="shared" view={view} />
+              <Session focused={false} params={{ ref: "shared" }} paneId={pane.id} />
             </div>
           );
         });
@@ -146,7 +146,7 @@ test.each(["input", "close", "reset", "replacement"] as const)(
           expect(bp.scrollTop).toBe(500);
         }
         if (action === "replacement") {
-          const fresh = retainedTranscriptReadView(conversationPaneLifetime(replacement), "shared", "transcript");
+          const fresh = retainedTranscriptReadView(conversationPaneLifetime(replacement), "shared", "session");
           expect(fresh).not.toBe(av);
           const freshPort = portFor(a.id);
           expect(freshPort).not.toBe(ap);

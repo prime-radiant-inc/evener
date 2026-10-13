@@ -5,6 +5,7 @@ import {
   ACTIVITY_VIEW_LIMIT,
   ACTIVITY_VIEW_STORAGE_KEY,
   activitySidebarReturnFocusTarget,
+  activitySidebarScopeRef,
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
 } from "./activitySidebarStore";
@@ -108,6 +109,116 @@ test("openFor preserves the focused pane when the session has multiple instances
   activitySidebarStore.getState().openFor("remote:owner", "about");
   expect(workspaceStore.getState().focusedPaneId).toBe("focused-instance");
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "remote:owner", tab: "about" });
+  // A focus-carried open holds no explicit scope: the sidebar follows focus.
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+});
+
+test("an embedded column's explicit scope holds until the workspace scope moves or the sidebar closes", () => {
+  workspaceStore.setState({ panes: [], focusedPaneId: null });
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "remote:column" });
+  expect(activitySidebarScopeRef()).toBe("remote:column");
+  // The workspace scope arriving at the held ref releases the hold even
+  // though retarget early-returns on the same ref.
+  workspaceStore.setState({
+    panes: [{ id: "pane-child", type: "session", params: { ref: "remote:column" }, slot: "main" }],
+    focusedPaneId: "pane-child",
+  });
+  expect(activitySidebarScopeRef()).toBe("remote:column");
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+  // Closing the sidebar ends the inspection: a chip open follows focus again.
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  activitySidebarStore.getState().close();
+  expect(activitySidebarScopeRef()).toBe("remote:column");
+  activitySidebarStore.getState().openWith("jobs");
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+});
+
+test("closing the sidebar retargets its preference saves to the focused scope", () => {
+  // A drilled cascade: the focused zoom names its selected leaf, so no
+  // workspace scope change ever releases the held column itself.
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: { ref: "remote:leaf", source: { type: "session", params: { ref: "remote:root" } }, edges: [] },
+        slot: "main",
+      },
+    ],
+    focusedPaneId: "zoom",
+  });
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  activitySidebarStore.getState().setTab("watches");
+  activitySidebarStore.getState().close();
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+  // Closing ends the column's inspection: later preference saves belong to
+  // the focused conversation, not the retired column.
+  expect(activitySidebarStore.getState().ref).toBe("remote:leaf");
+  activitySidebarStore.getState().setTab("jobs");
+  const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
+  expect(saved["remote:leaf"]).toMatchObject({ open: false, tab: "jobs" });
+  expect(saved["remote:column"]).toMatchObject({ open: false, tab: "watches" });
+});
+
+test("closing the held column does not reopen the focused leaf's saved-open Overview", () => {
+  // The same drilled cascade as the retarget test above, but the focused
+  // leaf's Overview was open before the column inspection began, so the
+  // leaf's saved view carries open: true. Closing the sidebar is a
+  // dismissal: the retarget back onto the leaf must not replay that old
+  // preference and reopen the panel the user just closed.
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: { ref: "remote:leaf", source: { type: "session", params: { ref: "remote:root" } }, edges: [] },
+        slot: "main",
+      },
+    ],
+    focusedPaneId: "zoom",
+  });
+  activitySidebarStore.getState().openFor("remote:leaf", "jobs");
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  activitySidebarStore.getState().close();
+  expect(activitySidebarStore.getState().open).toBe(false);
+  expect(activitySidebarStore.getState().ref).toBe("remote:leaf");
+  // The dismissal records as the focused conversation's explicit close
+  // choice, so a later retarget does not reopen it either.
+  activitySidebarStore.getState().setTab("jobs");
+  const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
+  expect(saved["remote:leaf"]).toMatchObject({ open: false, tab: "jobs" });
+  expect(saved["remote:column"]).toMatchObject({ open: false, tab: "agents" });
+});
+
+test("a focus-based open request releases the held column scope and saves against its own session", () => {
+  // A drilled cascade with an ordinary pane for its selected leaf: the
+  // focused scope never moves, so only the request itself can release the
+  // held column scope.
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: { ref: "remote:leaf", source: { type: "session", params: { ref: "remote:root" } }, edges: [] },
+        slot: "main",
+      },
+      { id: "pane-leaf", type: "session", params: { ref: "remote:leaf" }, slot: "secondary" },
+    ],
+    focusedPaneId: "zoom",
+  });
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  activitySidebarStore.getState().setTab("watches");
+  // The footer chip's request: focus the ordinary pane, then open its
+  // conversation's overview naming it as the source.
+  workspaceStore.getState().focusPane("pane-leaf");
+  activitySidebarStore.getState().openFor("remote:leaf", "jobs", undefined, "pane-leaf");
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+  expect(activitySidebarStore.getState().ref).toBe("remote:leaf");
+  activitySidebarStore.getState().setTab("tasks");
+  const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
+  expect(saved["remote:leaf"]).toMatchObject({ open: true, tab: "tasks" });
+  expect(saved["remote:column"]).toMatchObject({ open: true, tab: "watches" });
 });
 
 function sessionActions(parent: HTMLElement, ref: string, paneId: string): HTMLButtonElement {
@@ -151,7 +262,7 @@ test.each(["removed", "hidden ancestor", "invisible ancestor", "disabled"])(
 test("return focus prefers the originating pane's chip before another pane's action for the same ref", () => {
   const root = document.body.appendChild(document.createElement("div"));
   try {
-    sessionActions(root, "remote:other", "origin");
+    const focusedAction = sessionActions(root, "remote:other", "origin");
     const otherAction = sessionActions(root, "remote:owner", "other-pane");
     const chip = root.appendChild(document.createElement("button"));
     chip.dataset.activityTab = "jobs";
@@ -166,7 +277,9 @@ test("return focus prefers the originating pane's chip before another pane's act
     chip.hidden = true;
     expect(activitySidebarReturnFocusTarget("jobs")).toBe(otherAction);
     otherAction.disabled = true;
-    expect(activitySidebarReturnFocusTarget("jobs")).toBeNull();
+    // The revealed pane owns the last resort: the read-only crumb the old
+    // chain ended on is gone, so the focused pane's own action takes focus.
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(focusedAction);
   } finally {
     root.remove();
   }

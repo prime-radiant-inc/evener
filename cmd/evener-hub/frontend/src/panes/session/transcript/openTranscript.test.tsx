@@ -1,9 +1,8 @@
 import { keyID } from "@evener/appwire-client/state/navigation";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeAll, beforeEach, expect, test } from "vitest";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { recordConversationOpenParent, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
-import { OpenButton } from "../../../widgets";
 import { OpenTranscriptButton, openTranscript } from "./openTranscript";
 
 beforeAll(async () => {
@@ -53,20 +52,31 @@ function seedLocation(ref: string, topLevelRef: string) {
   navigationStore.setState({ resources });
 }
 
-test("canonicalizes a child opened without a parent when its owning session is later known", () => {
-  openTranscript("local:child");
-  const first = transcriptPanes("local:child")[0];
-  expect(first?.params).toEqual({ ref: "local:child" });
-
+test("opens a session child as a conversation pane beside its origin", () => {
+  workspaceStore.getState().openPane("session", { ref: "local:owner" });
   openTranscript("local:child", "local:owner");
 
-  const child = transcriptPanes("local:child");
-  expect(child).toHaveLength(1);
-  expect(child[0]?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
-  expect(child[0]?.id).not.toBe(first?.id);
-  expect(sessionPane("local:owner")?.slot).toBe("main");
-  expect(child[0]?.slot).toBe("secondary");
-  expect(workspaceStore.getState().focusedPaneId).toBe(child[0]?.id);
+  const child = sessionPane("local:child");
+  expect(child).toBeDefined();
+  expect(child?.slot).toBe("secondary");
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+  expect(transcriptPanes("local:child")).toHaveLength(0);
+});
+
+test("reuses the open conversation pane for the same child instead of duplicating", () => {
+  openTranscript("local:child", "local:owner-a");
+  const first = sessionPane("local:child");
+  expect(first).toBeDefined();
+
+  openTranscript("local:child", "local:owner-b");
+
+  const state = workspaceStore.getState();
+  expect(
+    state.panes.filter((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === "local:child"),
+  ).toHaveLength(1);
+  expect(sessionPane("local:child")?.id).toBe(first?.id);
+  expect(state.focusedPaneId).toBe(first?.id);
+  expect(transcriptPanes("local:child")).toHaveLength(0);
 });
 
 test("does not promote an owner from a stale navigation location during a reconnect", () => {
@@ -102,42 +112,22 @@ test("does not promote an owner from a stale navigation location during a reconn
   openTranscript("local:child", "local:nested");
 
   // The stale location's top_level_ref is not trusted: the retained main
-  // session is preserved and the child opens beside it.
+  // session is preserved and the child's conversation opens beside it.
   const state = workspaceStore.getState();
   expect(state.mainPane()?.id).toBe(mainId);
   expect(state.panes.some((pane) => pane.id === nestedId)).toBe(true);
   expect(sessionPane("local:stale-owner")).toBeUndefined();
-  const child = transcriptPanes("local:child");
-  expect(child).toHaveLength(1);
-  expect(child[0]?.params).toEqual({ ref: "local:child", parentRef: "local:nested" });
+  const child = sessionPane("local:child");
+  expect(child).toBeDefined();
+  expect(child?.slot).toBe("secondary");
+  expect(transcriptPanes("local:child")).toHaveLength(0);
 });
 
-test("canonicalizes a child pane across parent contexts without disturbing a retained main session", () => {
-  openTranscript("local:child", "local:owner-a");
-  openTranscript("local:other", "local:other-owner");
-  expect(transcriptPanes("local:other")).toHaveLength(1);
-
-  openTranscript("local:child", "local:owner-b");
-
-  // Neither parent's location is loaded, so no owner is ever proven: the
-  // retained main session and the unrelated secondary pane survive every
-  // open, and only the child's own pane is canonicalized to the new parent.
-  expect(transcriptPanes("local:child")).toHaveLength(1);
-  expect(transcriptPanes("local:child")[0]?.params).toEqual({
-    ref: "local:child",
-    parentRef: "local:owner-b",
-  });
-  expect(transcriptPanes("local:other")).toHaveLength(1);
-  expect(sessionPane("local:owner-a")?.slot).toBe("main");
-  expect(sessionPane("local:owner-b")).toBeUndefined();
-  expect(workspaceStore.getState().focusedPaneId).toBe(transcriptPanes("local:child")[0]?.id);
-});
-
-test("preserves a restored workspace when the transcript owner cannot be proven", () => {
+test("preserves a restored workspace when the conversation owner cannot be proven", () => {
   const workspace = workspaceStore.getState();
   const mainId = workspace.replacePrimary("session", { ref: "local:owner" });
   const nestedId = workspace.openPane("session", { ref: "local:nested" });
-  const unrelatedId = workspace.openPane("transcript", { ref: "local:unrelated" });
+  const unrelatedId = workspace.openPane("transcript", { ref: "job:job-unrelated", parentRef: "local:owner" });
   workspace.focusPane(nestedId);
 
   openTranscript("local:child", "local:nested");
@@ -151,11 +141,10 @@ test("preserves a restored workspace when the transcript owner cannot be proven"
   expect(state.panes.some((pane) => pane.id === nestedId)).toBe(true);
   expect(state.panes.some((pane) => pane.id === unrelatedId)).toBe(true);
   expect(sessionPane("local:nested")?.id).toBe(nestedId);
-  const child = transcriptPanes("local:child");
-  expect(child).toHaveLength(1);
-  expect(child[0]?.params).toEqual({ ref: "local:child", parentRef: "local:nested" });
-  expect(child[0]?.slot).toBe("secondary");
-  expect(state.focusedPaneId).toBe(child[0]?.id);
+  const child = sessionPane("local:child");
+  expect(child).toBeDefined();
+  expect(child?.slot).toBe("secondary");
+  expect(state.focusedPaneId).toBe(child?.id);
 });
 
 test("promotes the proven top-level owner from a loaded navigation location", () => {
@@ -169,109 +158,62 @@ test("promotes the proven top-level owner from a loaded navigation location", ()
 
   // Ownership is proven: the top-level owner moves into main, never the
   // immediate nested parent. The promotion replaces the whole pane set, so
-  // the nested session pane yields to the opened child transcript.
+  // the nested session pane yields to the opened child conversation.
   expect(sessionPane("local:owner")?.slot).toBe("main");
   expect(sessionPane("local:nested")).toBeUndefined();
-  const child = transcriptPanes("local:child");
-  expect(child).toHaveLength(1);
-  expect(child[0]?.params).toEqual({ ref: "local:child", parentRef: "local:nested" });
-  expect(workspaceStore.getState().focusedPaneId).toBe(child[0]?.id);
+  const child = sessionPane("local:child");
+  expect(child).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
 });
 
-test("focuses an already exact child pane without remounting it or duplicating it", () => {
-  const owner = workspaceStore.getState().openPane("session", { ref: "local:owner" });
-  const exact = workspaceStore.getState().openPane("transcript", { ref: "local:child", parentRef: "local:owner" });
-  const unrelated = workspaceStore.getState().openPane("transcript", { ref: "local:other" });
-  workspaceStore.getState().focusPane(unrelated);
+test("keeps the retained main session when the parent's conversation chain reaches it", () => {
+  // The parent's ancestry runs through the RECORDED conversation parent
+  // edges: the retained main session is an ancestor of the immediate parent,
+  // so ownership is already satisfied and nothing may be promoted. The
+  // parent's location names a different canonical owner (a continuation);
+  // trusting it would replace the retained workspace and discard every
+  // secondary pane.
+  const workspace = workspaceStore.getState();
+  const rootId = workspace.replacePrimary("session", { ref: "local:root" });
+  const midId = workspace.openPane("session", { ref: "local:mid" });
+  const sideId = workspace.openPane("session", { ref: "local:side" });
+  const mid = workspaceStore.getState().panes.find((pane) => pane.id === midId);
+  if (!mid) throw new Error("mid pane missing");
+  recordConversationOpenParent(mid, "local:root");
+  seedLocation("local:mid", "local:other");
+  workspace.focusPane(midId);
 
-  openTranscript("local:child", "local:owner");
+  openTranscript("local:child", "local:mid");
 
-  expect(transcriptPanes("local:child")).toHaveLength(1);
-  expect(transcriptPanes("local:child")[0]?.id).toBe(exact);
-  expect(sessionPane("local:owner")?.id).toBe(owner);
-  expect(sessionPane("local:owner")?.slot).toBe("main");
-  expect(workspaceStore.getState().focusedPaneId).toBe(exact);
-  expect(transcriptPanes("local:other")).toHaveLength(1);
+  const state = workspaceStore.getState();
+  expect(state.mainPane()?.id).toBe(rootId);
+  expect(state.panes.some((pane) => pane.id === midId)).toBe(true);
+  expect(state.panes.some((pane) => pane.id === sideId)).toBe(true);
+  expect(sessionPane("local:other")).toBeUndefined();
+  const child = sessionPane("local:child");
+  expect(child).toBeDefined();
+  expect(child?.slot).toBe("secondary");
 });
 
-test("keeps no-parent opening deduped and usable without a desktop host", () => {
-  openTranscript("remote:child");
-  const first = transcriptPanes("remote:child")[0];
+test("keeps a job ref on the job-log transcript pane with its owner context", () => {
+  workspaceStore.getState().openPane("session", { ref: "local:owner" });
+  openTranscript("job:job-1", "local:owner");
 
-  openTranscript("remote:child");
+  const first = transcriptPanes("job:job-1");
+  expect(first).toHaveLength(1);
+  expect(first[0]?.params).toEqual({ ref: "job:job-1", parentRef: "local:owner" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(first[0]?.id);
 
-  expect(transcriptPanes("remote:child")).toHaveLength(1);
-  expect(transcriptPanes("remote:child")[0]?.id).toBe(first?.id);
-  expect(transcriptPanes("remote:child")[0]?.slot).toBe("main");
-  expect(workspaceStore.getState().focusedPaneId).toBe(first?.id);
+  // Reopening the same job log focuses the exact pane without a duplicate.
+  openTranscript("job:job-1", "local:owner");
+  expect(transcriptPanes("job:job-1")).toHaveLength(1);
+  expect(workspaceStore.getState().focusedPaneId).toBe(first[0]?.id);
 });
 
-test("OpenTranscriptButton renders the glyph with no visible label, tooltip 'Open', and opens on click", () => {
+test("the row button names the conversation it opens for a session ref", () => {
   render(<OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" />);
+  expect(screen.getByRole("button", { name: "Open conversation" })).toBeTruthy();
 
-  const button = screen.getByRole("button", { name: "Open transcript" });
-  // Icon-only: the accessible name comes from aria-label, not visible text.
-  expect(button.textContent).toBe("");
-  const title = button.getAttribute("title") ?? "";
-  expect(title).not.toBe("");
-  expect(title).not.toContain("local:child");
-  // The same one-word tooltip every other open control carries.
-  const other = render(<OpenButton label="Open beside: elsewhere" />);
-  expect(screen.getByRole("button", { name: "Open beside: elsewhere" }).getAttribute("title")).toBe(title);
-  other.unmount();
-
-  fireEvent.click(button);
-  expect(transcriptPanes("local:child")).toHaveLength(1);
-  expect(transcriptPanes("local:child")[0]?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
-});
-
-test("exact Open origin: canonical reuse replaces session and transcript origins without changing panes", async () => {
-  const { transcriptOpenOrigin } = await import("../../../shell/workspace");
-  const workspace = workspaceStore.getState();
-  const owner = workspace.openPane("session", { ref: "local:owner" });
-  openTranscript("local:child", "local:owner");
-  const child = transcriptPanes("local:child")[0]!;
-  openTranscript("local:leaf", "local:child");
-  const leaf = transcriptPanes("local:leaf")[0]!;
-  expect(transcriptOpenOrigin(leaf)).toBe(child);
-  expect(transcriptOpenOrigin(child)).toBe(sessionPane("local:owner"));
-  const session = workspace.openPane("session", { ref: "local:child" });
-  const retained = workspaceStore.getState().panes;
-
-  openTranscript("local:leaf", "local:child");
-  expect(transcriptOpenOrigin(leaf)).toBe(sessionPane("local:child"));
-  expect(transcriptOpenOrigin(leaf)?.id).toBe(session);
-  expect(workspaceStore.getState().panes).toEqual(retained);
-  expect(transcriptPanes("local:leaf")[0]).toBe(leaf);
-
-  workspace.focusPane(child.id);
-  openTranscript("local:leaf", "local:child");
-  expect(transcriptOpenOrigin(leaf)).toBe(child);
-  expect(workspaceStore.getState().focusedPaneId).toBe(leaf.id);
-  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
-  expect(workspaceStore.getState().panes).toEqual(retained);
-});
-
-test.each([
-  { context: "unrelated session", type: "session" as const, params: { ref: "local:unrelated" } },
-  { context: "unrelated transcript", type: "transcript" as const, params: { ref: "local:unrelated" } },
-  { context: "same-ref document", type: "doc" as const, params: { ref: "local:owner" } },
-  { context: "no focused pane", type: null, params: {} },
-])("exact Open origin: $context cannot become the canonical child's return context", async ({ type, params }) => {
-  const { transcriptOpenOrigin } = await import("../../../shell/workspace");
-  if (type === "doc") await import("../../doc");
-  const workspace = workspaceStore.getState();
-  const owner = workspace.openPane("session", { ref: "local:owner" });
-  openTranscript("local:leaf", "local:owner");
-  const leaf = transcriptPanes("local:leaf")[0]!;
-  expect(transcriptOpenOrigin(leaf)?.id).toBe(owner);
-  if (type) workspace.openPane(type, params);
-  else workspaceStore.setState({ focusedPaneId: null });
-  const retained = workspaceStore.getState().panes;
-
-  openTranscript("local:leaf", "local:owner");
-
-  expect(transcriptOpenOrigin(leaf)).toBeUndefined();
-  expect(transcriptPanes("local:leaf")[0]).toBe(leaf);
-  expect(workspaceStore.getState().panes).toEqual(retained);
+  render(<OpenTranscriptButton transcriptRef="job:job-1" parentRef="local:owner" label="Open transcript" />);
+  expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
 });

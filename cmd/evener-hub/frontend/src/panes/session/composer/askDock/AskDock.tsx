@@ -76,7 +76,13 @@ import { Button, Card, useToasts, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { requestComposerFocus } from "../composerFocus";
 import { AskQuestionCard } from "./AskQuestionCard";
-import { type AskAnswerState, askDockStore, nextUnansweredKey, useAskDockStore } from "./askDockStore";
+import {
+  type AskAnswerState,
+  askDockStore,
+  claimPendingGreeting,
+  nextUnansweredKey,
+  useAskDockStore,
+} from "./askDockStore";
 import styles from "./askdock.module.css";
 
 const CLASS = {
@@ -92,6 +98,10 @@ const CLASS = {
 
 export interface AskDockProps {
   ref: string;
+  // The conversation seat the dock lives in: the focus request a completed
+  // ask issues is addressed to this pane's composer, so an ordinary pane and
+  // an embedded column sharing the ref never both take focus.
+  paneId?: string;
 }
 
 const NO_BATCHES: AskBatch[] = [];
@@ -475,7 +485,7 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   );
 }
 
-export function AskDock({ ref: sessionRef }: AskDockProps) {
+export function AskDock({ ref: sessionRef, paneId }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
   const pendingGreeted = useAskDockStore((s) => s.byRef.get(sessionRef)?.pendingGreeted ?? false);
@@ -516,7 +526,15 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
     const dock = dockRef.current;
     if (!dock) return;
     const focusFirst = () => {
-      askDockStore.markPendingGreeted(sessionRef);
+      // Re-check and CLAIM the shared activation here, inside the callback:
+      // one conversation can mount two docks for the same ref (an ordinary
+      // pane and a cascade column embedding it), and both visibility
+      // callbacks capture pendingGreeted=false before either runs. The first
+      // to claim focuses its OWN seat (paneId - the seat this dock answers
+      // for); the second sees the claim taken and must not steal focus.
+      // claimPendingGreeting's synchronous check-and-mark is atomic, so
+      // exactly one seat takes the activation auto-focus.
+      if (!claimPendingGreeting(sessionRef)) return;
       dock.querySelector<HTMLElement>(FIRST_CONTROL_SELECTOR)?.focus();
     };
     if (typeof IntersectionObserver !== "function") {
@@ -567,7 +585,9 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
     // #884 round 13).
     const nextBatch = remaining.find((b) => !b.sending) ?? remaining[0];
     if (nextBatch === undefined) {
-      requestComposerFocus(sessionRef);
+      // Addressed to the dock's own seat, so a composer in another pane for
+      // the same conversation never steals the focus this handoff grants.
+      requestComposerFocus(sessionRef, paneId ?? null);
       return;
     }
     const nextEl = dockRef.current?.querySelector<HTMLElement>(`[data-ask-batch="${nextBatch.id}"]`);

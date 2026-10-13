@@ -69,11 +69,11 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     if (pendingRequest.originReadOnly) {
       const active = document.activeElement;
       if (active !== null && active !== document.body) {
-        topNotesStore.getState().takePendingFocus(sessionRef);
+        topNotesStore.getState().takePendingFocus(sessionRef, sourcePaneId);
         return;
       }
     }
-    if (!topNotesStore.getState().takePendingFocus(sessionRef)) return;
+    if (!topNotesStore.getState().takePendingFocus(sessionRef, sourcePaneId)) return;
     // The pane can be reused for another session between the take and the
     // frame, and React hands the successor the same DOM editor, so the
     // element alone cannot say whose request it carries: only the session
@@ -82,7 +82,7 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     requestAnimationFrame(() => {
       if (latestSessionRef.current === requestedRef) editorRef.current?.focus();
     });
-  }, [sessionRef, canWrite, expanded, pendingRequest]);
+  }, [sessionRef, canWrite, expanded, pendingRequest, sourcePaneId]);
 
   if (!readable) return null;
 
