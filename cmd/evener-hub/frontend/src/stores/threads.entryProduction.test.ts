@@ -1580,12 +1580,12 @@ it("aborted Clear restarts a pending end read from the current owner", async () 
   client.emitNotification(tool);
   client.emitNotification(end);
   await vi.waitFor(() => expect(reads).toBe(2));
-  const clearing = deferred<{ committed: false }>();
+  const clearing = deferred<{ committed: false; epoch: number }>();
   vi.spyOn(storage, "clear").mockReturnValueOnce(clearing.promise);
   const clear = clearCachedSessions();
   pendingEnd.resolve({ ...readOf([recorded("obsolete-end")], 41), overlay: [], requestGeneration: 2 });
   await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
-  clearing.resolve({ committed: false });
+  clearing.resolve({ committed: false, epoch: 0 });
   expect(await clear).toEqual({ committed: false });
   await vi.waitFor(() => expect(reads).toBe(3));
   await settleEntryTranscriptForTests(ref);
