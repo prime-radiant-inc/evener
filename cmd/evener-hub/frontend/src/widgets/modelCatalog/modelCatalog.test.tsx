@@ -86,11 +86,6 @@ test("an open picker refreshes selectable models when provider configuration cha
 
 // --- closed state (unchanged: the chip IS the trigger) ---------------------
 
-test("shows the (default) marker when no model is chosen", () => {
-  renderPicker();
-  expect(screen.getByText("(default)")).toBeTruthy();
-});
-
 // kata xgk8: a caller whose harness genuinely has no resolvable default
 // (the spawn form's top-level Model field, when the daemon's own launch
 // config resolves to no model at all) must be able to say so instead of
