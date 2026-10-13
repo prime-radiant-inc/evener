@@ -209,7 +209,7 @@ export const wireSnapshot = (
       revision,
       ref: params.ref,
       top_level_ref: (body.top_level_ref as string) ?? (params.ref as string),
-      top_level: true,
+      top_level: (body.top_level as boolean) ?? true,
     };
   }
   if (rootSlot) {

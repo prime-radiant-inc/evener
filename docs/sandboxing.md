@@ -482,10 +482,11 @@ denial is by design, not a bug.
 
 Invariant: a sandboxed session can never poison a cache that a later build consumes.
 
-- `workspace-write` serves the language cache roots (`~/.cache`, and
-  `$XDG_CACHE_HOME` when set, `~/.npm`, `~/.cargo`, the `pkg` directory of your
-  first GOPATH entry and of Go's `$HOME/go` default, and a `GOMODCACHE` or
-  `GOCACHE` you set elsewhere) as a **read-real, write-private overlay** where the
+- `workspace-write` serves the language cache roots (`~/.cache` alongside a set
+  `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`
+  or `$CARGO_HOME`, the `pkg` directory of your first GOPATH entry and of Go's
+  `$HOME/go` default, and a `GOMODCACHE` or `GOCACHE` you set elsewhere) as a
+  **read-real, write-private overlay** where the
   host's bubblewrap supports it: builds read warm from the real cache, but writes
   land in a per-session tmpfs that is discarded at session end. The Go settings
   are the host's, resolved once at session start (see the GOPATH note below). A

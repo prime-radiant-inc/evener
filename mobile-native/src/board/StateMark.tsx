@@ -7,6 +7,10 @@ import { PulseMeter } from "./PulseMeter";
 type Tint = "danger" | "attention" | "accent" | "alive";
 export type Glyph = { name: SFSymbol; tint: Tint; size: number };
 
+/** The leading mark column's width. An indented row that skips a mark column
+ * derives its indent from this, so the two cannot drift apart. */
+export const markColumnWidth = 28;
+
 const GLYPHS: Record<BoardState, Glyph | null> = {
 	failed: { name: "xmark.octagon.fill", tint: "danger", size: 20 },
 	question: { name: "questionmark.circle.fill", tint: "attention", size: 20 },
@@ -51,7 +55,7 @@ export function StateMark({
 	const tone = !connected ? "gray" : stuck ? "attention" : "alive";
 	return (
 		<View
-			style={{ width: 28, alignItems: "center", justifyContent: "center" }}
+			style={{ width: markColumnWidth, alignItems: "center", justifyContent: "center" }}
 			accessible={mark !== null}
 			accessibilityLabel={mark ? stateWord(state) : undefined}
 		>

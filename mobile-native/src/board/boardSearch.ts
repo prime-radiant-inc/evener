@@ -3,6 +3,7 @@
 // are Board memory, in boardMemory.ts. The Archived scope and "In sessions"
 // hits wait for S14.
 import type { NavigationProjectSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
+import { groupSearchResults, type GroupedSearchRow } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { type BoardState, decisiveState } from "./attention";
 
@@ -97,14 +98,22 @@ export function createSearchController(): SearchController {
 	};
 }
 
-/** The Sessions group: live results, then past ones in All; live only in
- * Live. The hub's past index holds live sessions' records too, and its past
- * results don't leave them out, so a session that is live shows once, as its
- * live result. */
-export function sessionResults(results: SearchResponse, scope: SearchScope): SearchResult[] {
-	if (scope === "live") return results.live;
+/** The Sessions group's rows, grouped through the shared client rule: live
+ * rows first (a matched live parent nests its ended subagent hits directly
+ * under its own row), then the past groups — each matching subagent nested
+ * under its top-level session's row, which greys when only its subagents
+ * matched. The hub's past index holds live sessions' records too, and an
+ * older hub's past results don't leave them out, so a session that is live
+ * shows once, as its live result. The Live scope keeps its meaning: live rows
+ * only, so past children appear only in All. */
+export function sessionResults(results: SearchResponse, scope: SearchScope): GroupedSearchRow[] {
+	if (scope === "live") return groupSearchResults(results.live, []).live;
 	const live = new Set(results.live.map((result) => result.ref));
-	return [...results.live, ...results.past.filter((result) => !live.has(result.ref))];
+	const grouped = groupSearchResults(
+		results.live,
+		results.past.filter((result) => !live.has(result.ref)),
+	);
+	return [...grouped.live, ...grouped.past];
 }
 
 /** The Projects group: the projects the Board has loaded whose name or

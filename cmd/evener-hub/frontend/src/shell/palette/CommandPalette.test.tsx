@@ -36,6 +36,8 @@ import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
 import {
   helpChords,
+  paletteIndirectRows,
+  paletteNestedRows,
   paletteRowsOfKind,
   paletteSection,
   renderPalette as render,
@@ -622,6 +624,145 @@ describe("remote search results", () => {
     expect(live?.textContent).toContain("frobnitz worker");
     // The matched substring is wrapped in <mark> (§2.3 highlighting).
     expect(within(live as HTMLElement).getByText("frobnitz").tagName).toBe("MARK");
+  });
+
+  // --- grouped subagent hits ---
+
+  // A matching subagent nests under its top-level session's row. The parent
+  // here has no row of its own, so the palette synthesizes a greyed anchor
+  // that still opens the parent session, and the Past count counts matches,
+  // not anchors.
+  test("a matching subagent nests under a greyed synthesized anchor", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearch({
+      live: [],
+      past: [
+        {
+          id: "sub1",
+          ref: "local:sub1",
+          title: "delegate frobnitz",
+          project: "proj",
+          state: "ended",
+          age: "2h",
+          topLevel: { id: "root1", ref: "local:root1", title: "Alpha root", state: "ended", age: "3h" },
+        },
+      ],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "frobnitz");
+
+    await waitFor(() => expect(paletteSection("past")).not.toBeNull());
+    // The header's words are copy; its trailing count is the behavior.
+    expect(paletteSection("past")?.textContent).toMatch(/1$/);
+    const indirect = paletteIndirectRows();
+    const nested = paletteNestedRows();
+    expect(indirect).toHaveLength(1);
+    expect(nested).toHaveLength(1);
+    // The anchor comes first, the subagent nests under it.
+    expect(indirect[0]?.textContent).toContain("Alpha root");
+    expect(indirect[0]?.compareDocumentPosition(nested[0] as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(nested[0]?.textContent).toContain("delegate frobnitz");
+  });
+
+  test("Enter on a greyed anchor opens the parent session; ArrowDown then Enter opens the subagent", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearch({
+      live: [],
+      past: [
+        {
+          id: "sub1",
+          ref: "local:sub1",
+          title: "delegate frobnitz",
+          project: "proj",
+          state: "ended",
+          age: "2h",
+          topLevel: { id: "root1", ref: "local:root1", title: "Alpha root", state: "ended", age: "3h" },
+        },
+      ],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "frobnitz");
+    await waitFor(() => expect(paletteIndirectRows()).toHaveLength(1));
+
+    // The active row is the greyed anchor: it opens the parent, not the child.
+    await user.keyboard("{Enter}");
+    expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:root1");
+
+    // Walk down to the nested child: it opens the subagent's own session.
+    window.history.replaceState(null, "", "/");
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "frobnitz");
+    await waitFor(() => expect(paletteNestedRows()).toHaveLength(1));
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
+    expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:sub1");
+  });
+
+  // A live parent that matched keeps one row per session: its ended
+  // subagent's hits nest under its Live row, and the Past section carries
+  // nothing for the group.
+  test("a matched live parent nests its subagent hits under its Live row", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearch({
+      live: [{ id: "root1", ref: "local:root1", title: "frobnitz root", project: "proj", state: "active", age: "now" }],
+      past: [
+        {
+          id: "sub1",
+          ref: "local:sub1",
+          title: "delegate",
+          project: "proj",
+          state: "ended",
+          age: "2h",
+          topLevel: { id: "root1", ref: "local:root1", title: "frobnitz root", state: "active", age: "now" },
+        },
+      ],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "frobnitz");
+
+    await waitFor(() => expect(paletteSection("live")).not.toBeNull());
+    expect(paletteSection("past")).toBeNull();
+    const nested = paletteNestedRows();
+    expect(nested).toHaveLength(1);
+    expect(nested[0]?.textContent).toContain("delegate");
+    // The nested child sits directly under its live anchor.
+    const live = paletteRowsOfKind("live");
+    expect(live).toHaveLength(1);
+    expect(live[0]?.compareDocumentPosition(nested[0] as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    // The pulled-into-Live layout is keyboard-walked: ArrowDown lands on the
+    // nested child, and Enter opens the subagent's own session.
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
+    expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:sub1");
+  });
+
+  // An older hub answers without topLevel: rows render exactly as before,
+  // flat, and the counts stay the response's own.
+  test("a topLevel-less response renders flat rows as before", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearch({
+      live: [{ id: "l1", ref: "local:l1", title: "frobnitz live", project: "proj", state: "active", age: "now" }],
+      past: [
+        { id: "p1", ref: "local:p1", title: "frobnitz one", project: "old", state: "ended", age: "2h" },
+        { id: "p2", ref: "local:p2", title: "frobnitz two", project: "old", state: "ended", age: "4h" },
+      ],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "frobnitz");
+
+    await waitFor(() => expect(paletteSection("past")).not.toBeNull());
+    expect(paletteSection("past")?.textContent).toMatch(/2$/);
+    expect(paletteRowsOfKind("past")).toHaveLength(2);
+    expect(paletteNestedRows()).toHaveLength(0);
+    expect(paletteIndirectRows()).toHaveLength(0);
   });
 
   // Typed against the real SearchResult, not Record<string, unknown>: `ref` is
