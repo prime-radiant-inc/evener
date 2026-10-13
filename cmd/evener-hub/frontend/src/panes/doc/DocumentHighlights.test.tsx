@@ -432,6 +432,40 @@ test("reveals the literal inert note on hover, focus and click", () => {
   }
 });
 
+// The revealed note must never trap the underlying prose: a repeated tap on
+// the same band, a stationary tap outside every band, and focus leaving the
+// bands and the revealed surface all dismiss it.
+test("dismisses the revealed note on a repeated tap, an outside tap and focus departure", () => {
+  const { view, map, scroll } = renderReader([annotationView("op-1", FIRST, "note")]);
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  const band = bandFor(scroll, "op-1");
+
+  // Reveal, then a repeated tap on the same band toggles the note away.
+  fireEvent.click(band);
+  expect(noteTexts(scroll)).toEqual(["note"]);
+  fireEvent.click(band);
+  expect(noteTexts(scroll)).toEqual([]);
+
+  // Reveal again; a tap on the prose outside every band clears the note so the
+  // underlying text is reachable again.
+  fireEvent.click(band);
+  expect(noteTexts(scroll)).toEqual(["note"]);
+  fireEvent.click(scroll, { clientX: 500, clientY: 500 });
+  expect(noteTexts(scroll)).toEqual([]);
+
+  // Reveal via real keyboard focus; focus departure dismisses.
+  act(() => {
+    band.focus();
+  });
+  expect(noteTexts(scroll)).toEqual(["note"]);
+  act(() => {
+    band.blur();
+  });
+  expect(noteTexts(scroll)).toEqual([]);
+  view.unmount();
+});
+
 test("keeps overlapping notes reachable together for the touched passage across hover, focus and click", () => {
   const overlapping = [
     annotationView("op-a", FIRST, "note A"),
