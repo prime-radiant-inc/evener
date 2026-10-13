@@ -118,7 +118,7 @@ export function floatingWitnessExpr() {
 //
 // Composable with the wrapper measureDelayedFloatingDock already installs: it
 // calls through and restores exactly what it found.
-export function watchEvaluateFailures(driver) {
+export function watchEvaluateFailures(driver, expression) {
   const page = driver.page;
   const originalSend = typeof page?.send === "function" ? page.send : null;
   if (originalSend === null) {
@@ -131,14 +131,19 @@ export function watchEvaluateFailures(driver) {
     lastPollError = detail;
   };
   page.send = async (method, params) => {
+    // Only the watched condition's polls count. `Driver.waitPage` evaluates a
+    // toast expression of its own on timeout, and that read failing says
+    // nothing about the predicate - it must not inflate the count or overwrite
+    // the predicate's last error.
+    const watched = method === "Runtime.evaluate" && params?.expression === expression;
     try {
       const response = await originalSend(method, params);
-      if (method === "Runtime.evaluate" && response?.result?.exceptionDetails) {
+      if (watched && response?.result?.exceptionDetails) {
         failed(`page eval threw: ${JSON.stringify(response.result.exceptionDetails)}`);
       }
       return response;
     } catch (error) {
-      if (method === "Runtime.evaluate") failed(messageOf(error));
+      if (watched) failed(messageOf(error));
       throw error;
     }
   };
@@ -154,7 +159,7 @@ export function watchEvaluateFailures(driver) {
 // own message with the fixture's state attached, so the failure names what the
 // page held instead of only how long it waited.
 export async function waitForFloatingState(driver, expression, { label, stage = null, openPaneMs = null } = {}) {
-  const watch = watchEvaluateFailures(driver);
+  const watch = watchEvaluateFailures(driver, expression);
   let failure = null;
   try {
     return await driver.waitPage(expression, { label });

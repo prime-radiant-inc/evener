@@ -176,18 +176,17 @@ async function measureFloatingDock(page, stage = "first measurement") {
   driver.page = page;
   await waitForFloatingState(
     driver,
-    `(async () => {
-      const { getDockviewApi } = await import('/src/shell/workspace.ts');
-      return getDockviewApi() != null;
-    })()`,
-    { label: "real floating fixture's restored workspace", stage },
-  );
-  await evaluate(
-    driver.send,
+    // The install rides INSIDE the wait, on every poll: the witness a failed
+    // wait attaches reads the store and api through this global, so a wait that
+    // times out with the module still importable must not report them as
+    // unreadable just because nothing had published them yet - and a transport
+    // hiccup still retries the import rather than failing the guard outright.
     `(async () => {
       const { workspaceStore, getDockviewApi } = await import('/src/shell/workspace.ts');
       window.shellguardFloat = { workspaceStore, getDockviewApi };
+      return getDockviewApi() != null;
     })()`,
+    { label: "real floating fixture's restored workspace", stage },
   );
   // DockHost is a lazy chunk and settledShell waits only for the rail, so the
   // dock can still be booting here. A pane opened before DockHost's onReady is

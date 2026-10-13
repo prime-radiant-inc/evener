@@ -262,6 +262,43 @@ describe("floating fixture panel-wait witness", () => {
     expect(witness.unreadable).toEqual(["witness"]);
   });
 
+  test("only the watched condition's polls are counted, not waitPage's toast read", async () => {
+    // Driver.waitPage evaluates a toast expression of its own before it throws.
+    // That read failing says nothing about the predicate, so it must not
+    // inflate the count or overwrite the predicate's last error.
+    installFixture({ panes: [SETTINGS_PANE], panels: [], paneId: SETTINGS_PANE.id });
+    const page = {
+      send: vi.fn(async () => {
+        throw new Error("Runtime.evaluate transport lost");
+      }),
+    };
+    const driver = {
+      page,
+      get send() {
+        return page.send;
+      },
+      waitPage: vi.fn(async (expression, { label }) => {
+        await page.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }).catch(() => {});
+        await page
+          .send("Runtime.evaluate", {
+            expression: "window.__shellGuardToast ?? ''",
+            awaitPromise: true,
+            returnByValue: true,
+          })
+          .catch(() => {});
+        throw new Error(`timed out after 15000ms (waited 15035ms) waiting for ${label}`);
+      }),
+    };
+    const failure = await waitForFloatingState(driver, PANEL_EXPR, {
+      label: FLOATING_PANEL_LABEL,
+      stage: "first measurement",
+    }).catch((error) => error);
+
+    const witness = witnessOf(failure, PANEL_TIMEOUT);
+    expect(witness.failedPolls).toBe(1);
+    expect(witness.lastPollError).toContain("Runtime.evaluate transport lost");
+  });
+
   test("a witness read that never returns is bounded, not left to the CDP tripwire", async () => {
     // A page that stopped answering must not turn a named 15s failure into a
     // silent 30s one, so the witness read has its own short bound.
