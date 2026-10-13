@@ -1934,6 +1934,37 @@ func (e *LocalExecutionEnvironment) listDirectory(path string, depth int, visibl
 	return out, nil
 }
 
+// ListDirectoryWithBudget implements DirListBudgeter: ListDirectory as a
+// context-aware, budgeted page/walk. The walk stops once it has collected
+// enough entries to answer the page the budget was built for (#2375) — or
+// when the budget's bounds refuse — rather than enumerating the whole
+// requested subtree; a cancelled context aborts it. Depth is clamped to
+// MaxListDirDepth. What the walk collected is returned whole; slicing it
+// into the rendered page is the caller's.
+func (e *LocalExecutionEnvironment) ListDirectoryWithBudget(ctx context.Context, path string, depth int, budget *DirListBudget) ([]DirEntry, error) {
+	if budget == nil {
+		return nil, errors.New("list_dir requires a budget: pass execenv.NewDirListBudget(offset, limit)")
+	}
+	if depth <= 0 {
+		depth = 1
+	}
+	depth = min(depth, MaxListDirDepth)
+	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
+		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath
+		// its parent fd with O_NOFOLLOW; masked entries skipped; symlinks not
+		// followed) under the same bounds.
+		return sfs.listDirBudgeted(ctx, "list_dir", e.resolve(path), depth, budget)
+	}
+	root := e.resolve(path)
+	fsys := cancelFS{ctx: ctx, fsys: listDirBaseFS(ctx, root, budget.glob)}
+	var out []DirEntry
+	if err := listDirWalk(ctx, fsys, ".", "", depth, &out, budget); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Glob returns absolute paths matching pattern (doublestar syntax) under
 // basePath, which defaults to RootDir and is resolved relative to RootDir when
 // not absolute. Results are sorted by modification time, newest first, with
