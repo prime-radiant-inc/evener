@@ -32,6 +32,16 @@ func runTimingBudgetScript(t *testing.T, measured, budget string, flags, extraEn
 	writeAuditScriptFixture(t, measuredPath, measured)
 	budgetPath := filepath.Join(dir, "budget.json")
 	writeAuditScriptFixture(t, budgetPath, budget)
+	return runTimingBudgetFixture(t, measuredPath, budgetPath, dir, flags, extraEnv)
+}
+
+// runTimingBudgetFixture runs the runner against explicit on-disk fixture paths
+// with the given extra flags and environment. The caller writes the fixtures, so
+// budgetPath may name a file that does not exist — that is how the missing-file
+// warn state is exercised — and measuredPath and budgetPath may be asserted in
+// the output. dir receives the runner's scratch (dir/tmp).
+func runTimingBudgetFixture(t *testing.T, measuredPath, budgetPath, dir string, flags, extraEnv []string) (string, error) {
+	t.Helper()
 	tmpDir := filepath.Join(dir, "tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", tmpDir, err)
@@ -129,12 +139,14 @@ func TestTimingParseHelperEmitsTheRatchetsRows(t *testing.T) {
 	}
 }
 
-// runBless runs the real runner's bless path over budgetJSON with extra
-// flags and returns the budget it wrote. The caller names a module list that
-// matches nothing, so no producer runs: the bless only rewrites and preserves
-// entries, which is exactly the marker decision under test, with no test suite
-// to wait on and nothing faked.
-func runBless(t *testing.T, budgetJSON string, args ...string) string {
+// runBlessCommand writes budgetJSON to a fresh budget file and runs the real
+// runner's bless path over it with extra flags, returning the combined output,
+// the file's content after the run, and the run's error. The caller names a
+// module list that matches nothing, so no producer runs: the bless only rewrites
+// and preserves entries, which is exactly the decision under test, with no test
+// suite to wait on and nothing faked. Returning the error (rather than failing)
+// lets a caller assert a refused bless, which is why runBless wraps it.
+func runBlessCommand(t *testing.T, budgetJSON string, args ...string) (string, string, error) {
 	t.Helper()
 	dir := t.TempDir()
 	budget := filepath.Join(dir, "budget.json")
@@ -147,14 +159,23 @@ func runBless(t *testing.T, budgetJSON string, args ...string) string {
 		timingBudgetScript, "--budget", budget, "--no-web", "--bless",
 	}, args...)...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, runErr := cmd.CombinedOutput()
+	got, readErr := os.ReadFile(budget)
+	if readErr != nil {
+		t.Fatalf("read blessed budget: %v", readErr)
+	}
+	return string(out), string(got), runErr
+}
+
+// runBless runs the real runner's bless path and returns the budget it wrote,
+// failing the test if the bless did not succeed.
+func runBless(t *testing.T, budgetJSON string, args ...string) string {
+	t.Helper()
+	out, got, err := runBlessCommand(t, budgetJSON, args...)
+	if err != nil {
 		t.Fatalf("bless failed: %v\n%s", err, out)
 	}
-	got, err := os.ReadFile(budget)
-	if err != nil {
-		t.Fatalf("read blessed budget: %v", err)
-	}
-	return string(got)
+	return got
 }
 
 // TestTimingBudgetBlessKeepsAWallTimeMarker pins the marker rule for a narrowed
@@ -473,6 +494,144 @@ func TestTimingBudgetFailsWhenTheClassMapIsNotAnObject(t *testing.T) {
 			out, err := runTimingBudgetCompare(t, measured, budget)
 			if err == nil {
 				t.Fatalf("a present non-object class map (%s) must fail under --strict, not read as no classes:\n%s", value, out)
+			}
+		})
+	}
+}
+
+// TestTimingBudgetFailsOnAMalformedBudget pins issue #4609.
+// json.JSONDecodeError is a ValueError, and the comparer's
+// `except (FileNotFoundError, ValueError)` used to treat a syntax error exactly
+// like a missing file: an empty budget, the NO BASELINE warn state, and --check
+// exiting 0 with every package ratio and every perTestCeilingClasses ceiling
+// silently unenforced. A malformed file is a broken config that must fail
+// loudly, naming the file and the parse error, in every mode. The exit status,
+// the MALFORMED BUDGET verdict marker and the named file are the assertions —
+// the diagnostic copy is not pinned (docs/developing-evener/testing.md's "Copy
+// Is Not a Test Oracle"). Red before the fix: exit 0, output "NO BASELINE ...".
+func TestTimingBudgetFailsOnAMalformedBudget(t *testing.T) {
+	dir := t.TempDir()
+	malformed := `{ "packages": { "pkg": 1 }` // missing both closing braces
+	measuredPath := filepath.Join(dir, "measured.tsv")
+	writeAuditScriptFixture(t, measuredPath, "SUM\tpkg\t100.00\n")
+	budgetPath := filepath.Join(dir, "budget.json")
+	writeAuditScriptFixture(t, budgetPath, malformed)
+	out, err := runTimingBudgetFixture(t, measuredPath, budgetPath, dir, []string{"--check", "--strict"}, nil)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("a malformed budget must fail --check --strict with exit 1: exit = %v\n%s", err, out)
+	}
+	if strings.Contains(out, "NO BASELINE") {
+		t.Fatalf("a malformed budget took the missing-file NO BASELINE path, silently disarming every ratio and class ceiling:\n%s", out)
+	}
+	if !strings.Contains(out, "MALFORMED BUDGET") {
+		t.Fatalf("no MALFORMED BUDGET verdict for a syntax error:\n%s", out)
+	}
+	if !strings.Contains(out, budgetPath) {
+		t.Fatalf("the malformed-budget failure does not name the budget file %s:\n%s", budgetPath, out)
+	}
+}
+
+// TestTimingBudgetFailsOnAMalformedBudgetWhenWarnOnly pins the "non-zero under
+// --check" half of #4609. --check with neither $CI nor --strict is the
+// warn-only posture for ratios — a real ratio excess only warns and exits 0 —
+// but a broken config is not a ratio warning: a malformed budget must fail
+// regardless of the strictness posture.
+func TestTimingBudgetFailsOnAMalformedBudgetWhenWarnOnly(t *testing.T) {
+	out, err := runTimingBudgetScript(t, "SUM\tpkg\t100.00\n", `{"packages":`, []string{"--check"}, nil)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("a malformed budget must fail --check even on a warn-only run: exit = %v\n%s", err, out)
+	}
+	if strings.Contains(out, "NO BASELINE") {
+		t.Fatalf("a malformed budget took the missing-file NO BASELINE path on a warn-only run:\n%s", out)
+	}
+}
+
+// TestTimingBudgetBlessRefusesAMalformedBudget pins the same fail-loud rule on
+// the bless path. A narrowed --bless reads the existing file to preserve the
+// entries it did not measure; reading a malformed file as an empty budget would
+// make the bless rewrite it from that empty fallback and drop every preserved
+// entry. The refusal must leave the file untouched.
+func TestTimingBudgetBlessRefusesAMalformedBudget(t *testing.T) {
+	const malformed = `{ "packages": `
+	out, got, err := runBlessCommand(t, malformed, "--modules", "no-such-module")
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("--bless must refuse a malformed budget: exit = %v\n%s", err, out)
+	}
+	if got != malformed {
+		t.Fatalf("--bless overwrote a malformed budget instead of refusing it:\n%s", got)
+	}
+}
+
+// TestTimingBudgetKeepsTheMissingFileWarnState pins the deliberate warn state
+// #4609 separates from a syntax error: a budget file that does not exist is not
+// a broken config — the tree stays green until a measured baseline is blessed —
+// so --check --strict still exits 0 with the NO BASELINE marker.
+func TestTimingBudgetKeepsTheMissingFileWarnState(t *testing.T) {
+	dir := t.TempDir()
+	measuredPath := filepath.Join(dir, "measured.tsv")
+	writeAuditScriptFixture(t, measuredPath, "SUM\tpkg\t100.00\n")
+	budgetPath := filepath.Join(dir, "absent-budget.json") // never written
+	out, err := runTimingBudgetFixture(t, measuredPath, budgetPath, dir, []string{"--check", "--strict"}, nil)
+	if err != nil {
+		t.Fatalf("a missing budget file must keep the NO BASELINE warn state (exit 0): %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "NO BASELINE") {
+		t.Fatalf("a missing budget file did not reach the NO BASELINE warn state:\n%s", out)
+	}
+}
+
+// TestTimingBudgetKeepsTheEmptyObjectWarnState pins a valid-but-partial case:
+// an empty JSON object is valid, has no packages, and is the same NO BASELINE
+// warn state as a missing file (exit 0) — not a malformed-budget failure.
+func TestTimingBudgetKeepsTheEmptyObjectWarnState(t *testing.T) {
+	out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", "{}")
+	if err != nil {
+		t.Fatalf("an empty budget object must stay the NO BASELINE warn state (exit 0): %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "NO BASELINE") {
+		t.Fatalf("an empty budget object did not reach the NO BASELINE warn state:\n%s", out)
+	}
+}
+
+// TestTimingBudgetKeepsTheClassMapOnlyWarnState pins the other valid-but-partial
+// case: a file with a perTestCeilingClasses map but no packages is still no
+// baseline — the map is validated, but with no packages the run stays the
+// NO BASELINE warn state and --check --strict exits 0, exactly as before #4609.
+func TestTimingBudgetKeepsTheClassMapOnlyWarnState(t *testing.T) {
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"retirement":{"ceilingSeconds":20,"tests":["TestClassed"]}}}`
+	out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", budget)
+	if err != nil {
+		t.Fatalf("a class-map-only budget must stay the NO BASELINE warn state (exit 0): %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "NO BASELINE") {
+		t.Fatalf("a class-map-only budget did not reach the NO BASELINE warn state:\n%s", out)
+	}
+}
+
+// TestTimingBudgetFailsOnANonObjectTopLevel pins #4609's shape half: a file
+// that is valid JSON but not an object (null, a list, a string, a number) must
+// fail the same loud MALFORMED BUDGET way, naming the file. The pre-fix code
+// raised an AttributeError, so python printed a traceback to stderr that named
+// neither the budget file nor the reason.
+func TestTimingBudgetFailsOnANonObjectTopLevel(t *testing.T) {
+	for _, value := range []string{"null", "[]", `"a string"`, "5"} {
+		t.Run(value, func(t *testing.T) {
+			dir := t.TempDir()
+			measuredPath := filepath.Join(dir, "measured.tsv")
+			writeAuditScriptFixture(t, measuredPath, "SUM\tpkg\t100.00\n")
+			budgetPath := filepath.Join(dir, "budget.json")
+			writeAuditScriptFixture(t, budgetPath, value)
+			out, err := runTimingBudgetFixture(t, measuredPath, budgetPath, dir, []string{"--check", "--strict"}, nil)
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+				t.Fatalf("a non-object top level (%s) must fail loudly: exit = %v\n%s", value, err, out)
+			}
+			if !strings.Contains(out, "MALFORMED BUDGET") {
+				t.Fatalf("a non-object top level (%s) produced no MALFORMED BUDGET verdict:\n%s", value, out)
 			}
 		})
 	}
