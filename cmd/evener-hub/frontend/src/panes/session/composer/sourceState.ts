@@ -471,11 +471,21 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     // token. Load the durable row and adopt its token when it is NEWER - the
     // revision the durable state acknowledges - while never overwriting a
     // newer local token (a concurrent edit this source has already taken).
+    // A namespace reset retires the epoch while preserving the revision, and
+    // revisions from different incarnations are not comparable authority, so
+    // a changed incarnation is adopted the same way: presenting the retired
+    // epoch would be refused by every later press too, stranding the row.
     const repositoryNow = repository;
     const keyNow = draftKey;
     if (!repositoryNow || !keyNow) return getDraftToken();
     const row = await repositoryNow.load(keyNow).catch(() => null);
-    if (row && !disposed && (draftToken === null || row.token.sessionRevision > draftToken.sessionRevision)) {
+    if (
+      row &&
+      !disposed &&
+      (draftToken === null ||
+        row.token.namespaceIncarnation !== draftToken.namespaceIncarnation ||
+        row.token.sessionRevision > draftToken.sessionRevision)
+    ) {
       draftToken = { ...row.token };
     }
     return getDraftToken();

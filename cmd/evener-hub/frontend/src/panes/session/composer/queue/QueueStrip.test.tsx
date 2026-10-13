@@ -18,6 +18,7 @@ import {
   createBrowserDraftRepository,
 } from "../../../../stores/browserDraftRepository";
 import { connectionStore } from "../../../../stores/connection";
+import { createDocumentAnnotationRepository } from "../../../../stores/documentAnnotationIndexedDB";
 import type {
   MutationOutboxRecord,
   MutationRecoveryKind,
@@ -937,6 +938,90 @@ test("a refused dismiss leaves the next deliberate press with current durable au
     repository.close();
   }
   if (failures.length > 0) throw new AggregateError(failures, "strip refused-retry checkpoint failed");
+});
+
+test("a namespace reset does not strand the next dismissal press", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "strip-reset-dismiss";
+  const key = browserDraftKey("ref_a");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const observerRepository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const annotations = createDocumentAnnotationRepository({
+    indexedDB: factory,
+    databaseName,
+    drafts: repository,
+    targetFor: () => null,
+  });
+  const storage = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const observerStorage = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const failures: unknown[] = [];
+  const attempt = async (check: () => void | Promise<void>) => {
+    try {
+      await check();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  let source: ComposerSourceState | undefined;
+  let unmount: (() => void) | undefined;
+  try {
+    setMutationStorageForTests(storage);
+    await repository.seedDraft(key, { text: "ordinary", skillNames: [], mentions: [] });
+    const original = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a", turnId: "turn_1" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected", "stop refused");
+    await act(async () => {
+      source = createComposerSourceState("ref_a", { repository, key, outbox: storage });
+      await source.ready();
+    });
+    const mountedSource = source as ComposerSourceState;
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const view = renderStrip(defaultProps({ source: mountedSource }));
+    unmount = view.unmount;
+    await flushPendingTurnsProjectionForTests();
+    const before = await observerRepository.load(key);
+    if (!before) throw new Error("missing initial ordinary row");
+
+    // A namespace reset retires the row's epoch while preserving its revision:
+    // the dismiss press must present the RESET epoch's authority or the
+    // storage refuses the guard on every later press too.
+    const reset = await annotations.resetOwnedNamespace(key.namespace, before.token.namespaceIncarnation);
+    if (!reset.committed) throw new Error("namespace reset did not commit");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    });
+    await flushPendingTurnsProjectionForTests();
+    await attempt(async () =>
+      waitFor(async () => expect(await observerStorage.getRecovery(original.clientMutationId)).toBeUndefined()),
+    );
+    await attempt(async () =>
+      waitFor(() => expect(mountedSource.getDraftToken().namespaceIncarnation).toBe(reset.incarnation)),
+    );
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(async () => {
+      await act(async () => {
+        await source?.whenSettled();
+        unmount?.();
+        source?.dispose();
+      });
+    });
+    observerStorage.close();
+    storage.close();
+    observerRepository.close();
+    annotations.close();
+    repository.close();
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "strip reset-dismiss checkpoint failed");
 });
 
 describe("visibility", () => {
