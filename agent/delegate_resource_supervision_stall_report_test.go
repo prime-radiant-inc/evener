@@ -264,3 +264,80 @@ func TestStableSupervisionQuiescenceWaitKeepsWaitingWhileASourceLockIsHeld(t *te
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+
+// stableSupervisionEntryRefusalWithin runs the wait's entry precondition on its
+// own goroutine and fails if it does not return before the deadline, which is
+// exactly what a blocking sub.mu read does. A hang is not a t.Fatalf on the
+// helper itself, so running it off the test goroutine is how a blocking read is
+// made a testable failure.
+func stableSupervisionEntryRefusalWithin(t *testing.T, sub *subagent, childID string) string {
+	t.Helper()
+	done := make(chan string, 1)
+	go func() { done <- stableSupervisionEntryRefusal(sub, childID) }()
+	select {
+	case got := <-done:
+		return got
+	case <-time.After(stableSupervisionRefusalDeadline):
+		t.Fatalf("stableSupervisionEntryRefusal blocked for %s while sub.mu was held", stableSupervisionRefusalDeadline)
+		return ""
+	}
+}
+
+// TestStableSupervisionEntryNeverBlocksWhileChildLockIsHeld pins the wait's
+// entry precondition to be non-blocking and to keep waiting, not decide, while
+// a source is held. waitForStableSupervisionRun reads the child's completion
+// channel before it enters its bounded poll; a blocking read there would wait
+// on a stall that holds sub.mu, keeping the wait from ever reaching its poll —
+// and so from ever firing the 30s bound and the #4513 timeout report that runs
+// only after it, the same class #4548 removed from the poll predicate.
+//
+// The child never ran, so its channel is genuinely nil and the entry reads a
+// refusal with the lock free. Holding sub.mu across a controlled window must
+// still return the read (a blocking read fails the 2s deadline instead), and
+// every held read must be empty: a busy lock observes neither presence nor
+// absence, so it defers to the poll rather than deciding. Releasing the lock
+// restores the true state the busy hold suppressed, so the empties are the busy
+// lock's deferral and not a helper that answers "" for everything.
+func TestStableSupervisionEntryNeverBlocksWhileChildLockIsHeld(t *testing.T) {
+	t.Parallel()
+	sub := &subagent{}
+	const childID = "child-never-ran"
+	if got := stableSupervisionEntryRefusalWithin(t, sub, childID); got == "" {
+		t.Fatal("entry read a missing channel as present with sub.mu free")
+	}
+	func() {
+		sub.mu.Lock()
+		defer sub.mu.Unlock()
+		held := time.Now().Add(stableSupervisionRefusalHeldWindow)
+		for time.Now().Before(held) {
+			if got := stableSupervisionEntryRefusalWithin(t, sub, childID); got != "" {
+				t.Fatalf("entry decided %q while sub.mu was held; a busy lock must keep the wait waiting", got)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	if got := stableSupervisionEntryRefusalWithin(t, sub, childID); got == "" {
+		t.Fatal("entry did not read the missing channel after sub.mu was released")
+	}
+}
+
+// TestStableSupervisionEntryRefusalReadsTheChannelState pins the present
+// branch and the busy mapping together. A healthy child's channel is present,
+// so the wait proceeds; behind a busy lock the same present channel still
+// decides nothing, so a busy lock cannot be turned into a missing channel (the
+// missing-channel and deferral halves are the other test). It asserts the
+// decision (empty vs a refusal), not the refusal wording, which is test-helper
+// copy (docs/developing-evener/testing.md, Copy Is Not a Test Oracle).
+func TestStableSupervisionEntryRefusalReadsTheChannelState(t *testing.T) {
+	t.Parallel()
+	_, sub := stableSupervisionReportFixture(t)
+	if got := stableSupervisionEntryRefusalWithin(t, sub, sub.id); got != "" {
+		t.Fatalf("entry refusal for a healthy child = %q, want empty", got)
+	}
+	present := &subagent{done: make(chan struct{})}
+	present.mu.Lock()
+	defer present.mu.Unlock()
+	if got := stableSupervisionEntryRefusalWithin(t, present, "child-busy-present"); got != "" {
+		t.Fatalf("entry refusal for a present channel behind a busy lock = %q, want empty", got)
+	}
+}
