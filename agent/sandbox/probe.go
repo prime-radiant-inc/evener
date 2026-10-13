@@ -666,19 +666,24 @@ func bwrapOverlayLowerWorks(system probeSystem, path, root string) bool {
 // verdict so the probe runs once per root per session. The filesystem a root
 // sits on does not change mid-session, so a remembered verdict is as good as a
 // fresh one. The probe is asked from more than one spawn site, so the memo is
-// mutex-guarded: the closure is shared by every copy of the HostFacts it was
+// mutex-guarded; the lock is released while the subprocess runs, so concurrent
+// spawns do not queue behind it (a root probed twice concurrently stores the
+// same answer). The closure is shared by every copy of the HostFacts it was
 // built into.
 func memoizedOverlayLower(system probeSystem, path string) func(root string) bool {
 	var mu sync.Mutex
 	seen := map[string]bool{}
 	return func(root string) bool {
 		mu.Lock()
-		defer mu.Unlock()
-		if ok, found := seen[root]; found {
+		ok, found := seen[root]
+		mu.Unlock()
+		if found {
 			return ok
 		}
-		ok := bwrapOverlayLowerWorks(system, path, root)
+		ok = bwrapOverlayLowerWorks(system, path, root)
+		mu.Lock()
 		seen[root] = ok
+		mu.Unlock()
 		return ok
 	}
 }
@@ -689,11 +694,7 @@ func memoizedOverlayLower(system probeSystem, path string) func(root string) boo
 // overlay flag pair buildBwrapArgv emits, placed immediately before the "--".
 func bwrapOverlayProbeArgs(path, root string) []string {
 	args := bwrapProbeArgs(path)
-	i := slices.Index(args, "--")
-	if i < 0 {
-		i = len(args)
-	}
-	return slices.Insert(args, i, "--overlay-src", root, "--tmp-overlay", root)
+	return slices.Insert(args, slices.Index(args, "--"), overlayFlags(root)...)
 }
 
 // probeKernelVersion returns `uname -r` best-effort, or "" if unavailable.

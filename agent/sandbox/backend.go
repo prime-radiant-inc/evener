@@ -76,8 +76,25 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 	if rp.CacheStrategy == CacheOverlay {
 		recreateMissingCacheRoots(rp)
+		warmOverlayProbes(rp)
 	}
 	return rp
+}
+
+// warmOverlayProbes asks the per-root overlay probe for each cache root that is
+// a directory now, so the session's first spawn does not pay the probe's
+// subprocess. A root that is not a directory yet is left unwarmed: its verdict
+// is judged when it appears (servableCacheRoot, #4220), and warming it now would
+// pin an unserved verdict it might outgrow.
+func warmOverlayProbes(rp ResolvedPolicy) {
+	if rp.resolveHost.OverlayLowerOK == nil {
+		return
+	}
+	for _, c := range rp.CacheRoots {
+		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
+			overlayLowerOK(rp, c)
+		}
+	}
 }
 
 // recreateMissingCacheRoots creates, empty, each cache root that has gone

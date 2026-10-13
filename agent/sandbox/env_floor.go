@@ -51,7 +51,7 @@ var floorPrefixDrops = []string{
 //     serve (see redirectedCacheVars).
 //
 // It returns a fresh slice and never reads the process environment; the overlay
-// branch inspects the filesystem at the cache paths it judges (overlayServes).
+// branch inspects the filesystem at the cache paths it judges (servedByOverlay).
 // Called at EVERY spawn site (shell jobs, rg, stdio MCP servers, hook commands)
 // so no spawned process escapes the floor.
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
@@ -118,7 +118,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // go env file cannot be judged (unreadable now, relative, or not the probe's),
 // since the overlay cannot know where go will write. npm's and cargo's caches
 // are left as they are, except under a root the overlay cannot mount on this
-// host's filesystem (#4220, OverlayDegradedRoots): that root is not overlaid, so
+// host's filesystem (#4220, underUnoverlayableRoot): that root is not overlaid, so
 // what names it — the spawn's own value or its HOME default — goes to the
 // scratch rather than writing into a read-only tree.
 //
@@ -149,8 +149,9 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 		// must not override.
 		dirs, unknown := overlayCacheDirs(env, policy)
 		writeRoots := bwrapWriteRoots(policy)
+		roots := liveCacheRoots(policy)
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
-			if dir := dirs[name]; unknown[name] || (filepath.IsAbs(dir) && (!overlayServes(policy, dir) || overlapsAnyRoot(dir, writeRoots))) {
+			if dir := dirs[name]; unknown[name] || (filepath.IsAbs(dir) && (!servedByOverlay(roots, dir) || overlapsAnyRoot(dir, writeRoots))) {
 				out[name] = true
 			}
 		}
@@ -160,7 +161,7 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 		// than write into a read-only tree. A root dropped for sharing storage
 		// with a writable directory keeps today's "leave it alone".
 		for _, name := range []string{npmConfigCacheEnv, envvars.CargoHome.Name} {
-			if dir := dirs[name]; filepath.IsAbs(dir) && !overlayServes(policy, dir) && underUnoverlayableRoot(policy, dir) {
+			if dir := dirs[name]; filepath.IsAbs(dir) && !servedByOverlay(roots, dir) && underUnoverlayableRoot(policy, dir) {
 				out[name] = true
 			}
 		}
@@ -174,31 +175,35 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 	return out, pins
 }
 
-// overlayServes reports whether the overlay covers writes to dir: dir can be a
-// directory, and its real destination (following any symlink on the way,
-// existing or not yet created) lies under a root bwrap overlays at this spawn.
-// It is judged by real location only, so a spelling through another path to
-// the same storage is served, and a link from a served root into the worktree
-// is not.
+// servedByOverlay reports whether the overlay over roots covers writes to dir:
+// dir can be a directory, and its real destination (following any symlink on the
+// way, existing or not yet created) lies under one of them. roots is the caller's
+// liveCacheRoots, taken once per spawn. The answer follows the real location
+// only, so a spelling through another path to the same storage is served, and a
+// link from a served root into the worktree is not.
 //
 // A spawn that spells its own cache through a host link bwrap's private /tmp
 // hides (GOPATH=/tmp/gopath linked to a served root) keeps that spelling and
 // writes into the private /tmp instead. Only that spawn's own cache output is
 // lost; nothing leaves its grants, so the threat model leaves it to the spawn
 // (docs/sandboxing.md#threat-model).
-func overlayServes(policy ResolvedPolicy, dir string) bool {
-	// Only a root bwrap overlays at this spawn serves (liveCacheRoots).
-	roots := liveCacheRoots(policy)
+func servedByOverlay(roots []string, dir string) bool {
 	if !canBeDirectory(dir) {
 		return false
 	}
 	dest := resolveExistingPrefix(dir)
 	for _, r := range roots {
-		if pathUnder(dest, r) || pathUnder(dest, resolveExistingPrefix(r)) {
+		if landsUnder(dest, r) {
 			return true
 		}
 	}
 	return false
+}
+
+// landsUnder reports whether dest (a resolved location) is at or under root, by
+// spelling or by the root's own resolved location.
+func landsUnder(dest, root string) bool {
+	return pathUnder(dest, root) || pathUnder(dest, resolveExistingPrefix(root))
 }
 
 // underUnoverlayableRoot reports whether dir lies at or under one of the
@@ -206,12 +211,9 @@ func overlayServes(policy ResolvedPolicy, dir string) bool {
 // (HostFacts.OverlayLowerOK, #4220). Such a root is not served, so what names it
 // is redirected to the session scratch rather than writing into a read-only tree.
 func underUnoverlayableRoot(policy ResolvedPolicy, dir string) bool {
-	if policy.resolveHost.OverlayLowerOK == nil {
-		return false
-	}
 	dest := resolveExistingPrefix(dir)
 	return slices.ContainsFunc(policy.CacheRoots, func(r string) bool {
-		return (pathUnder(dest, r) || pathUnder(dest, resolveExistingPrefix(r))) && !overlayLowerOK(policy, r)
+		return landsUnder(dest, r) && !overlayLowerOK(policy, r)
 	})
 }
 
@@ -326,7 +328,7 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, m
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
-	out[npmConfigCacheEnv] = envVarFold(env, npmConfigCacheEnv)
+	out[npmConfigCacheEnv] = envValueFold(env, npmConfigCacheEnv)
 	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
 	if home != "" {
 		out[npmConfigCacheEnv] = firstOr(out[npmConfigCacheEnv], filepath.Join(home, ".npm"))
@@ -343,17 +345,6 @@ func envVars(env []string) map[string]string {
 		vars[name] = val
 	}
 	return vars
-}
-
-// envVarFold returns the value of the first environment entry whose name
-// matches key case-insensitively (npm reads its configuration that way), or "".
-func envVarFold(env []string, key string) string {
-	for _, kv := range env {
-		if name, val, ok := strings.Cut(kv, "="); ok && strings.EqualFold(name, key) {
-			return val
-		}
-	}
-	return ""
 }
 
 // canonicalCacheVar maps npm's environment configuration name, which npm reads

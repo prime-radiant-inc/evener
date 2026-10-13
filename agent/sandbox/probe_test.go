@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
@@ -29,15 +30,31 @@ func TestBwrapProbeExercisesWrapFlags(t *testing.T) {
 // its verdict is whether that root can be an unprivileged overlay lower (#4220).
 func TestBwrapOverlayProbeArgsUseTheEmittedOverlayFlags(t *testing.T) {
 	t.Parallel()
-	args := bwrapOverlayProbeArgs("/usr/bin/bwrap", "/cache/root")
-	base := bwrapProbeArgs("/usr/bin/bwrap")
+	home := overlayFixtureDir(t)
+	cache := filepath.Join(home, "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	emitted := buildBwrapArgv(ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, Backend: BackendBwrap, CacheStrategy: CacheOverlay,
+		CacheRoots: []string{cache}, Spawned: AccessScope{Read: ReadAnywhere},
+		resolveHost: HostFacts{OS: "linux", Home: home},
+	}, "", "/work")
+	i := slices.Index(emitted, "--overlay-src")
+	if i < 0 || i+4 > len(emitted) {
+		t.Fatalf("buildBwrapArgv emitted no overlay for %q: %v", cache, emitted)
+	}
+	want := emitted[i : i+4]
+
+	args := bwrapOverlayProbeArgs("/usr/bin/bwrap", cache)
 	for _, want := range []string{"--unshare-user", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("overlay probe argv must keep the base flag %q, got %v", want, args)
 		}
 	}
-	if !hasSeq(args, "--overlay-src", "/cache/root", "--tmp-overlay", "/cache/root") {
-		t.Errorf("overlay probe argv must emit the overlay pair for the root: %v (base %v)", args, base)
+	j := slices.Index(args, "--overlay-src")
+	if j < 0 || !slices.Equal(args[j:j+4], want) {
+		t.Errorf("overlay probe argv must emit the pair buildBwrapArgv does %v, got %v", want, args)
 	}
 }
 
@@ -45,22 +62,13 @@ func TestBwrapOverlayProbeArgsUseTheEmittedOverlayFlags(t *testing.T) {
 // un-overlayable, and a root it can as fine (#4220).
 func TestBwrapOverlayLowerWorksReportsTheProbeResult(t *testing.T) {
 	t.Parallel()
-	if bwrapOverlayLowerWorks(probeSystemWithRunErr{err: errors.New("EINVAL")}, "/usr/bin/bwrap", "/cache/root") {
+	if bwrapOverlayLowerWorks(overlayProbeSystem{runErr: errors.New("EINVAL")}, "/usr/bin/bwrap", "/cache/root") {
 		t.Error("a failing trivial overlay mount must report the root un-overlayable")
 	}
-	if !bwrapOverlayLowerWorks(probeSystemWithRunErr{}, "/usr/bin/bwrap", "/cache/root") {
+	if !bwrapOverlayLowerWorks(overlayProbeSystem{}, "/usr/bin/bwrap", "/cache/root") {
 		t.Error("a succeeding trivial overlay mount must report the root overlaid")
 	}
 }
-
-// probeSystemWithRunErr is stubProbeSystem with a settable command result, the
-// one thing the overlay-lower probe asks of the host.
-type probeSystemWithRunErr struct {
-	stubProbeSystem
-	err error
-}
-
-func (s probeSystemWithRunErr) run(context.Context, string, ...string) error { return s.err }
 
 // overlayProbeSystem is stubProbeSystem whose bwrap reports (or does not report)
 // overlay support, with a settable per-command result.

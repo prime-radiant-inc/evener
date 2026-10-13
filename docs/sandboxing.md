@@ -506,8 +506,8 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   another is served by the outer overlay. Whether an overlay can be mounted
   also depends on each root's filesystem: a root the host refuses as an
   unprivileged overlay lower (one on an overlayfs root, or a network mount; the
-  kernel returns EINVAL) is probed once at session start and left out of the
-  overlay rather than aborting every spawn, and the cache variables naming it —
+  kernel returns EINVAL) is probed once per root and left out of the overlay
+  rather than aborting every spawn, and the cache variables naming it —
   including npm's and cargo's own defaults under it — go to the session scratch.
   A Go cache the overlay does not
   serve (set in the spawn's environment, with `go env -w`, which is read again
