@@ -217,6 +217,22 @@ func requireTranscriptHistoryFailedWithoutIdentity(t testing.TB, err error, ordi
 	}
 }
 
+// isTranscriptHistoryFailed reports whether err carries the terminal
+// history-failed answer, in either wire shape, so a test can pin its absence.
+func isTranscriptHistoryFailed(err error) bool {
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		return false
+	}
+	switch data := wire.Data.(type) {
+	case appwire.HistoryReadErrorData:
+		return data.EvenerErrorInfo == appwire.ErrorTranscriptHistoryFailed
+	case appwire.ErrorData:
+		return data.EvenerErrorInfo == appwire.ErrorTranscriptHistoryFailed
+	}
+	return false
+}
+
 func requireTranscriptHistoryFailed(t testing.TB, err error, ordinal uint64) {
 	t.Helper()
 	requireTranscriptHistoryFailedWithoutIdentity(t, err, ordinal)
@@ -443,6 +459,55 @@ func TestALegacyTranscriptAnswersHistoryFailedDirectly(t *testing.T) {
 	// for a transcript that can never be indexed. The open's directory and
 	// lock file are today's residue.
 	requireUnchangedSidecar(t, transcriptindex.DirFor(path), before)
+}
+
+// TestAHeaderCheckFailureStaysRetriable pins the gate's transient corner: a
+// transcript the header check cannot diagnose right now — unreadable
+// permissions here — answers an ordinary retriable error, never the terminal
+// history-failed, and the read converges once the condition clears.
+func TestAHeaderCheckFailureStaysRetriable(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, calls := installRepairSeam(t)
+	cfg, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	staleSidecarForTest(t, path)
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(path, 0o644) }()
+
+	_, err := readStaleSession(t, cfg, entry)
+	if err == nil {
+		t.Fatal("read of a transcript with unreadable permissions should fail")
+	}
+	if isTranscriptHistoryFailed(err) {
+		t.Fatalf("transient header-check failure answered terminal history-failed: %v", err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("repairs = %d, want none armed while the transcript cannot be diagnosed", got)
+	}
+
+	// The condition clears: the gate passes, a repair arms, and the read
+	// answers the typed retryable rebuilding code. Driven to completion, the
+	// read converges.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = readStaleSession(t, cfg, entry)
+	requireTranscriptIndexRebuilding(t, err)
+	feed(repairTranscriptIndex)
+	<-completions
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("repairs = %d, want exactly one after the condition clears", got)
+	}
+	response, err := readStaleSession(t, cfg, entry)
+	if err != nil {
+		t.Fatalf("read after the repair: %v", err)
+	}
+	if items := flattenTestItems(response.Thread.Turns); len(items) != 1 || items[0].Text != "question" {
+		t.Fatalf("post-repair items = %+v, want the transcript's one", items)
+	}
 }
 
 // requireUnchangedSidecar asserts the sidecar directory still holds exactly

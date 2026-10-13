@@ -328,7 +328,8 @@ func withPastTranscriptIndex(ctx context.Context, entry hubcore.PastEntry, fn fu
 // background repair — registered or joined, never waited on — and the read
 // answers the typed retryable rebuilding error while it runs; a transcript
 // whose header cannot be this format can never be indexed and answers
-// history-failed directly with no repair; a path whose repair budget is
+// history-failed directly with no repair, while a header check that fails
+// transiently answers its ordinary error; a path whose repair budget is
 // exhausted re-arms exactly one repair and answers history-failed itself,
 // naming the refusal's ordinal. Lock contention answers the rebuilding code
 // when the registry's own repair holds the lock, and an ordinary transient
@@ -350,7 +351,15 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 		// The check runs only on this refusal path; the healthy path never
 		// pays it.
 		if err := hubcore.CheckTranscriptHeader(path); err != nil {
-			return appwire.TranscriptHistoryFailed(0)
+			if errors.Is(err, transcript.ErrUnsupportedFormat) {
+				return appwire.TranscriptHistoryFailed(0)
+			}
+			// The check could not diagnose the transcript — a transient
+			// read failure such as unreadable permissions, not a verdict.
+			// Answer the ordinary error so the client's retry converges; the
+			// gate re-runs on the next read, and no repair is armed off a
+			// read that could not see the transcript.
+			return err
 		}
 		armed, exhausted := transcriptIndexRepairs.answerRead(path)
 		if armed && !exhausted {
