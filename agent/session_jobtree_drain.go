@@ -331,15 +331,10 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 		}
 		// A delegate whose finish append failed reads quiet on its own run flags
 		// but still holds an open generation behind the controller's recovery
-		// latch. Counting it as live would hang the drain until a stop or restart
-		// reconciliation clears the latch; ignoring it is a false quiescence that
-		// lets the drain (and Close) proceed with the generation unsettled.
-		// Report it as outstanding-but-not-live, so the drain waits rather than
-		// quiescing and the stall watchdog gives up after DrainStallTimeout
-		// instead of exiting as if nothing were owed (issue #179 item b). The
-		// give-up warning names stuck managed jobs and stop-requested delegates,
-		// so a stall caused by this signal alone reads "none" for both.
-		if child != nil && child.owningDelegateID != "" && s.delegateController.finalizationRecoveryHolds(child.owningDelegateID) {
+		// latch. Report it outstanding-but-not-live: the drain waits, and the
+		// stall watchdog gives up after DrainStallTimeout instead of quiescing on
+		// an unsettled generation (finalizationRecoveryHolds; issue #179 item b).
+		if s.childDelegateRecoveryHeld(child) {
 			return true, nil
 		}
 		if child != nil {
@@ -353,6 +348,13 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// childDelegateRecoveryHeld reports whether child names a stable delegate whose
+// last generation failed its finish append and is still held behind the
+// controller's recovery latch (see finalizationRecoveryHolds).
+func (s *Session) childDelegateRecoveryHeld(child *Session) bool {
+	return child != nil && child.owningDelegateID != "" && s.delegateController.finalizationRecoveryHolds(child.owningDelegateID)
 }
 
 // undisposedBackgroundDrainJobs reports the background shells that are the

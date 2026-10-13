@@ -57,7 +57,7 @@ func outstandingWorkReasons(s *Session) []string {
 		}
 		// A delegate whose finish append failed holds drain work the run flags do
 		// not show; name it so a failure here says why the tree was outstanding.
-		if child != nil && child.owningDelegateID != "" && s.delegateController.finalizationRecoveryHolds(child.owningDelegateID) {
+		if s.childDelegateRecoveryHeld(child) {
 			reasons = append(reasons, "child "+child.id+": delegate finalization recovery held")
 		}
 		if child != nil {

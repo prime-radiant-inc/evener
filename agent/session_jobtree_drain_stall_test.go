@@ -361,13 +361,12 @@ func TestDrainCountsStrandedDelegateFinalizationRecoveryAsOutstanding(t *testing
 	t.Parallel()
 	const delegateID = "dlg_stranded_recovery"
 	for _, tt := range []struct {
-		name    string
-		present bool
-		recover bool
-		want    bool
+		name string
+		live *delegateLiveState
+		want bool
 	}{
-		{name: "recovery latched", present: true, recover: true, want: true},
-		{name: "no recovery", present: true, want: false},
+		{name: "recovery latched", live: &delegateLiveState{recoveryRequired: true, finalizationRecoveryRequired: true}, want: true},
+		{name: "no recovery", live: &delegateLiveState{}, want: false},
 		{name: "delegate unknown", want: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -390,11 +389,8 @@ func TestDrainCountsStrandedDelegateFinalizationRecoveryAsOutstanding(t *testing
 				t.Fatal("precondition: a session must own a delegate controller")
 			}
 			controller.mu.Lock()
-			if tt.present {
-				controller.live[delegateID] = &delegateLiveState{
-					recoveryRequired:             tt.recover,
-					finalizationRecoveryRequired: tt.recover,
-				}
+			if tt.live != nil {
+				controller.live[delegateID] = tt.live
 			}
 			controller.mu.Unlock()
 			t.Cleanup(func() {
