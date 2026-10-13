@@ -13,6 +13,11 @@
 // value (a closure that closes over one throws ReferenceError in the page and
 // fails the guard on the first tick). `send` is the context's CDP send: a page's
 // own, or a realm's with its executionContextId already bound.
+//
+// Chrome can throttle a hidden page's timers, which would only DELAY a poll, not
+// skip the predicate: every predicate the guard waits on is monotone (once it
+// holds it keeps holding), so a coarser cadence cannot change the verdict, and
+// the deadline still bounds the wait.
 
 import { evaluate } from "../browserGuardCdp.mjs";
 
@@ -40,4 +45,13 @@ export function pollInPage(send, read, accepts, { waitMs = WAIT_MS, pollMs = POL
       return { ok: false, observed };
     })()`,
   );
+}
+
+/**
+ * The message a wait that spent its whole deadline throws: the caller's own
+ * sentence, the deadline, and the last value read. Kept here so the deadline
+ * the two share cannot drift apart.
+ */
+export function waitDeadline(message, observed) {
+  return new Error(`${message} (${WAIT_MS}ms deadline); observed ${JSON.stringify(observed)}`);
 }

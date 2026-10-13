@@ -13,7 +13,7 @@ import {
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
-import { pollInPage, WAIT_MS } from "./inPageWait.mjs";
+import { pollInPage, waitDeadline } from "./inPageWait.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const CHANNEL = "evener.session-cache.v1";
@@ -25,12 +25,6 @@ const SOURCE_DISCOVERED =
 
 function check(condition, message, observed) {
   if (!condition) throw new Error(`${message}; observed ${JSON.stringify(observed)}`);
-}
-
-// The deadline a wait gives up on, kept identical to the Node-side loop's own
-// message so a timeout reads the same as it always has.
-function waitDeadline(message, observed) {
-  return new Error(`${message} (${WAIT_MS}ms deadline); observed ${JSON.stringify(observed)}`);
 }
 
 function tabAPI(page, label) {

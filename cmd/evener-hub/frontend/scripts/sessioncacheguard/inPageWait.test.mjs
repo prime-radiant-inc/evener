@@ -12,7 +12,7 @@
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { POLL_MS, pollInPage, WAIT_MS } from "./inPageWait.mjs";
+import { POLL_MS, pollInPage, WAIT_MS, waitDeadline } from "./inPageWait.mjs";
 
 // Answer Runtime.evaluate the way the CDP wire does: the awaited value of the
 // expression, in the response shape evaluate() reads.
@@ -33,6 +33,14 @@ describe("the guard's own cadence and deadline", () => {
   test("polls at 20ms on a 5s deadline", () => {
     expect(POLL_MS).toBe(20);
     expect(WAIT_MS).toBe(5000);
+  });
+
+  test("a wait that spent its deadline names the deadline and the last value read", () => {
+    expect(
+      waitDeadline("clear-epoch suppression: B never suppressed before storage I/O", { sourceId: null }).message,
+    ).toBe(
+      'clear-epoch suppression: B never suppressed before storage I/O (5000ms deadline); observed {"sourceId":null}',
+    );
   });
 });
 
