@@ -11,6 +11,11 @@
 // one does. The fakes stub only the browser transport and the wait loop (the
 // pattern in sessionHoverCard.test.mjs); the conditions under test are the
 // guard's own exported ones. No browser.
+//
+// Nothing here copies production wording into an oracle: the wait error is the
+// fake driver's own captured Error, its identity is asserted through `cause`,
+// and the message contract is read back off that same object rather than
+// retyped.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -40,23 +45,27 @@ function pageSend() {
 }
 
 // A fake Driver: `page.send` is the CDP transport, and `waitPage` polls it the
-// way the real one does before failing with the real wait's message. It records
-// the condition and options it was asked for, so a test can pin the wiring
-// run.mjs installs.
+// way the real one does before rejecting with its own captured error. It
+// records the condition and options it was asked for, so a test can pin the
+// wiring run.mjs installs, and exposes that error as `timeout` so a test can
+// assert the failure preserved its identity.
 function fakeDriver(send) {
   const page = { send };
+  const timeout = new Error("the real wait timed out");
   return {
     page,
+    timeout,
     // Driver.send is a getter onto page.send (skillguard/run.mjs), which is
     // what makes watchEvaluateFailures' wrapper visible to waitPage.
     get send() {
       return page.send;
     },
     waitPage: vi.fn(async (expression, { label }) => {
+      timeout.label = label;
       for (let poll = 0; poll < 3; poll += 1) {
         await page.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }).catch(() => {});
       }
-      throw new Error(`timed out after 15000ms (waited 15035ms) waiting for ${label}`);
+      throw timeout;
     }),
   };
 }
@@ -78,18 +87,9 @@ function installFixture({ panes = [], panels = [], paneId = null, focusedPaneId 
 // so a test cannot pass against a condition the guard no longer uses.
 const PANEL_EXPR = FLOATING_PANEL_WAIT_EXPR;
 const READY_EXPR = DOCKVIEW_READY_WAIT_EXPR;
-
-// The composer appends the witness JSON after `; witness `. Asserting the exact
-// prefix is half the contract: the wait's own message, then the witness.
-function witnessOf(failure, original) {
-  const prefix = `${original.message}; witness `;
-  if (!failure.message.startsWith(prefix)) {
-    throw new Error(`failure message lost the original error: ${failure.message}`);
-  }
-  return JSON.parse(failure.message.slice(prefix.length));
-}
-
-const PANEL_TIMEOUT = new Error(`timed out after 15000ms (waited 15035ms) waiting for ${FLOATING_PANEL_LABEL}`);
+// A stand-in for the wait error on cases that call describeFloatingFailure
+// directly; its identity is what the assertions use, never its wording.
+const ORIGINAL = new Error("the real wait timed out");
 const CONTEXT = {
   label: FLOATING_PANEL_LABEL,
   stage: "first measurement",
@@ -99,6 +99,21 @@ const CONTEXT = {
 };
 const SETTINGS_PANE = { id: "pane_settings_2", type: "settings", slot: "main" };
 
+// The failure contract: the wait's own error and its identity are preserved as
+// `cause`, and the witness JSON is appended after `; witness `. The prefix is
+// read back off the cause rather than retyped, so this can only pass when the
+// driver's real error object survived.
+function witnessOf(failure) {
+  if (!(failure.cause instanceof Error)) {
+    throw new Error(`failure lost its cause: ${failure.message}`);
+  }
+  const prefix = `${failure.cause.message}; witness `;
+  if (!failure.message.startsWith(prefix)) {
+    throw new Error(`failure message lost the original error: ${failure.message}`);
+  }
+  return JSON.parse(failure.message.slice(prefix.length));
+}
+
 beforeEach(() => {
   window.__shellGuardErrors = [];
 });
@@ -106,12 +121,11 @@ beforeEach(() => {
 afterEach(() => {
   Reflect.deleteProperty(window, "shellguardFloat");
   Reflect.deleteProperty(window, "__shellGuardErrors");
-  Reflect.deleteProperty(document, "elementFromPoint");
 });
 
 describe("floating fixture panel-wait witness", () => {
   test("the predicates read the live api and store, not a fixed answer", () => {
-    // The four states the two conditions can be in, read through the REAL
+    // The states the two conditions can be in, read through the REAL
     // expression: a green page cannot look like the failing one.
     installFixture({ panes: [SETTINGS_PANE], panels: [], paneId: SETTINGS_PANE.id });
     let witness = evaluateInPage(floatingWitnessExpr());
@@ -134,12 +148,16 @@ describe("floating fixture panel-wait witness", () => {
   test("the waited-on condition and options are the guard's own", async () => {
     installFixture({ panes: [SETTINGS_PANE], panels: [], paneId: SETTINGS_PANE.id });
     const driver = fakeDriver(pageSend());
-    await expect(
-      waitForFloatingState(driver, PANEL_EXPR, { label: FLOATING_PANEL_LABEL, stage: "first measurement" }),
-    ).rejects.toThrow(/; witness /);
+    const failure = await waitForFloatingState(driver, PANEL_EXPR, {
+      label: FLOATING_PANEL_LABEL,
+      stage: "first measurement",
+    }).catch((error) => error);
+
     expect(driver.waitPage).toHaveBeenCalledTimes(1);
     expect(driver.waitPage.mock.calls[0][0]).toBe(PANEL_EXPR);
     expect(driver.waitPage.mock.calls[0][1]).toEqual({ label: FLOATING_PANEL_LABEL });
+    expect(failure.cause).toBe(driver.timeout);
+    expect(witnessOf(failure).fixture).toBe(FLOATING_PANEL_LABEL);
   });
 
   test("a timed-out wait names the fixture, the pane and what the page held", async () => {
@@ -154,16 +172,8 @@ describe("floating fixture panel-wait witness", () => {
     }).catch((error) => error);
 
     expect(failure).toBeInstanceOf(Error);
-    expect(failure.cause).toBeInstanceOf(Error);
-    expect(failure.cause.message).toContain(FLOATING_PANEL_LABEL);
-    // The operator-facing message is pinned whole: the wait's own line, then
-    // the witness. Nothing here is a substring of the text under test.
-    expect(
-      failure.message.startsWith(
-        "timed out after 15000ms (waited 15035ms) waiting for real floating fixture's workspace panel; witness ",
-      ),
-    ).toBe(true);
-    const witness = witnessOf(failure, PANEL_TIMEOUT);
+    expect(failure.cause).toBe(driver.timeout);
+    const witness = witnessOf(failure);
     expect(witness.fixture).toBe(FLOATING_PANEL_LABEL);
     expect(witness.stage).toBe("first measurement");
     expect(witness.paneId).toBe("pane_settings_2");
@@ -186,7 +196,6 @@ describe("floating fixture panel-wait witness", () => {
       paneId: "pane_welcome_1",
     });
     const driver = fakeDriver(pageSend());
-    const readyTimeout = new Error(`timed out after 15000ms (waited 15035ms) waiting for ${DOCKVIEW_READY_LABEL}`);
     const failure = await waitForFloatingState(driver, READY_EXPR, {
       label: DOCKVIEW_READY_LABEL,
       stage: "first measurement",
@@ -194,7 +203,7 @@ describe("floating fixture panel-wait witness", () => {
 
     expect(driver.waitPage.mock.calls[0][0]).toBe(READY_EXPR);
     expect(driver.waitPage.mock.calls[0][1]).toEqual({ label: DOCKVIEW_READY_LABEL });
-    const witness = witnessOf(failure, readyTimeout);
+    const witness = witnessOf(failure);
     expect(witness.fixture).toBe(DOCKVIEW_READY_LABEL);
     expect(witness.apiReady).toBe(true);
     expect(witness.panels).toEqual(["pane_welcome_1"]);
@@ -210,9 +219,9 @@ describe("floating fixture panel-wait witness", () => {
       paneId: "pane_settings_2",
       focusedPaneId: "pane_welcome_1",
     });
-    const failure = await describeFloatingFailure({ send: pageSend() }, CONTEXT, PANEL_TIMEOUT);
+    const failure = await describeFloatingFailure({ send: pageSend() }, CONTEXT, ORIGINAL);
 
-    const witness = witnessOf(failure, PANEL_TIMEOUT);
+    const witness = witnessOf(failure);
     expect(witness.paneRecordPresent).toBe(false);
     expect(witness.panelPresent).toBe(false);
     expect(witness.panes).toEqual([{ id: "pane_welcome_1", type: "welcome", slot: "main" }]);
@@ -233,7 +242,7 @@ describe("floating fixture panel-wait witness", () => {
       openPaneMs: 14,
     }).catch((error) => error);
 
-    const witness = witnessOf(failure, PANEL_TIMEOUT);
+    const witness = witnessOf(failure);
     expect(witness.failedPolls).toBe(3);
     expect(witness.lastPollError).toContain("Runtime.evaluate transport lost");
     expect(witness.unreadable).toEqual(["witness"]);
@@ -256,7 +265,7 @@ describe("floating fixture panel-wait witness", () => {
       stage: "first measurement",
     }).catch((error) => error);
 
-    const witness = witnessOf(failure, PANEL_TIMEOUT);
+    const witness = witnessOf(failure);
     expect(witness.failedPolls).toBe(3);
     expect(witness.lastPollError).toContain("ReferenceError");
     expect(witness.unreadable).toEqual(["witness"]);
@@ -267,9 +276,10 @@ describe("floating fixture panel-wait witness", () => {
     // That read failing says nothing about the predicate, so it must not
     // inflate the count or overwrite the predicate's last error.
     installFixture({ panes: [SETTINGS_PANE], panels: [], paneId: SETTINGS_PANE.id });
+    const transportLost = new Error("Runtime.evaluate transport lost");
     const page = {
       send: vi.fn(async () => {
-        throw new Error("Runtime.evaluate transport lost");
+        throw transportLost;
       }),
     };
     const driver = {
@@ -286,7 +296,9 @@ describe("floating fixture panel-wait witness", () => {
             returnByValue: true,
           })
           .catch(() => {});
-        throw new Error(`timed out after 15000ms (waited 15035ms) waiting for ${label}`);
+        const timeout = new Error("the real wait timed out");
+        timeout.label = label;
+        throw timeout;
       }),
     };
     const failure = await waitForFloatingState(driver, PANEL_EXPR, {
@@ -294,7 +306,7 @@ describe("floating fixture panel-wait witness", () => {
       stage: "first measurement",
     }).catch((error) => error);
 
-    const witness = witnessOf(failure, PANEL_TIMEOUT);
+    const witness = witnessOf(failure);
     expect(witness.failedPolls).toBe(1);
     expect(witness.lastPollError).toContain("Runtime.evaluate transport lost");
   });
@@ -305,9 +317,9 @@ describe("floating fixture panel-wait witness", () => {
     vi.useFakeTimers();
     try {
       const send = vi.fn(() => new Promise(() => {}));
-      const pending = describeFloatingFailure({ send }, CONTEXT, PANEL_TIMEOUT);
+      const pending = describeFloatingFailure({ send }, CONTEXT, ORIGINAL);
       await vi.advanceTimersByTimeAsync(WITNESS_READ_MS + 1);
-      const witness = witnessOf(await pending, PANEL_TIMEOUT);
+      const witness = witnessOf(await pending);
       expect(witness.unreadable).toEqual(["witness"]);
       expect(witness.error).toContain(`did not return within ${WITNESS_READ_MS}ms`);
     } finally {
@@ -353,21 +365,21 @@ describe("floating fixture panel-wait witness", () => {
     const send = vi.fn(async () => {
       throw new Error("Runtime.evaluate transport lost");
     });
-    const failure = await describeFloatingFailure({ send }, CONTEXT, PANEL_TIMEOUT);
+    const failure = await describeFloatingFailure({ send }, CONTEXT, ORIGINAL);
 
     expect(failure).toBeInstanceOf(Error);
-    expect(failure.cause).toBe(PANEL_TIMEOUT);
-    const witness = witnessOf(failure, PANEL_TIMEOUT);
+    expect(failure.cause).toBe(ORIGINAL);
+    const witness = witnessOf(failure);
     expect(witness.unreadable).toEqual(["witness"]);
     expect(witness.error).toContain("Runtime.evaluate transport lost");
   });
 
   test("an unserializable witness keeps the host's own fields", async () => {
     const send = vi.fn(async () => ({ result: { result: { value: { unreadable: [], big: 1n } } } }));
-    const failure = await describeFloatingFailure({ send }, CONTEXT, PANEL_TIMEOUT);
+    const failure = await describeFloatingFailure({ send }, CONTEXT, ORIGINAL);
 
-    expect(failure.cause).toBe(PANEL_TIMEOUT);
-    const witness = witnessOf(failure, PANEL_TIMEOUT);
+    expect(failure.cause).toBe(ORIGINAL);
+    const witness = witnessOf(failure);
     expect(witness.unreadable).toEqual(["payload"]);
     expect(witness.fixture).toBe(FLOATING_PANEL_LABEL);
     expect(witness.openPaneMs).toBe(14);
