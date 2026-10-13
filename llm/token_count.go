@@ -727,7 +727,7 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 		return 0
 	}
 	family := t.mediaFamily()
-	detail := effectiveImageDetail(t, img)
+	detail := imageDetail(t.protocol, img.Detail, t.imageDetail)
 	if family == "openai" && strings.EqualFold(strings.TrimSpace(detail), "low") {
 		// OpenAI bills a low-detail image a fixed 85 tokens without reading its
 		// dimensions, so an image whose dimensions cannot be decoded locally (a
@@ -749,23 +749,6 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 	default:
 		return fallbackMediaTokens + len(img.MediaType)/4 + len(img.Detail)/4
 	}
-}
-
-// effectiveImageDetail is the detail the target's adapter puts on the wire for
-// the image, so the estimate bills what the request sends. The Chat Completions
-// builder normalizes the part's detail together with the row's image_detail
-// (ChatImageDetail); the Responses builder keeps the image's own detail or, when
-// it names none, the row's configured image_detail (its builder defaults that to
-// "high"). Other builders send the image's own detail alone.
-func effectiveImageDetail(t targetInfo, img *ImageData) string {
-	if t.protocol == registry.ProtocolOpenAIChat {
-		return ChatImageDetail(img.Detail, t.imageDetail)
-	}
-	detail := img.Detail
-	if strings.TrimSpace(detail) == "" && t.protocol == registry.ProtocolOpenAIResponses {
-		detail = t.imageDetail
-	}
-	return detail
 }
 
 func imageDimensions(img *ImageData) (int, int, bool) {

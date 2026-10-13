@@ -371,7 +371,8 @@ func comparisons(n ast.Node) []comparison {
 
 // stringLit is the text a string literal holds. A concatenation of literals
 // is one literal; one that also concatenates a value ("copy "+value) gives
-// the literal text in front, with complete false.
+// the literal text in front, with complete false, however the concatenation
+// is parenthesized.
 func stringLit(e ast.Expr) (text string, complete, ok bool) {
 	e = ast.Unparen(e)
 	if concat, isConcat := e.(*ast.BinaryExpr); isConcat && concat.Op == token.ADD {
@@ -380,10 +381,10 @@ func stringLit(e ast.Expr) (text string, complete, ok bool) {
 			return front, false, ok
 		}
 		back, backComplete, backOK := stringLit(concat.Y)
-		if !backOK || !backComplete {
+		if !backOK {
 			return front, false, true
 		}
-		return front + back, true, true
+		return front + back, backComplete, true
 	}
 	lit, isLit := e.(*ast.BasicLit)
 	if !isLit || lit.Kind != token.STRING {

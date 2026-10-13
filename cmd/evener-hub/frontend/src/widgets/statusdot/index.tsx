@@ -4,6 +4,12 @@ import styles from "./statusdot.module.css";
 
 export interface StatusDotProps {
   state: CadenceState;
+  /** Render the glyph as a decoration with no role or accessible name when the
+   * caller's own adjacent text already names the status (the compact ancestor
+   * spine's exact runtime label). The dot, its geometry and its motion are
+   * unchanged; only the extra accessible name goes away. Default false keeps
+   * the standalone name. */
+  decorative?: boolean;
 }
 
 // Mirrors Cadence's own state -> family -> label mapping (see
@@ -50,17 +56,20 @@ const BASE_CLASS = {
  * Use Cadence instead where the trailing ~60s trace is wanted; StatusDot is
  * for tighter contexts (tree rows, compact lists) that only have room for
  * the dot. Passive - no interaction, no focus ring - but carries its own
- * accessible name since (unlike Cadence's dot) nothing else labels it. */
-export function StatusDot({ state }: StatusDotProps) {
+ * accessible name since (unlike Cadence's dot) nothing else labels it.
+ * A caller that already names the status (the compact ancestor spine's exact
+ * runtime label) passes `decorative`, which drops the role and the name so the
+ * glyph is not announced a second time. */
+export function StatusDot({ state, decorative = false }: StatusDotProps) {
   const family = STATE_FAMILY[state];
   const working = state === "working" ? ` ${BASE_CLASS.working}` : "";
-  return (
-    <span
-      role="img"
-      aria-label={STATUS_LABEL[state]}
-      data-state={state}
-      data-shape={state === "failed" ? "diamond" : "dot"}
-      className={`${BASE_CLASS.dot} ${FAMILY_CLASS[family]}${working}`}
-    />
-  );
+  const attrs = {
+    "data-state": state,
+    "data-shape": state === "failed" ? "diamond" : "dot",
+    className: `${BASE_CLASS.dot} ${FAMILY_CLASS[family]}${working}`,
+  };
+  if (decorative) {
+    return <span aria-hidden="true" {...attrs} />;
+  }
+  return <span role="img" aria-label={STATUS_LABEL[state]} {...attrs} />;
 }

@@ -3,11 +3,50 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { env } from "node:process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { contractShaped, regexCore, Scanner, scanRepo } from "./copyonly";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Runs git in the fixture repository at root, without the developer's global
+ * or system config, so a global excludes file cannot decide what it tracks.
+ */
+function fixtureGit(root: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", root, ...args], {
+    encoding: "utf8",
+    env: { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+  });
+}
+
+/** Makes root a git repository tracking every file written under it. */
+function trackFixture(root: string): void {
+  fixtureGit(root, "init", "-q", "--template=");
+  fixtureGit(root, "config", "core.excludesFile", "");
+  fixtureGit(root, "add", "--", ".");
+}
+
+test("a fixture repository tracks its files despite the developer's git config", () => {
+  const home = mkdtempSync(join(tmpdir(), "copyonly-home-"));
+  const root = mkdtempSync(join(tmpdir(), "copyonly-repo-"));
+  const previous = env.GIT_CONFIG_GLOBAL;
+  try {
+    writeFileSync(join(home, "excludes"), "*.ts\n");
+    writeFileSync(join(home, "gitconfig"), `[core]\n\texcludesFile = ${join(home, "excludes")}\n`);
+    env.GIT_CONFIG_GLOBAL = join(home, "gitconfig");
+    writeFileSync(join(root, "a.test.ts"), "");
+    writeFileSync(join(root, "a.ts"), "");
+    trackFixture(root);
+    expect(fixtureGit(root, "ls-files").split("\n").filter(Boolean)).toEqual(["a.test.ts", "a.ts"]);
+  } finally {
+    if (previous === undefined) delete env.GIT_CONFIG_GLOBAL;
+    else env.GIT_CONFIG_GLOBAL = previous;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 /** The names of the targets in one test file, scanned against a production corpus of prod. */
 function targetNames(src: string, prod: string[], file = "a.test.tsx"): string[] {
@@ -554,8 +593,7 @@ test("sends the request", () => {
       mkdirSync(join(root, front), { recursive: true });
       writeFileSync(join(root, `${front}Empty.tsx`), `export const Empty = () => <p>No sessions yet</p>;\n`);
       writeFileSync(join(root, `${front}Empty.test.tsx`), SRC);
-      execFileSync("git", ["-C", root, "init", "-q"], { encoding: "utf8" });
-      execFileSync("git", ["-C", root, "add", "--", "."], { encoding: "utf8" });
+      trackFixture(root);
       const out = execFileSync("node", [join(HERE, "copyonly.ts"), "--root", root, "--path", front], {
         encoding: "utf8",
       });
@@ -605,10 +643,8 @@ test("scanRepo reads tracked tests in the TypeScript trees against their product
       "appwire-client/typescript/Untracked.test.ts",
       copyTest("shows the untracked phrase", "Shared mobile phrase"),
     );
-    const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
-    git("init", "-q");
-    git("add", "--", ".");
-    git("rm", "-q", "--cached", "--", "appwire-client/typescript/Untracked.test.ts");
+    trackFixture(root);
+    fixtureGit(root, "rm", "-q", "--cached", "--", "appwire-client/typescript/Untracked.test.ts");
 
     expect(scanRepo(root)).toEqual([
       { file: "cmd/evener-hub/frontend/src/Empty.test.tsx", test: "shows nothing", line: 1 },
