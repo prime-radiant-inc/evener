@@ -344,8 +344,71 @@ var errGrepFileTooLarge = errors.New("file exceeds the grep read cap")
 // when more bytes remain, so an effectively-unbounded source costs one bounded
 // read instead of the whole file.
 func grepCappedRead(r io.Reader) ([]byte, error) {
+	if f, ok := r.(*grepCtxFile); ok {
+		return grepCappedReadFile(f.ctx, f.File)
+	}
 	data, err := io.ReadAll(io.LimitReader(r, int64(grepMaxFileBytes)+1))
 	if err != nil {
+		return nil, err
+	}
+	if len(data) > grepMaxFileBytes {
+		return nil, errGrepFileTooLarge
+	}
+	return data, nil
+}
+
+// grepCtxFile is the file grepAdmitFS hands back: the admitted descriptor
+// plus the context its read must honor. The reader seams' signature is
+// ctx-less (grepReadFile), so the context travels with the file instead.
+type grepCtxFile struct {
+	*os.File
+	ctx context.Context
+}
+
+// grepReadStallTimeout bounds how long one file's capped read may take: an
+// admitted stream with no writer — an idle pty master, a device nobody
+// feeds — would otherwise hold the read forever, because the byte cap only
+// counts bytes that arrive (#4574 round 3, HIGH). A multiple of the 10s
+// subprocess timeout the ripgrep arm used to give these targets, so the
+// native bound is never the tighter one.
+var grepReadStallTimeout = 30 * time.Second
+
+// errGrepStreamStalled reports a read that hit grepReadStallTimeout without
+// finishing; the walk's unreadable-file handling skips the file and keeps
+// walking.
+var errGrepStreamStalled = errors.New("stream read stalled")
+
+// grepCappedReadFile is grepCappedRead for a descriptor the runtime poller
+// owns: the read arms a deadline that cancellation yanks to now, so a
+// blocked stream read ends promptly either way. A regular file is not
+// pollable — SetReadDeadline refuses it — and never blocks past its data,
+// so it falls through to the plain capped read.
+func grepCappedReadFile(ctx context.Context, f *os.File) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := f.SetReadDeadline(time.Now().Add(grepReadStallTimeout)); err == nil {
+		watched := make(chan struct{})
+		defer close(watched)
+		go func() {
+			select {
+			case <-ctx.Done():
+				// Yank the deadline: the poller wakes the blocked read with
+				// a deadline error, which the caller maps back to ctx.
+				_ = f.SetReadDeadline(time.Now())
+			case <-watched:
+			}
+		}()
+		defer func() { _ = f.SetReadDeadline(time.Time{}) }()
+	}
+	data, err := io.ReadAll(io.LimitReader(f, int64(grepMaxFileBytes)+1))
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, errGrepStreamStalled
+		}
 		return nil, err
 	}
 	if len(data) > grepMaxFileBytes {
@@ -396,7 +459,11 @@ func (f grepAdmitFS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
-	return openRegularFollow(filepath.Join(f.root, filepath.FromSlash(name)), f.admitDevice)
+	file, err := openRegularFollow(filepath.Join(f.root, filepath.FromSlash(name)), f.admitDevice)
+	if err != nil {
+		return nil, err
+	}
+	return &grepCtxFile{File: file, ctx: f.ctx}, nil
 }
 
 // ReadDir and Stat forward to the wrapped filesystem rather than letting

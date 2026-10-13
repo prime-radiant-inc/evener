@@ -50,9 +50,10 @@ func OpenRegularNoFollow(path string) (*os.File, error) {
 // FIFO under /tmp or /run hung a path=/ search indefinitely, because the
 // read cap only applies after a successful open) — and so is any other
 // non-regular entry except a device when admitDevice is set: a device named
-// as a search target is still read, bounded by the caller's cap. O_NONBLOCK
-// is cleared once the type is admitted, so callers get the ordinary blocking
-// descriptor they expect.
+// as a search target is still read, bounded by the caller's cap. A device
+// keeps O_NONBLOCK — the runtime poller owns the descriptor, so a read
+// deadline can interrupt a stream that never yields — while a regular file
+// or directory gets the ordinary blocking descriptor back.
 func openRegularFollow(path string, admitDevice bool) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
@@ -73,6 +74,9 @@ func openRegularFollow(path string, admitDevice bool) (*os.File, error) {
 	if !admit {
 		_ = file.Close()
 		return nil, fmt.Errorf("open %q: not a regular file", path)
+	}
+	if !mode.IsRegular() && !info.IsDir() {
+		return file, nil
 	}
 	flags, ferr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
 	if ferr != nil {
