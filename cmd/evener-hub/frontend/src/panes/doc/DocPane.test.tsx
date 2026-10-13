@@ -1836,6 +1836,33 @@ test("a namespace reset expires the stale capture, suppresses old-lease Send, th
   );
 });
 
+test("a failed reread keeps the readable snapshot and its comment editor on screen", async () => {
+  const f = await fixture("reader-reread-outage");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  mountAnnotated(f, ports, client, "doc-reread-outage");
+
+  await screen.findByText("First occurrence: same");
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+
+  mockRead.mockRejectedValueOnce(new DocFileError("error", 500));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+    await ports.runtime.whenIdle();
+  });
+  // The outage must not tear down the readable document or the comment
+  // editor: the failure shows alongside them, and the retained snapshot
+  // stays usable for annotation work.
+  expect(await screen.findByText("Refresh failed")).toBeTruthy();
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+  expect(screen.getByRole("textbox")).toBeTruthy();
+  expect(screen.getByDisplayValue("Keep this scope.")).toBeTruthy();
+});
+
 test("a failed reader reopen preserves saved views and editable work, then a readable reread recovers and settles a real save", async () => {
   const f = await fixture("reader-reopen-failure");
   await settleBaseline(f);
@@ -1852,7 +1879,8 @@ test("a failed reader reopen preserves saved views and editable work, then a rea
   const composerBefore = f.source.getSnapshot();
 
   // A failed reopen cannot accept empty content, expire saved notes or lose the
-  // editable work.
+  // editable work. The readable document stays on screen and the failure
+  // shows alongside it instead of replacing the pane.
   mockRead.mockRejectedValueOnce(new DocFileError("error", 500));
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   // Join the real foreground reread AND the shared retained-attempt retry it
@@ -1862,7 +1890,7 @@ test("a failed reader reopen preserves saved views and editable work, then a rea
     fireEvent(document, new Event("visibilitychange"));
     await ports.runtime.whenIdle();
   });
-  expect(await screen.findByText("Couldn't load file")).toBeTruthy();
+  expect(await screen.findByText("Refresh failed")).toBeTruthy();
   expect(await f.repo.listAnnotations(f.document)).toEqual(savedViewsBefore);
   expect(f.source.getSnapshot()).toEqual(composerBefore);
   expect(work.comment.note).toBe("Keep this scope.");

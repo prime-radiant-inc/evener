@@ -75,7 +75,7 @@ const ERROR_COPY: Record<DocFileErrorKind, { title: string; hint: string }> = {
 type FileState =
   | { status: "loading" }
   | { status: "error"; kind: DocFileErrorKind }
-  | { status: "ok"; content: DocFileContent };
+  | { status: "ok"; content: DocFileContent; rereadError?: DocFileErrorKind };
 
 function errorKind(err: unknown): DocFileErrorKind {
   return err instanceof DocFileError ? err.kind : "error";
@@ -427,7 +427,17 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         content = await readDocFile(session, readTarget, browserDocPort);
       } catch (err) {
         // A failed raw read preserves the exact authored note and unsent work.
-        if (!cancelled) setState({ status: "error", kind: errorKind(err) });
+        // A failed REREAD also keeps the readable snapshot on screen: a
+        // temporary outage must not tear down the document, its highlights or
+        // the comment editor. The failure shows alongside them until a later
+        // reread succeeds; only a first read without content shows the
+        // full-pane error state.
+        if (!cancelled)
+          setState((previous) =>
+            previous.status === "ok"
+              ? { status: "ok", content: previous.content, rereadError: errorKind(err) }
+              : { status: "error", kind: errorKind(err) },
+          );
         return;
       }
       if (cancelled) return;
@@ -694,6 +704,14 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
 
   return scaffold(
     <>
+      {state.rereadError !== undefined && (
+        <div className={CLASS.notice}>
+          <Chip tone="attention">Refresh failed</Chip>
+          <span className={CLASS.noticeText}>
+            {ERROR_COPY[state.rereadError].hint} Still showing the last loaded version.
+          </span>
+        </div>
+      )}
       {content.truncated && <TruncationNotice content={content} />}
       {isMarkdownPath(path) ? (
         <div className={CLASS.markdown} ref={bindHost}>
