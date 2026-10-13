@@ -3612,13 +3612,6 @@ test.each([
       },
       '"mixed-origin"',
     );
-    // wireSnapshot's location convenience branch defaults top_level to true even
-    // when its input says otherwise. Correct the external snapshot metadata,
-    // not the navigation store, so the real decoder places a nested session.
-    if (response.status === "ok" && response.representation === "snapshot") {
-      const snapshot = response.data as { metadata: { top_level: boolean } };
-      snapshot.metadata.top_level = params.ref === "local:owner";
-    }
     return response;
   });
   client.on("thread/read", ({ ref }) => {

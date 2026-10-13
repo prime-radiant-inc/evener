@@ -139,6 +139,31 @@ func TestBuildIncludesStableDelegateInfo(t *testing.T) {
 	t.Fatal("build() missing EvenerDelegateInfo")
 }
 
+// TestBuildIncludesSearchTopLevel guards the search grouping wire change:
+// SearchTopLevel only ever nests inside SearchResult.TopLevel, never as a
+// method's own Params/Result, so without an explicit registration it would
+// get named in the field list but none of its fields documented - the same
+// silent gap SearchResult itself needed registering for.
+func TestBuildIncludesSearchTopLevel(t *testing.T) {
+	d := build()
+	for _, tv := range d.Types {
+		if tv.Name != "SearchTopLevel" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"id", "ref", "title", "project", "state", "age", "askPending", "approvalPending"} {
+			if !fields[name] {
+				t.Fatalf("SearchTopLevel missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing SearchTopLevel")
+}
+
 // TestBuildIncludesInstanceEntry guards PR #758's review finding:
 // InstanceEntry only ever appears nested inside InstanceListResponse's
 // Instances field, never as a method's own Params/Result, so without an
