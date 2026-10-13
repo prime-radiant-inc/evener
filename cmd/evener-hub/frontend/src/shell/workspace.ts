@@ -387,7 +387,14 @@ function migrateLegacyLayout(json: unknown): unknown {
   const conversationParents: Record<string, string> = { ...layout.conversationParents };
   for (const [id, panel] of Object.entries(layout.panels)) {
     const params = panel?.params as
-      | { paneType?: unknown; paneParams?: { ref?: unknown; parentRef?: unknown } }
+      | {
+          paneType?: unknown;
+          paneParams?: {
+            ref?: unknown;
+            parentRef?: unknown;
+            source?: { type?: unknown; params?: { ref?: unknown; parentRef?: unknown } };
+          };
+        }
       | undefined;
     const ref = params?.paneParams?.ref;
     if (
@@ -406,9 +413,29 @@ function migrateLegacyLayout(json: unknown): unknown {
       }
     } else {
       panels[id] = panel;
+      // A legacy cascade's source descriptor named the conversation it was
+      // opened from; on a read-only layout that descriptor was a transcript
+      // carrying the source's own parentRef. parseZoomParams drops that field
+      // when the record is normalized on restore, so lift it into the edge map
+      // now, while the raw panel JSON still holds it. Return retypes this pane
+      // into the source conversation and retypePane carries the recorded edge
+      // across, so Back reaches the retained parent instead of Welcome.
+      const source = params?.paneType === "sessionZoom" ? params.paneParams?.source : undefined;
+      const sourceRef = source?.params?.ref;
+      const sourceParentRef = source?.params?.parentRef;
+      if (
+        typeof sourceRef === "string" &&
+        sourceRef !== "" &&
+        typeof sourceParentRef === "string" &&
+        sourceParentRef !== "" &&
+        sourceParentRef !== sourceRef
+      ) {
+        conversationParents[id] = sourceParentRef;
+        parentsChanged = true;
+      }
     }
   }
-  if (!changed) return json;
+  if (!changed && !parentsChanged) return json;
   return parentsChanged || layout.conversationParents !== undefined
     ? { ...layout, panels, conversationParents }
     : { ...layout, panels };
@@ -764,7 +791,19 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       const conversationParents = migrated.conversationParents ?? {};
       for (const pane of panes) {
         const parentRef = conversationParents[pane.id];
-        if (typeof parentRef === "string") recordConversationOpenParent(pane, parentRef);
+        if (typeof parentRef !== "string" || parentRef === "") continue;
+        // A legacy cascade's returned-to source conversation is not a pane of
+        // its own: the migration lifted the source's parentRef onto the cascade
+        // record, and Return retypes that record into the source session
+        // (retypePane carries conversation parent edges to the replacement).
+        // Record it here, describing the SOURCE conversation rather than the
+        // drilled leaf, so the reopened conversation keeps its Back target.
+        if (pane.type === "sessionZoom") {
+          const sourceRef = (pane.params as { source?: { params?: { ref?: unknown } } } | null)?.source?.params?.ref;
+          if (typeof sourceRef === "string" && parentRef !== sourceRef) conversationOpenParentRefs.set(pane, parentRef);
+          continue;
+        }
+        recordConversationOpenParent(pane, parentRef);
       }
       return true;
     } catch {

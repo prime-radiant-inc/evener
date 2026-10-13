@@ -1,8 +1,11 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
+import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
+import { connectionStore } from "./connection";
 import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
+import { acquireSessionActivity, sessionActivitySnapshot } from "./sessionActivity";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "./topNotes";
 
@@ -305,4 +308,57 @@ test("a cascade column keeps expanded notes through a focus change and a drill",
     await Promise.resolve();
   });
   expect(topNotesStore.getState().isExpanded("ref_child")).toBe(true);
+});
+
+// A cascade's readable parent can be absent from its RECORDED edges: after
+// popping above the original source, the ancestry above the source lives only
+// in the authoritative activity context, which is what Zoom renders columns
+// from. The retention sweep must read that same context, or the still-visible
+// parent column's expanded notes are evicted by an unrelated workspace change.
+test("a readable parent known only from the authoritative ancestry keeps expanded notes", async () => {
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "ref_child" ? ["ref_root"] : []));
+  connectionStore.setState({ client });
+  const lease = acquireSessionActivity(client, "ref_child", "session");
+  try {
+    await waitFor(() =>
+      expect(sessionActivitySnapshot(client, "ref_child", "session")?.context?.ancestryKnown).toBe(true),
+    );
+
+    act(() => {
+      workspaceStore.setState({
+        panes: [
+          {
+            id: "p_zoom",
+            type: "sessionZoom",
+            params: {
+              // The edge above the source was trimmed by the pop, so `ref_root`
+              // is a readable parent only the authoritative context names.
+              ref: "ref_child",
+              source: { type: "session", params: { ref: "ref_child" } },
+              edges: [],
+            },
+            slot: "main",
+          },
+        ],
+        focusedPaneId: "p_zoom",
+      });
+    });
+    act(() => {
+      topNotesStore.getState().openAndFocus("ref_root");
+    });
+    expect(topNotesStore.getState().isExpanded("ref_root")).toBe(true);
+
+    // An unrelated workspace change (a focus change) runs the sweep; the parent
+    // column is still rendered, so its expanded state must stay.
+    act(() => {
+      workspaceStore.setState({ focusedPaneId: "p_zoom" });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(topNotesStore.getState().isExpanded("ref_root")).toBe(true);
+  } finally {
+    lease.release();
+    connectionStore.setState({ client: null });
+  }
 });

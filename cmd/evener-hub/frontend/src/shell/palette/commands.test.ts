@@ -1069,6 +1069,25 @@ test("/notes focuses or opens the session pane, not just the notes state", () =>
   expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
 });
 
+test("/notes expands in an addressed cascade column without opening another pane", () => {
+  // A focused cascade column already hosts the conversation, so its notes bar
+  // is already on screen: expanding notes there must not open (or focus) a
+  // second pane for the same conversation, which would pull the user off the
+  // inspector they were working in.
+  workspaceStore.setState({
+    panes: [{ id: "zoom", type: "sessionZoom", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "zoom",
+  });
+  seedModel("ref_a");
+
+  cmd("notes").run?.(runContext());
+
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
+  expect(topNotesStore.getState().hasPendingFocus("ref_a")).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe("zoom");
+  expect(workspaceStore.getState().panes).toHaveLength(1);
+});
+
 test("/notes closing from a companion pane leaves the session pane unfocused", () => {
   focusSession("ref_a");
   seedModel("ref_a");

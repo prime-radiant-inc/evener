@@ -1,5 +1,8 @@
+import type { SessionActivityContext } from "@evener/appwire-client";
 import { deriveCascadePath, parseZoomParams } from "../panes/zoom/intent";
 import { type OpenPaneRecord, type WorkspaceStoreState, workspaceStore } from "../shell/workspace";
+import { connectionStore } from "./connection";
+import { sessionActivitySnapshot } from "./sessionActivity";
 
 export interface PanelStoreEvictor {
   refs: () => Iterable<string>;
@@ -29,6 +32,17 @@ function paneRef(pane: { type: string; params: unknown }): string | undefined {
   return paramsRef(pane.params);
 }
 
+// The authoritative ancestry Zoom renders comes from the leaf's session
+// activity context (see Zoom.tsx and panes/zoom/actions.ts's own contextFor).
+// Reading the same snapshot here keeps the retention set in step with the
+// rendered path: a readable parent the recorded edges do not carry - e.g. one
+// restored only from authority after popping above the original source - stays
+// referenced instead of having its column's panel state evicted.
+function cascadeActivityContext(ref: string): SessionActivityContext | null {
+  const client = connectionStore.getState().client;
+  return client ? (sessionActivitySnapshot(client, ref, "session")?.context ?? null) : null;
+}
+
 // A sessionZoom pane renders a retained cascade path of embedded conversations:
 // the leaf and its ancestors each stay readable in a column of the same pane,
 // so EVERY scope ref in the path keeps its panel state alive - the pane's own
@@ -40,7 +54,9 @@ function zoomScopeRefs(params: unknown): Iterable<string> {
     const ref = paramsRef(params);
     return ref ? [ref] : [];
   }
-  return deriveCascadePath(parsed, null).scopes.map((scope) => scope.requestedRef);
+  // Pass the same authoritative context Zoom renders from, not null, so scopes
+  // the edges omit but authority names are still retained.
+  return deriveCascadePath(parsed, cascadeActivityContext(parsed.ref)).scopes.map((scope) => scope.requestedRef);
 }
 
 function paneRefs(pane: { type: string; params: unknown }): Iterable<string> {

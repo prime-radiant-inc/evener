@@ -3,6 +3,7 @@ import "../session";
 import "../transcript";
 import "./index";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { waitFor } from "@testing-library/react";
 import type { DockviewApi } from "dockview-core";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -17,12 +18,14 @@ import {
 } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
+import { acquireSessionActivity } from "../../stores/sessionActivity";
 import { activityDelegate } from "../../stores/sessionActivityTestUtils";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
-import { enterAgentCascade, popAgentCascade, returnFromAgentCascade } from "./actions";
+import { enterAgentCascade, popAgentCascade, resumeCascadeScope, returnFromAgentCascade } from "./actions";
+import { cascadeClient, cascadeContext } from "./cascadeTestUtils";
 import { associatedCascade, cascadeOrigin } from "./inspectionOrigin";
-import { parseZoomParams, type SessionZoomParams } from "./intent";
+import { deriveCascadePath, parseZoomParams, type SessionZoomParams } from "./intent";
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
@@ -472,4 +475,44 @@ test("saved invalid Zoom panes are rejected locally and malformed edges keep a d
   expect(JSON.stringify(pane(job.id).params)).toBe(JSON.stringify(job.params.paneParams));
   expect(pane("usable-zoom").params).toEqual({ ...malformed, edges: [] });
   expect(workspaceStore.getState().focusedPaneId).toBe(job.id);
+});
+
+// Ancestry reachable only from the hub's authoritative chain — the shape left
+// behind after popping above the recorded edge segment — supplies a rendered
+// scope the recorded edges never name. Resuming it must persist the resumed
+// binding so the rendered path follows, and only then report success.
+const ancestry: Record<string, string[]> = { root: [], child: ["root"], grandchild: ["root", "child"] };
+const ancestryContext = (ref: string) => cascadeContext(ref, ancestry[ref] ?? ["root"]);
+
+test("a resume of an ancestor recorded only by authoritative ancestry follows the resumed ref", async () => {
+  const client = cascadeClient(ancestryContext);
+  connectionStore.getState().connect(client);
+  const lease = acquireSessionActivity(client, "grandchild", "session");
+  try {
+    await waitFor(() => expect(lease.store.getSnapshot().context?.ancestryKnown).toBe(true));
+    const paneId = workspaceStore.getState().openPane("sessionZoom", {
+      ref: "grandchild",
+      source: { type: "session", params: { ref: "root" } },
+      edges: [],
+    });
+    const lifetime = conversationPaneLifetime(pane(paneId));
+
+    // "child" renders only because "grandchild"'s authoritative ancestry names
+    // it: it is absent from params.ref, params.source and params.edges.
+    expect(
+      deriveCascadePath(pane(paneId).params as SessionZoomParams, ancestryContext("grandchild")).scopes.map(
+        (scope) => scope.requestedRef,
+      ),
+    ).toEqual(["root", "child", "grandchild"]);
+
+    const applied = resumeCascadeScope(lifetime, "child", "child-resumed");
+    expect(applied).toBe(true);
+    expect(
+      deriveCascadePath(pane(paneId).params as SessionZoomParams, ancestryContext("grandchild")).scopes.map(
+        (scope) => scope.requestedRef,
+      ),
+    ).toEqual(["root", "child-resumed", "grandchild"]);
+  } finally {
+    lease.release();
+  }
 });

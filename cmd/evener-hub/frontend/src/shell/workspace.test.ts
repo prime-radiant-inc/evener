@@ -2,6 +2,7 @@ import { bindFilePath, parseFileReference } from "@evener/appwire-client/docCont
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { parseZoomParams } from "../panes/zoom/intent";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTests } from "./paneRegistry";
 import {
@@ -43,7 +44,10 @@ beforeAll(() => {
   registerPaneForTests(fixtureDescriptor("spawn", { singleton: true }));
   // The cascade retype test below retypes a sessionZoom pane, and retypePane
   // resolves its type through paneFor like every open path does.
-  registerPaneForTests(fixtureDescriptor("sessionZoom"));
+  // parseParams mirrors the production registration (panes/zoom/index.tsx), so
+  // restoreLayout normalizes a sessionZoom panel's params the way a real
+  // reload does - including dropping a legacy source descriptor's parentRef.
+  registerPaneForTests(fixtureDescriptor("sessionZoom", { parseParams: parseZoomParams }));
   // "welcome" is a real PaneTypeId and the main slot's empty state, so the
   // placement tests below open one. openPane has ALWAYS resolved its type
   // through paneFor (that is where an unregistered type throws), so this is a
@@ -966,6 +970,48 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     expect(migrated.panels.p2!.params.paneParams.parentRef).toBeUndefined();
     const restoredChild = workspaceStore.getState().panes.find((pane) => pane.id === "p2")!;
     expect(conversationOpenParentRef(restoredChild)).toBe("local:parent");
+  });
+
+  // A legacy cascade's `source` names the conversation it was opened from; on a
+  // read-only layout that descriptor was a transcript carrying its parentRef.
+  // parseZoomParams drops parentRef when the record is normalized, so the edge
+  // must be lifted into the retained conversation metadata during migration or
+  // Return's reopened conversation loses its Back target (Welcome on the phone).
+  test("restoreLayout keeps a legacy cascade source's parentRef on the conversation Return reopens", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = (data) => {
+      const layout = data as { panels?: Record<string, { params?: unknown }> };
+      fake.panels = Object.entries(layout.panels ?? {}).map(([id, panel]) => ({ id, params: panel.params }));
+      fake.activePanel = { id: "cascade" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    const ok = workspaceStore.getState().restoreLayout({
+      panels: {
+        root: { params: { paneType: "session", paneParams: { ref: "local:root" } } },
+        cascade: {
+          params: {
+            paneType: "sessionZoom",
+            paneParams: {
+              ref: "local:grandchild",
+              source: { type: "transcript", params: { ref: "local:child", parentRef: "local:root" } },
+              edges: [{ ownerRef: "local:child", childRef: "local:grandchild", delegateId: "d1" }],
+            },
+          },
+        },
+      },
+    });
+    expect(ok).toBe(true);
+
+    // Return reopens the cascade's source conversation in the cascade's own
+    // pane (actions.ts retypes it to `source.params`); the source's parent edge
+    // must reach the session pane it becomes.
+    const cascade = workspaceStore.getState().panes.find((pane) => pane.id === "cascade");
+    if (!cascade) throw new Error("cascade pane missing");
+    expect(workspaceStore.getState().retypePane(cascade, "session", { ref: "local:child" })).toBe(true);
+    const reopened = workspaceStore.getState().panes.find((pane) => pane.id === "cascade");
+    if (!reopened) throw new Error("reopened conversation missing");
+    expect(conversationOpenParentRef(reopened)).toBe("local:root");
   });
 });
 
