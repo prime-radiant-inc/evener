@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -94,12 +95,12 @@ var (
 	errAnotherFile     = errors.New("transcript index describes another file")
 )
 
-// testKillAfterRecordWrites, when set, runs right after an extension's or a
-// rebuild's scan has written its records and before the meta commit that
-// would make them readable: it stands for the process being killed at
-// exactly that point, leaving the records on disk uncounted. An error it
-// returns propagates as scan's own would, so writeMeta never runs. Test seam
-// only; nil in production.
+// testKillAfterRecordWrites, when set, runs after an extension's or a
+// rebuild's records are flushed to the files and before the update log is
+// cut and the meta commit that would count them: it stands for the process
+// being killed at exactly that point, leaving the records on disk
+// uncounted. An error it returns propagates as writeMeta's own would, so
+// the log cut and publish never run. Test seam only; nil in production.
 var testKillAfterRecordWrites func() error
 
 // testKillAfterItemUpdateLog, when set, runs in addContributor right after
@@ -396,6 +397,12 @@ func rebuildFixes(err error) bool {
 		errors.Is(err, errAnotherFile) || errors.Is(err, errCorrupt)
 }
 
+// isNotExist keeps a vanished build classified as no-live-build through
+// whatever wrapping a load site added.
+func isNotExist(err error) bool {
+	return errors.Is(err, fs.ErrNotExist)
+}
+
 // refresh takes up the sidecar as it is on disk: another build reopens,
 // and a changed covered state (another handle extended) is adopted.
 func (x *Index) refresh() error {
@@ -416,6 +423,12 @@ func (x *Index) refresh() error {
 		_ = x.closeBuild()
 		if err := x.load(name); err != nil {
 			_ = x.closeBuild()
+			// A CURRENT naming a build whose files are gone is no live
+			// build either — a rebuild recreates them — while other load
+			// failures keep their own class.
+			if isNotExist(err) {
+				return errNoLiveBuild
+			}
 			return err
 		}
 		// Stale marks belong to the build they were set on, not to the handle:
@@ -431,6 +444,9 @@ func (x *Index) refresh() error {
 	m, err := x.readMeta()
 	if err != nil {
 		_ = x.closeBuild()
+		if isNotExist(err) {
+			return errNoLiveBuild
+		}
 		return err
 	}
 	if !reflect.DeepEqual(m, x.meta) {
@@ -637,11 +653,6 @@ func (x *Index) extend(length int64) error {
 		// depth costs nothing here). The echo check pendingFlush relies on
 		// would be missing the true prior text otherwise.
 		return x.rebuild(length, x.meta.Incarnation)
-	}
-	if testKillAfterRecordWrites != nil {
-		if err := testKillAfterRecordWrites(); err != nil {
-			return err
-		}
 	}
 	return x.writeMeta()
 }
@@ -1070,6 +1081,11 @@ func (x *Index) writeMeta() error {
 	}
 	if err := x.strings.flush(); err != nil {
 		return err
+	}
+	if testKillAfterRecordWrites != nil {
+		if err := testKillAfterRecordWrites(); err != nil {
+			return err
+		}
 	}
 	cut, err := x.cutUpdateLog()
 	if err != nil {

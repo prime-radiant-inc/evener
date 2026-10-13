@@ -488,6 +488,37 @@ func TestARefusingCatchUpOverAnUnreadableCurrentAnswersTheOrdinaryError(t *testi
 	}
 }
 
+// A CURRENT that names a build whose files are gone is no live build either —
+// a rebuild recreates them from the transcript — so a refusing read refuses
+// and the hub's repair heals, instead of the reads failing as ordinary
+// errors that no repair ever answers.
+func TestARefusingReadOverAVanishedBuildRefuses(t *testing.T) {
+	t.Run("build directory gone", func(t *testing.T) {
+		path, dir := openCommittedSidecar(t, preludeFixture())
+		name, err := os.ReadFile(filepath.Join(dir, currentFileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(filepath.Join(dir, strings.TrimSpace(string(name)))); err != nil {
+			t.Fatal(err)
+		}
+		x := openRefusing(t, path, dir)
+		requireRefusal(t, x.CatchUp(), 0)
+	})
+	t.Run("meta.json gone under the loaded build", func(t *testing.T) {
+		path, dir := openCommittedSidecar(t, preludeFixture())
+		x := openRefusing(t, path, dir)
+		if err := x.CatchUp(); err != nil {
+			t.Fatalf("catch-up over the committed sidecar: %v", err)
+		}
+		if err := os.Remove(filepath.Join(liveBuild(t, dir), metaFile)); err != nil {
+			t.Fatal(err)
+		}
+		_, err := x.Latest(5)
+		requireRefusal(t, err, 0)
+	})
+}
+
 func TestRefusingHandleExtendsIncrementallyWithoutRebuilding(t *testing.T) {
 	fx := fixture{name: "incremental", header: everything().header, lines: []fixtureLine{
 		entryLine(user("read the image")),
