@@ -277,12 +277,15 @@ unsandboxed root's `TMPDIR` is not in the tree.
   `<common>/rr-cache`. That is the intended behaviour: the mode runs the
   developer's git, not a blanked-out one.
 
-  **A global `core.excludesFile` or `core.attributesFile` outside the project is NOT
-  readable in `restricted`** (accepted limitation, 2026-10-13; recorded in
+  **A global `core.excludesFile` or `core.attributesFile` gets no read grant of its
+  own in `restricted`** (accepted limitation, 2026-10-13; recorded in
   [friction.md's T06](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
   and [#4234](https://github.com/prime-radiant-inc/evener/issues/4234)). The grant
-  above is the config FILES, never the files they name, so the effect depends on the
-  host: macOS/Seatbelt reports
+  above is the config FILES, never the files they name, so such a file is readable
+  inside the sandbox only where it already sits under a root the mode grants — the
+  project worktree, `/etc`, `/opt`, `/nix/store` and the other system read roots — and
+  not elsewhere, typically under `$HOME`. Where it is not readable, the effect depends
+  on the host: macOS/Seatbelt reports
 
       warning: unable to access '<path>': Operation not permitted
 

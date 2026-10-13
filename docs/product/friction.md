@@ -1429,10 +1429,12 @@ pathname from being re-pointed, which six review rounds did not find.
 
 **Current behavior.** `restricted` grants the user's global git config FILES
 read-only (`$XDG_CONFIG_HOME/git/config`, `~/.gitconfig`) so git can run at all on a
-host that has one. It does not grant the files those configs NAME through
-`core.excludesFile` or `core.attributesFile`. git reads those on ordinary commands
-(`status`, `add`, `commit`), so the effect of the refusal differs by host:
-macOS/Seatbelt reports
+host that has one. It grants nothing of its own for the files those configs NAME
+through `core.excludesFile` or `core.attributesFile`: such a file is readable only
+where it already sits under a root the mode grants — the project worktree, `/etc`,
+`/opt`, `/nix/store` and the other system read roots — and not elsewhere, typically
+under `$HOME`. git reads those files on ordinary commands (`status`, `add`, `commit`),
+so where one is not readable the effect differs by host: macOS/Seatbelt reports
 
     warning: unable to access '<path>': Operation not permitted
 
