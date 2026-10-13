@@ -2,12 +2,17 @@ package evener_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"primeradiant.com/evener/internal/devtool/procgroup"
 )
 
 // moduleRunnerScript is the gate that owns module selection, private per-module
@@ -47,6 +52,13 @@ func runnerEnv(t *testing.T, overrides ...string) []string {
 	controlled := map[string]bool{
 		"MODULES": true, "WAVE1": true, "WAVE2": true, "WEB": true,
 		"TMPDIR": true, "EVENER_RUNNER_TEST_OBSERVE": true,
+		// The timing capture's controls. An enclosing measured run exports
+		// EVENER_GATE_TIMING_TSV, and a fixture runner that inherited it would
+		// write fixture-package rows over the real --measured destination — and
+		// leave them there even if the enclosing run failed. The others steer
+		// the same capture, so they are stripped for the same reason.
+		"EVENER_GATE_TIMING_TSV": true, "EVENER_SHARD_JSON_DIR": true,
+		"EVENER_SHARD_JSON_PACKAGE": true, "EVENER_WEB_VITEST_JSON": true,
 		"GOFLAGS": true, "GOCACHE": true, "GOMODCACHE": true, "GOPATH": true,
 		"GOENV": true, "GOTOOLCHAIN": true, "GOPROXY": true, "GOSUMDB": true,
 		"GOPRIVATE": true, "GONOPROXY": true, "GONOSUMDB": true, "GOTMPDIR": true,
@@ -525,5 +537,246 @@ func TestLegacy(t *testing.T) {}
 	}
 	if strings.Contains(string(rows), "legacy") {
 		t.Fatalf("the inventory still names a package -tags excluded from the run:\n%s", rows)
+	}
+}
+
+// TestModuleRunnerLeavesAnEnclosingTimingDestinationUntouched pins the review
+// finding on runnerEnv: it must strip the timing-control variables an enclosing
+// measured run exports, or a fixture runner the root suite starts inherits
+// EVENER_GATE_TIMING_TSV and writes its fixture-package rows over the real
+// `--measured` destination. A later replay would then read the fixture rows as
+// the enclosing run's measurement, and read them even when that run failed —
+// the opposite of the green-run-only contract the capture rests on.
+func TestModuleRunnerLeavesAnEnclosingTimingDestinationUntouched(t *testing.T) {
+	_, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "plainmod", `package fixture
+
+import "testing"
+
+func TestPlain(t *testing.T) {}
+`)
+
+	// The destination an enclosing measured run would have exported.
+	dest := filepath.Join(t.TempDir(), "enclosing-timing.tsv")
+	const sentinel = "ENCLOSING MEASUREMENT\n"
+	writeTestFile(t, dest, []byte(sentinel), 0o644)
+	t.Setenv("EVENER_GATE_TIMING_TSV", dest)
+
+	res := runModuleRunner(t, modules, append(controlledScratchEnv(ctrl), "MODULES=plainmod")...)
+	if res.exitCode != 0 {
+		t.Fatalf("runner exit = %d, want 0:\n%s", res.exitCode, res.output)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("the enclosing timing destination is gone: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("a fixture run wrote over the enclosing timing destination:\n%s", got)
+	}
+}
+
+// TestModuleRunnerKeepsItsRowsWhenTheTimingExportFails pins the review finding
+// on the timing export: it runs after the failure-log retention block, so a
+// write failure used to let cleanup delete the scratch directory holding the
+// successful measurements and force the whole lane to run again. The run must
+// fail, leave nothing at the destination, and keep the captured rows.
+func TestModuleRunnerKeepsItsRowsWhenTheTimingExportFails(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
+
+import "testing"
+
+func TestTimed(t *testing.T) {}
+`)
+
+	// A destination whose parent directory does not exist: the export cannot land.
+	dest := filepath.Join(root, "no-such-dir", "measured.tsv")
+	res := runModuleRunner(t, modules, append(controlledScratchEnv(ctrl),
+		"MODULES=timingmod",
+		"EVENER_GATE_TIMING_TSV="+dest)...)
+	if res.exitCode == 0 {
+		t.Fatalf("a timing export to an unwritable destination must fail the run:\n%s", res.output)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("a timing file was left at %s (stat err = %v); the destination must stay untouched", dest, err)
+	}
+	leftovers := runnerScratchDirs(t, ctrl)
+	if len(leftovers) == 0 {
+		t.Fatalf("a failed timing export deleted the scratch holding the captured rows")
+	}
+	rows, err := filepath.Glob(filepath.Join(leftovers[0], "json", "*.rows"))
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("the retained scratch holds no timing rows (glob err = %v)", err)
+	}
+}
+
+// TestModuleRunnerRefusesADirectoryTimingDestination pins the review finding on
+// the atomic publish: renaming the temp file onto a destination that is a
+// directory (or a symlink to one) moves it inside that directory and succeeds,
+// so the run would exit green while publishing nothing at the requested path.
+// The destination must be refused through the export-failure path, with the
+// captured rows retained.
+func TestModuleRunnerRefusesADirectoryTimingDestination(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
+
+import "testing"
+
+func TestTimed(t *testing.T) {}
+`)
+
+	dest := filepath.Join(root, "timing-destination")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := runModuleRunner(t, modules, append(controlledScratchEnv(ctrl),
+		"MODULES=timingmod",
+		"EVENER_GATE_TIMING_TSV="+dest)...)
+	if res.exitCode == 0 {
+		t.Fatalf("a directory timing destination must fail the run:\n%s", res.output)
+	}
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		t.Fatalf("reading the destination directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("the timing capture was moved into the destination directory: %v", entries)
+	}
+	if leftovers := runnerScratchDirs(t, ctrl); len(leftovers) == 0 {
+		t.Fatalf("a refused timing destination deleted the scratch holding the captured rows")
+	}
+}
+
+// TestModuleRunnerDoesNotWriteThroughASiblingSymlink pins the review finding on
+// the temp file's name. The capture used to write `<dest>.tmp-<script pid>` with
+// plain truncating redirection, so a symlink planted at that predictable path
+// was followed and its target overwritten before publication. The temp file is
+// created exclusively instead, so a planted symlink is never written through.
+//
+// The fixture holds its own test open until the caller has planted the symlink,
+// so the plant is provably before the export rather than racing it: a test that
+// only hoped to win the race could pass against the vulnerable implementation.
+func TestModuleRunnerDoesNotWriteThroughASiblingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the module runner is a bash script")
+	}
+	root, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
+
+import (
+	"os"
+	"testing"
+	"time"
+)
+
+// TestTimed announces itself, then blocks until the caller releases it, so the
+// caller can plant its symlink before this run reaches its timing export.
+func TestTimed(t *testing.T) {
+	started := os.Getenv("FIXTURE_STARTED")
+	release := os.Getenv("FIXTURE_RELEASE")
+	if started == "" || release == "" {
+		return
+	}
+	if err := os.WriteFile(started, []byte("started\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(release); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the handshake release file never appeared")
+}
+`)
+
+	dest := filepath.Join(root, "measured.tsv")
+	victim := filepath.Join(root, "victim.txt")
+	const precious = "PRECIOUS\n"
+	writeTestFile(t, victim, []byte(precious), 0o644)
+	started := filepath.Join(root, "fixture-started")
+	release := filepath.Join(root, "fixture-release")
+
+	script, err := filepath.Abs(moduleRunnerScript)
+	if err != nil {
+		t.Fatalf("abs %s: %v", moduleRunnerScript, err)
+	}
+	cmd := exec.Command("bash", script, "-short", "-count=1")
+	cmd.Dir = modules
+	cmd.Env = runnerEnv(t, append(controlledScratchEnv(ctrl),
+		"MODULES=timingmod", "EVENER_GATE_TIMING_TSV="+dest,
+		"FIXTURE_STARTED="+started, "FIXTURE_RELEASE="+release)...)
+	// The output goes to a file, not a pipe: the runner's own `run_bounded` puts
+	// its monitored commands in their own process groups, so a stop that reaches
+	// only bash's group can leave a descendant holding a pipe open and block
+	// Wait. With a file there is nothing for a survivor to hold.
+	outPath := filepath.Join(root, "runner-output.log")
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		t.Fatalf("creating the output file: %v", err)
+	}
+	cmd.Stdout, cmd.Stderr = outFile, outFile
+	runnerOutput := func() string {
+		data, readErr := os.ReadFile(outPath)
+		if readErr != nil {
+			return ""
+		}
+		return string(data)
+	}
+	// The runner is a bash script that forks the module's `go test`; starting it
+	// through procgroup puts the whole tree in one process group so a failed
+	// handshake is reaped as a unit rather than leaving bash's group alive.
+	if err := procgroup.Start(cmd); err != nil {
+		_ = outFile.Close()
+		t.Fatalf("starting the runner: %v", err)
+	}
+	abort := func() {
+		// bash's group is not the whole tree: run_bounded enables job control, so
+		// its monitored commands and their builds sit in process groups of their
+		// own. Walk the tree and KILL each descendant, deepest first, before
+		// reaping bash — a signal aimed only at bash's group would orphan them.
+		_ = exec.Command("bash", "-c",
+			`walk() { for c in $(pgrep -P "$1" 2>/dev/null); do walk "$c"; done; kill -9 "$1" 2>/dev/null; }; walk "$1"`,
+			"bash", strconv.Itoa(cmd.Process.Pid)).Run()
+		procgroup.Kill(cmd.Process.Pid)
+		_ = cmd.Wait()
+		_ = outFile.Close()
+	}
+	// The fixture's own test is inside its run by now, which is before the
+	// export by construction.
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			abort()
+			t.Fatalf("the fixture never announced itself:\n%s", runnerOutput())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// $$ in the script is this bash process's pid.
+	planted := fmt.Sprintf("%s.tmp-%d", dest, cmd.Process.Pid)
+	if err := os.Symlink(victim, planted); err != nil {
+		abort()
+		t.Fatalf("planting the symlink at %s: %v", planted, err)
+	}
+	writeTestFile(t, release, []byte("go\n"), 0o644)
+	waitErr := cmd.Wait()
+	_ = outFile.Close()
+
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("reading the symlink's target: %v", err)
+	}
+	if string(got) != precious {
+		t.Fatalf("the capture wrote through a planted sibling symlink:\n%s", got)
+	}
+	if waitErr != nil {
+		t.Fatalf("the run failed with the symlink planted: %v\n%s", waitErr, runnerOutput())
+	}
+	if rows, err := os.ReadFile(dest); err != nil || !strings.Contains(string(rows), "TEST\t") {
+		t.Fatalf("the run published no timing rows at %s (err = %v):\n%s", dest, err, runnerOutput())
 	}
 }
