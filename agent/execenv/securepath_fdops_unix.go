@@ -420,7 +420,7 @@ func (s *sandboxFS) grantedWriteParent(tool, abs string) (int, string, error) {
 // the runtime poller, letting a read deadline interrupt it (#4574 round 4).
 // On a non-nil error the caller owns nothing (the file, and its fd, are
 // closed); on success the returned *os.File owns fd.
-func admitReadFD(fd int, name string, allowDir, streamed bool) (*os.File, error) {
+var admitReadFD = func(fd int, name string, allowDir, streamed bool) (*os.File, error) {
 	file := os.NewFile(uintptr(fd), name)
 	if file == nil {
 		_ = unix.Close(fd)
@@ -456,17 +456,29 @@ func admitReadFD(fd int, name string, allowDir, streamed bool) (*os.File, error)
 // file would allocate without bound. The read is capped at
 // MaxWholeFileReadBytes, so an oversized or hostile regular file — procfs
 // specials stat regular at terabyte sizes — fails fast instead of loading
-// (issue #4556).
+// (issue #4556). A regular the classification routes as a stream (see
+// fdStreamed) can block in read(2) although it stats regular, so that read is
+// also bounded in time by grepReadStallTimeout; the seam has no context to
+// observe, which is the filed full-parity work, not this one.
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return nil, err
 	}
-	f, err := admitReadFD(fd, abs, false, false)
+	streamed := fdStreamed(fd, isPseudoFsPath(abs))
+	f, err := admitReadFD(fd, abs, false, streamed)
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
 	defer func() { _ = f.Close() }()
+	// The deadline is what turns a never-ready stream — one that keeps its
+	// O_NONBLOCK because the classification routed it here — from a read
+	// parked on the runtime poller forever into a failure at the stall
+	// timeout. An ordinary regular never takes it: its descriptor is
+	// blocking and its read ends at the data.
+	if streamed {
+		_ = f.SetReadDeadline(time.Now().Add(grepReadStallTimeout))
+	}
 	// Refuse at the stat size before reading a byte, matching the off arm's
 	// fstat refusal; readAllCapped still bounds the read for a file that grows
 	// past the cap after this check.
@@ -477,7 +489,14 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	if info.Size() > MaxWholeFileReadBytes {
 		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 	}
-	return readAllCapped(f, MaxWholeFileReadBytes)
+	data, rerr := readAllCapped(f, MaxWholeFileReadBytes)
+	if rerr != nil {
+		if errors.Is(rerr, os.ErrDeadlineExceeded) {
+			return nil, fmt.Errorf("read %q: %w", abs, errGrepStreamStalled)
+		}
+		return nil, rerr
+	}
+	return data, nil
 }
 
 // writeFile atomically writes data to abs: it resolves the parent beneath a
