@@ -138,20 +138,21 @@ func memoryEvalPathGoSupportsToolchainSelection() bool {
 }
 
 // memoryEvalToolchainDownloadPresent reports whether cache holds the compiling
-// toolchain in a shape the file proxy can serve offline: the extracted
-// installation, or a download record with both its zip and its ziphash (an
-// interrupted download leaves metadata such as .info behind without either, and
-// the proxy cannot serve a toolchain from those). A machine that installed the
-// pin natively rather than through the module cache this process points at has
-// none, and no offline fallback can materialize it there. Tests that need the
-// fallback to fetch the toolchain say so rather than failing on the machine's
-// cache state.
+// toolchain in a shape the file proxy can serve offline: a completed extraction
+// (the directory with its own bin/go), or a download record with both its zip
+// and its ziphash. An interrupted download leaves metadata such as .info behind
+// without either, and an interrupted extraction leaves an empty directory, so a
+// bare directory or a lone .info is not enough. A machine that installed the pin
+// natively rather than through the module cache this process points at has none,
+// and no offline fallback can materialize it there. Tests that need the fallback
+// to fetch the toolchain say so rather than failing on the machine's cache
+// state.
 func memoryEvalToolchainDownloadPresent(cache string) bool {
 	if cache == "" {
 		return false
 	}
 	name := "v0.0.1-" + runtime.Version() + "." + runtime.GOOS + "-" + runtime.GOARCH
-	if info, err := os.Stat(filepath.Join(cache, "golang.org", "toolchain@"+name)); err == nil && info.IsDir() {
+	if info, err := os.Stat(filepath.Join(cache, "golang.org", "toolchain@"+name, "bin", "go")); err == nil && !info.IsDir() {
 		return true
 	}
 	entries, err := os.ReadDir(filepath.Join(cache, "cache", "download", "golang.org", "toolchain", "@v"))

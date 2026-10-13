@@ -141,14 +141,15 @@ func TestMemoryEvalToolchainDownloadPresentRequiresAUsableToolchain(t *testing.T
 	shapes := []struct {
 		name  string
 		files []string
-		dirs  []string
 		want  bool
 	}{
 		{name: "empty cache", want: false},
 		{name: "metadata only", files: []string{"cache/download/golang.org/toolchain/@v/" + name + ".info"}, want: false},
 		{name: "zip without ziphash", files: []string{"cache/download/golang.org/toolchain/@v/" + name + ".zip"}, want: false},
 		{name: "complete download", files: []string{"cache/download/golang.org/toolchain/@v/" + name + ".zip", "cache/download/golang.org/toolchain/@v/" + name + ".ziphash"}, want: true},
-		{name: "extracted installation", dirs: []string{"golang.org/toolchain@" + name}, want: true},
+		{name: "extracted installation", files: []string{"golang.org/toolchain@" + name + "/bin/go"}, want: true},
+		{name: "interrupted extraction, no archive", files: []string{"golang.org/toolchain@" + name + "/VERSION"}, want: false},
+		{name: "interrupted extraction with a complete download", files: []string{"golang.org/toolchain@" + name + "/VERSION", "cache/download/golang.org/toolchain/@v/" + name + ".zip", "cache/download/golang.org/toolchain/@v/" + name + ".ziphash"}, want: true},
 	}
 	for _, shape := range shapes {
 		t.Run(shape.name, func(t *testing.T) {
@@ -160,11 +161,6 @@ func TestMemoryEvalToolchainDownloadPresentRequiresAUsableToolchain(t *testing.T
 				}
 				if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
 					t.Fatalf("write %s: %v", rel, err)
-				}
-			}
-			for _, rel := range shape.dirs {
-				if err := os.MkdirAll(filepath.Join(cache, filepath.FromSlash(rel)), 0o755); err != nil {
-					t.Fatalf("prepare %s: %v", rel, err)
 				}
 			}
 			if got := memoryEvalToolchainDownloadPresent(cache); got != shape.want {
