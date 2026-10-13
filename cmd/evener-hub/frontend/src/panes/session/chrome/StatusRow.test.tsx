@@ -605,20 +605,34 @@ test("renders exact context counts and percentage in its accessible label and ho
 
 // An assumed window (#4596): the daemon budgets an unknown window against a
 // conservative default and says so on the wire (contextAssumed). The strip's
-// spoken and hover label marks the capacity with the same "~" that marks the
-// cost row's derived estimate, never as an error - while a window something
-// vouches for keeps the exact unmarked label the test above pins.
-test("an assumed context window marks the capacity as an estimate in its label", () => {
-  render(
+// spoken and hover label marks the CAPACITY with the same "~" that marks the
+// cost row's derived estimate, never as an error. Asserted structurally -
+// figures and the mark, not label prose - so wording tweaks don't break this
+// while the estimate indicator stays pinned, including its absence once a
+// window something vouches for arrives.
+test("an assumed context window marks only the capacity figure as an estimate", () => {
+  const { rerender } = render(
     <StatusRow
       sessionRef="ref_a"
       model={runningModel({ contextUsed: 64_000, contextWindow: 128_000, contextPressure: 0.5, contextAssumed: true })}
       now={1_000_000}
     />,
   );
-  const label = "Context: 64000 of ~128000 tokens used, 50 percent";
-  expect(screen.getByRole("meter").getAttribute("aria-label")).toBe(label);
-  expect(screen.getByTestId("status-row-context").getAttribute("title")).toBe(label);
+  const meter = screen.getByRole("meter");
+  expect(meter.getAttribute("value")).toBe("64000");
+  expect(meter.getAttribute("max")).toBe("128000");
+  const label = meter.getAttribute("aria-label") ?? "";
+  expect(label).toContain("~128000");
+  expect(label).not.toContain("~64000");
+  expect(screen.getByTestId("status-row-context").getAttribute("title") ?? "").toContain("~128000");
+  rerender(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({ contextUsed: 64_000, contextWindow: 128_000, contextPressure: 0.5, contextAssumed: false })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.getByRole("meter").getAttribute("aria-label") ?? "").not.toContain("~");
 });
 
 // The gauge's severity comes from the shared contextTone ladder (see
