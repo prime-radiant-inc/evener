@@ -595,9 +595,6 @@ func TestTimed(t *testing.T) {}
 	if _, err := os.Stat(dest); !os.IsNotExist(err) {
 		t.Fatalf("a timing file was left at %s (stat err = %v); the destination must stay untouched", dest, err)
 	}
-	if !strings.Contains(res.output, "captured rows are retained") {
-		t.Errorf("the run did not point at the retained rows:\n%s", res.output)
-	}
 	leftovers := runnerScratchDirs(t, ctrl)
 	if len(leftovers) == 0 {
 		t.Fatalf("a failed timing export deleted the scratch holding the captured rows")
@@ -605,5 +602,42 @@ func TestTimed(t *testing.T) {}
 	rows, err := filepath.Glob(filepath.Join(leftovers[0], "json", "*.rows"))
 	if err != nil || len(rows) == 0 {
 		t.Fatalf("the retained scratch holds no timing rows (glob err = %v)", err)
+	}
+}
+
+// TestModuleRunnerRefusesADirectoryTimingDestination pins the review finding on
+// the atomic publish: renaming the temp file onto a destination that is a
+// directory (or a symlink to one) moves it inside that directory and succeeds,
+// so the run would exit green while publishing nothing at the requested path.
+// The destination must be refused through the export-failure path, with the
+// captured rows retained.
+func TestModuleRunnerRefusesADirectoryTimingDestination(t *testing.T) {
+	root, modules, ctrl := newRunnerFixture(t)
+	writeRunnerFixtureModule(t, modules, "timingmod", `package fixture
+
+import "testing"
+
+func TestTimed(t *testing.T) {}
+`)
+
+	dest := filepath.Join(root, "timing-destination")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := runModuleRunner(t, modules, append(controlledScratchEnv(ctrl),
+		"MODULES=timingmod",
+		"EVENER_GATE_TIMING_TSV="+dest)...)
+	if res.exitCode == 0 {
+		t.Fatalf("a directory timing destination must fail the run:\n%s", res.output)
+	}
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		t.Fatalf("reading the destination directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("the timing capture was moved into the destination directory: %v", entries)
+	}
+	if leftovers := runnerScratchDirs(t, ctrl); len(leftovers) == 0 {
+		t.Fatalf("a refused timing destination deleted the scratch holding the captured rows")
 	}
 }

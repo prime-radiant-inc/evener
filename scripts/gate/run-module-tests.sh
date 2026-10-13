@@ -825,9 +825,10 @@ if [ "$timing_enabled" -eq 1 ]; then
 	# Publish atomically: write beside the destination and rename it into place.
 	# A later --measured replay reads the destination, so a partial file there
 	# would read as a complete but truncated measurement; the rename keeps the
-	# file absent or whole. An export that fails keeps the scratch holding the
-	# rows — they are the expensive part, and cleanup would otherwise delete
-	# them and force another full run.
+	# file absent or whole. An export that fails — including a destination that
+	# is a directory, which the rename would silently move the temp file into —
+	# keeps the scratch holding the rows: they are the expensive part, and
+	# cleanup would otherwise delete them and force another full run.
 	timing_tmp="${EVENER_GATE_TIMING_TSV}.tmp-$$"
 	if [ "$fail" -ne 0 ]; then
 		:
@@ -838,6 +839,12 @@ if [ "$timing_enabled" -eq 1 ]; then
 		rm -f "$timing_tmp"
 		keep_failed_logs=1
 		printf 'run-module-tests.sh: could not write the timing rows to %s\n' "$EVENER_GATE_TIMING_TSV" >&2
+		printf 'run-module-tests.sh: the captured rows are retained in %s\n' "$logdir" >&2
+		fail=1
+	elif [ -d "$EVENER_GATE_TIMING_TSV" ]; then
+		rm -f "$timing_tmp"
+		keep_failed_logs=1
+		printf 'run-module-tests.sh: the timing destination %s is a directory\n' "$EVENER_GATE_TIMING_TSV" >&2
 		printf 'run-module-tests.sh: the captured rows are retained in %s\n' "$logdir" >&2
 		fail=1
 	elif ! mv "$timing_tmp" "$EVENER_GATE_TIMING_TSV"; then
