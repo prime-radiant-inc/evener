@@ -59,8 +59,14 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// a model switch landing mid-compaction would otherwise bill one layer's
 	// numbers by another model's thinking rule and image family.
 	prof, _, _ := s.cm.profileSnapshot()
-	if cw := contextWindowOf(prof); cw <= 0 {
+	cw, assumed := effectiveWindowOf(prof)
+	if cw <= 0 {
 		return nil
+	}
+	if assumed && s.cm.claimAssumedWindowDisclosure() {
+		// The budget the layers below run against is an assumption, not a
+		// fact (issue #4564); the session hears that once per manager.
+		emitFn(events.EventWarning, assumedWindowWarning(prof))
 	}
 
 	// Each phase reads pressure and its before/after diagnostics from ONE
@@ -69,6 +75,10 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	estimatePressure := func() (float64, *provider.Profile) { return s.cm.pressureWithProfile(history, sysPromptChars) }
 
 	p, prof := estimatePressure()
+	// Captured before any layer invalidates the measurement: the tripwire
+	// (issue #4564) forces the checkpoint layer below whatever the pressure
+	// estimate says.
+	tripwire := s.cm.unknownWindowTripwireFires(prof)
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
@@ -113,7 +123,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	}
 
 	// Layer 3 (replaced): Session-log checkpoint.
-	if p >= s.cm.CheckpointThreshold {
+	if p >= s.cm.CheckpointThreshold || tripwire {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
 		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))

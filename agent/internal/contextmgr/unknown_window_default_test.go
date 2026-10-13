@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -174,5 +175,102 @@ func TestDeclaredWindowBeatsAssumption(t *testing.T) {
 	}
 	if m := cm.EstimateUsage(history, 0); m.Window != 27_500 {
 		t.Fatalf("post-fold metrics window = %d, want the declared 27500", m.Window)
+	}
+}
+
+// TestUnknownWindowOptInStrategiesStayLive pins #4564's rule on the opt-in
+// strategies, whose own window gates used to skip ManageContext entirely on
+// an unknown window: each now budgets against the assumed window — folding a
+// history that has outgrown it and disclosing the assumption exactly once —
+// and the shared latch keeps the disclosure once per manager across passes.
+// ooda rides session-log's ManageContext, so the same gate covers it.
+func TestUnknownWindowOptInStrategiesStayLive(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		build func(t *testing.T, cm *Manager) Strategy
+	}{
+		{"session-log", func(t *testing.T, cm *Manager) Strategy {
+			return &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
+		}},
+		{"obs-mask", func(_ *testing.T, cm *Manager) Strategy { return NewObsMaskStrategy(cm) }},
+		{"checkpoint-pred", func(_ *testing.T, cm *Manager) Strategy { return NewCheckpointPredStrategy(cm) }},
+		{"ooda", func(t *testing.T, cm *Manager) Strategy {
+			sls, err := NewSessionLogStrategy(cm, &fakeStrategyHost{stateDir: t.TempDir(), id: "sess", profile: cm.currentProfile()})
+			if err != nil {
+				t.Fatalf("NewSessionLogStrategy: %v", err)
+			}
+			return &OODAStrategy{SessionLogStrategy: sls}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := llm.NewClient()
+			client.Register(&stubSummarizeAdapter{name: "gw", respFn: func(llm.Request) (llm.Response, error) {
+				return llm.Response{Message: llm.Assistant("condensed context summary")}, nil
+			}})
+			cm := NewManager(unknownGatewayProfile(), client, cheapmodel.New(client))
+			strategy := tc.build(t, cm)
+
+			history := bulkHistory(10, 10_000) // ~150K tokens: past every layer's gate against the assumed 128K
+			before := len(history)
+			spy := &emitSpy{}
+			if err := strategy.ManageContext(context.Background(), &history, 0, spy.fn); err != nil {
+				t.Fatalf("ManageContext: %v", err)
+			}
+			if len(spy.compaction) == 0 {
+				t.Fatal("strategy emitted no compaction events under the assumed window")
+			}
+			if len(history) >= before {
+				t.Fatalf("strategy folded nothing: %d turns (had %d)", len(history), before)
+			}
+			if n := spy.disclosures(); n != 1 {
+				t.Fatalf("assumption disclosures = %d, want exactly 1", n)
+			}
+
+			spy2 := &emitSpy{}
+			if err := strategy.ManageContext(context.Background(), &history, 0, spy2.fn); err != nil {
+				t.Fatalf("second ManageContext: %v", err)
+			}
+			if n := spy2.disclosures(); n != 0 {
+				t.Fatalf("second pass disclosed the assumption %d times, want 0", n)
+			}
+		})
+	}
+}
+
+// TestUnknownWindowStrategyTripwireForcesFold pins the tripwire on a
+// strategy path: with the window unknown and the configured thresholds out
+// of reach, an exact measurement past the tripwire still forces the
+// strategy's own fold — the same guarantee MaybeCompact carries. The mask
+// layers answer ordinary pressure; the tripwire guarantees the fold.
+func TestUnknownWindowStrategyTripwireForcesFold(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	client.Register(&stubSummarizeAdapter{name: "gw", respFn: func(llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant("condensed context summary")}, nil
+	}})
+	cm := NewManager(unknownGatewayProfile(), client, cheapmodel.New(client))
+	// No pressure estimate can reach these; only the tripwire can fold.
+	cm.CheckpointThreshold = 100
+	cm.SummarizeThreshold = 100
+
+	history := bulkHistory(12, 100) // ~1.8K tokens
+	measured := UnknownWindowInputTripwire + 50_000
+	cm.RecordInputTokens(measured, len(history))
+
+	strategy := NewObsMaskStrategy(cm)
+	spy := &emitSpy{}
+	if err := strategy.ManageContext(context.Background(), &history, 0, spy.fn); err != nil {
+		t.Fatalf("ManageContext: %v", err)
+	}
+	if len(history) >= 12 {
+		t.Fatalf("strategy tripwire left %d turns (had 12): no fold on a %d-token measurement", len(history), measured)
+	}
+	if len(spy.compaction) == 0 {
+		t.Fatal("strategy tripwire fold emitted no compaction event")
+	}
+	if got := cm.LastInputTokens(); got != 0 {
+		t.Fatalf("LastInputTokens after the tripwire fold = %d, want 0 (reset with the fold)", got)
 	}
 }

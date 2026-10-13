@@ -682,20 +682,11 @@ func (cm *Manager) MaybeCompact(
 	pressure := func() (float64, *provider.Profile) { return cm.pressureWithProfile(history, sysPromptChars) }
 
 	p, prof := pressure()
-
-	// Window-independent tripwire (issue #4564): with the window unknown, an
-	// exact API measurement already past a few hundred K input tokens forces
-	// the checkpoint fold whatever the pressure estimate says — the char/4
-	// estimate can badly lag a tokenizer-dense history, and threshold scaling
-	// can move the ordinary gates out of reach. LastInputTokens is safe to
-	// read apart from the pressure snapshot: SetProfile clears a measurement
-	// together with the profile it belonged to, so the count either matches
-	// the profile this pass decided on or is already 0. A known window
-	// governs on its own, so the tripwire never fires for one.
-	if _, unknown := effectiveWindowOf(prof); unknown && p < cm.CheckpointThreshold && cm.LastInputTokens() >= UnknownWindowInputTripwire {
+	// Window-independent tripwire (issue #4564): force at least checkpoint
+	// pressure when it fires; see unknownWindowTripwireFires.
+	if cm.unknownWindowTripwireFires(prof) && p < cm.CheckpointThreshold {
 		p = cm.CheckpointThreshold
 	}
-
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
@@ -791,6 +782,20 @@ func assumedWindowWarning(prof *provider.Profile) events.WarningData {
 		Hint:    "Compaction stays live against a conservative assumed window. Declare context_window on the model's row in providers.toml to budget against the real size.",
 		Code:    events.WarningCodeContextWindowAssumed,
 	}
+}
+
+// unknownWindowTripwireFires reports the window-unknown tripwire condition
+// (issue #4564): with the window unknown, an exact API measurement already
+// past a few hundred K input tokens must force a fold whatever the pressure
+// estimate says — the char/4 estimate can badly lag a tokenizer-dense
+// history, and threshold scaling can move the ordinary gates out of reach.
+// LastInputTokens is safe to read apart from the caller's pressure snapshot:
+// SetProfile clears a measurement together with the profile it belonged to,
+// so the count either matches the profile this pass decided on or is already
+// 0. A known window governs on its own, so the tripwire never fires for one.
+func (cm *Manager) unknownWindowTripwireFires(prof *provider.Profile) bool {
+	_, unknown := effectiveWindowOf(prof)
+	return unknown && cm.LastInputTokens() >= UnknownWindowInputTripwire
 }
 
 // ForceCompact runs all compaction layers unconditionally, regardless of context pressure.
