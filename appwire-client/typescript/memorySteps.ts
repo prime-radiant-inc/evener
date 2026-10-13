@@ -36,6 +36,16 @@ export function memoryFileTarget(args: Record<string, unknown>): string | undefi
   return scope ? `${scope}/${path}` : path;
 }
 
+// The page a memory_write step saved, as Markdown: its body under its when
+// line, the recall trigger that tells which index line the page gets. Empty
+// when the call carried no body.
+export function memoryWritePage(args: Record<string, unknown>): string | undefined {
+  const body = str(args, "body");
+  if (!body) return undefined;
+  const when = str(args, "when");
+  return when ? `**When:** ${when}\n\n${body}` : body;
+}
+
 function memorySearchLocation(args: Record<string, unknown>): string | undefined {
   const scope = scopeOf(args);
   const path = str(args, "path");

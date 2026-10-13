@@ -5672,6 +5672,37 @@ test.each([
     }));
     const user = userEvent.setup();
     let historyPane: string | undefined;
+    // #4187: this journey flaked under heavy load and the failing assertion was
+    // never captured, so a recurrence must name the state it saw: which pane
+    // held focus and the transitions that moved it, what the retained observer
+    // pane and the source conversation held, and the route, workspace and
+    // rendered cascade every assertion reads. `describeFailure` starts as a
+    // placeholder and is bound to the real report once the journey's identities
+    // exist; the catch below appends it to whatever fails - an assertion or a
+    // waiting find - so a red run reports its state instead of only
+    // "expected 'pane_x' to be 'pane_y'".
+    let describeFailure = (): string => "the drill failed before it captured its state";
+    // A pane's identity for a failure report: id, type, slot and ref, so the
+    // node that held focus is named, not just its opaque id. Defined before the
+    // recorder so a transition can name the pane on each side of the move.
+    const describePane = (pane: OpenPaneRecord | undefined): string =>
+      pane === undefined ? "none" : `${pane.id}(${pane.type},${pane.slot},ref=${refParam(pane.params) ?? "-"})`;
+    const describeFocused = (panes: readonly OpenPaneRecord[], id: string | null): string => {
+      if (id === null) return "none";
+      const pane = panes.find((candidate) => candidate.id === id);
+      // A pane that is already gone still names itself, so a focus move onto a
+      // closed pane is not reported as a bare "none".
+      return pane === undefined ? `${id}(gone)` : describePane(pane);
+    };
+    const focusHistory: string[] = [];
+    onTestFinished(
+      workspaceStore.subscribe((state, previous) => {
+        if (state.focusedPaneId !== previous.focusedPaneId)
+          focusHistory.push(
+            `${describeFocused(previous.panes, previous.focusedPaneId)}->${describeFocused(state.panes, state.focusedPaneId)}`,
+          );
+      }),
+    );
     try {
       render(<AppShell client={client} />);
       await screen.findByRole("heading", { name: "local:owner" });
@@ -5692,6 +5723,35 @@ test.each([
       const lifetime = conversationPaneLifetime(original);
       let inspectorId = "";
       const inspectorPane = () => workspaceStore.getState().panes.find((pane) => pane.id === inspectorId);
+      // The retained ref-only observer pane this journey drills past: an
+      // ordinary session pane for the child, beside the cascade.
+      const isRefOnlyChild = (pane: OpenPaneRecord): boolean =>
+        pane.type === "session" && pane.id !== sourceId && refParam(pane.params) === "local:child";
+      const renderedScopeRefs = (testId: string): string =>
+        screen
+          .queryAllByTestId(testId)
+          .map((node) => node.getAttribute("data-scope-ref") ?? "-")
+          .join(" ");
+      const drillState = (): string => {
+        const workspace = workspaceStore.getState();
+        return [
+          `path=${window.location.pathname}`,
+          `focus=${describeFocused(workspace.panes, workspace.focusedPaneId)}`,
+          `dockviewActive=${getDockviewApi()?.activePanel?.id ?? "none"}`,
+          `inspector=${inspectorId === "" ? "unset" : describeFocused(workspace.panes, inspectorId)}`,
+          `source=${describeFocused(workspace.panes, sourceId)}`,
+          `sourceIsOriginal=${String(sourcePane() === original)}`,
+          `sourceLifetimeAlive=${String(conversationPaneLifetime(original).alive)}`,
+          `retainedObserver=${describePane(workspace.panes.find(isRefOnlyChild))}`,
+          `retained=${retained}`,
+          `case=${source}`,
+          `columns=[${renderedScopeRefs("cascade-column")}]`,
+          `spines=[${renderedScopeRefs("cascade-spine")}]`,
+          `panes=[${workspace.panes.map(describePane).join(" ")}]`,
+          `focusHistory=[${focusHistory.join(" ")}]`,
+        ].join(" ");
+      };
+      describeFailure = drillState;
       act(() => {
         historyPane = workspaceStore
           .getState()
@@ -5751,13 +5811,7 @@ test.each([
         source === "nested" ? ["local:grandchild"] : ["local:child", "local:grandchild"],
       );
       expect(workspaceStore.getState().panes.some((p) => p.id === historyPane)).toBe(true);
-      expect(
-        workspaceStore
-          .getState()
-          .panes.filter(
-            (p) => p.type === "session" && p.id !== sourceId && (p.params as { ref?: string }).ref === "local:child",
-          ),
-      ).toHaveLength(retained ? 1 : 0);
+      expect(workspaceStore.getState().panes.filter(isRefOnlyChild)).toHaveLength(retained ? 1 : 0);
       // The cascade column's "Open conversation" link is gone - the column
       // embeds the conversation directly - so the click flow that opened a
       // session pane for the grandchild is deleted with it. The workspace and
@@ -5789,6 +5843,13 @@ test.each([
         expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
       });
       expect(workspaceStore.getState().panes).toHaveLength(1);
+    } catch (error) {
+      // Any failure in the journey - an assertion or a waiting find - reports
+      // the state above it, so a recurrence names the pane that took focus and
+      // what the workspace held instead of only the bare matcher diff.
+      if (error instanceof Error)
+        error.message = `${error.message}\n\n[#4187 desktop Activity drill state] ${describeFailure()}`;
+      throw error;
     } finally {
       act(() => resetActivitySidebarStoreForTests());
     }

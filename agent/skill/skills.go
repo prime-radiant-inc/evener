@@ -141,7 +141,7 @@ func ResolveSkillContent(skills map[string]SkillMeta, name string) (string, erro
 // Returns (meta, true) on success or (zero, false) if the file is missing, unparseable,
 // or lacks required fields.
 func parseSkillFile(path string) (SkillMeta, bool) {
-	data, err := os.ReadFile(path)
+	data, err := execenv.ReadFileCapped(path)
 	if err != nil {
 		return SkillMeta{}, false
 	}

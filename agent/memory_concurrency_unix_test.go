@@ -40,9 +40,15 @@ func memoryWithoutStamps(raw string) string {
 	return "---\n" + strings.Join(kept, "") + "---\n" + body
 }
 
-// memoryRacePage is the content a racing write gives a page.
+// memoryRaceFields are the memory_write arguments of a racing write.
+func memoryRaceFields(who string, round int, step string) (when, body string) {
+	return fmt.Sprintf("%s wrote round %d %s", who, round, step), fmt.Sprintf("%s-%d-%s\n", who, round, step)
+}
+
+// memoryRacePage is the page a racing write gives a page, stamps aside.
 func memoryRacePage(who string, round int, step string) string {
-	return fmt.Sprintf("---\ndescription: %s wrote round %d %s\n---\n%s-%d-%s\n", who, round, step, who, round, step)
+	when, body := memoryRaceFields(who, round, step)
+	return "---\nwhen: " + when + "\n---\n\n" + body
 }
 
 // memoryPageState is a page's content, stamps aside, or "" when it is absent.
@@ -66,7 +72,7 @@ func memoryPageState(t *testing.T, path string) string {
 // absent. B's first shared.md write or its doomed.md write surviving means a
 // stamp wrote back content its session had read before a later write. The
 // observer must never render a "(no description)" or "(frontmatter
-// unreadable)" line: every page written here has a description.
+// unreadable)" line: every page written here has a when line.
 func TestMemoryConcurrentSessionsKeepEachPageLastWrite(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -78,8 +84,9 @@ func TestMemoryConcurrentSessionsKeepEachPageLastWrite(t *testing.T) {
 	a, b, observer := open(), open(), open()
 	ctx := context.Background()
 	// Each call reports whether the tool succeeded; every call here should.
-	write := func(s *Session, file, content string) bool {
-		_, err := s.execMemoryWrite(ctx, nil, map[string]any{"scope": "personal", "file_path": file, "content": content})
+	write := func(s *Session, file, who string, round int, step string) bool {
+		when, body := memoryRaceFields(who, round, step)
+		_, err := s.execMemoryWrite(ctx, nil, map[string]any{"scope": "personal", "file_path": file, "when": when, "body": body})
 		return err == nil
 	}
 	del := func(s *Session, file string) bool {
@@ -117,15 +124,15 @@ func TestMemoryConcurrentSessionsKeepEachPageLastWrite(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Go(func() {
 			<-start
-			aOK[0] = write(a, "shared.md", memoryRacePage("A", round, "only"))
-			aOK[1] = write(a, "doomed.md", memoryRacePage("A", round, "only"))
+			aOK[0] = write(a, "shared.md", "A", round, "only")
+			aOK[1] = write(a, "doomed.md", "A", round, "only")
 			aOK[2] = edit(a, "a-own.md", fmt.Sprintf("body-v%d\n", round), fmt.Sprintf("body-v%d\n", round+1))
 		})
 		wg.Go(func() {
 			<-start
-			bOK[0] = write(b, "shared.md", memoryRacePage("B", round, "first"))
-			bOK[1] = write(b, "shared.md", memoryRacePage("B", round, "second"))
-			bOK[2] = write(b, "doomed.md", memoryRacePage("B", round, "doomed")) && del(b, "doomed.md")
+			bOK[0] = write(b, "shared.md", "B", round, "first")
+			bOK[1] = write(b, "shared.md", "B", round, "second")
+			bOK[2] = write(b, "doomed.md", "B", round, "doomed") && del(b, "doomed.md")
 		})
 		close(start)
 		wg.Wait()
@@ -188,19 +195,19 @@ func (c *postWritePausingClock) Now() time.Time {
 	return c.Clock.Now()
 }
 
-// memoryStampRace runs A's memory_write of page with content, whose body
+// memoryStampRace runs A's memory_write of page with when and body, where body
 // holds marker, and returns once A's write has landed: either A's tool
 // returned, or it read the clock after the write and is held there. Either
 // way, the page on disk must already carry A's stamps, so the tool wrote
-// them with the content. finish lets A's tool go on and waits for it.
-func memoryStampRace(t *testing.T, root, page, content, marker string) (finish func()) {
+// them with the page. finish lets A's tool go on and waits for it.
+func memoryStampRace(t *testing.T, root, page, when, body, marker string) (finish func()) {
 	t.Helper()
 	clk := newPostWritePausingClock(filepath.Join(root, "memory", page), marker)
 	a := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, clock: clk}))
 	clk.armed.Store(true)
 	done := make(chan error, 1)
 	go func() {
-		_, err := a.execMemoryWrite(context.Background(), nil, map[string]any{"scope": "personal", "file_path": page, "content": content})
+		_, err := a.execMemoryWrite(context.Background(), nil, map[string]any{"scope": "personal", "file_path": page, "when": when, "body": body})
 		done <- err
 	}()
 	var aErr error
@@ -236,7 +243,7 @@ func TestMemoryStampDoesNotResurrectAPageDeletedAfterItWasRead(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "memory", "fact.md")
-	finish := memoryStampRace(t, root, "fact.md", "---\ndescription: A's fact\n---\nA-fact\n", "A-fact")
+	finish := memoryStampRace(t, root, "fact.md", "A's fact", "A-fact\n", "A-fact")
 	b := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	read, err := b.execMemoryRead(context.Background(), nil, map[string]any{"scope": "personal", "file_path": "fact.md"})
 	if err != nil || !strings.Contains(fmt.Sprint(read), "A-fact") {
@@ -258,7 +265,7 @@ func TestMemoryStampDoesNotUndoAnEditOfThePageItStamps(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "memory", "fact.md")
-	finish := memoryStampRace(t, root, "fact.md", "---\ndescription: A's fact\n---\nA-fact\n", "A-fact")
+	finish := memoryStampRace(t, root, "fact.md", "A's fact", "A-fact\n", "A-fact")
 	b := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	if _, err := b.execMemoryEdit(context.Background(), nil, map[string]any{"scope": "personal", "file_path": "fact.md", "old_string": "A-fact", "new_string": "B-corrected-fact"}); err != nil {
 		t.Fatalf("B's edit: %v", err)

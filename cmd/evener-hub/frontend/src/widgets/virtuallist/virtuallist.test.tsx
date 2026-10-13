@@ -894,6 +894,49 @@ describe("anchorToEnd", () => {
     },
   );
 
+  // A native backward key knows its direction before any scroll event arrives,
+  // and its smooth scroll can deliver that event after the gesture marker's
+  // frames have expired (#4065). The handle declares the direction directly, so
+  // the rule protects the reading point even though the earlier record was
+  // cleared by the keydown's own cancellation.
+  test("a declared backward movement protects a backward partial shrink after observer idle", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
+    const frames = holdReaderFrames();
+    let layout: ReaderLayout | undefined;
+    try {
+      const { root, current, ref } = renderMeasuredList(true, true, {
+        onLayout: (value) => {
+          layout = value;
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => current().scrollToIndex(1, { align: "start" }));
+      expect(root.scrollTop).toBe(1600);
+      external.geometry.rowHeights[0] = 700;
+      await act(async () => {
+        root.scrollTop = 100;
+        // The reader intent supersedes the pending capture first; the key's own
+        // direction is declared after it and must survive the cancellation.
+        layout?.cancelPendingScroll();
+        ref.current?.noteBackwardMovement?.();
+      });
+      await act(async () => frames.release());
+      await act(async () => vi.advanceTimersByTime(current().options.isScrollingResetDelay));
+      expect(current().scrollDirection).toBeNull();
+      await act(async () => external.notify((target) => target.dataset.index === "0"));
+      await act(async () => frames.release());
+      expect(root.scrollTop).toBe(100);
+      expect(current().scrollOffset).toBe(100);
+      expect(root.querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-100);
+    } finally {
+      cleanup();
+      external.restore();
+      frames.restore();
+      vi.useRealTimers();
+    }
+  });
+
   test.each([
     { command: "absolute", requested: 300, want: 0, wantTop: 0 },
     { command: "index", requested: 1100, want: 200, wantTop: -200 },

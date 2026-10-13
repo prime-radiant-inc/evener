@@ -59,7 +59,7 @@ export async function measureDelayedFloatingDock(endpoint, url, boot, viewport, 
       if (method === "Runtime.evaluate") firstRead.resolve();
       return result;
     };
-    measurement = measureFloatingDock(page).then(
+    measurement = measureFloatingDock(page, "delayed DockHost request").then(
       (result) => ({ result }),
       (error) => ({ error }),
     );

@@ -30,6 +30,13 @@ import { Driver } from "../skillguard/run.mjs";
 import { measureDelayedFloatingDock } from "./startup.mjs";
 import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
 import { checkMovingControls } from "./click-regression.mjs";
+import {
+  DOCKVIEW_READY_LABEL,
+  DOCKVIEW_READY_WAIT_EXPR,
+  FLOATING_PANEL_LABEL,
+  FLOATING_PANEL_WAIT_EXPR,
+  waitForFloatingState,
+} from "./floatingFixture.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -164,22 +171,22 @@ function assertDockResize(result) {
   return failures;
 }
 
-async function measureFloatingDock(page) {
+async function measureFloatingDock(page, stage = "first measurement") {
   const driver = new Driver({});
   driver.page = page;
-  await driver.waitPage(
-    `(async () => {
-      const { getDockviewApi } = await import('/src/shell/workspace.ts');
-      return getDockviewApi() != null;
-    })()`,
-    { label: "real floating fixture's restored workspace" },
-  );
-  await evaluate(
-    driver.send,
+  await waitForFloatingState(
+    driver,
+    // The install rides INSIDE the wait, on every poll: the witness a failed
+    // wait attaches reads the store and api through this global, so a wait that
+    // times out with the module still importable must not report them as
+    // unreadable just because nothing had published them yet - and a transport
+    // hiccup still retries the import rather than failing the guard outright.
     `(async () => {
       const { workspaceStore, getDockviewApi } = await import('/src/shell/workspace.ts');
       window.shellguardFloat = { workspaceStore, getDockviewApi };
+      return getDockviewApi() != null;
     })()`,
+    { label: "real floating fixture's restored workspace", stage },
   );
   // DockHost is a lazy chunk and settledShell waits only for the rail, so the
   // dock can still be booting here. A pane opened before DockHost's onReady is
@@ -187,14 +194,24 @@ async function measureFloatingDock(page) {
   // saved, and the id openPane returned then never gets a panel. DockHost
   // registers the api at the top of its synchronous onReady, so a non-null api
   // means that restore has finished.
-  await driver.waitPage("window.shellguardFloat.getDockviewApi() != null", { label: "real Dockview api ready" });
+  await waitForFloatingState(driver, DOCKVIEW_READY_WAIT_EXPR, {
+    label: DOCKVIEW_READY_LABEL,
+    stage,
+  });
+  const openPaneStart = Date.now();
   await evaluate(
     driver.send,
     "window.shellguardFloat.paneId = window.shellguardFloat.workspaceStore.getState().openPane('settings')",
   );
-  await driver.waitPage(
-    "window.shellguardFloat.getDockviewApi()?.getPanel(window.shellguardFloat.paneId) != null",
-    { label: "real floating fixture's workspace panel" },
+  // The wait covers the openPane -> addPanel hop, measured at single-digit
+  // milliseconds on a green run, so a timeout here means the panel really never
+  // appeared - or the page stopped answering, which waitPage swallows. Either
+  // way the bare label says nothing about the state, so the wait attaches it
+  // before rethrowing (#3747).
+  await waitForFloatingState(
+    driver,
+    FLOATING_PANEL_WAIT_EXPR,
+    { label: FLOATING_PANEL_LABEL, stage, openPaneMs: Date.now() - openPaneStart },
   );
   const initial = await evaluate(
     driver.send,

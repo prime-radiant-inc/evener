@@ -3385,11 +3385,8 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, ad
 			t.Logf("failed supervision wait snapshot: %#v", stableSupervisionFailureSnapshot(root, sub, adapter))
 		}
 	}()
-	sub.mu.Lock()
-	hasChannel := sub.done != nil
-	sub.mu.Unlock()
-	if !hasChannel {
-		t.Fatalf("stable child %q has no completion channel", childID)
+	if refusal := stableSupervisionEntryRefusal(sub, childID); refusal != "" {
+		t.Fatalf("%s", refusal)
 	}
 	desc := fmt.Sprintf("stable child %q supervision to quiesce", childID)
 	// why is the last check that refused; a timeout reports it with the state
@@ -3413,12 +3410,59 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string, ad
 	quiesced = true
 }
 
+// stableSupervisionEntryRefusal is waitForStableSupervisionRun's entry
+// precondition: it returns the fatal message when sub positively has no
+// completion channel to wait on, or "" when the channel is present or when
+// sub.mu is busy.
+//
+// The read is non-blocking. waitForStableSupervisionRun makes it before it
+// enters its 30s bounded poll, so a blocking sub.mu.Lock() here would wait on a
+// stall that holds sub.mu, keeping the wait from ever reaching its poll — and
+// so from ever firing the bound and the #4513 timeout report that runs only
+// after it — the same class #4548 removed from the poll predicate. A busy
+// sub.mu observes neither presence nor absence, so it returns "" and falls
+// through to the poll, whose predicate re-TryLocks sub.mu and refuses
+// ("subagent lock busy") for as long as it stays held; a busy source therefore
+// keeps the wait waiting and can never be read as a present channel or as a
+// missing one. The fatal is returned only after positively observing
+// sub.done == nil under its own lock. sub.done is nil only until the child's
+// first run starts — a cold-restored record is built without a runner channel,
+// and a run start assigns a fresh one (resetSubagentForRunLocked) — and it is
+// never nilled once assigned, so the fatal is reachable only for a child that
+// has not run in this process.
+func stableSupervisionEntryRefusal(sub *subagent, childID string) string {
+	if !sub.mu.TryLock() {
+		return ""
+	}
+	channel := sub.done
+	sub.mu.Unlock()
+	if channel != nil {
+		return ""
+	}
+	return fmt.Sprintf("stable child %q has no completion channel", childID)
+}
+
 // stableSupervisionRefusal is the first stage of stable child supervision
 // still holding sub, as waitForStableSupervisionRun reads them, or "" once
 // all are quiet.
+//
+// Every source is read with TryLock: a source production holds is, by
+// definition, not quiesced, so a busy lock REFUSES (keeps the wait waiting)
+// rather than blocking. waitForCondition calls this inline, so a blocking read
+// would keep the wait's bound from ever being reached; a busy read always
+// returns before the deadline check is skipped again. The predicate returns ""
+// only after positively observing every stage under its own lock, so a busy
+// lock can only add a refusal — it can never turn an unquiesced run into a
+// quiesced one.
 func stableSupervisionRefusal(sub *subagent) string {
-	sub.mu.Lock()
+	// sub.sess is assigned once, at subagent creation, and never reassigned
+	// (delegate_runtime.go's cold restore and subagents.go's start), so an
+	// unlocked read cannot race a writer; stableSupervisionState reads it the
+	// same way.
 	sess := sub.sess
+	if !sub.mu.TryLock() {
+		return "subagent lock busy"
+	}
 	closed := sub.closed
 	sub.mu.Unlock()
 	// Dispatching an armed attention hands the work along a chain of
@@ -3430,30 +3474,13 @@ func stableSupervisionRefusal(sub *subagent) string {
 	// predecessor is left, so reading them in dispatch order means work
 	// that races past one read is caught by a later one.
 	if sess != nil && !closed {
-		if sess.hasPendingDelegateAttentionArmRetry() {
-			return "attention arm retry pending"
-		}
-		if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
-			return fmt.Sprintf("pending attention %v (err %v)", pending, err)
-		}
-		if controller, delegateID := sess.delegateController, sess.owningDelegateID; controller != nil && delegateID != "" {
-			if controller.reservedAttentionID(sess) != "" {
-				return "attention reserved"
-			}
-			controller.mu.Lock()
-			aggregate := controller.durable[delegateID]
-			runOpen := aggregate != nil && aggregate.CurrentRunOpen
-			// A finished generation whose finalize tail hasn't reported
-			// quiescence still holds the delegate: it takes no start yet.
-			live := controller.live[delegateID]
-			finalizing := live != nil && live.finalizing != nil
-			controller.mu.Unlock()
-			if runOpen || finalizing {
-				return fmt.Sprintf("controller runOpen=%t finalizing=%t", runOpen, finalizing)
-			}
+		if refusal := stableSupervisionAttentionRefusal(sess); refusal != "" {
+			return refusal
 		}
 	}
-	sub.mu.Lock()
+	if !sub.mu.TryLock() {
+		return "subagent lock busy"
+	}
 	done := sub.done
 	live := sub.running || sub.driving || sub.finalizing
 	sub.mu.Unlock()
@@ -3469,11 +3496,111 @@ func stableSupervisionRefusal(sub *subagent) string {
 		// The session namer is the last stage: a run launches it and it
 		// can outlive the run, taking the session lock to name and save
 		// the session.
-		sess.mu.Lock()
+		if !sess.mu.TryLock() {
+			return "session lock busy"
+		}
 		naming := sess.naming.pending
 		sess.mu.Unlock()
 		if naming != 0 {
 			return fmt.Sprintf("%d session namer runs pending", naming)
+		}
+	}
+	return ""
+}
+
+// stableSupervisionAttentionRefusal reads sess's attention stages — an arm
+// awaiting retry, attention pending with no reservation yet, a reservation that
+// has consumed the pending id but not yet committed, and the controller's open
+// run — without waiting on any lock, refusing when a source is busy. It mirrors
+// what the predicate read through the Session helpers
+// (hasPendingDelegateAttentionArmRetry, pendingDelegateAttentionIDs ->
+// delegateAttentionFoldLocked) and through delegateTreeController.reservedAttentionID,
+// which take these locks blocking and so could hold the predicate past its bound.
+func stableSupervisionAttentionRefusal(sess *Session) string {
+	// The arm-retry ids and the pending-attention fold are both read under
+	// attentionMu (which also guards the fold cursor); reading them together
+	// under one TryLock is a snapshot at least as strong as the two separate
+	// blocking reads it replaces, so it can never read quiesced where they
+	// would have refused.
+	if !sess.attentionMu.TryLock() {
+		return "attention lock busy"
+	}
+	if len(sess.delegateAttentionArmIDs) != 0 {
+		sess.attentionMu.Unlock()
+		return "attention arm retry pending"
+	}
+	pending, busy, err := stableSupervisionPendingAttentionLocked(sess)
+	sess.attentionMu.Unlock()
+	if busy {
+		return "session lock busy"
+	}
+	if err != nil || len(pending) != 0 {
+		return fmt.Sprintf("pending attention %v (err %v)", pending, err)
+	}
+	controller, delegateID := sess.delegateController, sess.owningDelegateID
+	if controller == nil || delegateID == "" {
+		return ""
+	}
+	if !controller.mu.TryLock() {
+		return "controller lock busy"
+	}
+	reserved := stableSupervisionReservedAttentionIDLocked(controller, sess)
+	aggregate := controller.durable[delegateID]
+	runOpen := aggregate != nil && aggregate.CurrentRunOpen
+	// A finished generation whose finalize tail hasn't reported
+	// quiescence still holds the delegate: it takes no start yet.
+	live := controller.live[delegateID]
+	finalizing := live != nil && live.finalizing != nil
+	controller.mu.Unlock()
+	if reserved != "" {
+		return "attention reserved"
+	}
+	if runOpen || finalizing {
+		return fmt.Sprintf("controller runOpen=%t finalizing=%t", runOpen, finalizing)
+	}
+	return ""
+}
+
+// stableSupervisionPendingAttentionLocked lists sess's durable pending attention
+// ids, mirroring pendingDelegateAttentionIDs -> delegateAttentionFoldLocked. The
+// caller holds sess.attentionMu, which guards the fold cursor
+// (Session.attentionFoldCursor) that readDelegateAttentionFold reads. It keeps
+// delegateAttentionFoldLocked's early return: no ready transcript, session id,
+// or state dir reads as no pending attention. A busy sess.mu — whose fields the
+// fold needs to locate the transcript — is reported busy so the caller refuses
+// rather than reading a path it could not observe.
+func stableSupervisionPendingAttentionLocked(sess *Session) ([]string, bool, error) {
+	if !sess.mu.TryLock() {
+		return nil, true, nil
+	}
+	ready := sess.transcriptReady
+	sessionID := sess.id
+	stateDir := sess.stateDir
+	sess.mu.Unlock()
+	if !ready || sessionID == "" || stateDir == "" {
+		return nil, false, nil
+	}
+	fold, err := sess.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	return fold.pendingIDs(), false, nil
+}
+
+// stableSupervisionReservedAttentionIDLocked mirrors
+// delegateTreeController.reservedAttentionID while c.mu is held: that accessor
+// takes c.mu blocking, so the predicate cannot call it. It routes through
+// runtimeOwnerLocked and keeps the same three guards — the record's delegate id
+// matches, its trigger is TriggerAttention, and its runtime is this session — so
+// a reservation of another kind for the same delegate does not read as reserved.
+func stableSupervisionReservedAttentionIDLocked(c *delegateTreeController, runtime *Session) string {
+	delegateID, _, err := c.runtimeOwnerLocked(runtime)
+	if err != nil || delegateID == "" {
+		return ""
+	}
+	for _, record := range c.reservations {
+		if record != nil && record.delegateID == delegateID && record.trigger == delegatestore.TriggerAttention && record.runtime == runtime {
+			return record.attentionID
 		}
 	}
 	return ""

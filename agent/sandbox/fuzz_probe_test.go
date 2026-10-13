@@ -146,6 +146,8 @@ func (s scriptedProbeSystem) environ() []string {
 
 func (s scriptedProbeSystem) userHomeDir() (string, error) { return s.home, s.homeErr }
 
+func (scriptedProbeSystem) loginHomeDir() (string, error) { return "", errors.New("no") }
+
 func (s scriptedProbeSystem) lookPath(name string) (string, error) {
 	if name == "bwrap" && s.bwrapFound {
 		return s.bwrapPath, nil
