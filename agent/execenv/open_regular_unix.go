@@ -58,7 +58,7 @@ type admitOptions struct {
 // mount, or classify-then-open swap can hide a stream that stats regular
 // (/proc/kmsg) behind an ordinary spelling (#4574 round 11). streamed is the
 // caller's spelled hint, kept only as the seam a stub-backed test root needs
-// where the descriptor's real mount cannot be faked (see fdStreamed). A FIFO
+// where the descriptor's real mount cannot be faked. A FIFO
 // or socket is refused — a read-only open of one would otherwise block until a
 // peer appears, and nothing bounds that wait, because the read cap applies
 // only after a successful open (#4574 round 1) — and so is any other

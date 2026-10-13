@@ -43,13 +43,13 @@ func ReadFileCapped(path string) ([]byte, error) {
 	return readFileCapped(afero.NewOsFs(), path)
 }
 
-// readFileCapped is readFileCappedCtx without a caller context — the
-// Background default for callers that carry none.
+// readFileCapped is readFileCappedCtx with context.Background(), for callers
+// that carry no context.
 func readFileCapped(fsys afero.Fs, name string) ([]byte, error) {
 	return readFileCappedCtx(context.Background(), fsys, name)
 }
 
-// readFileCapped is the off arm's whole-file read: it opens without blocking
+// readFileCappedCtx is the off arm's whole-file read: it opens without blocking
 // (openNonblock, so a FIFO with no writer cannot hang the open), admits the
 // handle only when it stats regular on that same handle — mirroring
 // admitReadFD, so a device or FIFO the off arm once read is refused — and
@@ -59,12 +59,11 @@ func readFileCapped(fsys afero.Fs, name string) ([]byte, error) {
 // — would otherwise block here indefinitely, because O_NONBLOCK only makes the
 // descriptor pollable, not bounded (#4611's off-arm gap). O_NONBLOCK never
 // needs clearing here: only a regular file is read, and a regular file's reads
-// do not honor it. The
-// admission runs through the afero.File interface, never a *os.File type
-// assertion: SetFs accepts OS-backed wrappers (fault.FS, BasePathFs) whose
-// wrapped handles must not hide the file's type, while an injected in-memory
-// filesystem cannot hold a device or FIFO and its FileInfo modes carry no
-// file-type bits, so the admission never refuses them.
+// do not honor it. Admission runs through the afero.File interface, never a
+// *os.File type assertion: SetFs accepts OS-backed wrappers (fault.FS,
+// BasePathFs) whose wrapped handles must not hide the file's type, while an
+// injected in-memory filesystem cannot hold a device or FIFO and its FileInfo
+// modes carry no file-type bits, so the admission never refuses them.
 func readFileCappedCtx(ctx context.Context, fsys afero.Fs, name string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

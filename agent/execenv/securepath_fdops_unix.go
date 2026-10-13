@@ -421,11 +421,10 @@ var admitReadFD = func(fd int, name string, allowDir, streamed bool) (*os.File, 
 // file would allocate without bound. The read is capped at
 // MaxWholeFileReadBytes, so an oversized or hostile regular file — procfs
 // specials stat regular at terabyte sizes — fails fast instead of loading
-// (issue #4556). A regular the classification routes as a stream (see
-// fdStreamed) can block in read(2) although it stats regular, so that read is
-// also bounded in time by grepReadStallTimeout and cancellation-observable
-// (see readFileCtx). This context-less entry is the Background default for
-// callers without one.
+// (issue #4556). A regular the admission routes as a stream can block in
+// read(2) although it stats regular, so that read is also bounded in time by
+// grepReadStallTimeout and cancellation-observable (see readFileCtx). This
+// context-less entry is the Background default for callers without one.
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	return s.readFileCtx(context.Background(), tool, abs)
 }
@@ -444,8 +443,7 @@ func (s *sandboxFS) readFileCtx(ctx context.Context, tool, abs string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	streamed := fdStreamed(fd, isPseudoFsPath(abs))
-	f, err := admitReadFD(fd, abs, false, streamed)
+	f, err := admitReadFD(fd, abs, false, isPseudoFsPath(abs))
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
