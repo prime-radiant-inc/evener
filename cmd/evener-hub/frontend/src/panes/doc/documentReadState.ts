@@ -53,6 +53,7 @@ export function getDocumentAnnotationPorts(): DocumentAnnotationPorts {
         ? retainedComposerSourceFor(origin.paneId, origin.compositionOwnerId, key.sessionRef)
         : null,
     onStorageSuccess: () => runtime?.storageSucceeded(),
+    onPendingExpiryRetained: () => runtime?.registerRetryNeed(),
   });
   runtime = createDocumentAnnotationRuntime(repository);
   const ports: DocumentAnnotationPorts = { repository, runtime };
