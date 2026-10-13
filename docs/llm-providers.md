@@ -291,8 +291,11 @@ A model id matching nothing is still resolvable: it's synthesized from
 provider-level caps, matching glob rows, and the provider's surface and
 family. `Warnings` carries `model not in catalog`; the wire id is the
 reference verbatim; the context window is unset, which the agent treats as
-"unknown" — no compaction budget until a live listing or a user row supplies
-one. The anthropic protocol's required `max_tokens` falls back to 32000.
+"unknown" — compaction budgets against a conservative assumed window (128K),
+disclosed once as a warning naming the remedy (declare `context_window` on
+the model's row), until a live listing or a user row supplies the real one.
+Catalog and declared windows keep governing untouched. The anthropic
+protocol's required `max_tokens` falls back to 32000.
 This is how a model released this morning works before the cache refreshes.
 **Exception:** the `oauth-openai-codex` transport enforces a model
 allowlist — an unknown id there is a resolve error, not a synthesized row.
