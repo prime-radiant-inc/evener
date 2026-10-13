@@ -71,7 +71,8 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	// Captured before any layer invalidates the measurement: the tripwire
 	// (issue #4564) forces the checkpoint layer below whatever the pressure
 	// estimate says. It carries the profile it was captured under and governs
-	// only while that profile is still the gate's model (tripwireGoverns).
+	// only while that profile is still the gate's assumption
+	// (assumptionStillGoverns).
 	tripwire := s.cm.unknownWindowTripwireFires(prof)
 	tripwireProf := prof
 	compacted := false
@@ -121,7 +122,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	// messages from (summarizeFold). A predictive checkpoint carries them
 	// whole itself, so it needs none.
 	var checkpointed []schema.Turn
-	if p >= s.cm.CheckpointThreshold || (tripwire && tripwireGoverns(tripwireProf, prof)) {
+	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)

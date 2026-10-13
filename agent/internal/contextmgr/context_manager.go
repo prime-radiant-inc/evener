@@ -758,14 +758,15 @@ func (cm *Manager) MaybeCompact(
 
 // claimAssumedWindowDisclosure hands out the right to emit the unknown-window
 // disclosure exactly once per model target: the latch is unset AND the
-// manager's current profile is still the caller's captured one, checked under
-// the same lock that latches. A SetProfile that swapped targets in between
-// reset the latch, and the stale caller must not consume the switched-to
-// model's disclosure; the current model's own pass claims it instead.
+// caller's captured assumption still governs the manager's current profile —
+// same target, and still an unknown window — checked under the same lock that
+// latches. A SetProfile that swapped models, or a real window that arrived for
+// this one in between, refuses the stale caller without touching the latch;
+// the current model's own pass claims it instead.
 func (cm *Manager) claimAssumedWindowDisclosure(caller *provider.Profile) bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if cm.assumedWindowDisclosed || !sameProfileTarget(cm.profile, caller) {
+	if cm.assumedWindowDisclosed || !assumptionStillGoverns(caller, cm.profile) {
 		return false
 	}
 	cm.assumedWindowDisclosed = true
@@ -810,15 +811,20 @@ func (cm *Manager) unknownWindowTripwireFires(prof *provider.Profile) bool {
 	return unknown && cm.LastInputTokens() >= UnknownWindowInputTripwire
 }
 
-// tripwireGoverns reports whether a tripwire captured under captured still
-// decides for current. The strategy fold gates re-snapshot pressure after
-// their mask layers run, so a SetProfile landing in between would otherwise
-// let one model's measurement force another model's fold — the one-snapshot
-// rule the strategy comments state. The switched-to model's own pass
-// re-captures the tripwire on its terms, with the measurement the switch
-// cleared.
-func tripwireGoverns(captured, current *provider.Profile) bool {
-	return sameProfileTarget(captured, current)
+// assumptionStillGoverns reports whether an assumption-state captured under
+// captured — a tripwire verdict, or the right to disclose the assumed window —
+// still applies to current: the model is the same target, and current still
+// budgets against the assumed window. Every profile mutation that can
+// invalidate a captured assumption-state changes one of those two facts — a
+// switch to another model, or a real window arriving for this one (a live
+// listing enriching the same target, which sameProfileTarget alone cannot
+// see) — so deriving the verdict from the profiles themselves cannot
+// desynchronize the way cached state would. The fold gates re-snapshot
+// pressure after their mask layers, and the claim runs under its latch's
+// lock; both consult the current profile through this one predicate.
+func assumptionStillGoverns(captured, current *provider.Profile) bool {
+	_, assumed := effectiveWindowOf(current)
+	return assumed && sameProfileTarget(captured, current)
 }
 
 // ForceCompact runs all compaction layers unconditionally, regardless of context pressure.

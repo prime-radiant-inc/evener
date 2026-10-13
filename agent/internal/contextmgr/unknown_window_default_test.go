@@ -409,3 +409,98 @@ func TestDisclosureClaimRejectsStaleProfile(t *testing.T) {
 		t.Fatalf("the switched-to model's own pass disclosed %d times, want 1: the stale caller consumed its latch", n)
 	}
 }
+
+// knownWindowArrival builds the same-target enrichment a live listing
+// supplies: the gateway model's real window, on the identical resolved row.
+func knownWindowArrival() *provider.Profile {
+	window := 1_000_000
+	enriched := provider.FromResolved(registry.Resolved{
+		Instance: "gw", ModelID: "deepseek-4.1-flash", WireID: "deepseek-4.1-flash",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
+		Caps: registry.Caps{ContextWindow: &window},
+	}, nil)
+	if enriched.ContextWindowSize() != window {
+		panic("knownWindowArrival: fixture lost its window")
+	}
+	return enriched
+}
+
+// TestStrategyTripwireDropsWhenWindowArrivesMidPass pins the third mid-pass
+// seam: a live listing can enrich the SAME model with a real window, and
+// sameProfileTarget is window-blind, so the swap keeps the measurement and the
+// target match. A tripwire captured while the window was unknown must not
+// force a fold under a profile that now knows its window — a known window
+// governs on its own. The mask layer's own event is the deterministic seam,
+// as in the model-switch test above.
+func TestStrategyTripwireDropsWhenWindowArrivesMidPass(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		build func(t *testing.T, cm *Manager) Strategy
+	}{
+		{"session-log", func(t *testing.T, cm *Manager) Strategy {
+			return &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
+		}},
+		{"obs-mask", func(_ *testing.T, cm *Manager) Strategy { return NewObsMaskStrategy(cm) }},
+		{"checkpoint-pred", func(_ *testing.T, cm *Manager) Strategy { return NewCheckpointPredStrategy(cm) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := llm.NewClient()
+			client.Register(&stubSummarizeAdapter{name: "gw", respFn: func(llm.Request) (llm.Response, error) {
+				return llm.Response{Message: llm.Assistant("condensed context summary")}, nil
+			}})
+			// The model is unknown-window, thresholds are out of reach, and a
+			// measurement past the tripwire is planted — only the captured
+			// tripwire can force a fold.
+			cm := NewManager(unknownGatewayProfile(), client, cheapmodel.New(client))
+			cm.CheckpointThreshold = 100
+			cm.SummarizeThreshold = 100
+			history := bulkHistory(12, 100) // ~1.8K tokens
+			cm.RecordInputTokens(UnknownWindowInputTripwire+50_000, len(history))
+
+			strategy := tc.build(t, cm)
+			arrived := false
+			emit := func(kind events.EventKind, data events.EventData) {
+				if kind == events.EventContextCompaction && !arrived {
+					arrived = true
+					cm.SetProfile(knownWindowArrival())
+				}
+			}
+			if err := strategy.ManageContext(context.Background(), &history, 0, emit); err != nil {
+				t.Fatalf("ManageContext: %v", err)
+			}
+			if !arrived {
+				t.Fatal("the mid-pass enrichment never ran: the mask layer emitted no event")
+			}
+			if len(history) != 12 {
+				t.Fatalf("tripwire captured under the unknown window folded a history whose window had arrived: %d turns (had 12)", len(history))
+			}
+		})
+	}
+}
+
+// TestDisclosureClaimRejectsKnownWindowArrival pins the claim's half of the
+// same seam: a caller that captured the model while its window was unknown
+// must not announce an assumed window after the same model's real window
+// arrived — a known window is never disclosed as assumed.
+func TestDisclosureClaimRejectsKnownWindowArrival(t *testing.T) {
+	t.Parallel()
+	cm := NewManager(unknownGatewayProfile(), nil, cheapmodel.New(nil))
+
+	// The caller captured the model while its window was unknown; a live
+	// listing then enriched the same target with its real window.
+	staleCaller := unknownGatewayProfile()
+	cm.SetProfile(knownWindowArrival())
+
+	var emitted []events.WarningData
+	emit := func(kind events.EventKind, data events.EventData) {
+		if w, ok := data.(events.WarningData); ok {
+			emitted = append(emitted, w)
+		}
+	}
+	discloseAssumedWindow(cm, staleCaller, emit)
+	if len(emitted) != 0 {
+		t.Fatalf("announced an unknown window for a model whose current profile knows it: %d disclosures, want 0", len(emitted))
+	}
+}
