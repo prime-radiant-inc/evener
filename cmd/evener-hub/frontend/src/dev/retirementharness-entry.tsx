@@ -129,10 +129,43 @@ async function boot() {
       case "unavailable":
         throw new Error("Couldn't save the retirement fixture locally");
     }
+    // The composer's draft projection is asynchronous on the durable
+    // repository: mountSession renders the pane, and the composer publishes
+    // its hydrated draft a tick later. ready must not resolve before the
+    // draft is visible through the same read the assertions use, or
+    // snapshot 0 races the hydration and reads an empty draft — the guard
+    // then reports a phantom "draft changed across retirement" that is
+    // really the hydration landing between the before and after reads.
+    const projected = await awaitDraftProjection();
+    if (!projected) {
+      throw new Error("the composer never projected the fixture draft");
+    }
     resolveReady?.();
   } catch (err) {
     rejectReady?.(err instanceof Error ? err : new Error(String(err)));
   }
+}
+
+// Polls the same read the assertions use until the mounted composer projects
+// a non-empty draft (any draft: a conflict winner may legitimately differ
+// from FIXTURE_DRAFT). Bounded, and honest about the difference between
+// "still hydrating" and "never appeared".
+function awaitDraftProjection(timeoutMs = 10000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const tick = (): void => {
+      if (readDraft(REF).length > 0) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        resolve(false);
+        return;
+      }
+      setTimeout(tick, 50);
+    };
+    void tick();
+  });
 }
 
 void boot();
@@ -178,7 +211,8 @@ interface RetirementHarnessSnapshot {
 }
 
 interface RetirementHarness {
-  /** Resolves after hydration, durable seed resolution and pane publication. */
+  /** Resolves after hydration, durable seed resolution, pane publication and
+   *  the composer's projection of the seeded draft. */
   ready: Promise<void>;
   /** Triggers daemon retirement via the fixture HTTP endpoint. */
   retire(): Promise<void>;
