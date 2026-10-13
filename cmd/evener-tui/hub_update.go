@@ -353,6 +353,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.reestablishDisplayedSubscription()
 			}
 			m.sessionDetailsRequested = false
+			// The pick's response concluded its flight — whether the
+			// arming below continues its intent or the error surfaces, the
+			// pendingness itself is done.
+			if msg.liveNavEntry {
+				m.liveNavEntryPendingSeq = 0
+			}
 			// #4343: a session entry whose read answered the hub's typed
 			// rebuilding code arms the paced retry instead of stranding, and
 			// the error line carries the repair status while the retry
@@ -416,6 +422,9 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// with it, not skipped as an ordinary same-ref resync.
 			if msg.entryRetrySeq > 0 {
 				m.entryRepairRetire()
+			}
+			if msg.liveNavEntry {
+				m.liveNavEntryPendingSeq = 0
 			}
 			m.detail = msg.detail
 			if msg.expectedState == "" {
@@ -485,6 +494,11 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.liveNavSeq++
 		}
 		m.liveNavPendingRef = ""
+		// The pick concluded its flight: its pending generation goes with
+		// the landing, whatever the flavor's outcome below.
+		if msg.liveNavEntry {
+			m.liveNavEntryPendingSeq = 0
+		}
 		// Entering any session is the newer intent: a pending entry-repair
 		// retry — whose own successful re-read lands here too — retires
 		// with it, and its status with it.

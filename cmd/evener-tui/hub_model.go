@@ -340,6 +340,15 @@ type hubModel struct {
 	// press has superseded.
 	liveNavPendingRef string
 	liveNavSeq        int
+	// liveNavEntryPendingSeq is the generation of the latest picked entry
+	// read still in flight (a dashboard list or palette pick, a fork or
+	// spawn landing): while a picked read is pending, a superseded read's
+	// discard defers its subscription reconciliation rather than racing the
+	// pick's own replacement, exactly as a pending cycling read's target
+	// does. Cleared at the pick response's landing — its entry, its error,
+	// or its same-ref apply — and on reconnect, whose fresh connection
+	// carries no reads (#4343 round-16 medium 2).
+	liveNavEntryPendingSeq int
 	// liveNavNeedsReconcile records that a stale recovery response was
 	// dropped while a newer read was still pending: its server-side
 	// replacement may have landed after the newer read's, so once the newest

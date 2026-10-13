@@ -554,6 +554,14 @@ func (m *hubModel) openSpawnForm() {
 
 func (m *hubModel) closeSpawnForm() {
 	m.resetSpawnForm()
+	// Esc closing the form is a departure from the spawn surface, the same
+	// departure opening it is (#4343): a pending entry-repair retry retires
+	// with its status, the generation advances so the spawn's read still in
+	// flight lands superseded, and the picked read's pending generation
+	// goes with it.
+	m.entryRepairRetire()
+	m.liveNavSeq++
+	m.liveNavEntryPendingSeq = 0
 	m.mode = hubModeDashboard
 	m.clampSelection()
 }

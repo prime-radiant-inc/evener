@@ -65,6 +65,7 @@ func (m *hubModel) issuePickedSessionRead(ref appwire.Ref) tea.Cmd {
 	// subscription (round-15 medium 1).
 	m.liveNavPendingRef = ""
 	seq := m.liveNavSeq
+	m.liveNavEntryPendingSeq = seq
 	read := fetchHubSession(m.frames, m.client, ref)
 	return func() tea.Msg {
 		msg := read()
@@ -78,15 +79,27 @@ func (m *hubModel) issuePickedSessionRead(ref appwire.Ref) tea.Cmd {
 }
 
 // discardSupersededSessionRead drops a response whose read already
-// re-pointed the connection's subscriptions server-side: when a session is
-// displayed, its subscription is re-established, since nothing else will;
-// otherwise there is nothing to repair. The obligation the live-nav guards
-// carry, shared by every navigation read that lands superseded.
+// re-pointed the connection's subscriptions server-side. When a session is
+// displayed and no newer navigation read is pending, its subscription is
+// re-established, since nothing else will. While a newer read IS pending —
+// a cycling read's target, or a picked read's generation — the newer read
+// owns the server-side subscription while it is in flight: reconciling now
+// would race it, this read's replacement landing after the newer read's
+// and stealing the subscription back, so the newer response would apply
+// with the subscription pointing at the older session (round-16 medium 2).
+// The obligation is recorded instead, and the newer navigation's landing
+// settles it through the tagged reconcile (both settle points — the entry
+// branch and the same-ref apply — already consume it). On a non-session
+// surface there is nothing displayed to repair.
 func (m hubModel) discardSupersededSessionRead() (hubModel, tea.Cmd) {
-	if m.mode == hubModeSession {
-		return m.reestablishDisplayedSubscription()
+	if m.mode != hubModeSession {
+		return m, nil
 	}
-	return m, nil
+	if m.liveNavPendingRef != "" || m.liveNavEntryPendingSeq != 0 {
+		m.liveNavNeedsReconcile = true
+		return m, nil
+	}
+	return m.reestablishDisplayedSubscription()
 }
 
 // switchToAdjacentLiveSession switches the session view to the adjacent live

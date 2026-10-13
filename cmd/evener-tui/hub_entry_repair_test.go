@@ -1268,3 +1268,231 @@ func TestASuccessfulRetryReadHoldsForAnOpenOverlay(t *testing.T) {
 		t.Fatal("the declined read re-pointed the subscription but re-established nothing")
 	}
 }
+
+// Closing the spawn form with Esc is a departure from the spawn surface: the
+// pending entry retry retires with it, and neither its pending tick nor its
+// in-flight read may enter the spawned session the user walked away from.
+func TestEscClosingTheSpawnFormRetiresThePendingEntryRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{wireErrorByRef: map[string]appwire.WireError{
+		"local:01S": appwire.WithHistoryReadIdentity(appwire.TranscriptIndexRebuilding(), appwire.DaemonlessBootGeneration, 0),
+	}}
+	m, cleanup := newEntryPickModel(t, reads)
+	defer cleanup()
+	refS := mustParseRef(t, "local:01S")
+
+	// The spawn's entry read answers rebuilding with the form standing: the
+	// retry arms (round 14's rule).
+	opened, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	spawned, read := opened.(hubModel).Update(hubSpawnMsg{resp: hubSpawnResponse{Ref: refS.String()}})
+	answer := read().(hubSessionMsg)
+	armed, _ := spawned.Update(answer)
+	armedModel := armed.(hubModel)
+	if armedModel.entryRepairRef != refS {
+		t.Fatalf("setup: the spawn's rebuilding entry did not arm: ref = %v", armedModel.entryRepairRef)
+	}
+	armedSeq := armedModel.entryRepairSeq
+
+	// The user presses Esc: the form closes, the retry retires.
+	afterEsc, _ := armedModel.updateKey(tea.KeyMsg{Type: tea.KeyEsc})
+	closed := afterEsc.(hubModel)
+	if closed.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("esc closing the spawn form left the entry retry armed")
+	}
+
+	// The retired retry's pending tick enters nothing.
+	afterTick, tickCmd := closed.Update(hubEntryRepairTickMsg{ref: refS, seq: armedSeq})
+	if tickCmd != nil {
+		t.Fatal("the retired retry's tick re-issued a read after the esc departure")
+	}
+	ticked := afterTick.(hubModel)
+
+	// The in-flight re-read's late success is discarded with it: the
+	// spawned session is not entered from the dashboard the user chose.
+	late := hubSessionMsg{
+		ref:           refS.String(),
+		detail:        hubSessionDetail{Ref: refS.String(), SessionID: "sess_s", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	}
+	afterLate, lateCmd := ticked.Update(late)
+	ended := afterLate.(hubModel)
+	if ended.mode != hubModeDashboard || ended.detail.Ref != "" {
+		t.Fatalf("the in-flight read entered the spawned session after the esc departure: mode = %v detail = %v", ended.mode, ended.detail.Ref)
+	}
+	if ended.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the in-flight read rearmed the retired retry")
+	}
+	if lateCmd != nil {
+		t.Fatal("the discarded read scheduled work from the dashboard")
+	}
+}
+
+// A superseded retry read's discard defers its subscription reconciliation
+// while a newer cycling read is still pending: the recovery must not race
+// the newer read's own replacement. The newer navigation's landing settles
+// the recorded obligation through the tagged reconcile.
+func TestASupersededDiscardDefersWhileACycleIsPending(t *testing.T) {
+	captureEntryRepairWaits(t)
+	m, _, cleanup := newLiveCycleModel(t, "local:01C", liveCycleTree())
+	defer cleanup()
+	refA := mustParseRef(t, "local:01A")
+
+	// A palette pick of A answers rebuilding with C displayed: the retry
+	// arms, and its re-read goes in flight.
+	updated, cmd := m.Update(hubSessionMsg{ref: refA.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	armedSeq := armed.entryRepairSeq
+	armed.Update(executeEntryRepairCmd(t, cmd))
+
+	// The user cycles: the press retires the retry and puts a newer
+	// cycling read in flight.
+	afterPress, _ := armed.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	pressed := afterPress.(hubModel)
+	cycleSeq := pressed.liveNavSeq
+	cycleTarget := pressed.liveNavPendingRef
+
+	// A's superseded re-read lands: discarded, and its reconciliation
+	// DEFERS on the pending cycle — no recovery read races the newer
+	// navigation's replacement.
+	afterStale, staleCmd := pressed.Update(hubSessionMsg{
+		ref:           refA.String(),
+		detail:        hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	})
+	stale := afterStale.(hubModel)
+	if staleCmd != nil {
+		t.Fatal("the superseded discard issued a recovery read that races the pending cycle")
+	}
+	if !stale.liveNavNeedsReconcile {
+		t.Fatal("the superseded discard dropped its reconciliation obligation instead of recording it")
+	}
+
+	// The cycle's response lands and settles: B enters, and the recorded
+	// obligation issues the tagged reconcile for the entered session.
+	entered, settleCmd := stale.Update(hubSessionMsg{
+		ref:        cycleTarget,
+		detail:     hubSessionDetail{Ref: cycleTarget, SessionID: "sess_cycle", State: appwire.ThreadStatusIdle},
+		liveNavSeq: cycleSeq,
+	})
+	shown := entered.(hubModel)
+	if shown.mode != hubModeSession || shown.detail.Ref != cycleTarget {
+		t.Fatalf("the cycle's response did not enter its target: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	if shown.liveNavNeedsReconcile {
+		t.Fatal("the settle point did not consume the recorded obligation")
+	}
+	settled := false
+	if settleCmd != nil {
+		for _, c := range flattenBatch(t, settleCmd) {
+			if recovery, ok := c().(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == cycleTarget {
+				settled = true
+			}
+		}
+	}
+	if !settled {
+		t.Fatal("the settle point issued no tagged reconcile for the entered session")
+	}
+}
+
+// flattenBatch expands a command that may be a tea.Batch into its members so
+// a test can inspect every command a landing returned.
+func flattenBatch(t *testing.T, cmd tea.Cmd) []tea.Cmd {
+	t.Helper()
+	var out []tea.Cmd
+	var walk func(tea.Cmd)
+	walk = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		msg := c()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, member := range batch {
+				walk(member)
+			}
+			return
+		}
+		out = append(out, func() tea.Msg { return msg })
+	}
+	walk(cmd)
+	return out
+}
+
+// The defer covers a pending picked read the same way: a superseded retry
+// read discarded while a pick is in flight defers, and the pick's landing
+// settles the obligation.
+func TestASupersededDiscardDefersWhileAPickIsPending(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session C is displayed when a palette pick of A answers rebuilding:
+	// the retry arms and its re-read goes in flight.
+	enteredC, _ := m.Update(hubSessionMsg{
+		ref:    "local:01C",
+		detail: hubSessionDetail{Ref: "local:01C", SessionID: "sess_c", State: appwire.ThreadStatusIdle},
+	})
+	watching := enteredC.(hubModel)
+	updated, cmd := watching.Update(hubSessionMsg{ref: refA.String(), err: rebuildingEntryError(t)})
+	armed := updated.(hubModel)
+	armedSeq := armed.entryRepairSeq
+	armed.Update(executeEntryRepairCmd(t, cmd))
+
+	// The user palette-picks B: the pick site retires the retry and puts
+	// B's read in flight.
+	picked := armed
+	picked.entryRepairRetire()
+	pickCmd := picked.issuePickedSessionRead(refB)
+	pickSeq := picked.liveNavSeq
+
+	// A's superseded re-read lands: discarded, deferring on the pending
+	// pick — no recovery read races B's replacement.
+	afterStale, staleCmd := picked.Update(hubSessionMsg{
+		ref:           refA.String(),
+		detail:        hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	})
+	stale := afterStale.(hubModel)
+	if staleCmd != nil {
+		t.Fatal("the superseded discard issued a recovery read that races the pending pick")
+	}
+	if !stale.liveNavNeedsReconcile {
+		t.Fatal("the superseded discard dropped its reconciliation obligation instead of recording it")
+	}
+	if stale.liveNavEntryPendingSeq != pickSeq {
+		t.Fatalf("the pick's pending generation = %d, want the issuance generation %d", stale.liveNavEntryPendingSeq, pickSeq)
+	}
+
+	// B's pick response lands and settles: B enters with the obligation
+	// consumed, the tagged reconcile issued for it.
+	entered, settleCmd := stale.Update(pickCmd().(hubSessionMsg))
+	shown := entered.(hubModel)
+	if shown.mode != hubModeSession || shown.detail.Ref != refB.String() {
+		t.Fatalf("the pick's response did not enter B: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	if shown.liveNavNeedsReconcile {
+		t.Fatal("the settle point did not consume the recorded obligation")
+	}
+	if shown.liveNavEntryPendingSeq != 0 {
+		t.Fatal("the pick's pending generation outlived its landing")
+	}
+	settled := false
+	if settleCmd != nil {
+		for _, c := range flattenBatch(t, settleCmd) {
+			if recovery, ok := c().(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == refB.String() {
+				settled = true
+			}
+		}
+	}
+	if !settled {
+		t.Fatal("the settle point issued no tagged reconcile for the entered session")
+	}
+}

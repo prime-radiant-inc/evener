@@ -95,6 +95,7 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 	preReconnectSeq := m.liveNavSeq
 	m.liveNavSeq++
 	m.liveNavPendingRef = ""
+	m.liveNavEntryPendingSeq = 0    // the fresh connection carries no picked reads
 	m.liveNavNeedsReconcile = false // the reconnect's own tagged resub re-establishes
 	if m.pending != nil {
 		m.client.SetPendingCoordinator(m.pending)
