@@ -8,6 +8,7 @@ import type {
 } from "@evener/appwire-client";
 import {
 	subagentOutcome,
+	subagentQuietWake,
 	summaryTally,
 	endedInStop,
 	flattenActivity,
@@ -331,23 +332,10 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 		// One subagent reads in the singular.
 		expect(onOne.text.replace("1", "#")).not.toBe(onTwo.text.replace("2", "#"));
 		// A running row with nothing to say says nothing: the dot alone
-		// speaks the fresh-versus-quiet distinction, and its live silence
-		// rides the line for the wake.
+		// speaks the fresh-versus-quiet distinction, whatever the clock reads.
 		expect(subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN) })), NOW)).toEqual({
 			kind: "silent",
 			text: "",
-			quietForMs: 4 * MIN,
-		});
-		// The tray's and a subagent row's threshold: 20 seconds without an update.
-		expect(subagentWhy(rowOf(running("s", { latestActivityAt: ago(30_000) })), NOW)).toEqual({
-			kind: "silent",
-			text: "",
-			quietForMs: 30_000,
-		});
-		expect(subagentWhy(rowOf(running("n", { latestActivityAt: ago(10_000) })), NOW)).toEqual({
-			kind: "silent",
-			text: "",
-			quietForMs: 10_000,
 		});
 	});
 
@@ -356,15 +344,12 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 			kind: "intent",
 			text: "Reading the board.",
 		});
-		// The intent is the whole line: no quiet word rides beside it, but
-		// the live silence still rides for the wake - the dot dims behind
-		// an intent line too.
+		// The intent is the whole line: no quiet word rides beside it.
 		expect(
 			subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN), latestIntent: "Reading the board." })), NOW),
 		).toEqual({
 			kind: "intent",
 			text: "Reading the board.",
-			quietForMs: 4 * MIN,
 		});
 	});
 
@@ -378,11 +363,10 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 	});
 
 	// The silence the list times to dim a row's dot (useNowPastQuiet): every
-	// running line carries its live silence - whatever it says, since the dot
-	// dims behind an intent or a command too - while a frozen snapshot stays
-	// out, or the wake would fire again and again for a silence that never
-	// grows.
-	it("times the live silence of every running line, and never a frozen snapshot", () => {
+	// running row carries its live silence - the dot dims behind an intent
+	// or a command line too - while a frozen snapshot stays out, or the wake
+	// would fire again and again for a silence that never grows.
+	it("times the live silence of every running row, and never a frozen snapshot", () => {
 		const commanding = running("r", {
 			latestActivityAt: ago(10_000),
 			child: session("local:r", [{ kind: "shell", job: job(false, { command: "go test ./agent/..." }) }]),
@@ -390,11 +374,11 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 		const waiting = running("w", { latestActivityAt: ago(10_000), child: session("local:w", [entry(running("a"))]) });
 		// Only a snapshot of its silence, with no time it can grow from.
 		const snapshotOnly = delegate("p", { quietForMs: 10_000 });
-		expect(subagentWhy(rowOf(commanding), NOW).quietForMs).toBe(10_000);
-		expect(subagentWhy(rowOf(waiting), NOW).quietForMs).toBe(10_000);
-		expect(subagentWhy(rowOf(snapshotOnly), NOW).quietForMs).toBeUndefined();
+		expect(subagentQuietWake(rowOf(commanding), NOW)).toBe(10_000);
+		expect(subagentQuietWake(rowOf(waiting), NOW)).toBe(10_000);
+		expect(subagentQuietWake(rowOf(snapshotOnly), NOW)).toBeUndefined();
 		for (const settled of [done("d"), failed("f")]) {
-			expect(subagentWhy(rowOf(settled), NOW).quietForMs).toBeUndefined();
+			expect(subagentQuietWake(rowOf(settled), NOW)).toBeUndefined();
 		}
 	});
 });

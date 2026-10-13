@@ -96,9 +96,6 @@ describe("the demo fleet's subagents", () => {
 		expect(subagentWhy(rows.find((row) => row.id === "g-run-0") as NonNullable<(typeof rows)[number]>, NOW)).toEqual({
 			kind: "command",
 			text: "Running go test ./agent/...",
-			// The line carries its live silence for the wake: the dot dims
-			// behind a command line too.
-			quietForMs: 5000,
 		});
 	});
 

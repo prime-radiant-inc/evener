@@ -22,7 +22,7 @@ import {
 	type SubagentRow,
 	isSubagentRow,
 	sameModel,
-	subagentWhy,
+	subagentQuietWake,
 	summaryTally,
 } from "./subagentModel";
 import { stopRequests } from "./nativeStopRequests";
@@ -61,7 +61,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	// threshold, dimming its dot.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
 	const treeTime = useMemo(() => Date.now(), [snapshot]);
-	const now = useNowPastQuiet(treeTime, (at) => rows.map((row) => subagentWhy(row, at).quietForMs));
+	const now = useNowPastQuiet(treeTime, (at) => rows.map((row) => subagentQuietWake(row, at)));
 
 	const [filter, setFilter] = useState<ActivityFilter>("all");
 	const [query, setQuery] = useState("");

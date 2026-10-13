@@ -433,7 +433,7 @@ function JobKindGlyph({
   );
 }
 
-// A delegate row's dot is a tick subscriber, like the live meta cluster
+// An open delegate row's dot is a tick subscriber, like the live meta cluster
 // beside it: the memoized row view stays asleep and the quiet threshold's
 // flip arrives through the tree's clock, not a row re-render. The dot is
 // unlabeled - the row's aria-description already carries the status word -
@@ -446,7 +446,7 @@ function TreeDelegateDot({ delegate }: { delegate: ActivityDelegate }): ReactNod
 // The row chrome (name, leading mark, transcript button, focus, disclosure)
 // is all snapshot data, so the memoized view re-renders only when its own
 // props change; the ticking pieces live one level down in TreeDelegateDot
-// (a live delegate's status dot), LiveMetaSegments (the quiet-age cluster)
+// (an open delegate's status dot), LiveMetaSegments (the quiet-age cluster)
 // and RowDetail (the open strip), which subscribe alone.
 const DenseRowView = memo(function DenseRowView({
   row,
@@ -475,12 +475,14 @@ const DenseRowView = memo(function DenseRowView({
       >
         {row.kind === "delegate" ? (
           <span className={CLASS.denseKind}>
-            {row.live ? (
-              <TreeDelegateDot delegate={row.delegate} />
-            ) : (
+            {row.delegate.terminal === true ? (
               // Terminal rows never read the clock - the outcome decides the
-              // dot - so the 0 only fills `now`'s slot.
+              // dot - so the 0 only fills `now`'s slot. Even a live terminal
+              // row (an active child keeps the row itself live) shows a dot
+              // that cannot change, so it stays off the tick.
               <SubagentDot delegate={row.delegate} now={0} />
+            ) : (
+              <TreeDelegateDot delegate={row.delegate} />
             )}
           </span>
         ) : (

@@ -328,8 +328,6 @@ export interface SubagentWhy {
 	/** The actual unsuccessful outcome, displayed beside its cause. */
 	word?: "Failed";
 	text: string;
-	/** The live silence that dims the row's dot; the list's wake times it. */
-	quietForMs?: number;
 }
 
 function runningCommand(session: ActivitySessionNode | undefined): string | undefined {
@@ -349,26 +347,31 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 			typeof delegate.reportPreview === "string" ? firstLine(plainQuoteLine(delegate.reportPreview), 120) : "";
 		return report ? { kind: "report", text: report } : { kind: "finished", text: "Finished" };
 	}
-	// The dot alone speaks the fresh-versus-quiet distinction, so every
-	// running line carries its live silence for the screen's wake, whatever
-	// the line says. A frozen snapshot stays out: its silence never grows, so
-	// waking for it would fire again and again for nothing.
-	const timing = delegateTiming(delegate, now);
-	const quietForMs = timing.quietLive ? timing.quietForMs : undefined;
 	// The shared display rule: a running row's non-empty stated intent stands
 	// in for the whole line. The predicate's empty answer is the point — this
 	// line has no word of its own to keep, so the rule alone decides, and
 	// today's chain stays the fallback.
 	const stated = delegateStatedIntent(delegate);
-	if (stated !== "") return { kind: "intent", text: stated, quietForMs };
+	if (stated !== "") return { kind: "intent", text: stated };
 	const command = runningCommand(delegate.child);
-	if (command) return { kind: "command", text: `Running ${command}`, quietForMs };
+	if (command) return { kind: "command", text: `Running ${command}` };
 	const waiting = runningSubagentCount(
 		(delegate.child?.entries ?? []).filter((entry) => entry.kind === "delegate").map((entry) => entry.delegate),
 	);
-	if (waiting > 0) return { kind: "waiting", text: waitingOnSubagents(waiting), quietForMs };
+	if (waiting > 0) return { kind: "waiting", text: waitingOnSubagents(waiting) };
 	// Nothing to say: the line stays empty and the dot alone speaks.
-	return { kind: "silent", text: "", quietForMs };
+	return { kind: "silent", text: "" };
+}
+
+/** The live silence the list's wake times to dim a row's dot
+ * (useNowPastQuiet): a running row's growing quiet age, whatever its why line
+ * says, and nothing else - settled rows show no flip, and a frozen snapshot
+ * stays out, or the wake would fire again and again for a silence that never
+ * grows. */
+export function subagentQuietWake(row: SubagentRow, now: number): number | undefined {
+	if (row.state !== "running") return undefined;
+	const timing = delegateTiming(row.delegate, now);
+	return timing.quietLive ? timing.quietForMs : undefined;
 }
 
 // Cache the same qualified entity identity used by the shared projection.

@@ -75,10 +75,13 @@ const SUBAGENT_DOT: Record<
   DelegateDotState,
   { family: Family; label: string; shape: "dot" | "diamond"; working: boolean } | null
 > = {
-  fresh: { family: "alive", label: "Working", shape: "dot", working: true },
+  // The shared states speak the session vocabulary's own words and hues, so a
+  // session-status ruling reaches the subagent dot with no second table to
+  // update; quiet - the one state the session set does not have - is ours.
+  fresh: { family: STATE_FAMILY.working, label: STATUS_LABEL.working, shape: "dot", working: true },
   quiet: { family: "neutral", label: "Quiet", shape: "dot", working: false },
-  attention: { family: "attention", label: "Needs you", shape: "dot", working: false },
-  failed: { family: "danger", label: "Failed", shape: "diamond", working: false },
+  attention: { family: STATE_FAMILY["needs-you"], label: STATUS_LABEL["needs-you"], shape: "dot", working: false },
+  failed: { family: STATE_FAMILY.failed, label: STATUS_LABEL.failed, shape: "diamond", working: false },
   // A settled row shows no dot, exactly as the main sessions' idle and
   // ended scopes show no glyph.
   idle: null,

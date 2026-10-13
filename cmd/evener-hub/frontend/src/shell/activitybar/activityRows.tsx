@@ -59,19 +59,22 @@ function agentStateText(sub: SessionDelegate): string {
 // cancelled when its activity moves or the row unmounts (the native
 // useNowPastQuiet precedent).
 function useDotFlip(sub: SessionDelegate): number {
-  const [flippedAt, setFlippedAt] = useState(() => Date.now());
+  // The state's value is never read - only the re-render it forces matters -
+  // so it must change on every flip: a row that goes quiet twice must flip
+  // twice, and a repeated value would let the second flip pass unnoticed.
+  const [, setFlippedAt] = useState(() => Date.now());
   useEffect(() => {
     if (sub.terminal === true) return;
-    const { quietForMs } = delegateTiming(sub, Date.now());
-    if (quietForMs === undefined) return;
-    const remaining = DELEGATE_QUIET_AFTER_MS - quietForMs;
+    const timing = delegateTiming(sub, Date.now());
+    // A frozen snapshot never grows - waking for it would re-render the row
+    // forever without ever flipping the dot, the native wake's own guard.
+    if (!timing.quietLive || timing.quietForMs === undefined) return;
+    const remaining = DELEGATE_QUIET_AFTER_MS - timing.quietForMs;
     if (remaining <= 0) return; // the dot already renders quiet
     const timer = setTimeout(() => setFlippedAt(Date.now()), remaining + 1);
     return () => clearTimeout(timer);
   }, [sub]);
-  // A sibling row's publish re-renders this row without moving its anchor,
-  // so never compute the dot younger than the flip already proved.
-  return Math.max(flippedAt, Date.now());
+  return Date.now();
 }
 
 export function AgentRow({ sub, onDrill }: { sub: SessionDelegate; onDrill?: () => void }) {

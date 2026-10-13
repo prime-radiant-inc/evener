@@ -40,19 +40,7 @@ export interface DelegateTiming {
 // timing fields delegateTiming measures the quiet age from. Either wire shape
 // - the activity tree's ActivityDelegate or the thread snapshot's
 // EvenerDelegateInfo - satisfies it.
-export type DelegateDotFields = Pick<
-  ActivityDelegate,
-  | "terminal"
-  | "outcome"
-  | "status"
-  | "phase"
-  | "runStartedAt"
-  | "runEndedAt"
-  | "latestActivityAt"
-  | "quietForMs"
-  | "runningForMs"
-  | "durationMs"
->;
+export type DelegateDotFields = Pick<ActivityDelegate, "outcome" | "status" | "phase"> & DelegateTimingFields;
 
 /** What a subagent row's leading dot says: fresh work, work gone quiet,
  * attention owed, a failure, or a settled row that shows no dot at all. */

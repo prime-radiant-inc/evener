@@ -5,7 +5,7 @@ import { SymbolView } from "expo-symbols";
 import { Fragment, memo, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { type DelegateDotState, delegateDotState } from "@evener/appwire-client";
-import { fonts } from "../design/tokens";
+import { type Palette, fonts } from "../design/tokens";
 import { compactDuration, spokenDuration } from "../session/format";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
@@ -16,6 +16,17 @@ import {
 	subagentWhy,
 	timeInState,
 } from "./subagentModel";
+
+// The dot's tints, from the shared rule: alive while fresh, quiet ink past
+// the threshold, amber for attention, red for failure. A settled run shows
+// no mark at all; the band headers carry those states.
+const DOT_TINT: Record<DelegateDotState, keyof Palette | null> = {
+	fresh: "alive",
+	quiet: "inkLow",
+	attention: "attention",
+	failed: "danger",
+	idle: null,
+};
 
 /** Words that replace a row's why line, and what they report: a stop
  * request on its way (sent through the coordinator or directly) or settled. */
@@ -47,17 +58,6 @@ export const SubagentRowView = memo(function SubagentRowView({
 	const time = timeInState(row, now);
 	const why = subagentWhy(row, now);
 	const last = subagentLastLine(row, coordinatorModel, modelName);
-	// The main sessions' dot vocabulary, from the shared rule: alive while
-	// fresh, quiet ink past the threshold, amber for attention, red for
-	// failure. A settled run shows no mark at all; the band headers carry
-	// those states.
-	const DOT_TINT: Record<DelegateDotState, string | null> = {
-		fresh: palette.alive,
-		quiet: palette.inkLow,
-		attention: palette.attention,
-		failed: palette.danger,
-		idle: null,
-	};
 	const tint = DOT_TINT[delegateDotState(row.delegate, now)];
 	// Preserve the outcome and cause; a note replaces the why line.
 	const failure = note === undefined && why.word === "Failed";
@@ -83,7 +83,7 @@ export const SubagentRowView = memo(function SubagentRowView({
 			})}
 		>
 			<View style={{ width: 28, height: 22 * scale, alignItems: "center", justifyContent: "center" }}>
-				{tint === null ? null : <SymbolView name="circle.fill" size={8} tintColor={tint} />}
+				{tint === null ? null : <SymbolView name="circle.fill" size={8} tintColor={palette[tint]} />}
 			</View>
 			<View style={{ flex: 1, minWidth: 0, gap: 2 }}>
 				<View style={{ flexDirection: "row", alignItems: "baseline", columnGap: 8 }}>
