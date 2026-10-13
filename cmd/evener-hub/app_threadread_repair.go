@@ -93,12 +93,17 @@ func repairTranscriptIndex(transcriptPath string) error {
 	defer index.Close() //nolint:errcheck // the rebuild has committed or not; close is hygiene
 	if err := index.Rebuild(info.Size()); err != nil {
 		if _, serr := os.Stat(transcriptPath); os.IsNotExist(serr) {
-			// The transcript is gone: everything the open resurrected after
-			// a deletion won is a deleted path's artifacts, so finish the
-			// deletion the race interrupted. This runs while the handle's
-			// lock fd is still open — the deferred Close runs after — and
-			// an open fd does not keep a directory entry alive.
-			_ = os.RemoveAll(dir)
+			// Close before removing: on Windows the still-open lock file keeps
+			// the directory from being removed, and the artifacts the open
+			// resurrected would survive the cleanup the deletion is owed. The
+			// deferred Close tolerates this second call (it is idempotent). A
+			// cleanup failure is logged, never hidden — the registry's own log
+			// carries it the way it carries repairs.
+			_ = index.Close()
+			if rmErr := os.RemoveAll(dir); rmErr != nil {
+				transcriptIndexRepairLog("transcript index repair cleanup failed (%s): %v",
+					filepath.Base(transcriptPath), rmErr)
+			}
 		}
 		return err
 	}
