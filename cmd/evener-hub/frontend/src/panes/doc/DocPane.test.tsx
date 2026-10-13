@@ -239,6 +239,13 @@ test("loading placeholder while HTTP response is deferred", () => {
 });
 test("restored document hydrates its exact serialized session, not focused navigation, and releases its lease", async () => {
   let hydrate: ((response: ThreadReadResponse) => void) | undefined;
+  const readResponse = (requestGeneration?: number): ThreadReadResponse => ({
+    thread: thread(),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+    requestGeneration,
+  });
   client.on("thread/read", async (params) => ({
     ...(await new Promise<ThreadReadResponse>((resolve) => {
       hydrate = resolve;
@@ -271,16 +278,21 @@ test("restored document hydrates its exact serialized session, not focused navig
   const view = render(<DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />);
   await waitFor(() => expect(hydrate).toBeTypeOf("function"));
   expect(requests).toHaveLength(0);
-  await act(async () => hydrate?.({ thread: thread() }));
+  await act(async () => hydrate?.(readResponse()));
   await screen.findByText("healthy bytes");
   expect(
     client.calls.filter((call) => call.method === "thread/read").map((call) => (call.params as { ref: string }).ref),
   ).toEqual([ref]);
   expect(requests[0]?.searchParams.get("path")).toBe("/work/a/plan.md");
   expect(documentPaneState(pane)?.reference.cwd).toBe("/work/a");
+  // Retirement captures one final versioned read before releasing the lease.
+  client.on("thread/read", ({ requestGeneration }) => readResponse(requestGeneration));
   view.unmount();
   await waitFor(() => expect(client.calls.some((call) => call.method === "thread/unsubscribe")).toBe(true));
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
+  expect(
+    client.calls.filter((call) => call.method === "thread/read").map((call) => (call.params as { ref: string }).ref),
+  ).toEqual([ref, ref]);
 });
 test.each(["plan.md", "/work/a/plan.md"])(
   "owning cwd publication clears %s immediately, B failure and late A cannot publish, explicit B reopen recovers",
