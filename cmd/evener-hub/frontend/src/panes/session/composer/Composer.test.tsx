@@ -2199,7 +2199,10 @@ test("with no IndexedDB the composer still attempts the send and keeps its draft
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
 
-  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
+  // The source reports its readiness fault honestly ("Couldn't load the
+  // draft") and the failed direct send reports its transport failure, so the
+  // no-storage world carries both truthful errors, not one.
+  await waitFor(() => expect(toastKinds()).toEqual(["error", "error"]));
   expect(editor.textContent).toBe("hello");
   // The send is attempted on the direct path even though no outbox row can be
   // written. The transport fails, so the composer keeps the draft; every

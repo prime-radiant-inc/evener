@@ -379,28 +379,11 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     });
   }
   async function ensureDeps(): Promise<void> {
-    if (!repository) {
-      try {
-        repository = getBrowserDraftRepository();
-      } catch {
-        // No IndexedDB at all: a send must still go out when local
-        // persistence is unavailable (#4194), so the source keeps running
-        // without durable drafts. ready() already treats a missing repository
-        // as nothing to hydrate, and every consumer optional-chains it.
-      }
-    }
+    if (!repository) repository = getBrowserDraftRepository();
     if (!draftKey) draftKey = browserDraftKey(ref);
     // A retired source must not start the shared mutation runtime: auto-init
     // may still be in flight when the source disposes.
-    if (!outbox && !disposed) {
-      try {
-        outbox = await getComposerMutationStorage();
-      } catch {
-        // The same no-storage wedge: recovery bookkeeping stays unavailable
-        // (its consumers optional-chain the outbox) rather than failing the
-        // submit.
-      }
-    }
+    if (!outbox && !disposed) outbox = await getComposerMutationStorage();
   }
   async function drainAccepted(): Promise<void> {
     const r = repository;
@@ -617,7 +600,11 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     // The shared per-ref edit revision at entry: another same-ref source's
     // explicit edit since this point advances it.
     const entryEditRevision = readDraftRevision(ref);
-    await ready();
+    // A send must still go out when local persistence is unavailable (#4194):
+    // readiness keeps its own honest contract - it rejects with the platform's
+    // error and reports it - but the submission proceeds from the captured
+    // payload without a durable draft instead of inheriting that refusal.
+    await ready().catch(() => undefined);
     await whenSettled();
     // Accepted recovery work is part of the submission's durable state: drain it
     // before capturing the guard so the guard matches the durable row.
