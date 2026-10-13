@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import {
+  type AcceptedSourceLease,
   type CapturedPassage,
   DOC_FILE_MAX_BYTES,
   type DocFileContent,
@@ -72,6 +73,7 @@ import {
   docContent,
   expectStampedNoEarlierThan,
   fixture,
+  preparedAnnotationFromLease,
   rowsForTests,
 } from "./testing/annotationRepositoryFixtures";
 import { DocumentGeometrySeam, type TestRect } from "./testing/documentGeometryTestUtils";
@@ -1395,6 +1397,115 @@ test("a real source change expires the old epoch's highlight and old-lease Send 
   expect(views[0]?.receipt.operationId).toBe(produced.operationId);
   expect(views[0]?.handoff.state).toBe("already-applied");
   expect(await payloadRowsFor(f, produced.operationId)).toEqual([produced]);
+});
+
+test("a peer fence and save keeps foreign offsets off the retained display, then the committed wake adopts the replacement epoch", async () => {
+  const f = await fixture("reader-peer-fence-save");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const seam = new DocumentGeometrySeam();
+  seam.install();
+  cleanupAfterTest(() => seam.restore());
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  mountAnnotated(f, ports, client, "doc-peer-fence-save");
+  const work = documentReaderWork("doc-peer-fence-save", f.document, ports);
+
+  // The baseline saved annotation is a visible highlight first: configure the
+  // REAL FIRST fragment and the PaneScaffold body's nonzero clip, then trigger
+  // the production re-measure through a real scroll event.
+  await screen.findByText("First occurrence: same");
+  const boundMap = await waitForCurrentBoundMap(work, maps);
+  const scrollOwner = paneScaffoldBody();
+  seam.setElementRect(scrollOwner, SCROLL_RECT);
+  seam.configure(boundMap, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scrollOwner);
+  await waitFor(() => expect(highlightBands().length).toBeGreaterThan(0));
+
+  // Hold the reader's raw reads so the retained display stays on screen while
+  // the peer's committed wake arrives. Opening the gate later resolves every
+  // pending and future read with the replacement content: the peer's
+  // handoff-applied wake can schedule one more current read, and whichever
+  // run is live must complete against the replacement source.
+  // A blank line before the marker keeps it its own rendered paragraph.
+  const CHANGED = `${SOURCE}\nCHANGED`;
+  let holdReads = true;
+  let releaseHeldRead: ((content: DocFileContent) => void) | undefined;
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((resolve) => {
+        if (holdReads) {
+          releaseHeldRead = resolve;
+          return;
+        }
+        resolve(docContent(CHANGED, "rev-B"));
+      }),
+  );
+
+  // A peer reader fences the changed source exactly as another pane would: a
+  // changed read expires this epoch, and the reread of the committed
+  // replacement earns the lease the peer saves against. Every call whose
+  // commit publishes a document wake is wrapped in act so the reader's real
+  // subscription processes it inside the test's act scope.
+  const beginReads = vi.spyOn(f.repo, "beginRead");
+  await act(async () => {
+    const fenced = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(CHANGED, "rev-B"));
+    if (fenced.state !== "expiry-pending") throw new Error("peer fence did not expire the epoch");
+  });
+  // The fence's committed wake dropped the expired epoch's own band, and that
+  // same pass issued the pane's revalidation ticket: let it finish before the
+  // peer reads again, or the peer's reread races a superseded ticket.
+  await waitFor(() => expect(highlightBands()).toHaveLength(0));
+  let peerLease: AcceptedSourceLease | undefined;
+  await act(async () => {
+    const peerRead = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(CHANGED, "rev-B"));
+    if (peerRead.state !== "accepted") throw new Error("peer reread was not accepted");
+    peerLease = peerRead.lease;
+  });
+  if (!peerLease) throw new Error("peer lease missing");
+  const peerEpoch = peerLease.epoch;
+  const basePeer = preparedAnnotationFromLease(peerLease, "peer-op", "Peer scope.", f.destination, "rev-B");
+  const peerOperation: PreparedAnnotation = {
+    ...basePeer,
+    capture: {
+      ...basePeer.capture,
+      // Honest evidence for the replacement content the peer actually read.
+      evidence: { wholeRevision: "rev-B", fingerprint: displayedFingerprint(CHANGED, false) },
+      mappingId: "peer-map",
+    },
+  };
+
+  const readsBeforeSave = beginReads.mock.calls.length;
+  await act(async () => {
+    await f.repo.saveAnnotation(peerOperation);
+  });
+
+  // The save's committed wake is replacement-epoch evidence: the reader
+  // schedules a current read without any foreground event or remount.
+  await waitFor(() => expect(beginReads.mock.calls.length).toBeGreaterThan(readsBeforeSave));
+  // While that read is in flight the foreign annotation never paints over the
+  // retained display.
+  await waitFor(() => expect(releaseHeldRead).toBeTruthy());
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+  expect(highlightBands().map((band) => band.getAttribute("data-operation-id"))).toEqual([]);
+
+  // The scheduled read completes against the replacement source and adopts
+  // the peer's epoch; the peer's annotation then paints over the text it was
+  // captured against.
+  holdReads = false;
+  await act(async () => {
+    releaseHeldRead?.(docContent(CHANGED, "rev-B"));
+  });
+  await screen.findByText("CHANGED");
+  await waitFor(() => expect(work.lease?.epoch).toBe(peerEpoch));
+  const replacementMap = await waitForCurrentBoundMap(work, maps);
+  seam.setElementRect(paneScaffoldBody(), SCROLL_RECT);
+  seam.configure(replacementMap, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(paneScaffoldBody());
+  await waitFor(() =>
+    expect(highlightBands().map((band) => band.getAttribute("data-operation-id"))).toEqual(["peer-op"]),
+  );
 });
 
 test("a failed expiry fence keeps the pending phase, suppresses the stale highlight and old-lease Send, then recovers on a current read", async () => {

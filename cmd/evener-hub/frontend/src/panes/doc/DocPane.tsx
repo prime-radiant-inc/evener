@@ -328,6 +328,22 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     }
   }, [work]);
 
+  // A committed wake whose views all name a foreign epoch is a peer's fence
+  // committed while this reader still displays the retained snapshot: the
+  // expired epoch's rows are already suppressed, so the replacement's
+  // operations are the only evidence left. Schedule the current read that
+  // adopts the replacement epoch (or restores the retained one); the read
+  // itself never wakes, so this cannot loop.
+  const recoverReplacedEpochOnWake = useCallback(
+    (next: readonly AnnotationView[]): void => {
+      const authority = work.lease ?? work.attempted?.lease ?? null;
+      if (!authority || next.length === 0) return;
+      if (next.some((view) => view.receipt.epoch === authority.epoch)) return;
+      setReadNonce((value) => value + 1);
+    },
+    [work],
+  );
+
   // View refresh through the actual repository subscription. A committed wake
   // (a save/handoff, a namespace reset, a peer) refreshes the visible receipts
   // and revalidates the retained authority against the durable incarnation. The
@@ -351,6 +367,9 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           // regardless of the list's emptiness: the expired epoch's rows are
           // suppressed, so an empty list is the expected shape here.
           recoverLeaselessExpiryOnWake();
+          // Views that all name a foreign epoch: a peer's fence replaced this
+          // reader's epoch and the replacement's save just committed.
+          recoverReplacedEpochOnWake(next);
         },
         () => {},
       );
@@ -359,7 +378,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     return ports.repository.subscribe(key, () => {
       load(true);
     });
-  }, [ports, key, revalidateOnWake, recoverLeaselessExpiryOnWake]);
+  }, [ports, key, revalidateOnWake, recoverLeaselessExpiryOnWake, recoverReplacedEpochOnWake]);
 
   // Retire the stale capture/attempt for an expiry-pending read while keeping
   // the exact editable note; the runtime drops the local failed operation.
@@ -562,6 +581,16 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       ? boundMap
       : null;
 
+  // Only the displayed lease's own epoch may drive the status or paint: a
+  // peer's fence-and-save leaves this reader displaying the snapshot its
+  // lease names, and the replacement epoch's offsets belong to text it does
+  // not display. The committed wake adopts the replacement epoch, after which
+  // its annotations paint over the text they were captured against.
+  const epochViews = useMemo(
+    () => (currentLease ? views.filter((view) => view.receipt.epoch === currentLease.epoch) : []),
+    [views, currentLease],
+  );
+
   // Finished selections open the box and freeze the capture at the first edit.
   useEffect(() => {
     const root = hostRef.current;
@@ -576,7 +605,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     });
   }, [boundForLease, state, work]);
 
-  const status = commentStatus(work, views);
+  const status = commentStatus(work, epochViews);
   const boxVisible = work.attempted !== null || work.comment.capture !== undefined || work.comment.note.trim() !== "";
   const saving = work.phase === "saving";
 
@@ -647,7 +676,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         <div className={CLASS.markdown} ref={bindHost}>
           <DocumentMarkdown source={content.text} identity={identity} onMap={handleMap} />
           {boundForLease && scrollElement && canMeasureRanges() && (
-            <DocumentHighlights map={boundForLease} annotations={views} scrollElement={scrollElement} />
+            <DocumentHighlights map={boundForLease} annotations={epochViews} scrollElement={scrollElement} />
           )}
         </div>
       ) : (
