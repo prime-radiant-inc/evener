@@ -19,15 +19,22 @@
 # Two independent things are checked, both from the same measurement:
 #
 #   - Per-package budget: fail at 1.5x the checked-in budget, warn at 1.1x.
-#   - Per-test ceiling (testing-budget.json's perTestCeilingSeconds, currently
-#     3s; 2s when a budget file does not name one at all):
-#     any single test or subtest over the ceiling is flagged regardless of its
-#     package's budget — one runaway test is a defect on its own. It is WARN-ONLY
-#     in every mode, --strict included, until the ceiling is segmented by test
-#     class (#4601) and enforcement follows (ruling, 2026-10-13): the ceiling has
-#     never run in CI, so enforcing the flat 3s today would red the gate on tests
-#     that were always over it. #144's "done when" is strict enforcement, so the
-#     issue stays open.
+#   - Per-test ceiling, SEGMENTED BY TEST CLASS (testing-budget.json's
+#     perTestCeilingClasses; ruling, 2026-10-13, issue #4601):
+#       * A test named in a class — or a subtest of one (Name/sub) — is compared
+#         strictly against that class's ceiling; a breach FAILs regardless of its
+#         package's budget. The classes and their ceilings were drawn from the
+#         breaches #4601 recorded, each ceiling that class's largest CI observation
+#         across two runs + 25% rounded up to a multiple of five seconds, so one
+#         runaway test is a defect on its own.
+#       * A test in no class keeps the flat perTestCeilingSeconds (currently 3s;
+#         2s when a budget file does not name one at all) and stays WARN-ONLY in
+#         every mode, --strict included: the unclassified backlog never ran under
+#         a ceiling, so enforcing the flat 3s would red the gate on tests that
+#         were always over it. Give the test a class to enforce it.
+#     bounded-wait unit has no class yet by ruling, so its members stay on the
+#     flat ceiling; the web repo-audit test is a class of one and is split or
+#     sped up rather than blessed.
 #
 # A package the budget file does not mention is a WARN, not silently skipped —
 # see kata b6rv's stop condition. When the budget file is missing or its
@@ -67,13 +74,14 @@
 #                                                   # the coverage-floor web row's reuse of the vitest report
 #
 # --check's exit policy: CI is strict (a $CI-set environment, or --strict);
-# everywhere else is warn-only (--local, or --check with $CI unset). Strict
-# fails on a per-package ratio over 1.5x and on a broken measurement; the
-# per-test ceiling is warn-only in every mode until it is segmented by test class
-# and enforced (#4601, see above). Warn-only prints the identical diagnostics, labeled, and always exits 0 except
-# for a broken measurement. Bare measurement (no --check) fails only on a broken
-# measurement; its ratio and ceiling verdicts are a report, like `evener dev
-# coverage-floor` with neither --check nor --bless.
+# everywhere else is warn-only (--local, or --check with $CI unset). Strict fails
+# on a per-package ratio over 1.5x, on a blessed-class per-test ceiling breach,
+# and on a broken measurement; an unclassified test over the flat ceiling warns
+# in every mode (see above, #4601). Warn-only prints the identical
+# diagnostics, labeled, and always exits 0 except for a broken measurement. Bare
+# measurement (no --check) fails only on a broken measurement; its ratio and
+# ceiling verdicts are a report, like `evener dev coverage-floor` with neither
+# --check nor --bless.
 #
 # The budget file is a hand-reviewed artifact: raising a package's number is an
 # edit to testing-budget.json in the same commit as whatever earned it, exactly
@@ -267,13 +275,14 @@ if [ -z "$measured_override" ] && [ "$modules_overridden" -eq 0 ] && [ "$module_
 fi
 
 # compare.py is the whole comparison contract: package ratios against the
-# checked-in budget, the flat per-test ceiling, the missing-budget-entry warn,
-# and the global no-baseline-yet warn. It can be exercised entirely through
+# checked-in budget, the per-class per-test ceilings (strict) plus the flat
+# per-test ceiling (warn-only for an unclassified test), the missing-budget-entry
+# warn, and the global no-baseline-yet warn. It can be exercised entirely through
 # --budget/--modules/measured.tsv, with no go test or vitest run involved —
 # the fixture IS the input this step reads.
 compare_out="$work/compare.txt"
 python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" "$bless_full" <<'PY'
-import json, sys
+import json, math, sys
 
 measured_path, budget_path, bless, check, strict, out_path, bless_full = sys.argv[1:8]
 bless = bless == "true"
@@ -329,6 +338,31 @@ except (FileNotFoundError, ValueError):
 
 packages = budget.get("packages") or {}
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
+
+# The per-class ceilings (#4601, ruling 2026-10-13). A test whose name is listed
+# in a class, or is a subtest of one (Name/sub), is compared STRICTLY against
+# that class's ceiling; a test in no class keeps the flat `ceiling` above and
+# stays warn-only in every mode, so the unclassified backlog cannot red the
+# gate. Membership is by test name, not by package, because one package holds
+# several classes (issue #4601). A name matched by more than one class is a
+# config error, reported as a FAIL: the map is hand-edited, and silently
+# picking the first class would enforce the wrong number.
+# The raw field: absent (None) means no classes, which is fine. Any other
+# non-object value (a list, string, number, or bool) is a config error the
+# validation below reports — a plain `or {}` here would silently turn a falsy
+# malformed value such as [] or false into an empty map and disarm every class.
+raw_classes = budget.get("perTestCeilingClasses")
+ceiling_classes = raw_classes if isinstance(raw_classes, dict) else {}
+
+def class_memberships(name):
+	found = []
+	for class_name, spec in ceiling_classes.items():
+		for member in spec.get("tests", []):
+			if name == member or name.startswith(member + "/"):
+				found.append((class_name, spec.get("ceilingSeconds")))
+				break
+	return found
+
 no_baseline = len(packages) == 0
 had_metric = budget.get("metric") == WALL_METRIC
 stale_units = not no_baseline and not had_metric
@@ -340,6 +374,33 @@ def raise_worst(level):
 	order = {"ok": 0, "warn": 1, "fail": 2}
 	if order[level] > order[worst]:
 		worst = level
+
+# A class must be an object naming a numeric (non-bool) ceiling and a non-empty
+# list of string test names. A hand-edited map that gets any of that wrong would
+# otherwise mis-enforce — a None or bool ceiling, a non-object spec, or a
+# `tests` string that iterates as characters and matches nothing — instead of
+# saying what is wrong: it FAILs naming the class and drops the class, leaving
+# its tests on the flat warn-only default below rather than crashing the check.
+if raw_classes is not None and not isinstance(raw_classes, dict):
+	lines.append("FAIL  testing-budget.json perTestCeilingClasses must be an object mapping each "
+		"class to {ceilingSeconds, tests} (got " + type(raw_classes).__name__ + ")")
+	raise_worst("fail")
+
+valid_classes = {}
+for class_name, spec in ceiling_classes.items():
+	if (not isinstance(spec, dict)
+			or isinstance(spec.get("ceilingSeconds"), bool)
+			or not isinstance(spec.get("ceilingSeconds"), (int, float))
+			or not math.isfinite(spec.get("ceilingSeconds"))
+			or not isinstance(spec.get("tests"), list)
+			or not spec.get("tests")
+			or not all(isinstance(t, str) for t in spec.get("tests"))):
+		lines.append(f"FAIL  ceiling class '{class_name}' needs a numeric ceilingSeconds and a "
+			f"non-empty tests list of strings (testing-budget.json perTestCeilingClasses)")
+		raise_worst("fail")
+		continue
+	valid_classes[class_name] = spec
+ceiling_classes = valid_classes
 
 if no_baseline:
 	lines.append("NO BASELINE: testing-budget.json has no packages recorded yet; every "
@@ -376,14 +437,33 @@ for pkg in sorted(sums):
 		lines.append(f"OK    {pkg}: {m:.2f}s (budget {b:.2f}s)")
 
 for pkg, name, secs in tests:
+	# A test in a class is compared STRICTLY against that class's ceiling
+	# (#4601, ruling 2026-10-13): the classes are drawn, so a breach is a real
+	# regression and FAILs — nonzero under --check in a CI-shaped environment or
+	# --strict. Membership is by name; a subtest inherits its parent's class.
+	memberships = class_memberships(name)
+	if len(memberships) > 1:
+		listed = ", ".join(f"'{c}'" for c, _ in memberships)
+		lines.append(f"FAIL  {pkg}: test {name} is listed in more than one ceiling class ({listed}); "
+			f"a test must belong to exactly one class in testing-budget.json perTestCeilingClasses")
+		raise_worst("fail")
+		continue
+	if memberships:
+		class_name, class_ceiling = memberships[0]
+		if secs > class_ceiling:
+			lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over its {class_ceiling:g}s "
+				f"'{class_name}' class ceiling")
+			raise_worst("fail")
+		else:
+			lines.append(f"OK    {pkg}: test {name} {secs:.2f}s (class '{class_name}', ceiling {class_ceiling:g}s)")
+		continue
 	if secs > ceiling:
-		# The flat per-test ceiling is warn-only in EVERY mode, --strict
-		# included (ruling, 2026-10-13): it has never run in CI, #4601 records
-		# the pre-existing breaches, and enforcing the flat 3s today would red
-		# the gate for everyone on tests that were always over it. Segmentation
-		# by test class lands first, then enforcement; the breaches stay
-		# reported and named until then.
-		lines.append(f"WARN  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling (warn-only until #4601 segments it)")
+		# A test in no class keeps the flat ceiling and stays warn-only in EVERY
+		# mode, --strict included (#4601): the unclassified backlog has never run
+		# under a ceiling, so enforcing the flat 3s would red the gate on tests
+		# that were always over it. Give the test a class to enforce it.
+		lines.append(f"WARN  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling "
+			f"(unclassified; warn-only, #4601)")
 		raise_worst("warn")
 
 # no_baseline is the ONE place the "tree must stay green" rule is enforced
