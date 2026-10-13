@@ -846,6 +846,99 @@ test("consecutive recovery dismissals each present current durable authority", a
   if (failures.length > 1) throw new AggregateError(failures, "strip dismiss checkpoint failed");
 });
 
+test("a refused dismiss leaves the next deliberate press with current durable authority", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "strip-refused-dismiss-retry";
+  const key = browserDraftKey("ref_a");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const observerRepository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const storage = new HeldStripDiscardStorage({ indexedDB: factory, databaseName });
+  const observerStorage = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const failures: unknown[] = [];
+  const attempt = async (check: () => void | Promise<void>) => {
+    try {
+      await check();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  let source: ComposerSourceState | undefined;
+  let unmount: (() => void) | undefined;
+  try {
+    setMutationStorageForTests(storage);
+    await repository.seedDraft(key, { text: "ordinary", skillNames: [], mentions: [] });
+    const original = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a", turnId: "turn_1" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected", "stop refused");
+    await act(async () => {
+      source = createComposerSourceState("ref_a", { repository, key, outbox: storage });
+      await source.ready();
+    });
+    const mountedSource = source as ComposerSourceState;
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const view = renderStrip(defaultProps({ source: mountedSource }));
+    unmount = view.unmount;
+    await flushPendingTurnsProjectionForTests();
+    const beforeOrdinary = await observerRepository.load(key);
+    if (!beforeOrdinary) throw new Error("missing initial ordinary row");
+
+    // The first press is refused: a competitor commits while the press is held
+    // inside its discard, so the durable revision moves past the press's token.
+    storage.arm(original.clientMutationId);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+      await storage.entered;
+      const competitor = await observerRepository.commitEdit(
+        key,
+        beforeOrdinary.token,
+        { text: "competing ordinary", skillNames: [], mentions: [] },
+        () => true,
+      );
+      expect(competitor.state).toBe("committed");
+      storage.release();
+    });
+    await flushPendingTurnsProjectionForTests();
+    await attempt(async () =>
+      waitFor(async () => expect(await observerStorage.getRecovery(original.clientMutationId)).toBeDefined()),
+    );
+
+    // The NEXT deliberate press must establish current durable authority - the
+    // competitor's revision - instead of re-presenting the token the storage
+    // already refused, or the row survives forever.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    });
+    await flushPendingTurnsProjectionForTests();
+    await attempt(async () =>
+      waitFor(async () => expect(await observerStorage.getRecovery(original.clientMutationId)).toBeUndefined()),
+    );
+    await attempt(async () => waitFor(() => expect(mountedSource.getDraftToken().sessionRevision).toBe(4)));
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    storage.release();
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(async () => {
+      await act(async () => {
+        await source?.whenSettled();
+        unmount?.();
+        source?.dispose();
+      });
+    });
+    observerStorage.close();
+    storage.close();
+    observerRepository.close();
+    repository.close();
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "strip refused-retry checkpoint failed");
+});
+
 describe("visibility", () => {
   test.each(["rejected", "blockedUnknown"])(
     "notes %s recovery never offers composer message editing",
@@ -1556,9 +1649,15 @@ describe("dismiss a rejected Stop", () => {
     await act(async () => {
       releaseDiscard();
     });
+    // The press establishes current durable authority before its discard, so
+    // the row's departure lands when that read resolves, not inside the
+    // release act itself. waitFor's act wrapper also absorbs the discard's
+    // late state updates.
+    await waitFor(() => {
+      expect(queryRow("refused-stop")).toBeNull();
+    });
     await flushPendingTurnsProjectionForTests();
 
-    expect(queryRow("refused-stop")).toBeNull();
     expect(getToasts()).toHaveLength(0);
   });
 
@@ -1569,14 +1668,21 @@ describe("dismiss a rejected Stop", () => {
     await act(async () => {
       fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
     });
+    // The press establishes current durable authority before its discard, so
+    // the failure toast and the lock's release land when that read resolves.
+    // waitFor's act wrapper also absorbs those late state updates.
+    await waitFor(() => {
+      expect(getToasts().map((toast) => [toast.kind, toast.text])).toEqual([
+        ["error", expect.stringContaining("storage is full")],
+      ]);
+    });
     await flushPendingTurnsProjectionForTests();
 
-    expect(getToasts().map((toast) => [toast.kind, toast.text])).toEqual([
-      ["error", expect.stringContaining("storage is full")],
-    ]);
     // The record survived the failure, so the row has to stay clickable.
     expect(queryRow("refused-stop")).not.toBeNull();
-    expect(isDisabled(within(row).getByRole("button", { name: "Dismiss" }))).toBe(false);
+    await waitFor(() => {
+      expect(isDisabled(within(row).getByRole("button", { name: "Dismiss" }))).toBe(false);
+    });
   });
 
   test("a record already discarded elsewhere still leaves the strip", async () => {
@@ -1595,9 +1701,14 @@ describe("dismiss a rejected Stop", () => {
     await act(async () => {
       fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
     });
+    // The press establishes current durable authority before its discard, so
+    // the row's departure lands when that read resolves. waitFor's act
+    // wrapper also absorbs the late state updates.
+    await waitFor(() => {
+      expect(queryRow("refused-stop")).toBeNull();
+    });
     await flushPendingTurnsProjectionForTests();
 
-    expect(queryRow("refused-stop")).toBeNull();
     expect(queueStrip()).toBeNull();
   });
 });

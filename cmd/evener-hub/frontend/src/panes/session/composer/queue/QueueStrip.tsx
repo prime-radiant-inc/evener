@@ -472,6 +472,13 @@ export function QueueStrip({
     // Lock the row at the press, before any yield.
     setRowBusy(record.clientMutationId, true);
     try {
+      // Every deliberate press establishes current durable authority first: a
+      // previous refused press leaves the cached token at the revision the
+      // storage already refused, and a background transition or another tab's
+      // edit can have advanced the durable row since this source last loaded.
+      // The press's own guards still capture before the discard's yield and
+      // never refresh after a competitor commits while the press is waiting.
+      await source.currentDraftToken();
       // Capture before any yield, never refresh destructive authority after a
       // competitor commits while the original press is waiting.
       const key = browserDraftKey(source.ref);
