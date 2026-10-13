@@ -40,6 +40,11 @@ func TestIsPseudoFsPath(t *testing.T) {
 		{"/sys/kernel", true},
 		{"/dev", true},
 		{"/dev/null", true},
+		// /dev/shm is carved back out: a tmpfs of ordinary files — the RAM
+		// staging area the test gates mint their scratch under — so a
+		// search rooted there is ordinary, on the rg arm when rg is present.
+		{"/dev/shm", false},
+		{"/dev/shm/gate-scratch/001", false},
 		{"/", false},
 		{"/home/x", false},
 		{"/home/x/proc", false},

@@ -504,12 +504,18 @@ var pseudoFsRoots = []string{"/proc", "/sys", "/dev"}
 // isPseudoFsPath reports whether path names pseudo-filesystem content: one of
 // the pseudoFsRoots, or anything under one. Only an absolute path can — a
 // relative path resolves under the environment root, a real tree — so on a
-// platform without these mount points nothing is ever pseudo.
+// platform without these mount points nothing is ever pseudo. /dev/shm is
+// carved back out: it is a tmpfs of ordinary bounded files — the RAM staging
+// area even the test gates mint their scratch under — not a device tree, so
+// a search rooted there is a search of real files and must not be rerouted.
 func isPseudoFsPath(path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
 	path = filepath.Clean(path)
+	if path == "/dev/shm" || strings.HasPrefix(path, "/dev/shm/") {
+		return false
+	}
 	for _, root := range pseudoFsRoots {
 		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
 			return true
