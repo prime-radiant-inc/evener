@@ -968,7 +968,24 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         throw error;
       }
     }
+    await this.#sweepUnfinishedExpiries();
     await this.#retryPersistedPending();
+  }
+
+  // Complete persisted unfinished expiry receipts: a fence's deletion can
+  // outlive the reader that fenced it (the pane closed before its reread
+  // adopted the replacement epoch, or the deletion transaction itself
+  // faulted), so every retry pass sweeps the receipt rows that are not yet
+  // terminal. finishExpiry is idempotent and incarnation-guarded, so a
+  // receipt from before a namespace reset no-ops here.
+  async #sweepUnfinishedExpiries(): Promise<void> {
+    const rows = await this.#transaction([ANNOTATION_EXPIRY_STORE], "readonly", async (transaction) =>
+      requestResult<AnnotationExpiryRow[]>(transaction.objectStore(ANNOTATION_EXPIRY_STORE).getAll()),
+    );
+    for (const row of rows) {
+      if (row.receipt.phase === "deleted") continue;
+      await this.finishExpiry(row.receipt);
+    }
   }
 
   // Read the persisted pending operations once, then hand each off using its
