@@ -214,6 +214,71 @@ test("repeated ends share a fresh disposition and fixed off-window page coverage
   reader.dispose();
 });
 
+test("multi-page end disposition retains distinct connected page certificates", async () => {
+  const value = fixture();
+  const client = new FakeClient("ready");
+  client.on("thread/read", () => ({
+    ...readOf([{ ...recorded("latest"), position: { entry: 49, item: 0 }, version: 50 }], 50),
+    overlay: [],
+    olderCursor: "page-one",
+    requestGeneration: 2,
+  }));
+  client.on("thread/turns/list", ({ cursor }) => ({
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 50 },
+    data: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        version: 50,
+        items: [
+          {
+            ...recorded(cursor === "page-one" ? "middle body" : "oldest body"),
+            id: cursor === "page-one" ? "middle" : "oldest",
+            transcriptKey: cursor === "page-one" ? "middle" : "oldest",
+            position: { entry: cursor === "page-one" ? 20 : 2, item: 0 },
+            version: 50,
+          },
+        ],
+      },
+    ],
+    ...(cursor === "page-one" ? { nextCursor: "page-two" } : {}),
+  }));
+  const repo = repoOf(value.cache, {
+    readHistory: () => client.request("thread/read", { ref, includeTurns: true }),
+    readHistoryPage: ({ cursor, before }) => client.request("thread/turns/list", { ref, cursor, before }),
+  });
+  const reader = repo.attachReader();
+  repo.acceptRead(readOf(), { lifetime: 1, readId: "initial", boundary: "initial" });
+  await repo.settled();
+  repo.accept(tool, { lifetime: 1 });
+  repo.accept(end, { lifetime: 1 });
+  await repo.settled();
+  expect(client.calls.filter((call) => call.method === "thread/turns/list").map((call) => call.params)).toEqual([
+    { ref, cursor: "page-one", before: { entry: 49, item: 0 } },
+    { ref, cursor: "page-two", before: { entry: 20, item: 0 } },
+  ]);
+  const calls = client.calls.length;
+  const window = await value.cache.getOlderWindow(historyKey, { entry: 49, item: 0 }, 100, repo.getBaselineIdentity());
+  const pages = window.coverage.filter((certificate) => certificate.rangeId.startsWith("page:"));
+  expect(pages).toHaveLength(2);
+  expect(new Set(pages.map((certificate) => certificate.boundary)).size).toBe(2);
+  expect(
+    pages
+      .map(({ requestCursor, serverCursor }) => ({ requestCursor, serverCursor }))
+      .sort((a, b) => (a.requestCursor ?? "").localeCompare(b.requestCursor ?? "")),
+  ).toEqual([
+    { requestCursor: "page-one", serverCursor: "page-two" },
+    { requestCursor: "page-two", serverCursor: undefined },
+  ]);
+  expect(window).toMatchObject({ complete: true, stale: false });
+  expect(window.rows.map((row) => (row.item as ThreadItem).text)).toEqual(["oldest body", "middle body"]);
+  expect(client.calls).toHaveLength(calls);
+  reader.dispose();
+});
+
 test.each([false, true])(
   "failed end disposition leaves stale authority and paced recovery, foreground=%s",
   async (foreground) => {

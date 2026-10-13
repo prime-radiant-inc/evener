@@ -128,6 +128,265 @@ function connect(read = response()): FakeClient {
   return client;
 }
 
+function unrelatedOverlay(client: FakeClient): void {
+  client.emitNotification({
+    method: "overlay/upserted",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      item: {
+        key: "unrelated",
+        kind: "notice",
+        anchor: { entry: 2, item: 0 },
+        turnId: "recorded",
+        item: { id: "unrelated", type: "agentMessage", text: "unrelated" },
+      },
+    },
+  });
+  expect(threadsStore.getState().threads.get("local:a")?.overlay?.unrelated).toBeDefined();
+}
+
+it.each([false, true])("response ownership preserves goal after overlay, newer notification=%s", async (newer) => {
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  expect(productionEntryTranscriptForTests("local:a")?.repository).toBeDefined();
+  const reply = deferred<{ started: boolean }>();
+  client.on("goal/set", () => reply.promise);
+  const pending = threadsStore.getState().setGoal("local:a", "confirmed goal");
+  const pushed = { objective: "newer goal", status: "active", iterations: 2 };
+  if (newer)
+    client.emitNotification({
+      method: "evener/goal/updated",
+      params: { ref: "local:a", threadId: "thread-a", goal: pushed },
+    });
+  reply.resolve({ started: true });
+  await pending;
+  unrelatedOverlay(client);
+  expect(threadsStore.getState().threads.get("local:a")?.goal).toEqual(
+    newer ? pushed : { objective: "confirmed goal", status: "active", iterations: 0 },
+  );
+});
+
+it.each(["response", "notification", "intent"] as const)(
+  "response ownership preserves human note after overlay, authority=%s",
+  async (authority) => {
+    const client = connect();
+    await threadsStore.getState().ensureThread("local:a");
+    expect(productionEntryTranscriptForTests("local:a")?.repository).toBeDefined();
+    const reached = deferred<void>();
+    const reply = deferred<void>();
+    client.on("notes/human/set", async (params) => {
+      if (params.note === "confirmed note") {
+        reached.resolve();
+        await reply.promise;
+      }
+      return {
+        note: params.note ?? "",
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          threadId: "thread-a",
+          disposition: "applied",
+          projectionState: "notProjected",
+        },
+      };
+    });
+    await threadsStore.getState().setHumanNote("local:a", "confirmed note");
+    await reached.promise;
+    if (authority === "notification")
+      client.emitNotification({
+        method: "evener/notes/updated",
+        params: { ref: "local:a", threadId: "thread-a", humanNote: "newer note" },
+      });
+    if (authority === "intent") await threadsStore.getState().setHumanNote("local:a", "newer note");
+    reply.resolve();
+    const outbox = new MutationOutboxIndexedDB({ indexedDB: factory });
+    await vi.waitFor(async () => expect(await outbox.listOutbox("local:a")).toEqual([]));
+    await settleProjectionWorkForTests();
+    const expected = authority === "response" ? "confirmed note" : "newer note";
+    await vi.waitFor(() => expect(threadsStore.getState().threads.get("local:a")?.humanNote).toBe(expected));
+    unrelatedOverlay(client);
+    expect(threadsStore.getState().threads.get("local:a")?.humanNote).toBe(expected);
+  },
+);
+
+it.each(
+  (["thread", "watched"] as const).flatMap((kind) =>
+    [false, true].flatMap((committed) =>
+      (["held", "released", "replaced"] as const).map((owner) => ({ kind, committed, owner })),
+    ),
+  ),
+)("Clear pending demand $kind committed=$committed owner=$owner", async ({ kind, committed, owner }) => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  const acquire = () =>
+    kind === "thread"
+      ? threadsStore.getState().ensureThread("local:a")
+      : threadsStore.getState().watchThread("local:a", { includeTurns: true });
+  await acquire();
+  await settleEntryTranscriptForTests("local:a");
+  const model = () =>
+    (kind === "thread" ? threadsStore.getState().threads : threadsStore.getState().watchedThreads).get("local:a");
+  const obsolete = deferred<ThreadReadResponse>();
+  const entered = deferred<void>();
+  client.on("thread/read", async (params) => {
+    entered.resolve();
+    return { ...(await obsolete.promise), requestGeneration: params.requestGeneration };
+  });
+  client.emitNotification({ method: "evener/thread/resync", params: { ref: "local:a", threadId: "thread-a" } });
+  await entered.promise;
+  const clearReply = deferred<void>();
+  const original = storage.clear.bind(storage);
+  vi.spyOn(storage, "clear").mockImplementation(async () => {
+    await clearReply.promise;
+    return committed ? original() : { committed: false, epoch: 0 };
+  });
+  const clearing = clearCachedSessions();
+  const published: string[] = [];
+  const unsubscribe = threadsStore.subscribe(() => published.push(JSON.stringify(model()) ?? ""));
+  const replacement = deferred<ThreadReadResponse>();
+  client.on("thread/read", async (params) => ({
+    ...(await replacement.promise),
+    requestGeneration: params.requestGeneration,
+  }));
+  if (owner !== "held") {
+    if (kind === "thread") threadsStore.getState().releaseThread("local:a");
+    else threadsStore.getState().releaseWatchedThread("local:a");
+  }
+  if (owner === "replaced") {
+    client.on("thread/read", (params) => ({
+      ...response("local:a", [turn("new-owner", 2)]),
+      requestGeneration: params.requestGeneration,
+    }));
+    await acquire();
+  }
+  const reads = client.calls.filter((call) => call.method === "thread/read").length;
+  clearReply.resolve();
+  expect(await clearing).toEqual({ committed });
+  obsolete.resolve({ ...response("local:a", [turn("obsolete", 2)]), authoritative: true });
+  if (owner === "held")
+    await vi.waitFor(() =>
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1),
+    );
+  expect(JSON.stringify(model()) ?? "").not.toContain("obsolete");
+  replacement.resolve({ ...response("local:a", [turn("replacement", 2)]), authoritative: true });
+  if (owner === "held") await vi.waitFor(() => expect(JSON.stringify(model())).toContain("replacement"));
+  await settleBackgroundTranscriptsForTests();
+  expect(published.join("\n")).not.toContain("obsolete");
+  unsubscribe();
+  if (owner !== "held") expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+  if (committed) expect(await storage.count()).toBe(0);
+});
+
+it.each(
+  (["mutation", "history"] as const).flatMap((holder) =>
+    [false, true].map((secondHolder) => ({ holder, secondHolder })),
+  ),
+)("shared reader release holder=$holder secondHolder=$secondHolder", async ({ holder, secondHolder }) => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const initial = { ...response(), olderCursor: "older" };
+  const client = connect(initial);
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const entered = deferred<void>();
+  const finish = deferred<void>();
+  let historyRequest: Promise<void> | undefined;
+  if (holder === "mutation") {
+    client.on("notes/human/set", async (params) => {
+      entered.resolve();
+      await finish.promise;
+      return {
+        note: params.note ?? "",
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          threadId: "thread-a",
+          disposition: "applied",
+          projectionState: "notProjected",
+        },
+      };
+    });
+    await threadsStore.getState().setHumanNote("local:a", "note pin");
+  } else {
+    client.on("thread/turns/list", async () => {
+      entered.resolve();
+      await finish.promise;
+      return { data: [turn("older", 0)], bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-a", length: 3 } };
+    });
+    historyRequest = threadsStore.getState().loadOlderTurns("local:a");
+  }
+  await entered.promise;
+  client.on("thread/read", (params) => ({ ...initial, requestGeneration: params.requestGeneration }));
+  client.emitNotification({ method: "evener/thread/resync", params: { ref: "local:a", threadId: "thread-a" } });
+  await vi.waitFor(() => expect(productionEntryTranscriptForTests("local:a").reader).toBeDefined());
+  await settleEntryTranscriptForTests("local:a");
+  const repository = productionEntryTranscriptForTests("local:a").repository;
+  expect(
+    repository
+      ?.getSnapshot()
+      ?.history?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toContain("recorded");
+  if (secondHolder) {
+    await threadsStore.getState().ensureThread("local:a");
+    threadsStore.getState().releaseThread("local:a");
+    expect(productionEntryTranscriptForTests("local:a").reader).toBeDefined();
+    expect(
+      repository
+        ?.getSnapshot()
+        ?.history?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toContain("recorded");
+    await threadsStore.getState().ensureThread("local:a");
+  }
+  finish.resolve();
+  await historyRequest;
+  if (holder === "mutation") {
+    const outbox = new MutationOutboxIndexedDB({ indexedDB: factory });
+    await vi.waitFor(async () => expect(await outbox.listOutbox("local:a")).toEqual([]));
+    await settleProjectionWorkForTests();
+  }
+  await settleBackgroundTranscriptsForTests();
+  if (secondHolder) {
+    expect(productionEntryTranscriptForTests("local:a").reader).toBeDefined();
+    expect(
+      repository
+        ?.getSnapshot()
+        ?.history?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toContain("recorded");
+    threadsStore.getState().releaseThread("local:a");
+  }
+  await settleBackgroundTranscriptsForTests();
+  expect(productionEntryTranscriptForTests("local:a").repository).toBe(repository);
+  expect(productionEntryTranscriptForTests("local:a").reader).toBeUndefined();
+  expect(
+    repository
+      ?.getSnapshot()
+      ?.history?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toEqual([""]);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect((await storage.getLatest<ThreadItem>(key, 200)).map((row) => row.item.text)).toContain("recorded");
+  const retain = vi.spyOn(entryWriteAdmissionFor(storage), "retain");
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("later", 3).items,
+    },
+  });
+  await settleBackgroundTranscriptsForTests();
+  expect(retain.mock.calls.map((call) => call[2])).toContain("background");
+  expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+  background.release();
+});
+
 async function seedDiskOnlyOpening(withPages = false): Promise<SessionEntryCache> {
   const storage = cache();
   const read = response("local:a", [turn("window-1", 30), turn("window-2", 31), turn("window-3", 32)]);
