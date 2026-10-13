@@ -2397,6 +2397,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 		return "", err
 	}
 	excludedByIgnore := 0
+	oversized := 0
 
 	err = grepWalk(fsys, walkRoot, func(p string, d fs.DirEntry, err error) error {
 		if cancelErr := ctx.Err(); cancelErr != nil {
@@ -2464,6 +2465,33 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				return cancelErr
 			}
+			if singleFile && errors.Is(err, errGrepFileTooLarge) {
+				// A file named as the target is a deliberate request: search
+				// the over-cap regular behind it in bounded windows. A device
+				// keeps the capped skip — its stream never ends, so bounding
+				// it is the cap's job, not the window's.
+				if opened, oerr := fsys.Open(p); oerr == nil {
+					if cf, ok := opened.(*grepCtxFile); ok {
+						if info, ierr := cf.Stat(); ierr == nil && info.Mode().IsRegular() {
+							stop, serr := a.feedLargeFile(cf.ctx, cf.File)
+							_ = cf.Close()
+							if serr != nil {
+								if cancelErr := ctx.Err(); cancelErr != nil {
+									return cancelErr
+								}
+								return nil //nolint:nilerr // best-effort grep: a stalled or failed stream is skipped, like an unreadable file
+							}
+							if stop {
+								return filepath.SkipAll
+							}
+							return nil
+						}
+					}
+					_ = opened.Close()
+				}
+			} else if errors.Is(err, errGrepFileTooLarge) {
+				oversized++
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
 		}
 		if a.feed(relPath, data) {
@@ -2477,7 +2505,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return a.finishWalk(excludedByIgnore), nil
+	return a.finishWalk(excludedByIgnore, oversized), nil
 }
 
 // ExecCommand runs command through the platform shell in its own process group,

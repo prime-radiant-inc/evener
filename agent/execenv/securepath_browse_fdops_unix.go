@@ -221,6 +221,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 		return "", err
 	}
 	excludedByIgnore := 0
+	oversized := 0
 	err = secureBrowseWalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
 		if cancelErr := ctx.Err(); cancelErr != nil {
 			return cancelErr
@@ -289,6 +290,9 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				return cancelErr
 			}
+			if errors.Is(rerr, errGrepFileTooLarge) {
+				oversized++
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files
 		}
 		if a.feed(rel, data) {
@@ -302,7 +306,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return a.finishWalk(excludedByIgnore), nil
+	return a.finishWalk(excludedByIgnore, oversized), nil
 }
 
 // grepNamedFile searches the one file a grep's path names, given its
@@ -327,8 +331,17 @@ func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globF
 	if cancelErr := ctx.Err(); cancelErr != nil {
 		return "", cancelErr
 	}
+	if errors.Is(err, errGrepFileTooLarge) {
+		// A file named as the target is a deliberate request: search the
+		// over-cap regular behind it in bounded windows. admitReadFD admits
+		// only regular files here, so the target cannot be a device stream.
+		if _, serr := a.feedLargeFile(ctx, f); serr != nil {
+			return "", nil //nolint:nilerr // best-effort grep: a stalled or failed stream is skipped, like an unreadable file
+		}
+		return a.finish(), nil
+	}
 	if err != nil {
-		return "", nil //nolint:nilerr // best-effort grep: an unreadable or oversized file is skipped, as in the walk
+		return "", nil //nolint:nilerr // best-effort grep: an unreadable file is skipped, as in the walk
 	}
 	a.feed(".", data)
 	return a.finish(), nil

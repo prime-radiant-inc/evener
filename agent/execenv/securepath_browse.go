@@ -230,6 +230,108 @@ func (a *grepAccum) cutAtCap() (stop bool) {
 	return true
 }
 
+// grepStream applies the whole-file feed's rules to one file as its lines
+// arrive in bounded windows, so a file larger than grepMaxFileBytes can be
+// searched without ever holding it whole. The output order is the feed's:
+// a match's before-context is known at the match, and its after-context
+// lines are emitted the moment each arrives — the same lines, in the same
+// order, the whole-file feed prints in its deferred blocks.
+type grepStream struct {
+	a          *grepAccum
+	name       string
+	singleFile bool
+	// recent holds the last contextLines non-matching lines, for a match's
+	// before-context.
+	recent []streamLine
+	// last is the last line written from this file, afterEnd the last line
+	// the latest match's after-context reaches; both -1 when none yet.
+	last, afterEnd int
+	// count is the matches seen so far (count mode).
+	count int
+	// done marks a files_with_matches row already emitted; no later line
+	// of this file can add output.
+	done bool
+}
+
+type streamLine struct {
+	idx  int
+	text string
+}
+
+// line applies the feed's rules to line index i (0-based); stop is the
+// feed's: the results cap cut the output off.
+func (s *grepStream) line(i int, text string) (stop bool) {
+	a := s.a
+	switch a.outputMode {
+	case "files_with_matches":
+		if s.done || !a.re.MatchString(text) {
+			return false
+		}
+		s.done = true
+		return a.emit(s.name)
+	case "count":
+		if a.re.MatchString(text) {
+			s.count++
+		}
+		return false
+	}
+	if !a.re.MatchString(text) {
+		if i > s.afterEnd {
+			s.remember(i, text)
+			return false
+		}
+		// Inside the latest match's after-context: emit the context line
+		// the moment it arrives, as the whole-file feed emits it in its
+		// next block or the trailing one.
+		if a.emitLine(s.name, s.singleFile, i, "-", text) {
+			return true
+		}
+		s.last = i
+		return false
+	}
+	start := max(s.last+1, i-a.contextLines)
+	if a.contextLines > 0 && len(a.results) > 0 && (s.last < 0 || start > s.last+1) && a.emit("--") {
+		return true
+	}
+	for _, held := range s.recent {
+		if held.idx < start || held.idx > i-1 {
+			continue
+		}
+		if a.emitLine(s.name, s.singleFile, held.idx, "-", held.text) {
+			return true
+		}
+		s.last = held.idx
+	}
+	if a.emitLine(s.name, s.singleFile, i, ":", text) {
+		return true
+	}
+	s.last, s.afterEnd = i, i+a.contextLines
+	return false
+}
+
+// remember holds a non-matching line for a later match's before-context.
+func (s *grepStream) remember(i int, text string) {
+	if s.a.contextLines <= 0 {
+		return
+	}
+	s.recent = append(s.recent, streamLine{idx: i, text: text})
+	if len(s.recent) > s.a.contextLines {
+		s.recent = s.recent[len(s.recent)-s.a.contextLines:]
+	}
+}
+
+// eof finishes the file: count mode emits its one row, exactly as the
+// whole-file feed does after scanning the last line.
+func (s *grepStream) eof() (stop bool) {
+	if s.a.outputMode == "count" && s.count > 0 {
+		if s.singleFile {
+			return s.a.emit(strconv.Itoa(s.count))
+		}
+		return s.a.emit(s.name + ":" + strconv.Itoa(s.count))
+	}
+	return false
+}
+
 // grepFileSelected reports whether grep searches the file named name, at
 // slash path rel, once dotfile and ignore rules have let it through: a file
 // skip names (when skip is not nil) or outside the glob filters is left out.
@@ -248,23 +350,130 @@ func grepFileSelected(name, rel string, globFilters []string, skip func(rel stri
 // grepTruncationNote as a note (searchresult.WithNotes) when the cap left
 // results out.
 func (a *grepAccum) finish() string {
-	out := strings.Join(a.results, "\n")
-	if a.truncated {
-		return searchresult.WithNotes(out, grepTruncationNote(a.maxResults))
+	out, notes := a.finishNotes()
+	if len(notes) > 0 {
+		return searchresult.WithNotes(out, notes...)
 	}
 	return out
 }
 
-// finishWalk is finish for a walk that left excludedByIgnore paths out.
-// Silent-empty is the enemy (D2): when the walk found nothing, a note tells
-// "no matches among the files searched, but N were skipped by the default
-// dotfile/gitignore exclusion" from "genuinely no matches". grep has no
-// include_ignored knob, so this is informational rather than a suggestion to
-// retry.
-func (a *grepAccum) finishWalk(excludedByIgnore int) string {
-	out := a.finish()
+// finishNotes renders the accumulated results and the notes the search owes
+// about them: the truncation note when the results cap left some out.
+func (a *grepAccum) finishNotes() (out string, notes []string) {
+	out = strings.Join(a.results, "\n")
+	if a.truncated {
+		notes = append(notes, grepTruncationNote(a.maxResults))
+	}
+	return out, notes
+}
+
+// feedLargeFile searches the over-cap regular file behind f in windows of
+// grepStreamWindowBytes, applying the feed's rules line by line, so a file
+// named as the search target — a deliberate request the capped read refused
+// (#4574 round 4, MEDIUM) — still yields its matches without any read
+// holding it whole. f is rewound first: the capped read leaves it partway
+// in. The scan ends at the first window holding a NUL byte, the content the
+// whole-file feed treats as binary, with matches from earlier windows
+// standing; a single line longer than grepMaxFileBytes is skipped — its
+// number spent, the scan resuming after it — rather than held whole. A
+// cancelled context or a stalled read ends the scan. stop is the feed's:
+// the results cap cut the output off.
+func (a *grepAccum) feedLargeFile(ctx context.Context, f *os.File) (stop bool, err error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	disarm := armStreamDeadline(ctx, f)
+	defer disarm()
+	// A named target's feed name is "." (see feed); the walk never streams.
+	s := &grepStream{a: a, name: ".", singleFile: true, last: -1, afterEnd: -1}
+	buf := make([]byte, grepStreamWindowBytes)
+	var pending []byte
+	i, skipping, binary := 0, false, false
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			if bytes.IndexByte(buf[:n], 0) >= 0 {
+				binary = true
+				break
+			}
+			chunk := buf[:n]
+			if skipping {
+				end := bytes.IndexByte(chunk, '\n')
+				if end < 0 {
+					chunk = nil
+				} else {
+					skipping = false
+					i++
+					chunk = chunk[end+1:]
+				}
+			}
+			if len(chunk) > 0 {
+				pending = append(pending, chunk...)
+				for {
+					sep := bytes.IndexByte(pending, '\n')
+					if sep < 0 {
+						break
+					}
+					if s.line(i, string(pending[:sep])) {
+						return true, nil
+					}
+					i++
+					pending = pending[sep+1:]
+				}
+				if len(pending) >= grepMaxFileBytes {
+					// A line as long as the whole per-file read budget
+					// cannot be searched without holding it whole.
+					skipping = true
+					pending = nil
+				}
+			}
+		}
+		if rerr != nil {
+			if !errors.Is(rerr, io.EOF) {
+				if cerr := ctx.Err(); cerr != nil {
+					return false, cerr
+				}
+				if errors.Is(rerr, os.ErrDeadlineExceeded) {
+					return false, errGrepStreamStalled
+				}
+				return false, rerr
+			}
+			break
+		}
+		if s.done {
+			break
+		}
+	}
+	if !binary && !skipping && len(pending) > 0 {
+		if s.line(i, string(pending)) {
+			return true, nil
+		}
+	}
+	return s.eof(), nil
+}
+
+// finishWalk is finish for a walk that left paths out: excludedByIgnore
+// dotfile/gitignored ones, oversized ones past the read cap. Silent-empty is
+// the enemy (D2): when the walk found nothing, a note tells "no matches
+// among the files searched, but N were skipped by the default dotfile/
+// gitignore exclusion" from "genuinely no matches" — grep has no
+// include_ignored knob, so that one is informational rather than a
+// suggestion to retry — while over-cap files are worth knowing about
+// however many matches came back, and each one can still be searched by
+// naming it directly.
+func (a *grepAccum) finishWalk(excludedByIgnore, oversized int) string {
+	out, notes := a.finishNotes()
+	if oversized > 0 {
+		notes = append(notes, grepOversizeNote(oversized))
+	}
 	if out == "" && excludedByIgnore > 0 {
-		return searchresult.WithNotes("", fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore))
+		notes = append(notes, fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore))
+	}
+	if len(notes) > 0 {
+		return searchresult.WithNotes(out, notes...)
 	}
 	return out
 }
@@ -273,6 +482,13 @@ func (a *grepAccum) finishWalk(excludedByIgnore int) string {
 // model never reads the results it got as all there are.
 func grepTruncationNote(maxResults int) string {
 	return fmt.Sprintf("[results truncated at %d; narrow the path or glob_filter, or raise max_results]", maxResults)
+}
+
+// grepOversizeNote is the note on a walk that left files larger than the
+// read cap out of the search: the matches it returned are not all there
+// are, and the way to search one of the files it skipped is to name it.
+func grepOversizeNote(n int) string {
+	return fmt.Sprintf("%d file(s) larger than the %d-byte read cap were left out; name one directly to search it", n, grepMaxFileBytes)
 }
 
 // pseudoFsRoots are the pseudo-filesystem mount points a file-tree walk must
@@ -349,6 +565,11 @@ var grepMaxFileBytes = 16 << 20
 // the walk's unreadable-file handling skips the file and keeps walking.
 var errGrepFileTooLarge = errors.New("file exceeds the grep read cap")
 
+// grepStreamWindowBytes bounds one read of the over-cap streaming search: a
+// file named as the target is searched window by window, never held whole.
+// A variable so a test can force the window boundaries with a small file.
+var grepStreamWindowBytes = 1 << 20
+
 // grepCappedRead reads r until grepMaxFileBytes and reports errGrepFileTooLarge
 // when more bytes remain, so an effectively-unbounded source costs one bounded
 // read instead of the whole file.
@@ -396,20 +617,8 @@ func grepCappedReadFile(ctx context.Context, f *os.File) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := f.SetReadDeadline(time.Now().Add(grepReadStallTimeout)); err == nil {
-		watched := make(chan struct{})
-		defer close(watched)
-		go func() {
-			select {
-			case <-ctx.Done():
-				// Yank the deadline: the poller wakes the blocked read with
-				// a deadline error, which the caller maps back to ctx.
-				_ = f.SetReadDeadline(time.Now())
-			case <-watched:
-			}
-		}()
-		defer func() { _ = f.SetReadDeadline(time.Time{}) }()
-	}
+	disarm := armStreamDeadline(ctx, f)
+	defer disarm()
 	data, err := io.ReadAll(io.LimitReader(f, int64(grepMaxFileBytes)+1))
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
@@ -424,6 +633,32 @@ func grepCappedReadFile(ctx context.Context, f *os.File) ([]byte, error) {
 		return nil, errGrepFileTooLarge
 	}
 	return data, nil
+}
+
+// armStreamDeadline arms f's read deadline for grepReadStallTimeout, watched
+// by ctx: cancellation yanks the deadline to now, so a blocked read ends
+// promptly either way. A descriptor the runtime poller does not own — the
+// ordinary blocking regular file — arms nothing, and such a read never
+// blocks past its data. The returned disarm clears the deadline and stops
+// the watcher.
+func armStreamDeadline(ctx context.Context, f *os.File) (disarm func()) {
+	if err := f.SetReadDeadline(time.Now().Add(grepReadStallTimeout)); err != nil {
+		return func() {}
+	}
+	watched := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Yank the deadline: the poller wakes the blocked read with a
+			// deadline error, which the caller maps back to ctx.
+			_ = f.SetReadDeadline(time.Now())
+		case <-watched:
+		}
+	}()
+	return func() {
+		_ = f.SetReadDeadline(time.Time{})
+		close(watched)
+	}
 }
 
 // grepReadFileCapped reads one file of a grep walk through fsys, bounded by

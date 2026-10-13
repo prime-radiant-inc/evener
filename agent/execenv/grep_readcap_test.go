@@ -3,9 +3,11 @@ package execenv
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
@@ -75,9 +77,9 @@ func TestGrepCappedReadEndsAnUnboundedSource(t *testing.T) {
 }
 
 // The walk skips a file past the read cap the way it skips a binary one —
-// without a match, without spending a result — on the off arm, and a file
-// named as the target past the cap returns nothing rather than reading to
-// its end.
+// without a match, without spending a result — and says so in a note, on the
+// off arm; a file named as the target past the cap is a deliberate request,
+// so it is searched in bounded windows rather than skipped (#4574 round 4).
 func TestGrepSkipsFilesPastTheReadCap(t *testing.T) {
 	// Not parallel: stubGrepMaxFileBytes swaps the package's read cap.
 	root := t.TempDir()
@@ -98,14 +100,15 @@ func TestGrepSkipsFilesPastTheReadCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "small.txt"; got != want {
-		t.Fatalf("walk past the read cap = %q, want only %q", got, want)
+	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
+	if want := "small.txt\n\n" + note; got != want {
+		t.Fatalf("walk past the read cap = %q, want %q", got, want)
 	}
 	got, err = env.Grep(t.Context(), "needle", root, "", false, 100, "content")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "small.txt:1:needle small"; got != want {
+	if want := "small.txt:1:needle small\n\n" + note; got != want {
 		t.Fatalf("content past the read cap = %q, want %q", got, want)
 	}
 
@@ -113,8 +116,12 @@ func TestGrepSkipsFilesPastTheReadCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "" {
-		t.Fatalf("named over-cap file = %q, want nothing read from it", got)
+	var bigWant []string
+	for i := 1; i <= 10; i++ {
+		bigWant = append(bigWant, fmt.Sprintf("%d:needle big", i))
+	}
+	if want := strings.Join(bigWant, "\n"); got != want {
+		t.Fatalf("named over-cap file = %q, want %q from the bounded-window search", got, want)
 	}
 	got, err = env.Grep(t.Context(), "needle", small, "", false, 100, "content")
 	if err != nil {
@@ -125,7 +132,8 @@ func TestGrepSkipsFilesPastTheReadCap(t *testing.T) {
 	}
 }
 
-// The sandboxed arm's walk and named-file path apply the same cap.
+// The sandboxed arm's walk and named-file path apply the same cap, note,
+// and bounded-window search of a named over-cap file.
 func TestSandboxedGrepSkipsFilesPastTheReadCap(t *testing.T) {
 	// Not parallel: stubGrepMaxFileBytes swaps the package's read cap.
 	env, _, worktree := sandboxedEnv(t, sandbox.ModeRestricted)
@@ -143,14 +151,19 @@ func TestSandboxedGrepSkipsFilesPastTheReadCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "small.txt"; got != want {
-		t.Fatalf("sandboxed walk past the read cap = %q, want only %q", got, want)
+	const note = "1 file(s) larger than the 64-byte read cap were left out; name one directly to search it"
+	if want := "small.txt\n\n" + note; got != want {
+		t.Fatalf("sandboxed walk past the read cap = %q, want %q", got, want)
 	}
 	got, err = env.Grep(t.Context(), "needle", big, "", false, 100, "content")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "" {
-		t.Fatalf("sandboxed named over-cap file = %q, want nothing read from it", got)
+	var bigWant []string
+	for i := 1; i <= 10; i++ {
+		bigWant = append(bigWant, fmt.Sprintf("%d:needle big", i))
+	}
+	if want := strings.Join(bigWant, "\n"); got != want {
+		t.Fatalf("sandboxed named over-cap file = %q, want %q from the bounded-window search", got, want)
 	}
 }
