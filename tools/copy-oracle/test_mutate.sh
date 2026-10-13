@@ -46,8 +46,12 @@ fail() {
   exit 1
 }
 
+# The fixture repo must not inherit the developer's global or system Git
+# config or templates: commit signing or global hooks would fail or prompt
+# before any case runs.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 repo="$tmp/repo"
-git init -q "$repo"
+git init -q --template= "$repo"
 echo x >"$repo/file.txt"
 git -C "$repo" add file.txt
 git -C "$repo" -c user.name=t -c user.email=t@t commit -qm init
