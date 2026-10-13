@@ -868,6 +868,33 @@ it("fences a pending note before deletion and resumes useful work afterward", as
   expect(await rowsForTests<unknown>(f.factory, f.databaseName, MUTATION_OUTBOX_STORE)).toEqual(outboxBefore);
 });
 
+it("rejects a save against a confirmed-suppressed epoch whose fence transaction failed", async () => {
+  let fail = true;
+  const f = await fixture("suppressed-epoch-save", {
+    beforeCommit: (operation) => {
+      if (operation === "expiry" && fail) throw new Error("fence fault");
+    },
+  });
+  // A changed read confirms expiry; the fence transaction fails, so the
+  // durable head still names the dead epoch and retains its old evidence.
+  const ticket = await f.repo.beginRead(f.document);
+  const fenced = await f.repo.acceptRead(ticket, docContent(SOURCE, "rev-B"));
+  expect(fenced.state).toBe("expiry-pending");
+
+  // A new operation using the dead epoch's lease: the head and its evidence
+  // still validate the lease, but the confirmed suppression must reject the
+  // save before any write. A committed receipt would clear the caller's note
+  // while the pending expiry deletes the payload with the epoch.
+  const rowsBefore = await annotationSnapshot(f);
+  const deadSave = preparedAnnotationFromLease(f.operation.lease, "op-dead-epoch", "dead epoch note", f.destination);
+  const saved = await f.repo.saveAnnotation(deadSave).then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  expect(saved.ok).toBe(false);
+  expect(await annotationSnapshot(f)).toEqual(rowsBefore);
+});
+
 it("applied text survives a failed expiry deletion, stale cleanup and reversion", async () => {
   let failDeletion = true;
   const f = await fixture("read-expiry-delete-fault", {
