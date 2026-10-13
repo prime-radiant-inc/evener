@@ -452,7 +452,7 @@ describe("per-message fork affordance", () => {
             text:
               mode === "conflict"
                 ? "Couldn't fork from here: The forked session already has a draft"
-                : "Couldn't fork from here: Couldn't save the forked message locally",
+                : "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
           },
         ]);
       } finally {
@@ -462,6 +462,70 @@ describe("per-message fork affordance", () => {
       }
     },
   );
+
+  test("a seed fault retains the created child: a second press seeds it without repeating the fork RPC", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return {
+        thread: forkWireThread({
+          id: `child_${forkCalls}`,
+          sessionId: `child_${forkCalls}`,
+          evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+        }),
+        originalInput: "literal /same\nsecond line",
+      };
+    });
+    let faultArmed = true;
+    const repository = createBrowserDraftRepository({
+      beforeCommit(operation) {
+        if (faultArmed && operation === "seedDraft") throw new Error("real fork seed transaction fault");
+      },
+    });
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    try {
+      render(
+        <UserMessageItem
+          item={item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+          turn={turn}
+          live={false}
+          sessionRef="ref_a"
+        />,
+      );
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await userEvent.setup().click(button);
+      await waitFor(() => expect(button.disabled).toBe(false));
+      // The fork RPC created the child; only its local seeding faulted, and the
+      // toast names that real outcome instead of claiming the fork failed.
+      expect(forkCalls).toBe(1);
+      expect(workspaceStore.getState().panes).toEqual([]);
+      expect(
+        getToasts().some(
+          (toast) =>
+            toast.kind === "error" &&
+            toast.text ===
+              "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
+        ),
+      ).toBe(true);
+
+      faultArmed = false;
+      await userEvent.setup().click(button);
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      // The second press finished the RETAINED child; the fork RPC never ran
+      // again, so no second child was created.
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the retained fork child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+    } finally {
+      faultArmed = false;
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
+  });
 
   test("a user message with a sessionRef renders a Fork-from-here button; a read-only one (no ref) does not", () => {
     const { rerender } = render(
