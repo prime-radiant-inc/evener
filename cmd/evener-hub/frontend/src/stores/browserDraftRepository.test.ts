@@ -253,8 +253,9 @@ test("an interrupted post-commit cleanup retains source bytes and markers, and r
   const imported = await restarted.load(key("root"));
   if (!imported) throw new Error("transferred draft missing");
   // The complete imported public row: exact value shape plus the token fields.
+  // The v1 plain-text legacy draft carried no edit stamp, and the transfer
+  // leaves unstamped legacy drafts unstamped.
   expect(imported).toEqual({
-    editedAt: expect.any(Number),
     text: sourceBytes,
     skillNames: [],
     key: key("root"),
@@ -735,6 +736,44 @@ test("carryDraft is a no-op for an absent, blank or same-ref source", async () =
   await repository.carryDraft(key("carry-blank-source"), same);
   await repository.carryDraft(same, same);
   expect((await repository.load(same))!.text).toBe("destination draft");
+});
+
+// The legacy transfer imports refs in sorted order, not edit order, so every
+// imported row must keep its own legacy edit stamp (or stay unstamped): a
+// migration-wide Date.now() would order later carries by import order and
+// let an older draft imported later overwrite newer destination work.
+test("transferSupportedDrafts preserves legacy edit stamps so a carry orders by edit order, not import order", async () => {
+  const indexedDB = new IDBFactory();
+  const storage = new MemoryStorage();
+  // Refs sort "aa" before "bb", so "aa" imports first — but "aa"'s draft is
+  // the NEWER edit, the opposite of import order.
+  storage.setItem(
+    composerDraftStorageKey("aa"),
+    JSON.stringify({ text: "edited later", skillNames: [], editedAt: 9_000 }),
+  );
+  storage.setItem(
+    composerDraftStorageKey("bb"),
+    JSON.stringify({ text: "edited earlier", skillNames: [], editedAt: 4_000 }),
+  );
+  // A legacy draft with no stamp must stay unstamped, not take the
+  // migration's clock.
+  storage.setItem(composerDraftStorageKey("cc"), JSON.stringify({ text: "unstamped", skillNames: [] }));
+  const repository = createBrowserDraftRepository({
+    indexedDB,
+    databaseName: "transfer-chronology",
+    storage,
+  });
+  closeAfterTest(() => repository.close());
+  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
+  // The imported rows keep their own stamps — the newer edit's stamp is
+  // genuinely later, and the unstamped draft stays unstamped.
+  expect((await repository.load(key("aa")))!.editedAt).toBe(9_000);
+  expect((await repository.load(key("bb")))!.editedAt).toBe(4_000);
+  expect((await repository.load(key("cc")))!.editedAt).toBeUndefined();
+  // The older edit carries toward the newer edit's ref and must lose.
+  await repository.carryDraft(key("bb"), key("aa"));
+  expect((await repository.load(key("aa")))!.text).toBe("edited later");
+  expect((await repository.load(key("bb")))!.text).toBe("edited earlier");
 });
 
 test("seed and commit edits stamp the row's wall-clock write time", async () => {
@@ -1721,15 +1760,15 @@ test("a real duplicate-key request failure rolls back namespace, drafts and mark
   closeAfterTest(() => retry.close());
   expect(await retry.transferSupportedDrafts(namespace)).toEqual({ state: "committed" });
   // Complete fresh durable values/metadata, not a partial text/skills match.
+  // The v1 plain-text legacy drafts carried no edit stamps, and the transfer
+  // leaves unstamped legacy drafts unstamped.
   expect(await retry.load(key("first"))).toEqual({
-    editedAt: expect.any(Number),
     text: "first legacy",
     skillNames: [],
     key: key("first"),
     token: { namespaceIncarnation: expect.any(String), sessionRevision: expect.any(Number) },
   });
   expect(await retry.load(key("second"))).toEqual({
-    editedAt: expect.any(Number),
     text: "second legacy",
     skillNames: [],
     key: key("second"),
