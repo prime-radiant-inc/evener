@@ -1,57 +1,71 @@
-# Responses-protocol `/models` vision capability
+# Responses-protocol `/models` vision and modality facts
 
 Date: 2026-10-13
 Issue: [#4508](https://github.com/prime-radiant-inc/evener/issues/4508)
-Status: awaiting implementation
+Status: revised after spec review; awaiting implementation
 
 ## Problem
 
-The openai-chat live `/models` reader maps a gateway's `capabilities.vision`
-object to image input (#4489). The openai-responses reader does not:
-`openAIModelListEntry` (`llm/providers/responses/models.go`) parses no
-capability object, so a gateway that `evener providers probe` records as
-`openai-responses` resolves its models image-blind — the same failure #4489
-fixed for chat.
+The openai-chat live `/models` reader maps a gateway's advertised modality facts
+to image input (#4489). The openai-responses reader maps neither: its platform
+entry, `openAIModelListEntry` (`llm/providers/responses/models.go`), parses no
+`architecture` and no `capabilities` object, so a gateway that `evener providers
+probe` records as `openai-responses` resolves its models image-blind. That also
+makes the live-layer statement in `docs/llm-providers.md` ("`InputModalities`
+comes from OpenRouter's `architecture.input_modalities`, or … `capabilities.vision`")
+false for the Responses reader.
 
-`grep -n "capabilities\|Vision" llm/providers/responses/models.go` finds
-nothing, and a `{"data":[{"id":"x","capabilities":{"vision":true}}]}` listing
-yields no image input.
+Evidence: `grep -n "capabilities\|Vision\|input_modalities"
+llm/providers/responses/models.go` finds only the Codex entry's
+`input_modalities`; a `{"data":[{"id":"x","capabilities":{"vision":true}}]}`
+listing yields no image input.
 
 ## Scope
 
-- `llm/gateway_capabilities.go` (new): the shared capability object and its
-  modality mapping.
-- `llm/providers/responses/models.go`: read it in the platform entry.
-- `llm/providers/chatcompletions/models.go`: reuse the shared type (no
-  behavior change).
-- `docs/llm-providers.md`: the live-layer statement already names
-  `capabilities.vision`; keep it true for both readers.
+- `llm/providers/internal/requestutil/gateway.go` (new): `GatewayArchitecture`,
+  `GatewayCapabilities`, and `GatewayInputModalities`, which holds the one
+  precedence rule. `requestutil` is the seam both readers already import.
+- `llm/providers/responses/models.go`: the platform entry reads both objects.
+- `llm/providers/chatcompletions/models.go`: uses the shared types and function;
+  behavior unchanged.
+- `docs/llm-providers.md`: keeps the live-layer statement true for both readers.
 
 ## Non-goals
 
-- No change to the Codex entry: the Codex backend states `input_modalities`
-  directly.
-- No change to layer precedence or to which listing shape a protocol parses.
-- No other capability keys (tools, reasoning) are read from the object; only
-  vision affects resolution today.
+- The Codex entry is unchanged: the Codex backend states `input_modalities`
+  itself.
+- Only `vision` is read from the capability object; its other keys (tools,
+  reasoning) do not affect resolution today.
+- No lenient parsing. A non-boolean `vision` fails the whole listing, exactly as
+  it already does for the chat reader; see Risks.
 
 ## Behavior
 
-- A platform `/models` row advertising `capabilities.vision: true` yields
-  `InputModalities = ["text", "image"]`; `vision: false` or an absent object
-  yields none.
-- The chat reader's behavior is unchanged: `architecture.input_modalities`
-  wins when present, else `capabilities.vision`.
+- A model row's advertised input modalities are `architecture.input_modalities`
+  when that list is non-empty, else `["text", "image"]` when
+  `capabilities.vision` is true, else none. Both readers now apply that rule.
+- A row that advertises nothing leaves `InputModalities` unset.
 
 ## Precedence and preservation
 
-- The live layer still never overrides a field the user layer set.
-- Both readers map through one shared type, so they cannot drift.
+- The live layer still never overrides a field the user layer set, and an unset
+  modality list overrides nothing (`llm/registry/merge.go`).
+- The precedence lives in one function, so the two readers cannot disagree.
 
 ## Test plan
 
-- Red first: `TestListModelsPlatformVisionCapability` in
-  `llm/providers/responses/models_test.go`.
-- The chat reader's `TestListModelsReadsGatewayVisionCapability` stays green
-  through the shared-type refactor.
+- Red first, `llm/providers/responses/models_test.go`: a platform row with
+  `capabilities.vision` true yields image input; `false` and an absent object
+  yield none; and `architecture.input_modalities: ["text"]` beside
+  `capabilities.vision: true` yields `["text"]` (architecture wins).
+- `llm/providers/chatcompletions/models_test.go`: add the both-present
+  precedence fixture, so the shared-type refactor cannot invert it.
 - `go test ./llm/...`.
+
+## Risks
+
+- A gateway that advertises vision for a model that cannot see images marks it
+  image-capable; this is the risk #4489's chat fix already carries.
+- A malformed (non-boolean) `vision` value fails the whole `/models` parse, so
+  the instance falls back to its catalog facts. That is pre-existing chat
+  behavior, kept for consistency.
