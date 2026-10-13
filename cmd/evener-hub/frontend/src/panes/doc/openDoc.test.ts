@@ -139,3 +139,41 @@ test("openDocBeside focuses the open document instead of duplicating it when the
   expect(workspaceStore.getState().focusedPaneId).toBe(existing.id);
   expect(documentPaneState(document)).toEqual({ reference, origin: source, reopen: 1 });
 });
+
+// A cascade origin keeps its secondary slot on a NEW document open because
+// promoting the inspection into main would break "main is the routed session"
+// and let the next primary navigation replace the whole cascade. Reusing an
+// already-open document must keep the same rule: opening the same file twice
+// from a cascade must not promote the zoom pane either.
+test("openDocBeside never promotes a cascade origin when reusing the open document", () => {
+  vi.restoreAllMocks();
+  const zoom: OpenPaneRecord = {
+    id: "pane_zoom",
+    type: "sessionZoom",
+    slot: "secondary",
+    params: {
+      ref: "child",
+      source: { type: "session", params: { ref: "root" } },
+      edges: [{ ownerRef: "root", childRef: "child", delegateId: "edge" }],
+    },
+  };
+  const reference = bindFilePath("src/x.ts", "/work");
+  if (!reference) throw new Error("fixture did not bind its file");
+  const document: OpenPaneRecord = {
+    id: "pane_doc",
+    type: "doc",
+    slot: "main",
+    params: { session: "root", path: "src/x.ts", kind: "file" },
+  };
+  workspaceStore.setState({ panes: [zoom, document], focusedPaneId: document.id });
+
+  // The document is already open, so the open reuses its pane.
+  openDocBeside({ session: "root", reference, sourcePaneId: zoom.id });
+
+  const zoomAfter = workspaceStore.getState().panes.find((pane) => pane.id === zoom.id);
+  if (!zoomAfter) throw new Error("the zoom pane is missing");
+  expect(zoomAfter.slot).toBe("secondary");
+  expect(workspaceStore.getState().focusedPaneId).toBe(document.id);
+  const documents = workspaceStore.getState().panes.filter((pane) => pane.type === "doc");
+  expect(documents).toHaveLength(1);
+});
