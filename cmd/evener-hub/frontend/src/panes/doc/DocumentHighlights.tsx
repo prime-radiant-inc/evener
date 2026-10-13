@@ -77,6 +77,11 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
     // capture-phase listener sees it.
     const activate = (event: Event): void => {
       const target = event.target;
+      // An interaction on the note stack's own interactive surface (the
+      // copyable pending reference) belongs to that surface: it never
+      // reveals, switches or dismisses, so the reference's selection and
+      // copy path stay usable.
+      if (target instanceof Node && notesRef.current?.contains(target) === true) return;
       let operationId =
         target instanceof Element
           ? (target.closest("[data-document-highlight]")?.getAttribute("data-operation-id") ?? null)
@@ -115,6 +120,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
     let tapStart: { x: number; y: number } | null = null;
     let tapOperationId: string | null = null;
     let tapMoved = false;
+    let tapInNotes = false;
     // A real press reaches the browser as pointerdown/up AND THEN a click at
     // the same coordinates. The tap path has already handled the interaction,
     // so the trailing click must be consumed — otherwise a reveal's own click
@@ -126,7 +132,10 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
       tapPointerId = event.pointerId;
       tapStart = { x: event.clientX, y: event.clientY };
       tapMoved = false;
-      tapOperationId = bandAtPoint(event.clientX, event.clientY);
+      // A press on the note's own interactive surface never arms a reveal or
+      // a dismissal: its release and trailing click belong to that surface.
+      tapInNotes = event.target instanceof Node && notesRef.current?.contains(event.target) === true;
+      tapOperationId = tapInNotes ? null : bandAtPoint(event.clientX, event.clientY);
     };
     const onPointerMove = (event: PointerEvent): void => {
       if (event.pointerId !== tapPointerId || !tapStart) return;
@@ -134,7 +143,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
     };
     const onPointerUp = (event: PointerEvent): void => {
       if (event.pointerId !== tapPointerId) return;
-      if (!tapMoved && !event.shiftKey) {
+      if (!tapMoved && !event.shiftKey && !tapInNotes) {
         // The tap mirrors the click's dismissal contract: a repeated stationary
         // tap on the same band toggles the note away, and a stationary tap that
         // lands on no band clears the revealed note so touch users get the
@@ -151,6 +160,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
       tapStart = null;
       tapOperationId = null;
       tapMoved = false;
+      tapInNotes = false;
     };
     const onPointerCancel = (event: PointerEvent): void => {
       if (event.pointerId !== tapPointerId) return;
@@ -158,6 +168,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
       tapStart = null;
       tapOperationId = null;
       tapMoved = false;
+      tapInNotes = false;
     };
     // Keyboard reachability is symmetric: when focus leaves the bands and the
     // revealed surface, the note goes with it. Focus moving between the bands

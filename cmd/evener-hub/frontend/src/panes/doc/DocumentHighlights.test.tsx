@@ -819,6 +819,32 @@ test("reveals a complete copyable pending reference for a saved operation whose 
   view.unmount();
 });
 
+test("interactions inside the copyable pending reference keep the revealed note and its selectable surface", () => {
+  const note = "Legacy note.";
+  const { view, map, scroll } = renderReader([
+    annotationView("op-legacy", FIRST, note, { state: "pending", reason: "owner-unavailable" }),
+  ]);
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  fireEvent.click(bandFor(scroll, "op-legacy"));
+  const reference = scroll.querySelector<HTMLElement>("[data-annotation-reference]");
+  if (!reference) throw new Error("pending reference not revealed");
+
+  // A stationary press, its release and the trailing click inside the
+  // reference belong to its own selectable surface: none of them dismisses
+  // the revealed note or switches the active annotation, so the reference's
+  // text can be selected and copied.
+  act(() => {
+    pointerEvent("pointerdown", reference, { pointerId: 31, clientX: 5, clientY: 250 });
+    pointerEvent("pointerup", reference, { pointerId: 31, clientX: 5, clientY: 250, buttons: 0 });
+  });
+  fireEvent.click(reference, { clientX: 5, clientY: 250 });
+  const retained = scroll.querySelector<HTMLElement>("[data-annotation-reference]");
+  expect(retained).not.toBeNull();
+  expect(noteTexts(scroll)).toEqual([note]);
+  view.unmount();
+});
+
 // Synthetic component event coverage. These dispatch the pointer events a real
 // browser would deliver to the component in jsdom; they are NOT trusted
 // real-browser input and are labelled as synthetic here. The restored component
