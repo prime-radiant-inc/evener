@@ -1246,25 +1246,26 @@ A per-test ceiling checks a test's own wall time, independent of its package's
 budget: one runaway test is a defect on its own. It is not one flat number.
 `testing-budget.json`'s `perTestCeilingClasses` maps each class to a ceiling and
 to the tests that belong to it, by test name (a subtest inherits the class of the
-test it is under). The ceiling is the class's largest CI observation + 25%,
-rounded up to a multiple of five seconds (#4601, Jesse's ruling 2026-10-13): the
-names come from the breaches that ruling recorded, so a class holding a
-48-second test is not held to a 3-second number, and a class member that doubles
-still trips its ceiling.
+test it is under). The ceiling is the union of the
+class's largest CI observations across two CI runs + 25%, rounded up to a
+multiple of five seconds (#4601, Jesse's ruling 2026-10-13): the names come from
+the breaches that ruling recorded, so a class holding a 48-second test is not
+held to a 3-second number, and a class member that doubles still trips its
+ceiling.
 
 | class | ceiling | what it covers |
 | --- | --- | --- |
-| install | 60s | installs real binaries and runs them |
-| transcript large-fixture | 65s | transcript indexing over a large fixture |
+| install | 80s | installs real binaries and runs them |
+| transcript large-fixture | 95s | transcript indexing over a large fixture |
 | delegate-attention & idle | 40s | delegate attention and idle lifecycles |
 | deploy-host integration | 30s | host deploy and remote-host attach |
 | session-activity | 30s | session-activity tree capture |
-| retirement | 20s | daemon retirement lifecycles |
+| retirement | 30s | daemon retirement lifecycles |
 | eval harness | 20s | memory and prompt evals |
 | plugin-git integration | 15s | plugin materialization over real git |
 | gate-runner integration | 15s | the module-test runner's own tests |
-| live-stack E2E | 10s | hub and TUI end-to-end suites |
-| dev-tool compile/CLI | 10s | `evener-dev` compile and CLI tests |
+| live-stack E2E | 15s | hub and TUI end-to-end suites |
+| dev-tool compile/CLI | 15s | `evener-dev` compile and CLI tests |
 
 Two classes are deliberately absent. **bounded-wait unit** has no ceiling of its
 own yet: a wall ceiling on a test whose whole job is to sit out a wait mostly

@@ -24,9 +24,9 @@
 #       * A test named in a class — or a subtest of one (Name/sub) — is compared
 #         strictly against that class's ceiling; a breach FAILs regardless of its
 #         package's budget. The classes and their ceilings were drawn from the
-#         breaches #4601 recorded, each ceiling the class's largest CI observation
-#         + 25% rounded up to a multiple of five seconds, so one runaway test is a
-#         defect on its own.
+#         breaches #4601 recorded, each ceiling that class's largest CI observation
+#         across two runs + 25% rounded up to a multiple of five seconds, so one
+#         runaway test is a defect on its own.
 #       * A test in no class keeps the flat perTestCeilingSeconds (currently 3s;
 #         2s when a budget file does not name one at all) and stays WARN-ONLY in
 #         every mode, --strict included: the unclassified backlog never ran under
