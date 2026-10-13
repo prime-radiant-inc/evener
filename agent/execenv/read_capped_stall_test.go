@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -108,5 +109,32 @@ func TestReadFileCappedCtxObservesCancellation(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("readFileCappedCtx(cancelled) did not observe the cancellation")
+	}
+}
+
+// TestOffArmReadHandleIsAConcreteOSFile pins the mechanism readFileCappedCtx's
+// stall bound depends on: the OS-backed afero handle must be a concrete
+// *os.File, so readFileCappedCtx's readDeadlineSetter assertion engages on a
+// pollable mount. A future afero layer that wrapped the handle in another type
+// would silently drop the bound — the synthetic stall test above could not see
+// it — so this fails first. A real procfs regular needs root, so the synthetic
+// stalledAferoFile is the only deterministic behavioral check; this pins the
+// type underneath it.
+func TestOffArmReadHandleIsAConcreteOSFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "file.txt")
+	if err := os.WriteFile(path, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := afero.NewOsFs().OpenFile(path, os.O_RDONLY|openNonblock, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, ok := f.(*os.File); !ok {
+		t.Fatalf("OS-backed afero handle is %T, want *os.File: readFileCappedCtx's deadline assertion would not engage", f)
+	}
+	if _, ok := f.(readDeadlineSetter); !ok {
+		t.Fatalf("OS-backed afero handle %T does not implement SetReadDeadline: the stall bound would not arm", f)
 	}
 }
