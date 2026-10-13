@@ -98,7 +98,7 @@ export function openDocBeside(request: DocumentOpenRequest): void {
     // pane as a different document and open a duplicate beside it. A
     // document's identity is its session/path/kind (isRequestedDocument),
     // never its opening origin.
-    if (origin) workspace.promotePane(origin.id);
+    if (origin && origin.type !== "sessionZoom") workspace.promotePane(origin.id);
     workspace.focusPane(existingDocument.id);
     return;
   }
