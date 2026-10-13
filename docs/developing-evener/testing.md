@@ -920,26 +920,31 @@ link, but `mobile-native/.gitignore` uses `node_modules/`, which does not
 match a symlink: that link shows as untracked in `git status`, so keep it
 out of commits by path, not by ignore.
 
-The gate's `vitest run` writes nothing under `node_modules` or `dist/`:
+The web gate - `evener-dev dev web-checks`: typecheck, test, lint - writes
+nothing under `cmd/evener-hub/frontend`, so it runs in a checkout whose
+frontend directory denies writes. (`make test-web` as a whole is not
+read-only: its own prerequisites write `./evener-dev` and may `npm ci`.)
 `vitest_run_args` selects `--configLoader runner` (Vite's default loader
-writes a bundled config under `node_modules/.vite-temp`), and the plugin
-that restores `dist/PLACEHOLDER` applies to builds only. The whole gate is
-not read-only yet. Vitest still writes its dependency cache to the
-checkout's `.vite-cache`. `npm test`'s `node --test scripts/*.test.mjs`
-phase loads Vite configs with the default loader in
-`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs` and
-`editorial-preview.test.mjs`, which still write `node_modules/.vite-temp`
-(issue #4193). So a read-only lane still needs a scratch config for focused
-experiments: run
-it with `--configLoader runner --cache=false`, and give the scratch-rooted
-Vite config a `server.fs.allow` that names the checkout, the AppWire
-package and the dependency realpath, or external setup imports fail as
-`Cannot find module '/@fs/…/src/testSetup.ts'` before any test runs. Keep
-the custom config, test files, cacheDir and dependency symlink in scratch,
-reuse the frontend's resolve aliases and test setup, and keep at least two
-workers (the vmThreads isolation floor explained below). These runs are
-probes; canonical verdicts stay with `make test-web`, which cannot run in
-a read-only lane until those writes are gone.
+writes a bundled config under `node_modules/.vite-temp`), the plugin that
+restores `dist/PLACEHOLDER` applies to builds only, and `webCheckSpec` points
+`EVENER_FRONTEND_VITE_CACHE_DIR` at each check's private scratch root, so
+Vitest's dependency cache never lands in the checkout's `.vite-cache` (issue
+#4193). The other `npm test` phases match: `check-package-tests` passes
+`--configLoader runner` to its own Vitest spawns, and the
+`node --test scripts/*.test.mjs` phase loads its configs with the runner
+loader (`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs`,
+`distPlaceholderPlugin.test.mjs`, and `browserguard-vite.mjs`, which that
+phase spawns; `editorial-preview.test.mjs` does the same and keeps its loads
+inside its own temporary copy).
+
+A focused run in a read-only lane needs those same two things by hand, with
+the real config - no scratch config is needed:
+`EVENER_FRONTEND_VITE_CACHE_DIR=<absolute scratch path outside the checkout>
+npx vitest run <file> --configLoader runner --maxWorkers=2`. The value has to
+be absolute: a relative one resolves against the config root and lands back in
+the checkout (the gate passes an absolute path). Keep a test-file filter, keep
+at least two workers (the vmThreads isolation floor explained below), and
+discard the scratch cache directory afterward.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may

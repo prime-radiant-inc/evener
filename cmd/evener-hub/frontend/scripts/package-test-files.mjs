@@ -24,6 +24,12 @@ import { CONSUMER_TREES, isTestFile, sourceFiles } from "../../../../scripts/sdk
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const packageDir = path.resolve(frontend, "../../../appwire-client/typescript");
 
+// Every vitest spawn here passes the runner config loader. Vite's default
+// bundle loader writes a bundled copy of vite.config.ts under
+// node_modules/.vite-temp, which a read-only checkout denies and the shared
+// fleet install must not collect (issue #4193).
+export const vitestArgs = (subcommand, ...args) => [subcommand, ...args, "--configLoader", "runner"];
+
 // Shared with the package's own value-import derivation, which needs the same
 // answer: see scripts/sdk/source-files.mjs.
 
@@ -423,7 +429,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(`${vitestBin} is missing - run npm ci in cmd/evener-hub/frontend`);
     process.exit(1);
   }
-  const listed = spawnSync(vitestBin, ["list", "--filesOnly"], { cwd: frontend, encoding: "utf8" });
+  const listed = spawnSync(vitestBin, vitestArgs("list", "--filesOnly"), { cwd: frontend, encoding: "utf8" });
   if (listed.status !== 0) {
     console.error(`vitest list failed (exit ${listed.status}):\n${listed.stderr ?? ""}`);
     process.exit(1);
@@ -471,7 +477,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
   const reportFile = path.join(mkdtempSync(path.join(os.tmpdir(), "appwire-proof-")), "report.json");
-  const ran = spawnSync(vitestBin, ["run", "--reporter=json", `--outputFile=${reportFile}`, proof], {
+  const ran = spawnSync(vitestBin, vitestArgs("run", "--reporter=json", `--outputFile=${reportFile}`, proof), {
     cwd: frontend,
     encoding: "utf8",
   });
