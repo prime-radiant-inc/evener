@@ -13,45 +13,13 @@ import (
 // corpora and one sentence as the text assets.
 func scanFixture(t *testing.T, path, src string, prod ...string) []Target {
 	t.Helper()
-	s := newScanner(strings.Join(prod, "\n"), strings.Join(prod, "\n"), "Always use the tools you have.")
-	targets, err := s.scanFile(path, src)
+	s := newScanner(strings.Join(prod, "\n"), "Always use the tools you have.")
+	targets, err := s.scanGo(path, src)
 	if err != nil {
 		t.Fatalf("scanFile(%s): %v", path, err)
 	}
 	return targets
 }
-
-func tsBlockNames(src string) []string {
-	var names []string
-	for _, b := range tsTestBlocks(src) {
-		names = append(names, b.name)
-	}
-	return names
-}
-
-const tsFlagSrc = `import { render, screen } from "@testing-library/react";
-
-test("shows the empty title", () => {
-  render(<Empty />);
-  expect(screen.getByText("No sessions yet")).toBeTruthy();
-});
-
-test("starting a session sends turn/start", async () => {
-  render(<Composer />);
-  await user.click(screen.getByRole("button", { name: "Send" }));
-  expect(fake.calls).toHaveLength(1);
-  expect(screen.getByText("Sending…")).toBeTruthy();
-});
-
-it.each([1, 2])("renders hint %s", (n) => {
-  render(<Hint n={n} />);
-  expect(screen.queryByText("Try again")).not.toBeNull();
-});
-
-test("no assertions at all", () => {
-  render(<Thing />);
-});
-`
 
 const goFlagSrc = `package x
 
@@ -83,8 +51,10 @@ func TestCountsRows(t *testing.T) {
 }
 `
 
-// TestTargets ports every case of tools/copy-oracle/test_inventory.py, plus
-// the cases the Go AST settles that the line-based scanner could not.
+// TestTargets ports every Go case of tools/copy-oracle/test_inventory.py, plus
+// the cases the Go AST settles that the line-based scanner could not. The
+// TypeScript cases live with the TypeScript scanner in
+// cmd/evener-hub/frontend/src/dev/copyonly.
 func TestTargets(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -94,12 +64,6 @@ func TestTargets(t *testing.T) {
 		prod []string
 		want []string
 	}{
-		{
-			name: "ts: only tests whose every check is copy",
-			path: "a.test.tsx", src: tsFlagSrc,
-			prod: []string{"No sessions yet", "Sending…", "Try again"},
-			want: []string{"shows the empty title", "renders hint %s"},
-		},
 		{
 			name: "go: setup error guards are not claims",
 			path: "a_test.go", src: goFlagSrc,
@@ -124,49 +88,6 @@ func TestRejectsEmptyTarget(t *testing.T) {
 			prod: []string{"target is required"},
 		},
 		{
-			name: "ts: text the test feeds in is fixture, not copy",
-			path: "a.test.tsx",
-			src: `test("edit_file body renders the diff lines", () => {
-  const args = JSON.stringify({ old_string: "old line", new_string: "new line" });
-  render(<Body args={args} />);
-  expect(screen.getByText("old line")).toBeTruthy();
-  expect(screen.getByText("new line")).toBeTruthy();
-});
-`,
-			prod: []string{"old line", "new line"},
-		},
-		{
-			name: "ts: text used only to locate an attribute check is not a copy claim",
-			path: "a.test.tsx",
-			src: `test("scopes the dark pane", () => {
-  render(<ThemeFlip />);
-  expect(screen.getByText("Dark").parentElement?.getAttribute("data-theme")).toBe("dark");
-});
-`,
-			prod: []string{"Dark"},
-		},
-		{
-			name: "ts: a behavior-named test with only a copy oracle is not a target",
-			path: "a.test.ts",
-			src: `test("resetGeneration rejects invalidation waiters", async () => {
-  r.resetGeneration("h");
-  expect(await settled).toMatch(/generation mismatch/);
-});
-`,
-			prod: []string{"generation mismatch"},
-		},
-		{
-			name: "ts: the same copy-only body under a wording name is a target",
-			path: "a.test.ts",
-			src: `test("shows the generation mismatch", async () => {
-  r.resetGeneration("h");
-  expect(await settled).toMatch(/generation mismatch/);
-});
-`,
-			prod: []string{"generation mismatch"},
-			want: []string{"shows the generation mismatch"},
-		},
-		{
 			name: "go: braces inside strings do not merge the next test",
 			path: "a_test.go",
 			src: "package x\n" +
@@ -178,16 +99,6 @@ func TestRejectsEmptyTarget(t *testing.T) {
 				"\tif !strings.Contains(help(), \"Usage: evener\") {\n\t\tt.Fatal(\"no usage\")\n\t}\n}\n",
 			prod: []string{"Usage: evener"},
 			want: []string{"TestHelpShowsUsage"},
-		},
-		{
-			name: "ts: a count on the same line is a behavior claim",
-			path: "a.test.tsx",
-			src: `test("renders Recommended in both themes", () => {
-  render(<Specimen />);
-  expect(screen.getAllByText("Recommended")).toHaveLength(THEMES);
-});
-`,
-			prod: []string{"Recommended"},
 		},
 		{
 			name: "go: a count in the condition is a behavior claim",
@@ -216,17 +127,6 @@ func TestRenderShowsNoSessions(t *testing.T) {
 `,
 			prod: []string{"no sessions yet"},
 			want: []string{"TestRenderShowsNoSessions"},
-		},
-		{
-			name: "ts: the name is not a fixture input",
-			path: "a.test.tsx",
-			src: `test("renders No sessions yet", () => {
-  render(<Empty />);
-  expect(screen.getByText("No sessions yet")).toBeTruthy();
-});
-`,
-			prod: []string{"No sessions yet"},
-			want: []string{"renders No sessions yet"},
 		},
 		{
 			name: "go: a variable comparison in the condition is a behavior claim",
@@ -269,22 +169,6 @@ func TestHelpShowsUsage(t *testing.T) {
 			want: []string{"TestHelpShowsUsage"},
 		},
 		{
-			name: "ts: expression-bodied tests do not swallow their neighbours",
-			path: "a.test.tsx",
-			src: `test("shows the hint", () => expect(screen.getByText("Try again")).toBeTruthy());
-
-test("sends the request", async () => {
-  await send();
-  expect(fake.calls).toHaveLength(1);
-});
-
-test("renders the label", () =>
-  expect(screen.getByText("Retry")).toBeTruthy());
-`,
-			prod: []string{"Try again", "Retry"},
-			want: []string{"shows the hint", "renders the label"},
-		},
-		{
 			name: "go: a machine-token comparison is not a copy term",
 			path: "a_test.go",
 			src: `package x
@@ -296,31 +180,6 @@ func TestHelpShowsUsage(t *testing.T) {
 }
 `,
 			prod: []string{"Usage: evener", "running"},
-		},
-		{
-			name: "ts: a paren in a regex literal does not end a test early",
-			path: "a.test.tsx",
-			src: `test("shows the retry label", async () => {
-  expect(screen.getByText(/Retry[)]/)).toBeTruthy();
-  await send();
-  expect(fake.calls).toHaveLength(1);
-});
-`,
-			prod: []string{"Retry"},
-		},
-		{
-			name: "ts: a paren in a regex literal does not absorb the next test",
-			path: "a.test.tsx",
-			src: `test("shows the open paren label", () => {
-  expect(screen.getByText(/Open[(]/)).toBeTruthy();
-});
-
-test("renders the hint", () => {
-  expect(screen.getByText("Try again")).toBeTruthy();
-});
-`,
-			prod: []string{"Open", "Try again"},
-			want: []string{"shows the open paren label", "renders the hint"},
 		},
 		{
 			name: "go: a semicolon in a trailing comment does not split the condition",
@@ -335,19 +194,6 @@ func TestHelpShowsUsage(t *testing.T) {
 `,
 			prod: []string{"Usage: evener"},
 			want: []string{"TestHelpShowsUsage"},
-		},
-		{
-			name: "ts: inline JSX closing tags do not merge neighbouring tests",
-			path: "a.test.tsx",
-			src: `test("renders the body", () => render(<div>body</div>));
-
-test("shows the hint", () => {
-  render(<span>/tmp/path</span>);
-  expect(screen.getByText("Try again")).toBeTruthy();
-});
-`,
-			prod: []string{"Try again"},
-			want: []string{"shows the hint"},
 		},
 		{
 			name: "go: text supplied in an if initializer is fixture",
@@ -373,25 +219,6 @@ func TestRenderShowsEmpty(t *testing.T) {
 `,
 			prod: []string{"No sessions yet", "empty"},
 			want: []string{"TestRenderShowsEmpty"},
-		},
-		{
-			name: "ts: an imported copy constant is a copy claim",
-			path: "a.test.tsx",
-			src: `import { EMPTY_MESSAGE } from "./Empty";
-
-test("shows the empty message", () => {
-  expect(screen.getByText(EMPTY_MESSAGE)).toBeTruthy();
-});
-`,
-			want: []string{"shows the empty message"},
-		},
-		{
-			name: "ts: a literal found only in tests is fixture",
-			path: "a.test.tsx",
-			src: `test("shows the empty title", () => {
-  expect(screen.getByText("No sessions yet")).toBeTruthy();
-});
-`,
 		},
 		{
 			name: "go: a contract-shaped literal is not copy",
@@ -516,37 +343,6 @@ func TestHelpShowsUsage(t *testing.T) {
 			want: []string{"TestHelpShowsUsage"},
 		},
 		{
-			name: "ts: a commented-out check is not a check",
-			path: "a.test.tsx",
-			src: `test("shows the hint", () => {
-  expect(screen.getByText("Try again")).toBeTruthy();
-  // expect(fake.calls).toHaveLength(1);
-});
-`,
-			prod: []string{"Try again"},
-			want: []string{"shows the hint"},
-		},
-		{
-			name: "ts: a test.each table spread over lines supplies its rows",
-			path: "a.test.tsx",
-			src: `test.each([
-  ["Retry"],
-])("renders the %s label", () => {
-  expect(screen.getByText("Retry")).toBeTruthy();
-});
-`,
-			prod: []string{"Retry"},
-		},
-		{
-			name: "ts: a one-line test.each table supplies its rows",
-			path: "a.test.tsx",
-			src: `test.each([["Retry"]])("renders the %s label", () => {
-  expect(screen.getByText("Retry")).toBeTruthy();
-});
-`,
-			prod: []string{"Retry"},
-		},
-		{
 			name: "go: a numeric comparison before a text comparison is behavior",
 			path: "a_test.go",
 			src: `package x
@@ -628,19 +424,6 @@ func TestHelpShowsUsage(t *testing.T) {
 `,
 			prod: []string{"Usage: evener"},
 		},
-		{
-			name: "ts: a multi-line declaration's name is not a fixture input",
-			path: "a.test.tsx",
-			src: `test(
-  "renders Try again",
-  () => {
-    expect(screen.getByText("Try again")).toBeTruthy();
-  },
-);
-`,
-			prod: []string{"Try again"},
-			want: []string{"renders Try again"},
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -657,205 +440,9 @@ func TestHelpShowsUsage(t *testing.T) {
 
 func TestTargetsReportTheLineTheTestStartsOn(t *testing.T) {
 	t.Parallel()
-	ts := scanFixture(t, "a.test.tsx", tsFlagSrc, "No sessions yet")
-	if len(ts) != 1 || ts[0].Line != 3 {
-		t.Fatalf("ts targets = %+v, want one starting on line 3", ts)
-	}
 	goTargets := scanFixture(t, "a_test.go", goFlagSrc, "Usage: evener")
 	if len(goTargets) != 1 || goTargets[0].Line != 3 {
 		t.Fatalf("go targets = %+v, want one starting on line 3", goTargets)
-	}
-}
-
-// TestTSTestBlocks pins the block boundaries: each case once merged two
-// neighbouring tests or split one.
-func TestTSTestBlocks(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		src  string
-		want []string
-	}{
-		{
-			name: "inline JSX closing tag",
-			src: `test("renders the body", () => render(<div>body</div>));
-
-test("shows the hint", () => {
-  render(<span>/tmp/path</span>);
-  expect(screen.getByText("Try again")).toBeTruthy();
-});
-`,
-			want: []string{"renders the body", "shows the hint"},
-		},
-		{
-			name: "apostrophe in JSX text",
-			src: `test("renders the advice", () => render(<span>Don't retry</span>));
-
-test("shows the hint", () => {
-  expect(screen.getByText("Try again")).toBeTruthy();
-});
-`,
-			want: []string{"renders the advice", "shows the hint"},
-		},
-		{
-			name: "string after a keyword",
-			src: `test("shows the retry label", () => {
-  const label = () => { return "Retry("; };
-  expect(screen.getByText(label())).toBeTruthy();
-  expect(fake.calls).toHaveLength(1);
-});
-
-test("renders the hint", () => {
-  expect(screen.getByText("Try again")).toBeTruthy();
-});
-`,
-			want: []string{"shows the retry label", "renders the hint"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := tsBlockNames(tc.src); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("blocks = %q, want %q", got, tc.want)
-			}
-		})
-	}
-	for _, kw := range []string{"as", "satisfies"} {
-		src := `test("shows the retry label", () => {
-  const label = value ` + kw + ` "Retry(";
-  expect(fake.calls).toHaveLength(1);
-});
-
-test("renders the hint", () => {
-  expect(screen.getByText("Try again")).toBeTruthy();
-});
-`
-		want := []string{"shows the retry label", "renders the hint"}
-		if got := tsBlockNames(src); !reflect.DeepEqual(got, want) {
-			t.Errorf("%s: blocks = %q, want %q", kw, got, want)
-		}
-	}
-}
-
-// TestTSDeclarationFormsGiveTheSameTargets pins that formatting alone can't
-// hide a copy-only test: a declaration whose name starts on a later line, and
-// a test.each table spread over several lines, give the same targets and the
-// same boundaries as their one-line forms.
-func TestTSDeclarationFormsGiveTheSameTargets(t *testing.T) {
-	t.Parallel()
-	const neighbours = `
-test("sends the request", async () => {
-  await send();
-  expect(fake.calls).toHaveLength(1);
-});
-
-test("shows the label", () => {
-  expect(screen.getByText("Retry")).toBeTruthy();
-});
-`
-	const body = `expect(screen.getByText("Try again")).toBeTruthy();`
-	forms := map[string]struct{ name, src string }{
-		"one line": {"renders the hint", `test("renders the hint", () => {
-  ` + body + `
-});
-`},
-		"name on the next line": {"renders the hint", `test(
-  "renders the hint",
-  () => {
-    ` + body + `
-  },
-);
-`},
-		"modifier, name on the next line": {"renders the hint", `it.only(
-  "renders the hint",
-  () => {
-    ` + body + `
-  },
-);
-`},
-		"each on one line": {"renders hint %s", `it.each([1, 2])("renders hint %s", (n) => {
-  ` + body + `
-});
-`},
-		"each over several lines": {"renders hint %s", `test.each([
-  [1, "one"],
-  [2, "two"],
-])(
-  "renders hint %s",
-  (n) => {
-    ` + body + `
-  },
-);
-`},
-		"each table closing alone": {"renders hint %s", `test.each(
-  cases
-)("renders hint %s", (n) => {
-  ` + body + `
-});
-`},
-		"typed each": {"renders hint %s", `test.each<[number]>([[1], [2]])("renders hint %s", (n) => {
-  ` + body + `
-});
-`},
-		"nested generic each": {"renders hint %s", `it.each<Array<[string, number]>>([
-  ["a", 1],
-])(
-  "renders hint %s",
-  (n) => {
-    ` + body + `
-  },
-);
-`},
-		"multi-line type arguments": {"renders hint %s", `test.each<
-  [string, number]
->([
-  ["a", 1],
-])("renders hint %s", (n) => {
-  ` + body + `
-});
-`},
-		"function type in the type arguments": {"renders hint %s", `test.each<[(n: number) => string]>([[String]])("renders hint %s", (f) => {
-  ` + body + `
-});
-`},
-	}
-	for form, tc := range forms {
-		got := scanFixture(t, "a.test.tsx", tc.src+neighbours, "Try again", "Retry")
-		var names []string
-		for _, target := range got {
-			names = append(names, target.Test)
-		}
-		if want := []string{tc.name, "shows the label"}; !reflect.DeepEqual(names, want) {
-			t.Errorf("%s: targets = %q, want %q", form, names, want)
-		}
-		if len(got) > 0 && got[0].Line != 1 {
-			t.Errorf("%s: first target starts on line %d, want 1", form, got[0].Line)
-		}
-	}
-}
-
-// TestTSCountAssertionsAreBehavior pins that a count of elements found by
-// their text, in any of its spellings, is a behavior check, as is any numeric
-// matcher.
-func TestTSCountAssertionsAreBehavior(t *testing.T) {
-	t.Parallel()
-	for _, check := range []string{
-		`expect(screen.getAllByText("Recommended")).toHaveLength(2);`,
-		`expect(screen.getAllByText("Recommended").length).toBe(2);`,
-		`expect(screen.getAllByText("Recommended").length).toEqual(2);`,
-		`expect(screen.queryAllByText("Recommended").length).toBeGreaterThanOrEqual(1);`,
-		`expect(rowsMatching(screen.getByText("Recommended"))).toBe(2);`,
-		`expect(rowsMatching(screen.getByText("Recommended"))).toStrictEqual(-1);`,
-	} {
-		src := "test(\"renders Recommended in both themes\", () => {\n  render(<Specimen />);\n  " + check + "\n});\n"
-		if got := scanFixture(t, "a.test.tsx", src, "Recommended"); len(got) != 0 {
-			t.Errorf("%s: targets = %+v, want none", check, got)
-		}
-	}
-	// The same test with a copy-only check is a target, so the cases above
-	// pass for the count and not for some other reason.
-	src := "test(\"renders Recommended in both themes\", () => {\n  render(<Specimen />);\n  expect(screen.getByText(\"Recommended\")).toBeTruthy();\n});\n"
-	if got := scanFixture(t, "a.test.tsx", src, "Recommended"); len(got) != 1 {
-		t.Errorf("copy-only control: targets = %+v, want one", got)
 	}
 }
 
@@ -911,9 +498,6 @@ func TestScanReadsTheRepositoryCorpus(t *testing.T) {
 	goTest := func(name, phrase string) string {
 		return "func " + name + "(t *testing.T) {\n\tif !strings.Contains(out(), \"" + phrase + "\") {\n\t\tt.Fatal(1)\n\t}\n}\n"
 	}
-	tsTest := func(name, phrase string) string {
-		return "test(\"" + name + "\", () => {\n  expect(screen.getByText(\"" + phrase + "\")).toBeTruthy();\n});\n"
-	}
 
 	write("pkg/x.go", "package x\nconst a = \"Go phrase here\"\n")
 	write("pkg/x_test.go", "package x\n"+goTest("TestShowsGoPhrase", "Go phrase here")+goTest("TestShowsAssetPhrase", "asset phrase here"))
@@ -921,23 +505,10 @@ func TestScanReadsTheRepositoryCorpus(t *testing.T) {
 	write("pkg/fixture_test.go", "package x\n"+goTest("TestShowsTestOnlyPhrase", "only in tests here"))
 	write("docs/guide.md", "a docs phrase here\n")
 	write("pkg/doc_test.go", "package x\n"+goTest("TestShowsDocsPhrase", "a docs phrase here"))
-
-	front := "cmd/evener-hub/frontend/src/"
-	write(front+"Empty.tsx", "export const Empty = () => <p>Nothing to show</p>;\n")
-	write(front+"Empty.test.tsx", tsTest("shows nothing", "Nothing to show"))
-	write(front+"helper.d.ts", "declare const x: \"Declared phrase\";\n")
-	write(front+"Declared.test.tsx", tsTest("shows the declared phrase", "Declared phrase"))
-	write(front+"testing/fake.ts", "export const f = \"Fake phrase\";\n")
-	write(front+"Fake.test.tsx", tsTest("shows the fake phrase", "Fake phrase"))
-	write("other/src/Other.tsx", "export const o = \"Other tree phrase\";\n")
-	write("other/src/Other.test.tsx", tsTest("shows the other phrase", "Other tree phrase"))
-	write("mobile-native/node_modules/dep/index.ts", "export const d = \"Vendored phrase\";\n")
-	write("mobile-native/src/Dep.test.ts", tsTest("shows the vendored phrase", "Vendored phrase"))
-	// mobile-native typechecks and tests the shared mobile/src tree, so its
-	// tests are scanned and its sources are production copy for both trees.
-	write("mobile/src/state/shared.ts", "export const s = \"Shared mobile phrase\";\n")
-	write("mobile/src/state/shared.test.ts", tsTest("shows the shared phrase", "Shared mobile phrase"))
-	write("mobile-native/src/Shared.test.ts", tsTest("shows the shared phrase", "Shared mobile phrase"))
+	// TypeScript tests belong to the frontend's own audit.
+	write("cmd/evener-hub/frontend/src/Empty.tsx", "export const Empty = () => <p>Nothing to show</p>;\n")
+	write("cmd/evener-hub/frontend/src/Empty.test.tsx",
+		"test(\"shows nothing\", () => {\n  expect(screen.getByText(\"Nothing to show\")).toBeTruthy();\n});\n")
 
 	write("pkg/untracked_test.go", "package x\n"+goTest("TestShowsUntrackedPhrase", "Go phrase here"))
 	for _, args := range [][]string{{"init", "-q"}, {"add", "--", "."}, {"rm", "-q", "--cached", "--", "pkg/untracked_test.go"}} {
@@ -953,9 +524,6 @@ func TestScanReadsTheRepositoryCorpus(t *testing.T) {
 		t.Fatalf("Scan: %v", err)
 	}
 	want := []Target{
-		{File: "cmd/evener-hub/frontend/src/Empty.test.tsx", Test: "shows nothing", Line: 1},
-		{File: "mobile-native/src/Shared.test.ts", Test: "shows the shared phrase", Line: 1},
-		{File: "mobile/src/state/shared.test.ts", Test: "shows the shared phrase", Line: 1},
 		{File: "pkg/x_test.go", Test: "TestShowsGoPhrase", Line: 2},
 		{File: "pkg/x_test.go", Test: "TestShowsAssetPhrase", Line: 7},
 	}

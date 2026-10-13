@@ -1,7 +1,9 @@
-// Package copyonly finds tests that exist only to check wording, the ratchet
-// behind docs/developing-evener/testing.md's "Copy Is Not a Test Oracle". The
-// root copyonly_audit_test.go runs Scan over the repository and fails on any
-// target missing from allowlist.tsv.
+// Package copyonly finds Go tests that exist only to check wording, the
+// ratchet behind docs/developing-evener/testing.md's "Copy Is Not a Test
+// Oracle". The root copyonly_audit_test.go runs Scan over the repository and
+// fails on any target missing from allowlist.tsv. TypeScript tests have their
+// own scanner, on the TypeScript compiler, in
+// cmd/evener-hub/frontend/src/dev/copyonly.
 //
 // A target is a test whose name says its subject is wording (it shows,
 // renders, labels, says, ...) and whose every check is a copy claim. A check
@@ -9,15 +11,14 @@
 // else: an expected error, a count or comparison, an attribute or state read
 // from an element found by its text, or a comparison with a machine-contract
 // token makes it a behavior check. A copy literal is one that also appears in
-// production source (or, for Go, in a production text asset such as an
-// embedded prompt), is not shaped like an identifier, code or markup, and is
+// production Go source or in a production text asset such as an embedded
+// prompt, is not shaped like an identifier, code or markup, and is
 // not text the test itself supplied: seeing a test's own fixture come back out
 // is a real behavioral check.
 //
-// This is the Go port of tools/copy-oracle/inventory.py --copy-only. Go tests
-// are read through go/ast, so conditions split across lines and raw strings
-// holding braces are understood exactly. TypeScript tests keep the Python
-// tool's line-based scanner.
+// This is the Go port of tools/copy-oracle/inventory.py --copy-only. Tests are
+// read through go/ast, so conditions split across lines and raw strings
+// holding braces are understood exactly.
 package copyonly
 
 import (
@@ -28,7 +29,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -43,24 +43,11 @@ type Target struct {
 	Line int
 }
 
-// tsTrees are the TypeScript source trees: tests in them are scanned, and
-// their non-test sources are the TypeScript production corpus. mobile/src is
-// the shared tree mobile-native typechecks and tests.
-var tsTrees = []string{"cmd/evener-hub/frontend/src/", "mobile-native/", "mobile/src/", "appwire-client/typescript/"}
-
-var (
-	tsSource = regexp.MustCompile(`\.(ts|tsx|mts)$`)
-	// tsTestSupport marks TypeScript files that are tests or test support, so
-	// none of them is production copy.
-	tsTestSupport = regexp.MustCompile(`(/__tests__/|TestUtils\.|/testing/|/src/dev/)`)
-	tsTestFile    = regexp.MustCompile(`\.(test|spec)\.`)
-)
-
 // assetExts are the non-Go text assets (embedded prompts, templates) whose
 // phrases count as copy for Go tests.
 var assetExts = []string{".md", ".tmpl", ".txt", ".gotmpl", ".prompt"}
 
-// Scan reports every target among the tests git tracks in the checkout at
+// Scan reports every target among the Go tests git tracks in the checkout at
 // root, sorted by file and line. Tracked files are read as they are in the
 // working tree. Untracked files are left out, so a scratch file another test
 // is writing can't change the answer; a new test counts once it is added.
@@ -69,27 +56,21 @@ func Scan(root string) ([]Target, error) {
 	if err != nil {
 		return nil, err
 	}
-	var goTests, tsTests, goProd, tsProd, assets []string
+	var tests, prod, assets []string
 	for _, f := range files {
 		switch {
 		case strings.HasSuffix(f, "_test.go"):
-			goTests = append(goTests, f)
+			tests = append(tests, f)
 		case strings.HasSuffix(f, ".go"):
-			goProd = append(goProd, f)
-		case inTSTree(f) && tsSource.MatchString(f) && !strings.HasSuffix(f, ".d.ts"):
-			if tsTestFile.MatchString(f) {
-				tsTests = append(tsTests, f)
-			} else if !tsTestSupport.MatchString(f) {
-				tsProd = append(tsProd, f)
-			}
+			prod = append(prod, f)
 		case isAsset(f):
 			assets = append(assets, f)
 		}
 	}
-	s := newScanner(readAll(root, goProd), readAll(root, tsProd), readAll(root, assets))
+	s := newScanner(readAll(root, prod), readAll(root, assets))
 
 	var targets []Target
-	for _, f := range slices.Concat(goTests, tsTests) {
+	for _, f := range tests {
 		src, err := os.ReadFile(filepath.Join(root, f))
 		if os.IsNotExist(err) {
 			continue // tracked but deleted in the working tree
@@ -97,7 +78,7 @@ func Scan(root string) ([]Target, error) {
 		if err != nil {
 			return nil, fmt.Errorf("copyonly: %w", err)
 		}
-		found, err := s.scanFile(f, string(src))
+		found, err := s.scanGo(f, string(src))
 		if err != nil {
 			return nil, fmt.Errorf("copyonly: %s: %w", f, err)
 		}
@@ -128,15 +109,6 @@ func listFiles(root string) ([]string, error) {
 		}
 	}
 	return files, nil
-}
-
-func inTSTree(f string) bool {
-	for _, tree := range tsTrees {
-		if strings.HasPrefix(f, tree) {
-			return true
-		}
-	}
-	return false
 }
 
 // isAsset reports a production text asset. The docs and test data are prose
@@ -191,20 +163,11 @@ func (c *corpus) contains(lit string) bool {
 
 // scanner holds the production corpora a test's literals are looked up in.
 type scanner struct {
-	goProd, tsProd, assets *corpus
+	goProd, assets *corpus
 }
 
-func newScanner(goProd, tsProd, assets string) *scanner {
-	return &scanner{goProd: newCorpus(goProd), tsProd: newCorpus(tsProd), assets: newCorpus(assets)}
-}
-
-// scanFile reports the targets in one test file, Go or TypeScript by its
-// name.
-func (s *scanner) scanFile(path, src string) ([]Target, error) {
-	if strings.HasSuffix(path, ".go") {
-		return s.scanGo(path, src)
-	}
-	return s.scanTS(path, src), nil
+func newScanner(goProd, assets string) *scanner {
+	return &scanner{goProd: newCorpus(goProd), assets: newCorpus(assets)}
 }
 
 var (
