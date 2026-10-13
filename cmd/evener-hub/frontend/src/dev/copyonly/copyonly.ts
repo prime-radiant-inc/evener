@@ -140,21 +140,19 @@ export class Scanner {
 
   private isCopyOnly(decl: TestDeclaration, sf: ts.SourceFile, imported: Set<string>): boolean {
     const checks = findChecks(decl.call);
-    if (checks.length === 0) return false;
+    if (checks.length === 0 || checks.some(checksBehavior)) return false;
     const supplied = suppliedText(decl, checks, sf);
     return checks.every((check) => this.isCopyClaim(check, supplied, sf, imported));
   }
 
   /**
-   * A check that claims only that some copy appears: nothing in it checks
-   * behavior, none of its literals is text the test supplied, and it compares
-   * output with production copy.
+   * A check (already known not to check behavior) that claims only that some
+   * copy appears: none of its literals is text the test supplied, and it
+   * compares output with production copy.
    */
   private isCopyClaim(check: ts.Node, supplied: string, sf: ts.SourceFile, imported: Set<string>): boolean {
-    if (checksBehavior(check)) return false;
-    if (stringLiterals(check).some((lit) => [...rawText(lit, sf)].length >= 3 && supplied.includes(rawText(lit, sf)))) {
-      return false;
-    }
+    const isSupplied = (raw: string) => runeLength(raw) >= 3 && supplied.includes(raw);
+    if (stringLiterals(check).some((lit) => isSupplied(rawText(lit, sf)))) return false;
     return copyProbes(check, sf, imported).some(
       (probe) => probe === IMPORTED_COPY || (!contractShaped(probe) && this.inProd(probe)),
     );
@@ -211,16 +209,15 @@ function calleeName(call: ts.CallExpression): string | null {
  */
 function findChecks(call: ts.CallExpression): ts.Node[] {
   const roots: ts.Node[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
+  for (const arg of call.arguments.slice(1)) {
+    walk(arg, (node) => {
+      if (!ts.isCallExpression(node)) return;
       const name = calleeName(node);
       if ((ts.isIdentifier(node.expression) && name === "expect") || (name !== null && CHECK_QUERY.test(name))) {
         roots.push(chainTop(node));
       }
-    }
-    ts.forEachChild(node, visit);
-  };
-  for (const arg of call.arguments.slice(1)) visit(arg);
+    });
+  }
   return roots.filter(
     (check, i) =>
       roots.indexOf(check) === i &&
@@ -245,8 +242,7 @@ function chainTop(node: ts.Node): ts.Node {
 /** A check that reads a count, structure or state, asserts on a spy, or finds by role. */
 function checksBehavior(check: ts.Node): boolean {
   let found = false;
-  const visit = (node: ts.Node): void => {
-    if (found) return;
+  walk(check, (node) => {
     if (ts.isPropertyAccessExpression(node) && BEHAVIOR_PROPERTIES.has(node.name.text)) found = true;
     if (ts.isCallExpression(node)) {
       const name = calleeName(node) ?? "";
@@ -259,9 +255,8 @@ function checksBehavior(check: ts.Node): boolean {
     if (ts.isBinaryExpression(node) && COMPARISONS.has(node.operatorToken.kind)) {
       found ||= isNumber(node.left) || isNumber(node.right);
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(check);
+    return !found;
+  });
   return found;
 }
 
@@ -280,24 +275,20 @@ const IMPORTED_COPY = Symbol("imported copy");
  */
 function copyProbes(check: ts.Node, sf: ts.SourceFile, imported: Set<string>): (string | typeof IMPORTED_COPY)[] {
   const probes: (string | typeof IMPORTED_COPY)[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      const name = calleeName(node) ?? "";
-      const arg = node.arguments[0];
-      const isMatcher = ts.isPropertyAccessExpression(node.expression) && TEXT_MATCHERS.has(name);
-      if (arg !== undefined && (TEXT_QUERY.test(name) || isMatcher)) {
-        if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
-          probes.push(rawText(arg, sf).trim());
-        } else if (ts.isRegularExpressionLiteral(arg)) {
-          probes.push(regexCore(arg.text.slice(1, arg.text.lastIndexOf("/"))).trim());
-        } else if (ts.isIdentifier(arg) && imported.has(arg.text)) {
-          probes.push(IMPORTED_COPY);
-        }
-      }
+  walk(check, (node) => {
+    if (!ts.isCallExpression(node)) return;
+    const name = calleeName(node) ?? "";
+    const arg = node.arguments[0];
+    const isMatcher = ts.isPropertyAccessExpression(node.expression) && TEXT_MATCHERS.has(name);
+    if (arg === undefined || !(TEXT_QUERY.test(name) || isMatcher)) return;
+    if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
+      probes.push(rawText(arg, sf).trim());
+    } else if (ts.isRegularExpressionLiteral(arg)) {
+      probes.push(regexCore(arg.text.slice(1, arg.text.lastIndexOf("/"))).trim());
+    } else if (ts.isIdentifier(arg) && imported.has(arg.text)) {
+      probes.push(IMPORTED_COPY);
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(check);
+  });
   return probes;
 }
 
@@ -308,8 +299,8 @@ function copyProbes(check: ts.Node, sf: ts.SourceFile, imported: Set<string>): (
 function suppliedText(decl: TestDeclaration, checks: ts.Node[], sf: ts.SourceFile): string {
   const parts: string[] = [];
   const skip = new Set<ts.Node>([decl.name, ...checks]);
-  const visit = (node: ts.Node): void => {
-    if (skip.has(node)) return;
+  walk(decl.call, (node) => {
+    if (skip.has(node)) return false;
     // Raw source text, escapes as written, the form check literals are
     // compared in.
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
@@ -319,20 +310,28 @@ function suppliedText(decl: TestDeclaration, checks: ts.Node[], sf: ts.SourceFil
     } else if (ts.isJsxText(node)) {
       parts.push(node.text);
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(decl.call);
+  });
   return parts.join("\n");
 }
 
 function stringLiterals(root: ts.Node): (ts.StringLiteral | ts.NoSubstitutionTemplateLiteral)[] {
   const found: (ts.StringLiteral | ts.NoSubstitutionTemplateLiteral)[] = [];
-  const visit = (node: ts.Node): void => {
+  walk(root, (node) => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) found.push(node);
-    ts.forEachChild(node, visit);
-  };
-  visit(root);
+  });
   return found;
+}
+
+/** Visits root and its descendants depth-first; returning false from visit skips a node's children. */
+function walk(root: ts.Node, visit: (node: ts.Node) => boolean | undefined): void {
+  const step = (node: ts.Node): void => {
+    if (visit(node) !== false) ts.forEachChild(node, step);
+  };
+  step(root);
+}
+
+function runeLength(s: string): number {
+  return [...s].length;
 }
 
 /** A string literal's source text between its quotes, escapes as written. */
@@ -366,7 +365,7 @@ const CODE_LIKE =
 
 /** A literal that is a machine contract (or too short or letterless to be wording), not copy. */
 export function contractShaped(lit: string): boolean {
-  if ([...lit].length < 3 || !/[A-Za-z]/.test(lit) || CODE_LIKE.test(lit)) return true;
+  if (runeLength(lit) < 3 || !/[A-Za-z]/.test(lit) || CODE_LIKE.test(lit)) return true;
   return CONTRACT_TOKEN.test(lit) && !LABEL_WORD.test(lit);
 }
 
@@ -401,7 +400,7 @@ export function regexCore(rx: string): string {
   runs.push(run);
   let best = runs[0] ?? "";
   for (const r of runs) {
-    if ([...r].length > [...best].length) best = r;
+    if (runeLength(r) > runeLength(best)) best = r;
   }
   return best;
 }

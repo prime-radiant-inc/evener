@@ -7,15 +7,16 @@
 // a reason. The allowlist should only shrink: an entry whose test is
 // converted, deleted or renamed is stale and must go. Go tests have the same
 // audit in copyonly_audit_test.go.
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { scanRepo } from "./copyonly";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(HERE, "../../../../../..");
-const ALLOWLIST = "cmd/evener-hub/frontend/src/dev/copyonly/allowlist.tsv";
+const ROOT = execFileSync("git", ["-C", HERE, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+const ALLOWLIST = relative(ROOT, join(HERE, "allowlist.tsv"));
 const HEADER = "file\ttest\treason";
 
 /** The allowlist's file\ttest keys; every row needs a reason, and a test may be listed once. */
