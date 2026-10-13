@@ -100,6 +100,23 @@ test("memory_write renders its body as Markdown", () => {
   expect(screen.getByText("saved prose").tagName).toBe("STRONG");
 });
 
+test("memory_write shows its when line above the body", () => {
+  const Body = toolRendererFor("memory_write").body!;
+  render(
+    <Body
+      item={item({
+        toolName: "memory_write",
+        argumentsJSON: JSON.stringify({ when: "When pricing a cart", body: "# Cart pricing\n\nfact" }),
+      })}
+      live={false}
+    />,
+  );
+
+  expect(screen.getByText("When:").tagName).toBe("STRONG");
+  expect(screen.getByText(/When pricing a cart/)).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Cart pricing" })).toBeTruthy();
+});
+
 test("memory_write body passes through at the 8,000-character boundary and clips with the established marker above it", () => {
   const Body = toolRendererFor("memory_write").body!;
   const atBudget = "x".repeat(8_000);

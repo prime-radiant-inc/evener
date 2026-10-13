@@ -4,6 +4,7 @@ import {
   memoryEditSummary,
   memoryReadSummary,
   memorySearchSummary,
+  memoryWritePage,
   memoryWriteSummary,
   parseArgs,
   str,
@@ -22,10 +23,10 @@ function MemoryWriteBody({ item, live }: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
   // Only the current argument shape renders; a fallback for the older `content`
   // argument is a compatibility decision that needs Jesse's approval.
-  const body = str(args, "body");
+  const page = memoryWritePage(args);
   // An empty page renders the confirmation, not an empty markdown block -
   // the same empty-body guard the native evidence applies.
-  if (body) return <Markdown source={clip(body, TOOL_BODY_MAX_CHARS)} />;
+  if (page) return <Markdown source={clip(page, TOOL_BODY_MAX_CHARS)} />;
 
   return <WriteFileBody item={item} live={live} />;
 }

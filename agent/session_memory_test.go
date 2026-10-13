@@ -444,7 +444,11 @@ func TestMemoryScopeRootRecovery(t *testing.T) {
 			wantState, wantBody = "unavailable", ""
 			run()
 			for _, name := range []string{"memory_read", "memory_write", "memory_delete"} {
-				if res := memoryExec(t, s, name, map[string]any{"scope": scope, "file_path": "fact.md", "content": "bad"}); !res.IsError {
+				args := map[string]any{"scope": scope, "file_path": "fact.md"}
+				if name == "memory_write" {
+					args["when"], args["body"] = "w", "bad"
+				}
+				if res := memoryExec(t, s, name, args); !res.IsError {
 					t.Fatalf("symlink replacement accepted %s", name)
 				}
 			}
@@ -2634,7 +2638,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 				args["file_path"] = path
 			}
 			if name == "memory_write" {
-				args["content"] = "bad"
+				args["when"], args["body"] = "w", "bad"
 			}
 			if name == "memory_edit" {
 				args["old_string"] = "opaque"

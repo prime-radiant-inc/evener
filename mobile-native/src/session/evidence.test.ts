@@ -560,6 +560,12 @@ describe("memory step evidence", () => {
 		).toEqual([{ kind: "markdown", title: "personal/notes.md", markdown: content }]);
 	});
 
+	it("shows a written page's when line above its body", () => {
+		expect(
+			stepEvidence(memory("memory_write", JSON.stringify({ file_path: "p.md", when: "When pricing", body: "# Cart" }))),
+		).toEqual([{ kind: "markdown", title: "p.md", markdown: "**When:** When pricing\n\n# Cart" }]);
+	});
+
 	it("shows a rejected session-memory write's error", () => {
 		const error = "session memory belongs to the root session; report this to your parent instead";
 		const rejectedWrite = memory(
