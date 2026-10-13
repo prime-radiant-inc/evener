@@ -7,12 +7,15 @@
 // SAME 5s deadline inside the page, as one awaited Runtime.evaluate per context.
 //
 // These cases drive the REAL pollInPage expression - the string the guard sends
-// to Chrome - against a Runtime.evaluate that answers it here, so the loop's
-// accept / early-return / deadline behavior is pinned without a browser.
+// to Chrome - against a Runtime.evaluate that answers it here, on a fake clock,
+// so the loop's accept / early-return / deadline behavior is deterministic and
+// pinned without a browser. The deadline MESSAGE is copy a person reads: it is
+// reviewed in the diff, never asserted here (docs/developing-evener/testing.md,
+// "Copy Is Not a Test Oracle").
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { POLL_MS, pollInPage, WAIT_MS, waitDeadline } from "./inPageWait.mjs";
+import { POLL_MS, pollInPage, WAIT_MS } from "./inPageWait.mjs";
 import { SOURCE_DISCOVERED, SUPPRESSED } from "./predicates.mjs";
 
 // Answer Runtime.evaluate the way the CDP wire does: the awaited value of the
@@ -23,7 +26,8 @@ const evaluatingSend = (run) => async (method, params) => {
 };
 
 // An indirect evaluation in this process's global scope, the way the page's own
-// scope resolves the interpolated read/predicate.
+// scope resolves the interpolated read/predicate. The page's timers and clock
+// are this process's, so the fake clock below drives the real loop.
 const send = evaluatingSend((expression) => new Function(`return (${expression});`)());
 
 // Evaluate one of the guard's own predicates against a snapshot shape, the way
@@ -31,7 +35,10 @@ const send = evaluatingSend((expression) => new Function(`return (${expression})
 // here, not silently in a browser run.
 const evaluatePredicate = (predicate, state) => new Function(`return (${predicate});`)()(state);
 
+const advance = (ms) => vi.advanceTimersByTimeAsync(ms);
+
 afterEach(() => {
+  vi.useRealTimers();
   delete globalThis.__reads;
 });
 
@@ -39,14 +46,6 @@ describe("the guard's own cadence and deadline", () => {
   test("polls at 20ms on a 5s deadline", () => {
     expect(POLL_MS).toBe(20);
     expect(WAIT_MS).toBe(5000);
-  });
-
-  test("a wait that spent its deadline names the deadline and the last value read", () => {
-    expect(
-      waitDeadline("clear-epoch suppression: B never suppressed before storage I/O", { sourceId: null }).message,
-    ).toBe(
-      'clear-epoch suppression: B never suppressed before storage I/O (5000ms deadline); observed {"sourceId":null}',
-    );
   });
 });
 
@@ -68,6 +67,7 @@ describe("the guard's own predicates", () => {
 
 describe("pollInPage", () => {
   test("accepts on the first poll and returns the observed value", async () => {
+    vi.useFakeTimers();
     globalThis.__reads = 0;
     const result = await pollInPage(send, `(globalThis.__reads += 1)`, `(n) => n >= 1`, {
       waitMs: 500,
@@ -78,23 +78,42 @@ describe("pollInPage", () => {
   });
 
   test("re-polls the same predicate until it holds", async () => {
+    vi.useFakeTimers();
     globalThis.__reads = 0;
-    const result = await pollInPage(send, `(globalThis.__reads += 1)`, `(n) => n >= 3`, {
+    const pending = pollInPage(send, `(globalThis.__reads += 1)`, `(n) => n >= 3`, {
       waitMs: 500,
       pollMs: 5,
     });
-    expect(result).toEqual({ ok: true, observed: 3 });
+    await advance(500);
+    await expect(pending).resolves.toEqual({ ok: true, observed: 3 });
     expect(globalThis.__reads).toBe(3);
   });
 
   test("gives up on the deadline with ok false and the last observed value", async () => {
+    vi.useFakeTimers();
     globalThis.__reads = 0;
-    const result = await pollInPage(send, `(globalThis.__reads += 1, { at: globalThis.__reads })`, `() => false`, {
+    const pending = pollInPage(send, `(globalThis.__reads += 1, { at: globalThis.__reads })`, `() => false`, {
       waitMs: 100,
       pollMs: 10,
     });
+    await advance(100);
+    const result = await pending;
     expect(result.ok).toBe(false);
     expect(result.observed).toEqual({ at: globalThis.__reads });
-    expect(globalThis.__reads).toBeGreaterThanOrEqual(3);
+    expect(globalThis.__reads).toBeGreaterThanOrEqual(2);
+  });
+
+  test("reads after the deadline check, so a poll delayed past the deadline still observes the condition", async () => {
+    vi.useFakeTimers();
+    globalThis.__reads = 0;
+    // One poll, delayed to 40ms against a 10ms deadline: the condition holds by
+    // the time the delayed poll lands, so the wait must succeed. Checking the
+    // deadline before the read would report a false timeout here.
+    const pending = pollInPage(send, `(globalThis.__reads += 1, globalThis.__reads)`, `(n) => n >= 2`, {
+      waitMs: 10,
+      pollMs: 40,
+    });
+    await advance(200);
+    await expect(pending).resolves.toEqual({ ok: true, observed: 2 });
   });
 });

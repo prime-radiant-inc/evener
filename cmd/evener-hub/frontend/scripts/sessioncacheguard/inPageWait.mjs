@@ -14,10 +14,11 @@
 // fails the guard on the first tick). `send` is the context's CDP send: a page's
 // own, or a realm's with its executionContextId already bound.
 //
-// Chrome can throttle a hidden page's timers, which would only DELAY a poll, not
-// skip the predicate: every predicate the guard waits on is monotone (once it
-// holds it keeps holding), so a coarser cadence cannot change the verdict, and
-// the deadline still bounds the wait.
+// Chrome throttles a hidden page's timers, which can delay a poll past the
+// deadline. The loop therefore READS, then checks the deadline, so the read is
+// always the last thing a wait does before it gives up: a poll delayed beyond
+// the deadline still observes a condition that became true during the delay,
+// instead of reporting a false timeout.
 
 import { evaluate } from "../browserGuardCdp.mjs";
 
@@ -36,13 +37,12 @@ export function pollInPage(send, read, accepts, { waitMs = WAIT_MS, pollMs = POL
     send,
     `(async () => {
       const deadline = performance.now() + ${Number(waitMs)};
-      let observed;
-      do {
-        observed = await (${read});
+      for (;;) {
+        const observed = await (${read});
         if ((${accepts})(observed)) return { ok: true, observed };
+        if (performance.now() >= deadline) return { ok: false, observed };
         await new Promise((resolve) => setTimeout(resolve, ${Number(pollMs)}));
-      } while (performance.now() < deadline);
-      return { ok: false, observed };
+      }
     })()`,
   );
 }
@@ -52,7 +52,8 @@ export function pollInPage(send, read, accepts, { waitMs = WAIT_MS, pollMs = POL
  * sentence, the deadline, and the last value read. Kept here so the deadline
  * the two share cannot drift apart. It names the guard's own WAIT_MS because
  * that is the only deadline the guard uses; pollInPage's `waitMs` exists so the
- * unit test can run budget-short cases without waiting the real 5s.
+ * unit test can run budget-short cases without waiting the real 5s. The wording
+ * is copy a person reads, so it is reviewed in the diff, not asserted by a test.
  */
 export function waitDeadline(message, observed) {
   return new Error(`${message} (${WAIT_MS}ms deadline); observed ${JSON.stringify(observed)}`);
