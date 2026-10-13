@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -150,7 +151,7 @@ func TestEachLineYieldsSplitSegments(t *testing.T) {
 			got = append(got, line)
 			return false
 		})
-		if !equalStringSlices(got, want) {
+		if !slices.Equal(got, want) {
 			t.Fatalf("eachLine(%q) = %q, want %q", text, got, want)
 		}
 		got = got[:0]
@@ -162,16 +163,4 @@ func TestEachLineYieldsSplitSegments(t *testing.T) {
 			t.Fatalf("eachLine(%q) visited %d segments after stop, want 1", text, len(got))
 		}
 	}
-}
-
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

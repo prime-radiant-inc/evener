@@ -78,12 +78,7 @@ func TestReadFileOffArmCapsWholeFileRead(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
 	path := filepath.Join(dir, "oversize.log")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatalf("create oversize: %v", err)
-	}
-	if err := os.Truncate(path, MaxWholeFileReadBytes+1); err != nil {
-		t.Fatalf("truncate oversize: %v", err)
-	}
+	sparseOversize(t, path)
 	_, raw, err := env.ReadFileAndBytes(path, nil, nil)
 	if err == nil {
 		t.Fatalf("ReadFileAndBytes(oversize) = %d bytes, nil; want the read-limit refusal", len(raw))
@@ -149,9 +144,7 @@ func TestReadFileRawOffArmRefusesFIFOWithoutBlocking(t *testing.T) {
 func TestReadFileOffArmRefusesOversizeBeforeReadingIt(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	path := filepath.Join(env.WorkingDirectory(), "oversize-dense.log")
-	if err := writeDenseOversize(t, path); err != nil {
-		t.Fatal(err)
-	}
+	writeDenseOversize(t, path)
 
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
@@ -172,19 +165,20 @@ func TestReadFileOffArmRefusesOversizeBeforeReadingIt(t *testing.T) {
 // writeDenseOversize writes a real (non-sparse) file of NUL-free bytes one
 // past the whole-file read cap, so no later NUL-byte or truncation check can
 // masquerade as the cap's refusal.
-func writeDenseOversize(t *testing.T, path string) error {
+func writeDenseOversize(t *testing.T, path string) {
 	t.Helper()
 	f, err := os.Create(path)
 	if err != nil {
-		return err
+		t.Fatalf("create dense oversize: %v", err)
 	}
 	defer f.Close()
 	chunk := bytes.Repeat([]byte("a"), 1<<20)
 	for written := int64(0); written < MaxWholeFileReadBytes; written += 1 << 20 {
 		if _, err := f.Write(chunk); err != nil {
-			return err
+			t.Fatalf("write dense oversize: %v", err)
 		}
 	}
-	_, err = f.WriteString("a")
-	return err
+	if _, err := f.WriteString("a"); err != nil {
+		t.Fatalf("write dense oversize tail: %v", err)
+	}
 }

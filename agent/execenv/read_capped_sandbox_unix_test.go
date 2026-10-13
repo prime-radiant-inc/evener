@@ -4,7 +4,6 @@ package execenv
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -22,12 +21,7 @@ func TestSandboxReadFileCapsWholeFileRead(t *testing.T) {
 	t.Parallel()
 	s, _, worktree := newSB(t, sandbox.ModeRestricted)
 	path := filepath.Join(worktree, "oversize.log")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatalf("create oversize: %v", err)
-	}
-	if err := os.Truncate(path, MaxWholeFileReadBytes+1); err != nil {
-		t.Fatalf("truncate oversize: %v", err)
-	}
+	sparseOversize(t, path)
 	got, err := s.readFile("read_file", path)
 	if err == nil {
 		t.Fatalf("readFile(oversize) = %d bytes, nil; want the read-limit refusal", len(got))
@@ -49,12 +43,7 @@ func TestSandboxReadFileCapsWholeFileRead(t *testing.T) {
 func TestSandboxReadFileRefusesOversizeBeforeReadingIt(t *testing.T) {
 	s, _, worktree := newSB(t, sandbox.ModeRestricted)
 	path := filepath.Join(worktree, "oversize.log")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatalf("create oversize: %v", err)
-	}
-	if err := os.Truncate(path, MaxWholeFileReadBytes+1); err != nil {
-		t.Fatalf("truncate oversize: %v", err)
-	}
+	sparseOversize(t, path)
 
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)

@@ -104,12 +104,7 @@ func TestReadFileCappedReadsARegularFile(t *testing.T) {
 func TestReadFileCappedFailsFastPastCap(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "oversize.log")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatalf("create oversize: %v", err)
-	}
-	if err := os.Truncate(path, MaxWholeFileReadBytes+1); err != nil {
-		t.Fatalf("truncate oversize: %v", err)
-	}
+	sparseOversize(t, path)
 	got, err := ReadFileCapped(path)
 	if err == nil {
 		t.Fatalf("ReadFileCapped(oversize) = %d bytes, nil; want the read-limit refusal", len(got))
@@ -120,5 +115,17 @@ func TestReadFileCappedFailsFastPastCap(t *testing.T) {
 	}
 	if rle.Limit != MaxWholeFileReadBytes {
 		t.Fatalf("ReadLimitError.Limit = %d, want %d", rle.Limit, MaxWholeFileReadBytes)
+	}
+}
+
+// sparseOversize leaves a fresh file at path one byte past the whole-file
+// read cap; the fixture costs no I/O.
+func sparseOversize(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("create oversize: %v", err)
+	}
+	if err := os.Truncate(path, MaxWholeFileReadBytes+1); err != nil {
+		t.Fatalf("truncate oversize: %v", err)
 	}
 }

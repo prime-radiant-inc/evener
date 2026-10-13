@@ -1524,16 +1524,10 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 // of slice header per line at once (issue #4556). The walk stops once visit
 // returns true.
 func eachLine(text string, visit func(line string) bool) {
-	for {
-		idx := strings.IndexByte(text, '\n')
-		if idx < 0 {
-			visit(text)
+	for line := range strings.SplitSeq(text, "\n") {
+		if visit(line) {
 			return
 		}
-		if visit(text[:idx]) {
-			return
-		}
-		text = text[idx+1:]
 	}
 }
 
