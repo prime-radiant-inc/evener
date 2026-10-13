@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { env } from "node:process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { contractShaped, regexCore, Scanner, scanRepo } from "./copyonly";
+import { contractShaped, openRepo, regexCore, Scanner, scanRepo } from "./copyonly";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -651,6 +651,34 @@ test("scanRepo reads tracked tests in the TypeScript trees against their product
       { file: "mobile-native/src/Shared.test.ts", test: "shows the shared phrase", line: 1 },
       { file: "mobile/src/state/shared.test.ts", test: "shows the shared phrase", line: 1 },
     ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("openRepo scans the snapshot it read, so a later edit or delete does not change the answer", () => {
+  const root = mkdtempSync(join(tmpdir(), "copyonly-snapshot-"));
+  try {
+    const front = "cmd/evener-hub/frontend/src/";
+    const file = `${front}Empty.test.tsx`;
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, `${front}Empty.tsx`), `export const Empty = () => <p>Nothing to show</p>;\n`);
+    writeFileSync(
+      join(root, file),
+      `test("shows nothing", () => {\n  expect(screen.getByText("Nothing to show")).toBeTruthy();\n});\n`,
+    );
+    trackFixture(root);
+
+    const repo = openRepo(root);
+    // Rename the test after opening, then delete the file entirely: the scan
+    // must answer from the text read at open, not from the working tree.
+    writeFileSync(
+      join(root, file),
+      `test("shows the edit", () => {\n  expect(screen.getByText("Nothing to show")).toBeTruthy();\n});\n`,
+    );
+    expect(repo.scan(repo.testFiles)).toEqual([{ file, test: "shows nothing", line: 1 }]);
+    rmSync(join(root, file), { recursive: true, force: true });
+    expect(repo.scan(repo.testFiles)).toEqual([{ file, test: "shows nothing", line: 1 }]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

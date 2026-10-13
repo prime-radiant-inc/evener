@@ -114,21 +114,29 @@ export interface RepoScan {
 }
 
 /**
- * Reads root's tracked TypeScript files and production corpus once. A caller
- * that audits the checkout in slices takes one snapshot and scans a slice with
- * it; the snapshot is taken now, so a change to the working tree afterwards is
- * not seen and a fresh snapshot is needed for the next audit (issue #4608).
+ * Reads root's tracked TypeScript files and production corpus once, and returns
+ * a snapshot of that checkout: scan() answers from the text read here, so a
+ * change to the working tree after openRepo returns is not seen, and the next
+ * audit needs a fresh snapshot. A caller that audits the checkout in slices
+ * takes one snapshot and scans each slice with it, sharing the reads instead of
+ * re-reading per slice (issue #4608).
  */
 export function openRepo(root: string): RepoScan {
   const files = trackedFiles(root);
   const scanner = new Scanner(productionCorpus(root, files));
+  const testFiles = files.filter((f) => TEST_FILE.test(f));
+  const contents = new Map<string, string>();
+  for (const f of testFiles) {
+    const text = readTracked(root, f);
+    if (text !== null) contents.set(f, text);
+  }
   return {
-    testFiles: files.filter((f) => TEST_FILE.test(f)),
+    testFiles,
     scan(files: readonly string[]): Target[] {
       const targets: Target[] = [];
       for (const f of files) {
-        const text = readTracked(root, f);
-        if (text === null) continue;
+        const text = contents.get(f);
+        if (text === undefined) continue;
         targets.push(...scanner.scanFile(f, text));
       }
       targets.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1));
