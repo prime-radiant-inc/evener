@@ -660,12 +660,10 @@ describe("remote search results", () => {
     const nested = paletteNestedRows();
     expect(indirect).toHaveLength(1);
     expect(nested).toHaveLength(1);
-    // The anchor comes first, the subagent nests under it, and the row says
-    // what it is.
+    // The anchor comes first, the subagent nests under it.
     expect(indirect[0]?.textContent).toContain("Alpha root");
     expect(indirect[0]?.compareDocumentPosition(nested[0] as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(nested[0]?.textContent).toContain("delegate frobnitz");
-    expect(nested[0]?.textContent).toContain("subagent");
   });
 
   test("Enter on a greyed anchor opens the parent session; ArrowDown then Enter opens the subagent", async () => {

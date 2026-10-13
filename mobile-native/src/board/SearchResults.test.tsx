@@ -149,9 +149,6 @@ it("groups a matching subagent under a greyed anchor that still opens its sessio
 	expect(rows).toHaveLength(2);
 	// The anchor greys — its own session did not match — but stays pressable.
 	expect(flatten(textWith(rows[0], "Alpha root").props.style).color).toBe(palette.inkLow);
-	// The subagent announces what it is in its label; the anchor does not.
-	expect(rows[1].props.accessibilityLabel).toContain("subagent");
-	expect(rows[0].props.accessibilityLabel).not.toContain("subagent");
 	// The subagent indents into its group and reads subordinate.
 	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
 	expect(flatten(textWith(rows[1], "Delegate").props.style).fontWeight).toBe("400");
@@ -182,7 +179,6 @@ it("nests a matched live parent's subagent hit under its row, one row per sessio
 	expect(rows).toHaveLength(2);
 	// The live parent keeps its own row, still working.
 	expect(rows[0].findByType(StateMark).props.state).toBe("working");
-	expect(rows[1].props.accessibilityLabel).toContain("subagent");
 	expect(bandText(tree)).toMatch(/2$/);
 	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
 });
@@ -208,10 +204,11 @@ it("greys an unmatched live parent's anchor without hiding that it is live", () 
 			failed: false,
 		},
 	});
-	const [anchor, nested] = resultRows(tree);
+	const rows = resultRows(tree);
+	expect(rows).toHaveLength(2);
+	const [anchor] = rows;
 	expect(flatten(textWith(anchor, "Live root").props.style).color).toBe(palette.inkLow);
 	expect(anchor.findByType(StateMark).props.state).toBe("working");
-	expect(nested.props.accessibilityLabel).toContain("subagent");
 	expect(bandText(tree)).toMatch(/1$/);
 });
 

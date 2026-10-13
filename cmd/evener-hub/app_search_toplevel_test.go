@@ -237,6 +237,82 @@ func TestHubSearchAnchorsThroughRosterReportedLineage(t *testing.T) {
 	}
 }
 
+// A live subagent whose meta is on disk but not yet folded into the index is
+// indexed by the query's own probes (MatchIDs' and liveSearchResult's Find
+func TestHubSearchExcludesLiveSubagentFoldedInMidQuery(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	subID := hubtest.SessionID(t)
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: subID, UpdatedAt: now, Name: "live frobnitz", IsSubagent: true, ParentSessionID: "01GONE",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// No Rebuild: the index starts stale, and the query's probes do the
+	// folding — exactly the first query after a hub restart.
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{PID: 1, SessionID: subID, WorkingDir: "/projects/alpha", Status: appwire.ThreadStatusActive},
+	)
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Live) != 0 {
+		t.Fatalf("live=%v, want nothing: a live subagent is not a navigation row", searchIDs(resp.Live))
+	}
+	if len(resp.Past) != 0 {
+		t.Fatalf("past=%v, want nothing: the live subagent is not an ended match", searchIDs(resp.Past))
+	}
+}
+
+// A fork continuation folded in mid-query supersedes the original as a past
+// child's anchor: the annotation's lineage view must be read after the
+// query's own probes, or the group lands under the superseded original.
+func TestHubSearchAppliesForkSupersessionFoldedInMidQuery(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	origID, subID, contID := hubtest.SessionID(t), hubtest.SessionID(t), hubtest.SessionID(t)
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+	for _, meta := range []schema.SessionMeta{
+		{ID: origID, UpdatedAt: now.Add(-4 * time.Hour), Name: "original", ForkLabel: "old branch", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: subID, UpdatedAt: now.Add(-time.Hour), Name: "delegate frobnitz", IsSubagent: true, ParentSessionID: origID, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+	} {
+		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	// The continuation exists only on disk: the query's probes fold it in.
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: contID, UpdatedAt: now.Add(-3 * time.Hour), Name: "quiet worker", ParentSessionID: origID,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{PID: 1, SessionID: contID, WorkingDir: "/projects/alpha", Status: appwire.ThreadStatusIdle},
+	)
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := searchIDs(resp.Past); !reflect.DeepEqual(got, []string{subID}) {
+		t.Fatalf("past=%v, want only the matching delegate", got)
+	}
+	tl := resp.Past[0].TopLevel
+	if tl == nil || tl.ID != contID {
+		t.Fatalf("topLevel=%+v, want the folded-in continuation", tl)
+	}
+}
+
 // The real search rules and the tree's rollup agree on one corpus: the same
 // metas, disk index and roster drive hubSearch's annotations and
 // BuildTreeAt's attribution, so the two lineage views cannot drift apart.

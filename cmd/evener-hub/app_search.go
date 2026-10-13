@@ -57,18 +57,24 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 		entries = cfg.Roster.List()
 		sortLiveForSearch(entries, cfg.Past)
 	}
-	// roots is the lineage index the past results' grouping annotations come
-	// from, hoisted out of the roster block because ended matches annotate
-	// without any live session at all.
-	roots := hubcore.NewRootIndex(nil)
-	if cfg.Past != nil {
-		roots = cfg.Past.RootIndex()
-	}
 	// Roster-reported lineage: which live sessions are running children, and
 	// the live session each was reported by — the only parent link a child
 	// has before its meta reaches the past index.
 	running := hubcore.RunningSubagentIDs(entries)
 	rosterParents := hubcore.RunningSubagentParents(entries)
+	// lineage is the past index's lineage view at the moment it is asked
+	// for. Sessions fold into the index mid-query — MatchIDs' and
+	// liveSearchResult's Find probes load on-disk-but-unindexed metas — so a
+	// view captured before those probes ran would miss them: the Live filter
+	// would admit a live subagent on the first query against a stale index,
+	// and a fork continuation folded in mid-query would not supersede the
+	// original as a past child's anchor.
+	lineage := func() *hubcore.RootIndex {
+		if cfg.Past == nil {
+			return hubcore.NewRootIndex(nil)
+		}
+		return cfg.Past.RootIndex()
+	}
 	// A live session's meta sits in the past index too, so a prompt or
 	// working-directory match there lists it here, live. Resolve every live
 	// session's own past-index match in one lookup, ahead of the bounded Past
@@ -111,7 +117,7 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(result.Title), q) && !pastMatched[le.SessionID] {
 				continue
 			}
-			if roots.IsSubagent(le.SessionID) || running[le.SessionID] {
+			if lineage().IsSubagent(le.SessionID) || running[le.SessionID] {
 				continue
 			}
 			if searchScopeAdmits(scope, result.Archived, true) {
@@ -128,6 +134,9 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	// own prompt match is answered separately above, so it never depended on this
 	// fetch's width.
 	if cfg.Past != nil {
+		// Read after the Live group's probes, so metas folded into the
+		// index mid-query shape these annotations too.
+		roots := cfg.Past.RootIndex()
 		pastMatches := cfg.Past.SearchAdmitted(q, searchPastLimit, func(e hubcore.PastEntry) bool {
 			return !isLive[e.Meta.ID] && searchScopeAdmits(scope, pastArchived(e, decisions, now), false)
 		})
