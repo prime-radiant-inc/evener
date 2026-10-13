@@ -201,6 +201,22 @@ export function compareDisplayedSources(
 
   const capturedCoverage = capturedFingerprint.coverage;
   const currentCoverage = currentFingerprint.coverage;
+  // A complete observation pins the document's true end, and a truncated
+  // observation proves content existed beyond its coverage (the doc read
+  // marks truncation only when the file exceeded the cap). In a mixed
+  // comparison those facts make a definite change the overlap comparison
+  // cannot see: truncated coverage at or beyond the complete end means
+  // content appeared past a known EOF, vanished while the complete end is
+  // now earlier, or the truncated side's proven continuation no longer
+  // fits within the complete observation. Only a complete end past the
+  // truncated coverage keeps real uncertainty about the unread middle.
+  if (capturedFingerprint.scope !== currentFingerprint.scope) {
+    const completeCoverage = capturedFingerprint.scope === "displayed-full" ? capturedCoverage : currentCoverage;
+    const truncatedCoverage = capturedFingerprint.scope === "displayed-prefix" ? capturedCoverage : currentCoverage;
+    if (truncatedCoverage.end >= completeCoverage.end) {
+      return { changed: true, detection: "comparable-source" };
+    }
+  }
   const overlapStart = Math.max(capturedCoverage.start, currentCoverage.start, 0);
   const overlapEnd = Math.min(capturedCoverage.end, currentCoverage.end, captured.source.length, current.source.length);
   if (overlapStart >= overlapEnd) return { changed: false, detection: "insufficient-coverage" };
