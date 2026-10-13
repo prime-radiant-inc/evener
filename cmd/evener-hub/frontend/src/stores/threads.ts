@@ -599,10 +599,13 @@ type PendingThreadHydration = {
   // (ThreadReadParams.requestGeneration), echoed by the response and used to
   // discard a superseded ErrorTranscriptHistoryFailed rejection.
   requestGeneration?: number;
-  // The per-ref read sequence both hydration kinds stamp from
+  // The per-ref read sequence history-requesting hydration reads stamp from
   // (threadReadSequences): pending-entry currency is per-kind, so only this
   // shared counter orders reads across the tracked and watched maps — an
   // older read of one kind cannot publish over a newer read of the other.
+  // A lean watched read (no turns) neither advances it nor publishes a
+  // repair-clearing verdict: it does not touch the transcript index, so it
+  // has no cross-kind repair verdict to order.
   readSequence: number;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
@@ -610,9 +613,12 @@ type PendingThreadHydration = {
 // response. Keep the newest hydration's notifications out of the old model,
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
-// The per-ref read sequence both hydration kinds stamp their pendings from:
-// each map keeps its own current entry, so pending-entry currency alone
-// cannot order a tracked read against a watched one. Monotonic per ref.
+// The per-ref read sequence history-requesting reads stamp their pendings
+// from: each map keeps its own current entry, so pending-entry currency alone
+// cannot order a tracked read against a watched one. Monotonic per ref, and
+// advanced only by reads that request history — a lean watched read carries
+// the current value instead, so it cannot fence out a tracked read's repair
+// verdict.
 const threadReadSequences = new Map<string, number>();
 // Tracked-hydration attempts: one monotonically increasing counter per ref,
 // stamped onto each tracked pending and never reset. This is the currency the
@@ -2644,9 +2650,13 @@ async function hydrateAndSubscribeWatch(
     }
     throw err;
   }
-  // The read succeeded: any repairing status from this attempt's earlier
-  // read is over — a superseded attempt leaves the newer one's say standing.
-  publishThreadRepairing("watched", ref, pending, false);
+  // The read succeeded. Only a history-requesting read observed the index:
+  // a lean watch the hub can answer without touching the transcript index
+  // saw nothing about the repair, so its success must not clear a status a
+  // tracked read owns (the lean read's own rebuilding answer still
+  // publishes in the catch above — that error the read observed itself). A
+  // superseded rich attempt leaves the newer one's say standing.
+  if (includeTurns) publishThreadRepairing("watched", ref, pending, false);
   // See hydrateAndSubscribe's identical comment: a retry that dropped the
   // held snapshot must fully replace history, not merge into it.
   const model =
@@ -3860,9 +3870,22 @@ function beginWatchedHydration(
   client: AppwireClientLike,
   model: ThreadModel | undefined,
   epoch: number,
+  includeTurns: boolean,
 ): PendingThreadHydration {
-  const readSequence = (threadReadSequences.get(ref) ?? 0) + 1;
-  threadReadSequences.set(ref, readSequence);
+  // Only a history-requesting read orders the repair-status sequence: a
+  // lean watch the hub can answer without touching the transcript index
+  // must not advance the shared counter out from under a tracked read's
+  // still-pending publication — the fence would drop the tracked read's
+  // own verdict. The lean read carries the current value instead, which
+  // satisfies the fence for the one verdict it did observe itself: its
+  // catch-path rebuilding answer.
+  let readSequence: number;
+  if (includeTurns) {
+    readSequence = (threadReadSequences.get(ref) ?? 0) + 1;
+    threadReadSequences.set(ref, readSequence);
+  } else {
+    readSequence = threadReadSequences.get(ref) ?? 0;
+  }
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putWatchedThreadModel(ref, baseModel);
   const pending = {
@@ -4686,8 +4709,14 @@ async function refreshWatchedThread(
   const generation = watchGenerations.get(ref) ?? 0;
   const previous = pendingWatchedHydrations.get(ref);
   if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
-  const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
   const includeTurns = watchIncludeTurns.get(ref) ?? false;
+  const pending = beginWatchedHydration(
+    ref,
+    client,
+    threadsStore.getState().watchedThreads.get(ref),
+    epoch,
+    includeTurns,
+  );
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) =>
     isDiscardedReadResult(pending, model)
@@ -5374,6 +5403,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         hydrationClient,
         threadsStore.getState().watchedThreads.get(ref),
         hydrationEpoch,
+        needTurns,
       );
       const hydration = hydrateAndSubscribeWatch(hydrationClient, ref, Date.now(), pending, needTurns)
         .then((model) => publishWatchedHydration(ref, pending, model, needTurns, generation))

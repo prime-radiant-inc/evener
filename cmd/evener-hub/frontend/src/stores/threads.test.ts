@@ -3077,6 +3077,79 @@ describe("useThreadsStore.ensureThread", () => {
       threadsStore.getState().releaseWatchedThread("ref_a");
       void watching.catch(() => undefined);
     });
+
+    test("a successful lean watch preserves the tracked read's repair status", async () => {
+      const fake = connectFakeClient();
+      let reads = 0;
+      fake.on("thread/read", () => {
+        reads += 1;
+        if (reads === 1) throw rebuildingRejection();
+        return readResponse("ref_a", { name: "Lean" });
+      });
+
+      // The tracked first open answers rebuilding: the owned retry stands and
+      // the status flag is set by the read that observed the answer.
+      const ensuring = threadsStore.getState().ensureThread("ref_a");
+      await flushUntil(() => scheduledHydrationRetries.length === 1);
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      // A lean watcher's read requests no history — the hub can answer it
+      // without touching the transcript index — so it observed nothing about
+      // the repair: the flag stands until the tracked owner's own read
+      // answers, never cleared by the lean watch's success.
+      const watching = threadsStore.getState().watchThread("ref_a");
+      await watching;
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      // The tracked retry's own read succeeds: the flag clears through the
+      // owner that observed the answer.
+      runScheduledHydrationRetry(0);
+      await ensuring;
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+
+      threadsStore.getState().releaseWatchedThread("ref_a");
+    });
+
+    test("a lean watch does not silence a tracked read's own repair verdict", async () => {
+      const fake = connectFakeClient();
+      let reads = 0;
+      const hungRefresh: { reject: ((reason?: unknown) => void) | null } = { reject: null };
+      fake.on("thread/read", () => {
+        reads += 1;
+        if (reads === 2) {
+          return new Promise<ThreadReadResponse>((_, reject) => {
+            hungRefresh.reject = reject;
+          });
+        }
+        return readResponse("ref_a", { name: "Open" });
+      });
+
+      // The pane is open and its refresh hangs on the wire.
+      await threadsStore.getState().ensureThread("ref_a");
+      const refresh = threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length === 2);
+
+      // A lean watcher joins while the refresh is in flight: the watcher's
+      // metadata-only read succeeds and must not advance the repair sequence
+      // out from under the tracked refresh still on the wire.
+      const watching = threadsStore.getState().watchThread("ref_a");
+      await watching;
+
+      // The refresh answers rebuilding: its own verdict must publish — the
+      // lean watch neither bumped the shared sequence nor fenced the
+      // refresh's publication out.
+      hungRefresh.reject?.(rebuildingRejection());
+      await flushUntil(() => threadsStore.getState().repairingRefs.has("ref_a"));
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      threadsStore.getState().releaseThread("ref_a");
+      threadsStore.getState().releaseWatchedThread("ref_a");
+      void watching.catch(() => undefined);
+      await refresh;
+    });
   });
 
   // ensureThread's client-swap re-arm waits for the replacement client to reach
