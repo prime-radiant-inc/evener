@@ -80,17 +80,25 @@ export function openDocBeside(request: DocumentOpenRequest): void {
   const existingDocument = workspace.panes.find((pane) => isRequestedDocument(pane, params));
   if (existingDocument) {
     const previous = documentPaneState(existingDocument);
-    // Publish a changed binding before openBeside focuses the reused pane, so
+    // Publish a changed binding before the reused pane is focused, so
     // consumers never observe the newly focused document with its old source.
     recordDocumentPaneState(existingDocument, {
       reference,
       origin,
       reopen: previous === undefined ? 0 : previous.reopen + 1,
     });
+    // The document is already open, so focus it here rather than re-asking
+    // openPane: that dedupe compares FULL params, and the opening origin
+    // churns with every composer remount, so the re-ask would read the reused
+    // pane as a different document and open a duplicate beside it. A
+    // document's identity is its session/path/kind (isRequestedDocument),
+    // never its opening origin.
+    if (origin) workspace.promotePane(origin.id);
+    workspace.focusPane(existingDocument.id);
+    return;
   }
   if (origin) workspace.promotePane(origin.id);
   paneActions.openBeside({ type: "doc", params });
-  if (existingDocument) return;
   const document = workspaceStore.getState().panes.find((pane) => isRequestedDocument(pane, params));
   if (!document) return;
   recordDocumentPaneState(document, {
