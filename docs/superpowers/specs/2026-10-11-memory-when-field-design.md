@@ -119,8 +119,8 @@ that opens with its own frontmatter block are refused and write nothing. `memory
 plain string edit.
 
 The memory lab compared this tool with the one that takes frontmatter inside a `content` string,
-over 12-rep downstream tasks on deepseek and glm: recall tied, and memory index lines came out 5%
-to 18% shorter. The tool is smaller and the model has less to get wrong, so it replaced the
+over 12-rep downstream tasks on deepseek and glm: recall tied and lines came out 5% to 18%
+shorter. The tool is smaller and the model has less to get wrong, so it replaced the
 `content` tool outright.
 
 Write notes follow: a page that has a `when` gets no description note, a page left without a `when`

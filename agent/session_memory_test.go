@@ -2572,7 +2572,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		max, context int
 		want         string
 	}{
-		{"content", 5, 1, "duplicate.txt-1-before\nduplicate.txt:2:changed\nduplicate.txt:3:changed\nduplicate.txt-4-after"},
+		{"content", 5, 1, "duplicate.txt-5-before\nduplicate.txt:6:changed\nduplicate.txt:7:changed\nduplicate.txt-8-after"},
 		{"files_with_matches", 5, 0, "duplicate.txt"}, {"count", 5, 0, "duplicate.txt:2"},
 	} {
 		res = memoryExec(t, s, "memory_search", map[string]any{"scope": "project", "path": "", "pattern": "^CHANG(E|ed)", "case_insensitive": true, "glob_filter": "*.txt", "output_mode": tc.mode, "max_results": tc.max, "context_lines": tc.context})
@@ -2592,7 +2592,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		t.Fatalf("delete=%v", err)
 	}
 	got, err = os.ReadFile(filepath.Join(root, "projects", "fixture-project", "memory", "overview.md"))
-	if want := "---\n" + memoryOwnStamps(s) + "---\nopaque-index-94\n"; err != nil || string(got) != want {
+	if want := "---\nwhen: w\n" + memoryOwnStamps(s) + "---\n\nopaque-index-94\n"; err != nil || string(got) != want {
 		t.Fatalf("unrelated=%q err=%v", got, err)
 	}
 }
