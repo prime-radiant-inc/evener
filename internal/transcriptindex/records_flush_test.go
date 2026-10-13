@@ -1,6 +1,8 @@
 package transcriptindex
 
 import (
+	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -228,6 +230,40 @@ func TestAnAdoptedStringsFileThatOutgrewTheBufferKeepsTheFile(t *testing.T) {
 	}
 	if info.Size() != 41 {
 		t.Fatalf("file holds %d bytes after the flush, want the other handle's growth kept", info.Size())
+	}
+}
+
+// TestACorruptStringReferenceCannotOverflowTheBoundsCheck pins the overflow
+// the buffered path opened: a corrupt reference whose Off is MaxUint64 wraps
+// an additive bounds check into passing, and the buffered slice then panics
+// where the unbuffered ReadAt answered an error. The bounds check must reject
+// by subtraction, which cannot wrap.
+func TestACorruptStringReferenceCannotOverflowTheBoundsCheck(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "strings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString("seed"); err != nil {
+		t.Fatal(err)
+	}
+	b := &blob{file: f, n: 4}
+	if err := b.load(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := b.get(strRef{Off: math.MaxUint64, Len: 1}); !errors.Is(err, errCorrupt) {
+		t.Fatalf("buffered get with an overflowing reference = %v, want the corrupt error, not a panic", err)
+	}
+	if _, err := b.get(strRef{Off: 4, Len: 1}); !errors.Is(err, errCorrupt) {
+		t.Fatalf("buffered get at the file's end = %v, want the corrupt error", err)
+	}
+
+	// The unbuffered shape answers the same error, not a panic either.
+	b.buf = nil
+	b.flushed = 0
+	if _, err := b.get(strRef{Off: math.MaxUint64, Len: 1}); !errors.Is(err, errCorrupt) {
+		t.Fatalf("unbuffered get with an overflowing reference = %v, want the corrupt error", err)
 	}
 }
 

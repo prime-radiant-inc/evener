@@ -587,6 +587,52 @@ func TestCorruptRecordOnARefusingWindowReadRefusesAndMarksStale(t *testing.T) {
 	})
 }
 
+// TestACorruptTurnIDReferenceRefusesAndRepairs pins the reader-crash shape
+// end to end: a stored turn record whose leading ID reference points past
+// the strings file — MaxUint64 is the value that overflows an additive
+// bounds check — must refuse as corrupt and heal through a repair, never
+// panic the reader.
+func TestACorruptTurnIDReferenceRefusesAndRepairs(t *testing.T) {
+	path, dir := openCommittedSidecar(t, preludeFixture())
+	turnsPath := filepath.Join(liveBuild(t, dir), turnsFile)
+	f, err := os.OpenFile(turnsPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	rec := make([]byte, turnRecordSize)
+	if _, err := f.ReadAt(rec, 0); err != nil {
+		t.Fatal(err)
+	}
+	for i := range rec[:8] {
+		rec[i] = 0xff
+	}
+	if _, err := f.WriteAt(rec, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	x := openRefusing(t, path, dir)
+	_, err = x.Latest(5)
+	requireRefusal(t, err, lastRecordedEntry(t, dir))
+
+	// A foreign handle's rebuild re-encodes the reference from the
+	// transcript, and the refusing handle converges onto the fresh build.
+	repair := openIndex(t, path, dir)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repair.Rebuild(info.Size()); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.CatchUp(); err != nil {
+		t.Fatalf("the refusing handle did not converge after the repair: %v", err)
+	}
+	if _, err := x.Latest(5); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCorruptRecordConvergesThroughAForeignRepair(t *testing.T) {
 	fx, headerLen := bigFixture(t)
 	path := writeFixture(t, fx)

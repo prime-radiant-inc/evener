@@ -540,7 +540,11 @@ func (b *blob) get(ref strRef) ([]byte, error) {
 	if ref.Len == 0 {
 		return nil, nil
 	}
-	if ref.Off+uint64(ref.Len) > b.n {
+	// Reject by subtraction: an additive check (Off+Len > n) wraps around
+	// MaxUint64 and lets a corrupt reference through to the slice below,
+	// panicking the buffered read where the unbuffered one answered an
+	// error. Off > n first, then Len against what is left, cannot wrap.
+	if ref.Off > b.n || uint64(ref.Len) > b.n-ref.Off {
 		return nil, fmt.Errorf("%w: string past the strings file", errCorrupt)
 	}
 	buf := make([]byte, ref.Len)
