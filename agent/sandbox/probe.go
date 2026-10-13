@@ -483,7 +483,7 @@ func confinedReferencedFiles(candidates, writable []string) []string {
 		// manages to open (`~/unused/../global-ignore` is the case the review raised).
 		// The symlink walk runs on the SPELLING git hands the kernel (`c`), the
 		// containment walk on the spelling the policy will carry (`clean`).
-		if clean != c || !symlinkFree(c) || underAnyIdentity(clean, writableInfos) {
+		if clean != c || !isPlainFile(c) || underAnyIdentity(clean, writableInfos) {
 			continue
 		}
 		out = append(out, clean)
@@ -498,7 +498,7 @@ func confinedReferencedFiles(candidates, writable []string) []string {
 // bound again. Only a non-session writer can change any of that, which is exactly why
 // the check is repeated rather than trusted.
 func referencedFileGrantable(path string, rp ResolvedPolicy) bool {
-	if !symlinkFree(path) {
+	if !isPlainFile(path) {
 		return false
 	}
 	if underAnyIdentity(path, pathFileInfos(rp.Spawned.WriteRoots)) {

@@ -1064,19 +1064,28 @@ func underAnyIdentity(path string, infos []fs.FileInfo) bool {
 	}
 }
 
-// symlinkFree reports whether every component of path is really a directory — or, for
-// the last one, a real file — rather than a symlink. A path with no symlink component
-// IS what the filesystem resolves it to, so nothing a session writes can change what a
-// bind at that name exposes: the referenced-file grant needs exactly that, because
-// bwrap binds the literal name afresh at every spawn. A missing or unreadable
-// component is not symlink-free either — there is nothing to grant.
+// isPlainFile reports whether path names a real, NON-DIRECTORY file reached without a
+// single symlink component: every ancestor is a real directory and the last component
+// is a regular file. The referenced-file grant needs exactly that, and it is checked
+// again at every spawn because bwrap binds the literal name afresh.
+//
+// No symlink component means the path IS what the filesystem resolves it to, so
+// nothing a session writes can change what a bind at that name exposes. Requiring a
+// non-directory keeps the grant FILE-EXACT: should the named file become a directory,
+// bwrap would bind the whole tree and Seatbelt's subpath grant would cover its
+// descendants, neither of which this grant authorizes. A missing or unreadable
+// component is not a plain file either — there is nothing to grant.
 //
 // It walks the SPELLING's prefixes rather than a cleaned path: cleaning collapses a
 // `..` that follows a symlink, and the symlink before it is exactly what to catch
 // (`~/link/../notes` where `~/link` is a symlink names another directory's file, but
 // its cleaned spelling is a path of its own).
-func symlinkFree(path string) bool {
+func isPlainFile(path string) bool {
 	if !filepath.IsAbs(path) {
+		return false
+	}
+	path = strings.TrimRight(path, string(filepath.Separator))
+	if path == "" {
 		return false
 	}
 	// Every prefix of the spelling that ends at a separator, then the whole spelling.
@@ -1084,10 +1093,7 @@ func symlinkFree(path string) bool {
 		if i < len(path) && path[i] != filepath.Separator {
 			continue
 		}
-		prefix := strings.TrimRight(path[:i], string(filepath.Separator))
-		if prefix == "" {
-			continue
-		}
+		prefix := path[:i]
 		fi, err := os.Lstat(prefix)
 		if err != nil {
 			return false
@@ -1095,8 +1101,14 @@ func symlinkFree(path string) bool {
 		if fi.Mode()&fs.ModeSymlink != 0 {
 			return false
 		}
+		if i == len(path) {
+			return !fi.IsDir()
+		}
+		if !fi.IsDir() {
+			return false
+		}
 	}
-	return true
+	return false
 }
 
 // withEvenerConfigMask returns the masked set with Evener's own config root in

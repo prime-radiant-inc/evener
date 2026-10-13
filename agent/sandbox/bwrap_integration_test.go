@@ -834,4 +834,40 @@ printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
 			t.Errorf("a /tmp-held file swapped for a link after resolution must not be bound again; stdout:\n%s", after)
 		}
 	})
+
+	t.Run("a named file that becomes a directory is not bound, and a restored file is", func(t *testing.T) {
+		// The grant is file-exact: were the named path to become a directory, bwrap
+		// would bind the whole tree and Seatbelt's subpath grant would cover its
+		// descendants. The spawn-time check therefore requires a non-directory as well,
+		// and because it runs per spawn, restoring a regular file grants it again.
+		target := filepath.Join(home, "flip-ignore")
+		writeFixtureFile(t, target, "first.txt\n")
+		rp, facts := resolveFixtureHome(t, "[core]\n\texcludesFile = ~/flip-ignore\n")
+		first, _ := runWithPolicy(t, rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, target)
+		if !strings.Contains(first, "first.txt") {
+			t.Fatalf("the granted file must be readable at first; stdout:\n%s", first)
+		}
+
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		inside := filepath.Join(target, "inside")
+		writeFixtureFile(t, inside, "inside-content\n")
+		asDir, _ := runWithPolicy(t, rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, inside)
+		if strings.Contains(asDir, "inside-content") {
+			t.Errorf("a named file that became a directory must not be bound as a tree; stdout:\n%s", asDir)
+		}
+
+		if err := os.RemoveAll(target); err != nil {
+			t.Fatal(err)
+		}
+		writeFixtureFile(t, target, "again.txt\n")
+		again, _ := runWithPolicy(t, rp, facts, `cat "$1" 2>/dev/null || echo unreadable`, target)
+		if !strings.Contains(again, "again.txt") {
+			t.Errorf("a regular file restored at the named path must be granted again; stdout:\n%s", again)
+		}
+	})
 }

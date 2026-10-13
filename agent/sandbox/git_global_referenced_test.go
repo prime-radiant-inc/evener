@@ -797,6 +797,31 @@ func TestGlobalGitReferencedFileWithAnUncleanSpellingIsRefused(t *testing.T) {
 	}
 }
 
+// TestGlobalGitReferencedDirectoryIsNeverGranted pins the resolution-time half of the
+// file-exact requirement: the probe admits only non-directory files, but a file can
+// BECOME a directory between the probe and Resolve, and bwrap would then bind the
+// whole tree while Seatbelt's subpath grant covered its descendants.
+func TestGlobalGitReferencedDirectoryIsNeverGranted(t *testing.T) {
+	t.Parallel()
+	home := clean(t.TempDir())
+	dir := filepath.Join(home, "ignore-dir")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, filepath.Join(dir, "inside"), "inside\n")
+
+	host := darwinSeatbeltHost()
+	host.Home = home
+	host.GitGlobalReferencedPaths = []string{dir}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if slices.Contains(rp.Spawned.ReadRoots, dir) {
+		t.Errorf("a directory must never be granted as a config-named file: %v", rp.Spawned.ReadRoots)
+	}
+}
+
 // TestGlobalGitReferencedFileHardlinkedToAMaskedFileIsDropped pins the mask judgement
 // by FILE IDENTITY, which runs on any filesystem: a hard link is another name for one
 // file, so a config naming a hard link to a masked file names that file, and a
