@@ -28,11 +28,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"unicode/utf8"
 )
 
@@ -53,7 +51,7 @@ var (
 	tsSource = regexp.MustCompile(`\.(ts|tsx|mts)$`)
 	// tsTestSupport marks TypeScript files that are tests or test support, so
 	// none of them is production copy.
-	tsTestSupport = regexp.MustCompile(`(\.test\.|\.spec\.|/__tests__/|TestUtils\.|/testing/|/src/dev/)`)
+	tsTestSupport = regexp.MustCompile(`(/__tests__/|TestUtils\.|/testing/|/src/dev/)`)
 	tsTestFile    = regexp.MustCompile(`\.(test|spec)\.`)
 )
 
@@ -89,38 +87,20 @@ func Scan(root string) ([]Target, error) {
 	}
 	s := newScanner(readAll(root, goProd), readAll(root, tsProd), readAll(root, assets))
 
-	tests := slices.Concat(goTests, tsTests)
-	results := make([][]Target, len(tests))
-	errs := make([]error, len(tests))
-	var wg sync.WaitGroup
-	next := make(chan int)
-	for range runtime.GOMAXPROCS(0) {
-		wg.Go(func() {
-			for i := range next {
-				src, err := os.ReadFile(filepath.Join(root, tests[i]))
-				if os.IsNotExist(err) {
-					continue // tracked but deleted in the working tree
-				}
-				if err != nil {
-					errs[i] = err
-					continue
-				}
-				results[i], errs[i] = s.scanFile(tests[i], string(src))
-			}
-		})
-	}
-	for i := range tests {
-		next <- i
-	}
-	close(next)
-	wg.Wait()
-
 	var targets []Target
-	for i := range tests {
-		if errs[i] != nil {
-			return nil, fmt.Errorf("copyonly: %s: %w", tests[i], errs[i])
+	for _, f := range slices.Concat(goTests, tsTests) {
+		src, err := os.ReadFile(filepath.Join(root, f))
+		if os.IsNotExist(err) {
+			continue // tracked but deleted in the working tree
 		}
-		targets = append(targets, results[i]...)
+		if err != nil {
+			return nil, fmt.Errorf("copyonly: %w", err)
+		}
+		found, err := s.scanFile(f, string(src))
+		if err != nil {
+			return nil, fmt.Errorf("copyonly: %s: %w", f, err)
+		}
+		targets = append(targets, found...)
 	}
 	sort.SliceStable(targets, func(i, j int) bool {
 		if targets[i].File != targets[j].File {
@@ -189,10 +169,9 @@ func readAll(root string, files []string) string {
 
 // corpus answers "does this literal appear in this text?". A miss scans the
 // whole text and the same literal recurs across many tests, so answers are
-// memoized; scanFile runs on many goroutines at once.
+// memoized.
 type corpus struct {
 	text string
-	mu   sync.Mutex
 	memo map[string]bool
 }
 
@@ -201,16 +180,11 @@ func newCorpus(text string) *corpus {
 }
 
 func (c *corpus) contains(lit string) bool {
-	c.mu.Lock()
 	found, ok := c.memo[lit]
-	c.mu.Unlock()
-	if ok {
-		return found
+	if !ok {
+		found = strings.Contains(c.text, lit)
+		c.memo[lit] = found
 	}
-	found = strings.Contains(c.text, lit)
-	c.mu.Lock()
-	c.memo[lit] = found
-	c.mu.Unlock()
 	return found
 }
 

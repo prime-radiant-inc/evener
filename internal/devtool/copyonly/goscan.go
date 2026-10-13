@@ -25,12 +25,6 @@ var diagnostics = map[string]bool{
 	"Log": true, "Logf": true, "Skip": true, "Skipf": true,
 }
 
-// goCheck is one claim a Go test makes: an `if` condition, or a require/assert
-// call.
-type goCheck struct {
-	cond ast.Expr
-}
-
 func (s *scanner) scanGo(path, src string) ([]Target, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, src, parser.ParseComments|parser.SkipObjectResolution)
@@ -67,17 +61,17 @@ func (s *scanner) scanGo(path, src string) ([]Target, error) {
 // require/assert call, closures included. `if err != nil` (with or without an
 // initializer) is a setup guard after a call, not a claim; expecting an error
 // (`err == nil`) is a claim.
-func goChecks(body *ast.BlockStmt) []goCheck {
-	var checks []goCheck
+func goChecks(body *ast.BlockStmt) []ast.Expr {
+	var checks []ast.Expr
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.IfStmt:
-			if !isErrNotNil(n.Cond) {
-				checks = append(checks, goCheck{cond: n.Cond})
+			if !isErrCompare(n.Cond, token.NEQ) {
+				checks = append(checks, n.Cond)
 			}
 		case *ast.CallExpr:
 			if pkg, _ := selector(n.Fun); pkg == "require" || pkg == "assert" {
-				checks = append(checks, goCheck{cond: n})
+				checks = append(checks, n)
 			}
 		}
 		return true
@@ -85,9 +79,10 @@ func goChecks(body *ast.BlockStmt) []goCheck {
 	return checks
 }
 
-func isErrNotNil(e ast.Expr) bool {
+// isErrCompare reports `err <op> nil`.
+func isErrCompare(e ast.Expr, op token.Token) bool {
 	b, ok := e.(*ast.BinaryExpr)
-	return ok && b.Op == token.NEQ && isIdent(b.X, "err") && isIdent(b.Y, "nil")
+	return ok && b.Op == op && isIdent(b.X, "err") && isIdent(b.Y, "nil")
 }
 
 func isIdent(e ast.Expr, name string) bool {
@@ -111,12 +106,12 @@ func selector(e ast.Expr) (string, string) {
 // suppliedText is the test body minus what carries no input to the code under
 // test: the checks' conditions, comments, and failure diagnostics. `if`
 // initializers stay: `if got := render("x"); ...` supplies "x".
-func suppliedText(fset *token.FileSet, src string, file *ast.File, body *ast.BlockStmt, checks []goCheck) string {
+func suppliedText(fset *token.FileSet, src string, file *ast.File, body *ast.BlockStmt, checks []ast.Expr) string {
 	type span struct{ lo, hi int }
 	off := func(p token.Pos) int { return fset.Position(p).Offset }
 	var cut []span
 	for _, c := range checks {
-		cut = append(cut, span{off(c.cond.Pos()), off(c.cond.End())})
+		cut = append(cut, span{off(c.Pos()), off(c.End())})
 	}
 	for _, cg := range file.Comments {
 		if cg.Pos() > body.Lbrace && cg.End() < body.Rbrace {
@@ -150,17 +145,17 @@ func suppliedText(fset *token.FileSet, src string, file *ast.File, body *ast.Blo
 // && / || term compares text with a non-contract literal, nothing in it checks
 // behavior, none of its literals is text the test supplied, and at least one
 // literal is production copy.
-func (s *scanner) goCopyClaim(c goCheck, supplied string) bool {
-	if checksBehavior(c.cond) {
+func (s *scanner) goCopyClaim(cond ast.Expr, supplied string) bool {
+	if checksBehavior(cond) {
 		return false
 	}
-	for _, term := range conditionTerms(c.cond) {
+	for _, term := range conditionTerms(cond) {
 		if !isCopyTerm(term) {
 			return false
 		}
 	}
 	isSupplied := false
-	ast.Inspect(c.cond, func(n ast.Node) bool {
+	ast.Inspect(cond, func(n ast.Node) bool {
 		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
 			// The raw source between the quotes, compared with raw source.
 			raw := lit.Value[1 : len(lit.Value)-1]
@@ -173,7 +168,7 @@ func (s *scanner) goCopyClaim(c goCheck, supplied string) bool {
 	if isSupplied {
 		return false
 	}
-	for _, lit := range copyLiterals(c.cond) {
+	for _, lit := range copyLiterals(cond) {
 		if !contractShaped(lit) && s.isGoCopy(lit) {
 			return true
 		}
@@ -198,11 +193,8 @@ func checksBehavior(cond ast.Expr) bool {
 		switch n := n.(type) {
 		case *ast.BinaryExpr:
 			switch n.Op {
-			case token.EQL:
-				found = found || isIdent(n.X, "err") && isIdent(n.Y, "nil")
-				found = found || isNumber(n.X) || isNumber(n.Y)
-			case token.NEQ, token.LSS, token.GTR, token.LEQ, token.GEQ:
-				found = found || isNumber(n.X) || isNumber(n.Y)
+			case token.EQL, token.NEQ, token.LSS, token.GTR, token.LEQ, token.GEQ:
+				found = isErrCompare(n, token.EQL) || isNumber(n.X) || isNumber(n.Y)
 			}
 		case *ast.CallExpr:
 			found = found || isIdent(n.Fun, "len")
