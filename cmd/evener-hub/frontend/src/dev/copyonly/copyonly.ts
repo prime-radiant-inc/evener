@@ -221,13 +221,10 @@ export class Scanner {
   private copyHits(file: string, sf: ts.SourceFile, imported: Set<string>): FileInventory {
     const found: FileInventory = { hits: [], fixtures: 0, copyOnly: [] };
     walk(sf, (node) => {
-      if (!ts.isCallExpression(node)) return;
-      const name = calleeName(node) ?? "";
-      const isQuery = TEXT_QUERY.test(name);
-      const isMatcher = ts.isPropertyAccessExpression(node.expression) && TEXT_MATCHERS.has(name);
-      const arg = node.arguments[0];
-      if (arg === undefined || !(isQuery || isMatcher)) return;
-      const line = lineOf(ts.isPropertyAccessExpression(node.expression) ? node.expression.name : node.expression, sf);
+      const check = textCheck(node);
+      if (check === null) return;
+      const { call, arg, isQuery } = check;
+      const line = lineOf(ts.isPropertyAccessExpression(call.expression) ? call.expression.name : call.expression, sf);
       if (ts.isIdentifier(arg)) {
         if (imported.has(arg.text)) found.hits.push({ file, line, category: "ts-constant", literal: arg.text });
         return;
@@ -238,7 +235,7 @@ export class Scanner {
         found.fixtures++;
         return;
       }
-      const category = isQuery && insideClick(node) ? "ts-locator" : "ts-assert";
+      const category = isQuery && insideClick(call) ? "ts-locator" : "ts-assert";
       found.hits.push({ file, line, category, literal: probe });
     });
     return found;
@@ -276,6 +273,21 @@ export class Scanner {
 
 function lineOf(node: ts.Node, sf: ts.SourceFile): number {
   return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+}
+
+/**
+ * A text check: a by-text or by-title query, or a text matcher, with the
+ * argument it compares. The audit's copy claims and the inventory's hits both
+ * read checks through this, so they agree on what one is.
+ */
+function textCheck(node: ts.Node): { call: ts.CallExpression; arg: ts.Expression; isQuery: boolean } | null {
+  if (!ts.isCallExpression(node)) return null;
+  const name = calleeName(node) ?? "";
+  const isQuery = TEXT_QUERY.test(name);
+  const isMatcher = ts.isPropertyAccessExpression(node.expression) && TEXT_MATCHERS.has(name);
+  const arg = node.arguments[0];
+  if (arg === undefined || !(isQuery || isMatcher)) return null;
+  return { call: node, arg, isQuery };
 }
 
 /** The text a query or matcher argument stands for: a string's raw text, a regex's literal core. */
@@ -433,11 +445,8 @@ const IMPORTED_COPY = Symbol("imported copy");
 function copyProbes(check: ts.Node, sf: ts.SourceFile, imported: Set<string>): (string | typeof IMPORTED_COPY)[] {
   const probes: (string | typeof IMPORTED_COPY)[] = [];
   walk(check, (node) => {
-    if (!ts.isCallExpression(node)) return;
-    const name = calleeName(node) ?? "";
-    const arg = node.arguments[0];
-    const isMatcher = ts.isPropertyAccessExpression(node.expression) && TEXT_MATCHERS.has(name);
-    if (arg === undefined || !(TEXT_QUERY.test(name) || isMatcher)) return;
+    const arg = textCheck(node)?.arg;
+    if (arg === undefined) return;
     const probe = literalProbe(arg, sf);
     if (probe !== null) probes.push(probe);
     else if (ts.isIdentifier(arg) && imported.has(arg.text)) probes.push(IMPORTED_COPY);

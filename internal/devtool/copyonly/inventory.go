@@ -6,7 +6,6 @@ import (
 	"io"
 	"path"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -95,41 +94,48 @@ func blankZero(n int) string {
 	return strconv.Itoa(n)
 }
 
-// packageOf is the directory a test file lives in, "." for the root.
-func packageOf(file string) string {
-	return path.Dir(file)
+func sumCounts(counts map[string]int) int {
+	n := 0
+	for _, c := range counts {
+		n += c
+	}
+	return n
+}
+
+// tally counts items per group and kind, and each kind's total.
+func tally[T any](items []T, group, kind func(T) string) (per map[string]map[string]int, totals map[string]int) {
+	per, totals = map[string]map[string]int{}, map[string]int{}
+	for _, item := range items {
+		g := group(item)
+		if per[g] == nil {
+			per[g] = map[string]int{}
+		}
+		per[g][kind(item)]++
+		totals[kind(item)]++
+	}
+	return per, totals
+}
+
+// rankedGroups is per's groups ordered by rank, largest first, ties by name.
+func rankedGroups(per map[string]map[string]int, rank func(map[string]int) int) []string {
+	ranks := make(map[string]int, len(per))
+	groups := make([]string, 0, len(per))
+	for g, counts := range per {
+		ranks[g] = rank(counts)
+		groups = append(groups, g)
+	}
+	slices.SortFunc(groups, func(a, b string) int {
+		return cmp.Or(cmp.Compare(ranks[b], ranks[a]), cmp.Compare(a, b))
+	})
+	return groups
 }
 
 // WritePackageTable writes the per-package Markdown table of hit counts by
 // category, largest first, with the fixture literals each package excluded.
 // top > 0 keeps only that many packages; the totals row always covers all.
 func WritePackageTable(w io.Writer, r Report, top int) {
-	per := map[string]map[string]int{}
-	totals := map[string]int{}
-	for _, h := range r.Hits {
-		if per[packageOf(h.File)] == nil {
-			per[packageOf(h.File)] = map[string]int{}
-		}
-		per[packageOf(h.File)][h.Category]++
-		totals[h.Category]++
-	}
-	sum := func(counts map[string]int) int {
-		n := 0
-		for _, c := range counts {
-			n += c
-		}
-		return n
-	}
-	pkgs := make([]string, 0, len(per))
-	for pkg := range per {
-		pkgs = append(pkgs, pkg)
-	}
-	sort.Slice(pkgs, func(i, j int) bool {
-		if a, b := sum(per[pkgs[i]]), sum(per[pkgs[j]]); a != b {
-			return a > b
-		}
-		return pkgs[i] < pkgs[j]
-	})
+	per, totals := tally(r.Hits, func(h Hit) string { return path.Dir(h.File) }, func(h Hit) string { return h.Category })
+	pkgs := rankedGroups(per, sumCounts)
 	shown := pkgs
 	if top > 0 && top < len(shown) {
 		shown = shown[:top]
@@ -141,14 +147,14 @@ func WritePackageTable(w io.Writer, r Report, top int) {
 		for i, c := range Categories {
 			cells[i] = blankZero(per[pkg][c])
 		}
-		_, _ = fmt.Fprintf(w, "| `%s` | %d | %s | %s |\n", pkg, sum(per[pkg]), strings.Join(cells, " | "), blankZero(r.Fixtures[pkg]))
+		_, _ = fmt.Fprintf(w, "| `%s` | %d | %s | %s |\n", pkg, sumCounts(per[pkg]), strings.Join(cells, " | "), blankZero(r.Fixtures[pkg]))
 	}
 	cells := make([]string, len(Categories))
 	for i, c := range Categories {
 		cells[i] = fmt.Sprintf("**%d**", totals[c])
 	}
 	_, _ = fmt.Fprintf(w, "| **all (%d packages)** | **%d** | %s | **%d** |\n",
-		len(pkgs), len(r.Hits), strings.Join(cells, " | "), sum(r.Fixtures))
+		len(pkgs), len(r.Hits), strings.Join(cells, " | "), sumCounts(r.Fixtures))
 }
 
 // WriteHitsTSV writes every hit as file, line, category, literal, sorted;
@@ -196,26 +202,9 @@ func WriteCopyOnly(table, tsv io.Writer, tests []CopyOnlyTest) {
 			cmp.Compare(a.Line, b.Line))
 	})
 
-	per := map[string]map[string]int{}
-	totals := map[string]int{}
-	for _, t := range rows {
-		area := areaOf(t.File)
-		if per[area] == nil {
-			per[area] = map[string]int{}
-		}
-		per[area][t.Purpose]++
-		totals[t.Purpose]++
-	}
-	areas := make([]string, 0, len(per))
-	for area := range per {
-		areas = append(areas, area)
-	}
-	sort.Slice(areas, func(i, j int) bool {
-		if a, b := per[areas[i]][PurposeCopy], per[areas[j]][PurposeCopy]; a != b {
-			return a > b
-		}
-		return areas[i] < areas[j]
-	})
+	per, totals := tally(rows, func(t CopyOnlyTest) string { return areaOf(t.File) },
+		func(t CopyOnlyTest) string { return t.Purpose })
+	areas := rankedGroups(per, func(counts map[string]int) int { return counts[PurposeCopy] })
 	_, _ = fmt.Fprintln(table, "| area | copy-only (targets) | behavior, copy-only oracle (incidental) |")
 	_, _ = fmt.Fprintln(table, "|---|---:|---:|")
 	for _, area := range areas {

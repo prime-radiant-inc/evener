@@ -83,6 +83,7 @@ func (s *scanner) scanGo(path, src string, withHits bool) (fileReport, error) {
 // use. Contract-shaped literals are neither.
 func (s *scanner) goHits(fset *token.FileSet, src string, file *ast.File, path string) fileReport {
 	var r fileReport
+	tf := fset.File(file.Pos())
 	ast.Inspect(file, func(n ast.Node) bool {
 		for _, c := range comparisons(n) {
 			if contractShaped(c.lit) {
@@ -92,7 +93,7 @@ func (s *scanner) goHits(fset *token.FileSet, src string, file *ast.File, path s
 			switch {
 			case s.goProd.contains(c.lit):
 				category = CategoryGoCopy
-				subject := src[fset.Position(c.subject.Pos()).Offset:fset.Position(c.subject.End()).Offset]
+				subject := src[tf.Offset(c.subject.Pos()):tf.Offset(c.subject.End())]
 				if errish.MatchString(subject) {
 					category = CategoryGoErrString
 				}
@@ -102,7 +103,7 @@ func (s *scanner) goHits(fset *token.FileSet, src string, file *ast.File, path s
 				r.fixtures++
 				continue
 			}
-			r.hits = append(r.hits, Hit{File: path, Line: fset.Position(n.Pos()).Line, Category: category, Literal: c.lit})
+			r.hits = append(r.hits, Hit{File: path, Line: tf.Line(n.Pos()), Category: category, Literal: c.lit})
 		}
 		return true
 	})

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -115,7 +116,7 @@ func inventory(root, prefix string, withHits bool) (Report, error) {
 		r.Hits = append(r.Hits, found.hits...)
 		r.CopyOnly = append(r.CopyOnly, found.copyOnly...)
 		if found.fixtures > 0 {
-			r.Fixtures[packageOf(f)] += found.fixtures
+			r.Fixtures[path.Dir(f)] += found.fixtures
 		}
 	}
 	sort.SliceStable(r.CopyOnly, func(i, j int) bool {

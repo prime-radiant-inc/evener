@@ -101,9 +101,8 @@ func copyOracleRun(args []string, stdout, stderr io.Writer, tsInventory tsInvent
 	merged := copyonly.Merge(reports...)
 
 	if *copyOnly != "" {
-		var tsv bytes.Buffer
-		copyonly.WriteCopyOnly(stdout, &tsv, merged.CopyOnly)
-		if err := os.WriteFile(*copyOnly, tsv.Bytes(), 0o644); err != nil {
+		err := writeFile(*copyOnly, func(w io.Writer) { copyonly.WriteCopyOnly(stdout, w, merged.CopyOnly) })
+		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "copy-oracle: %v\n", err)
 			return 1
 		}
@@ -112,15 +111,23 @@ func copyOracleRun(args []string, stdout, stderr io.Writer, tsInventory tsInvent
 	}
 	copyonly.WritePackageTable(stdout, merged, *top)
 	if *hits != "" {
-		var tsv bytes.Buffer
-		copyonly.WriteHitsTSV(&tsv, merged.Hits)
-		if err := os.WriteFile(*hits, tsv.Bytes(), 0o644); err != nil {
+		if err := writeFile(*hits, func(w io.Writer) { copyonly.WriteHitsTSV(w, merged.Hits) }); err != nil {
 			_, _ = fmt.Fprintf(stderr, "copy-oracle: %v\n", err)
 			return 1
 		}
 		_, _ = fmt.Fprintf(stderr, "\n%d hits written to %s\n", len(merged.Hits), *hits)
 	}
 	return 0
+}
+
+// writeFile creates path and fills it with write.
+func writeFile(path string, write func(io.Writer)) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	write(f)
+	return f.Close()
 }
 
 // tsInventoryScript is the TypeScript half's entry point, relative to the
