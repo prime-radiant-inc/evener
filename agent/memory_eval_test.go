@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,7 +63,19 @@ func TestMemoryEvalToolchainNoCompiledRoot(t *testing.T) {
 	if goroot := os.Getenv("GOROOT"); goroot != "" {
 		toolchainBin = filepath.Join(goroot, "bin")
 	}
-	t.Setenv("PATH", removePathEntry(original, toolchainBin))
+	// Drop the one toolchain bin entry `go test` prepends, not every occurrence:
+	// on a machine whose ambient PATH already carries the compiling toolchain the
+	// entry appears twice, and a directly launched binary still finds it.
+	lane := filepath.SplitList(original)
+	if toolchainBin != "" {
+		for i, dir := range lane {
+			if dir == toolchainBin {
+				lane = append(lane[:i:i], lane[i+1:]...)
+				break
+			}
+		}
+	}
+	t.Setenv("PATH", strings.Join(lane, string(filepath.ListSeparator)))
 	if _, err := exec.LookPath("go"); err != nil {
 		// No PATH Go left to run; keep the full PATH rather than fail on this.
 		t.Setenv("PATH", original)
@@ -99,6 +112,7 @@ func TestMemoryEvalGoModCacheMatchesGoEnv(t *testing.T) {
 	}{
 		{name: "explicit GOMODCACHE wins", gomodcache: filepath.Join(root, "cache"), gopath: filepath.Join(root, "gopath"), home: filepath.Join(root, "home")},
 		{name: "GOPATH's first entry", gopath: filepath.Join(root, "one") + string(filepath.ListSeparator) + filepath.Join(root, "two"), home: filepath.Join(root, "home")},
+		{name: "empty first GOPATH entry", gopath: string(filepath.ListSeparator) + filepath.Join(root, "gopath"), home: filepath.Join(root, "home")},
 		{name: "HOME fallback", home: filepath.Join(root, "home")},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
@@ -116,6 +130,21 @@ func TestMemoryEvalGoModCacheMatchesGoEnv(t *testing.T) {
 				t.Fatalf("memoryEvalGoModCache() = %q, go env GOMODCACHE = %q", got, want)
 			}
 		})
+	}
+}
+
+// A module cache path may contain URL-reserved characters; the file proxy must
+// escape them, or GOPROXY sees a truncated URL and the toolchain cannot resolve.
+func TestMemoryEvalFileProxyEscapesReservedCharacters(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "cache#1", "download")
+	got := memoryEvalFileProxy(dir)
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("file proxy URL %q does not parse: %v", got, err)
+	}
+	if parsed.Scheme != "file" || parsed.Path != dir {
+		t.Fatalf("file proxy URL %q = scheme %q path %q, want scheme file and path %q", got, parsed.Scheme, parsed.Path, dir)
 	}
 }
 

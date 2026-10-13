@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,7 +65,7 @@ func memoryEvalResolveToolchain(compiledRoot string) (string, error) {
 		// GOPROXY=off, but the module cache is already on disk: serve it as a
 		// local file proxy. No network is consulted, and the GOVERSION check
 		// below still refuses anything but the exact compiling toolchain.
-		proxy = "file://" + filepath.Join(cache, "cache", "download")
+		proxy = memoryEvalFileProxy(filepath.Join(cache, "cache", "download"))
 	}
 	cmd := exec.CommandContext(ctx, goBinary, "env", "GOROOT", "GOVERSION")
 	cmd.Env = []string{"GOENV=off", "GOTOOLCHAIN=" + selection, "GOPROXY=" + proxy, "GOSUMDB=off", "GOWORK=off"}
@@ -84,21 +85,33 @@ func memoryEvalResolveToolchain(compiledRoot string) (string, error) {
 	return fields[0], nil
 }
 
+// memoryEvalFileProxy names dir as a local file proxy URL for GOPROXY. A cache
+// path may contain URL-reserved characters, so the path is escaped rather than
+// concatenated into the URL.
+func memoryEvalFileProxy(dir string) string {
+	return (&url.URL{Scheme: "file", Path: dir}).String()
+}
+
 // memoryEvalGoModCache names the module cache the PATH Go resolves for this
-// process's environment: GOMODCACHE, else GOPATH's first entry, else HOME/go.
-// The file proxy must name the cache the child Go reads, or it points at a
-// directory the pinned toolchain is not in.
+// process's environment, mirroring the toolchain's cfg.gopathDir: GOMODCACHE,
+// else the first GOPATH entry (empty when that entry is empty, which Go does not
+// skip), else HOME/go. The file proxy must name the cache the child Go reads, or
+// it points at a directory the pinned toolchain is not in.
 func memoryEvalGoModCache() string {
 	if cache := os.Getenv("GOMODCACHE"); cache != "" {
 		return cache
 	}
-	if entries := filepath.SplitList(os.Getenv("GOPATH")); len(entries) > 0 && entries[0] != "" {
-		return filepath.Join(entries[0], "pkg", "mod")
+	gopath := os.Getenv("GOPATH")
+	if gopath == "" {
+		if home := os.Getenv("HOME"); home != "" {
+			gopath = filepath.Join(home, "go")
+		}
 	}
-	if home := os.Getenv("HOME"); home != "" {
-		return filepath.Join(home, "go", "pkg", "mod")
+	entries := filepath.SplitList(gopath)
+	if len(entries) == 0 || entries[0] == "" {
+		return ""
 	}
-	return ""
+	return filepath.Join(entries[0], "pkg", "mod")
 }
 
 type memoryEvalAdmission struct {
