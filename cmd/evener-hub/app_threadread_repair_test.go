@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -734,7 +733,6 @@ func TestAVanishedTranscriptAbortsTheRepairWithoutCreatingAnything(t *testing.T)
 
 func TestTheRepairFailureBudget(t *testing.T) {
 	wireRepairsForTest(t)
-	logged := captureRepairLog(t)
 	feed, completions, calls := installRepairSeam(t)
 	cfg, entry, path := seedIndexedPastSession(t,
 		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
@@ -750,11 +748,9 @@ func TestTheRepairFailureBudget(t *testing.T) {
 		feed(func(string) error { return boom })
 		<-completions
 	}
-	base := filepath.Base(path)
-	wantExhausted := fmt.Sprintf("transcript index repair budget exhausted (%s)", base)
-	if logs := logged(); !slices.Contains(logs, wantExhausted) {
-		t.Fatalf("repair log = %q, want %q among them", logs, wantExhausted)
-	}
+	// The exhausted budget is pinned by what the registry does below — the
+	// history-failed answer and the budget's recovery — not by the log
+	// sentence announcing it (Copy Is Not a Test Oracle).
 
 	// The read that re-arms the exhausted path answers history-failed itself,
 	// and holds its re-armed repair in flight for a moment.
