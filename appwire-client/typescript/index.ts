@@ -239,6 +239,7 @@ export {
   StoreMessageError,
   sessionActionError,
   sessionActionHeadline,
+  storeErrorText,
   WireError,
   wireRejectionPayload,
 } from "./errors";

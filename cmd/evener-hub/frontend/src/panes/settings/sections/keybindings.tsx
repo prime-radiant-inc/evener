@@ -33,6 +33,7 @@ import {
   modifierDisplayKey,
   type OverrideRule,
   serializeChord,
+  storeErrorText,
 } from "@evener/appwire-client";
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
@@ -90,8 +91,10 @@ function eventModifiers(event: ReactKeyboardEvent): string[] {
   return modifiers;
 }
 
+// A rejected write keeps the store's own refusal (an introduced conflict, an
+// unavailable hub) and shows any other failure in its friendly form.
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return storeErrorText(error);
 }
 
 /** The full replacement rule set a single-action edit produces: the store's

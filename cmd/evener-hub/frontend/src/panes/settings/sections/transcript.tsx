@@ -1,7 +1,9 @@
 import {
   configFingerprint,
   type HubTranscriptDisplayDefault,
+  StoreMessageError,
   shippedDefault,
+  storeErrorText,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
@@ -72,7 +74,7 @@ export function TranscriptSection() {
       if (saveOperations.current[layout] !== operation) return;
       const storeState = transcriptDisplayStore.getState();
       if (configFingerprint(canonical.config) !== configFingerprint(config) || storeState.drafts[layout] !== undefined)
-        throw new Error("Hub did not acknowledge this transcript display default.");
+        throw new StoreMessageError("Hub did not acknowledge this transcript display default.");
       // patchHubDefault returns only a fully validated canonical response for
       // this layout. Do not inspect store-wide errors: another layout may be
       // settling concurrently.
@@ -90,7 +92,7 @@ export function TranscriptSection() {
           // If another writer left a newer draft in the store, preserve that
           // draft for Retry rather than replacing it with this stale request.
           config: currentDraft ?? config,
-          error: error instanceof Error ? error.message : String(error),
+          error: storeErrorText(error),
         },
       }));
     }

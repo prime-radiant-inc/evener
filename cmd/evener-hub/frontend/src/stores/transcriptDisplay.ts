@@ -587,7 +587,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
         transcriptDisplayStore.setState({
           hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: error },
         });
-        throw new Error(error);
+        throw new StoreMessageError(error);
       }
       // Captured before the write starts: any rewire, detach, or ready
       // generation change past this point fences the restore below.
@@ -610,22 +610,22 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
     // the package's own gate words.
     editDraft: (layout, input) => {
       const store = packageStore;
-      if (store === null) throw new Error(UNAVAILABLE_MESSAGE);
+      if (store === null) throw new StoreMessageError(UNAVAILABLE_MESSAGE);
       store.getState().editDraft(layout, input);
     },
     saveDraft: async (layout, input): Promise<HubTranscriptDisplayDefault> => {
       const store = packageStore;
-      if (store === null) throw new Error(UNAVAILABLE_MESSAGE);
+      if (store === null) throw new StoreMessageError(UNAVAILABLE_MESSAGE);
       return store.getState().saveDraft(layout, input);
     },
     discardDraft: () => {
       const store = packageStore;
-      if (store === null) throw new Error(UNAVAILABLE_MESSAGE);
+      if (store === null) throw new StoreMessageError(UNAVAILABLE_MESSAGE);
       store.getState().discardDraft();
     },
     rebaseDraft: (reviewedRevision) => {
       const store = packageStore;
-      if (store === null) throw new Error(UNAVAILABLE_MESSAGE);
+      if (store === null) throw new StoreMessageError(UNAVAILABLE_MESSAGE);
       store.getState().rebaseDraft(reviewedRevision);
     },
   }),

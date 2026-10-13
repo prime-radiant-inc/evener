@@ -1239,7 +1239,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // freshly-loaded clean state - "Hub keybindings settings are
         // unavailable" plus the round-3 editing gate would read the new hub
         // read-only until something cleared it. Throw only.
-        if (!fence.liveHub(callGeneration)) throw new Error(UNAVAILABLE_MESSAGE);
+        if (!fence.liveHub(callGeneration)) throw new StoreMessageError(UNAVAILABLE_MESSAGE);
         // Support resolved to UNSUPPORTED is the same hygiene class as the
         // fence (finding 26): the unsupported state is deliberately clean -
         // the section says the built-in defaults are in effect - and the
@@ -1247,7 +1247,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // bump the generation (finding 24: isSupported() gates the window),
         // so a write QUEUED while supported can reach this point, as can one
         // composed while unsupported. Both throw without hubError.
-        if (state.hubSupport === "unsupported") throw new Error(UNAVAILABLE_MESSAGE);
+        if (state.hubSupport === "unsupported") throw new StoreMessageError(UNAVAILABLE_MESSAGE);
         if (
           state.hubSupport !== "supported" ||
           state.loaded !== true ||
@@ -1266,12 +1266,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
           // gate: both paths take the same write token, so starting here would
           // fence the checkpointed write's own reply out and strand it saving.
           setState({ hubError: UNAVAILABLE_MESSAGE });
-          throw new Error(UNAVAILABLE_MESSAGE);
+          throw new StoreMessageError(UNAVAILABLE_MESSAGE);
         }
         // Reject with the validation layer's own message and leave
         // hubError/conflict untouched: nothing hub-sourced happened.
         const introduced = reconciler.introducedWarnings(state.rawOverrides, rules);
-        if (introduced.length > 0) throw new Error(introduced.map((warning) => warning.message).join("\n"));
+        if (introduced.length > 0) throw new StoreMessageError(introduced.map((warning) => warning.message).join("\n"));
         const token = fence.claimWrite();
         // A response landing after support loss must not re-apply - the
         // unsupported branch already un-applied and retired the hub state.
@@ -1347,7 +1347,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       !state.loaded ||
       state.loadError !== null
     )
-      throw new Error(UNAVAILABLE_MESSAGE);
+      throw new StoreMessageError(UNAVAILABLE_MESSAGE);
     return { revision: state.revision, rules: state.rawOverrides };
   }
 
@@ -1448,9 +1448,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         ? fence.liveHub(directWrite.generation)
         : fence.writeStillMine(directWrite.generation, directWrite.token))
     )
-      throw new Error(UNAVAILABLE_MESSAGE);
+      throw new StoreMessageError(UNAVAILABLE_MESSAGE);
     const existing = getState().draft;
-    if (getState().draftConflict) throw new Error("Review the current shortcuts before saving your changes.");
+    if (getState().draftConflict)
+      throw new StoreMessageError("Review the current shortcuts before saving your changes.");
     const checked = keybindingRules(rules ?? existing?.rules ?? current.rules);
     const revision = existing?.revision ?? current.revision;
     // The durable intent must exist before the request can leave the device.
@@ -1469,7 +1470,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // The saving publish above may have disposed the store or retired the
       // payload (a host tearing down on the transition): the checkpoint stays
       // for the next instance to restore, and nothing leaves.
-      if (!stillMine()) throw new Error("Shortcut save was cancelled.");
+      if (!stillMine()) throw new StoreMessageError("Shortcut save was cancelled.");
       result = await client.request("evener/settings/keybindings/patch", {
         expectedRevision: revision,
         config: { version: 1, rules: checked },
@@ -1580,7 +1581,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const current = assertEditable();
     const { draft, hubLoading } = getState();
     if (draft === null || hubLoading || current.revision !== reviewedRevision)
-      throw new Error(DRAFT_REVIEW_AGAIN_MESSAGE);
+      throw new StoreMessageError(DRAFT_REVIEW_AGAIN_MESSAGE);
     persistDraft({ baseRevision: current.revision, rules: draft.rules, writeUncertain: false });
     setState({
       draft: { ...draft, revision: current.revision, generation: currentGeneration() },

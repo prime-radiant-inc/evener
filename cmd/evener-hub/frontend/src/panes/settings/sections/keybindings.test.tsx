@@ -949,7 +949,7 @@ test("a failed Unbind surfaces the hub error inline on the row", async () => {
   const client = new FakeClient("ready");
   client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
   client.on("evener/settings/keybindings/patch", () => {
-    throw new Error("socket went away");
+    throw new WireError("socket went away", -32000);
   });
   await wireClient(client, true);
   render(<KeybindingsSection />);
@@ -961,6 +961,27 @@ test("a failed Unbind surfaces the hub error inline on the row", async () => {
   expect(within(row).getByText("K")).toBeTruthy();
 });
 
+// The client's own write failures (a timeout, a lost connection) show their
+// friendly form on the row, never the client's wiring text.
+test.each([
+  ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+  ["the client's lost socket", new Error("AppwireClient: socket closed (code 1006)")],
+])("a failed Unbind from %s shows its friendly form on the row", async (_name, err) => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  client.on("evener/settings/keybindings/patch", () => {
+    throw err;
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
+
+  const row = rowFor("Open the command palette");
+  await waitFor(() => expect(within(row).getByRole("alert").textContent).toContain(friendlyErrorMessage(err)));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
+});
+
 test("a confirmed hub payload clears a stale row error - and leaves an unrelated capture alone", async () => {
   // The hub rejects writes while it recovers; the failed PATCH never
   // confirmed, so the GET stays at revision 1 and the refresh re-confirms
@@ -970,7 +991,7 @@ test("a confirmed hub payload clears a stale row error - and leaves an unrelated
   const client = new FakeClient("ready");
   client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
   client.on("evener/settings/keybindings/patch", (params) => {
-    if (failPatch) throw new Error("state unavailable");
+    if (failPatch) throw new WireError("state unavailable", -32000);
     return overridesPayload(2, params.config.rules);
   });
   await wireClient(client, true);
