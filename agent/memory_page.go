@@ -19,7 +19,6 @@ import (
 // memoryPage is one page of a memory scope, as its generated index line needs it.
 type memoryPage struct {
 	Path           string // slash-separated, relative to the scope root
-	Title          string
 	Description    string // one line; the fallback when HasDescription is false
 	HasDescription bool
 	When           string // one line: when a future session needs the page; "" when there is none
@@ -105,7 +104,7 @@ func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) st
 // non-Markdown file, or a page that could not be read.
 func filenameMemoryPage(rel string, modTime time.Time) memoryPage {
 	base := path.Base(rel)
-	return memoryPage{Path: rel, Title: strings.TrimSuffix(base, path.Ext(base)), Description: base, ModTime: modTime}
+	return memoryPage{Path: rel, Description: base, ModTime: modTime}
 }
 
 // parseMemoryPage builds the index entry for the page at rel from its bytes.
@@ -123,9 +122,6 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 	p.Unreadable = err != nil
 	p.Frontmatter = hasBlock
 	heading := firstMarkdownHeading(body)
-	if heading != "" {
-		p.Title = heading
-	}
 	if description, ok := doc.Meta["description"].(string); ok {
 		p.Description = collapseWhitespace(description)
 		p.HasDescription = p.Description != ""

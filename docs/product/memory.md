@@ -120,7 +120,7 @@ sessions are also told that `memory_write` takes each part of a page as its own
 field (the parameter descriptions carry the guidance on what each holds: a
 `when` line saying when a future session needs the page, and a body with one
 durable fact, its reason and when it bears on work), that the index is built
-from each page's title and `when` line, and to keep run details that go
+from each page's path and `when` line, and to keep run details that go
 stale within days (commit SHAs, branch names, ids, scratch paths, test counts)
 out of memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
@@ -299,8 +299,8 @@ does not parse is still a page; it renders as
 
 ```text
 Tags: formatting (3), money (2), vitest (6)
-- [Integer cents](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)
-- [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
+- [cents.md](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)
+- [vitest/loader.md](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
 ```
 
 The `Tags:` header lists every tag with its page count, alphabetically, and is
@@ -310,15 +310,15 @@ omitted when no page has tags. Lines run newest `updated` first. A page with no
 Ties order by path. Pages whose frontmatter is unreadable come after every
 other page, ordered by path: a broken page's file date says nothing about what
 it holds, so a freshly touched one never crowds the newest pages out of the
-projection. The title is the page's first heading (whitespace runs
-collapsed, as in the fallback), else its filename without extension; `[tags]` and `(updated …)` are left out when empty. A `]`
-or `\` in a title is backslash-escaped. A path holding whitespace, a
+projection. The link text is the page's path, so a heading change never
+changes a line; `[tags]` and `(updated …)` are left out when empty. A `]`
+or `\` in the path is backslash-escaped in the link text. A path holding whitespace, a
 parenthesis or a backslash, or starting with `<`, is written in angle brackets
-(`[Old notes](<my notes (old).md>)`), with `\`, `<` and `>` inside escaped, so
+(`[my notes (old).md](<my notes (old).md>)`), with `\`, `<` and `>` inside escaped, so
 the link names the whole path. A file whose name holds an ASCII control
 character other than tab, which `memory_write` refuses but a file can still
 have, gets no link. Its line is the path as a JSON string, then a note, with no
-title, description, tags or date: `- "bad\nname.md" — (no link: the name holds
+link text, description, tags or date: `- "bad\nname.md" — (no link: the name holds
 a control character, shown JSON-escaped; read or delete it, and save its
 content under another name)`. A name that also holds invalid UTF-8, which no JSON
 string or tool call can carry, is quoted with `\x` escapes instead, and its note
@@ -360,7 +360,7 @@ empty, up to the scope root.
 **Writing a page.** `memory_write` takes `scope`, `file_path`, `when` (a
 required, non-blank line) and `body` (the page's Markdown), and no other
 property. Evener writes a frontmatter block holding `when`, stamps the page
-(below), then writes the body, whose first heading becomes the page's title.
+(below), then writes the body.
 Writing a path that exists replaces the page whole. Two calls are refused and
 write nothing: a blank or missing `when` ("memory_write needs a when: one line
 saying when a future session needs the page"), and a `body` that opens with a
