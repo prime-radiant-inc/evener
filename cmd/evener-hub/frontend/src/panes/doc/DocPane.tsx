@@ -26,7 +26,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { usePaneVisible } from "../../shell/paneVisibility";
-import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
+import { documentPaneState, recordDocumentPaneState, useWorkspaceStore, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import type { DocumentAnnotationPorts } from "../../stores/documentAnnotationRuntime";
 import { createSecureUUID } from "../../stores/secureUUID";
@@ -246,6 +246,26 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     () => ({ namespace: { kind: "browser", origin: location.origin }, sessionRef: session, path }),
     [session, path],
   );
+  // The pane's retained binding decides what this reader fetches: an absolute
+  // provenance keeps its exact read target across cwd changes, and a relative
+  // one rebinds with a changed cwd, the same resolution the workspace's
+  // reference-bound reader performs below. The pane's params.path remains the
+  // document's identity for annotations and the pane record; it is only the
+  // fetch target when no binding was ever recorded. The stores are read per
+  // render, never subscribed: the binding re-resolves on every render - a
+  // foreground reread and any later read fetch the rebound target - while the
+  // reader keeps rendering only for the state it already observes, so a
+  // closed pane's committed retirement can never be resurrected by an extra
+  // render of a reader waiting to unmount.
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.id === paneId);
+  const retained = pane ? documentPaneState(pane) : undefined;
+  let readTarget = path;
+  if (retained) {
+    const cwd = threadsStore.getState().threads.get(session)?.cwd;
+    const reference =
+      cwd && cwd !== retained.reference.cwd ? rebindFileReference(retained.reference, cwd) : retained.reference;
+    readTarget = reference.readTarget;
+  }
   const work = documentReaderWork(paneId, key, ports);
   const destination: DestinationProvenance = origin ?? { kind: "browser-restored-session" };
 
@@ -357,7 +377,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
 
       let content: DocFileContent;
       try {
-        content = await readDocFile(session, path, browserDocPort);
+        content = await readDocFile(session, readTarget, browserDocPort);
       } catch (err) {
         // A failed raw read preserves the exact authored note and unsent work.
         if (!cancelled) setState({ status: "error", kind: errorKind(err) });
@@ -456,7 +476,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     return () => {
       cancelled = true;
     };
-  }, [session, path, key, ports, work, readNonce, enterExpiryPending]);
+  }, [session, path, readTarget, key, ports, work, readNonce, enterExpiryPending]);
 
   // A genuine foreground reread of the current ticket, in addition to the shared
   // retained-attempt retry.

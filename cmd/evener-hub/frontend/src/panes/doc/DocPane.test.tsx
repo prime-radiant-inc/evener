@@ -1676,6 +1676,43 @@ test("a failed reader reopen preserves saved views and editable work, then a rea
   expect(await payloadRowsFor(f, produced.operationId)).toEqual([produced]);
 });
 
+// The retained binding decides what the annotated reader fetches. A pane
+// opened through an absolute path carries the relative path in params while
+// the exact target lives in the pane's retained binding; fetching the pane
+// path would let the server resolve it against whatever cwd the session has
+// moved to by the time of a later read, silently opening a different file.
+test("the annotated reader fetches the retained binding's read target, not the cwd-resolved pane path", async () => {
+  const f = await fixture("reader-retained-target");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+
+  const sourcePaneId = workspaceStore.getState().openPane("session", { ref: "root" });
+  const absolute = bindFilePath("/work/a/NOTES.md", "/work/a");
+  if (!absolute) throw new Error("expected an absolute reference");
+  openDocBeside({ session: "root", sourcePaneId, reference: absolute });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a real document pane");
+
+  const requested: string[] = [];
+  mockRead.mockImplementation(async (_session: string, path: string) => {
+    requested.push(path);
+    return docContent(SOURCE, "rev-A");
+  });
+
+  const host = render(
+    <ClientProvider client={client}>
+      <DocPane paneId={pane.id} focused={true} params={pane.params as DocParams} annotations={ports} />
+    </ClientProvider>,
+  );
+  cleanupAfterTest(() => disposeDocumentReaderWork(pane.id));
+  cleanupAfterTest(() => host.unmount());
+  await screen.findByText("First occurrence: same");
+
+  expect(requested.length).toBeGreaterThan(0);
+  expect(requested.every((path) => path === "/work/a/NOTES.md")).toBe(true);
+});
+
 // ---------------------------------------------------------------------------
 // Reader pipeline ordering: the approved beginRead -> readDocFile -> acceptRead
 // -> mapped rendering path, traced with read-only observers placed around the
