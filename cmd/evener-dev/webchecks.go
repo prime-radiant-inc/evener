@@ -30,9 +30,21 @@ func newWebChecksGate() *webGate {
 // roots under root, its own scratch directory, Vite's dep cache inside that
 // root, and Node's compile cache off.
 func webCheckSpec(check, root string) guardSpec {
+	argv := []string{"npm", "run", check}
+	// The timing ratchet reads the frontend's durations from the same vitest
+	// run the gate already pays for (issue #144): EVENER_WEB_VITEST_JSON names
+	// a file to receive vitest's JSON reporter, while the default reporter
+	// keeps the human log. `npm run test -- ...` forwards the flags to vitest
+	// (the script hands "$@" through), and the test check's own package.json
+	// script only ever adds them to vitest, never to the node helper tests.
+	if check == "test" {
+		if out := os.Getenv("EVENER_WEB_VITEST_JSON"); out != "" {
+			argv = append(argv, "--", "--reporter=default", "--reporter=json", "--outputFile.json="+out)
+		}
+	}
 	return guardSpec{
 		name: check,
-		argv: []string{"npm", "run", check},
+		argv: argv,
 		dir:  frontendDir,
 		env: []string{
 			"HOME=" + filepath.Join(root, "home"),

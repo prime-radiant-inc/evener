@@ -22,7 +22,12 @@
 #   - Per-test ceiling (testing-budget.json's perTestCeilingSeconds, currently
 #     3s; 2s when a budget file does not name one at all):
 #     any single test or subtest over the ceiling is flagged regardless of its
-#     package's budget — one runaway test is a defect on its own.
+#     package's budget — one runaway test is a defect on its own. It is WARN-ONLY
+#     in every mode, --strict included, until the ceiling is segmented by test
+#     class (#4601) and enforcement follows (ruling, 2026-10-13): the ceiling has
+#     never run in CI, so enforcing the flat 3s today would red the gate on tests
+#     that were always over it. #144's "done when" is strict enforcement, so the
+#     issue stays open.
 #
 # A package the budget file does not mention is a WARN, not silently skipped —
 # see kata b6rv's stop condition. When the budget file is missing or its
@@ -63,11 +68,12 @@
 #
 # --check's exit policy: CI is strict (a $CI-set environment, or --strict);
 # everywhere else is warn-only (--local, or --check with $CI unset). Strict
-# fails on a per-package ratio over 1.5x or any ceiling breach; warn-only
-# prints the identical diagnostics, labeled, and always exits 0. Bare
-# measurement (no --check) fails only on a broken measurement; its ratio and
-# ceiling verdicts are a report, like `evener dev coverage-floor` with neither
-# --check nor --bless.
+# fails on a per-package ratio over 1.5x and on a broken measurement; the
+# per-test ceiling is warn-only in every mode until it is segmented by test class
+# and enforced (#4601, see above). Warn-only prints the identical diagnostics, labeled, and always exits 0 except
+# for a broken measurement. Bare measurement (no --check) fails only on a broken
+# measurement; its ratio and ceiling verdicts are a report, like `evener dev
+# coverage-floor` with neither --check nor --bless.
 #
 # The budget file is a hand-reviewed artifact: raising a package's number is an
 # edit to testing-budget.json in the same commit as whatever earned it, exactly
@@ -123,6 +129,9 @@ fi
 # surface no gate reproduces.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/scratch-lib.sh"
+# The row contract (go_test_json_to_tsv / vitest_json_to_tsv) is shared with
+# run-module-tests.sh, the gate's single measured producer (issue #144).
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/timing-tsv-lib.sh"
 
 if [ -n "$strict_override" ]; then
 	strict=$([ "$strict_override" = "1" ] && echo true || echo false)
@@ -137,55 +146,6 @@ scratch_dir work evener-testbudget
 
 measured="$work/measured.tsv"
 : >"$measured"
-
-# go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE
-# — prints the ratchet's rows for one module: one "PKG\t<package>" line per
-# package-level terminal event, one "TEST\t<package>\t<name>\t<seconds>" line per
-# test AND subtest result (what the ceiling check needs to catch a slow subtest a
-# top-level-only view would hide), and one "SUM\t<package>\t<seconds>" line per
-# package, the package's own wall time read from its terminal event's Elapsed
-# field. (The SUM used to be the sum of top-level Test/Example Elapsed; under
-# t.Parallel that counts overlapping tests additively, so it measured contention
-# as much as work — issue #172.)
-#
-# go test -json emits exactly one terminal event for EVERY package it was asked
-# to test — including a package with no test files (skip) and a package that
-# fails to build (fail). $2 lists what `go list ./...` reported, one import path
-# per line; any of those the stream never ends is the silent-drop shape issue
-# #172 filed (a build-failed package contributing no rows, so --bless quietly
-# wrote a budget without it) and fails the whole run.
-#
-# The parsing is `evener-dev timing-parse`, unit-tested in Go against JSON stream
-# strings rather than through a faked toolchain (issue #172 review;
-# docs/developing-evener/testing.md's port-on-touch rule). GOFLAGS= keeps an
-# inherited GOFLAGS from changing how the helper itself builds.
-go_test_json_to_tsv() {
-	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev timing-parse --json "$1" --packages "$2" )
-}
-
-# vitest_json_to_tsv REPORT_JSON >> measured.tsv — rolls the whole frontend
-# suite up under one package key, "web": vitest has no per-package shape the
-# way a Go module does, and the budget's own doc comment names this as the
-# design. duration is milliseconds in the vitest/Jest-compatible JSON reporter;
-# everything else in this file is seconds.
-vitest_json_to_tsv() {
-	python3 - "$1" <<'PY'
-import json, sys
-
-with open(sys.argv[1]) as fh:
-	report = json.load(fh)
-
-total = 0.0
-for suite in report.get("testResults", []):
-	for a in suite.get("assertionResults", []):
-		secs = a.get("duration") or 0
-		secs = secs / 1000.0
-		name = a.get("fullName") or a.get("title") or "(unnamed)"
-		print(f"TEST\tweb\t{name}\t{secs}")
-		total += secs
-print(f"SUM\tweb\t{total}")
-PY
-}
 
 module_short_flag() {
 	[ "$1" = "." ] && printf '' || printf -- '-short'
@@ -335,9 +295,10 @@ WARN_RATIO = 1.1
 WALL_METRIC = "package-wall-seconds"
 
 # The frontend rolls up under this one key. Its number is the vitest reporter's
-# assertion durations, the same metric issue #172 left unchanged, so it stays
-# comparable to the checked-in budget even while the Go packages' units are
-# stale and held back (below).
+# assertion durations, the same metric issue #172 left unchanged, but the
+# checked-in entry was blessed on a different host than a CI runner, so its
+# measurement is not comparable to this run's either and it warns with the Go
+# rows until #141 re-blesses the baseline for the host class CI uses.
 WEB_KEY = "web"
 
 sums = {}
@@ -386,10 +347,11 @@ if no_baseline:
 		"`make test-rebaseline` lands a measured baseline (kata b6rv).")
 elif stale_units:
 	lines.append("STALE UNITS: testing-budget.json's Go-package numbers were blessed "
-		"under the pre-#172 sum-of-test-Elapsed metric; they are not comparable to the "
-		"package wall time measured now, so their ratio failures are warnings until #141 "
-		f"regenerates the baseline (a rebaseline records \"metric\": \"{WALL_METRIC}\"). "
-		f"The \"{WEB_KEY}\" entry is the unchanged vitest metric and stays enforced.")
+		"under the pre-#172 sum-of-test-Elapsed metric and its "
+		f"\"{WEB_KEY}\" entry on a different host than this run, so no ratio in it is "
+		"comparable to what this run measured; every ratio failure below warns, with its "
+		"numbers, until #141 re-blesses the baseline for the host class CI uses "
+		f"(a rebaseline records \"metric\": \"{WALL_METRIC}\").")
 
 for pkg in sorted(sums):
 	m = sums[pkg]
@@ -400,7 +362,7 @@ for pkg in sorted(sums):
 		continue
 	ratio = (m / b) if b > 0 else (float("inf") if m > 0 else 0.0)
 	if ratio > FAIL_RATIO:
-		if stale_units and pkg != WEB_KEY:
+		if stale_units:
 			lines.append(f"WARN  {pkg}: {m:.2f}s over stale budget {b:.2f}s "
 				f"({ratio:.2f}x > {FAIL_RATIO}x; not enforced until the #141 rebaseline)")
 			raise_worst("warn")
@@ -415,8 +377,14 @@ for pkg in sorted(sums):
 
 for pkg, name, secs in tests:
 	if secs > ceiling:
-		lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling")
-		raise_worst("fail")
+		# The flat per-test ceiling is warn-only in EVERY mode, --strict
+		# included (ruling, 2026-10-13): it has never run in CI, #4601 records
+		# the pre-existing breaches, and enforcing the flat 3s today would red
+		# the gate for everyone on tests that were always over it. Segmentation
+		# by test class lands first, then enforcement; the breaches stay
+		# reported and named until then.
+		lines.append(f"WARN  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling (warn-only until #4601 segments it)")
+		raise_worst("warn")
 
 # no_baseline is the ONE place the "tree must stay green" rule is enforced
 # (below, in exit_code): severity above is computed the same way regardless of
@@ -474,8 +442,10 @@ if check:
 		exit_code = 1 if worst == "fail" else 0
 	else:
 		exit_code = 0
-		if worst != "ok":
+		if worst == "fail":
 			lines.append(f"warn-only run: would exit non-zero under --strict/CI ({worst})")
+		elif worst == "warn":
+			lines.append("warn-only run: the warnings above are reported but not enforced")
 
 with open(out_path, "w") as fh:
 	fh.write("\n".join(lines) + ("\n" if lines else ""))

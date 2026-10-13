@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,24 +39,36 @@ var memoryCorrectionStages = []memoryEvalStage{{"A", 8}, {"B", 12}, {"C", 10}}
 
 // Capture before TestMain replaces HOME. Trimpath removes the compiled-in root,
 // and a directly launched installed Go does not export GOROOT to its tests.
-// Let Go resolve the exact compiling version offline, not a guessed cache path.
+// Let Go resolve the exact compiling version offline; the fallback serves the
+// module cache so an ambient Go older than the pin can select it without a fetch.
 var memoryEvalToolchainRoot, memoryEvalToolchainError = memoryEvalCaptureToolchain()
 
 func memoryEvalCaptureToolchain() (string, error) {
+	root := runtime.GOROOT() //nolint:staticcheck // SA1019: this local verifier intentionally selects its compiling Go installation, not a relocated binary's PATH toolchain.
+	return memoryEvalResolveToolchain(root)
+}
+
+// memoryEvalResolveToolchain resolves the Go installation that compiled this
+// test binary from its compiled-in root, and falls back to PATH Go when the
+// binary was trimmed and carries none.
+func memoryEvalResolveToolchain(compiledRoot string) (string, error) {
 	// TRIPWIRE: offline go env normally returns immediately, twenty seconds only detects a wedged process.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	goBinary, selection := "go", runtime.Version()
-	if root := runtime.GOROOT(); root != "" { //nolint:staticcheck // SA1019: this local verifier intentionally selects its compiling Go installation, not a relocated binary's PATH toolchain.
-		goBinary, selection = filepath.Join(root, "bin", "go"), "local"
+	goBinary, selection, proxy := "go", runtime.Version(), "off"
+	if compiledRoot != "" {
+		goBinary, selection = filepath.Join(compiledRoot, "bin", "go"), "local"
+	} else if cache := memoryEvalGoModCache(); cache != "" {
+		// A trimmed binary launched directly inherits no GOROOT, so this runs the
+		// PATH Go to select the compiling version. An ambient Go older than the
+		// pinned toolchain cannot materialize the toolchain module with
+		// GOPROXY=off, but the module cache is already on disk: serve it as a
+		// local file proxy. No network is consulted, and the GOVERSION check
+		// below still refuses anything but the exact compiling toolchain.
+		proxy = memoryEvalFileProxy(filepath.Join(cache, "cache", "download"))
 	}
 	cmd := exec.CommandContext(ctx, goBinary, "env", "GOROOT", "GOVERSION")
-	cmd.Env = []string{"GOENV=off", "GOTOOLCHAIN=" + selection, "GOPROXY=off", "GOSUMDB=off", "GOWORK=off"}
-	for _, key := range []string{"PATH", "HOME", "GOPATH", "GOMODCACHE", "GOCACHE"} {
-		if value, ok := os.LookupEnv(key); ok {
-			cmd.Env = append(cmd.Env, key+"="+value)
-		}
-	}
+	cmd.Env = memoryEvalToolchainEnv(selection, proxy)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("memory eval exact offline Go resolution failed: %w", err)
@@ -65,6 +78,103 @@ func memoryEvalCaptureToolchain() (string, error) {
 		return "", errors.New("memory eval offline Go does not match compiling toolchain")
 	}
 	return fields[0], nil
+}
+
+// memoryEvalFileProxy names dir as a local file proxy URL for GOPROXY. A cache
+// path may contain URL-reserved characters, so the path is escaped rather than
+// concatenated into the URL. GOPROXY's list separators "," and "|" are escaped
+// on top of that: url.URL leaves a comma alone (it is an RFC 3986 sub-delim), so
+// an unescaped one would split one cache path into two proxies — the second not
+// a URL at all — and the toolchain download would fail with "invalid proxy URL
+// missing scheme" instead of being served from the cache (see
+// TestMemoryEvalFileProxyEscapesGoproxySeparators).
+func memoryEvalFileProxy(dir string) string {
+	proxy := url.URL{Scheme: "file", Path: dir}
+	escaped := proxy.EscapedPath()
+	escaped = strings.ReplaceAll(escaped, ",", "%2C")
+	escaped = strings.ReplaceAll(escaped, "|", "%7C")
+	proxy.RawPath = escaped
+	return proxy.String()
+}
+
+// memoryEvalGoModCache names the module cache the PATH Go resolves for this
+// process's environment, mirroring the toolchain's cfg.gopathDir: GOMODCACHE,
+// else the first GOPATH entry (empty when that entry is empty, which Go does not
+// skip), else HOME/go. The file proxy must name the cache the child Go reads, or
+// it points at a directory the pinned toolchain is not in.
+func memoryEvalGoModCache() string {
+	if cache := os.Getenv("GOMODCACHE"); cache != "" {
+		return cache
+	}
+	gopath := os.Getenv("GOPATH")
+	if gopath == "" {
+		if home := os.Getenv("HOME"); home != "" {
+			gopath = filepath.Join(home, "go")
+		}
+	}
+	entries := filepath.SplitList(gopath)
+	if len(entries) == 0 || entries[0] == "" {
+		return ""
+	}
+	return filepath.Join(entries[0], "pkg", "mod")
+}
+
+// memoryEvalToolchainEnv is the environment the fallback runs the PATH Go in: the
+// toolchain selection it must honor, the proxy it must fetch through, and the
+// settings that keep that lookup offline. It is built here rather than inline so
+// a test can pin the contract — including the proxy a comma-bearing cache path
+// produces — without needing an older Go on the host to run it
+// (TestMemoryEvalToolchainEnvCarriesTheOfflineContract).
+func memoryEvalToolchainEnv(selection, proxy string) []string {
+	env := []string{"GOENV=off", "GOTOOLCHAIN=" + selection, "GOPROXY=" + proxy, "GOSUMDB=off", "GOWORK=off"}
+	for _, key := range []string{"PATH", "HOME", "GOPATH", "GOMODCACHE", "GOCACHE"} {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
+}
+
+// memoryEvalPathGoSupportsToolchainSelection reports whether the PATH Go a
+// fallback test would run knows GOTOOLCHAIN at all (Go 1.21 and newer). A
+// pre-1.21 bootstrap ignores the setting, so the fallback cannot materialize a
+// newer toolchain through it and a failure there would be the machine's, not the
+// code's. `go env GOTOOLCHAIN` is the probe: a command without the variable
+// fails rather than printing it.
+func memoryEvalPathGoSupportsToolchainSelection() bool {
+	cmd := exec.Command("go", "env", "GOTOOLCHAIN")
+	cmd.Env = append(os.Environ(), "GOENV=off", "GOTOOLCHAIN=local")
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "local"
+}
+
+// memoryEvalToolchainDownloadPresent reports whether cache holds the compiling
+// toolchain in a shape the file proxy can serve offline: a completed extraction
+// (the directory with its own bin/go), or a download record with both its zip
+// and its ziphash. An interrupted download leaves metadata such as .info behind
+// without either, and an interrupted extraction leaves an empty directory, so a
+// bare directory or a lone .info is not enough. A machine that installed the pin
+// natively rather than through the module cache this process points at has none,
+// and no offline fallback can materialize it there. Tests that need the fallback
+// to fetch the toolchain say so rather than failing on the machine's cache
+// state.
+func memoryEvalToolchainDownloadPresent(cache string) bool {
+	if cache == "" {
+		return false
+	}
+	name := "v0.0.1-" + runtime.Version() + "." + runtime.GOOS + "-" + runtime.GOARCH
+	if info, err := os.Stat(filepath.Join(cache, "golang.org", "toolchain@"+name, "bin", "go")); err == nil && !info.IsDir() {
+		return true
+	}
+	entries, err := os.ReadDir(filepath.Join(cache, "cache", "download", "golang.org", "toolchain", "@v"))
+	if err != nil {
+		return false
+	}
+	have := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		have[entry.Name()] = true
+	}
+	return have[name+".zip"] && have[name+".ziphash"]
 }
 
 type memoryEvalAdmission struct {

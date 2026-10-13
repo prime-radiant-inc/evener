@@ -147,6 +147,63 @@ func TestAgentShardsBuildsAndRunsWithTheCallersFlags(t *testing.T) {
 	}
 }
 
+// TestAgentShardsCaptureKeepsPerTestVerdictsUnderQuietForwardedFlags pins issue
+// #144 review finding 3. The capture appends -test.v so `go tool test2json` can
+// recover each test's duration from the shard logs, but the caller's own flags
+// used to arrive after it: a forwarded -v=false switched verbosity back off, the
+// shard logs carried no `--- PASS:` verdict at all, and the timing check still
+// passed on the package terminal events while enforcing no sharded test's
+// per-test ceiling. -test.v must win over the forwarded flag, and per-test rows
+// must survive the conversion the gate runs (capture_shard_rows).
+func TestAgentShardsCaptureKeepsPerTestVerdictsUnderQuietForwardedFlags(t *testing.T) {
+	cfg, stdout, stderr, _ := e2eConfig(t)
+	cfg.noSurvey = true
+	cfg.flags = []string{"-count=1", "-v=false"}
+	cfg.jsonDir = t.TempDir()
+	cfg.jsonPackage = "shardfixture"
+	if rc := runShards(cfg); rc != 0 {
+		t.Fatalf("runShards = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+	}
+	logs, err := filepath.Glob(filepath.Join(cfg.jsonDir, "agent-shard*.v"))
+	if err != nil {
+		t.Fatalf("globbing shard logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("no shard logs under %s", cfg.jsonDir)
+	}
+	// Convert exactly as run-module-tests.sh's capture_shard_rows does, then
+	// parse: a per-test row exists only if the log carried the verdict line that
+	// test2json reads it from.
+	var stream bytes.Buffer
+	for _, log := range logs {
+		data, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatalf("reading %s: %v", log, err)
+		}
+		cmd := exec.Command("go", "tool", "test2json", "-t", "-p", cfg.jsonPackage)
+		cmd.Stdin = bytes.NewReader(data)
+		cmd.Stdout = &stream
+		cmd.Env = append(os.Environ(), "GOENV=off", "GOFLAGS=")
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("test2json over %s: %v", log, err)
+		}
+	}
+	rows, err := parseGoTestJSON(strings.NewReader(stream.String()), []string{cfg.jsonPackage})
+	if err != nil {
+		t.Fatalf("parseGoTestJSON over the quiet run's shard logs: %v", err)
+	}
+	perTest := false
+	for _, row := range rows {
+		if strings.HasPrefix(row, "TEST\t"+cfg.jsonPackage+"\t") {
+			perTest = true
+			break
+		}
+	}
+	if !perTest {
+		t.Fatalf("the quiet run produced no per-test rows, so the capture's -test.v did not take precedence over the forwarded -v=false:\nrows:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
 // TestAgentShardsRunFileHoldsRegex verifies that the -test.run regex for
 // each shard is written to a file (shardN.run) and handed via
 // EVENER_SHARD_RUN_FILE, not passed on the execve argument list. A
