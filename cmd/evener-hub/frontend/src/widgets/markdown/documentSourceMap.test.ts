@@ -304,3 +304,22 @@ test("maps a long list continuation with exact coordinates", () => {
   if (!tailFirst || !tailLast) throw new Error("missing tail heading spans");
   expect(source.slice(tailFirst.start, tailLast.end)).toBe("Tail");
 });
+
+// String.replace interprets $$ and $& in a replacement string; authored code
+// must reach the DOM and the provenance map literally.
+test("renders and maps literal dollar replacement sequences in code", () => {
+  const span = documentFor("pay `$$` now");
+  expect(span.container.textContent).toContain("$$");
+  expect(span.map.capture(selectText(span.container, "$$"))).toEqual({
+    state: "mapped",
+    sourceRange: { start: 5, end: 7 },
+    selectedRenderedText: "$$",
+  });
+  const block = documentFor("```\na$$b $&\n```");
+  expect(block.container.textContent).toContain("a$$b $&");
+  expect(block.map.capture(selectText(block.container, "a$$b $&"))).toEqual({
+    state: "mapped",
+    sourceRange: { start: 4, end: 11 },
+    selectedRenderedText: "a$$b $&",
+  });
+});
