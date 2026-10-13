@@ -167,7 +167,10 @@ test("body renders multiple question cards in order", () => {
     },
   ];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  expect(questionCards().map((card) => card.firstElementChild?.textContent)).toEqual(["question one", "question two"]);
+  expect(questionCards().map((card) => card.querySelector('[data-slot="question"]')?.textContent)).toEqual([
+    "question one",
+    "question two",
+  ]);
 });
 
 // --- defensive parsing: malformed input never crashes ---------------------
@@ -219,5 +222,7 @@ test("body skips a malformed individual question (missing required fields) rathe
     { header: "Bad" /* missing question/options */ },
   ];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  expect(questionCards().map((card) => card.firstElementChild?.textContent)).toEqual(["a real question"]);
+  expect(questionCards().map((card) => card.querySelector('[data-slot="question"]')?.textContent)).toEqual([
+    "a real question",
+  ]);
 });

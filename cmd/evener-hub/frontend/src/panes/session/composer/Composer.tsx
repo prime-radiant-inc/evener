@@ -932,7 +932,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   //
   // `attachments` is accepted for signature symmetry but never restored: a
   // queued entry's edit keeps image attachments out of the composer per
-  // parity (contracts-composer-queue-pending.md:70, parity-m5-
+  // parity (contracts-composer-queue-pending.md:122, parity-m5-
   // composer.md:102) - dropped image attachments surface via QueueStrip's
   // own durable queue state. `skillNames` restores the entry's selections
   // as chips (union with the current draft's chips, deduped by name): a
@@ -1838,8 +1838,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                           // already gate this control's existence. The recovery
                           // fence gates the press the same way the Send button's
                           // does, and the tooltip says why (kata 2f41) instead of
-                          // describing an action the fence refuses.
-                          disabled={actionPending || steerRecoveryFenced}
+                          // describing an action the fence refuses. The fence is
+                          // an aria-disabled refusal, not the native attribute, so
+                          // the button keeps focus and hover and that reason
+                          // stays reachable.
+                          aria-disabled={steerRecoveryFenced || undefined}
+                          disabled={actionPending}
                         >
                           Steer
                         </Button>

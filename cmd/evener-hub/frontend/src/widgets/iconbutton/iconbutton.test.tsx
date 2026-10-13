@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
+import { SHOW_DELAY_MS } from "../hovercard/useFloatingLabel";
 import { IconButton, type IconButtonProps } from "./index";
 
 function DotIcon() {
@@ -91,6 +92,50 @@ test("an aria-disabled refusal swallows the click but keeps focus, exactly as Bu
   expect(onClick).toHaveBeenCalledOnce();
 });
 
+function focusAndWaitForTooltip(button: HTMLElement): void {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    act(() => button.focus());
+    act(() => {
+      vi.advanceTimersByTime(SHOW_DELAY_MS);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+test("a disabled button with a disabledReason stays focusable, refuses the press, and is described by its reason", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  const reason = "test-reason";
+  render(<IconButton label="Go" icon={<DotIcon />} disabled disabledReason={reason} onClick={onClick} />);
+  const button = screen.getByRole("button", { name: "Go" }) as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.getAttribute("aria-disabled")).toBe("true");
+
+  focusAndWaitForTooltip(button);
+  expect(document.activeElement).toBe(button);
+  const tooltip = screen.getByRole("tooltip");
+  expect(button.getAttribute("aria-describedby")).toBe(tooltip.id);
+  expect(tooltip.textContent).toBe(reason);
+
+  await user.keyboard("{Enter}");
+  await user.click(button);
+  expect(onClick).not.toHaveBeenCalled();
+});
+
+test("a disabledReason on an enabled button is inert: no refusal, no tooltip", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  render(<IconButton label="Go" icon={<DotIcon />} disabledReason="test-reason" onClick={onClick} />);
+  const button = screen.getByRole("button", { name: "Go" });
+  expect(button.hasAttribute("aria-disabled")).toBe(false);
+  focusAndWaitForTooltip(button);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  await user.click(button);
+  expect(onClick).toHaveBeenCalledOnce();
+});
+
 test("disabled marks the native button inert (not focusable)", () => {
   render(<IconButton label="Go" icon={<DotIcon />} disabled />);
   const button = screen.getByRole("button") as HTMLButtonElement;
@@ -170,9 +215,9 @@ test("reuses button.module.css's base class, so it inherits Button's :focus-visi
 test("sm size declares equal width and height in CSS", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const ownCss = readFileSync(join(here, "iconbutton.module.css"), "utf8");
-  // Verify that .sm class in iconbutton.module.css declares an explicit height
+  // Verify that .squareSm class in iconbutton.module.css declares an explicit height
   // equal to its width (28px) to make it square-ish, not squat/rectangular
-  expect(ownCss).toMatch(/\.sm\s*{[^}]*width:\s*28px[^}]*height:\s*28px[^}]*}/);
+  expect(ownCss).toMatch(/\.squareSm\s*{[^}]*width:\s*28px[^}]*height:\s*28px[^}]*}/);
 });
 
 // Same square rule one density step down, and matching Button's own xs height
@@ -181,10 +226,32 @@ test("sm size declares equal width and height in CSS", () => {
 test("xs size is square at 24px, matching Button's own xs height", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const ownCss = readFileSync(join(here, "iconbutton.module.css"), "utf8");
-  expect(ownCss).toMatch(/\.xs\s*{[^}]*width:\s*24px[^}]*height:\s*24px[^}]*}/);
+  expect(ownCss).toMatch(/\.squareXs\s*{[^}]*width:\s*24px[^}]*height:\s*24px[^}]*}/);
 
   const buttonCss = readFileSync(join(here, "../button/button.module.css"), "utf8");
   expect(/\.xs\s*\{([^}]*)\}/.exec(buttonCss)?.[1] ?? "").toMatch(/height:\s*24px/);
+});
+
+// badge: a count riding the icon's corner (the hidden rail's Show sidebar,
+// the phone's Sessions trigger). It is part of the button, so it hides,
+// moves and clicks with it, and it never renames the button.
+test("a badge renders its count inside the button without changing the accessible name", () => {
+  render(<IconButton label="Sessions" icon={<DotIcon />} badge={{ count: 3, tone: "attention" }} />);
+  const button = screen.getByRole("button", { name: "Sessions" });
+  expect(button.textContent).toBe("3");
+});
+
+test("a click on a badged button still reaches onClick", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  render(<IconButton label="Sessions" icon={<DotIcon />} badge={{ count: 3 }} onClick={onClick} />);
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+  expect(onClick).toHaveBeenCalledTimes(1);
+});
+
+test("without a badge the button carries no count", () => {
+  render(<IconButton label="Sessions" icon={<DotIcon />} />);
+  expect(screen.getByRole("button", { name: "Sessions" }).textContent).toBe("");
 });
 
 // Mobile touch-target floor (2026-07-30-mobile-session-layout-design.md,
@@ -195,7 +262,7 @@ test("mobile: all icon-button sizes meet the 44px tap floor in both dimensions",
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "iconbutton.module.css"), "utf8");
   const mobile = css.match(/@media \(max-width: 899px\), \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
   expect(mobile, "iconbutton.module.css must have a max-width:899px media block").not.toBeNull();
-  for (const size of ["xs", "sm", "md"]) {
+  for (const size of ["squareXs", "squareSm", "squareMd"]) {
     const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));
     expect(rule, `mobile media block must override .${size}`).not.toBeNull();
     expect(rule![1]).toContain("min-width: var(--tap-min)");
@@ -215,4 +282,19 @@ test("an aria-disabled reset icon button does not reset its form", async () => {
   await user.type(field, "kept");
   await user.click(screen.getByRole("button", { name: "Clear" }));
   expect(field).toHaveProperty("value", "kept");
+});
+
+// Toggling a refusal on and off must not remount the button: a keyboard user
+// standing on it keeps focus, which is the point of refusing via aria-disabled.
+test("toggling disabled-with-a-reason keeps the focused button focused", () => {
+  const { rerender } = render(<IconButton label="Steer" icon={<span>s</span>} disabledReason="Session is busy" />);
+  const button = screen.getByRole("button", { name: "Steer" });
+  act(() => button.focus());
+  rerender(<IconButton label="Steer" icon={<span>s</span>} disabled disabledReason="Session is busy" />);
+  expect(screen.getByRole("button", { name: "Steer" })).toBe(button);
+  expect(document.activeElement).toBe(button);
+  rerender(<IconButton label="Steer" icon={<span>s</span>} disabledReason="Session is busy" />);
+  expect(screen.getByRole("button", { name: "Steer" })).toBe(button);
+  expect(document.activeElement).toBe(button);
+  expect(button.hasAttribute("aria-describedby")).toBe(false);
 });

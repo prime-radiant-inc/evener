@@ -32,17 +32,6 @@
   gap: var(--space-2);
 }
 
-/* The kind label is the one eyebrow recipe (design-system §2): caption size,
- * semibold, uppercase with the single tracking token, ink-mid. The copy stays
- * sentence-case in EntityRef.tsx - the transform is presentation-only. */
-.kind {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
-}
-
 /* Status is color-by-meaning (design-system §1), not decoration: failure
  * reads danger, live work reads alive, and every terminal or neutral state
  * stays on the ink ramp - the hue law reserves green for ACTIVE work, so a
@@ -69,33 +58,4 @@
 .summary {
   color: var(--ink-hi);
   overflow-wrap: anywhere;
-}
-
-.rows {
-  display: flex;
-  margin: 0;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.row {
-  display: grid;
-  grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
-  gap: var(--space-2);
-}
-
-/* The meta-table idiom (design-system §10): ink-mid labels, ink-hi values,
- * mono for machine-shaped values via .mono. */
-.key {
-  color: var(--ink-mid);
-}
-
-.value {
-  margin: 0;
-  color: var(--ink-hi);
-  overflow-wrap: anywhere;
-}
-
-.mono {
-  font-family: var(--font-mono);
 }

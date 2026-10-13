@@ -37,7 +37,7 @@ export interface ActivityPanelHandle {
 }
 const COLLECTIONS: readonly SessionActivityCollection[] = ["delegates", "jobs", "watches"];
 const CLASS = {
-  panel: requireClass(styles.panel, "activitypanel.module.css", "panel"),
+  activityPanel: requireClass(styles.activityPanel, "activitypanel.module.css", "activityPanel"),
   panelColumn: requireClass(styles.panelColumn, "activitypanel.module.css", "panelColumn"),
   stale: requireClass(styles.stale, "activitypanel.module.css", "stale"),
 };
@@ -110,7 +110,7 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
   );
   return (
     <EntityViewsProvider entities={entities} ownerRef={sessionRef}>
-      <div className={CLASS.panel}>
+      <div className={CLASS.activityPanel}>
         <ScopeCrumbs path={scope.path} hierarchy />
         {!scope.ancestryKnown ? <p className={CLASS.stale}>Finding session context…</p> : null}
         {updating ? (

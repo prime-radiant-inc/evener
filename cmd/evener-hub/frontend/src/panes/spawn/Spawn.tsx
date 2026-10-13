@@ -56,6 +56,7 @@ import {
   Dropzone,
   FormRow,
   IconButton,
+  InlineNotice,
   Loader,
   type ModelCatalog,
   type ModelCatalogEntry,
@@ -70,7 +71,6 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
-import selectStyles from "../../widgets/select/select.module.css";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
@@ -192,7 +192,6 @@ const CLASS = {
   directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
   directoryText: requireClass(styles.directoryText, "spawn.module.css", "directoryText"),
   directoryPath: requireClass(styles.directoryPath, "spawn.module.css", "directoryPath"),
-  notice: requireClass(styles.notice, "spawn.module.css", "notice"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
   modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
@@ -207,7 +206,6 @@ const CLASS = {
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
   promptSubtitle: requireClass(styles.promptSubtitle, "spawn.module.css", "promptSubtitle"),
   promptAnchor: requireClass(styles.promptAnchor, "spawn.module.css", "promptAnchor"),
-  modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
   pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
@@ -216,7 +214,6 @@ const CLASS = {
   // class: the widget renders a native <select> too, but its SelectOption has no
   // per-option disabled flag, and an offline host must be RENDERED yet not
   // selectable (Component 06b). The class only borrows the visual treatment.
-  hostSelect: requireClass(selectStyles.select, "select.module.css", "select"),
   // The Connect affordance beside the picker: one button per offline remote
   // host, an enabled control so a never-attached host is reachable rather
   // than dead UI (component 06 §"Connecting a configured host").
@@ -2402,16 +2399,19 @@ function SpawnForm({
     <PaneScaffold title="New session" mobileTitle="New session">
       <div className={CLASS.form}>
         {staleNotice !== null && (
-          <div className={CLASS.notice} role="status">
-            <span>Discarded last-used model {staleNotice} — no longer offered by this hub.</span>
-            <IconButton
-              label="Dismiss notice"
-              icon={<CloseIcon />}
-              variant="quiet"
-              size="sm"
-              onClick={() => setStaleNotice(null)}
-            />
-          </div>
+          <InlineNotice
+            action={
+              <IconButton
+                label="Dismiss notice"
+                icon={<CloseIcon />}
+                variant="quiet"
+                size="sm"
+                onClick={() => setStaleNotice(null)}
+              />
+            }
+          >
+            Discarded last-used model {staleNotice} — no longer offered by this hub.
+          </InlineNotice>
         )}
 
         {/* Host picker (Component 06b): rendered only when the manifest lists a
@@ -2432,9 +2432,8 @@ function SpawnForm({
                 : "Where the session runs."
             }
           >
-            <select
+            <Select
               id="spawn-host"
-              className={CLASS.hostSelect}
               value={displayHostChoice}
               // A submit snapshots this choice (handleSpawn's closure carries
               // the submittedSource/remoteLaunch that thread/start and
@@ -2454,13 +2453,12 @@ function SpawnForm({
                 // name it — the Connect affordance below is the single path that
                 // reaches an offline host.
               }}
-            >
-              {displaySources.map((candidate) => (
-                <option key={candidate.id} value={candidate.id} disabled={!candidate.online}>
-                  {candidate.online ? candidate.label : `${candidate.label} (offline)`}
-                </option>
-              ))}
-            </select>
+              options={displaySources.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.online ? candidate.label : `${candidate.label} (offline)`,
+                disabled: !candidate.online,
+              }))}
+            />
             {displayRemoteHosts.some((candidate) => !candidate.online) && (
               <div className={CLASS.hostConnectRow}>
                 {displayRemoteHosts
@@ -2720,35 +2718,43 @@ function SpawnForm({
           </Dropzone>
         </div>
         {providerRequired && (
-          <div className={CLASS.notice} role="status">
-            {providerSetupIsLocal ? (
+          <InlineNotice
+            action={
               <>
-                <span>Connect a provider to use a model. Sign in or add an API key here.</span>
-                <Button onClick={openProviderSetup}>Connect provider</Button>
+                {providerSetupIsLocal && <Button onClick={openProviderSetup}>Connect provider</Button>}
+                <Button variant="quiet" onClick={() => void providerSetup.retry()}>
+                  Retry provider check
+                </Button>
               </>
-            ) : (
-              // A remote host's provider registry is not editable from this
-              // browser: the credentials editor is controller-scoped, so it
-              // would configure the wrong machine. Say where the work has to
-              // happen instead of offering an action that cannot unblock the
-              // spawn.
-              <span>No provider is configured on {remoteSourceLabel}. Configure one on that host to use a model.</span>
-            )}
-            <Button variant="quiet" onClick={() => void providerSetup.retry()}>
-              Retry provider check
-            </Button>
-          </div>
+            }
+          >
+            {providerSetupIsLocal
+              ? "Connect a provider to use a model. Sign in or add an API key here."
+              : // A remote host's provider registry is not editable from this
+                // browser: the credentials editor is controller-scoped, so it
+                // would configure the wrong machine. Say where the work has to
+                // happen instead of offering an action that cannot unblock the
+                // spawn.
+                `No provider is configured on ${remoteSourceLabel}. Configure one on that host to use a model.`}
+          </InlineNotice>
         )}
         {usesEvenerModels && providerSetup.status === "error" && (
-          <div className={CLASS.notice} role="status">
-            <span>Could not check provider configuration.</span>
-            <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
-            {providerSetupIsLocal && (
-              <Button variant="quiet" onClick={openProviderSetup}>
-                Review providers
-              </Button>
-            )}
-          </div>
+          <InlineNotice
+            tone="danger"
+            live="status"
+            action={
+              <>
+                <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
+                {providerSetupIsLocal && (
+                  <Button variant="quiet" onClick={openProviderSetup}>
+                    Review providers
+                  </Button>
+                )}
+              </>
+            }
+          >
+            Could not check provider configuration.
+          </InlineNotice>
         )}
         {connectingProvider && providerSetupIsLocal && (
           <ConnectProviderDialogBoundary
@@ -2788,24 +2794,26 @@ function SpawnForm({
             below: it explains why Start is disabled, so it sits beside the
             control it names rather than in a form row that no longer exists. */}
         {modelRequired && (
-          <p
-            className={CLASS.modelNote}
-            role="alert"
-            data-reason={noDefaultModel ? "no-default-model" : "provider-model"}
-          >
+          <InlineNotice live="alert" data-reason={noDefaultModel ? "no-default-model" : "provider-model"}>
             {noDefaultModel
               ? "This hub has no default model configured — choose one to start."
               : "Choose one of the connected provider's models to start."}
-          </p>
+          </InlineNotice>
         )}
 
         {hostCatalogErrorText !== "" && (
-          <div className={CLASS.notice} role="status" data-testid="spawn-host-catalog-error">
-            <span>{hostCatalogErrorText}</span>
-            <Button variant="quiet" type="button" onClick={retryHostCatalogs}>
-              Retry
-            </Button>
-          </div>
+          <InlineNotice
+            tone="danger"
+            live="status"
+            data-testid="spawn-host-catalog-error"
+            action={
+              <Button variant="quiet" type="button" onClick={retryHostCatalogs}>
+                Retry
+              </Button>
+            }
+          >
+            {hostCatalogErrorText}
+          </InlineNotice>
         )}
         {pluginSelectionSupported && (
           <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">

@@ -112,8 +112,8 @@ window.devicePairingGuard = {
         reject(new Error(`Missing UI state: ${text}`));
       }, 10000);
       const check = () => {
-        const labelled = Array.from(document.querySelectorAll("button")).some(
-          (button) => button.getAttribute("aria-label") === text,
+        const labelled = Array.from(document.querySelectorAll("[aria-label]")).some(
+          (element) => element.getAttribute("aria-label") === text,
         );
         if (!labelled && !document.body.textContent?.includes(text)) return;
         clearTimeout(timeout);

@@ -104,10 +104,14 @@ function memoryMeta(): { scope?: string; state?: string } {
   return { scope: meta.dataset.scope, state: meta.dataset.state };
 }
 
-function openSummary(): HTMLElement {
-  const details = screen.getByTestId("memory-context-item") as HTMLDetailsElement;
+function summaryOf(details: HTMLDetailsElement): HTMLElement {
   const summary = details.querySelector("summary");
   if (!summary) throw new Error("memory item has no summary");
+  return summary;
+}
+
+function openSummary(): HTMLElement {
+  const summary = summaryOf(screen.getByTestId("memory-context-item") as HTMLDetailsElement);
   fireEvent.click(summary);
   return summary;
 }
@@ -218,7 +222,9 @@ test("an empty current index reads as an empty index, not an error", () => {
   const config = preset("tools");
   renderProjected(project([wireItem({ raw: memoryRaw({ content: "" }) })], config), config);
   openSummary();
-  expect(screen.getByTestId("memory-context-empty").dataset.reason).toBe("current");
+  expect(memoryMeta().state).toBe("current");
+  expect(screen.getByTestId("empty-state").dataset.reason).toBe("empty");
+  expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByTestId("memory-context-content")).toBeNull();
 });
 
@@ -285,9 +291,11 @@ test("the same memory item id has independent state in another session", () => {
   );
   const items = screen.getAllByTestId("memory-context-item") as HTMLDetailsElement[];
   expect(items).toHaveLength(2);
-  fireEvent.click(items[0]!.querySelector("summary")!);
-  expect(items[0]?.open).toBe(true);
-  expect(items[1]?.open).toBe(false);
+  const [firstItem, secondItem] = items;
+  if (!firstItem || !secondItem) throw new Error("expected two memory items");
+  fireEvent.click(summaryOf(firstItem));
+  expect(firstItem.open).toBe(true);
+  expect(secondItem.open).toBe(false);
 });
 
 // An explicit choice is authoritative across verbosity changes. Memory ignores
@@ -310,13 +318,13 @@ test("an explicit open survives Tools -> Full -> Conversation, and an explicit c
   }
   const isOpen = () => (screen.getByTestId("memory-context-item") as HTMLDetailsElement).open;
   const { rerender } = render(harness("tools"));
-  fireEvent.click(screen.getByTestId("memory-context-item").querySelector("summary")!);
+  openSummary();
   expect(isOpen()).toBe(true);
   for (const level of ["full", "chat", "tools"] as const) {
     rerender(harness(level));
     expect(isOpen()).toBe(true);
   }
-  fireEvent.click(screen.getByTestId("memory-context-item").querySelector("summary")!);
+  openSummary();
   expect(isOpen()).toBe(false);
   for (const level of ["full", "tools", "full", "chat"] as const) {
     rerender(harness(level));
@@ -331,9 +339,7 @@ test("an explicit open survives Tools -> Full -> Conversation, and an explicit c
 test("the summary is natively focusable and activation toggles the disclosure", () => {
   const config = preset("tools");
   renderProjected(project([wireItem()], config), config);
-  const details = screen.getByTestId("memory-context-item") as HTMLDetailsElement;
-  const summary = details.querySelector("summary");
-  if (!summary) throw new Error("no summary");
+  const summary = summaryOf(screen.getByTestId("memory-context-item") as HTMLDetailsElement);
   summary.focus();
   expect(document.activeElement).toBe(summary);
   fireEvent.click(summary);
@@ -367,5 +373,8 @@ test("a memory refresh neither joins nor lets a system-event run straddle it", (
   const memory = screen.getByTestId("memory-context-item");
   expect(memory.closest('[data-testid="system-notice-group"]')).toBeNull();
   // The two notices before it do NOT group with the three after it.
-  expect(screen.getByTestId("system-notice-group").dataset.count).toBe("3");
+  expect(
+    screen.getByTestId("system-notice-group").querySelector<HTMLElement>(":scope > summary [data-count]")?.dataset
+      .count,
+  ).toBe("3");
 });

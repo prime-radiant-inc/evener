@@ -6,8 +6,6 @@ import styles from "./notifications.module.css";
 const CLASS = {
   root: requireClass(styles.root, "notifications.module.css", "root"),
   intro: requireClass(styles.intro, "notifications.module.css", "intro"),
-  row: requireClass(styles.row, "notifications.module.css", "row"),
-  help: requireClass(styles.help, "notifications.module.css", "help"),
 };
 
 const LOUD_SCOPE_OPTIONS: RadioGroupOption[] = [
@@ -86,49 +84,44 @@ export function NotificationsSection() {
         Title bar count is on by default; favicon, OS notification, and sound are opt-in. Saved per-browser.
       </p>
 
-      <div className={CLASS.row}>
-        <Switch
-          label="Title bar count"
-          checked={notifications.title}
-          onChange={(value) => commitPlain("title", value)}
-        />
-        <p className={CLASS.help}>Show the count of awaiting sessions in the browser tab title.</p>
-      </div>
+      <Switch
+        label="Title bar count"
+        checked={notifications.title}
+        onChange={(value) => commitPlain("title", value)}
+        description="Show the count of awaiting sessions in the browser tab title."
+      />
 
-      <div className={CLASS.row}>
-        <Switch
-          label="Favicon dot"
-          checked={notifications.favicon}
-          onChange={(value) => commitPlain("favicon", value)}
-        />
-        <p className={CLASS.help}>Tint the favicon with the highest-attention session state.</p>
-      </div>
+      <Switch
+        label="Favicon dot"
+        checked={notifications.favicon}
+        onChange={(value) => commitPlain("favicon", value)}
+        description="Tint the favicon with the highest-attention session state."
+      />
 
-      <div className={CLASS.row}>
-        <Switch label="OS notification" checked={notifications.os} onChange={(value) => void handleOsChange(value)} />
-        <p className={CLASS.help}>Native notification when a thread needs you or errors.</p>
-      </div>
+      <Switch
+        label="OS notification"
+        checked={notifications.os}
+        onChange={(value) => void handleOsChange(value)}
+        description="Native notification when a thread needs you or errors."
+      />
 
-      <div className={CLASS.row}>
-        <Switch label="Sound" checked={notifications.sound} onChange={(value) => commitPlain("sound", value)} />
-        <p className={CLASS.help}>Short tone on the same transitions.</p>
-      </div>
+      <Switch
+        label="Sound"
+        checked={notifications.sound}
+        onChange={(value) => commitPlain("sound", value)}
+        description="Short tone on the same transitions."
+      />
 
-      <div className={CLASS.row}>
-        <RadioGroup
-          label="Loud for"
-          value={loudScope}
-          options={LOUD_SCOPE_OPTIONS}
-          onChange={(value) => {
-            prefsStore.getState().setNotificationsLoudScope(value as "asks" | "all");
-            push("success", "Settings saved");
-          }}
-        />
-        <p className={CLASS.help}>
-          OS notification and sound fire for this scope only; the title/favicon count always reflects everything needing
-          you.
-        </p>
-      </div>
+      <RadioGroup
+        label="Loud for"
+        value={loudScope}
+        options={LOUD_SCOPE_OPTIONS}
+        onChange={(value) => {
+          prefsStore.getState().setNotificationsLoudScope(value as "asks" | "all");
+          push("success", "Settings saved");
+        }}
+        description="OS notification and sound fire for this scope only; the title/favicon count always reflects everything needing you."
+      />
     </div>
   );
 }

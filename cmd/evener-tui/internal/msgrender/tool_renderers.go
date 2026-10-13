@@ -2,6 +2,7 @@ package msgrender
 
 import (
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -78,6 +79,28 @@ func lookupToolRenderer(tool string) (ToolRenderer, bool) {
 		return mcpFallbackRenderer(tool), true
 	}
 	return unknownToolRenderer(tool), true
+}
+
+// listDirCountAloneRe matches a listing that is a count and nothing else: an empty
+// listing's footer (formatDirListing, agent/session_tools_shell.go).
+var listDirCountAloneRe = regexp.MustCompile(`^0(?: entries| of \d+ entries \(offset \d+\))$`)
+
+// listDirEntryCount is how many entries a list_dir call listed. formatDirListing
+// writes the entries one per line, then a blank line, then its count footer, and for
+// an empty listing that footer alone -- "0 entries", or "0 of N entries (offset M)"
+// for a page past the end, which is what listDirCountAloneRe picks out. An entry line
+// is never blank (searchresult), so the section before the output's first blank line
+// is those entries or that count alone. The repeated-call breaker's nudge lands after
+// another blank line (agent/internal/tool/breaker.go appendIntervention), past
+// everything this reads. The web's listDirCount reads the last line of the tool's
+// output, where every footer form appears; this reader reads the section, where only
+// the count-alone form can be.
+func listDirEntryCount(output string) int {
+	listing, _ := searchresult.Split(output)
+	if listDirCountAloneRe.MatchString(strings.TrimSuffix(listing, "\n")) {
+		return 0
+	}
+	return searchresult.EntryCount(output)
 }
 
 func mcpFallbackRenderer(tool string) ToolRenderer {
@@ -353,24 +376,7 @@ func init() {
 			if errStr != "" {
 				return "error"
 			}
-			// list_dir returns a JSON array of DirEntry objects.
-			var entries []struct {
-				Name  string `json:"name"`
-				IsDir bool   `json:"is_dir"`
-				Size  int64  `json:"size,omitempty"`
-			}
-			if err := json.Unmarshal([]byte(output), &entries); err == nil {
-				return strconv.Itoa(len(entries)) + " entries"
-			}
-			// Fallback: count non-empty lines for unexpected text output.
-			parts := strings.Split(strings.TrimSpace(output), "\n")
-			n := 0
-			for _, p := range parts {
-				if strings.TrimSpace(p) != "" {
-					n++
-				}
-			}
-			return strconv.Itoa(n) + " entries"
+			return strconv.Itoa(listDirEntryCount(output)) + " entries"
 		},
 	}
 	toolRenderers["list_dir"] = listRenderer

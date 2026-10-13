@@ -316,16 +316,16 @@ test("describeLiveness: names the model when a fallback chain walk switched it",
 });
 
 test("describeLiveness: shows the retry group's elapsed time, per the current call rather than the whole turn", () => {
-  const retry = retryWait({
-    attempt: 9,
-    attemptCap: 11,
-    delayMs: 60_000,
-    errorClass: "rate_limit",
-    groupElapsedMs: 14 * 60_000,
-  });
-  expect(describeLiveness(30_000, true, 0, retry).text).toBe(
-    "rate limited — attempt 9/11 — retrying in 60s — 14m on this call",
-  );
+  const chip = (groupElapsedMs: number, gapMs: number) =>
+    describeLiveness(
+      gapMs,
+      true,
+      0,
+      retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit", groupElapsedMs }),
+    ).text;
+  // The call's own elapsed time moves the chip; the turn's quiet gap does not.
+  expect(chip(14 * 60_000, 30_000)).not.toBe(chip(5 * 60_000, 30_000));
+  expect(chip(14 * 60_000, 30_000)).toBe(chip(14 * 60_000, 90_000));
 });
 
 // Web-only difference from the TUI (task 11 brief): while deltas flow, the

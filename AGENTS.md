@@ -242,6 +242,7 @@ loading them, since each opens a socket the moment its body runs.
 - **Merge approval**
   If every CI check is green and RoboRev notes only 'low' findings or findings 
   you have conclusively refuted, you are authorized to admin squash merge to main.
+  Handle those 'low' findings immediately in a fast-follow PR.
 
 - **Gates run from the repo root.** `make test-web`'s target lives in the root
   Makefile; running it from `cmd/evener-hub/frontend` dies with "No rule to

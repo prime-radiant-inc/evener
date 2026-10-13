@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { mergeConfig } from "vite";
 import { isSharedNodeModules } from "./editorial-preview-install.mjs";
 import base from "../vite.config.ts";
@@ -10,6 +11,12 @@ const frontend = fileURLToPath(new URL("../", import.meta.url));
 // a 403 with a green typecheck and a green build.
 const appwirePackage = fileURLToPath(new URL("../../../../appwire-client/typescript/", import.meta.url));
 const isolated = mergeConfig(base, {
+  // The base config honors EVENER_FRONTEND_VITE_CACHE_DIR, which the web gate
+  // sets for the whole `npm run test` process. This preview's isolation tests
+  // run against a private copy under os.tmpdir(); keep its dep cache in that
+  // copy so setting the gate's override cannot point a hermetic fixture at the
+  // gate's root (or the checkout) (issue #4193).
+  cacheDir: path.join(frontend, ".vite-cache"),
   plugins: [{
     name: "editorial-fixture-only",
     configResolved(config) {

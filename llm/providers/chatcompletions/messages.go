@@ -1,7 +1,6 @@
 package chatcompletions
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"strings"
 
@@ -70,7 +69,7 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			if hasImageContent(content) {
 				out = append(out, map[string]any{
 					"role":    "user",
-					"content": buildMultimodalParts(content),
+					"content": buildMultimodalParts(content, caps),
 				})
 			} else {
 				out = append(out, map[string]any{
@@ -289,8 +288,9 @@ func hasImageContent(parts []llm.ContentPart) bool {
 
 // buildMultimodalParts converts content parts to Chat Completions content array format
 // with {"type": "text", ...} and {"type": "image_url", ...} objects.
-func buildMultimodalParts(parts []llm.ContentPart) []map[string]any {
+func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[string]any {
 	var out []map[string]any
+	capDetail := registry.StringValue(caps.ImageDetail)
 	for _, p := range parts {
 		switch p.Kind {
 		case llm.ContentText:
@@ -305,14 +305,14 @@ func buildMultimodalParts(parts []llm.ContentPart) []map[string]any {
 				if mt == "" {
 					mt = "image/png"
 				}
-				imgURL = "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(p.Image.Data)
+				imgURL = llm.DataURI(mt, p.Image.Data)
 			}
 			if imgURL == "" {
 				continue
 			}
 			urlObj := map[string]any{"url": imgURL}
-			if p.Image.Detail != "" {
-				urlObj["detail"] = p.Image.Detail
+			if detail := llm.ChatImageDetail(p.Image.Detail, capDetail); detail != "" {
+				urlObj["detail"] = detail
 			}
 			out = append(out, map[string]any{"type": "image_url", "image_url": urlObj})
 		}

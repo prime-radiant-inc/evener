@@ -10,9 +10,16 @@ network identities and unsent work. This document is the wire contract; the
 
 An invitation carries a Hub locator and a random short-lived secret. It carries
 neither the Hub's durable credential nor Tailscale credentials. A Playdate hears
-it as sound. The native mobile app reads the same bytes from a QR code. The Web
-UI only plays audio and displays codes: it requires no camera, microphone, or
-secure-context browser API, so it works on HTTP over a tailnet.
+it as sound; clients can also read the same invitation bytes from a QR code.
+The Hub's Mobile settings offer **Scan with your phone** for the native app's
+direct credential QR and **Pair using sound** for devices listening for an
+invitation. Sound setup shows the playback controls and device claims without
+another QR code. **Use another Hub address** opens manual QR invitation setup
+with an editable address when the phone needs a different destination. If
+discovery fails, **Enter Hub address** opens the same recovery flow. QR
+invitations use the same comparison and approval flow as sound. The Web UI
+requires no camera, microphone, or secure-context browser API, so both choices
+work on HTTP over a tailnet.
 
 After receiving the invitation, the client generates an ephemeral X25519 key.
 It independently computes and displays the comparison code below, then claims
@@ -56,17 +63,36 @@ characters. `expiresAt` is Unix milliseconds. Invitations expire ten minutes
 after creation, including approved invitations. There are at most 16 live
 invitations per Hub and eight distinct keys per invitation. Expired entries
 are pruned on access. A Hub restart discards all pending invitations. Existing
-saved client credentials remain valid. `mobile_base_url`, when configured,
-takes precedence over the browser's proposed origin.
+saved client credentials remain valid.
+
+The Hub supplies the pairing destination automatically. An optional
+`mobile_base_url` supplies the default; otherwise the Hub uses the browser's
+usable origin, a concrete network listener address, or an interface
+address when listening on all interfaces. Interface selection prefers Tailscale
+IPv4, then the OS's outbound IPv4/IPv6 addresses ahead of container bridges,
+then other private and public addresses, respecting an IPv4-only listener.
+The Hub queries outbound routes with UDP sockets without sending packets or
+depending on a remote service. Loopback and link-local addresses are not advertised
+by discovery. A loopback-only listener still works behind a reachable reverse
+proxy when the browser supplies that proxy's origin.
+
+The Web UI uses the discovered origin for both the direct credential QR and
+the invitation form. The operator can edit the Hub address in **Pair using sound**
+or manual QR setup; that explicit destination takes precedence when creating an invitation. An
+empty creation origin uses the configured or discovered default. Ordinary
+LAN/tailnet setup needs no configuration-file edit. Discovery is repeated when
+the settings section connects; it does not change saved client destinations.
 
 Creating an invitation requires a Hub credential of 1–511 non-space printable
 ASCII bytes, matching the envelope receivers. Unsupported credentials are
 reported before an invitation is issued; ordinary Hub authentication is unchanged.
 
 `tailnet` marks a destination reached through Tailscale. A tailnet locator may
-use MagicDNS. Direct HTTP retains the
-mobile pairing private-network origin rules; direct HTTPS accepts a reachable
-DNS or IP origin, including IPv6. Origins contain no credentials, path, query or
+use MagicDNS. Both direct HTTP and HTTPS accept a reachable DNS or IP origin,
+including IPv6; the Hub does not require DNS resolution during creation.
+Loopback, unspecified listener addresses, and interface-scoped IPv6 addresses
+cannot be pairing destinations.
+Origins contain no credentials, path, query or
 fragment. IPv4 uses canonical dotted-decimal spelling; malformed numeric hosts
 and legacy numeric spellings are rejected before an invitation is created.
 Port range is 1–65535. Clients report unsupported
@@ -127,7 +153,9 @@ The code is SHA-512 over these concatenated bytes:
 
 Encode the first 16 digest bytes as 32 lowercase hexadecimal digits, grouped in
 eight groups of four separated by hyphens, for example
-`2be9-271d-6222-d455-d2d1-c217-62b2-3b82`. Display and compare every group. The
+`2be9-271d-6222-d455-d2d1-c217-62b2-3b82`. Display and compare every group. The Hub
+presents the groups as four lines of two, separated by spaces on each line, so
+the operator can compare the device's display line by line before approving. The
 128-bit fingerprint resists offline searches for a key matching an observed
 claim; a short decimal reduction does not. The Hub refuses approval when two
 distinct claims have the same fingerprint, and the operator starts a new

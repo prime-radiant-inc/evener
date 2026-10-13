@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Chevron, Input, VisuallyHidden } from "../../widgets";
+import { Chevron, Eyebrow, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SETTINGS_CLUSTERS, SETTINGS_SECTIONS, type SettingsSection } from "./sections";
 import styles from "./settings.module.css";
@@ -63,15 +63,15 @@ export function SettingsNav({ activeId, onNavigate }: SettingsNavProps) {
 
   return (
     <nav aria-label="Settings sections" className={CLASS.nav}>
-      <label className={CLASS.filterRow}>
-        <VisuallyHidden>Filter settings</VisuallyHidden>
+      <div className={CLASS.filterRow}>
         <Input
           type="search"
+          aria-label="Filter settings"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           placeholder="Filter settings…"
         />
-      </label>
+      </div>
       {ungrouped.map((section) => (
         <NavLink key={section.id} section={section} active={section.id === activeId} onNavigate={onNavigate} />
       ))}
@@ -81,7 +81,7 @@ export function SettingsNav({ activeId, onNavigate }: SettingsNavProps) {
         return (
           <div key={cluster.id}>
             <div className={CLASS.clusterHeader} data-section={cluster.id}>
-              {cluster.label}
+              <Eyebrow>{cluster.label}</Eyebrow>
             </div>
             {sections.map((section) => (
               <NavLink key={section.id} section={section} active={section.id === activeId} onNavigate={onNavigate} />

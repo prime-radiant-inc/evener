@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/searchresult"
@@ -1203,8 +1204,8 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			}
 			// Old-format checkpoint/summary stored as TurnUserInput — carry it
 			// just like a typed compaction turn.
-			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-				data.collectCompaction(text, strings.HasPrefix(text, "[CONTEXT SUMMARY]"))
+			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart) {
+				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
 				continue
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
@@ -1536,9 +1537,9 @@ func middleTrim(text string, edge int) string {
 // whitespace, which cleanCheckpointConversation trims and the checkpoint's
 // own extraction (parseMarkdownBlocks) trims again on every round trip.
 // Fitting follows the checkpoint's rule (fitCheckpointConversation): no
-// partner message is ever dropped; past maxCheckpointChars the longest are
-// middle-trimmed with a pointer to the transcript, and short ones are never
-// touched.
+// partner message is ever dropped; past the tighter of maxCheckpointChars and
+// the ceiling the longest are middle-trimmed with a pointer to the transcript,
+// and short ones are never touched.
 //
 // Only the partner's messages are carried. An earlier summary a folded
 // checkpoint holds is input to the new summary, which supersedes it; carrying
@@ -1552,7 +1553,9 @@ func middleTrim(text string, edge int) string {
 // summarizer is given each of them to summarize, quoting any permission or
 // hold per the summary prompt, and the turn reminds the model where to read
 // them verbatim. The newest message is held to the ceiling too: when it alone
-// exceeds it, its middle is trimmed (transcript permitting).
+// exceeds it, its middle is trimmed (transcript permitting), from the message
+// as written, so the note counts what it lost rather than what an earlier trim
+// had already taken.
 // The ceiling applies with or without a kept transcript: it keeps the session
 // inside the model's window, and the left-out messages are still summarized,
 // every one (condensePartnerMessages), as the #4309 ruling chose. Without a
@@ -1586,15 +1589,33 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 		summarized = partner[:len(partner)-n]
 		kept = partner[len(partner)-n:]
 	}
-	partner = fitCheckpointConversation(kept, maxCheckpointChars, recoverable)
+	// The carry is fitted to the tighter of the checkpoint's cap and the
+	// ceiling, so a message both bounds would cut is trimmed once, by the bound
+	// that binds, and the note it gets counts what the message as written lost.
+	budget := maxCheckpointChars
+	if ceiling > 0 {
+		budget = min(budget, ceiling)
+	}
+	// The newest message as written, for the ceiling's trim below.
+	newestAsWritten := ""
+	if len(kept) > 0 {
+		newestAsWritten = kept[len(kept)-1].Text
+	}
+	partner = fitCheckpointConversation(kept, budget, recoverable)
 	if len(partner) == 0 {
 		return "", summarized
 	}
 	if size := len(renderCheckpointConversation(partner)); ceiling > 0 && size > ceiling {
-		// Only the newest can overflow: trim its middle to fit, note included.
+		// Only the newest can be over, and only when the fit stopped at its
+		// floor for a message's kept edges rather than at the ceiling: trim its
+		// middle to fit, note included. The cut comes from the message as
+		// written, never from what the fit left of it, and the note's length is
+		// the one that count has: cutting an already-cut text would cut the
+		// middle of the note it wrote and leave a count that understates what
+		// was removed.
 		newest := &partner[len(partner)-1]
-		edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newest.Text)))) / 2
-		if trimmed := middleTrim(newest.Text, max(edge, 1)); len(trimmed) < len(newest.Text) {
+		edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newestAsWritten)))) / 2
+		if trimmed := middleTrim(newestAsWritten, max(edge, 1)); len(trimmed) < len(newest.Text) {
 			newest.Text = trimmed
 		}
 	}
@@ -2000,46 +2021,54 @@ func checkNotCutOff(reply llm.Response) error {
 // check or on the model: by ruling on #4173, the summary turn carries the
 // partner's messages verbatim beside the reply (partnerMessagesMarkdown).
 func checkSummaryReply(reply, instructions string) error {
-	text := strings.TrimSpace(reply)
-	if text == "" {
+	if strings.TrimSpace(reply) == "" {
 		return errors.New("summarizer returned an empty reply")
 	}
 	if instructions != "" {
 		return nil
 	}
 	// Once a section heading appears, any later line is content — subheadings,
-	// bold labels and "#3978" lines included — except another section heading
-	// and the summary's own framing markers.
+	// bold labels and "#3978" lines included — except another section heading.
 	// The permissions section restates the human partner's own words, so
 	// content there alone carries none of the folded work: a reply that is
 	// only "## Permissions and Holds\nNone." is no summary.
 	// A heading inside a fenced block is quoted text, not a section.
+	// This reads the reply as the model wrote it and edits nothing: the framing a
+	// model may echo back around its own text stays in the stored turn.
 	inSection := false
 	var fence fenceTracker
-	for line := range strings.Lines(text) {
-		line = strings.TrimSpace(line)
-		if fence.step(line) {
+	// The lines are read as written: the reply's own indentation is Markdown's,
+	// and trimming it would turn an indented block into a fence.
+	for raw := range strings.Lines(reply) {
+		line := strings.TrimSpace(raw)
+		// The tracker reads the line as written: a delimiter indented by four
+		// spaces is code inside the block, not a delimiter.
+		if fence.step(raw) {
 			continue
 		}
-		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() {
+		// A model sometimes echoes the framing around its own heading. Read through
+		// the markers at the line's edges so the heading still counts; a marker
+		// inside the line's own text is that text. An indented line is code: it is
+		// content under a section, never one.
+		if section, rest, ok := summarySectionHeading(withoutEdgeFraming(line)); ok && !fence.inside() && !indentedCode(raw) {
 			inSection = !strings.EqualFold(section, permissionsSection)
-			if inSection && isSummaryContent(rest) {
+			// The heading's own text counts only if it is text: the edge markers
+			// are read through above, but markup can hold one inside it
+			// ("**Progress: [END SUMMARY]**"), and a heading with nothing but
+			// framing under it has summarized nothing.
+			if inSection && rest != "" && !markerOnly(rest) {
 				return nil
 			}
 			continue
 		}
-		if inSection && isSummaryContent(line) {
+		// A line of framing markers is not content: quoting the framing is not
+		// summarizing the folded history, whether the markers sit on their own line
+		// or inside a fenced block.
+		if inSection && line != "" && !markerOnly(line) {
 			return nil
 		}
 	}
 	return errors.New("summarizer reply has no summary section with content")
-}
-
-// isSummaryContent reports whether trimmed text under or beside a section
-// heading carries content: it is not empty and not one of the summary's own
-// framing markers.
-func isSummaryContent(text string) bool {
-	return text != "" && text != "[CONTEXT SUMMARY]" && text != "[END SUMMARY]"
 }
 
 // summarySectionHeading reports whether line is a heading naming one of the
@@ -2417,7 +2446,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// the reply or shedding partner messages below the cap the #4173 ruling
 	// chose for them.
 	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
-		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryTurnEnd
+		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryMarkerEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
@@ -2483,18 +2512,26 @@ func countLines(s string) int {
 // searchSummary is a search result's one-line summary, "[head]", with the
 // notes the tool put after its entries (searchresult.Split) added inside the
 // brackets, each without brackets of its own, so a compacted search still
-// says it was cut short or left paths out. Anything the registry appended
-// after another blank line is left out; after a result with no notes of its
-// own, a registry nudge reads as its note (#4223 tracks giving notes a field
-// of their own).
+// says it was cut short or left paths out. The registry appends its breaker
+// nudge the same way, after a blank line, so the notes end where that nudge
+// begins (agent/internal/tool IsBreakerNudge): the nudge is not a note about
+// the search, and a result with no notes of its own would otherwise compact
+// with it read as one (#4223). Every block after the entries is kept, not
+// only the first: a result can carry two when the registry's character cap
+// cuts inside the tool's own note (#4460), and the marker it appends after
+// that fragment is the part a compacted search must not lose.
 func searchSummary(head, output string) string {
 	_, notes := searchresult.Split(output)
-	notes, _, _ = strings.Cut(notes, "\n\n")
 	parts := []string{head}
 	for line := range strings.SplitSeq(notes, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			parts = append(parts, strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
 		}
+		if tool.IsBreakerNudge(line) {
+			break
+		}
+		parts = append(parts, strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
 	}
 	return "[" + strings.Join(parts, "; ") + "]"
 }

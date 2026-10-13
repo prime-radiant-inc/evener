@@ -34,7 +34,7 @@ import {
 } from "react";
 import { WatchGlyph } from "../../../shell/rail/RailRow";
 import { armedWatchCount } from "../../../shell/rail/railNodes";
-import { Chevron, VisuallyHidden } from "../../../widgets";
+import { Chevron, SubagentDot, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
@@ -104,9 +104,9 @@ function rowStatusText(row: ActivityJobRow | ActivityDelegateRow): string {
   return row.kind === "job" ? jobStatusDisplay(row.job.status, row.job.reason) : delegateStatusText(row.delegate);
 }
 
-// The kind glyph ($/⌘) carries the status hue the StatusDot used to: working
-// is alive, live failure is danger, and needs-you is attention. Settled outcomes
-// keep the glyph's default low ink and truthful accessible name.
+// The shell row's kind glyph ($): working is alive, live failure is danger,
+// and needs-you is attention. Settled outcomes keep the glyph's default low
+// ink and truthful accessible name.
 const KIND_STATE_LABEL: Record<string, string> = {
   idle: "Idle",
   working: "Working",
@@ -207,8 +207,8 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   // window, else the snapshot.
   const timing = delegateTiming(delegate, now);
   // The visible meta is the one place the intent stands in for the status
-  // word: the row's aria-description and the glyph tone below keep reading
-  // the word itself, so the status stays reachable and the hue stays true.
+  // word: the row's aria-description keeps the word and the dot below keeps
+  // the state, so the status stays reachable and the hue stays true.
   const work = delegateWorkText(delegate, rowStatusText(row));
   if (row.live)
     return liveMetaSegments(tokens ?? undefined, work, timing.quietForMs, delegateStatedIntent(delegate) || undefined);
@@ -402,10 +402,52 @@ interface DenseRowViewProps {
   registerRowRef: (id: string, element: HTMLDivElement | null) => void;
 }
 
-// The row chrome (name, glyph, transcript button, focus, disclosure) is all
-// snapshot data, so the memoized view re-renders only when its own props
-// change; the ticking pieces live one level down in LiveMetaSegments (the
-// quiet-age cluster) and RowDetail (the open strip), which subscribe alone.
+// The shell row's kind glyph keeps its grammar: the $ states its status word
+// as its accessible name and carries the state hue, while settled outcomes
+// keep the glyph's default low ink.
+function JobKindGlyph({
+  statusText,
+  job,
+  live,
+}: {
+  statusText: string;
+  job: ActivityJobRow["job"];
+  live: boolean;
+}): ReactNode {
+  const statusState = jobStatusDotState(statusText, true);
+  // Active descendants keep settled ancestors live. Their current work and
+  // attention outrank settled failures without rewriting the ancestor's outcome.
+  const liveState =
+    statusState === "needs-you" ? statusState : statusState === "failed" && !job.terminal ? "failed" : "working";
+  const kindState = live ? liveState : jobIsFailed(job) ? "failed" : "ended";
+  const kindClass = live ? kindStateClass(kindState) : undefined;
+  return (
+    <span
+      role="img"
+      aria-label={KIND_STATE_LABEL[kindState] ?? kindState}
+      data-state={kindState}
+      className={kindClass ? `${CLASS.denseKind} ${kindClass}` : CLASS.denseKind}
+    >
+      $
+    </span>
+  );
+}
+
+// An open delegate row's dot is a tick subscriber, like the live meta cluster
+// beside it: the memoized row view stays asleep and the quiet threshold's
+// flip arrives through the tree's clock, not a row re-render. The dot is
+// unlabeled - the row's aria-description already carries the status word -
+// so it never joins the treeitem's name computation.
+function TreeDelegateDot({ delegate }: { delegate: ActivityDelegate }): ReactNode {
+  const now = useTreeNow();
+  return <SubagentDot delegate={delegate} now={now} />;
+}
+
+// The row chrome (name, leading mark, transcript button, focus, disclosure)
+// is all snapshot data, so the memoized view re-renders only when its own
+// props change; the ticking pieces live one level down in TreeDelegateDot
+// (an open delegate's status dot), LiveMetaSegments (the quiet-age cluster)
+// and RowDetail (the open strip), which subscribe alone.
 const DenseRowView = memo(function DenseRowView({
   row,
   detailOpen,
@@ -418,15 +460,6 @@ const DenseRowView = memo(function DenseRowView({
   const name = row.kind === "job" ? row.job.description : delegateName(row.delegate);
   const statusText = rowStatusText(row);
   const target = transcriptTarget(row);
-  const statusState = jobStatusDotState(statusText, true);
-  const failed = row.kind === "job" ? jobIsFailed(row.job) : activityDelegateState(row.delegate).failed;
-  const terminal = row.kind === "job" ? row.job.terminal : row.delegate.terminal === true;
-  // Active descendants keep settled ancestors live. Their current work and
-  // attention outrank settled failures without rewriting the ancestor's outcome.
-  const liveState =
-    statusState === "needs-you" ? statusState : statusState === "failed" && !terminal ? "failed" : "working";
-  const kindState = row.live ? liveState : failed ? "failed" : "ended";
-  const kindClass = row.live ? kindStateClass(kindState) : undefined;
   return (
     <Fragment>
       <RowShell
@@ -440,14 +473,21 @@ const DenseRowView = memo(function DenseRowView({
         onKeyDown={onKeyDown}
         registerRowRef={registerRowRef}
       >
-        <span
-          role="img"
-          aria-label={KIND_STATE_LABEL[kindState] ?? kindState}
-          data-state={kindState}
-          className={kindClass ? `${CLASS.denseKind} ${kindClass}` : CLASS.denseKind}
-        >
-          {row.kind === "delegate" ? "⌘" : "$"}
-        </span>
+        {row.kind === "delegate" ? (
+          <span className={CLASS.denseKind}>
+            {row.delegate.terminal === true ? (
+              // Terminal rows never read the clock - the outcome decides the
+              // dot - so the 0 only fills `now`'s slot. Even a live terminal
+              // row (an active child keeps the row itself live) shows a dot
+              // that cannot change, so it stays off the tick.
+              <SubagentDot delegate={row.delegate} now={0} />
+            ) : (
+              <TreeDelegateDot delegate={row.delegate} />
+            )}
+          </span>
+        ) : (
+          <JobKindGlyph statusText={statusText} job={row.job} live={row.live} />
+        )}
         <span className={row.live ? `${CLASS.denseName} ${CLASS.denseNameLive}` : CLASS.denseName}>{name}</span>
         {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} tabIndex={-1} />}
         {row.live ? <LiveMetaSegments row={row} /> : <StaticMetaSegments row={row} />}

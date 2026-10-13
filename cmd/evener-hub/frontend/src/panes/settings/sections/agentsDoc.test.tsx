@@ -1,5 +1,5 @@
 import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -82,15 +82,21 @@ test("a missing file renders an empty editor, not an error", async () => {
 
 // The hub's own text is the whole point for a file editor - "permission
 // denied" and "is a directory" are what tell the user what to fix - and it
-// has to be announced, not just drawn.
-test("a failed load shows the hub's own reason and announces it", async () => {
+// has to be announced, not just drawn. The store translates the failure while
+// it still has its type, so a hub's WireError keeps its explanation and a
+// client-side failure shows its friendly form, never the client's own text.
+test.each([
+  ["a hub-reported WireError", new WireError("permission denied", -32000)],
+  ["a client-side failure", new Error("AppwireClient internal detail")],
+])("a failed load from %s shows that error's friendly form and announces it", async (_name, err) => {
   const fake = new FakeClient("ready");
   fake.on("evener/settings/agentsDoc/get", () => {
-    throw new Error("disk on fire");
+    throw err;
   });
   connectionStore.getState().connect(fake);
   renderSection();
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("disk on fire"));
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(err)));
+  expect(screen.queryByText(/AppwireClient internal detail/)).toBeNull();
 });
 
 test("Save and Revert are disabled until the draft differs from the loaded file", async () => {

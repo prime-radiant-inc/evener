@@ -1,62 +1,19 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
-import { Code, FieldDim, SettingsField } from "./settingsField";
-import { settingsFieldIds } from "./settingsFieldTestUtils";
+import { PropertyList } from "../../../widgets";
+import { Code, FieldDim, FieldValue } from "./settingsField";
+import { settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
 
-describe("SettingsField", () => {
-  test("renders the label as a definition term and the value as its definition", () => {
-    render(
-      <dl>
-        <SettingsField field="fixture" label="Label fixture" value="127.0.0.1:9180" />
-      </dl>,
-    );
-    expect(screen.getByText("Label fixture").tagName).toBe("DT");
-    expect(screen.getByText("127.0.0.1:9180").tagName).toBe("DD");
-  });
-
-  test("exposes its field id as data-field on the row", () => {
+describe("FieldValue", () => {
+  test("tags a PropertyList row's value with its field id, so the row is findable without its label", () => {
     const { container } = render(
-      <dl>
-        <SettingsField field="run-dir" label="Run dir" value="/tmp/run" />
-      </dl>,
+      <PropertyList
+        layout="stacked"
+        rows={[{ label: "Label fixture", value: <FieldValue field="run-dir">/tmp/run</FieldValue> }]}
+      />,
     );
     expect(settingsFieldIds(container)).toEqual(["run-dir"]);
-  });
-
-  test("omits the help paragraph when not provided", () => {
-    const { container } = render(
-      <dl>
-        <SettingsField field="fixture" label="Run dir" value="/tmp/run" />
-      </dl>,
-    );
-    expect(container.querySelector("p")).toBeNull();
-  });
-
-  test("renders the help paragraph when provided", () => {
-    render(
-      <dl>
-        <SettingsField field="fixture" label="Run dir" value="/tmp/run" help="Per-PID rendezvous files." />
-      </dl>,
-    );
-    expect(screen.getByText("Per-PID rendezvous files.").tagName).toBe("P");
-  });
-
-  test("value accepts rich content (e.g. a value plus a dim trailing note)", () => {
-    render(
-      <dl>
-        <SettingsField
-          field="fixture"
-          label="Hub version"
-          value={
-            <>
-              1.2.3 <FieldDim>(abc1234)</FieldDim>
-            </>
-          }
-        />
-      </dl>,
-    );
-    expect(screen.getByText("1.2.3", { exact: false })).toBeTruthy();
-    expect(screen.getByText("(abc1234)")).toBeTruthy();
+    expect(settingsFieldValue("run-dir", container).textContent).toBe("/tmp/run");
   });
 });
 

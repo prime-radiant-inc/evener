@@ -183,6 +183,9 @@ const text = (tree: ReactTestRenderer) => renderedText(tree);
 const whys = (tree: ReactTestRenderer) => markers(tree, "subagent-why");
 /** Why the list shows a notice instead of rows, if it does. */
 const notices = (tree: ReactTestRenderer) => markers(tree, "activity-notice");
+/** A row's leading dot tint, found by its delegate id. */
+const dotTint = (tree: ReactTestRenderer, id: string) =>
+	tree.root.find((node) => node.props.row?.id === id).findByProps({ name: "circle.fill" }).props.tintColor;
 
 it("titles itself with the count over the coordinator's title", async () => {
 	await mount();
@@ -231,10 +234,12 @@ it("keeps a terminal parent's running child and stop identity reachable with his
 	});
 	expect(stopOffer({ row: parent, requested: false, direct: "no" })).toBe("ask");
 	const marks = tree.root.findAll(
-		(node) => String(node.type) === "SymbolView" && node.props.name === "xmark.octagon.fill",
+		(node) =>
+			String(node.type) === "SymbolView" &&
+			node.props.name === "circle.fill" &&
+			node.props.tintColor === paletteFor("light").danger,
 	);
 	expect(marks).toHaveLength(2);
-	expect(marks.every((node) => node.props.tintColor === paletteFor("light").inkLow)).toBe(true);
 	const failedWords = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "Failed");
 	expect(failedWords).toHaveLength(2);
 	expect(failedWords.every((node) => node.props.style.color === paletteFor("light").inkMid)).toBe(true);
@@ -474,11 +479,16 @@ it("reads a quiet failure, a nested subagent, another model, a branch and a fini
 	expect(shown).not.toContain("310K tokens");
 	expect(pressable(tree, "Fix race in tree settle, Failed, go test exited 1 (3 times), 6 minutes")).toBeDefined();
 	expect(shown).toContain("6m");
+	// The done checkmark retires with the dot: the band header carries the
+	// state, and a settled run shows no mark at all.
+	expect(
+		tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "checkmark"),
+	).toHaveLength(0);
 });
 
-// The list runs no clock, but a running subagent's row still turns Quiet
-// when its silence crosses the threshold, with no new tree to re-render it.
-it("turns a silent subagent's row Quiet on its own", async () => {
+// The list runs no clock, but a running subagent's dot still dims when its
+// silence crosses the threshold, with no new tree to re-render it.
+it("dims a silent running subagent's dot on its own", async () => {
 	// On fake timers, so the first read can take as long as it takes without
 	// crossing the threshold before the list shows the row. It flushes the
 	// read itself: settle() waits on a setTimeout that never fires
@@ -497,19 +507,39 @@ it("turns a silent subagent's row Quiet on its own", async () => {
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(0);
 		});
-		expect(whys(tree)).toEqual(["working"]);
+		// The line has nothing to say while the dot alone speaks its clock.
+		expect(whys(tree)).toEqual([]);
+		expect(dotTint(tree, "hush")).toBe(paletteFor("light").alive);
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(99);
 		});
-		expect(whys(tree)).toEqual(["working"]);
+		expect(dotTint(tree, "hush")).toBe(paletteFor("light").alive);
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(1);
 		});
-		expect(whys(tree)).toEqual(["quiet"]);
-		expect(text(tree)).toContain("20s");
+		expect(dotTint(tree, "hush")).toBe(paletteFor("light").inkLow);
+		// The row's corner keeps its own clock: time in state, not silence.
+		expect(text(tree)).toContain("4m");
 	} finally {
 		vi.useRealTimers();
 	}
+});
+
+// A subagent waiting on its human reads amber, the shared rule's attention
+// state - the same dot vocabulary the web sidebar shows.
+it("tints an attention subagent's dot amber", async () => {
+	client = hub(() => ({
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			runningOne("approval", "Ask before merging", { phase: "awaiting_approval" }),
+		]),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(dotTint(tree, "approval")).toBe(paletteFor("light").attention);
+	// Attention is spoken too: a human being needed is the one state a
+	// screen reader must never miss.
+	expect(pressable(tree, "Ask before merging, Running, Needs you, 4 minutes")).toBeDefined();
 });
 
 // The why line shows the subagent's stated intent, while the accessible label
@@ -526,7 +556,11 @@ it("shows a running subagent's stated intent as its row's why line", async () =>
 	const shown = text(tree);
 	expect(shown).toContain("Reading the board's row tests.");
 	expect(shown).not.toContain("Working");
-	expect(pressable(tree, "Inspect the cache, Running, Reading the board's row tests., 4 minutes")).toBeDefined();
+	// The label speaks the dot's state word beside the state word, so the
+	// fresh-versus-quiet distinction stays reachable without the visible line.
+	expect(
+		pressable(tree, "Inspect the cache, Running, Working, Reading the board's row tests., 4 minutes"),
+	).toBeDefined();
 });
 
 // A subagent's screen is its session (ruling 30), over this list.

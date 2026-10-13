@@ -35,7 +35,7 @@ func TestDevicePairingRejectsMalformedNumericHosts(t *testing.T) {
 				params := appwire.DevicePairingCreateParams{Origin: "http://" + host + ":9180", Tailnet: true}
 				if viaConfig {
 					cfg.MobileBaseURL = "https://" + host + ":9180"
-					params.Origin = "https://valid.example"
+					params.Origin = ""
 				}
 				p := newDevicePairings(cfg)
 				invite, err := p.create(params)
@@ -49,6 +49,27 @@ func TestDevicePairingRejectsMalformedNumericHosts(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDevicePairingUsesSelectedOrigin(t *testing.T) {
+	for _, tc := range []struct{ name, proposed, configured, bound, want string }{
+		{"automatic bind", "", "", "100.87.98.83:9180", "http://100.87.98.83:9180"},
+		{"configured default", "", "https://hub.example.test", "", "https://hub.example.test"},
+		{"configured MagicDNS", "", "http://magic-kingdom:9180", "", "http://magic-kingdom:9180"},
+		{"direct HTTP", "http://hub.example.test:9180", "", "", "http://hub.example.test:9180"},
+		{"edited destination", "http://magic-kingdom:9180", "https://old.example.test", "", "http://magic-kingdom:9180"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newDevicePairings(hubcore.WebConfig{AuthToken: "synthetic-credential", HubAddr: tc.bound, MobileBaseURL: tc.configured})
+			invite, err := p.create(appwire.DevicePairingCreateParams{Origin: tc.proposed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if invite.Origin != tc.want {
+				t.Fatalf("origin = %q, want %q", invite.Origin, tc.want)
+			}
+		})
 	}
 }
 

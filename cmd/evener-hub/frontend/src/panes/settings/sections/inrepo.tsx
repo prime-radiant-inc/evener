@@ -9,7 +9,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
-import { Button, CodeBlock, FormRow, Loader, PathField } from "../../../widgets";
+import { Button, CodeBlock, FormRow, InlineNotice, Loader, PathField } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./inrepo.module.css";
@@ -21,7 +21,6 @@ const CLASS = {
   status: requireClass(styles.status, "inrepo.module.css", "status"),
   note: requireClass(styles.note, "inrepo.module.css", "note"),
   hash: requireClass(styles.hash, "inrepo.module.css", "hash"),
-  error: requireClass(styles.error, "inrepo.module.css", "error"),
 };
 
 type Status =
@@ -140,14 +139,18 @@ export function InRepoSection({ host = LOCAL_HOST }: InRepoSectionProps) {
       >
         {status.phase === "empty" && <p className={CLASS.note}>Enter a working directory.</p>}
         {status.phase === "loading" && <Loader label="Loading" />}
-        {status.phase === "error" && <p className={CLASS.error}>Failed to load: {status.message}</p>}
+        {status.phase === "error" && (
+          <InlineNotice tone="danger" live="off">
+            Failed to load: {status.message}
+          </InlineNotice>
+        )}
         {status.phase === "resolved" && (
           <ResolvedStatus cwd={cwd.trim()} repo={status.repo} trusting={trusting} onTrust={handleTrust} />
         )}
         {trustError && (
-          <p className={CLASS.error} data-reason="trust-failed">
+          <InlineNotice tone="danger" live="off" data-reason="trust-failed">
             {trustError}
-          </p>
+          </InlineNotice>
         )}
       </div>
     </div>

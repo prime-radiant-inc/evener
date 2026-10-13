@@ -89,6 +89,37 @@ When the text really is the contract (an enum token, a wire field, a CLI flag,
 a file format), assert it through its structured form, as above. When it is
 copy a person reads, review it in the diff and test the behavior around it.
 
+Two audits enforce the rule against tests whose whole claim is that some copy
+exists. Each fails on a test whose name says it shows, renders or says
+something and whose every check compares output with production copy:
+
+- `copyonly_audit_test.go` (part of `go test`) runs `internal/devtool/copyonly`
+  over every tracked Go test. Its allowlist is
+  `internal/devtool/copyonly/allowlist.tsv`.
+- `cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts` (part of
+  `make test-web`) reads every tracked TypeScript test in the frontend,
+  `mobile-native`, `mobile/src` and `appwire-client/typescript` with the
+  TypeScript compiler. Its allowlist is
+  `cmd/evener-hub/frontend/src/dev/copyonly/allowlist.tsv`.
+
+Both skip expected errors, counts, attribute and state reads, spy assertions,
+role queries, machine-contract tokens, and text the test supplied itself. When
+an audit flags your test, assert the behavior instead. If the copy must stay
+the oracle (model-facing text whose conversion is deferred, or a false
+positive), add a row to that language's allowlist: the file, the test name,
+and the reason it is kept, tab-separated. Rows are keyed by file and test name,
+not line. Each audit also fails on a row whose test is no longer flagged, so
+remove the row when you convert, delete or rename the test.
+
+To find what is left to convert, `go run ./cmd/evener-dev/bin dev copy-oracle`
+inventories every assertion whose oracle is production copy, per package and
+category, using the same two scanners. `--hits FILE` writes each one as TSV,
+`--copy-only FILE` lists the copy-only tests instead, and `--path PREFIX` and
+`--only ts|go` narrow the scan. The TypeScript half runs under `node` with the
+frontend's install, so run `make web-preflight` first, or pass `--only go`.
+After converting a test, `tools/copy-oracle/mutate.sh` breaks the behavior it
+now checks and confirms the test fails.
+
 ## Flakes and Timeouts
 
 Two standing rules (Jesse, 2026-07-20/21), both absolute:
@@ -920,26 +951,31 @@ link, but `mobile-native/.gitignore` uses `node_modules/`, which does not
 match a symlink: that link shows as untracked in `git status`, so keep it
 out of commits by path, not by ignore.
 
-The gate's `vitest run` writes nothing under `node_modules` or `dist/`:
+The web gate - `evener-dev dev web-checks`: typecheck, test, lint - writes
+nothing under `cmd/evener-hub/frontend`, so it runs in a checkout whose
+frontend directory denies writes. (`make test-web` as a whole is not
+read-only: its own prerequisites write `./evener-dev` and may `npm ci`.)
 `vitest_run_args` selects `--configLoader runner` (Vite's default loader
-writes a bundled config under `node_modules/.vite-temp`), and the plugin
-that restores `dist/PLACEHOLDER` applies to builds only. The whole gate is
-not read-only yet. Vitest still writes its dependency cache to the
-checkout's `.vite-cache`. `npm test`'s `node --test scripts/*.test.mjs`
-phase loads Vite configs with the default loader in
-`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs` and
-`editorial-preview.test.mjs`, which still write `node_modules/.vite-temp`
-(issue #4193). So a read-only lane still needs a scratch config for focused
-experiments: run
-it with `--configLoader runner --cache=false`, and give the scratch-rooted
-Vite config a `server.fs.allow` that names the checkout, the AppWire
-package and the dependency realpath, or external setup imports fail as
-`Cannot find module '/@fs/…/src/testSetup.ts'` before any test runs. Keep
-the custom config, test files, cacheDir and dependency symlink in scratch,
-reuse the frontend's resolve aliases and test setup, and keep at least two
-workers (the vmThreads isolation floor explained below). These runs are
-probes; canonical verdicts stay with `make test-web`, which cannot run in
-a read-only lane until those writes are gone.
+writes a bundled config under `node_modules/.vite-temp`), the plugin that
+restores `dist/PLACEHOLDER` applies to builds only, and `webCheckSpec` points
+`EVENER_FRONTEND_VITE_CACHE_DIR` at each check's private scratch root, so
+Vitest's dependency cache never lands in the checkout's `.vite-cache` (issue
+#4193). The other `npm test` phases match: `check-package-tests` passes
+`--configLoader runner` to its own Vitest spawns, and the
+`node --test scripts/*.test.mjs` phase loads its configs with the runner
+loader (`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs`,
+`distPlaceholderPlugin.test.mjs`, and `browserguard-vite.mjs`, which that
+phase spawns; `editorial-preview.test.mjs` does the same and keeps its loads
+inside its own temporary copy).
+
+A focused run in a read-only lane needs those same two things by hand, with
+the real config - no scratch config is needed:
+`EVENER_FRONTEND_VITE_CACHE_DIR=<absolute scratch path outside the checkout>
+npx vitest run <file> --configLoader runner --maxWorkers=2`. The value has to
+be absolute: a relative one resolves against the config root and lands back in
+the checkout (the gate passes an absolute path). Keep a test-file filter, keep
+at least two workers (the vmThreads isolation floor explained below), and
+discard the scratch cache directory afterward.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
@@ -1250,7 +1286,10 @@ IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
 - **`npm run shellguard`** renders the production AppShell (rail + workspace)
   with a scripted tall sidebar tree and asserts the PAGE never grows taller
   than the viewport — the rail's own body is the scroll container, not the
-  document. The floating fixture waits for the restored workspace before opening
+  document. The Overview sweep also opens the Tasks tab over a scripted
+  task list taller than any swept viewport and asserts the tab's own
+  scroller owns that list while the document stays at the viewport height.
+  The floating fixture waits for the restored workspace before opening
   Settings. A held lazy DockHost request verifies that it captures no pane ID
   before restoration, then proves real placement, overhang, native input and
   resize after the request resumes. Workspace restoration and Dockview stay real.
@@ -1264,7 +1303,9 @@ IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
   scroll port itself shrinks (the pane header growing). Paged-open readiness
   waits through asynchronous cache/read admission until the actual scroll port
   mounts and its geometry settles. An explicitly deferred read exercises those
-  pre-mount frames without a fixed delay or a wider readiness deadline.
+  pre-mount frames without a fixed delay or a wider readiness deadline. A pane
+  that unmounts under any post-settle wait must report it by name ("unmounted
+  during the scroll-away wait"), never as the harness's own mount error.
 - **`node scripts/sessioncacheguard/run.mjs`** drives TWO REAL TABS through the
   real session-cache store, native BroadcastChannel and IndexedDB, with only
   AppWire scripted. It proves sibling deletion suppression and refusal to

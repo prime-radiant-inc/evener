@@ -19,7 +19,7 @@ import { Fragment, useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Chevron, IconButton, Timestamp, Tooltip, VisuallyHidden } from "../../../../widgets";
+import { Chevron, EmptyState, IconButton, Timestamp, Tooltip, VisuallyHidden } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
@@ -368,13 +368,11 @@ function SubagentCard({
               })}
             </ol>
           ) : (
-            <div
-              className={CLASS.quotesEmpty}
-              data-testid="subagent-quotes-empty"
-              data-reason={model ? "no-activity" : "unavailable"}
-            >
-              {model ? "No activity yet" : "Activity unavailable"}
-            </div>
+            <EmptyState
+              size="compact"
+              title={model ? "No activity yet" : "Activity unavailable"}
+              reason={model ? "empty" : "unavailable"}
+            />
           )}
           {row.receiptStatus !== undefined && (
             <div className={CLASS.mandate} data-testid="subagent-receipt">

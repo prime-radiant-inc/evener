@@ -46,6 +46,20 @@
   background: var(--hover-2);
 }
 
+/* Icon-only trigger: IconButton's sm square (widgets/iconbutton), glyph
+ * centred. Declared after .trigger so its size wins at equal specificity;
+ * the tap-floor block below adds IconButton's tap floor on both axes. */
+.triggerIcon {
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.triggerGlyph {
+  display: inline-flex;
+}
+
 /* position: fixed (not absolute): the popup portals to document.body (see
  * index.tsx) and gets its top/left as an inline style, computed off the
  * trigger's own getBoundingClientRect() - never these two static values,
@@ -133,6 +147,10 @@
 @media (max-width: 899px), (any-pointer: coarse) {
   .trigger {
     min-height: var(--tap-min);
+  }
+
+  .triggerIcon {
+    min-width: var(--tap-min);
   }
 
   .item {

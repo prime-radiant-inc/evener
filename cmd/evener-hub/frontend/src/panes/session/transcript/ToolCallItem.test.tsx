@@ -15,7 +15,6 @@ import {
 } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { SUMMARY_ENTITY_JOB, summaryEntityView } from "./entityView.testFixture";
-import galleryStyles from "./flow/imagegallery.module.css";
 import { ToolCallItem } from "./ToolCallItem";
 import itemStyles from "./toolcallitem.module.css";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
@@ -622,8 +621,9 @@ test("a read_file image read renders its output image at the large (up-to-600px)
   );
   // An image read auto-expands (the picture is the call's whole output), so
   // the gallery is already mounted - no expandRow() toggle needed.
-  const thumb = screen.getByTestId("image-gallery-thumb");
-  expect(thumb.className.split(/\s+/)).toContain(galleryStyles.thumbLarge);
+  // The large variant reserves no fixed 96px box (ImageGallery.test.tsx).
+  const img = screen.getByTestId("image-gallery-thumb").querySelector("img")!;
+  expect(img.hasAttribute("width")).toBe(false);
 });
 
 test("other tools' outputImages keep the default 96px thumbnail size", () => {
@@ -636,8 +636,8 @@ test("other tools' outputImages keep the default 96px thumbnail size", () => {
     />,
   );
   // At activity level the body auto-expands (expandByDefault=true).
-  const thumb = screen.getByTestId("image-gallery-thumb");
-  expect(thumb.className.split(/\s+/)).not.toContain(galleryStyles.thumbLarge);
+  const img = screen.getByTestId("image-gallery-thumb").querySelector("img")!;
+  expect(img.getAttribute("width")).toBe("96");
 });
 
 test("an empty outputImages array renders no gallery thumbnails", () => {

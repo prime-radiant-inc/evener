@@ -155,12 +155,16 @@ export {
   unconfiguredLabel,
 } from "./credentialLabels";
 export type {
+  DelegateDotFields,
+  DelegateDotState,
   DelegateEndingFields,
   DelegateModelFields,
   DelegateTiming,
   DelegateTimingFields,
 } from "./delegateDetails";
 export {
+  DELEGATE_QUIET_AFTER_MS,
+  delegateDotState,
   delegateEndingText,
   delegateModel,
   delegateNotResumableText,
@@ -269,8 +273,10 @@ export {
   isUpgradeRequiredError,
   mutationErrorData,
   RequestTimeoutError,
+  StoreMessageError,
   sessionActionError,
   sessionActionHeadline,
+  storeErrorText,
   WireError,
   wireRejectionPayload,
 } from "./errors";
@@ -537,6 +543,8 @@ export {
   resolvePendingEscalation,
   threadModelFromCache,
 } from "./reducer";
+export type { GroupedSearch, GroupedSearchRow } from "./searchGrouping";
+export { countSearchMatches, groupSearchResults } from "./searchGrouping";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export type { QuietState } from "./sessionActivity";
@@ -814,7 +822,6 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
-
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

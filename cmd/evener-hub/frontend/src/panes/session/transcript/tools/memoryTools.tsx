@@ -10,16 +10,20 @@ import {
 } from "@evener/appwire-client";
 import { Markdown } from "../../../../widgets";
 import { defaultToolBody, registerToolRenderer, type ToolRenderProps } from "../toolRenderers";
-import { EditFileBody, HeadClippedOutputBody, TailFoldedOutputBody, WriteFileBody } from "./bodies";
-
-const MEMORY_CONTENT_MAX_CHARS = 8000;
+import {
+  EditFileBody,
+  HeadClippedOutputBody,
+  TailFoldedOutputBody,
+  TOOL_BODY_MAX_CHARS,
+  WriteFileBody,
+} from "./bodies";
 
 function MemoryWriteBody({ item, live }: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
   const content = str(args, "content");
   // An empty page renders the confirmation, not an empty markdown block -
   // the same empty-content guard the native evidence applies.
-  if (content) return <Markdown source={clip(content, MEMORY_CONTENT_MAX_CHARS)} />;
+  if (content) return <Markdown source={clip(content, TOOL_BODY_MAX_CHARS)} />;
 
   return <WriteFileBody item={item} live={live} />;
 }

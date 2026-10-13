@@ -420,12 +420,13 @@ const SEMANTIC_USE_ALLOWLIST = [
   "statusdot", // state color
   "meter", // danger/attention fill tone
   "toast", // tone prop
-  "dialog", // danger footer
   "formrow", // error-state left border + message text (wave 7)
   "collectioneditor", // inline add-validation error text (wave 7)
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
   "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
   "inlinenotice", // danger tone: an inline error message's ink is the "something failed" hue
+  "card", // attention tone: the "a human is needed right now" envelope (ask batch, sandbox approval)
+  "toolicon", // tone prop: a state glyph whose hue IS the state (the activity sidebar's agent and job rows)
 ];
 
 const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
@@ -449,17 +450,6 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // module-level "a child failed" signal parity §12 calls for - the failure
 // colour has to come from somewhere, and this is the same deliberate,
 // exact-path route RailRow.module.css already established, not a new one.
-//
-// kata crcf: panes/session/composer/askDock/askdock.module.css earns the
-// same exception for the same structural reason - it lives under
-// panes/session/composer/askDock/, not widgets/<name>/, so it can never
-// match WIDGET_STYLESHEET_RE either. Its pending-ask batch is the app's
-// clearest "a human is needed right now" moment (docs/web-ui/decisions.md
-// topic 16); before this it was drawn in neutral ink alone, same-color as
-// everything else. The amber container is --attention-bg/-edge on the
-// batch envelope - the primary Send action inside it stays --accent (blue),
-// which is not gated at all, per the amber-owns-the-container/blue-owns-
-// the-action split the mockup settled on.
 //
 // tasklist-checklist-card: panes/session/transcript/tools/taskcheck.module.css
 // earns the same exception for the same structural reason - it lives under
@@ -489,41 +479,10 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // latest note, the hue is a glyph-level accent, and all panel text stays
 // on the ink scale.
 //
-// zoom-activity-surfaces PR 1: shell/activitybar/activitybar.module.css earns
-// the same exception for the same structural reason - it lives under
-// shell/activitybar/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its semantic reaches are the row glyphs' state
-// hues (.glyphAlive/.glyphAttention/.glyphDanger): the sidebar's agent and
-// job rows carry the same working/needs-you/failed glyph grammar
-// RailRow.module.css established for the rail's own activity rows - the hue
-// IS the state signal, and all text stays on the ink scale.
-//
-// reviewed-ux-fixes fix 1: panes/session/transcript/tools/sandboxescalation.
-// module.css earns the same exception for the same structural reason - it
-// lives under panes/session/transcript/tools/, not widgets/<name>/, so it
-// can never match WIDGET_STYLESHEET_RE either. A sandbox escalation card is
-// a BLOCKING approval (the tool-exec goroutine is parked waiting on
-// evener/sandbox/escalation/resolve) - the app's SECOND "a human is needed
-// right now" moment after askDock's ask batch (kata crcf, above), same
-// structural reason, so it earns the same --attention-bg/--attention-edge
-// container tint askDock's .batch uses instead of a neutral Card.
-// shell/rail/railDialog.module.css earns the same exception for the same
-// structural reason - it lives under shell/rail/, not widgets/<name>/, so it
-// can never match WIDGET_STYLESHEET_RE. Its one semantic reach is --danger
-// on .pickerError, the rail dialogs' inline failure text - error text is the
-// danger hue's canonical, ungateable job.
 // focus-sentence: panes/session/composer/currentwork.module.css earns the same
 // exact-path exception because it is pane content, not a widget stylesheet.
 // Its --alive ring marks an actually in-progress task, which is precisely the
 // semantic "agent working" meaning the token contract reserves for that hue.
-//
-// delegate-status: panes/session/transcript/tools/delegateStatus.module.css
-// earns the same exception for the same structural reason - it lives under
-// panes/session/transcript/tools/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger-ink on
-// .dangerText — failure text for a delegate's not-resumable reason and last
-// failed outcome reason. Error text is the danger hue's canonical, ungateable
-// job, the same as railDialog.module.css's .pickerError above.
 //
 // hover-card-glow-up: panes/session/transcript/entityref.module.css earns the
 // same exception for the same structural reason - it lives under
@@ -535,44 +494,9 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // the same meaning-per-hue split RailRow.module.css's signal-row family and
 // the subagent row's attribute-keyed state colors already established; every
 // terminal or neutral state stays on the ink ramp.
-//
-// webui-keybindings-p4 task 6: panes/settings/sections/keybindings.module.css
-// earns the same exception for the same structural reason - it lives under
-// panes/settings/sections/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger-ink on
-// .rowError and .captureError, the keybindings editor's inline validation and
-// hub-error text. Error text is the danger hue's canonical, ungateable job,
-// the same as railDialog.module.css's .pickerError and
-// delegateStatus.module.css's .dangerText above.
-// marketplace-sheet-editor task 4: panes/settings/sections/marketplacesPlugins/
-// marketplacesPlugins.module.css earns the same exception for the same
-// structural reason - it lives under panes/settings/sections/, not
-// widgets/<name>/, so it can never match WIDGET_STYLESHEET_RE either. Its one
-// semantic reach is --danger-ink on .sheetError, the MarketplaceSheet's inline
-// failed-save text. Error text is the danger hue's canonical, ungateable job,
-// the same as keybindings.module.css's .rowError above.
-// shared-notes panel: panes/session/chrome/notespanel.module.css earns the
-// same exception for the same structural reason - it lives under
-// panes/session/chrome/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger on
-// .statusError, the blur-save failure text under the human textarea. Error
-// text is the danger hue's canonical, ungateable job, the same as
-// railDialog.module.css's .pickerError and delegateStatus.module.css's
-// .dangerText above.
-// host-registry slice 1: panes/settings/sections/hosts.module.css earns the
-// same exception for the same structural reason - it lives under
-// panes/settings/sections/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its semantic reaches are --danger on .error
-// and .formError, the hosts pane's inline load-failure and add-form failure
-// text. Error text is the danger hue's canonical, ungateable job, the same as
-// keybindings.module.css's .rowError and marketplacesPlugins.module.css's
-// .sheetError above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
-  "shell/rail/railDialog.module.css",
-  "panes/session/chrome/notespanel.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
-  "panes/session/composer/askDock/askdock.module.css",
   "panes/session/composer/currentwork.module.css",
   "panes/session/transcript/tools/taskcheck.module.css",
   "panes/session/chrome/activitypanel.module.css",
@@ -584,18 +508,49 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   // the production task card/pane stylesheets are allowlisted on their own
   // above.
   "dev/taskcardmockups/taskcardmockups.module.css",
-  "panes/session/transcript/tools/sandboxescalation.module.css",
-  "panes/session/transcript/tools/delegateStatus.module.css",
-  "panes/settings/sections/keybindings.module.css",
-  "panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css",
-  "panes/settings/sections/hosts.module.css",
   "panes/session/transcript/entityref.module.css",
-  "shell/activitybar/activitybar.module.css",
 ]);
+
+function reachesSemanticHue(cssText: string): boolean {
+  return SEMANTIC_VAR_RE.test(cssText.replace(COMMENT_RE, " "));
+}
+
+// A grant whose stylesheet is gone, or no longer reaches for a semantic hue
+// outside comments, is a stale permission: it lets the next edit to that file
+// add a hue without anyone deciding it should.
+function unusedSemanticGrants(paths: Iterable<string>, stylesheets: Record<string, string>): string[] {
+  return [...paths].filter((path) => {
+    const text = stylesheets[path];
+    return text === undefined || !reachesSemanticHue(text);
+  });
+}
+
+test("every semantic-hue exception and allowlisted widget stylesheet still reaches for a semantic hue", () => {
+  const widgetPaths = SEMANTIC_USE_ALLOWLIST.map((name) => `widgets/${name}/${name}.module.css`);
+  expect(unusedSemanticGrants([...SEMANTIC_PATH_EXCEPTIONS, ...widgetPaths], STYLESHEETS)).toEqual([]);
+});
+
+test("unusedSemanticGrants reports a missing stylesheet and one naming a hue only in a comment", () => {
+  const stylesheets = {
+    "panes/live.module.css": ".error { color: var(--danger-ink); }",
+    "panes/commentOnly.module.css": "/* was var(--danger) */ .error { color: var(--ink-hi); }",
+  };
+  expect(
+    unusedSemanticGrants(
+      ["panes/live.module.css", "panes/commentOnly.module.css", "panes/gone.module.css"],
+      stylesheets,
+    ),
+  ).toEqual(["panes/commentOnly.module.css", "panes/gone.module.css"]);
+});
+
+test("a semantic hue named only in a comment does not count as reaching for it", () => {
+  expect(reachesSemanticHue("/* var(--alive) */ .row { color: var(--ink-mid); }")).toBe(false);
+  expect(reachesSemanticHue(".row { color: var(--alive-ink); }")).toBe(true);
+});
 
 for (const [path, text] of OTHER_STYLESHEETS) {
   test(`${path} only reaches for --attention/--alive/--danger if allowlisted`, () => {
-    if (!SEMANTIC_VAR_RE.test(text)) return;
+    if (!reachesSemanticHue(text)) return;
     if (SEMANTIC_PATH_EXCEPTIONS.has(path)) return;
     const widgetMatch = WIDGET_STYLESHEET_RE.exec(path);
     expect(widgetMatch).not.toBeNull();
@@ -609,20 +564,6 @@ test("the RailRow.module.css semantic-var exception is scoped to its exact path,
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/RailRow.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/RailRow.module.css")).toBe(false);
-});
-
-test("the activitybar.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("shell/activitybar/activitybar.module.css")).toBe(true);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/activitybar.module.css")).toBe(false);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/activitybar.module.css")).toBe(false);
-});
-
-test("the askdock.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/composer/askDock/askdock.module.css")).toBe(true);
-  // A same-named decoy anywhere else must still go through the normal
-  // widget-allowlist check, exactly like the dockview-theme.css precedent.
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/askdock.module.css")).toBe(false);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("askdock.module.css")).toBe(false);
 });
 
 test("the currentwork.module.css semantic-var exception is scoped to its exact path", () => {
@@ -642,14 +583,6 @@ test("the taskcardmockups.module.css semantic-var exception is scoped to its exa
   // normal widget-allowlist check, exactly like every other entry.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("taskcardmockups.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/taskcardmockups.module.css")).toBe(false);
-});
-
-test("the sandboxescalation.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/transcript/tools/sandboxescalation.module.css")).toBe(true);
-  // A same-named decoy anywhere else must still go through the normal
-  // widget-allowlist check, exactly like the dockview-theme.css precedent.
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/sandboxescalation.module.css")).toBe(false);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("sandboxescalation.module.css")).toBe(false);
 });
 
 test("the entityref.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {

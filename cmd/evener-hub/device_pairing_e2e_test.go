@@ -15,7 +15,7 @@ func TestDevicePairingBrowserRoundTrip(t *testing.T) {
 	if os.Getenv("EVENER_PAIRING_E2E") != "1" {
 		t.Skip("set EVENER_PAIRING_E2E=1 for browser/native interoperability")
 	}
-	web := NewWebServer(hubcore.WebConfig{AuthToken: "synthetic-pairing-token", MobileBaseURL: "http://100.64.1.2:9180"})
+	web := NewWebServer(hubcore.WebConfig{AuthToken: "synthetic-pairing-token", HubAddr: "100.64.1.2:9180"})
 	server := httptest.NewServer(web.Handler())
 	defer server.Close()
 	cmd := exec.Command("node", "scripts/check-device-pairing-browser.mjs")

@@ -23,26 +23,18 @@ test("renders its children twice: once under data-theme=dark, once under data-th
   expect(darkWrapper).toBeNull();
 });
 
-test("labels the dark and light panes", () => {
-  render(
-    <ThemeFlip>
-      <span>content</span>
-    </ThemeFlip>,
-  );
-  expect(screen.getByText("Dark")).toBeTruthy();
-  expect(screen.getByText("Light")).toBeTruthy();
-});
-
 test("explicitly scopes both panes when the gallery is nested under a light root", () => {
   document.documentElement.dataset.theme = "light";
   render(
     <ThemeFlip>
-      <span>content</span>
+      <span data-testid="content" />
     </ThemeFlip>,
   );
 
-  expect(screen.getByText("Dark").parentElement?.getAttribute("data-theme")).toBe("dark");
-  expect(screen.getByText("Light").parentElement?.getAttribute("data-theme")).toBe("light");
+  const scopes = screen
+    .getAllByTestId("content")
+    .map((content) => content.closest("[data-theme]")?.getAttribute("data-theme"));
+  expect(scopes).toEqual(["dark", "light"]);
 });
 
 // A themed wrapper must reset ink alongside surface: a pane that flips the

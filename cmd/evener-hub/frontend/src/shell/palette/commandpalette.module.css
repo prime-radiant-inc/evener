@@ -89,12 +89,6 @@
 
 .sectionHeader {
   padding: var(--space-2) var(--space-2) var(--space-1);
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }
 
 .row {
@@ -129,6 +123,20 @@
  * keyboard reach: choosing it prints its reason in the error strip, which is
  * the whole point of showing it instead of hiding it. */
 .rowUnavailable {
+  color: var(--ink-low);
+}
+
+/* A nested subagent row: indented into its group so the top-level session's
+ * row reads as the family's head (the tree's one-level --space-2 indent, one
+ * step wider so the glyph lands clear of the anchor's dot column). */
+.rowNested {
+  padding-left: calc(var(--space-2) + var(--space-4));
+}
+
+/* An indirect anchor: the session itself did not match — its subagents did —
+ * so it recedes like an unavailable row while staying a normal, activatable
+ * row that opens the session. */
+.rowIndirect {
   color: var(--ink-low);
 }
 
@@ -192,40 +200,6 @@
   border-radius: var(--radius-control);
 }
 
-.helpRow {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-3);
+.help {
   padding: var(--space-1) var(--space-2);
-}
-
-.helpKeys {
-  flex: none;
-  min-width: 5rem;
-  color: var(--ink-hi);
-  font-size: var(--font-size-caption);
-}
-
-.helpDesc {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
-.empty {
-  padding: var(--space-4) var(--space-2);
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-}
-
-.emptyTitle {
-  color: var(--ink-hi);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  margin: 0 0 var(--space-1);
-}
-
-.emptyBody {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  margin: 0;
 }

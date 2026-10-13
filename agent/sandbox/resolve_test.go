@@ -430,6 +430,34 @@ func TestCacheRootsFollowXDGCacheHome(t *testing.T) {
 	}
 }
 
+// npm and cargo move their caches with $npm_config_cache and $CARGO_HOME. A host
+// that sets them keeps the real cache outside every overlay root unless the probe
+// resolves them the way it resolves Go's, so a cold build that writes the real
+// cache fails read-only (#4225). The $HOME defaults stay served alongside, for
+// tools that write them whatever the environment says, as ~/.cache stays beside
+// $XDG_CACHE_HOME. A relative value, which npm and cargo resolve against their
+// own cwd, contributes nothing — the go command's rule for its cache settings.
+func TestCacheRootsFollowNpmAndCargoSettings(t *testing.T) {
+	home := "/home/tester"
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, CargoHome: "/custom/cargo", NpmConfigCache: "/custom/npm"}, "/work/project")
+	for _, want := range []string{"/custom/cargo", "/custom/npm", filepath.Join(home, ".cargo"), filepath.Join(home, ".npm")} {
+		if !slices.Contains(roots, want) {
+			t.Errorf("cache roots %v must include %q", roots, want)
+		}
+	}
+	// Control: unset values leave the $HOME defaults as the only npm/cargo roots.
+	plain := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home}, "/work/project")
+	for _, want := range []string{filepath.Join(home, ".cargo"), filepath.Join(home, ".npm")} {
+		if !slices.Contains(plain, want) {
+			t.Errorf("cache roots %v must include the $HOME default %q", plain, want)
+		}
+	}
+	rel := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, CargoHome: "relative/cargo", NpmConfigCache: "relative/npm"}, "/work/project")
+	if !slices.Equal(rel, plain) {
+		t.Errorf("a relative npm_config_cache or CARGO_HOME must add no cache root: %v, want %v", rel, plain)
+	}
+}
+
 // An overlay over a directory that holds the worktree would hide the real
 // worktree behind a discarded upper layer, so edits would vanish at session end.
 // A cache root at, above or inside the worktree (or at or above home, or a
@@ -441,6 +469,8 @@ func TestCacheRootsNeverCoverTheWorktree(t *testing.T) {
 		{Home: "/home/tester", GoCache: worktree},
 		{Home: "/home/tester", GoPath: "/home/tester/src/project/..", GoModCache: "/home/tester"},
 		{Home: "/home/tester", XDGCacheHome: "/home/tester/src"},
+		{Home: "/home/tester", CargoHome: "/home/tester/src"},
+		{Home: "/home/tester", NpmConfigCache: worktree + "/.npm"},
 		// A cache inside the worktree is workspace the session writes for good;
 		// an overlay there would discard those writes too.
 		{Home: "/home/tester", GoModCache: worktree + "/.cache/mod"},

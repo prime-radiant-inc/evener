@@ -589,7 +589,7 @@ test("multi-line whiteboards render with their line structure", () => {
 test("ended-empty session shows inert text with no editor", () => {
   openPanel(testModel({ status: { type: "notLoaded" } }));
   expect(screen.getByTestId("shared-notes-section")).toBeTruthy();
-  expect(screen.getByTestId("shared-notes-empty")).toBeTruthy();
+  expect(screen.getAllByTestId("empty-state")).toHaveLength(1);
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
 });
 
@@ -599,7 +599,7 @@ test("a whitespace-only note reads as empty in the read-only body, matching the 
   // must agree, or expanding an "Add a note…" bar shows blank paragraphs.
   expect(screen.queryByTestId("shared-notes-human")).toBeNull();
   expect(screen.queryByTestId("shared-notes-agent")).toBeNull();
-  expect(screen.getByTestId("shared-notes-empty")).toBeTruthy();
+  expect(screen.getAllByTestId("empty-state")).toHaveLength(1);
 });
 
 // --- rule 3: live shows the always-visible editor -----------------------------

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { friendlyErrorMessage, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
 import type { LaunchConfigLayer } from "../../types.gen";
 import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS } from "./launchLayer";
@@ -26,11 +27,11 @@ describe("store shape", () => {
     expect(first.store.getState().launchLayer).toEqual(PLUGIN_DIRS);
     expect(first.store.getState().launchLayerError).toBeNull();
     expect(second.store.getState().launchLayer).toBeNull();
-    expect(second.store.getState().launchLayerError).toBe("boom");
+    expect(second.store.getState().launchLayerError).toBe(friendlyErrorMessage(new Error("boom")));
 
     first.store.reset();
     expect(first.store.getState().launchLayer).toBeNull();
-    expect(second.store.getState().launchLayerError).toBe("boom");
+    expect(second.store.getState().launchLayerError).toBe(friendlyErrorMessage(new Error("boom")));
   });
 });
 
@@ -55,7 +56,7 @@ describe("fetches never throw, mutations reject", () => {
 
     fake.on(GET, failing("boom"));
     await expect(store.getState().fetchLaunchLayer()).resolves.toBeUndefined();
-    expect(store.getState().launchLayerError).toBe("boom");
+    expect(store.getState().launchLayerError).toBe(friendlyErrorMessage(new Error("boom")));
     expect(store.getState().launchLayer).toEqual(PLUGIN_DIRS);
     expect(store.getState().launchLayerLoading).toBe(false);
   });
@@ -64,7 +65,7 @@ describe("fetches never throw, mutations reject", () => {
     const { fake, store } = storeWithFake();
     fake.on(GET, failing("boom"));
     await store.getState().fetchLaunchLayer();
-    expect(store.getState().launchLayerError).toBe("boom");
+    expect(store.getState().launchLayerError).toBe(friendlyErrorMessage(new Error("boom")));
 
     fake.on(GET, () => PLUGIN_DIRS);
     await store.getState().fetchLaunchLayer();
@@ -146,7 +147,7 @@ describe("layer ordering", () => {
     const { fake, store } = storeWithFake();
     fake.on(GET, failing("boom"));
     await store.getState().fetchLaunchLayer();
-    expect(store.getState().launchLayerError).toBe("boom");
+    expect(store.getState().launchLayerError).toBe(friendlyErrorMessage(new Error("boom")));
 
     fake.on(SET, () => ({ effective: {}, layers: {}, provenance: {} }));
     await store.getState().setLaunchLayer({ pluginDirs: ["/written"] });
@@ -184,4 +185,19 @@ describe("notifications", () => {
     expect(store.getState().launchLayer).toEqual({ pluginDirs: ["/opt/plugins", "/opt/more"] });
     expect(fake.calls.filter((c) => c.method === GET)).toHaveLength(2);
   });
+});
+
+// The read error is translated while it still has its type: a hub's own
+// WireError explanation survives, and a client-side failure gets the shared
+// friendly form. A host translating the stored text would lose the detail.
+test.each([
+  ["a hub-reported WireError", new WireError("launch.toml is being rewritten", -32000)],
+  ["a client-side Error", new Error("AppwireClient internal detail")],
+])("a failed read stores %s in its friendly form", async (_label, err) => {
+  const { fake, store } = storeWithFake();
+  fake.on(GET, () => {
+    throw err;
+  });
+  await store.getState().fetchLaunchLayer();
+  expect(store.getState().launchLayerError).toBe(friendlyErrorMessage(err));
 });

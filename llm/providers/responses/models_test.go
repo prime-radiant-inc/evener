@@ -70,3 +70,35 @@ func TestListModelsPlatformAndCodexShapes(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestListModelsPlatformVisionCapability pins that a platform /models row's
+// advertised modality facts reach the row: capabilities.vision yields image
+// input, and architecture.input_modalities wins when both are present. Without
+// this a Responses-recorded gateway that publishes vision under capabilities
+// resolves image-blind (#4508).
+func TestListModelsPlatformVisionCapability(t *testing.T) {
+	capsOf := func(facts string) registry.Caps {
+		t.Helper()
+		srv, _ := server(t, 200, `{"data":[{"id":"gateway-model",`+facts+`}]}`)
+		rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].ID != "gateway-model" {
+			t.Fatalf("rows = %+v", rows)
+		}
+		return rows[0].Caps
+	}
+	if c := capsOf(`"capabilities":{"vision":true}`); !c.AcceptsModality("image") {
+		t.Fatalf("capabilities.vision must advertise image input: %+v", c.InputModalities)
+	}
+	if c := capsOf(`"capabilities":{"vision":false}`); c.AcceptsModality("image") {
+		t.Fatalf("vision:false must not advertise image input: %+v", c.InputModalities)
+	}
+	if c := capsOf(`"context_window":8192`); c.AcceptsModality("image") {
+		t.Fatalf("a row with no modality facts must not advertise image input: %+v", c.InputModalities)
+	}
+	if c := capsOf(`"architecture":{"input_modalities":["text"]},"capabilities":{"vision":true}`); c.AcceptsModality("image") || len(c.InputModalities) != 1 {
+		t.Fatalf("architecture.input_modalities must win over capabilities.vision: %+v", c.InputModalities)
+	}
+}

@@ -2,7 +2,7 @@ import type { AppwireClientLike, HostEntry, HostMutationPair, HostRow } from "@e
 import {
   committedMutationRow,
   createHostMutations,
-  errorText,
+  friendlyErrorMessage,
   HOST_GATE_TIMEOUT_MS,
   HostMutationOutcomeError,
 } from "@evener/appwire-client";
@@ -571,7 +571,10 @@ export const hostsStore = create<HostsStoreState>((set) => ({
       // failure on a connection that is gone says nothing about this one.
       if (generation > latestPublishedGeneration && connectionStore.getState().client === client) {
         latestPublishedGeneration = generation;
-        set({ load: { phase: "error", message: errorText(err) } });
+        // Translated here, while the error still has its type: a hub's own
+        // WireError explanation survives, which a later translation of the
+        // stored text could not tell apart from client wiring detail.
+        set({ load: { phase: "error", message: friendlyErrorMessage(err) } });
       }
     } finally {
       endListRequest();

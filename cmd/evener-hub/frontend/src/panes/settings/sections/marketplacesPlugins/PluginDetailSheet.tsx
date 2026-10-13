@@ -10,7 +10,16 @@ import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { useEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
-import { Button, ConfirmDialog, Sheet, Switch, useFocusRehome, useToasts } from "../../../../widgets";
+import {
+  Button,
+  ConfirmDialog,
+  PropertyList,
+  type PropertyListRow,
+  Sheet,
+  Switch,
+  useFocusRehome,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
@@ -20,11 +29,7 @@ const CLASS = {
   sheetDesc: requireClass(styles.sheetDesc, "marketplacesPlugins.module.css", "sheetDesc"),
   chipRow: requireClass(styles.chipRow, "marketplacesPlugins.module.css", "chipRow"),
   metaList: requireClass(styles.metaList, "marketplacesPlugins.module.css", "metaList"),
-  metaRow: requireClass(styles.metaRow, "marketplacesPlugins.module.css", "metaRow"),
-  metaLabel: requireClass(styles.metaLabel, "marketplacesPlugins.module.css", "metaLabel"),
-  metaValue: requireClass(styles.metaValue, "marketplacesPlugins.module.css", "metaValue"),
   switchRows: requireClass(styles.switchRows, "marketplacesPlugins.module.css", "switchRows"),
-  rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
   focusRoot: requireClass(styles.focusRoot, "marketplacesPlugins.module.css", "focusRoot"),
 };
 
@@ -156,22 +161,17 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
             {chips.length > 0 && <div className={CLASS.chipRow}>{chips}</div>}
             {description !== undefined && <p className={CLASS.sheetDesc}>{description}</p>}
             <div className={CLASS.metaList}>
-              <div className={CLASS.metaRow}>
-                <span className={CLASS.metaLabel}>Version</span>
-                <span className={`${CLASS.metaValue} ${CLASS.rowMeta}`}>{`v${entry.version || "unknown"}`}</span>
-              </div>
-              <div className={CLASS.metaRow}>
-                <span className={CLASS.metaLabel}>Marketplace</span>
-                <span className={CLASS.metaValue}>{entry.marketplace}</span>
-              </div>
-              {marketplaceEntry !== undefined && (
-                <div className={CLASS.metaRow}>
-                  <span className={CLASS.metaLabel}>Source</span>
-                  <span className={`${CLASS.metaValue} ${CLASS.rowMeta}`}>
-                    {marketplaceSourceLabel(marketplaceEntry.source)}
-                  </span>
-                </div>
-              )}
+              <PropertyList
+                rows={
+                  [
+                    { label: "Version", value: `v${entry.version || "unknown"}`, mono: true },
+                    { label: "Marketplace", value: entry.marketplace },
+                    ...(marketplaceEntry !== undefined
+                      ? [{ label: "Source", value: marketplaceSourceLabel(marketplaceEntry.source), mono: true }]
+                      : []),
+                  ] satisfies PropertyListRow[]
+                }
+              />
             </div>
             <div className={CLASS.switchRows}>
               <Switch

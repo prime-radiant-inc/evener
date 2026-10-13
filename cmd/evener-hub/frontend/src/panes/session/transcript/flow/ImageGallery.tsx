@@ -24,7 +24,7 @@
 
 import type { ItemImage } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
-import { Button, Dialog } from "../../../../widgets";
+import { Button, Dialog, ZoomableMedia } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./imagegallery.module.css";
 
@@ -133,40 +133,40 @@ export function ImageGallery({ images: supplied, size }: ImageGalleryProps) {
           // on its own; +i here is belt-and-suspenders against a literal
           // duplicate (two entries hashing the same, which would collide as
           // a bare-src key), not standing in for a missing real id.
-          <button
+          <div
             // biome-ignore lint/suspicious/noArrayIndexKey: src is already content-stable, see above
             key={image.src + i}
-            type="button"
-            data-testid="image-gallery-thumb"
             className={size === "large" ? `${CLASS.thumb} ${CLASS.thumbLarge}` : CLASS.thumb}
-            onClick={() => setOpenIndex(i)}
           >
-            <img
-              className={size === "large" ? `${CLASS.thumbImg} ${CLASS.thumbImgLarge}` : CLASS.thumbImg}
-              src={image.src}
-              alt={altFor(i, total)}
-              // Decode-scheduling only: thumbnails below the fold must not
-              // force the browser to fetch/decode full bytes up front. The
-              // lightbox img below stays eager - opening it is an explicit
-              // user request for the full image. src/onError/data-URI
-              // handling is unchanged.
-              loading="lazy"
-              decoding="async"
-              // Reserve the 96px box before CSS/decode so lazy thumbnails
-              // don't shift layout on load. Only the default cover-crop
-              // thumbnails have a fixed box - size="large" preserves each
-              // image's own aspect ratio (unknown up front), so no attrs
-              // there (React omits undefined attributes).
-              width={size === "large" ? undefined : 96}
-              height={size === "large" ? undefined : 96}
-              onError={() => markUnloadable(image.src)}
-            />
-            {caption !== undefined && (
-              <span className={CLASS.caption} data-testid="image-gallery-caption">
-                {caption}
-              </span>
-            )}
-          </button>
+            {/* No label: the thumbnail's alt text and caption name it. */}
+            <ZoomableMedia data-testid="image-gallery-thumb" onOpen={() => setOpenIndex(i)} fill>
+              <img
+                className={size === "large" ? `${CLASS.thumbImg} ${CLASS.thumbImgLarge}` : CLASS.thumbImg}
+                src={image.src}
+                alt={altFor(i, total)}
+                // Decode-scheduling only: thumbnails below the fold must not
+                // force the browser to fetch/decode full bytes up front. The
+                // lightbox img below stays eager - opening it is an explicit
+                // user request for the full image. src/onError/data-URI
+                // handling is unchanged.
+                loading="lazy"
+                decoding="async"
+                // Reserve the 96px box before CSS/decode so lazy thumbnails
+                // don't shift layout on load. Only the default cover-crop
+                // thumbnails have a fixed box - size="large" preserves each
+                // image's own aspect ratio (unknown up front), so no attrs
+                // there (React omits undefined attributes).
+                width={size === "large" ? undefined : 96}
+                height={size === "large" ? undefined : 96}
+                onError={() => markUnloadable(image.src)}
+              />
+              {caption !== undefined && (
+                <span className={CLASS.caption} data-testid="image-gallery-caption">
+                  {caption}
+                </span>
+              )}
+            </ZoomableMedia>
+          </div>
         );
       })}
 

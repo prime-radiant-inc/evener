@@ -602,7 +602,7 @@ test("a deletion fence after hydration replaces a cached transcript with the del
       .catch(() => undefined);
   });
 
-  await waitFor(() => expect(screen.getByText(/this session was deleted/i)).toBeTruthy());
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["deleted"]));
   expect(screen.queryByText("Soon gone")).toBeNull();
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
   expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);

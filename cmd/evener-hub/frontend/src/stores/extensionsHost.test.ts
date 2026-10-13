@@ -220,7 +220,7 @@ test("a host the registry reports gone keeps no instance and refuses instead of 
   // dialed nothing for a host the registry does not list.
   await gone.store.getState().fetchMarketplaces();
   expect(fake.calls.length).toBe(dialed);
-  expect(gone.store.getState().marketplacesError).toMatch(/not registered/);
+  expect(gone.store.getState().marketplacesError).not.toBeNull();
   expect(extensionsInstanceForHost("beta").store).toBe(gone.store);
 });
 

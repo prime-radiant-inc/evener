@@ -441,11 +441,14 @@ describe("ActivityTree", () => {
     const row = screen.getByRole("treeitem", { name: "Bounded audit" });
     expect(row.textContent).toContain("exhausted");
     expect(row.getAttribute("aria-description")).toBe("exhausted");
-    expect(within(row).getByText("⌘").getAttribute("data-state")).toBe("failed");
-    glyphName(row, within(row).getByText("⌘"));
+    // The settled failure shows the danger diamond the dot vocabulary gives
+    // terminal failures; the description keeps the outcome word.
+    const dot = row.querySelector("[data-state]");
+    expect(dot?.getAttribute("data-state")).toBe("failed");
+    expect(dot?.getAttribute("data-shape")).toBe("diamond");
   });
 
-  test("active child gives a terminal stable delegate a working glyph", () => {
+  test("an active child keeps a terminal stable delegate live without reviving its dot", () => {
     const tree = {
       revision: 10,
       root: {
@@ -494,12 +497,13 @@ describe("ActivityTree", () => {
 
     render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "Stable child work" });
-    expect(within(row).getByText("⌘").getAttribute("data-state")).toBe("working");
-    glyphName(row, within(row).getByText("⌘"));
+    // Terminal-done retires the dot even while the child's activity keeps the
+    // row live: the child's own row carries the working dot below.
+    expect(row.querySelector("[data-state]")).toBeNull();
     expect(row.textContent).toContain("completed");
   });
 
-  test("renders one dense row per live entry with kind glyph and meta", () => {
+  test("renders one dense row per live entry with its leading mark and meta", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
@@ -509,7 +513,7 @@ describe("ActivityTree", () => {
     expect(metaText(shellRow)).toBe("running · 12s");
 
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
-    expect(within(delegateRow).getByText("⌘")).toBeTruthy();
+    expect(delegateRow.querySelector("[data-state]")?.getAttribute("data-state")).toBe("fresh");
     expect(delegateRow.textContent).toContain("↑41K ↓6K · 12s");
 
     // One row per live entry plus the fold: sessions never become rows.
@@ -609,14 +613,15 @@ describe("ActivityTree", () => {
     glyphName(failedRow, kindGlyph);
   });
 
-  test("a live delegate row shows its intent while aria and glyph keep the status", () => {
+  test("a live delegate row shows its intent while aria and the dot keep the state", () => {
     const tree = intentDelegateTree({}, { active: 1, failed: 0, completed: 0, complete: false });
     render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "inspect" });
     expect(metaText(row)).toBe("Reading the board.");
     expect(row.getAttribute("aria-description")).toBe("running");
-    const kindGlyph = within(row).getByText("⌘");
-    expect(kindGlyph.getAttribute("aria-label")).toBe("Working");
+    // The dot is unlabeled in the tree - the row's description carries the
+    // status word - so the fresh state is the dot's to speak.
+    expect(row.querySelector("[data-state]")?.getAttribute("data-state")).toBe("fresh");
   });
 
   test("a live delegate row keeps its intent beside token usage", () => {
@@ -627,6 +632,68 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "inspect" });
     expect(metaText(row)).toBe("Reading the board. · ↑41.2K ↓6.1K");
+  });
+
+  test("a fresh delegate row leads with the working dot", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const tree = intentDelegateTree(
+      { latestActivityAt: "2026-08-05T15:00:08Z" },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    const dot = row.querySelector("[data-state]");
+    expect(dot?.getAttribute("data-state")).toBe("fresh");
+    expect(dot?.getAttribute("data-shape")).toBe("dot");
+    vi.useRealTimers();
+  });
+
+  test("a quiet delegate row dims its dot past the threshold and the tick flips it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const tree = intentDelegateTree(
+      { latestActivityAt: "2026-08-05T15:00:08Z" },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    expect(row.querySelector("[data-state]")?.getAttribute("data-state")).toBe("fresh");
+    // Four seconds of silence already elapsed; crossing twenty flips it.
+    act(() => {
+      vi.advanceTimersByTime(21_000);
+    });
+    expect(row.querySelector("[data-state]")?.getAttribute("data-state")).toBe("quiet");
+    vi.useRealTimers();
+  });
+
+  test("a live failed delegate row shows the failure diamond", () => {
+    const tree = intentDelegateTree(
+      { latestActivityAt: "2026-08-05T15:00:08Z", status: "failed", lifecycle: "active" },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    expect(row.querySelector("[data-state]")?.getAttribute("data-state")).toBe("failed");
+    expect(row.querySelector("[data-state]")?.getAttribute("data-shape")).toBe("diamond");
+  });
+
+  test("a settled delegate row shows no dot", () => {
+    const tree = intentDelegateTree(
+      {
+        delegateId: "dlg_done",
+        lifecycle: "idle",
+        phase: "done",
+        status: "completed",
+        terminal: true,
+        mandate: undefined,
+        runStartedAt: undefined,
+      },
+      { active: 0, failed: 0, completed: 1, complete: true },
+    );
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    expect(row.querySelector("[data-state]")).toBeNull();
   });
 
   test("a terminal delegate row keeps its status word over a stale intent", () => {
@@ -1288,7 +1355,12 @@ test.each([subagentOutcomesDelegatesResponse, subagentResumedDelegatesResponse])
     expect(row.getAttribute("aria-expanded")).toBe("false");
     expect(metaText(row)).toBe("30s");
     expect(row.getAttribute("aria-description")).toBe("failed");
-    expect(within(row).getByRole("img", { name: "Failed" }).className).not.toContain("kindDanger");
+    // The settled failure shows the danger diamond the dot vocabulary gives
+    // terminal failures - the red dot a failed subagent never had before.
+    const dot = row.querySelector("[data-state]");
+    expect(dot?.getAttribute("data-state")).toBe("failed");
+    expect(dot?.getAttribute("data-shape")).toBe("diamond");
+    expect(dot?.className).toContain("danger");
     expect(row.querySelector("[class*=denseFailed]")).toBeNull();
     fireEvent.click(within(row).getByRole("button", { name: "Show details for failed-delegate" }));
     expect(screen.getByText("Update the lockfile")).toBeTruthy();
@@ -1302,7 +1374,7 @@ test.each([subagentOutcomesDelegatesResponse, subagentResumedDelegatesResponse])
 );
 
 test.each(["blocked", "needs-you"])(
-  "a recorded failed ancestor stays visible and live attention outranks settled failure: %s",
+  "a live child keeps a recorded failed ancestor visible and carries the attention: %s",
   (status) => {
     vi.restoreAllMocks();
     const recorded = subagentOutcomesDelegatesResponse();
@@ -1332,7 +1404,12 @@ test.each(["blocked", "needs-you"])(
     const child = screen.getByRole("treeitem", { name: "Current attention" });
     expect(parent.getAttribute("aria-level")).toBe("1");
     expect(child.getAttribute("aria-level")).toBe("2");
-    expect(within(parent).getByRole("img", { name: "Working" }).className).toContain("kindAlive");
+    // The ancestor's dot reads its own settled outcome, not the child's live
+    // work: the danger diamond stays on the ancestor, the child's own row
+    // carries the attention below.
+    const parentDot = parent.querySelector("[data-state]");
+    expect(parentDot?.getAttribute("data-state")).toBe("failed");
+    expect(parentDot?.getAttribute("data-shape")).toBe("diamond");
     expect(parent.textContent).toContain("failed");
     expect(within(child).getByRole("img", { name: "Needs you" }).className).toContain("kindAttention");
     expect(screen.queryByRole("treeitem", { name: /inactive/ })).toBeNull();

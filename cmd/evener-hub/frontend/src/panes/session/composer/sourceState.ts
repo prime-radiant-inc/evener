@@ -379,11 +379,28 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     });
   }
   async function ensureDeps(): Promise<void> {
-    if (!repository) repository = getBrowserDraftRepository();
+    if (!repository) {
+      try {
+        repository = getBrowserDraftRepository();
+      } catch {
+        // No IndexedDB at all: a send must still go out when local
+        // persistence is unavailable (#4194), so the source keeps running
+        // without durable drafts. ready() already treats a missing repository
+        // as nothing to hydrate, and every consumer optional-chains it.
+      }
+    }
     if (!draftKey) draftKey = browserDraftKey(ref);
     // A retired source must not start the shared mutation runtime: auto-init
     // may still be in flight when the source disposes.
-    if (!outbox && !disposed) outbox = await getComposerMutationStorage();
+    if (!outbox && !disposed) {
+      try {
+        outbox = await getComposerMutationStorage();
+      } catch {
+        // The same no-storage wedge: recovery bookkeeping stays unavailable
+        // (its consumers optional-chain the outbox) rather than failing the
+        // submit.
+      }
+    }
   }
   async function drainAccepted(): Promise<void> {
     const r = repository;

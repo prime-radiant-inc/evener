@@ -10,7 +10,7 @@
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
 // session's Subagents list holds the detail.
 import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
-import { quietState, taskSettledCount } from "@evener/appwire-client";
+import { DELEGATE_QUIET_AFTER_MS, quietState, taskSettledCount } from "@evener/appwire-client";
 import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { compactDuration } from "../session/format";
 
@@ -137,10 +137,14 @@ export function rowClassifier(
  * (working, or reporting active) reads the hub alone: a turn end the hub
  * decides (with this phone's pending marks applied), or motion after its seen
  * mark, never this device's own markers. A resting one also counts a turn the
- * device's fallback hasn't seen. */
+ * device's fallback hasn't seen. An archived session gets no dot at all
+ * (#4164): a pin can keep one on the Board while it still runs, and the rail
+ * files it as archived, so nothing new rides on it (#4199). */
 function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boolean, moved: boolean): boolean {
 	// An offline row is shutDown (boardState).
 	if (!row.live || row.dormant || state === "shutDown") return false;
+	// A row the rail files as archived is new to no one (#4164, #4199).
+	if (row.archived) return false;
 	if (state === "working" || row.state === "active") return (hubTime(row.turn_ended_at) !== null && !seen) || moved;
 	return !seen || moved;
 }
@@ -328,11 +332,11 @@ export function waitingOnSubagents(count: number): string {
 }
 
 /** No update for this long reads "Quiet" in a session's tray, on a
- * subagent's row and in the Activity list: the web transcript's threshold
- * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts).
- * The tray also waits this long before showing a first model retry. The
- * Board's rows read the package's quietState instead. */
-export const AGENT_QUIET_AFTER_MS = 20_000;
+ * subagent's row and in the Activity list, and dims a subagent row's dot:
+ * the shared client's quiet threshold, so every surface flips at the same
+ * instant. The tray also waits this long before showing a first model retry.
+ * The Board's rows read the package's quietState instead. */
+export const AGENT_QUIET_AFTER_MS = DELEGATE_QUIET_AFTER_MS;
 
 /** The why line of a running agent with nothing more to say: Quiet once it
  * has gone AGENT_QUIET_AFTER_MS without an update, else Working. */

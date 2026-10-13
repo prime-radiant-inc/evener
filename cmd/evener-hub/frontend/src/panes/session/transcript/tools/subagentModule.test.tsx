@@ -714,7 +714,7 @@ test("an expanded card with no child activity yet says so instead of rendering a
   const row = screen.getByTestId("subagent-row");
   await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
   const quotes = await within(row).findByTestId("subagent-quotes");
-  expect(within(quotes).getByTestId("subagent-quotes-empty").dataset.reason).toBe("unavailable");
+  expect(within(quotes).getByTestId("empty-state").dataset.reason).toBe("unavailable");
   expect(within(quotes).queryAllByRole("listitem")).toHaveLength(0);
 });
 

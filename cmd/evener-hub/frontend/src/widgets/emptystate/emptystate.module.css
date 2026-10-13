@@ -7,7 +7,7 @@
   text-align: center;
 }
 
-.title {
+.emptyTitle {
   margin: 0;
   color: var(--ink-hi);
   font-family: var(--font-prose);
@@ -31,7 +31,13 @@
   line-height: var(--line-height-body);
 }
 
+/* One action or several: a fragment of buttons sits in one row that wraps
+ * on a narrow pane, centered under a centered block. */
 .action {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
   margin-top: var(--space-2);
 }
 
@@ -48,7 +54,7 @@
   text-align: start;
 }
 
-.compact .title {
+.compact .emptyTitle {
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -65,5 +71,6 @@
 }
 
 .compact .action {
+  justify-content: flex-start;
   margin-top: 0;
 }

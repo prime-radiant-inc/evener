@@ -427,8 +427,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
-		if len(s.history) > len(historyTurns) {
-			appended = append(appended, s.history[len(historyTurns):]...)
+		// Measure against the snapshot this request projected (presentedTurns),
+		// not the round snapshot (historyTurns): a leased delegate round
+		// projects the controller's later snapshot, which can already hold the
+		// turns that landed in between and would otherwise be appended again.
+		if len(s.history) > len(presentedTurns) {
+			appended = append(appended, s.history[len(presentedTurns):]...)
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
@@ -1064,6 +1068,15 @@ func (s *Session) providerWebSearchEnabled(profile *provider.Profile) bool {
 		return sandbox.ProviderWebAllowedUnderNetOff(profile.ProviderID())
 	}
 	return true
+}
+
+// protocolInjectsNativeWebSearch reports whether the wire protocol adds its
+// provider's own web_search tool to a request with req.WebSearch set. The
+// anthropic and OpenAI Responses builders do (llm/providers/anthropic and
+// llm/providers/responses); chat completions injects nothing, so the name stays
+// free there.
+func protocolInjectsNativeWebSearch(protocol string) bool {
+	return protocol == registry.ProtocolAnthropic || protocol == registry.ProtocolOpenAIResponses
 }
 
 // buildModelRequest assembles the llm.Request for one round: it lays out the

@@ -2,11 +2,15 @@ import type { KeybindingsOverrides, KeybindingsRule } from "@evener/appwire-clie
 import {
   ACTIONS,
   CHARACTER_KEY_TRIGGER_BINDING_ID,
+  ConnectionClosedError,
   DEFAULT_BINDINGS,
+  friendlyErrorMessage,
   parseChord,
+  RequestTimeoutError,
   registerDefaultBindings,
   SETTINGS_SCOPE,
   serializeChord,
+  WireError,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -198,7 +202,7 @@ test("a hub load failure surfaces the error honestly and keeps the defaults visi
   await wireClient(client, true);
   render(<KeybindingsSection />);
 
-  expect(screen.getByRole("alert").textContent).toContain("socket went away");
+  expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(new Error("socket went away")));
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
 });
 
@@ -312,7 +316,7 @@ test("a refresh error leaves the section read-only with a truthful status", asyn
   render(<KeybindingsSection />);
 
   expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
-  expect(screen.getByRole("alert").textContent).toContain("socket went away");
+  expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(new Error("socket went away")));
   expect(readOnlyReason()).toBe("load-failed");
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
 });
@@ -945,7 +949,7 @@ test("a failed Unbind surfaces the hub error inline on the row", async () => {
   const client = new FakeClient("ready");
   client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
   client.on("evener/settings/keybindings/patch", () => {
-    throw new Error("socket went away");
+    throw new WireError("socket went away", -32000);
   });
   await wireClient(client, true);
   render(<KeybindingsSection />);
@@ -957,6 +961,27 @@ test("a failed Unbind surfaces the hub error inline on the row", async () => {
   expect(within(row).getByText("K")).toBeTruthy();
 });
 
+// The client's own write failures (a timeout, a lost connection) show their
+// friendly form on the row, never the client's wiring text.
+test.each([
+  ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+  ["the client's lost socket", new Error("AppwireClient: socket closed (code 1006)")],
+])("a failed Unbind from %s shows its friendly form on the row", async (_name, err) => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  client.on("evener/settings/keybindings/patch", () => {
+    throw err;
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
+
+  const row = rowFor("Open the command palette");
+  await waitFor(() => expect(within(row).getByRole("alert").textContent).toContain(friendlyErrorMessage(err)));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
+});
+
 test("a confirmed hub payload clears a stale row error - and leaves an unrelated capture alone", async () => {
   // The hub rejects writes while it recovers; the failed PATCH never
   // confirmed, so the GET stays at revision 1 and the refresh re-confirms
@@ -966,7 +991,7 @@ test("a confirmed hub payload clears a stale row error - and leaves an unrelated
   const client = new FakeClient("ready");
   client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
   client.on("evener/settings/keybindings/patch", (params) => {
-    if (failPatch) throw new Error("state unavailable");
+    if (failPatch) throw new WireError("state unavailable", -32000);
     return overridesPayload(2, params.config.rules);
   });
   await wireClient(client, true);
@@ -1360,7 +1385,9 @@ test("a failed patch locks editing and shows a Retry that re-drives the refresh 
   // A transient server error: the PATCH rejects on the live generation, so
   // hubError surfaces and editing locks behind the round-3 gate.
   await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
-  await waitFor(() => expect(keybindingsStore.getState().hubError).toBe("hub exploded"));
+  await waitFor(() =>
+    expect(keybindingsStore.getState().hubError).toBe(friendlyErrorMessage(new Error("hub exploded"))),
+  );
   expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
   const retry = screen.getByRole("button", { name: "Retry" });
 
@@ -1466,4 +1493,23 @@ test("Retry is disabled while a refresh is in flight through the rollback window
   resolveGet?.(overridesPayload(1, []));
   await waitFor(() => expect(keybindingsStore.getState().hubError).toBeNull());
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+});
+
+// The store keeps its own failure messages, and gives a hub WireError and the
+// client's connection-state failure their friendly form, so the alert never
+// shows the client's wiring text.
+test.each([
+  ["a hub-reported WireError", new WireError("keybindings.toml is being rewritten", -32000)],
+  ["the client's connection-state failure", new ConnectionClosedError("AppwireClient: closed")],
+  ["the client's request timeout", new RequestTimeoutError('AppwireClient: "a method" timed out after 1ms')],
+])("a hub load failure from %s shows its friendly form", async (_name, err) => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => {
+    throw err;
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(err));
+  expect(screen.queryByText(/AppwireClient/)).toBeNull();
 });

@@ -80,12 +80,13 @@ test("shows the hub version (and commit) once connected and loaded", async () =>
 
 test("omits version/commit gracefully, with no raw error text, when not connected", async () => {
   await renderDisconnectedAbout();
-  // The identity line stands alone: no commit note, and the store's raw
-  // failure text never reaches the page.
+  // The identity line stands alone: no commit note. The caption carries the
+  // store's error, which the store already keeps in its friendly form
+  // (hubOverview.test.ts pins that contract).
   expect(screen.getByTestId("about-identity").querySelector("span")).toBeNull();
-  const rawError = settingsOverviewStore.getState().error;
-  expect(rawError).not.toBeNull();
-  expect(document.body.textContent).not.toContain(rawError);
+  const storedError = settingsOverviewStore.getState().error;
+  expect(storedError).not.toBeNull();
+  expect(screen.getByTestId("about-version-unavailable").textContent).toContain(storedError);
 });
 
 test("a fetch failure shows a friendly message, never the raw error", async () => {

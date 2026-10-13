@@ -9,7 +9,17 @@ import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import type { MarketplaceCatalogEntry } from "../../../../stores/extensions";
-import { Button, Chip, ConfirmDialog, Disclosure, Input, Loader, useToasts } from "../../../../widgets";
+import {
+  Button,
+  Chip,
+  ConfirmDialog,
+  Disclosure,
+  EmptyState,
+  InlineNotice,
+  Input,
+  Loader,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
@@ -26,7 +36,6 @@ const CLASS = {
   rowText: requireClass(styles.rowText, "marketplacesPlugins.module.css", "rowText"),
   rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
   rowActions: requireClass(styles.rowActions, "marketplacesPlugins.module.css", "rowActions"),
-  empty: requireClass(styles.empty, "marketplacesPlugins.module.css", "empty"),
 };
 
 const FILTER_DEBOUNCE_MS = 150;
@@ -180,15 +189,21 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       </div>
       <ul aria-label="Marketplace browse tree" className={CLASS.tree}>
         {marketplaces.length === 0 ? (
-          <li className={CLASS.empty} data-reason="empty">
-            No marketplaces registered. Add one from the Marketplaces tab.
+          <li>
+            <EmptyState
+              size="compact"
+              reason="empty"
+              title="No marketplaces registered. Add one from the Marketplaces tab."
+            />
           </li>
         ) : trimmedQuery !== "" && filterLoading ? (
           <li>
             <Loader label="Loading marketplaces" />
           </li>
         ) : trimmedQuery !== "" && visibleMarketplaces.length === 0 ? (
-          <li className={CLASS.empty}>{`No plugins match "${trimmedQuery}".`}</li>
+          <li>
+            <EmptyState size="compact" title={`No plugins match "${trimmedQuery}".`} />
+          </li>
         ) : (
           visibleMarketplaces.map((m) => (
             <MarketplaceNode
@@ -284,10 +299,12 @@ function MarketplaceNode({
               <Loader label="Loading" />
             </li>
           ) : cache.status === "error" ? (
-            <li className={CLASS.empty}>{`Failed to browse: ${cache.error}`}</li>
+            <li>
+              <InlineNotice tone="danger">{`Failed to browse: ${cache.error}`}</InlineNotice>
+            </li>
           ) : rows.length === 0 ? (
-            <li className={CLASS.empty} data-reason="empty">
-              This marketplace has no plugins.
+            <li>
+              <EmptyState size="compact" reason="empty" title="This marketplace has no plugins." />
             </li>
           ) : (
             rows.map((p) => (
