@@ -66,7 +66,7 @@ func goChecks(body *ast.BlockStmt) []ast.Expr {
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.IfStmt:
-			if !isErrCompare(n.Cond, token.NEQ) {
+			if !isErrNotNil(n.Cond) {
 				checks = append(checks, n.Cond)
 			}
 		case *ast.CallExpr:
@@ -79,10 +79,9 @@ func goChecks(body *ast.BlockStmt) []ast.Expr {
 	return checks
 }
 
-// isErrCompare reports `err <op> nil`.
-func isErrCompare(e ast.Expr, op token.Token) bool {
+func isErrNotNil(e ast.Expr) bool {
 	b, ok := e.(*ast.BinaryExpr)
-	return ok && b.Op == op && isIdent(b.X, "err") && isIdent(b.Y, "nil")
+	return ok && b.Op == token.NEQ && isIdent(b.X, "err") && isIdent(b.Y, "nil")
 }
 
 func isIdent(e ast.Expr, name string) bool {
@@ -185,8 +184,9 @@ func (s *scanner) isGoCopy(lit string) bool {
 	return utf8.RuneCountInString(lit) >= 8 && strings.Contains(lit, " ") && s.assets.contains(lit)
 }
 
-// checksBehavior reports a condition that checks something besides wording:
-// an expected error (`err == nil`), a length, or a numeric comparison.
+// checksBehavior reports a condition that checks something besides wording
+// anywhere inside it: an expected error (`err == nil`), a length, a numeric
+// comparison, or any other comparison that doesn't compare text with copy.
 func checksBehavior(cond ast.Expr) bool {
 	found := false
 	ast.Inspect(cond, func(n ast.Node) bool {
@@ -194,7 +194,12 @@ func checksBehavior(cond ast.Expr) bool {
 		case *ast.BinaryExpr:
 			switch n.Op {
 			case token.EQL, token.NEQ, token.LSS, token.GTR, token.LEQ, token.GEQ:
-				found = found || isErrCompare(n, token.EQL) || isNumber(n.X) || isNumber(n.Y)
+				// A comparison that is not a copy comparison checks behavior,
+				// however deeply it is nested: `err == nil`, `status ==
+				// expected`, a comparison with a number. So does one with a
+				// number even when copy sits inside it
+				// (`strings.Index(out, "Usage") == 0`).
+				found = found || !isCopyTerm(n) || isNumber(n.X) || isNumber(n.Y)
 			}
 		case *ast.CallExpr:
 			found = found || isIdent(n.Fun, "len")

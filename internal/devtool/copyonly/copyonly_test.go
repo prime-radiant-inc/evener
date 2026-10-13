@@ -573,6 +573,32 @@ func TestRenderShowsTheLabel(t *testing.T) {
 			prod: []string{"Try again"},
 		},
 		{
+			name: "go: a nested variable comparison after a text comparison is behavior",
+			path: "a_test.go",
+			src: `package x
+func TestRenderShowsTheLabel(t *testing.T) {
+	status, out := render()
+	if matches(out == "Try again", status == expectedStatus) {
+		t.Fatal(out)
+	}
+}
+`,
+			prod: []string{"Try again"},
+		},
+		{
+			name: "go: a nested variable comparison before a text comparison is behavior",
+			path: "a_test.go",
+			src: `package x
+func TestRenderShowsTheLabel(t *testing.T) {
+	status, out := render()
+	if matches(status == expectedStatus, out == "Try again") {
+		t.Fatal(out)
+	}
+}
+`,
+			prod: []string{"Try again"},
+		},
+		{
 			name: "ts: a multi-line declaration's name is not a fixture input",
 			path: "a.test.tsx",
 			src: `test(
