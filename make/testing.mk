@@ -27,24 +27,33 @@ test-web: web-preflight build-dev
 # first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
 ## shellguard, spawnguard, transcriptscrollguard,
-## retirementguard, mermaidguard) plus the
+## retirementguard, mermaidguard, docannotationguard) plus the
 ##   full-stack `web-skillguard` (TestSkillComposerBrowser behind the
-##   `browserguard` tag) that jsdom cannot evaluate.
+##   `browserguard` tag), `web-cascadeguard` (TestAgentCascadeBrowser behind
+##   the same tag) and `docannotationjourney`
+##   (TestDocumentAnnotationBrowserJourney behind the same tag) that jsdom
+##   cannot evaluate.
 ## proves: Headless Chrome evaluates real CSS geometry, the real Session
 ##   reducer/tree, the real Spawn staging/breakpoint path, the real transcript
-##   scroll/jump-to-latest path, and the real selected-thread recovery contract
-##   when its daemon retires and is replaced; the skill guard additionally
-##   drives the production composer through a REAL hub and two REAL
-##   `evener serve` daemons with only the LLM provider scripted.
+##   scroll/jump-to-latest path, the real selected-thread recovery contract
+##   when its daemon retires and is replaced, and the small document-annotation
+##   component cases; the skill guard drives the production composer through
+##   a REAL hub and two REAL `evener serve` daemons with only the LLM provider
+##   scripted, the cascade guard exercises the producer, hub and production
+##   browser boundary, and the annotation journey drives the production
+##   document reader through a REAL hub and its REAL daemon, proving the
+##   selection/comment/Send, exact original-session draft, saved-note access,
+##   clipped highlight geometry and native IndexedDB reopen with zero agent
 ## trigger: Required CI web job; local pre-merge on a Chrome-capable host.
 ## requires: Chrome/Chromium and the Go toolchain (the gate is the prebuilt
 ##   evener-dev); each guard gets a private process home,
 ##   temporary/XDG roots, and a private browser profile. No WebKit/Safari
 ##   runner. retirementguard also needs the Go toolchain: its npm script runs
 ##   the isolated TestRetirementBrowser fixture, which starts the Hub and
-##   drives the guard against it. The skill guard also needs the Go toolchain
-##   and the built frontend, which this target builds first (`build-web`); the
-##   gate still builds one when the dist is missing.
+##   drives the guard against it. The skill, cascade and annotation-journey
+##   guards also need the Go toolchain and the built frontend, which this
+##   target builds first (`build-web`); the gate still builds one when the
+##   dist is missing.
 ## fails-when: Any guard error, Vite failure, cleanup failure, or missing
 ##   Chrome/Chromium is nonzero.
 test-web-browser: build-web build-dev
