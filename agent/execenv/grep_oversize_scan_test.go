@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -125,5 +126,62 @@ func TestSandboxedGrepStreamSearchReturnsTheCancellationError(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("canceled sandboxed stream search never returned")
+	}
+}
+
+// The streaming scan admits an over-cap line by its length alone, never by
+// where the read windows happen to fall: a matching line of exactly the read
+// cap is searched at every window size, one a byte past it is searched at
+// none, and a preceding newline — which shifts every window boundary —
+// changes only the line's number, not whether it is searched (#4574 round 5,
+// medium 4).
+func TestGrepStreamAdmitsOverCapLinesByLengthNotAlignment(t *testing.T) {
+	// Not parallel: stubGrepMaxFileBytes and stubGrepStreamWindowBytes swap
+	// the package's cap and window.
+	root := t.TempDir()
+	atCap := "needle" + strings.Repeat("x", 64-len("needle"))
+	pastCap := "needle" + strings.Repeat("x", 64-len("needle")+1)
+	filler := strings.Repeat("plain line\n", 10)
+	files := map[string]string{
+		"atcap.log":   atCap + "\n" + filler,
+		"pastcap.log": pastCap + "\n" + filler,
+		"shift.log":   "\n" + atCap + "\n" + filler,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := NewLocalExecutionEnvironment(root)
+	defer env.Cleanup()
+	env.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
+
+	stubGrepMaxFileBytes(t, 64)
+	for _, window := range []int{8, 16, 32, 64, 65, 1000} {
+		stubGrepStreamWindowBytes(t, window)
+		got, err := env.Grep(t.Context(), "needle", filepath.Join(root, "atcap.log"), "", false, 100, "content")
+		if err != nil {
+			t.Fatalf("window %d: at-cap line: %v", window, err)
+		}
+		if want := "1:" + atCap; got != want {
+			t.Errorf("window %d: at-cap matching line = %q, want %q", window, got, want)
+		}
+		got, err = env.Grep(t.Context(), "needle", filepath.Join(root, "pastcap.log"), "", false, 100, "content")
+		if err != nil {
+			t.Fatalf("window %d: past-cap line: %v", window, err)
+		}
+		if got != "" {
+			t.Errorf("window %d: past-cap matching line = %q, want it skipped at every window size", window, got)
+		}
+	}
+	for _, window := range []int{8, 1000} {
+		stubGrepStreamWindowBytes(t, window)
+		got, err := env.Grep(t.Context(), "needle", filepath.Join(root, "shift.log"), "", false, 100, "content")
+		if err != nil {
+			t.Fatalf("window %d: shifted line: %v", window, err)
+		}
+		if want := "2:" + atCap; got != want {
+			t.Errorf("window %d: shifted at-cap matching line = %q, want %q: a preceding newline must not change admission", window, got, want)
+		}
 	}
 }

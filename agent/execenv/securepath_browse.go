@@ -375,7 +375,8 @@ func (a *grepAccum) finishNotes() (out string, notes []string) {
 // in. The scan ends at the first window holding a NUL byte, the content the
 // whole-file feed treats as binary, with matches from earlier windows
 // standing; a single line longer than grepMaxFileBytes is skipped — its
-// number spent, the scan resuming after it — rather than held whole. A
+// number spent, the scan resuming after it, its length alone deciding,
+// never where a window happens to fall — rather than held whole. A
 // cancelled context — checked between windows, because an ordinary regular
 // file takes no read deadline and a growing one can outlast any scan — or
 // a stalled read ends the scan. stop is the feed's: the results cap cut the
@@ -424,13 +425,21 @@ func (a *grepAccum) feedLargeFile(ctx context.Context, r io.ReadSeeker) (stop bo
 					if sep < 0 {
 						break
 					}
-					if s.line(i, string(pending[:sep])) {
+					line := pending[:sep]
+					pending = pending[sep+1:]
+					// A completed line is admitted by its own length — the
+					// same boundary the unfinished tail below applies — so
+					// window alignment can never decide admission.
+					if len(line) > grepMaxFileBytes {
+						i++
+						continue
+					}
+					if s.line(i, string(line)) {
 						return true, nil
 					}
 					i++
-					pending = pending[sep+1:]
 				}
-				if len(pending) >= grepMaxFileBytes {
+				if len(pending) > grepMaxFileBytes {
 					// A line as long as the whole per-file read budget
 					// cannot be searched without holding it whole.
 					skipping = true
