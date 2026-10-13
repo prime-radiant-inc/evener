@@ -1192,7 +1192,7 @@ async function acceptEntryTranscriptHydration(
   ref: string,
   pending: PendingThreadHydration,
   hydration: ThreadHydration,
-): Promise<void> {
+): Promise<boolean | undefined> {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || pending.client !== wiredClient || pending.epoch !== readyEpoch) return;
   const response = hydration.response;
@@ -1312,7 +1312,7 @@ async function acceptEntryTranscriptHydration(
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
   if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
-  repository.acceptRead(response, {
+  const adoptedRead = repository.acceptRead(response, {
     lifetime: fixture.lifetime,
     ...nextTranscriptReadIdentity(),
   });
@@ -1320,6 +1320,7 @@ async function acceptEntryTranscriptHydration(
     hydration.fixtureNotifications.map((update) => update.notification),
     { lifetime: fixture.lifetime },
   );
+  return adoptedRead;
 }
 
 // Dispose the entry route's reader, publication subscription and repository
@@ -4884,14 +4885,18 @@ function replayEntryHydrationNotifications(
   lifetime: number,
   model: ThreadModel,
   notifications: PendingTranscriptUpdate[],
+  adoptedRead: boolean,
 ): { model: ThreadModel; appliedAt: number[] } {
   let hydrated = model;
   const appliedAt: number[] = [];
   for (const update of notifications) {
+    const acceptedLive = update.acceptedEntry?.repository === repository && update.acceptedEntry.lifetime === lifetime;
+    // A discarded read left this owner's live model intact. Only a read that
+    // replaced it needs frames this same repository already accepted replayed.
+    if (!adoptedRead && acceptedLive) continue;
     // The repository owns both recorded ingestion and later publications, so
     // the post-cut tail must join that owner, not a temporary store-only fold.
     const accepted = repository.accept(update.notification, { lifetime });
-    const acceptedLive = update.acceptedEntry?.repository === repository && update.acceptedEntry.lifetime === lifetime;
     if (!accepted && !acceptedLive) continue;
     hydrated = repository.getSnapshot() ?? hydrated;
     // The live path already counted this physical arrival. Replay banks only
@@ -4903,7 +4908,12 @@ function replayEntryHydrationNotifications(
 
 // A snapshot may publish only for the client and ready generation that own
 // its hydration. Retired connections cannot overwrite replacement state.
-function publishThreadHydration(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel | null {
+function publishThreadHydration(
+  ref: string,
+  pending: PendingThreadHydration,
+  model: ThreadModel,
+  adoptedEntryRead: boolean,
+): ThreadModel | null {
   if (pendingThreadHydrations.get(ref) !== pending) return null;
   if (readyEpoch !== pending.epoch || wiredClient !== pending.client) return null;
   if (pending.backgroundInvalidated) {
@@ -4920,7 +4930,13 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   const repositoryModel = entry?.repository?.getSnapshot();
   const { model: hydrated, appliedAt } =
     entry?.repository && repositoryModel
-      ? replayEntryHydrationNotifications(entry.repository, entry.lifetime, repositoryModel, pending.notifications)
+      ? replayEntryHydrationNotifications(
+          entry.repository,
+          entry.lifetime,
+          repositoryModel,
+          pending.notifications,
+          adoptedEntryRead,
+        )
       : replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
   const backgroundModel = isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(hydrated) : hydrated;
   retirePendingHydration(ref, pending, pendingThreadHydrations);
@@ -4967,11 +4983,12 @@ async function publishAndReconcileThreadHydration(
   intent: HydrationIntent = "foreground",
 ): Promise<ThreadModel | null> {
   const productionEntry = entryTranscriptFixtureForTests?.ref !== ref;
+  let adoptedEntryRead = false;
   if (productionEntry) {
     if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
-    await acceptEntryTranscriptHydration(ref, pending, hydration);
+    adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   }
-  const published = publishThreadHydration(ref, pending, hydration.model);
+  const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
   if (!productionEntry) await acceptEntryTranscriptHydration(ref, pending, hydration);
   threadsStore.setState((state) => {
@@ -7849,8 +7866,8 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         // Yield once so a publication routed in the same turn is observed
         // before the owner census decides whether to drop the model.
         await Promise.resolve();
-        if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
         if (finalReleaseOwners.get(ref) === releaseGeneration) finalReleaseOwners.delete(ref);
+        if (backgroundLeaseSequences.get(ref) !== releaseGeneration || canonicalThreadOwnerActive(ref)) return;
         dropUnpinnedModel(ref, false);
         syncThreadSubscription(ref);
       })();
