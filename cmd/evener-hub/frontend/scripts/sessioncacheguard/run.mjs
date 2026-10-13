@@ -14,18 +14,17 @@ import {
 } from "../browserGuardCdp.mjs";
 import { startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { pollInPage, waitDeadline } from "./inPageWait.mjs";
+import { SOURCE_DISCOVERED, SUPPRESSED } from "./predicates.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const CHANNEL = "evener.session-cache.v1";
-// One predicate both tabs satisfy once each has learned the other's sourceId
-// from its own deletion broadcast and suppressed the sibling's ref.
-const SOURCE_DISCOVERED =
-  `(state) => typeof state.sourceId === "string" && state.sourceId.length > 0 && ` +
-  `state.lifetime?.suppressed === true`;
 
 function check(condition, message, observed) {
   if (!condition) throw new Error(`${message}; observed ${JSON.stringify(observed)}`);
 }
+
+// The snapshot read every wait issues in the page.
+const snapshotExpr = (ref) => `window.sessionCacheGuard.snapshot(${JSON.stringify(ref)})`;
 
 function tabAPI(page, label) {
   const call = (method, ...args) =>
@@ -67,11 +66,7 @@ async function siblingDeletion(a, b) {
   const idle = await b.snapshot(ref);
   check(idle.lifetime === null, "B must start without an open lease", idle);
   await a.call("delete", ref); // action-owned fence, never markCacheSessionsDeleted directly
-  const healPoll = await pollInPage(
-    b.send,
-    `window.sessionCacheGuard.snapshot(${JSON.stringify(ref)})`,
-    `(state) => state.lifetime?.suppressed === true`,
-  );
+  const healPoll = await pollInPage(b.send, snapshotExpr(ref), SUPPRESSED);
   const healed = b.checkSnapshot(healPoll.observed);
   if (!healPoll.ok) {
     throw waitDeadline("sibling deletion heal: B never gained suppression-only state", healed);
@@ -113,11 +108,7 @@ async function clearEpoch(a, b) {
   check(cleared.committed, "A clear must commit", cleared);
   // NO B cache read/write here. The held read has not published a model, so
   // no debounce can accidentally observe the new durable epoch and heal B.
-  const suppressedPoll = await pollInPage(
-    b.send,
-    `window.sessionCacheGuard.snapshot(${JSON.stringify(ref)})`,
-    `(state) => state.lifetime?.suppressed === true`,
-  );
+  const suppressedPoll = await pollInPage(b.send, snapshotExpr(ref), SUPPRESSED);
   const suppressed = b.checkSnapshot(suppressedPoll.observed);
   if (!suppressedPoll.ok) {
     throw waitDeadline("clear-epoch suppression: B never suppressed before storage I/O", suppressed);
@@ -150,7 +141,6 @@ async function driverRealm(page) {
   await run(`globalThis.received = []; globalThis.observer = new BroadcastChannel(${JSON.stringify(CHANNEL)});
     observer.onmessage = event => { if (event.data.guardProbe) received.push(event.data.guardProbe); };`);
   return {
-    seen: (tag) => run(`received.includes(${JSON.stringify(tag)})`),
     // The delivery barrier as one bounded in-page evaluation: the same
     // received.includes predicate at the same 20ms cadence on the same 5s
     // deadline, rather than one CDP round trip per Node tick.
@@ -168,8 +158,8 @@ async function channelFiltering(a, b, tabs) {
   await a.call("delete", "local:sessioncacheguard-source-a");
   await b.call("delete", "local:sessioncacheguard-source-b");
   const [aSourcePoll, bSourcePoll] = await Promise.all([
-    pollInPage(a.send, `window.sessionCacheGuard.snapshot("local:sessioncacheguard-source-b")`, SOURCE_DISCOVERED),
-    pollInPage(b.send, `window.sessionCacheGuard.snapshot("local:sessioncacheguard-source-a")`, SOURCE_DISCOVERED),
+    pollInPage(a.send, snapshotExpr("local:sessioncacheguard-source-b"), SOURCE_DISCOVERED),
+    pollInPage(b.send, snapshotExpr("local:sessioncacheguard-source-a"), SOURCE_DISCOVERED),
   ]);
   const sources = [a.checkSnapshot(aSourcePoll.observed), b.checkSnapshot(bSourcePoll.observed)];
   if (!(aSourcePoll.ok && bSourcePoll.ok)) {
@@ -216,11 +206,7 @@ async function channelFiltering(a, b, tabs) {
     const [aSeenPoll, bSeenPoll, bStatePoll] = await Promise.all([
       drivers[0].waitSeen("own-source"),
       drivers[1].waitSeen("own-source"),
-      pollInPage(
-        b.send,
-        `window.sessionCacheGuard.snapshot(${JSON.stringify(ref)})`,
-        `(state) => state.lifetime?.suppressed === true`,
-      ),
+      pollInPage(b.send, snapshotExpr(ref), SUPPRESSED),
     ]);
     const delivered = [aSeenPoll.observed, bSeenPoll.observed];
     const acceptedStateA = await a.snapshot(ref);

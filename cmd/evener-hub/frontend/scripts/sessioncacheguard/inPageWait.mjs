@@ -50,7 +50,9 @@ export function pollInPage(send, read, accepts, { waitMs = WAIT_MS, pollMs = POL
 /**
  * The message a wait that spent its whole deadline throws: the caller's own
  * sentence, the deadline, and the last value read. Kept here so the deadline
- * the two share cannot drift apart.
+ * the two share cannot drift apart. It names the guard's own WAIT_MS because
+ * that is the only deadline the guard uses; pollInPage's `waitMs` exists so the
+ * unit test can run budget-short cases without waiting the real 5s.
  */
 export function waitDeadline(message, observed) {
   return new Error(`${message} (${WAIT_MS}ms deadline); observed ${JSON.stringify(observed)}`);

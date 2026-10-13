@@ -13,6 +13,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 
 import { POLL_MS, pollInPage, WAIT_MS, waitDeadline } from "./inPageWait.mjs";
+import { SOURCE_DISCOVERED, SUPPRESSED } from "./predicates.mjs";
 
 // Answer Runtime.evaluate the way the CDP wire does: the awaited value of the
 // expression, in the response shape evaluate() reads.
@@ -24,6 +25,11 @@ const evaluatingSend = (run) => async (method, params) => {
 // An indirect evaluation in this process's global scope, the way the page's own
 // scope resolves the interpolated read/predicate.
 const send = evaluatingSend((expression) => new Function(`return (${expression});`)());
+
+// Evaluate one of the guard's own predicates against a snapshot shape, the way
+// the page would - so a predicate that stops meaning what the guard needs fails
+// here, not silently in a browser run.
+const evaluatePredicate = (predicate, state) => new Function(`return (${predicate});`)()(state);
 
 afterEach(() => {
   delete globalThis.__reads;
@@ -41,6 +47,22 @@ describe("the guard's own cadence and deadline", () => {
     ).toBe(
       'clear-epoch suppression: B never suppressed before storage I/O (5000ms deadline); observed {"sourceId":null}',
     );
+  });
+});
+
+describe("the guard's own predicates", () => {
+  test("SUPPRESSED accepts a suppressed lifetime and nothing else", () => {
+    expect(evaluatePredicate(SUPPRESSED, { lifetime: { suppressed: true } })).toBe(true);
+    expect(evaluatePredicate(SUPPRESSED, { lifetime: { suppressed: false } })).toBe(false);
+    expect(evaluatePredicate(SUPPRESSED, { lifetime: null })).toBe(false);
+  });
+
+  test("SOURCE_DISCOVERED needs a non-empty sourceId and a suppressed sibling ref", () => {
+    expect(evaluatePredicate(SOURCE_DISCOVERED, { sourceId: "a-tab", lifetime: { suppressed: true } })).toBe(true);
+    expect(evaluatePredicate(SOURCE_DISCOVERED, { sourceId: "", lifetime: { suppressed: true } })).toBe(false);
+    expect(evaluatePredicate(SOURCE_DISCOVERED, { sourceId: null, lifetime: { suppressed: true } })).toBe(false);
+    expect(evaluatePredicate(SOURCE_DISCOVERED, { sourceId: "a-tab", lifetime: null })).toBe(false);
+    expect(evaluatePredicate(SOURCE_DISCOVERED, { sourceId: "a-tab", lifetime: { suppressed: false } })).toBe(false);
   });
 });
 
