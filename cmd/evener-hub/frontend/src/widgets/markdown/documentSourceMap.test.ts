@@ -242,3 +242,43 @@ test("maps a large heavily formatted document with exact coordinates", () => {
   if (!tailFirst || !tailLast) throw new Error("missing tail heading spans");
   expect(source.slice(tailFirst.start, tailLast.end)).toBe("Tail");
 });
+
+// A long list item with thousands of lazy continuation lines: every
+// continuation check needs only the FIRST line's provenance, but splitting
+// the ENTIRE remaining document into lines per check was quadratic - the
+// list tokenizer runs synchronously during React rendering, so ordinary
+// documents within the 512 KiB limit could stall the browser. (Inline
+// markup stays on two anchor lines only: marked's per-paragraph strong
+// matching is itself quadratic in delimiter count, which would measure a
+// different defect.) The timing ratchet's per-test ceiling
+// (testing-budget.json) guards the bound; the assertions here pin the
+// mapping's exactness at scale.
+test("maps a long list continuation with exact coordinates", () => {
+  const lines: string[] = [];
+  for (let i = 0; i < 3000; i++) {
+    lines.push(`Line ${i} with lazy continuation text.`);
+  }
+  lines[0] = "Item start with a **bold anchor** head.";
+  lines[1500] = "Line 1500 with a **bold 1500** inline.";
+  const source = `# List continuation\n\n- ${lines.join("\n")}\n\n## Tail\n`;
+  const { map, segments } = renderDocument(source, { displayedSnapshotId: "snap-list", mappingId: "map-list" });
+  expect(segments.length).toBeGreaterThan(0);
+  const bold = map.textRuns.find((run) => run.renderedText === "bold 1500");
+  if (!bold) throw new Error("missing middle bold run");
+  const boldFirst = bold.sourceSpans[0];
+  const boldLast = bold.sourceSpans.at(-1);
+  if (!boldFirst || !boldLast) throw new Error("missing bold run spans");
+  expect(source.slice(boldFirst.start, boldLast.end)).toBe("bold 1500");
+  const mid = map.textRuns.find((run) => run.renderedText.includes("Line 750 with lazy"));
+  if (!mid) throw new Error("missing mid-document text run");
+  const midFirst = mid.sourceSpans[0];
+  const midLast = mid.sourceSpans.at(-1);
+  if (!midFirst || !midLast) throw new Error("missing mid run spans");
+  expect(source.slice(midFirst.start, midLast.end)).toContain("Line 750 with lazy continuation text.");
+  const tail = map.textRuns.find((run) => run.renderedText === "Tail");
+  if (!tail) throw new Error("missing tail heading run");
+  const tailFirst = tail.sourceSpans[0];
+  const tailLast = tail.sourceSpans.at(-1);
+  if (!tailFirst || !tailLast) throw new Error("missing tail heading spans");
+  expect(source.slice(tailFirst.start, tailLast.end)).toBe("Tail");
+});
