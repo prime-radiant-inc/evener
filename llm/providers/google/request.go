@@ -146,11 +146,18 @@ func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 			return nil
 		}
 	}
-	// A level row with no ladder spells the requested effort as-is: there is
-	// no ladder to clamp against and the row vouches the shape. The wire enum
-	// is uppercase (the Discovery document's ThinkingConfig.thinkingLevel:
-	// MINIMAL | LOW | MEDIUM | HIGH); catalogs and flags spell it lowercase.
-	thinking["thinkingLevel"] = strings.ToUpper(level)
+	// The wire enum is uppercase (the Discovery document's
+	// ThinkingConfig.thinkingLevel: MINIMAL | LOW | MEDIUM | HIGH); catalogs
+	// and flags spell it lowercase. Evener's xhigh and max rank above the
+	// enum's ceiling, so a ladderless request clamps down to HIGH rather than
+	// spell a value the API rejects.
+	wire := strings.ToUpper(level)
+	switch wire {
+	case "MINIMAL", "LOW", "MEDIUM", "HIGH":
+	default:
+		wire = "HIGH"
+	}
+	thinking["thinkingLevel"] = wire
 	return thinking
 }
 

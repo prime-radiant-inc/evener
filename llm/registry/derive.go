@@ -16,11 +16,13 @@ type deriveInput struct {
 	// the target's settled ThinkingShape verdict (even when the verdict was
 	// "no shape") and never re-derives one. A cross-protocol alias carries no
 	// verdict — the shape belongs to the target's protocol — and derives from
-	// whatever its own replay leaves: controls still tagged "alias" were
-	// inherited from a target whose own derivation may have invented them, so
-	// they are no evidence; controls any real layer restated are.
-	Aliased             bool
-	AliasTargetProtocol string
+	// whatever its own replay leaves. AliasControlsRecorded says the target's
+	// own catalog row recorded the effort control (not derivation), so the
+	// inherited control counts as evidence even though it arrived tagged
+	// "alias".
+	Aliased               bool
+	AliasTargetProtocol   string
+	AliasControlsRecorded bool
 }
 
 const provDerived = "derived"
@@ -84,19 +86,22 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 	// directly named row.
 	shapeSettledByAlias := in.Aliased && in.AliasTargetProtocol == ProtocolGoogle
 	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized && !shapeSettledByAlias {
-		// Controls still tagged "alias" were inherited from a target whose own
-		// derivation may have invented them; only controls a real layer
-		// restated count as evidence on this side of the seam.
-		inheritedControls := in.Aliased && prov["ReasoningControls"] == provAlias
 		var shape string
 		switch {
 		case slices.Contains(c.ReasoningControls, "budget_tokens"):
 			shape = "budget"
-		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty && !inheritedControls:
+		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty:
 			// The effort control must be recorded evidence: one derivation
-			// invented for an empty list, here or on the alias's target, says
-			// nothing about what the model accepts.
-			shape = "level"
+			// invented for an empty list says nothing about what the model
+			// accepts. For an alias, the provenance tag says whether the
+			// control was inherited from the target's catalog row or restated
+			// by a real layer on this side. Cross-protocol catalog evidence
+			// transfers when the target names the same model — the catalog
+			// describes the model, not the protocol — but not across model
+			// families, where a different model's controls say nothing.
+			if !in.Aliased || prov["ReasoningControls"] != provAlias || (in.AliasControlsRecorded && strings.HasPrefix(m.Family, "gemini")) {
+				shape = "level"
+			}
 		}
 		if shape != "" {
 			c.ThinkingShape = &shape

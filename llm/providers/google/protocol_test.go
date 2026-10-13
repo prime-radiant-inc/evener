@@ -137,6 +137,14 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 		t.Fatalf("level row without a ladder thinkingLevel = %v", got)
 	}
 
+	// Evener's higher tiers have no Google wire enum; a ladderless row clamps
+	// them to the enum's top level rather than emitting an unknown value.
+	for _, effort := range []string{"xhigh", "max"} {
+		if got := level(t, protoBuild(t, protoReq(effort), levelRow(nil))); got != "HIGH" {
+			t.Fatalf("ladderless %q must clamp to HIGH, got %v", effort, got)
+		}
+	}
+
 	// A configured model can vouch the level shape itself, with its own
 	// ladder, without a cataloged Reasoning verdict.
 	configured := protoRes(func(c *registry.Caps) {

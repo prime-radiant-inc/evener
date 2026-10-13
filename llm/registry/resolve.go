@@ -754,6 +754,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	var aliasDisabled *bool
 	var aliasDefault *bool
 	aliasTargetProtocol := ""
+	aliasControlsRecorded := false
 	if row.AliasOf != "" {
 		target, same, err := r.resolveAliasTarget(rec, row.AliasOf, includeLive)
 		if err != nil {
@@ -762,7 +763,16 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 			warnings = append(warnings, "dangling alias: "+err.Error())
 		} else {
 			aliasTargetProtocol = target.Protocol
+			// The target's provenance says whether its catalog row recorded
+			// the effort control or derivation invented it.
+			aliasControlsRecorded = target.Provenance["ReasoningControls"] == "snapshot/row" || target.Provenance["ReasoningControls"] == "cache/row" || target.Provenance["ReasoningControls"] == "config/row"
+			// The alias's effective protocol is its own override, else the
+			// target's when the replay below will inherit it, else the
+			// provider default.
 			aliasProto := rec.head.Models[hit.rowID].Protocol
+			if aliasProto == "" && same && target.Model.Protocol != "" {
+				aliasProto = target.Model.Protocol
+			}
 			if aliasProto == "" {
 				aliasProto = rec.head.Protocol
 			}
@@ -917,7 +927,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		warnings = append(warnings, cw...)
 	}
 
-	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol}, prov)
+	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)
 
 	if hit.synthesized {
 		warnings = append(warnings, "model not in catalog")
