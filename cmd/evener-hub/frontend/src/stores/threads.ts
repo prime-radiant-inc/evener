@@ -1771,12 +1771,12 @@ async function resumeFencedForSend(ref: string): Promise<void> {
 
 async function runResumeFencedForSend(ref: string): Promise<void> {
   // Hoisted for the catch: which identity this drive reached, what its first
-  // retarget moved, whether a Stop won the identity fence, and the token that
-  // identifies this drive's swap registration.
+  // retarget moved, whether a Stop won the identity fence, and whether this
+  // drive registered a swap (it only does when the resume changed the ref).
   let resumedRef: string | undefined;
   let movedFirst: RetargetedMutations | null = null;
   let stopWon = false;
-  let swapToken: symbol | undefined;
+  let swapRegistered = false;
   try {
     const client = wiredClient;
     if (client === null || client.state !== "ready")
@@ -1813,7 +1813,8 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     // identity. The swap is registered BEFORE the move, so a Stop landing inside
     // the move's window still reaches the resumed ref through it.
     if (resumedRef !== ref) {
-      swapToken = registerResumeSwap(ref, resumedRef);
+      registerResumeSwap(ref, resumedRef);
+      swapRegistered = true;
       movedFirst = await retargetParkedMutations(ref, resumedRef, resumedIdentity);
     }
     await threadsStore.getState().refreshThread(resumedRef, identityFence);
@@ -1842,7 +1843,7 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
       // moving). Navigation is a later React effect, so the trailing pass can
       // still precede the pane swap; a press that lands after it starts a fresh
       // drive once this one has settled, so its row is still moved.
-      if (swapToken !== undefined) scheduleRetargetDrain(ref, resumedRef, resumedIdentity);
+      scheduleRetargetDrain(ref, resumedRef, resumedIdentity);
       const swapTo = resumedRef;
       threadsStore.setState((state) => ({
         resumedIdentities: new Map(state.resumedIdentities).set(ref, swapTo),
@@ -1867,7 +1868,7 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     if (stopWon && movedFirst !== null && resumedRef !== undefined) {
       await cancelUnattemptedMutations(resumedRef).catch(() => {});
     }
-    if (swapToken !== undefined) settleResumeSwap(ref, swapToken);
+    if (swapRegistered) endResumeSwap(ref);
     const message = error instanceof Error ? error.message : String(error);
     resumeFailureSeq += 1;
     threadsStore.setState((state) => ({
@@ -1887,68 +1888,47 @@ const RETARGET_DRAIN_PASSES = 3;
 // A resume that changed identity is mid-swap: the rows it moved to the resumed
 // ref are still the user's to cancel with a Stop pressed on the ref they are
 // looking at, but a Stop's own durable cancel names only that ref. This map
-// (old ref -> resumed ref plus the registering drive's token) is the
-// registration that closes the gap, live from the moment the resume response
-// names the differing ref until the pane follows the identity that drive
-// published (Session.tsx's effect, which clears the resumed identity).
+// (old ref -> resumed ref) is the registration that closes the gap, live from
+// the moment the resume response names the differing ref until the pane follows
+// the identity that drive published (Session.tsx's effect, which clears the
+// resumed identity) or the drive fails.
 //
-// It is NOT cleared when the retarget machinery goes quiet: an empty drain pass
+// It is NOT ended when the retarget machinery goes quiet: an empty drain pass
 // proves only that no rows remain parked under the OLD ref - not that the rows
 // already moved to the resumed ref were delivered, and not that the pane has
 // followed (the follow is a later React commit). With the resumed ref itself
 // fenced, the moved rows sit unattempted under it, and a Stop on the
 // still-displayed old ref in that pre-navigation sliver would find no
 // registration and let the message dispatch when the resumed ref clears.
-// Failed drives still settle (a failed drive publishes no identity, so no pane
-// will ever follow to clear it).
-const resumeSwapTargets = new Map<string, { toRef: string; token: symbol }>();
+const resumeSwapTargets = new Map<string, string>();
 
-// The token identifies THIS drive's registration. Two drives can target the
-// same (fromRef, toRef) pair - inFlightResumes drops the first when it resolves
-// while its trailing drain still awaits storage, and a second press then starts
-// a second drive that registers the same pair - so matching only the pair would
-// let the first drive settle the second drive's live registration. The drain no
-// longer settles (see scheduleRetargetDrain), so the drive's own failure catch
-// is the only token-matched settle.
-function registerResumeSwap(fromRef: string, toRef: string): symbol {
-  const token = Symbol("resumeSwap");
-  resumeSwapTargets.set(fromRef, { toRef, token });
-  return token;
+function registerResumeSwap(fromRef: string, toRef: string): void {
+  resumeSwapTargets.set(fromRef, toRef);
 }
 
-// Idempotent and token-matched: only the registration carrying THIS token is
-// cleared, so a failed drive's settle can never clear a later drive's live
-// registration for the same (old ref -> resumed ref) pair.
-function settleResumeSwap(fromRef: string, token: symbol): void {
-  if (resumeSwapTargets.get(fromRef)?.token === token) resumeSwapTargets.delete(fromRef);
-}
-
-// The pane followed the identity that drive published (Session.tsx's effect
-// cleared the resumed identity and navigated): the user is now looking at the
-// resumed ref, so a Stop names that ref directly and no longer needs this
-// registration to reach the rows the drive moved. This - not the drain's empty
-// pass - is what ends the registration on the success path.
-function clearResumeSwap(fromRef: string): void {
+// The registration ends at the pane's follow (clearResumedIdentity: the user is
+// now looking at the resumed ref, so a Stop names it directly) or at this
+// drive's failure (a failed drive publishes no identity, so no pane will ever
+// follow to clear it). Idempotent: deleting an absent entry is a no-op.
+function endResumeSwap(fromRef: string): void {
   resumeSwapTargets.delete(fromRef);
 }
 
-// The Stop call sites' second cancel: while `ref` is mid-swap, a Stop pressed on
-// it must also cancel the unattempted rows the drive moved to the resumed ref.
-// Once the pane has followed the identity, a Stop is about the resumed ref's own
-// rows (a Stop there names it directly) and is not this registration's to
-// cancel.
-//
-// The target must be read SYNCHRONOUSLY at the press (resumeSwapTargetFor): the
-// pane's identity-follow effect clears the registration, and forceStop/shutdown
-// await their own cancellation write before they reach this - a Stop pressed
-// while the pane still showed `ref` must still cancel the rows the drive moved,
-// even if the follow lands inside that await.
+// The target a Stop pressed on `ref` must also cancel, read SYNCHRONOUSLY at the
+// press: the pane's follow effect ends the registration, and forceStop and
+// shutdown await their own cancellation write before they reach the cancel - a
+// Stop pressed while the pane still showed `ref` must still cancel the rows the
+// drive moved, even if the follow lands inside that await.
 function resumeSwapTargetFor(ref: string): string | undefined {
-  return resumeSwapTargets.get(ref)?.toRef;
+  return resumeSwapTargets.get(ref);
 }
 
-async function cancelResumeSwapTarget(ref: string): Promise<void> {
-  const toRef = resumeSwapTargetFor(ref);
+// The Stop call sites' second cancel: while `ref` is mid-swap (the captured
+// target is defined), a Stop pressed on it must also cancel the unattempted rows
+// the drive moved to the resumed ref. Once the pane has followed the identity,
+// a Stop is about the resumed ref's own rows (a Stop there names it directly)
+// and the registration is gone, so the captured target is undefined.
+async function cancelResumeSwapTarget(toRef: string | undefined): Promise<void> {
   if (toRef === undefined) return;
   await cancelUnattemptedMutations(toRef);
 }
@@ -1960,7 +1940,8 @@ async function cancelResumeSwapTarget(ref: string): Promise<void> {
 // that moves nothing does NOT settle the Stop registration: it proves only that
 // no rows remain parked under the old ref, not that the rows already moved to
 // the resumed ref were delivered or that the pane has followed. The
-// registration ends with that follow (clearResumeSwap, from clearResumedIdentity).
+// registration ends with that follow (endResumeSwap, from clearResumedIdentity)
+// or with this drive's failure.
 function scheduleRetargetDrain(
   fromRef: string,
   toRef: string,
@@ -4951,7 +4932,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // The pane followed the identity: its follow effect calls this, so this is
     // where a mid-swap Stop registration ends (see resumeSwapTargets). The user
     // is now on the resumed ref, and a Stop there names it directly.
-    clearResumeSwap(ref);
+    endResumeSwap(ref);
     threadsStore.setState((state) => {
       if (!state.resumedIdentities.has(ref)) return {};
       const resumedIdentities = new Map(state.resumedIdentities);
@@ -5488,7 +5469,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // Same mid-swap reach as forceStop's cancel above: a Stop pressed on the
     // old ref while a resume is moving its rows to the resumed ref must cancel
     // the moved rows too, or the message delivers under a Stop.
-    await cancelResumeSwapTarget(ref);
+    await cancelResumeSwapTarget(resumeSwapTargetFor(ref));
     // Stop is session-scoped, always. Naming a turn here could only ever make
     // Stop fail: the id is missing in the windows Stop matters most -- a turn
     // the session started for itself, a boundary between two turns of one
@@ -5691,7 +5672,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       await cancelUnattemptedMutations(ref);
       // A Stop pressed on the old ref while a resume is mid-swap must also
       // cancel the rows the drive already moved to the resumed ref.
-      if (swapTarget !== undefined) await cancelUnattemptedMutations(swapTarget);
+      await cancelResumeSwapTarget(swapTarget);
       // Resolve the client in its own step, so a lookup failure is
       // distinguishable by construction from a signal failure: no client
       // means no signal reached any daemon, so - exactly like the
@@ -5727,7 +5708,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const swapTarget = resumeSwapTargetFor(ref);
     await cancelUnattemptedMutations(ref);
     // Same mid-swap reach as forceStop's cancel above.
-    if (swapTarget !== undefined) await cancelUnattemptedMutations(swapTarget);
+    await cancelResumeSwapTarget(swapTarget);
     const client = requireClient();
     try {
       await client.request("thread/shutdown", { ref });
