@@ -117,10 +117,8 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // otherwise stay persistently writable, and all of them when the spawn's
 // go env file cannot be judged (unreadable now, relative, or not the probe's),
 // since the overlay cannot know where go will write. npm's and cargo's caches
-// are left as they are, except under a root the overlay cannot mount on this
-// host's filesystem (#4220, underUnoverlayableRoot): that root is not overlaid, so
-// what names it — the spawn's own value or its HOME default — goes to the
-// scratch rather than writing into a read-only tree.
+// go to the scratch when the overlay does not serve their directory and no
+// persistent write root covers it (an un-overlayable root, #4220, included).
 //
 // GOMODCACHE goes alongside GOCACHE because an ambient value can name any
 // directory. GOPATH goes because Go writes the checksum database's tree heads to
@@ -155,15 +153,15 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 				out[name] = true
 			}
 		}
-		// The exception is a root the overlay cannot mount on this host's
-		// filesystem (#4220): it is not overlaid at all, so what names it — the
-		// spawn's own value or its HOME default — must go to the scratch rather
-		// than write into a read-only tree. A root dropped for sharing storage
-		// with a writable directory keeps today's "leave it alone", even when it
-		// is also un-overlayable: those writes persist where the user granted.
+		// npm's and cargo's caches go to the scratch when the overlay does not
+		// serve their directory and no persistent write root covers it: read-only
+		// otherwise, whether the root was dropped or the host's filesystem refuses
+		// its overlay (#4220), or the directory lies outside every cache root (a
+		// child with no HOME resolving its own). A directory inside a write root
+		// keeps today's "leave it alone": those writes persist where the user
+		// granted.
 		for _, name := range []string{npmConfigCacheEnv, envvars.CargoHome.Name} {
-			if dir := dirs[name]; filepath.IsAbs(dir) && !servedByOverlay(roots, dir) &&
-				!overlapsAnyRoot(dir, writeRoots) && underUnoverlayableRoot(policy, dir) {
+			if dir := dirs[name]; filepath.IsAbs(dir) && !servedByOverlay(roots, dir) && !overlapsAnyRoot(dir, writeRoots) {
 				out[name] = true
 			}
 		}
@@ -206,17 +204,6 @@ func servedByOverlay(roots []string, dir string) bool {
 // spelling or by the root's own resolved location.
 func landsUnder(dest, root string) bool {
 	return pathUnder(dest, root) || pathUnder(dest, resolveExistingPrefix(root))
-}
-
-// underUnoverlayableRoot reports whether dir lies at or under one of the
-// policy's cache roots whose overlay this host's filesystem refuses
-// (HostFacts.OverlayLowerOK, #4220). Such a root is not served, so what names it
-// is redirected to the session scratch rather than writing into a read-only tree.
-func underUnoverlayableRoot(policy ResolvedPolicy, dir string) bool {
-	dest := resolveExistingPrefix(dir)
-	return slices.ContainsFunc(policy.CacheRoots, func(r string) bool {
-		return landsUnder(dest, r) && !overlayLowerOK(policy, r)
-	})
 }
 
 // overlapsAnyRoot reports whether dir lies at or under one of roots, or holds
@@ -333,9 +320,10 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, m
 	out[npmConfigCacheEnv] = envValueFold(env, npmConfigCacheEnv)
 	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
 	// With no HOME in the spawn's own environment (a clean EnvPolicyNone), npm
-	// and cargo fall back to the login user's home in the user database, which is
-	// the one the probe read, so their default caches are judged there.
-	npmHome := firstOr(home, host.Home)
+	// and cargo fall back to the login user's home in the user database — not
+	// this process's own HOME, which a deployment may override — so their default
+	// caches are judged where the tools will really write.
+	npmHome := firstOr(home, host.LoginHome, host.Home)
 	if npmHome != "" {
 		out[npmConfigCacheEnv] = firstOr(out[npmConfigCacheEnv], filepath.Join(npmHome, ".npm"))
 		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(npmHome, ".cargo"))

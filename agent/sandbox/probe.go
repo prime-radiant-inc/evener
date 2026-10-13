@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -158,6 +159,13 @@ type HostFacts struct {
 	// (tests, a hand-built HostFacts).
 	OverlayLowerOK func(root string) bool
 
+	// LoginHome is the login user's home directory from the user database
+	// (`getpwuid`/`/etc/passwd`), which is what npm and cargo fall back to for
+	// "~" when their environment carries no HOME (a clean EnvPolicyNone child).
+	// Empty when it cannot be resolved. It can differ from Home, which is this
+	// process's own HOME and which a deployment may override.
+	LoginHome string
+
 	// GoEnvFile is the go env file the probe read GoPath from ("" when none).
 	// The env floor reads it again at each spawn whose go reads the same file,
 	// since go reads it at every run.
@@ -208,6 +216,7 @@ type probeSystem interface {
 	getenv(string) string
 	environ() []string
 	userHomeDir() (string, error)
+	loginHomeDir() (string, error)
 	lookPath(string) (string, error)
 	nonDirectoryFile(string) bool
 	userConfigDir() (string, error)
@@ -228,6 +237,14 @@ func (hostProbeSystem) getenv(name string) string { return os.Getenv(name) }
 func (hostProbeSystem) environ() []string { return os.Environ() }
 
 func (hostProbeSystem) userHomeDir() (string, error) { return probeUserHomeDir() }
+
+func (hostProbeSystem) loginHomeDir() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return u.HomeDir, nil
+}
 
 func (hostProbeSystem) lookPath(name string) (string, error) { return exec.LookPath(name) }
 
@@ -312,6 +329,9 @@ func probeHost(system probeSystem) HostFacts {
 	}
 	if home, err := system.userHomeDir(); err == nil {
 		facts.Home = home
+	}
+	if login, err := system.loginHomeDir(); err == nil {
+		facts.LoginHome = login
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)

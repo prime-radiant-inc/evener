@@ -282,6 +282,17 @@ func TestProbeReadsNpmAndCargoCacheEnv(t *testing.T) {
 	}
 }
 
+// The login user's home comes from the user database, not this process's HOME:
+// a child with no HOME of its own resolves "~" to the former, so the env floor
+// must judge that directory (#4220).
+func TestProbeReadsTheLoginHome(t *testing.T) {
+	t.Parallel()
+	facts := probeHost(stubProbeSystem{loginHome: "/home/login"})
+	if facts.LoginHome != "/home/login" {
+		t.Errorf("probeHost LoginHome=%q, want the user database's home", facts.LoginHome)
+	}
+}
+
 // npm reads its environment configuration through a lowercased key, so
 // NPM_CONFIG_CACHE names the same setting as npm_config_cache. A host that sets
 // the uppercase spelling must still get the root overlaid, or its cache writes

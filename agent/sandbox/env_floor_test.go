@@ -474,24 +474,28 @@ func TestEnvFloorLeavesNpmCachesInAPersistentWriteRootAlone(t *testing.T) {
 }
 
 // A spawn with no HOME in its environment (a clean EnvPolicyNone) still gets
-// npm's and cargo's default caches judged: their runtimes fall back to the login
-// user's home in the user database, which is the one the probe read, so a
-// default under a degraded root is redirected there too (#4220).
+// npm's and cargo's default caches judged where the tools will really write:
+// they fall back to the login user's home in the user database, NOT to this
+// process's HOME, which a deployment may override (#4220).
 func TestEnvFloorRedirectsNpmAndCargoDefaultsWithNoHome(t *testing.T) {
-	home := servedHome(t)
+	overridden := servedHome(t)
+	login := servedHome(t)
 	tmp := "/tmp/evener-session-xyz"
 	policy := ResolvedPolicy{
 		Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay,
-		CacheRoots: []string{home + "/.npm", home + "/.cargo"},
+		CacheRoots: []string{overridden + "/.npm", overridden + "/.cargo"},
 		Spawned:    AccessScope{Read: ReadAnywhere},
 		resolveHost: HostFacts{
-			OS: "linux", Home: home, OverlayLowerOK: func(string) bool { return false },
+			OS: "linux", Home: overridden, LoginHome: login,
+			// The overridden home's roots are healthy; the login home's default
+			// caches are outside every root and must be redirected.
+			OverlayLowerOK: func(string) bool { return true },
 		},
 	}
 	out := ApplyEnvFloor(nil, policy, tmp)
 	for name, want := range map[string]string{"npm_config_cache": tmp + "/npm", "CARGO_HOME": tmp + "/cargo"} {
 		if v, _ := envValue(out, name); v != want {
-			t.Errorf("with no HOME, a %s under a degraded root must go to the session scratch %q, got %q", name, want, v)
+			t.Errorf("with no HOME, a %s under the login home's unserved default must go to the session scratch %q, got %q", name, want, v)
 		}
 	}
 }

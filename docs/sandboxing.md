@@ -509,6 +509,10 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   kernel returns EINVAL) is probed once per root and left out of the overlay
   rather than aborting every spawn, and the cache variables naming it —
   including npm's and cargo's own defaults under it — go to the session scratch.
+  More generally, an npm or cargo cache the overlay does not serve and that no
+  persistent write root covers is redirected into the session scratch, so a
+  child that resolves its own default (a clean environment with no `HOME`) is
+  covered too.
   A Go cache the overlay does not
   serve (set in the spawn's environment, with `go env -w`, which is read again
   at each spawn as go itself does, or by Go's defaults under the spawn's own
