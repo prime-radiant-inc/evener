@@ -48,6 +48,15 @@ export interface VirtualListHandle {
   scrollToOffset?: (offset: number) => void;
   /** True when rendered dynamic rows and the DOM sizer agree with measurements. */
   isMeasurementReady?: () => boolean;
+  /**
+   * Declare the reader is moving backward before any scroll event says so. A
+   * native backward key's smooth scroll starts a frame or two after its keydown
+   * - sometimes late enough that the gesture marker has expired before the
+   * first scroll event (#4065) - so the movement record cannot wait for that
+   * event to arm the size-change rule's protection of a partially visible
+   * reading point.
+   */
+  noteBackwardMovement?: () => void;
 }
 
 export interface VirtualListProps {
@@ -365,6 +374,9 @@ export function VirtualList({
         );
       },
       isLayoutCurrent: () => hasCommittedGeometry(virtualizer, measuredHeightsRef.current),
+      noteBackwardMovement: () => {
+        backwardMovementRef.current = true;
+      },
       getVisibleRange: () => {
         const items = virtualizer.getVirtualItems();
         const first = items[0];

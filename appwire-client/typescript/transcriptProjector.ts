@@ -7,6 +7,7 @@ import {
   isNonZeroExit,
   isTurnError,
 } from "./itemFailure";
+import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { comparePositions } from "./reducer";
 import { isParentSteer } from "./steeringLabels";
@@ -137,12 +138,6 @@ const HOOK_EVENT_KIND = "hook_completed";
 // decides visibility only; each client chooses how to draw them.
 const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "warning", "interrupted"]);
 const TOOL_REPAIR_EVENT_KIND = "tool_repair";
-// The automatic memory refresh (agent/session_memory.go's MEMORY_CONTEXT turn).
-// It is a standalone, collapsed notification a reader can always reach, so it
-// stays visible at every level regardless of the system-events gate, and it
-// opts out of the expand-everything baseline (see eligibleDisclosure below and
-// SteeringDivider's ignoreBaseline read).
-const MEMORY_CONTEXT_EVENT_KIND = "memory-context";
 
 // ask_user is the current interaction tool. The other names are protocol/tool
 // vocabulary used by compatible clients; matching exact names keeps this typed

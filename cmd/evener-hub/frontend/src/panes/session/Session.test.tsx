@@ -111,6 +111,22 @@ async function confirmForceStop(user: ReturnType<typeof userEvent.setup>): Promi
   await flushPendingTurnsProjectionForTests();
 }
 
+// The same race as confirmForceStop, for the tests that confirm the dialog
+// themselves and must keep asserting while it is still open: the refused stop
+// leaves the dialog up, so "wait for the close" cannot be their bound. What
+// they can wait for is the ref's stopping fence, which beginStop arms
+// synchronously in the click and endStop clears in the stop's own `finally` -
+// for the accepted and the refused stop alike. forceStop also looks its client
+// up only AFTER its cancellation await (threads.ts's `requireClient()`), so a
+// stop still in flight when the test ends lands its `evener/thread/forceStop`
+// on the NEXT test's fake and breaks that test's "no forceStop yet" check.
+// Waiting here does not stand in for any assertion: the call-count assertion
+// that follows is still what proves the stop reached the wire.
+async function settleForceStop(ref: string): Promise<void> {
+  await waitFor(() => expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false));
+  await flushPendingTurnsProjectionForTests();
+}
+
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,
@@ -3833,17 +3849,20 @@ test.each(["success", "refused"])(
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     if (outcome === "success") {
       // Force stop's durable cancellation and stop RPC run past the click; the
-      // pane starts its refresh only once they have settled.
+      // pane starts its refresh only once they have settled, and the recovery
+      // face exists only once that refresh has PUBLISHED the stopped snapshot.
+      // The call alone carries no model, so wait for the refresh to settle (the
+      // same edge the dialog closes on) before reading the face.
       await waitFor(() => expect(refresh).toHaveBeenCalledWith(ref));
+      await act(async () => {
+        await refresh.mock.results[0]?.value;
+      });
       // R09: confirmed recovery now surfaces as Send on the Send-resumes face,
       // not a standalone Resume control.
       expect(sendResumesLocalModel(ref)).toBe(true);
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
       // Hydration publishes Resume before storage reconciliation completes.
       // The dialog closes only when the complete refresh promise settles.
-      await act(async () => {
-        await refresh.mock.results[0]?.value;
-      });
       expect(screen.queryByRole("dialog")).toBeNull();
     } else {
       expect(await screen.findByText("no direct daemon ownership claim")).toBeTruthy();
@@ -3891,8 +3910,10 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
-  // land after the click resolves; wait for it rather than racing the write.
-  await flushPendingTurnsProjectionForTests();
+  // land after the click resolves; wait for the stop to settle rather than
+  // racing the write. The refused row leaves the dialog open, so the stopping
+  // fence is the bound both rows share.
+  await settleForceStop(ref);
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
     { method: "evener/thread/forceStop", params: { ref } },
   ]);
@@ -3906,15 +3927,18 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("restartRequired");
   } else {
     // R09: the recovered session offers Send on the Send-resumes face, and the
-    // send drives the resume - no standalone Resume control.
-    expect(sendResumesLocalModel(ref)).toBe(true);
-    expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
-    // Hydration publishes Resume before storage reconciliation completes.
-    // The dialog closes only when the complete refresh promise settles.
+    // send drives the resume - no standalone Resume control. The call only
+    // starts the pane's refresh; the face exists once that refresh has
+    // PUBLISHED the stopped snapshot, so wait for it to settle before reading
+    // the face (the same edge the dialog closes on).
     expect(refresh).toHaveBeenCalledWith(ref);
     await act(async () => {
       await refresh.mock.results[0]?.value;
     });
+    expect(sendResumesLocalModel(ref)).toBe(true);
+    expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+    // Hydration publishes Resume before storage reconciliation completes.
+    // The dialog closes only when the complete refresh promise settles.
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
     await resumeViaSend(ref);
@@ -4317,7 +4341,7 @@ test.each(["pending", "failed"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
-      await flushPendingTurnsProjectionForTests();
+      await settleForceStop(ref);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
       ]);
@@ -4720,7 +4744,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   await user.click(menuTrigger);
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
-  await flushPendingTurnsProjectionForTests();
+  await settleForceStop(ref);
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
     { method: "evener/thread/forceStop", params: { ref } },
   ]);
