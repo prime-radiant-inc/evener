@@ -66,6 +66,16 @@ function isRequestedDocument(pane: OpenPaneRecord, params: DocParams): boolean {
   return candidate.session === params.session && candidate.path === params.path && candidate.kind === params.kind;
 }
 
+// Captured origins are fresh objects on every open, so refresh decisions
+// compare them by value: two captures of the same scope are the same origin.
+function sameOpeningOrigin(a: DocOpeningOrigin | undefined, b: DocOpeningOrigin | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.kind === "browser-origin") {
+    return b.kind === "browser-origin" && a.paneId === b.paneId && a.compositionOwnerId === b.compositionOwnerId;
+  }
+  return b.kind === "browser-readonly-session" && a.sourcePaneId === b.sourcePaneId;
+}
+
 export function openDocBeside(request: DocumentOpenRequest): void {
   const path = request.reference.provenance === "absolute" ? request.reference.readTarget : request.reference.path;
   const reference = bindFilePath(path, request.reference.cwd);
@@ -85,6 +95,21 @@ export function openDocBeside(request: DocumentOpenRequest): void {
   const existingDocument = workspace.panes.find((pane) => isRequestedDocument(pane, params));
   if (existingDocument) {
     const previous = documentPaneState(existingDocument);
+    // The serialized origin must follow the live capture: a note authored
+    // after this reuse captures params.origin as its destination, so leaving
+    // the first composer's identity here would strand every later annotation
+    // on a composer that no longer exists. Destinations already captured by
+    // prepared or saved operations keep their own payloads. The assignment
+    // keeps the pane record's identity, like promotePane's slot swap, so the
+    // workspace's per-record state stays keyed to it; the publish below
+    // carries the change to consumers.
+    const capturedOrigin = request.origin;
+    if (
+      capturedOrigin !== undefined &&
+      !sameOpeningOrigin((existingDocument.params as Partial<DocParams>).origin, capturedOrigin)
+    ) {
+      existingDocument.params = params;
+    }
     // Publish a changed binding before the reused pane is focused, so
     // consumers never observe the newly focused document with its old source.
     recordDocumentPaneState(existingDocument, {

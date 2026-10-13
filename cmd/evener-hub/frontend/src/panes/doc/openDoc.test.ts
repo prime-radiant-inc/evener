@@ -7,7 +7,7 @@ import {
   resetWorkspaceStoreForTests,
   workspaceStore,
 } from "../../shell/workspace";
-import { openDocBeside } from "./openDoc";
+import { type DocParams, openDocBeside } from "./openDoc";
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
@@ -148,6 +148,41 @@ test("openDocBeside focuses the open document instead of duplicating it when the
   if (!document) throw new Error("the reused document pane is missing");
   expect(document.id).toBe(existing.id);
   expect(workspaceStore.getState().focusedPaneId).toBe(existing.id);
+  expect(documentPaneState(document)).toEqual({ reference, origin: source, reopen: 1 });
+});
+
+test("openDocBeside refreshes the reused document's serialized origin", () => {
+  vi.restoreAllMocks();
+  const sourceId = workspaceStore.getState().openPane("transcript", { ref: "sess_6" });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const reference = bindFilePath("src/x.ts", "/work");
+  if (!source || !reference) throw new Error("fixture did not create a source and bound file");
+
+  openDocBeside({
+    session: "sess_6",
+    reference,
+    sourcePaneId: sourceId,
+    origin: { kind: "browser-origin", paneId: "pane_session_1", compositionOwnerId: "composer-before-reload" },
+  });
+
+  // The next open-beside captures the live composer, not the one that opened
+  // the document first: a note's destination captures the pane's serialized
+  // origin, so a stale one here would strand every later annotation on a
+  // composer that no longer exists.
+  openDocBeside({
+    session: "sess_6",
+    reference,
+    sourcePaneId: sourceId,
+    origin: { kind: "browser-origin", paneId: "pane_session_1", compositionOwnerId: "composer-after-reload" },
+  });
+
+  const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!document) throw new Error("the reused document pane is missing");
+  expect((document.params as DocParams).origin).toEqual({
+    kind: "browser-origin",
+    paneId: "pane_session_1",
+    compositionOwnerId: "composer-after-reload",
+  });
   expect(documentPaneState(document)).toEqual({ reference, origin: source, reopen: 1 });
 });
 
