@@ -125,7 +125,7 @@ func BenchmarkRebuild(b *testing.B) {
 				}
 			}
 			b.StopTimer()
-			b.ReportMetric(float64(size)/b.Elapsed().Seconds()/(1<<20), "MB/s")
+			b.ReportMetric(float64(size)*float64(b.N)/b.Elapsed().Seconds()/(1<<20), "MB/s")
 			b.ReportMetric(float64(entries)*float64(b.N)/b.Elapsed().Seconds(), "entries/s")
 			b.ReportMetric(b.Elapsed().Seconds()/(float64(b.N)*float64(entries))*1000, "ms/entry")
 		})
