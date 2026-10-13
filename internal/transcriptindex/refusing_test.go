@@ -336,7 +336,7 @@ func TestRefusingCatchUpRefusesEachRebuildTrigger(t *testing.T) {
 		requireRefusal(t, x.CatchUp(), want)
 		after := snapshotSidecar(t, dir, true)
 		assertSameSidecar(t, "mid-scan refusal", before, after)
-		if string(before[currentFileName]) != string(after[currentFileName]) {
+		if !bytes.Equal(before[currentFileName], after[currentFileName]) {
 			t.Fatal("the mid-scan refusal swapped CURRENT")
 		}
 	})
@@ -388,7 +388,7 @@ func TestRefusingCatchUpRefusesEachRebuildTrigger(t *testing.T) {
 		requireRefusal(t, x.CatchUp(), want)
 		after := snapshotSidecar(t, dir, true)
 		assertSameSidecar(t, "pending-communicate refusal", before, after)
-		if string(before[currentFileName]) != string(after[currentFileName]) {
+		if !bytes.Equal(before[currentFileName], after[currentFileName]) {
 			t.Fatal("the pending-communicate refusal swapped CURRENT")
 		}
 	})

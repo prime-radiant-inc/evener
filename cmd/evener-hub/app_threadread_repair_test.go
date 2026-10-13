@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/transcriptindex"
@@ -189,18 +189,41 @@ func requireTranscriptIndexRebuilding(t testing.TB, err error) {
 
 // requireTranscriptHistoryFailed pins the history-failed answer, including
 // the ordinal its message names.
-func requireTranscriptHistoryFailed(t testing.TB, err error, ordinal uint64) {
+// requireTranscriptHistoryFailedWithoutIdentity asserts the history-failed
+// wire error and its entry-naming message, in either the wire-stamped shape
+// or the plain one a raw production call answers before the wire layer stamps
+// the daemonless read identity onto it.
+func requireTranscriptHistoryFailedWithoutIdentity(t testing.TB, err error, ordinal uint64) {
 	t.Helper()
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok {
 		t.Fatalf("err = %T %v, want a WireError", err, err)
 	}
-	data, ok := wire.Data.(appwire.HistoryReadErrorData)
-	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed {
+	var info appwire.ErrorInfo
+	switch data := wire.Data.(type) {
+	case appwire.HistoryReadErrorData:
+		info = data.EvenerErrorInfo
+	case appwire.ErrorData:
+		info = data.EvenerErrorInfo
+	default:
+		t.Fatalf("history-failed data = %#v, want transcriptHistoryFailed in either shape", wire.Data)
+		return
+	}
+	if info != appwire.ErrorTranscriptHistoryFailed {
 		t.Fatalf("history-failed data = %#v, want transcriptHistoryFailed", wire.Data)
 	}
 	if want := fmt.Sprintf("thread history failed at entry %d", ordinal); wire.Message != want {
 		t.Fatalf("history-failed message = %q, want %q", wire.Message, want)
+	}
+}
+
+func requireTranscriptHistoryFailed(t testing.TB, err error, ordinal uint64) {
+	t.Helper()
+	requireTranscriptHistoryFailedWithoutIdentity(t, err, ordinal)
+	wire, _ := errors.AsType[appwire.WireError](err)
+	data, ok := wire.Data.(appwire.HistoryReadErrorData)
+	if !ok {
+		t.Fatalf("history-failed data = %#v, want the wire-stamped shape a raw call has not yet received", wire.Data)
 	}
 	if data.BootGeneration != appwire.DaemonlessBootGeneration || data.Epoch == nil || *data.Epoch != 0 {
 		t.Fatalf("history-failed identity = boot %q epoch %v, want the daemonless generation and epoch 0", data.BootGeneration, data.Epoch)
@@ -232,7 +255,7 @@ func TestAStaleSidecarAnswersRebuildingAndRepairsInBackground(t *testing.T) {
 	requireTranscriptIndexRebuilding(t, err)
 
 	// Exactly one repair runs; feed it the real recipe.
-	feed(func(path string) error { return repairTranscriptIndex(path) })
+	feed(repairTranscriptIndex)
 	<-completions
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("repairs = %d, want 1", got)
@@ -262,7 +285,7 @@ func TestAStaleSidecarAnswersRebuildingAndRepairsInBackground(t *testing.T) {
 	staleSidecarForTest(t, path)
 	_, err = readStaleSession(t, cfg, entry)
 	requireTranscriptIndexRebuilding(t, err)
-	feed(func(path string) error { return repairTranscriptIndex(path) })
+	feed(repairTranscriptIndex)
 	<-completions
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("repairs = %d, want 2", got)
@@ -376,7 +399,7 @@ func TestTheRepairRebuildsRatherThanCatchingUp(t *testing.T) {
 	feed, completions, _ := installRepairSeam(t)
 	var big []schema.Turn
 	for i := range 6 {
-		big = append(big, execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("word ", 200)+fmt.Sprint(i)))))
+		big = append(big, execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("word ", 200)+strconv.Itoa(i)))))
 	}
 	cfg, entry, path := seedIndexedPastSession(t, big...)
 	corruptTranscriptEntry(t, path)
@@ -386,7 +409,7 @@ func TestTheRepairRebuildsRatherThanCatchingUp(t *testing.T) {
 	_, err := readStaleSession(t, cfg, entry)
 	requireTranscriptIndexRebuilding(t, err)
 
-	feed(func(path string) error { return repairTranscriptIndex(path) })
+	feed(repairTranscriptIndex)
 	<-completions
 
 	// The repair rebuilt: the read succeeds with the corrupted entry's
@@ -559,13 +582,36 @@ func TestTheRepairFailureBudget(t *testing.T) {
 	staleSidecarForTest(t, path)
 	_, err = readStaleSession(t, cfg, entry)
 	requireTranscriptIndexRebuilding(t, err)
-	feed(func(path string) error { return repairTranscriptIndex(path) })
+	feed(repairTranscriptIndex)
 	<-completions
 	if got := calls.Load(); got != 5 {
 		t.Fatalf("repairs = %d, want 5 (three failures, one held re-arm, one fresh)", got)
 	}
 	if _, err := readStaleSession(t, cfg, entry); err != nil {
 		t.Fatalf("read after the successful re-arm: %v", err)
+	}
+}
+
+// exhaustTheLaneBudget runs three failing refresher-fed repairs through the
+// lane, takes the exhausted path's first unpaced re-arm and fails it too, and
+// proves the next lane ask within the interval skips: the path is now paced,
+// with the failed re-arm's timestamp to measure from.
+func exhaustTheLaneBudget(t *testing.T, feed func(func(path string) error), completions <-chan struct{}, path string) {
+	t.Helper()
+	boom := errors.New("repair failed on purpose")
+	for range 3 {
+		transcriptIndexRepairs.askFromRefresher(path)
+		feed(func(string) error { return boom })
+		<-completions
+	}
+	// The first re-arm after exhaustion is taken — nothing paces it yet —
+	// and fails, recording the moment the interval measures from.
+	transcriptIndexRepairs.askFromRefresher(path)
+	feed(func(string) error { return boom })
+	<-completions
+	transcriptIndexRepairs.askFromRefresher(path)
+	if transcriptIndexRepairs.inFlight(path) {
+		t.Fatal("the lane took an exhausted path within the interval, want a skip")
 	}
 }
 
@@ -578,19 +624,9 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 	)
 	staleSidecarForTest(t, path)
 
-	// Exhaust the path's budget through the refresher's lane.
-	boom := errors.New("repair failed on purpose")
-	for range 3 {
-		transcriptIndexRepairs.askFromRefresher(path)
-		feed(func(string) error { return boom })
-		<-completions
-	}
-
-	// The exhausted path's first lane re-arm is taken — there is no previous
-	// re-arm to pace against — and fails again.
-	transcriptIndexRepairs.askFromRefresher(path)
-	feed(func(string) error { return boom })
-	<-completions
+	// Exhaust the path's budget through the refresher's lane; the first
+	// exhausted re-arm is taken and fails again.
+	exhaustTheLaneBudget(t, feed, completions, path)
 	if got := calls.Load(); got != 4 {
 		t.Fatalf("repairs = %d, want the first exhausted re-arm taken", got)
 	}
@@ -611,7 +647,7 @@ func TestTheRefresherLanePacesAnExhaustedPath(t *testing.T) {
 	// again.
 	time.Sleep(60 * time.Millisecond)
 	transcriptIndexRepairs.askFromRefresher(path)
-	feed(func(path string) error { return repairTranscriptIndex(path) })
+	feed(repairTranscriptIndex)
 	<-completions
 	if got := calls.Load(); got != 5 {
 		t.Fatalf("repairs = %d, want the lane to re-arm after the interval", got)
@@ -635,21 +671,9 @@ func TestTheLanePacesAnExhaustedPathOnlyWhileItsStampStands(t *testing.T) {
 	)
 	staleSidecarForTest(t, path)
 
-	// Exhaust the path's budget through the refresher's lane, then let one
-	// paced re-arm mark the interval.
-	boom := errors.New("repair failed on purpose")
-	for range 3 {
-		transcriptIndexRepairs.askFromRefresher(path)
-		feed(func(string) error { return boom })
-		<-completions
-	}
-	transcriptIndexRepairs.askFromRefresher(path)
-	feed(func(string) error { return boom })
-	<-completions
-	transcriptIndexRepairs.askFromRefresher(path)
-	if transcriptIndexRepairs.inFlight(path) {
-		t.Fatal("the lane took an exhausted path within the interval, want a skip")
-	}
+	// Exhaust the path's budget through the refresher's lane, take one paced
+	// re-arm so the interval stands, and prove the next ask skips.
+	exhaustTheLaneBudget(t, feed, completions, path)
 
 	// The transcript moves on — a live daemon appended, or the file was
 	// rewritten. The failures were counted against another state of the
@@ -662,7 +686,7 @@ func TestTheLanePacesAnExhaustedPathOnlyWhileItsStampStands(t *testing.T) {
 	if !transcriptIndexRepairs.inFlight(path) {
 		t.Fatal("the lane paced a path whose transcript changed, want an immediate re-arm")
 	}
-	feed(func(path string) error { return repairTranscriptIndex(path) })
+	feed(repairTranscriptIndex)
 	<-completions
 	if got := calls.Load(); got != 5 {
 		t.Fatalf("repairs = %d, want 5 (three failures, one paced re-arm, one after the stamp change)", got)
@@ -839,7 +863,7 @@ func TestANeverIndexedSessionAnswersRebuildingOnFirstRead(t *testing.T) {
 	}
 	_, err := readStaleSession(t, cfg, entry)
 	requireTranscriptIndexRebuilding(t, err)
-	feed(func(path string) error { return repairTranscriptIndex(path) })
+	feed(repairTranscriptIndex)
 	<-completions
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("repairs = %d, want 1", got)
@@ -858,7 +882,7 @@ func TestALiveWriterObservesTheRepairHoldAsAStallAndSurvivesIt(t *testing.T) {
 	feed, completions, _ := installRepairSeam(t)
 	var big []schema.Turn
 	for i := range 3 {
-		big = append(big, execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("word ", 200)+fmt.Sprint(i)))))
+		big = append(big, execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("word ", 200)+strconv.Itoa(i)))))
 	}
 	cfg, entry, path := seedIndexedPastSession(t, big...)
 	staleSidecarForTest(t, path)
@@ -869,22 +893,13 @@ func TestALiveWriterObservesTheRepairHoldAsAStallAndSurvivesIt(t *testing.T) {
 	// instead of the stall this test means to observe.
 	_, err := readStaleSession(t, cfg, entry)
 	requireTranscriptIndexRebuilding(t, err)
-	feed(func(p string) error { return repairTranscriptIndex(p) })
+	feed(repairTranscriptIndex)
 	<-completions
 
 	// The live writer's own turn, appended raw: extending to it must be a
 	// genuine incremental extension, the one the repair's incarnation stands.
-	turn := execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("the writer's own message")))
-	w, err := transcript.OpenWriter(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Append(turn); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
+	appendTranscriptEntries(t, path,
+		execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("the writer's own message"))))
 	before := sidecarIncarnation(t, path)
 
 	// The repair holds the sidecar's lock as its rebuild would.

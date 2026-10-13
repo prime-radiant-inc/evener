@@ -53,7 +53,7 @@ func syntheticTranscript(tb testing.TB, turns int) (path string, entries int, si
 			entry(inTurn(id, withModel(withUsage(at(assistant(
 				thinking(filler[:900]),
 				text(filler[:1200]),
-				call(c1, "read_file", fmt.Sprintf(`{"path":"src_%d.go","intent":"%s"}`, i, filler[100:300])),
+				call(c1, "read_file", fmt.Sprintf(`{"path":"src_%d.go","intent":%q}`, i, filler[100:300])),
 				call(c2, "grep", `{"pattern":"func","path":"."}`),
 			), i*10), 10, 5, 3, 15), "gpt-test")))
 			entry(inTurn(id, at(results(
@@ -141,7 +141,7 @@ func BenchmarkRealTranscriptRebuild(b *testing.B) {
 	if list == "" {
 		b.Skipf("set %s to a colon-separated list of transcript paths", realTranscriptsEnv)
 	}
-	for _, source := range strings.Split(list, ":") {
+	for source := range strings.SplitSeq(list, ":") {
 		b.Run(filepath.Base(source), func(b *testing.B) {
 			b.Helper()
 			path := copyRealTranscript(b, source)

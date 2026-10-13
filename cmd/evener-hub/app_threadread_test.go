@@ -1468,26 +1468,12 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 	// header gate in answerPastTranscriptIndexError, which names entry 0,
 	// a transcript that can never be indexed having no recorded entry to
 	// name. The daemonless read identity is stamped at the wire layer, above
-	// this raw call, so the plain error data is what this layer answers.
-	assertHistoryFailed := func(err error) {
-		t.Helper()
-		wire, ok := errors.AsType[appwire.WireError](err)
-		if !ok {
-			t.Fatalf("read err = %T %v, want the history-failed wire error", err, err)
-		}
-		data, ok := wire.Data.(appwire.ErrorData)
-		if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed {
-			t.Fatalf("history-failed data = %#v, want transcriptHistoryFailed", wire.Data)
-		}
-		if want := "thread history failed at entry 0"; wire.Message != want {
-			t.Fatalf("history-failed message = %q, want %q", wire.Message, want)
-		}
-	}
+	// this raw call, so the plain error shape is what this layer answers.
 	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
 	if !found {
 		t.Fatal("past thread not found")
 	}
-	assertHistoryFailed(err)
+	requireTranscriptHistoryFailedWithoutIdentity(t, err, 0)
 	if resp.Thread.Turns != nil {
 		t.Fatalf("past thread/read turns = %+v, want none", resp.Thread.Turns)
 	}
@@ -1495,7 +1481,7 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 	if !found {
 		t.Fatal("past thread not found")
 	}
-	assertHistoryFailed(err)
+	requireTranscriptHistoryFailedWithoutIdentity(t, err, 0)
 	if page.Data != nil {
 		t.Fatalf("past thread/turns/list data = %+v, want none", page.Data)
 	}

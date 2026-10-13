@@ -439,7 +439,7 @@ func (x *Index) readMeta() (meta, error) {
 		return m, err
 	}
 	if err := json.Unmarshal(data, &m); err != nil {
-		return m, fmt.Errorf("%w: parse meta.json: %v", errCorrupt, err)
+		return m, fmt.Errorf("%w: parse meta.json: %w", errCorrupt, err)
 	}
 	if m.Format != formatVersion || m.Projection != currentProjection() {
 		return m, errIdentityChanged

@@ -214,8 +214,9 @@ func (r *transcriptIndexRepairRegistry) askFromRefresher(path string) {
 	// a failure. The pacing uses the budget's own stamp key — a transcript
 	// that changed since the failures is no longer exhausted, so the lane
 	// re-arms it now rather than against another state of the file.
-	if e != nil && e.failures >= transcriptRepairBudget && e.stamp != nil &&
-		time.Since(e.lastLaneRearm) < transcriptRepairLaneExhaustedInterval && r.exhaustedLocked(path, e) {
+	// exhaustedLocked holds the budget and stamp checks itself, before its
+	// stat, so nothing repeats here.
+	if e != nil && time.Since(e.lastLaneRearm) < transcriptRepairLaneExhaustedInterval && r.exhaustedLocked(path, e) {
 		r.mu.Unlock()
 		return
 	}

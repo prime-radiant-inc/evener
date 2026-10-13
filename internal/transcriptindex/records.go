@@ -156,10 +156,6 @@ type updateRecord struct {
 	Offset int64
 }
 
-func encodeUpdate(r updateRecord) []byte {
-	return encodeUpdateInto(make([]byte, updateRecordSize), r)
-}
-
 func encodeUpdateInto(dst []byte, r updateRecord) []byte {
 	c := codec{buf: dst}
 	c.putU32(r.Kind)
@@ -244,10 +240,6 @@ func (c *codec) putContributor(v contributor) {
 	c.putRef(v.Name)
 }
 
-func encodeItem(r itemRecord) []byte {
-	return encodeItemInto(make([]byte, itemRecordSize), r)
-}
-
 func encodeItemInto(dst []byte, r itemRecord) []byte {
 	c := codec{buf: dst}
 	c.putU64(r.Entry)
@@ -307,10 +299,6 @@ func decodeContextEntries(buf []byte) ([]contextEntry, error) {
 		c.contextEntry(&list[i])
 	}
 	return list, nil
-}
-
-func encodeTurn(r turnRecord) []byte {
-	return encodeTurnInto(make([]byte, turnRecordSize), r)
 }
 
 func encodeTurnInto(dst []byte, r turnRecord) []byte {
@@ -408,14 +396,13 @@ type table struct {
 	size int64 // record size
 	n    uint64
 	buf  []byte // nil: reads and writes go straight to the file
-	// flushed is how much of buf the file already holds, and dirty is the
-	// lowest offset in buf whose bytes no longer match the file: an in-place
-	// write below flushed moves it down, and a flush writes only from
-	// min(flushed, dirty) — so a live extension that touches the record it
-	// keeps open, its turn, at the table's end, still commits a tail rather
-	// than the whole file. Valid only while buf != nil.
+	// flushed is how much of buf the file already holds, as a floor an
+	// in-place write below it lowers to its own offset: a flush writes only
+	// from there — the appended tail plus any in-place rewrites above the
+	// floor — so a live extension that touches the record it keeps open,
+	// its turn, at the table's end, still commits a tail rather than the
+	// whole file. Valid only while buf != nil.
 	flushed int64
-	dirty   int64
 }
 
 func (t *table) read(slot uint64, count int) ([]byte, error) {
@@ -443,7 +430,7 @@ func (t *table) write(slot uint64, record []byte) error {
 		if t.buf != nil {
 			off := int64(slot) * t.size
 			if off < t.flushed {
-				t.dirty = min(t.dirty, off)
+				t.flushed = off
 			}
 			copy(t.buf[off:], record)
 			return nil
@@ -467,7 +454,7 @@ func (t *table) buffer(slot uint64) error {
 			return err
 		}
 		t.buf = nil
-		t.flushed, t.dirty = 0, 0
+		t.flushed = 0
 		return nil
 	}
 	t.buf = append(t.buf, make([]byte, end-int64(len(t.buf)))...)
@@ -620,7 +607,6 @@ func (t *table) truncate(n uint64) error {
 	if t.buf != nil {
 		t.buf = t.buf[:int64(n)*t.size]
 		t.flushed = min(t.flushed, int64(n)*t.size)
-		t.dirty = min(t.dirty, int64(n)*t.size)
 		t.n = n
 		return nil
 	}
@@ -646,22 +632,22 @@ func (t *table) load() error {
 		return err
 	}
 	// The buffer mirrors the file it just read: everything is current.
-	t.flushed, t.dirty = int64(len(t.buf)), int64(len(t.buf))
+	t.flushed = int64(len(t.buf))
 	return nil
 }
 
 // flush writes buffered records back to the file, at the commit points where
 // the meta that counts them is about to publish. Only what the file does not
-// already hold — the appended records, plus any in-place rewrite from dirty
-// down — is written: a live writer commits one flush per extension, and
-// rewriting the whole table every time would amplify a few appended records
-// into megabytes of writes. The truncate always runs, so a shrink reaches the
-// file and rows past the counts never survive a restart.
+// already hold — the appended records, plus any in-place rewrites above the
+// watermark floor — is written: a live writer commits one flush per
+// extension, and rewriting the whole table every time would amplify a few
+// appended records into megabytes of writes. The truncate always runs, so a
+// shrink reaches the file and rows past the counts never survive a restart.
 func (t *table) flush() error {
 	if t.buf == nil {
 		return nil
 	}
-	from := min(t.flushed, t.dirty)
+	from := t.flushed
 	if from < int64(len(t.buf)) {
 		if _, err := t.file.WriteAt(t.buf[from:], from); err != nil {
 			return fmt.Errorf("write index records: %w", err)
@@ -671,7 +657,6 @@ func (t *table) flush() error {
 		return fmt.Errorf("truncate index records: %w", err)
 	}
 	t.flushed = int64(len(t.buf))
-	t.dirty = t.flushed
 	return nil
 }
 
