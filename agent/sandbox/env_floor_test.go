@@ -406,6 +406,100 @@ func TestNewWrapperDropsACacheRootItCannotCreate(t *testing.T) {
 	}
 }
 
+// One cache root on a filesystem the overlay cannot mount no longer fails the
+// spawn: it is not overlaid, and a cache variable naming it goes to the session
+// scratch — the session-private redirect, cold but working (#4220). The unset
+// case matters most: it is the default under the spawn's own HOME that names the
+// degraded root, so no environment setting points at it.
+func TestEnvFloorRedirectsNpmAndCargoCachesUnderADegradedRoot(t *testing.T) {
+	home := servedHome(t)
+	tmp := "/tmp/evener-session-xyz"
+	roots := []string{home + "/.cache", home + "/.npm", home + "/.cargo", home + "/go/pkg"}
+	mk := func(refused ...string) ResolvedPolicy {
+		bad := map[string]bool{}
+		for _, r := range refused {
+			bad[r] = true
+		}
+		return ResolvedPolicy{
+			Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: roots,
+			Spawned: AccessScope{Read: ReadAnywhere},
+			resolveHost: HostFacts{
+				OS: "linux", Home: home, GoEnvFile: filepath.Join(home, ".config", "go", "env"),
+				OverlayLowerOK: func(r string) bool { return !bad[r] },
+			},
+		}
+	}
+	out := ApplyEnvFloor([]string{"HOME=" + home}, mk(home+"/.npm", home+"/.cargo"), tmp)
+	for name, want := range map[string]string{"npm_config_cache": tmp + "/npm", "CARGO_HOME": tmp + "/cargo"} {
+		if v, _ := envValue(out, name); v != want {
+			t.Errorf("a %s under a degraded root must go to the session scratch %q, got %q", name, want, v)
+		}
+	}
+
+	// The uppercase spelling of npm's variable names the same setting: it points
+	// at a degraded root the HOME default does not, and must not survive.
+	out = ApplyEnvFloor([]string{"HOME=" + home, "NPM_CONFIG_CACHE=" + home + "/.cargo"}, mk(home+"/.cargo"), tmp)
+	if v, _ := envValue(out, "npm_config_cache"); v != tmp+"/npm" {
+		t.Errorf("an uppercase NPM_CONFIG_CACHE under a degraded root must go to the scratch %q, got %q", tmp+"/npm", v)
+	}
+	if _, ok := envValue(out, "NPM_CONFIG_CACHE"); ok {
+		t.Errorf("the redirected uppercase spelling must not survive: %v", out)
+	}
+
+	// Control: with every root overlaid, the defaults are left alone.
+	out = ApplyEnvFloor([]string{"HOME=" + home}, mk(), tmp)
+	for _, name := range []string{"npm_config_cache", "CARGO_HOME"} {
+		if v, ok := envValue(out, name); ok {
+			t.Errorf("a %s the overlay serves must be left alone, got %q", name, v)
+		}
+	}
+}
+
+// A cache inside a directory the user made writable on purpose is left alone,
+// even when its root is also one the overlay cannot mount: those writes land
+// where the user granted, and redirecting them would override that (#4220).
+func TestEnvFloorLeavesNpmCachesInAPersistentWriteRootAlone(t *testing.T) {
+	home := servedHome(t)
+	tmp := "/tmp/evener-session-xyz"
+	dir := home + "/.npm"
+	policy := ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{dir},
+		Spawned:     AccessScope{Read: ReadAnywhere, WriteRoots: []string{dir}},
+		resolveHost: HostFacts{OS: "linux", Home: home, OverlayLowerOK: func(string) bool { return false }},
+	}
+	out := ApplyEnvFloor([]string{"HOME=" + home}, policy, tmp)
+	if v, ok := envValue(out, "npm_config_cache"); ok {
+		t.Errorf("an npm cache the user made writable on purpose must be left alone, got %q", v)
+	}
+}
+
+// A spawn with no HOME in its environment (a clean EnvPolicyNone) still gets
+// npm's and cargo's default caches judged where the tools will really write:
+// they fall back to the login user's home in the user database, NOT to this
+// process's HOME, which a deployment may override (#4220).
+func TestEnvFloorRedirectsNpmAndCargoDefaultsWithNoHome(t *testing.T) {
+	overridden := servedHome(t)
+	login := servedHome(t)
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay,
+		CacheRoots: []string{overridden + "/.npm", overridden + "/.cargo"},
+		Spawned:    AccessScope{Read: ReadAnywhere},
+		resolveHost: HostFacts{
+			OS: "linux", Home: overridden, LoginHome: login,
+			// The overridden home's roots are healthy; the login home's default
+			// caches are outside every root and must be redirected.
+			OverlayLowerOK: func(string) bool { return true },
+		},
+	}
+	out := ApplyEnvFloor(nil, policy, tmp)
+	for name, want := range map[string]string{"npm_config_cache": tmp + "/npm", "CARGO_HOME": tmp + "/cargo"} {
+		if v, _ := envValue(out, name); v != want {
+			t.Errorf("with no HOME, a %s under the login home's unserved default must go to the session scratch %q, got %q", name, want, v)
+		}
+	}
+}
+
 // A Go cache that cannot be a directory (an existing file, or one below a
 // file) is not served by an overlaid ancestor: go would fail on it, so it
 // goes to the scratch instead.

@@ -467,11 +467,21 @@ func TestBwrapCacheHoldingAWritableRootIsNotOverlaid(t *testing.T) {
 	if strings.Contains(string(out), "STRAY-WRITTEN") {
 		t.Errorf("a write elsewhere in a cache holding a writable root must fail, not land in an overlay:\n%s", out)
 	}
-	if !strings.Contains(string(out), "NPM-WRITABLE") {
-		t.Errorf("a cache holding no writable root must stay overlaid and writable:\n%s", out)
-	}
-	if _, err := os.Stat(filepath.Join(npm, "private")); !os.IsNotExist(err) {
-		t.Errorf("a write into an overlaid cache must be discarded: %v", err)
+	if overlayLowerOK(w.Policy(), npm) {
+		if !strings.Contains(string(out), "NPM-WRITABLE") {
+			t.Errorf("a cache holding no writable root must stay overlaid and writable:\n%s", out)
+		}
+		if _, err := os.Stat(filepath.Join(npm, "private")); !os.IsNotExist(err) {
+			t.Errorf("a write into an overlaid cache must be discarded: %v", err)
+		}
+	} else {
+		// This host refuses the fixture's filesystem as an overlay lower, which is
+		// exactly the case #4220 degrades: the cache is not overlaid, and the floor
+		// sends what names it to the session scratch instead.
+		floored := ApplyEnvFloor([]string{"HOME=" + home}, w.Policy(), w.SessionTmp())
+		if v, _ := envValue(floored, "npm_config_cache"); !strings.HasPrefix(v, w.SessionTmp()+"/") {
+			t.Errorf("a cache root this host cannot overlay must be redirected to the session scratch, got %q", v)
+		}
 	}
 }
 

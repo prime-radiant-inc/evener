@@ -6,10 +6,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/envvars"
@@ -146,6 +148,24 @@ type HostFacts struct {
 	NpmConfigCache string
 	CargoHome      string
 
+	// OverlayLowerOK reports whether bwrap can mount an unprivileged overlay
+	// with a given directory as its lower on this host. Whether overlay is
+	// supported at all is host-wide (OverlaySupported), but whether one mounts
+	// depends on each lower directory's filesystem: a lower on an overlayfs
+	// root, or a network mount, is refused with EINVAL, which would abort the
+	// whole sandbox at every spawn (#4220). The probe runs a trivial namespaced
+	// overlay mount per root, once per session. nil means "every root can be
+	// overlaid": the host has no overlay support, or nothing supplied a probe
+	// (tests, a hand-built HostFacts).
+	OverlayLowerOK func(root string) bool
+
+	// LoginHome is the login user's home directory from the user database
+	// (`getpwuid`/`/etc/passwd`), which is what npm and cargo fall back to for
+	// "~" when their environment carries no HOME (a clean EnvPolicyNone child).
+	// Empty when it cannot be resolved. It can differ from Home, which is this
+	// process's own HOME and which a deployment may override.
+	LoginHome string
+
 	// GoEnvFile is the go env file the probe read GoPath from ("" when none).
 	// The env floor reads it again at each spawn whose go reads the same file,
 	// since go reads it at every run.
@@ -196,6 +216,7 @@ type probeSystem interface {
 	getenv(string) string
 	environ() []string
 	userHomeDir() (string, error)
+	loginHomeDir() (string, error)
 	lookPath(string) (string, error)
 	nonDirectoryFile(string) bool
 	userConfigDir() (string, error)
@@ -216,6 +237,14 @@ func (hostProbeSystem) getenv(name string) string { return os.Getenv(name) }
 func (hostProbeSystem) environ() []string { return os.Environ() }
 
 func (hostProbeSystem) userHomeDir() (string, error) { return probeUserHomeDir() }
+
+func (hostProbeSystem) loginHomeDir() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return u.HomeDir, nil
+}
 
 func (hostProbeSystem) lookPath(name string) (string, error) { return exec.LookPath(name) }
 
@@ -301,6 +330,9 @@ func probeHost(system probeSystem) HostFacts {
 	if home, err := system.userHomeDir(); err == nil {
 		facts.Home = home
 	}
+	if login, err := system.loginHomeDir(); err == nil {
+		facts.LoginHome = login
+	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
@@ -316,6 +348,9 @@ func probeHost(system probeSystem) HostFacts {
 		facts.BwrapPath = path
 		facts.BwrapCapable = bwrapUsernsWorks(system, path)
 		facts.OverlaySupported = bwrapSupportsOverlay(system, path)
+		if facts.OverlaySupported {
+			facts.OverlayLowerOK = memoizedOverlayLower(system, path)
+		}
 	}
 
 	if facts.OS == "darwin" {
@@ -631,6 +666,71 @@ func bwrapSupportsOverlay(system probeSystem, path string) bool {
 		return false
 	}
 	return strings.Contains(string(out), "--overlay-src")
+}
+
+// bwrapOverlayLowerWorks reports whether bwrap can mount an unprivileged overlay
+// whose lower is root on THIS host, by running a trivial namespaced sandbox with
+// the exact flag pair buildBwrapArgv emits and reporting success only if it exits
+// 0. The lower's filesystem, not the bwrap build, decides: an unprivileged
+// overlay over a lower on an overlayfs root (the reported container case) or a
+// network mount fails EINVAL. Fail-closed: any error is "cannot overlay", so the
+// root degrades rather than aborting every spawn.
+func bwrapOverlayLowerWorks(system probeSystem, path, root string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
+	defer cancel()
+	args := bwrapOverlayProbeArgs(path, root)
+	return system.run(ctx, args[0], args[1:]...) == nil
+}
+
+// memoizedOverlayLower returns bwrapOverlayLowerWorks, remembering each root's
+// verdict so the probe runs once per root per session. A cache root can be
+// retargeted under a session (a symlinked parent moved onto another filesystem),
+// so a verdict is keyed by the root's RESOLVED location, not its spelling: a
+// retarget is a new key and is probed again.
+//
+// A root that is not a directory is never remembered: it is not overlaid now,
+// and remembering that would keep it unserved for good once its storage appears
+// (its caller judges it afresh, servableCacheRoot).
+//
+// Accepted residual, and inherent to the issue's once-per-session shape: a
+// DIFFERENT filesystem mounted over the same path (not through a link) keeps the
+// key, so its verdict stands for the session. A user who remounts a cache root's
+// storage mid-session gets the next session's judgment.
+//
+// The probe is asked from more than one spawn site, so the memo is
+// mutex-guarded; the lock is released while the subprocess runs, so concurrent
+// spawns do not queue behind it (a root probed twice concurrently stores the
+// same answer). The closure is shared by every copy of the HostFacts it was
+// built into.
+func memoizedOverlayLower(system probeSystem, path string) func(root string) bool {
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	return func(root string) bool {
+		if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+			return bwrapOverlayLowerWorks(system, path, root)
+		}
+		key := resolveExistingPrefix(root)
+		mu.Lock()
+		over, found := seen[key]
+		mu.Unlock()
+		if found {
+			return over
+		}
+		over = bwrapOverlayLowerWorks(system, path, root)
+		mu.Lock()
+		seen[key] = over
+		mu.Unlock()
+		return over
+	}
+}
+
+// bwrapOverlayProbeArgs is the argv the per-root overlay probe runs: the same
+// namespaced base as the capability probe (bwrapProbeArgs — --unshare-user, a
+// --ro-bind / / that makes the mount target exist, --proc, --dev, …), plus the
+// overlay flag pair buildBwrapArgv emits, placed immediately before the "--".
+func bwrapOverlayProbeArgs(path, root string) []string {
+	args := bwrapProbeArgs(path)
+	return slices.Insert(args, slices.Index(args, "--"), overlayFlags(root)...)
 }
 
 // probeKernelVersion returns `uname -r` best-effort, or "" if unavailable.
