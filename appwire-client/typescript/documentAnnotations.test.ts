@@ -107,6 +107,45 @@ describe("display evidence", () => {
     ).toEqual({ changed: false, detection: "insufficient-coverage" });
   });
 
+  it("detects coverage beyond a complete observation's end", () => {
+    expect(
+      compareDisplayedSources(
+        { source: "abcdef", evidence: { fingerprint: displayedFingerprint("abcdef", true) } },
+        { source: "abc", evidence: { fingerprint: displayedFingerprint("abc", false) } },
+      ),
+    ).toEqual({ changed: true, detection: "comparable-source" });
+    expect(
+      compareDisplayedSources(
+        { source: "abc", evidence: { fingerprint: displayedFingerprint("abc", false) } },
+        { source: "abcdef", evidence: { fingerprint: displayedFingerprint("abcdef", true) } },
+      ),
+    ).toEqual({ changed: true, detection: "comparable-source" });
+  });
+
+  it("detects a truncated side's proven continuation changing at an equal complete end", () => {
+    expect(
+      compareDisplayedSources(
+        { source: "abc", evidence: { fingerprint: displayedFingerprint("abc", true) } },
+        { source: "abc", evidence: { fingerprint: displayedFingerprint("abc", false) } },
+      ),
+    ).toEqual({ changed: true, detection: "comparable-source" });
+    expect(
+      compareDisplayedSources(
+        { source: "abc", evidence: { fingerprint: displayedFingerprint("abc", false) } },
+        { source: "abc", evidence: { fingerprint: displayedFingerprint("abc", true) } },
+      ),
+    ).toEqual({ changed: true, detection: "comparable-source" });
+  });
+
+  it("keeps uncertainty when a complete end extends beyond the prefix coverage", () => {
+    expect(
+      compareDisplayedSources(
+        { source: "abc", evidence: { fingerprint: displayedFingerprint("abc", true) } },
+        { source: "abcdef", evidence: { fingerprint: displayedFingerprint("abcdef", false) } },
+      ),
+    ).toEqual({ changed: false, detection: "insufficient-coverage" });
+  });
+
   it.each([
     ["a suffix deletion", "abcdef", "abc", { changed: true, detection: "comparable-source" }],
     ["a suffix insertion", "abc", "abcdef", { changed: true, detection: "comparable-source" }],
