@@ -260,6 +260,22 @@ export function resumeCascadeScope(lifetime: PaneLifetime, ref: string, resumedR
     : after.scopes[index]?.requestedRef === resumedRef;
   if (!followed) return false;
   updateIntent(current, next);
-  if (sourceResumed) lifetime.adoptResumedSource(resumedRef);
+  if (sourceResumed) {
+    lifetime.adoptResumedSource(resumedRef);
+  } else {
+    // An interior column that changes identity leaves no scope rendering its
+    // old ref, so its retained composer is superseded: it still keys draft
+    // persistence and submission to the old ref, and a late write through it
+    // (a pending image decode failure) would restamp that ref's draft, letting
+    // a later carryComposerDraft overwrite the resumed conversation's newer
+    // draft. Dispose and remove it. Only this one key goes: the source column's
+    // composer moves with the source branch above, and every other scope
+    // renders a distinct ref and keeps its own.
+    const superseded = lifetime.composers.get(ref);
+    if (superseded) {
+      superseded.dispose();
+      lifetime.composers.delete(ref);
+    }
+  }
   return true;
 }

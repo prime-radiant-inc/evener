@@ -17,9 +17,16 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../s
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { urlToPane } from "../../shell/routing";
+import { openNestedSessionWithOwner } from "../../shell/sessionPlacement";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
-import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import {
+  conversationOpenParentRef,
+  type OpenPaneRecord,
+  recordConversationOpenParent,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
@@ -469,8 +476,12 @@ test.each(["closed", "ended", "notLoaded"] as const)(
 
 test("shows a loading placeholder before the thread hydrates", async () => {
   const fake = connectFakeClient();
+  // The conversation pane's hydration and the shared session-activity
+  // subscription both read this ref; both wait on the one pending read so the
+  // placeholder clears when it settles.
   const box: { resolve: ((r: ThreadReadResponse) => void) | null } = { resolve: null };
-  fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (box.resolve = resolve)));
+  const pending = new Promise<ThreadReadResponse>((resolve) => (box.resolve = resolve));
+  fake.on("thread/read", () => pending);
 
   render(
     <ClientProvider client={fake}>
@@ -480,9 +491,6 @@ test("shows a loading placeholder before the thread hydrates", async () => {
 
   expect(screen.getByText(/loading/i)).toBeTruthy();
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
-  // request()'s handler invocation (which captures the resolver) is
-  // deferred a microtask behind the synchronous render() above.
-  await flushUntil(() => box.resolve !== null);
   box.resolve?.(readResponse("ref_a"));
   await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
@@ -1371,7 +1379,18 @@ test("ensureThread fires exactly once when the client is already ready at mount 
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1));
+  // The pane also observes the shared session-activity availability state,
+  // whose subscription acquisition reads the same ref with includeTurns:false.
+  // Exactly two thread/reads total: one hydration read (includeTurns:true) and
+  // that one shared subscription metadata read.
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2));
+  await waitFor(() =>
+    expect(
+      fake.calls.filter(
+        (call) => call.method === "thread/read" && (call.params as { includeTurns?: boolean }).includeTurns === true,
+      ),
+    ).toHaveLength(1),
+  );
 });
 
 test("ensureThread is deferred until the client becomes ready, not attempted while merely connecting", async () => {
@@ -1395,8 +1414,16 @@ test("ensureThread is deferred until the client becomes ready, not attempted whi
   // The connection-store ready notification lets Session claim the ref just
   // before the client's onReady callback advances the hydration epoch. The
   // epoch-current replacement read is intentional; only a matching client
-  // and epoch may share the pending hydration.
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(2));
+  // and epoch may share the pending hydration. Count the hydration reads their
+  // own way (includeTurns:true); the session-activity subscription adds one
+  // includeTurns:false metadata read of its own.
+  await waitFor(() =>
+    expect(
+      fake.calls.filter(
+        (call) => call.method === "thread/read" && (call.params as { includeTurns?: boolean }).includeTurns === true,
+      ),
+    ).toHaveLength(2),
+  );
 });
 
 test("unmounting before the client ever becomes ready calls neither ensureThread nor releaseThread", async () => {
@@ -2074,7 +2101,10 @@ test("replaces stale item cursor content with a fresh read without a retry row",
   fake.on("thread/turns/list", () => {
     throw new WireError("cursor was replaced", -32001, { evenerErrorInfo: "transcriptItemCursorStale" });
   });
-  fake.on("thread/read", () => {
+  fake.on("thread/read", ({ includeTurns }) => {
+    // The session-activity subscription's shared metadata read carries no
+    // turns; answer it benignly and only alternate the hydration reads.
+    if (includeTurns === false) return readResponse("ref_a");
     reads += 1;
     return {
       ...readResponse("ref_a", {
@@ -4696,7 +4726,11 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     </ClientProvider>,
   );
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
-  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
+  // The pane itself now observes the shared session-activity availability
+  // state, so the session scope's store exists from the first render - its
+  // summary is still loading, not yet absent. Exactly one session read and one
+  // subtree read follow, however many surfaces show a count (below).
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeNull();
   // The fence must not hide the editor or its force-stop menu.
   const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
@@ -5042,4 +5076,108 @@ test("a resume survives a collapsed column in another cascade until that cascade
   );
   await act(async () => {});
   expect(threadsStore.getState().resumedIdentities.has(ref)).toBe(false);
+});
+
+// Finding A: session links now open this conversation pane, but its loading
+// branch ignored permanent unavailability. A child whose thread and activity
+// reads both answer sessionUnavailable stayed on the loading spinner forever,
+// while a cascade column (Zoom.tsx) showed the shared terminal explanation for
+// the same snapshot. The pane now observes that shared activity availability
+// state and shows the same explanation, and keeps recovering if it clears.
+test("a child whose reads are permanently unavailable shows the shared terminal explanation", async () => {
+  const fake = connectFakeClient();
+  const ref = "local:gone-child";
+  const unavailable = new WireError("thread not found: gone", -32001, { evenerErrorInfo: "sessionUnavailable" });
+  fake.on("thread/read", ({ ref: readRef }) => {
+    if (readRef === ref) throw unavailable;
+    return readResponse(readRef ?? ref);
+  });
+  fake.on("evener/thread/activity/read", ({ ref: readRef, scope }) => {
+    if (readRef === ref) throw unavailable;
+    return activitySummary(readRef ?? ref, scope);
+  });
+  workspaceStore.setState({
+    panes: [{ id: "gone-pane", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "gone-pane",
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="gone-pane" focused />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+  expect(screen.queryByText("Loading transcript")).toBeNull();
+});
+
+// Finding B: resume acknowledgement changed the URL without updating the
+// addressed pane's own workspace record. When an ordinary child conversation
+// sits in secondary beside its owner, routing to the resumed child calls
+// openNestedSessionWithOwner, which opened a second pane and left the original
+// on its superseded ref; the notification was cleared all the same. Cover the
+// addressed pane following the resume in place through real workspace records.
+test("a resumed secondary child replaces its own pane record in place, preserving its owner", async () => {
+  const owner = "local:owner";
+  const child = "local:child";
+  const resumed = "local:child-resumed";
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref }) => readResponse(ref ?? owner));
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => activitySummary(ref ?? owner, scope));
+
+  const ownerPane: OpenPaneRecord = { id: "owner-pane", type: "session", slot: "main", params: { ref: owner } };
+  const childPane: OpenPaneRecord = { id: "child-pane", type: "session", slot: "secondary", params: { ref: child } };
+  workspaceStore.setState({ panes: [ownerPane, childPane], focusedPaneId: childPane.id });
+  recordConversationOpenParent(childPane, owner);
+
+  // The real shell renders a pane from its workspace record; this harness does
+  // the same, so a resume that never moves the record cannot pass by only
+  // moving the URL.
+  function WorkspacePane({ paneId, focused }: { paneId: string; focused: boolean }) {
+    const pane = useSyncExternalStore(
+      (notify) => workspaceStore.subscribe(notify),
+      () => workspaceStore.getState().panes.find((record) => record.id === paneId),
+    );
+    if (pane?.type !== "session") return null;
+    return <Session params={pane.params as { ref: string }} paneId={paneId} focused={focused} />;
+  }
+
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(child)}`);
+  render(
+    <ClientProvider client={fake}>
+      <WorkspacePane paneId={ownerPane.id} focused={false} />
+      <WorkspacePane paneId={childPane.id} focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(document.querySelector(`[data-pane-scaffold="session:${child}"]`)).not.toBeNull());
+
+  act(() => {
+    threadsStore.setState((state) => ({ resumedIdentities: new Map(state.resumedIdentities).set(child, resumed) }));
+  });
+  await act(async () => {});
+
+  // The addressed pane's own record follows the resume in place...
+  const followed = workspaceStore.getState().panes.find((pane) => pane.id === childPane.id);
+  expect(followed?.params).toEqual({ ref: resumed });
+  // ...no second pane was opened, and the child kept its owner context...
+  expect(workspaceStore.getState().panes).toHaveLength(2);
+  expect(conversationOpenParentRef(followed as OpenPaneRecord)).toBe(owner);
+  // ...the pane renders the resumed identity...
+  await waitFor(() => expect(document.querySelector(`[data-pane-scaffold="session:${resumed}"]`)).not.toBeNull());
+  // ...and the resume is acknowledged only once the record moved.
+  expect(threadsStore.getState().resumedIdentities.has(child)).toBe(false);
+  expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumed)}`);
+
+  // The route placement the shell runs for a nested session reuses this pane
+  // instead of opening a second child beside the owner.
+  act(() => {
+    openNestedSessionWithOwner(resumed, owner);
+  });
+  expect(workspaceStore.getState().panes).toHaveLength(2);
+  const childPanes = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" && (pane.params as { ref: string }).ref === resumed);
+  expect(childPanes).toHaveLength(1);
+  expect(childPanes[0]?.id).toBe(childPane.id);
 });

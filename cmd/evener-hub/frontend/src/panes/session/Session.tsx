@@ -10,7 +10,7 @@
 // pane-owned scroll view, route navigation on resume, keyboard scroll
 // registration, the session menu, and the deleted/loading scaffold faces
 // with their pane-only affordances (the Close button, force-stop recovery).
-import type { ThreadModel } from "@evener/appwire-client";
+import { sessionActionError, type ThreadModel } from "@evener/appwire-client";
 import { useMemo, useState } from "react";
 import { useStore } from "zustand";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -21,6 +21,7 @@ import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
+import { useSessionActivity } from "../../stores/sessionActivity";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, InlineNotice, Loader, PaneScaffold } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
@@ -78,6 +79,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const model = useThreadsStore((state) => state.threads.get(ref));
   const deletedRef = useThreadsStore((state) => state.deletedRefs.has(ref));
   const navigation = useNavigationStore();
+  // The shared session-activity availability state, observed for the pane's
+  // whole life. A target whose thread and activity reads both return
+  // sessionUnavailable surfaces the same terminal explanation a cascade column
+  // shows for this snapshot (see the loading branch below), instead of
+  // spinning forever. Deriving it live - never a latched flag - keeps the
+  // pane's automatic recovery: a snapshot that clears unavailability returns
+  // it to its normal loading state.
+  const { snapshot: activitySnapshot } = useSessionActivity(ref);
 
   // Same fallback chain, and same shared resolver, as DockHost's dockview
   // tab title — the live thread name wins once hydrated, else the rail's
@@ -120,12 +129,23 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           ),
       viewFallbackId: paneId,
       focused: paneFocused,
-      // A resumed conversation replaces this pane's route so the workspace
-      // opens the resumed session rather than leaving a stale identity.
+      // A resumed conversation continues under a new ref. This pane follows it
+      // by retyping its OWN workspace record in place - the recorded
+      // parent-edge carries to the replacement - and only then moves the URL.
+      // Retyping first is what lets the route reconciliation resolve the
+      // resumed ref back to this pane: relying on the URL alone, an ordinary
+      // child beside its owner makes AppShell open a SECOND pane and strand
+      // this one on the superseded identity. The callback reports whether the
+      // record moved, so the resume is acknowledged only after the workspace
+      // update (ConversationBody's resume effect).
       onResumedIdentity: (resumedRef) => {
+        const addressed = workspaceStore
+          .getState()
+          .panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref);
+        if (!addressed) return false;
+        if (!workspaceStore.getState().retypePane(addressed, "session", { ref: resumedRef })) return false;
         const url = paneToURL("session", { ref: resumedRef });
-        if (url === null) return false;
-        navigate(url, { replace: true });
+        if (url !== null) navigate(url, { replace: true });
         return true;
       },
       keyboardScrollPaneId: paneId,
@@ -165,6 +185,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           );
         }
         if (state === "loading") {
+          // A permanently unavailable target can never hydrate a model: its
+          // thread and activity reads both refuse with sessionUnavailable. Show
+          // the shared terminal explanation instead of an eternal spinner,
+          // exactly as a cascade column does for this snapshot. The live
+          // snapshot is read straight into the branch (not latched) so any
+          // recovery returns the pane to its normal loading state.
           return (
             <PaneScaffold
               paneId={paneId}
@@ -173,17 +199,25 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               title={title}
               edgeFooter={edgeFooter}
             >
-              <div className={styles.loading}>
-                <Loader label="Loading transcript" />
-                {ref.startsWith("local:") && (
-                  <>
-                    <p className={styles.loadingHint}>
-                      If the session is unresponsive, you can stop its process to recover it.
-                    </p>
-                    <SessionForceStopRecovery sessionRef={ref} />
-                  </>
-                )}
-              </div>
+              {activitySnapshot?.summaryState?.permanent && activitySnapshot.summaryState.unavailable ? (
+                <EmptyState
+                  title="Transcript unavailable"
+                  reason="unavailable"
+                  hint={sessionActionError("Couldn't load transcript", activitySnapshot.summaryState.error)}
+                />
+              ) : (
+                <div className={styles.loading}>
+                  <Loader label="Loading transcript" />
+                  {ref.startsWith("local:") && (
+                    <>
+                      <p className={styles.loadingHint}>
+                        If the session is unresponsive, you can stop its process to recover it.
+                      </p>
+                      <SessionForceStopRecovery sessionRef={ref} />
+                    </>
+                  )}
+                </div>
+              )}
             </PaneScaffold>
           );
         }

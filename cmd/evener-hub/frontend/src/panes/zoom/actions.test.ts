@@ -20,6 +20,8 @@ import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { acquireSessionActivity } from "../../stores/sessionActivity";
 import { activityDelegate } from "../../stores/sessionActivityTestUtils";
+import { readComposerDraft } from "../session/composer/draft";
+import { retainedConversationComposer } from "../session/composer/retainedComposer";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { enterAgentCascade, popAgentCascade, resumeCascadeScope, returnFromAgentCascade } from "./actions";
@@ -515,4 +517,101 @@ test("a resume of an ancestor recorded only by authoritative ancestry follows th
   } finally {
     lease.release();
   }
+});
+
+// The finding: an interior (non-source) column keeps its position and its
+// drilled descendants when its identity resumes, but its superseded composer
+// must go with the identity it rendered. Left retained, a late write through it
+// (a pending image decode failure) restamps the OLD ref's persisted draft, and
+// a later carryComposerDraft of that ref can then clobber text edited in the
+// resumed conversation.
+test("resuming an interior column disposes the superseded column's composer", () => {
+  const paneId = workspaceStore.getState().openPane("sessionZoom", {
+    ref: "child",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+  });
+  const lifetime = conversationPaneLifetime(pane(paneId));
+  const superseded = retainedConversationComposer(lifetime, "child");
+  if (!superseded) throw new Error("Expected the interior column's composer");
+  expect(superseded.alive).toBe(true);
+
+  expect(resumeCascadeScope(lifetime, "child", "child-resumed")).toBe(true);
+
+  // A late write through the superseded composer cannot key the old ref.
+  superseded.writeDraft("stale draft", true);
+  expect(readComposerDraft("child").text).toBe("");
+  expect(lifetime.composers.get("child")).toBeUndefined();
+  expect(superseded.alive).toBe(false);
+});
+
+// Only the resumed ref's composer is superseded: the source column and every
+// other interior column render distinct refs, so their retained composers are
+// still in use and must survive.
+test("resuming an interior column keeps the source and descendant columns' composers", () => {
+  const paneId = workspaceStore.getState().openPane("sessionZoom", {
+    ref: "grandchild",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [
+      { ownerRef: "root", childRef: "child", delegateId: "d1" },
+      { ownerRef: "child", childRef: "grandchild", delegateId: "d2" },
+    ],
+  });
+  const lifetime = conversationPaneLifetime(pane(paneId));
+  const source = retainedConversationComposer(lifetime, "root");
+  const interior = retainedConversationComposer(lifetime, "child");
+  const leaf = retainedConversationComposer(lifetime, "grandchild");
+  if (!source || !interior || !leaf) throw new Error("Expected retained composers");
+
+  expect(resumeCascadeScope(lifetime, "child", "child-resumed")).toBe(true);
+
+  expect(lifetime.composers.get("root")).toBe(source);
+  expect(source.alive).toBe(true);
+  expect(lifetime.composers.get("grandchild")).toBe(leaf);
+  expect(leaf.alive).toBe(true);
+  expect(lifetime.composers.get("child")).toBeUndefined();
+  expect(interior.alive).toBe(false);
+});
+
+// Composers are retained per pane lifetime, so another pane showing the same
+// ref owns its own composer and the resume of this pane's interior column
+// leaves it alone.
+test("resuming an interior column leaves another pane's composer for the same ref alive", () => {
+  const other = pane(workspaceStore.getState().openPane("session", { ref: "child" }));
+  const otherComposer = retainedConversationComposer(conversationPaneLifetime(other), "child");
+  if (!otherComposer) throw new Error("Expected the other pane's composer");
+  const paneId = workspaceStore.getState().openPane("sessionZoom", {
+    ref: "child",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+  });
+  const lifetime = conversationPaneLifetime(pane(paneId));
+  retainedConversationComposer(lifetime, "child");
+
+  expect(resumeCascadeScope(lifetime, "child", "child-resumed")).toBe(true);
+
+  expect(conversationPaneLifetime(other).composers.get("child")).toBe(otherComposer);
+  expect(otherComposer.alive).toBe(true);
+});
+
+// The interior branch must not disturb the separate source path: resuming the
+// source column still moves the descriptor and the lifetime's retained source
+// ownership, disposing the superseded source composer.
+test("resuming the source column still moves source ownership and its composer", () => {
+  const paneId = workspaceStore.getState().openPane("sessionZoom", {
+    ref: "child",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+  });
+  const lifetime = conversationPaneLifetime(pane(paneId));
+  const sourceComposer = retainedConversationComposer(lifetime, "root");
+  if (!sourceComposer) throw new Error("Expected the source composer");
+  expect(lifetime.sourceRef).toBe("root");
+
+  expect(resumeCascadeScope(lifetime, "root", "root-resumed")).toBe(true);
+
+  expect((pane(paneId).params as SessionZoomParams).source.params.ref).toBe("root-resumed");
+  expect(lifetime.sourceRef).toBe("root-resumed");
+  expect(sourceComposer.alive).toBe(false);
+  expect(lifetime.composers.get("root")).toBeUndefined();
 });
