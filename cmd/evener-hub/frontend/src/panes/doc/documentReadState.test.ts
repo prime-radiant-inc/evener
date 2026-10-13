@@ -31,6 +31,7 @@ import {
   publishReader,
   retryDocumentReaders,
   saveReaderAnnotation,
+  setDocumentAnnotationPortsForTests,
   subscribeDocumentReaderWork,
 } from "./documentReadState";
 import { REFERENCE } from "./testing/annotationFixtures";
@@ -564,4 +565,35 @@ test("an unavailable origin saves pending-draft work instead of guessing a desti
   expect((await f.drafts.load(f.key))?.text).toBe(baselineText);
   expect(enqueues).not.toHaveBeenCalled();
   expect(resends).not.toHaveBeenCalled();
+});
+
+test("composer-open retry reaches the application runtime after every reader has closed", async () => {
+  let failAppend = false;
+  const f = await fixture("reader-retry-no-readers", {
+    beforeAbortableCompletion: () => {
+      if (failAppend) throw new Error("append boundary");
+    },
+  });
+  await settleBaseline(f);
+  const ports = openPorts(f);
+  // The application owns these ports beyond any open reader, exactly as
+  // production owns its singleton.
+  setDocumentAnnotationPortsForTests(ports);
+  cleanupAfterTest(() => setDocumentAnnotationPortsForTests(undefined));
+  const work = openWork("viewer-retry-less", f.document, ports);
+  work.lease = f.operation.lease;
+  work.comment = selectCommentPassage(editCommentText(work.comment, "Keep this scope."), f.operation.capture);
+  failAppend = true;
+  await saveReaderAnnotation(work, f.destination);
+  const pending = (await f.repo.listAnnotations(f.document)).find((entry) => entry.handoff.state === "pending");
+  if (!pending) throw new Error("handoff did not stay pending across the faulted append");
+  const baselineText = (await f.drafts.load(f.key))?.text;
+  if (!baselineText) throw new Error("baseline draft missing");
+
+  // The last reader closes; the persisted pending handoff must stay reachable
+  // through the application-owned runtime alone.
+  disposeDocumentReaderWork("viewer-retry-less");
+  failAppend = false;
+  await retryDocumentReaders("composer-open");
+  expect((await f.drafts.load(f.key))?.text).toBe(`${baselineText}\n\n${REFERENCE}`);
 });
