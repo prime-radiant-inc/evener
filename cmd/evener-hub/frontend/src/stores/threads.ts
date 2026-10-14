@@ -711,6 +711,8 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   identity?: TranscriptResolvedIdentity;
   cachedUnverified?: boolean;
   cachedOpening?: Promise<void>;
+  // Local reader continuation, separate from the repository's opaque server cursor.
+  localBefore?: ThreadItemPosition;
   // The status the last local open (`openEntryTranscript`) reported for this
   // route. Read-only test evidence for why a pane open did or did not need a
   // source read; never consulted by product logic.
@@ -858,7 +860,10 @@ function publishEntryTranscriptModel(ref: string): void {
   if (!fixture || fixture.ref !== ref || fixture.clearInert) return;
   const snapshot = fixture?.repository?.getSnapshot();
   if (!snapshot) return;
-  putThreadModel(ref, isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(snapshot) : snapshot);
+  const displayed = fixture.localBefore
+    ? { ...snapshot, olderCursor: snapshot.olderCursor ?? `entry-local:${JSON.stringify(fixture.localBefore)}` }
+    : snapshot;
+  putThreadModel(ref, isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(displayed) : displayed);
 }
 
 async function openEntryTranscript(ref: string): Promise<boolean> {
@@ -899,7 +904,8 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
       (refCounts.get(ref) ?? 0) > 0 &&
       !threadsStore.getState().deletedRefs.has(ref)
     ) {
-      putThreadModel(ref, result.model);
+      fixture.localBefore = result.before;
+      publishEntryTranscriptModel(ref);
     }
     if (result.status !== "recovery-needed") return true;
     // Cache proof can be unavailable while the live model already carries the
@@ -1347,6 +1353,7 @@ async function acceptEntryTranscriptHydration(
 function retireEntryTranscriptRoute(fixture: EntryTranscriptRoute): void {
   fixture.reader?.dispose();
   fixture.reader = undefined;
+  fixture.localBefore = undefined;
   fixture.unsubscribeRepository?.();
   fixture.unsubscribeRepository = undefined;
   fixture.repository?.dispose();
@@ -4837,18 +4844,20 @@ function syncCacheLifetimeForeground(ref: string): void {
         return { cacheLifetimes };
       });
     }
-  } else if (!lifetime.suppressionHoldsPreClearHolders) {
-    // An explicit foreground acquisition begun after the pre-clear holders
-    // finished; its authoritative hydration may capture the new epoch.
-    threadsStore.setState((state) => {
-      const current = state.cacheLifetimes.get(ref);
-      if (!current?.clearSuppressed || current.suppressionHoldsPreClearHolders) return state;
-      if (current.freshForegroundLifetime) return state;
-      const cacheLifetimes = new Map(state.cacheLifetimes);
-      cacheLifetimes.set(ref, { ...current, freshForegroundLifetime: true });
-      return { cacheLifetimes };
-    });
   }
+}
+
+// Retention alone grants no permission: automatic outbox pins and history
+// work can hold a ref after Clear without starting a writable cache lifetime.
+function acquireCacheLifetimeForeground(ref: string): void {
+  threadsStore.setState((state) => {
+    const current = state.cacheLifetimes.get(ref);
+    if (!current?.clearSuppressed || current.suppressionHoldsPreClearHolders) return state;
+    if (current.freshForegroundLifetime) return state;
+    const cacheLifetimes = new Map(state.cacheLifetimes);
+    cacheLifetimes.set(ref, { ...current, freshForegroundLifetime: true });
+    return { cacheLifetimes };
+  });
 }
 
 // An authoritative hydration ends the cached-shell window. A clear suppression
@@ -6555,6 +6564,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const generation = ensureGenerations.get(ref) ?? 0;
     refCounts.set(ref, count + 1);
     syncTranscriptResidencyOwners(ref);
+    if (count === 0) acquireCacheLifetimeForeground(ref);
     syncThreadSubscription(ref, client);
     // Already hydrated: no re-read. The exception is a clear-suppressed ref
     // whose new explicit foreground lifetime owes an authoritative hydration
@@ -7010,6 +7020,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // mis-certified on completion.
       const capturedAuthority = fixtureRepository?.getBaselineIdentity();
       const capturedBefore = fixtureRepository?.oldestPosition();
+      const capturedLocalBefore = fixtureState?.localBefore;
       // The same ownership/epoch/generation guard the server path uses, applied
       // before any local publication and before issuing a reconciliation.
       const stillOwned = (): boolean => {
@@ -7020,6 +7031,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           readyEpoch === capturedEpoch &&
           current.ref === capturedRef &&
           current.olderCursor === capturedCursor &&
+          fixtureState?.localBefore === capturedLocalBefore &&
           (threadsStore.getState().hydrations.get(ref) ?? 0) === capturedHydrations &&
           (olderPageGenerations.get(ref) ?? 0) === capturedPageGeneration &&
           !pendingThreadHydrations.has(ref)
@@ -7043,6 +7055,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // returned, and the background-only route (no attached reader
             // subscription) still receives the model here.
             olderPageGenerations.set(ref, capturedPageGeneration + 1);
+            if (fixtureState.localBefore) fixtureState.localBefore = fixtureRepository.oldestPosition();
             publishEntryTranscriptModel(ref);
           },
         );
@@ -7065,11 +7078,21 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         if (outcome.kind === "local") return;
         if (outcome.kind === "exhausted") {
           if (!stillOwned()) return;
+          fixtureState.localBefore = undefined;
           olderPageGenerations.set(ref, capturedPageGeneration + 1);
           putThreadModel(ref, outcome.model);
           return;
         }
         if (outcome.kind === "superseded") return;
+        if (capturedLocalBefore && !fixtureRepository.getSnapshot()?.olderCursor) {
+          // A local-only scheduling key is never an opaque source cursor.
+          // If its cache lookup is unavailable, recover through the normal
+          // authoritative read rather than sending the display key on the wire.
+          if (!stillOwned()) return;
+          fixtureState.localBefore = undefined;
+          await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
+          return;
+        }
       }
       let resp: ThreadTurnsListResponse;
       try {
@@ -7121,6 +7144,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         });
       }
       if (accepted) {
+        if (fixtureState) fixtureState.localBefore = undefined;
         const snapshot = fixture?.repository?.getSnapshot();
         if (snapshot) putThreadModel(ref, snapshot);
       } else {
