@@ -1325,6 +1325,31 @@ test("a strict submission refuses when readiness failed instead of resolving wit
   await expect(source.submissionDraft(value)).rejects.toThrow("Draft transfer is pending. Try again.");
 });
 
+test("an unreadable legacy store reports an unavailable transfer and readiness proceeds", async () => {
+  const factory = new IDBFactory();
+  const databaseName = `source-state-legacy-unavailable-${crypto.randomUUID()}`;
+  const key = browserDraftKey("root");
+  class FailingLegacyStorage extends MemoryStorage {
+    override getItem(_key: string): string | null {
+      throw new Error("legacy unreadable");
+    }
+  }
+  const storage = new FailingLegacyStorage();
+  storage.setItem(draftStorageKey("root"), '{"text":"legacy"}');
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName, storage });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const source = createComposerSourceState("root", { repository, key, outbox });
+  sourceCleanups.push(() => closeSourceFixture({ sources: [source], outbox, repositories: [repository] }));
+  const value: SkillEditorValue = { text: "plain", skillNames: [], commandNames: [], mentions: [] };
+  source.acceptEdit(value);
+  // The legacy scan faults, which is the absence of a usable legacy store, not
+  // a failed preparation: readiness seeds the durable row and proceeds.
+  expect(await repository.transferSupportedDrafts(key.namespace)).toEqual({ state: "unavailable" });
+  await source.ready();
+  expect(source.getSnapshot()).toMatchObject(value);
+  await expect(source.submissionDraft(value)).resolves.toBeTruthy();
+});
+
 // 5. A real storage abort - a SYNCHRONOUS commit-boundary fault, not an
 // asynchronous request failure - keeps the SAME accepted entry for a bounded
 // retry and leaves the source useful.

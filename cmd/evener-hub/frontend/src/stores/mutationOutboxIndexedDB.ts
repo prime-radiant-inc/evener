@@ -1191,17 +1191,30 @@ export class MutationOutboxIndexedDB {
     // One attempt: a timeout fails this call (the caller retries by acting
     // again), and every later call attempts the open afresh.
     const database = await this.#connection.open();
-    if (mode === "readwrite" && stores.includes(COMPOSER_DRAFTS_STORE) && globalThis.localStorage !== undefined) {
+    if (mode === "readwrite" && stores.includes(COMPOSER_DRAFTS_STORE)) {
       // Background recovery can precede the first composer. Finish migration
       // before opening any transaction that can initialize its ordinary row.
       // Reuse the existing transfer adapter over this same factory/database,
       // and close this operation's handle even when migration remains pending.
-      const drafts = createBrowserDraftRepository({ indexedDB: this.#indexedDB, databaseName: this.#databaseName });
+      // An UNAVAILABLE legacy scan - an unreadable legacy store - orders
+      // nothing: the transaction proceeds exactly as with no legacy store, so
+      // ordinary settlement never depends on legacy-storage health. A PENDING
+      // transfer is a fault on the transfer's own durable write: the caller
+      // retries by acting again.
+      let legacyStorage: Storage | undefined;
       try {
-        const transfer = await drafts.transferSupportedDrafts(browserDraftKey("").namespace);
-        if (transfer.state !== "committed") throw new Error("Draft transfer is pending. Try again.");
-      } finally {
-        drafts.close();
+        legacyStorage = globalThis.localStorage;
+      } catch {
+        legacyStorage = undefined;
+      }
+      if (legacyStorage !== undefined) {
+        const drafts = createBrowserDraftRepository({ indexedDB: this.#indexedDB, databaseName: this.#databaseName });
+        try {
+          const transfer = await drafts.transferSupportedDrafts(browserDraftKey("").namespace);
+          if (transfer.state === "pending") throw new Error("Draft transfer is pending. Try again.");
+        } finally {
+          drafts.close();
+        }
       }
     }
     const transaction = database.transaction(stores, mode);

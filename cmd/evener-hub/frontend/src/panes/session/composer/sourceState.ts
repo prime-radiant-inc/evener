@@ -460,7 +460,10 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       // show the destination without the carried text.
       await awaitDraftCarryInto(k);
       const transfer = await r.transferSupportedDrafts(k.namespace);
-      if (transfer.state !== "committed") throw new Error("Draft transfer is pending. Try again.");
+      // An UNAVAILABLE legacy scan is the same as no legacy store: hydration
+      // proceeds exactly as with no legacy drafts to migrate. A PENDING
+      // transfer is a durable-side fault; the caller retries by acting again.
+      if (transfer.state === "pending") throw new Error("Draft transfer is pending. Try again.");
       let row = await r.load(k);
       if (!row) {
         const seeded = await r.seedDraft(k, currentValue());

@@ -31,6 +31,9 @@ seeding. [MutationOutboxIndexedDB](../../cmd/evener-hub/frontend/src/stores/muta
 also awaits transfer before browser write transactions that can initialize
 session metadata, including recovery before any composer opens. Pending transfer
 or failed initialization cannot be treated as an empty, successfully loaded draft.
+An unavailable transfer - a legacy scan that faulted - is treated like the
+absence of a legacy store: those same paths proceed, so neither settlement nor
+composer readiness depends on legacy-storage health.
 
 ## Live work and retry ownership
 

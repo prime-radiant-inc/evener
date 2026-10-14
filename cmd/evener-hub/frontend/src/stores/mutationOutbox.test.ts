@@ -105,6 +105,30 @@ describe("MutationOutboxIndexedDB", () => {
     expect(accepted?.originClientId).toBe("tab-a");
   });
 
+  test("an ordinary settlement proceeds when the legacy draft store is unreadable", async () => {
+    const store = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
+    const persisted = await store.enqueueIntent(intent("settle against a broken legacy store"));
+
+    // The legacy localStorage is unreadable while the durable IndexedDB stays
+    // healthy: no migration can ever order against it, so an ordinary
+    // settlement - one that writes no composer draft row - must proceed through
+    // its own transaction instead of waiting for a transfer that cannot run.
+    // jsdom's localStorage is inherited, so the fault shadows it with an own
+    // accessor and the restore deletes the shadow.
+    try {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        get() {
+          throw new Error("legacy storage unreadable");
+        },
+      });
+      expect(await store.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
+      expect(await store.getOutbox(persisted.clientMutationId)).toBeUndefined();
+    } finally {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
   test("a resent recovery belongs to the resending client", async () => {
     const store = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
     setMutationClientIdentityForTests("tab-a");
