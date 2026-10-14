@@ -224,6 +224,16 @@ const (
 	// The live-external reconcile validation (§15) rides the same discriminator
 	// with `{source, hostCount}` data on its own path.
 	ErrorConcurrentEdit ErrorInfo = "concurrent-edit"
+	// ErrorConnectionBackpressure marks the hub's in-band refusal of a
+	// retry-safe mutation that arrived while the connection's inbound request
+	// queue was at or beyond its high-water depth: the mutation was never
+	// queued and never started, and the hub's journal holds nothing for it.
+	// It shares CodeUnavailable with ordinary unavailability, so a client that
+	// wants to distinguish backpressure matches this discriminant, never the
+	// code. Its data is the standard ErrorData carrying the transient mutation
+	// envelope (notAccepted plus retryDisposition automatic) and a cause
+	// naming why.
+	ErrorConnectionBackpressure ErrorInfo = "connectionBackpressure"
 )
 
 // StaleEntryBinding names which binding a stale-entry refusal fired on, exactly
@@ -870,6 +880,63 @@ func MutationUnknown(clientMutationID, message string) WireError {
 			Cause:            "persistenceUnavailable",
 		},
 	}
+}
+
+// BackpressureCauseQueueSaturated is the one cause a connectionBackpressure
+// refusal carries: the connection's inbound request queue was at or beyond
+// its high-water depth when the mutation arrived, so the hub refused the
+// mutation without queueing it.
+const BackpressureCauseQueueSaturated = "queueSaturated"
+
+// BackpressureRefusal is the hub's in-band refusal of a retry-safe mutation
+// that arrived on a connection whose inbound request queue was at or beyond
+// its high-water depth: the mutation was never queued and never started, so
+// an identical retry is safe — the ClientMutationID dedup on admission
+// already guards a double-apply. The envelope is the transient one the
+// shared dispatcher classifies (notAccepted plus automatic); message states
+// what happened on the hub and promises nothing about what the client will
+// do, because the TUI and the direct-send fallback do not retry
+// automatically.
+func BackpressureRefusal(clientMutationID, message string) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorConnectionBackpressure,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  MutationOutcomeNotAccepted,
+			RetryDisposition: RetryDispositionAutomatic,
+			Cause:            BackpressureCauseQueueSaturated,
+		},
+	}
+}
+
+// retrySafeMutationMethods is the wire contract the hub and the shared
+// TypeScript dispatcher both hold for which mutation requests are safe to
+// resend unchanged: each carries a clientMutationId, and the ClientMutationID
+// dedup on admission makes a raced resend a replay no-op. The hub refuses
+// only these in band for backpressure; the dispatcher holds the same set
+// (RETRY_SAFE_MUTATION_METHODS, appwire-client/typescript/state/mutation/
+// dispatcher.ts), and TestRetrySafeMutationMethodsMatchSharedDispatcher pins
+// the two equal. thread/start is deliberately absent: it can refuse after
+// the session has spawned (#3184), so a resend is not always safe.
+var retrySafeMutationMethods = map[string]bool{
+	MethodTurnStart:                true,
+	MethodTurnSteer:                true,
+	MethodTurnInterrupt:            true,
+	MethodTurnQueue:                true,
+	MethodTurnDrainAsSteer:         true,
+	MethodTurnPromoteQueuedAsSteer: true,
+	MethodTurnCancelQueued:         true,
+	MethodThreadClear:              true,
+	MethodNotesHumanSet:            true,
+}
+
+// RetrySafeMutationMethod reports whether name is a retry-safe mutation
+// method: one whose request the hub may refuse in band for backpressure, and
+// one a client may resend unchanged.
+func RetrySafeMutationMethod(name string) bool {
+	return retrySafeMutationMethods[name]
 }
 
 func Unavailable(message string) WireError {
