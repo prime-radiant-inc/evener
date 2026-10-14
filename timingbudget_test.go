@@ -767,27 +767,46 @@ func TestTimingBudgetKeepsTheClassMapOnlyWarnState(t *testing.T) {
 // reds if a removed class creeps back in.
 func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.T) {
 	dir := t.TempDir()
-
-	removed := filepath.Join(dir, "removed.tsv")
-	writeAuditScriptFixture(t, removed, "TEST\tprimeradiant.com/evener\tTestCrossCompileWindows\t52.26\n")
-	out, err := runTimingBudgetFixture(t, removed, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
-	if err != nil {
-		t.Fatalf("a removed runner-bound class member must warn, not fail (#4615):\n%s", out)
-	}
-	if !strings.Contains(out, "WARN") || !strings.Contains(out, "TestCrossCompileWindows") {
-		t.Fatalf("the removed class member was not reported on the flat ceiling:\n%s", out)
-	}
-	if strings.Contains(out, "FAIL") {
-		t.Fatalf("the removed class member was still enforced as a failure:\n%s", out)
-	}
-
-	kept := filepath.Join(dir, "kept.tsv")
-	writeAuditScriptFixture(t, kept, "TEST\tprimeradiant.com/evener\tTestGitCloneSurvivesAHookThatOrphansAPipeHolder\t20.00\n")
-	out, err = runTimingBudgetFixture(t, kept, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
-	if err == nil {
-		t.Fatalf("a kept class member over its ceiling must still fail:\n%s", out)
-	}
-	if !strings.Contains(out, "FAIL") {
-		t.Fatalf("the kept class member was not enforced over its class ceiling:\n%s", out)
+	for _, tc := range []struct {
+		name     string
+		test     string
+		seconds  string
+		wantFail bool
+	}{
+		{
+			name:    "removed runner-bound class member warns",
+			test:    "TestCrossCompileWindows",
+			seconds: "52.26",
+		},
+		{
+			name:     "kept class member still fails",
+			test:     "TestGitCloneSurvivesAHookThatOrphansAPipeHolder",
+			seconds:  "20.00",
+			wantFail: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			measured := filepath.Join(dir, tc.test+".tsv")
+			writeAuditScriptFixture(t, measured, "TEST\tprimeradiant.com/evener\t"+tc.test+"\t"+tc.seconds+"\n")
+			out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+			if !tc.wantFail {
+				if err != nil {
+					t.Fatalf("a removed runner-bound class member must warn, not fail (#4615):\n%s", out)
+				}
+				if !strings.Contains(out, "WARN") || !strings.Contains(out, tc.test) {
+					t.Fatalf("the removed class member was not reported on the flat ceiling:\n%s", out)
+				}
+				if strings.Contains(out, "FAIL") {
+					t.Fatalf("the removed class member was still enforced as a failure:\n%s", out)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("a kept class member over its ceiling must still fail:\n%s", out)
+			}
+			if !strings.Contains(out, "FAIL") {
+				t.Fatalf("the kept class member was not enforced over its class ceiling:\n%s", out)
+			}
+		})
 	}
 }

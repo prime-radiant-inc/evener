@@ -13,8 +13,9 @@ import (
 // classTestFunc matches a top-level Go test definition: "func Name(t *testing.T)".
 var classTestFunc = regexp.MustCompile(`^func (\w+)\(t \*testing\.T\)`)
 
-// classMapNames reads testing-budget.json's perTestCeilingClasses member names.
-func classMapNames(t *testing.T) []string {
+// classMap reads testing-budget.json's perTestCeilingClasses as class name ->
+// member test names.
+func classMap(t *testing.T) map[string][]string {
 	t.Helper()
 	raw, err := os.ReadFile("testing-budget.json")
 	if err != nil {
@@ -28,9 +29,19 @@ func classMapNames(t *testing.T) []string {
 	if err := json.Unmarshal(raw, &budget); err != nil {
 		t.Fatalf("parse testing-budget.json: %v", err)
 	}
+	classes := make(map[string][]string, len(budget.Classes))
+	for name, class := range budget.Classes {
+		classes[name] = class.Tests
+	}
+	return classes
+}
+
+// classMapNames reads testing-budget.json's perTestCeilingClasses member names.
+func classMapNames(t *testing.T) []string {
+	t.Helper()
 	var names []string
-	for _, class := range budget.Classes {
-		names = append(names, class.Tests...)
+	for _, tests := range classMap(t) {
+		names = append(names, tests...)
 	}
 	if len(names) == 0 {
 		t.Fatal("testing-budget.json's perTestCeilingClasses names no members to check")
@@ -167,38 +178,30 @@ func TestTimingBudgetClassMapAuditIgnoresGrepFormattingConfig(t *testing.T) {
 // the flat warn-only perTestCeilingSeconds. The kept classes are asserted too, so
 // this fails on an emptied or renamed map and not only on a re-added class.
 func TestTimingBudgetRunnerBoundClassesAreUnclassified(t *testing.T) {
-	raw, err := os.ReadFile("testing-budget.json")
-	if err != nil {
-		t.Fatalf("read testing-budget.json: %v", err)
-	}
-	var budget struct {
-		Classes map[string]json.RawMessage `json:"perTestCeilingClasses"` //nolint:tagliatelle // testing-budget.json's key, camelCase beside perTestCeilingSeconds
-	}
-	if err := json.Unmarshal(raw, &budget); err != nil {
-		t.Fatalf("parse testing-budget.json: %v", err)
-	}
-	for _, removed := range []string{
-		"dev-tool compile/CLI",
-		"install",
-		"transcript large-fixture",
-		"gate-runner integration",
+	classes := classMap(t)
+	for _, tc := range []struct {
+		name   string
+		wantIn bool
+	}{
+		{name: "dev-tool compile/CLI"},
+		{name: "install"},
+		{name: "transcript large-fixture"},
+		{name: "gate-runner integration"},
+		{name: "delegate-attention & idle", wantIn: true},
+		{name: "deploy-host integration", wantIn: true},
+		{name: "session-activity", wantIn: true},
+		{name: "retirement", wantIn: true},
+		{name: "eval harness", wantIn: true},
+		{name: "plugin-git integration", wantIn: true},
+		{name: "live-stack E2E", wantIn: true},
 	} {
-		if _, ok := budget.Classes[removed]; ok {
+		_, ok := classes[tc.name]
+		switch {
+		case ok && !tc.wantIn:
 			t.Errorf("testing-budget.json's perTestCeilingClasses still lists the runner-bound class %q; "+
-				"the 2026-10-14 ruling (#4615) removed it so its members stay on the flat warn-only ceiling", removed)
-		}
-	}
-	for _, kept := range []string{
-		"delegate-attention & idle",
-		"deploy-host integration",
-		"session-activity",
-		"retirement",
-		"eval harness",
-		"plugin-git integration",
-		"live-stack E2E",
-	} {
-		if _, ok := budget.Classes[kept]; !ok {
-			t.Errorf("testing-budget.json's perTestCeilingClasses no longer lists the kept class %q", kept)
+				"the 2026-10-14 ruling (#4615) removed it so its members stay on the flat warn-only ceiling", tc.name)
+		case !ok && tc.wantIn:
+			t.Errorf("testing-budget.json's perTestCeilingClasses no longer lists the kept class %q", tc.name)
 		}
 	}
 }
