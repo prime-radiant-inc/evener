@@ -874,6 +874,7 @@ func TestEvenerThreadMetricsJSONRoundTrip(t *testing.T) {
 		Usage:               &EvenerUsage{InputTokens: 1},
 		WorkMillis:          2,
 		ActiveTurnStartedAt: 3,
+		ContextAssumed:      true,
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -884,6 +885,7 @@ func TestEvenerThreadMetricsJSONRoundTrip(t *testing.T) {
 		`"usage":{"inputTokens":1}`,
 		`"workMillis":2`,
 		`"activeTurnStartedAt":3`,
+		`"contextAssumed":true`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("marshal=%s missing %s", got, want)
@@ -900,6 +902,9 @@ func TestEvenerThreadMetricsJSONRoundTrip(t *testing.T) {
 		t.Fatalf("roundtrip workMillis/activeTurnStartedAt=%d/%d, want %d/%d",
 			out.WorkMillis, out.ActiveTurnStartedAt, in.WorkMillis, in.ActiveTurnStartedAt)
 	}
+	if !out.ContextAssumed {
+		t.Fatal("roundtrip contextAssumed=false, want true")
+	}
 }
 
 // TestEvenerThreadMetricsOmitEmpty (WS2 A7) verifies that a zero-value
@@ -913,7 +918,7 @@ func TestEvenerThreadMetricsOmitEmpty(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	got := string(raw)
-	for _, banned := range []string{`"usage"`, `"workMillis"`, `"activeTurnStartedAt"`, `"cost"`} {
+	for _, banned := range []string{`"usage"`, `"workMillis"`, `"activeTurnStartedAt"`, `"cost"`, `"contextAssumed"`} {
 		if strings.Contains(got, banned) {
 			t.Fatalf("marshal=%s should have omitted %s", got, banned)
 		}

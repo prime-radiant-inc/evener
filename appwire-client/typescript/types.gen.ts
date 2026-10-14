@@ -831,6 +831,7 @@ export interface EvenerThread {
   contextUsed?: number;
   contextWindow?: number;
   contextRemaining?: number;
+  contextAssumed?: boolean;
   capabilities: ThreadCapabilities;
   diagnostics?: EvenerDiagnostics;
   /**

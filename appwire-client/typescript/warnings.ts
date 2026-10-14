@@ -35,12 +35,21 @@ export const WarningCodeDelegateAttentionRestore = "delegate_attention_restore";
 /** A restored MCP connection, independent of the pending tool call outcome. */
 export const WarningCodeMCPReconnected = "mcp_reconnected";
 
+/**
+ * The model has no known context window, so compaction is budgeting against
+ * a conservative assumed window; the disclosure carries the remedy (declare
+ * context_window on the model's provider row). Bound by test to the daemon's
+ * own constant in agent/events/payloads.go.
+ */
+export const WarningCodeContextWindowAssumed = "context_window_assumed";
+
 // The codes whose warnings show only at Full.
 const INFORMATIONAL_WARNING_CODES: ReadonlySet<unknown> = new Set([
   WarningCodeContextBudget,
   WarningCodePluginCompatibility,
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
+  WarningCodeContextWindowAssumed,
 ]);
 
 /**

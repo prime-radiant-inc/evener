@@ -264,9 +264,10 @@ func (p *Profile) SupportsStreaming() bool { return true }
 // DefaultCommandTimeoutMS is the default shell command timeout.
 func (p *Profile) DefaultCommandTimeoutMS() int { return 120_000 }
 
-// ContextWindowSize is the row's window, or 0 when unknown (spec §7.3): the
-// context manager applies no compaction budget until a live listing or a
-// user row supplies one.
+// ContextWindowSize is the row's window, or 0 when unknown (spec §7.3). The
+// context manager budgets an unknown window against a conservative assumed
+// window instead of running without one (issue #4564); callers that need the
+// fact itself still see 0 here.
 func (p *Profile) ContextWindowSize() int {
 	if p.contextWindow > 0 {
 		return p.contextWindow

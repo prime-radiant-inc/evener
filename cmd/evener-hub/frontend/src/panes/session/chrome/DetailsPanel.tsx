@@ -37,7 +37,7 @@ import { Button, Meter, PropertyList, Sheet, type StackedPropertyListRow } from 
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTimestamp, sessionTokens, tokenUnitLabel } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
-import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
+import { assumedWindowMark, contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
 
 export interface DetailsPanelProps {
   model: ThreadModel;
@@ -157,7 +157,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
               <>
                 <span className={CLASS.meter}>
                   <Meter
-                    label={`Context: ${formatTokenCount(model.contextUsed)} of ${formatTokenCount(model.contextWindow)} tokens used, ${percent} percent`}
+                    label={`Context: ${formatTokenCount(model.contextUsed)} of ${assumedWindowMark(model.contextAssumed)}${formatTokenCount(model.contextWindow)} tokens used, ${percent} percent`}
                     value={model.contextUsed}
                     max={model.contextWindow}
                     tone={contextTone(model.contextPressure)}
@@ -165,9 +165,13 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
                 </span>
                 <span>{percent}% used</span>
                 <span className={CLASS.dim}>
-                  {formatTokenCount(model.contextUsed)} / {formatTokenCount(model.contextWindow)}
+                  {formatTokenCount(model.contextUsed)} / {assumedWindowMark(model.contextAssumed)}
+                  {formatTokenCount(model.contextWindow)}
                 </span>
-                <span className={CLASS.dim}>{formatTokenCount(remaining)} left</span>
+                <span className={CLASS.dim}>
+                  {assumedWindowMark(model.contextAssumed)}
+                  {formatTokenCount(remaining)} left
+                </span>
               </>,
             ),
           workMs > 0 && detailRow("work time", "session-details-work-time", formatWorkDuration(workMs)),

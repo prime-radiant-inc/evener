@@ -97,6 +97,7 @@ type hubSessionDetail struct {
 	ContextUsed        int
 	ContextWindow      int
 	ContextRemaining   int
+	ContextAssumed     bool
 	ActiveTurnID       string
 	RecentErrors       []string
 	Diagnostics        *appwire.EvenerDiagnostics
@@ -316,6 +317,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		ContextUsed:           thread.Evener.ContextUsed,
 		ContextWindow:         thread.Evener.ContextWindow,
 		ContextRemaining:      thread.Evener.ContextRemaining,
+		ContextAssumed:        thread.Evener.ContextAssumed,
 		RecentErrors:          recentTurnErrors(thread),
 		Diagnostics:           thread.Evener.Diagnostics,
 		Live:                  node.Live,

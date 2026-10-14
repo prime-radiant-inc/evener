@@ -20,6 +20,17 @@ export function contextTone(pressure: number): MeterTone {
   return "neutral";
 }
 
+// assumedWindowMark prefixes a context-window figure when the window is the
+// daemon's conservative ASSUMPTION for an unknown window
+// (ThreadModel.contextAssumed; wire EvenerThread.ContextAssumed), not a size
+// anything vouches for - the same "~" that marks the cost row's server-derived
+// estimate ("~$X.XX"). Used figures never take it: usage is measured, only the
+// capacity is assumed, and "left" inherits the mark because it is
+// window-minus-used.
+export function assumedWindowMark(assumed: boolean): string {
+  return assumed ? "~" : "";
+}
+
 // formatWorkDuration formats accumulated session work time: under a minute
 // shows whole seconds (floored, clamped up to a minimum of 1 so a real but
 // sub-second duration never reads "0s"); under an hour shows whole minutes

@@ -2374,7 +2374,7 @@ func (l liveThreadEnvelopeSource) ContextPressure() float64 {
 
 func (l liveThreadEnvelopeSource) ContextMetrics() server.ContextMetrics {
 	metrics := l.session().ContextMetrics()
-	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining}
+	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed}
 }
 
 func (l liveThreadEnvelopeSource) DetailedStatus() server.DetailedStatus {
