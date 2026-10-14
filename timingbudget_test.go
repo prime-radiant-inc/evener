@@ -485,9 +485,11 @@ func TestTimingBudgetWarnsOnAClassBreachOnALocalRun(t *testing.T) {
 // TestTimingBudgetFailsWhenTheClassMapIsNotAnObject pins the outer shape of the
 // map: a perTestCeilingClasses that is present but not an object is a config
 // error, not a crash and not a silent empty map — including the falsy values
-// (an empty list, false, 0, "") that a plain `or {}` would quietly accept.
+// (an empty list, false, 0, "") that a plain `or {}` would quietly accept, and
+// `null`, which `budget.get` cannot tell from an absent key and which would
+// otherwise silently disarm every class ceiling (issue #4618).
 func TestTimingBudgetFailsWhenTheClassMapIsNotAnObject(t *testing.T) {
-	for _, value := range []string{`["nope"]`, `[]`, `false`, `0`, `""`, `"a string"`} {
+	for _, value := range []string{`["nope"]`, `[]`, `false`, `0`, `""`, `"a string"`, `null`} {
 		t.Run(value, func(t *testing.T) {
 			measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 			budget := `{"perTestCeilingSeconds":3,"perTestCeilingClasses":` + value + `,"packages":{"pkg":100}}`
@@ -513,7 +515,7 @@ func TestTimingBudgetFailsWhenThePackagesValueIsNotAnObject(t *testing.T) {
 	for _, value := range []string{`[]`, `0`, `false`, `""`, `null`, `"x"`, `5`, `true`} {
 		t.Run(value, func(t *testing.T) {
 			out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", `{"packages":`+value+`}`)
-			assertPackagesValueFails(t, out, err)
+			assertBrokenConfigFails(t, out, err)
 		})
 	}
 }
@@ -533,40 +535,107 @@ func TestTimingBudgetFailsWhenThePackagesValueIsNotAnObject(t *testing.T) {
 func TestTimingBudgetFailsOnANonObjectPackagesValueInEveryMode(t *testing.T) {
 	const measured = "SUM\tpkg\t100.00\n"
 	for _, value := range []string{`[]`, `false`, `null`, `5`} {
-		budget := `{"packages":` + value + `}`
-		t.Run(value+"/bare", func(t *testing.T) {
-			out, err := runTimingBudgetScript(t, measured, budget, nil, nil)
-			assertPackagesValueFails(t, out, err)
-		})
-		t.Run(value+"/warn-only", func(t *testing.T) {
-			out, err := runTimingBudgetCompareMode(t, measured, budget, false)
-			assertPackagesValueFails(t, out, err)
-		})
-		t.Run(value+"/ci-env", func(t *testing.T) {
-			out, err := runTimingBudgetScript(t, measured, budget, []string{"--check"}, []string{"CI=1"})
-			assertPackagesValueFails(t, out, err)
-		})
-		t.Run(value+"/bless", func(t *testing.T) {
-			out, got, err := runBlessCommand(t, budget, "--modules", "no-such-module")
-			assertPackagesValueFails(t, out, err)
-			if got != budget {
-				t.Fatalf("--bless overwrote a non-object-packages budget instead of refusing it:\n%s", got)
+		assertBudgetFailsInEveryMode(t, value, measured, `{"packages":`+value+`}`)
+	}
+}
+
+// assertBrokenConfigFails asserts the #4609/#4614/#4618 contract structurally:
+// a budget value that is present but broken exits 1 and never crashes with a
+// traceback. The diagnostic wording is never asserted
+// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
+func assertBrokenConfigFails(t *testing.T, out string, err error) {
+	t.Helper()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("a broken budget value must exit 1, not pass or crash: exit = %v\n%s", err, out)
+	}
+	if strings.Contains(out, "Traceback") {
+		t.Fatalf("a broken budget value crashed with a traceback instead of failing structurally:\n%s", out)
+	}
+}
+
+// assertBudgetFailsInEveryMode drives the runner over one budget fixture in all
+// four postures a check may run under — bare, warn-only --check --local, a
+// CI-shaped --check ($CI set, no --strict), and --bless — and asserts each exits
+// 1 with no traceback. On --bless it also asserts the budget file is left
+// byte-for-byte untouched: failing before the bless write is the observable
+// behavior that matters. Subtests are named name/<posture>.
+func assertBudgetFailsInEveryMode(t *testing.T, name, measured, budget string) {
+	t.Helper()
+	t.Run(name+"/bare", func(t *testing.T) {
+		out, err := runTimingBudgetScript(t, measured, budget, nil, nil)
+		assertBrokenConfigFails(t, out, err)
+	})
+	t.Run(name+"/warn-only", func(t *testing.T) {
+		out, err := runTimingBudgetCompareMode(t, measured, budget, false)
+		assertBrokenConfigFails(t, out, err)
+	})
+	t.Run(name+"/ci-env", func(t *testing.T) {
+		out, err := runTimingBudgetScript(t, measured, budget, []string{"--check"}, []string{"CI=1"})
+		assertBrokenConfigFails(t, out, err)
+	})
+	t.Run(name+"/bless", func(t *testing.T) {
+		out, got, err := runBlessCommand(t, budget, "--modules", "no-such-module")
+		assertBrokenConfigFails(t, out, err)
+		if got != budget {
+			t.Fatalf("--bless overwrote a broken budget instead of refusing it:\n%s", got)
+		}
+	})
+}
+
+// TestTimingBudgetFailsOnANonNumericPackageValue pins issue #4618. A package
+// budget that is present but not a number is a broken config, not a budget: a
+// string crashes the ratio with a TypeError traceback, a bool IS an int in
+// Python (True/False) so the ratio is computed against 1/0, and a null reads as
+// "no budget entry" — a WARN that leaves the package silently unenforced. A
+// list or object crashes like the string. Each must exit 1 with no traceback,
+// naming the offending entry. The fixture uses a 1.00s measurement against a
+// 1.00s-equivalent budget, so a bool would read OK and a null would merely warn
+// — only a real rejection makes the run nonzero. The entry name is a data value
+// identifying which entry failed, not copy
+// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
+func TestTimingBudgetFailsOnANonNumericPackageValue(t *testing.T) {
+	measured := "SUM\tslowpkg\t1.00\n"
+	for _, value := range []string{`"x"`, `true`, `null`, `[]`, `{}`} {
+		t.Run(value, func(t *testing.T) {
+			budget := `{"metric":"package-wall-seconds","packages":{"slowpkg":` + value + `}}`
+			out, err := runTimingBudgetCompare(t, measured, budget)
+			assertBrokenConfigFails(t, out, err)
+			if !strings.Contains(out, "slowpkg") {
+				t.Fatalf("the failure does not name the offending package entry slowpkg:\n%s", out)
 			}
 		})
 	}
 }
 
-// assertPackagesValueFails asserts the #4614 contract structurally: exit 1 and
-// no traceback. The diagnostic wording is never asserted
-// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
-func assertPackagesValueFails(t *testing.T, out string, err error) {
-	t.Helper()
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-		t.Fatalf("a present non-object packages value must exit 1, not pass or crash: exit = %v\n%s", err, out)
+// TestTimingBudgetFailsOnANonNumericPackageValueInEveryMode pins that a
+// non-numeric package budget fails in every posture, not only strict: the
+// silent WARN (`null`) or the Python bool (`true`) must not survive a bare run,
+// a warn-only --check --local, a CI-shaped --check, or --bless. It runs two
+// values rather than one so a guard that only caught a string crash, or only
+// fired under --strict, cannot pass. On --bless the file is left byte-for-byte
+// untouched, because failing before the bless write is the observable behavior
+// that matters.
+func TestTimingBudgetFailsOnANonNumericPackageValueInEveryMode(t *testing.T) {
+	// `true` is the sharp case: against a 1.00s budget it makes a 1.00s
+	// measurement read OK, so only rejecting the bool can make the run nonzero.
+	const measured = "SUM\tpkg\t1.00\n"
+	for _, value := range []string{`true`, `null`} {
+		assertBudgetFailsInEveryMode(t, value, measured, `{"packages":{"pkg":`+value+`}}`)
 	}
-	if strings.Contains(out, "Traceback") {
-		t.Fatalf("a non-object packages value crashed with a traceback instead of failing structurally:\n%s", out)
+}
+
+// TestTimingBudgetFailsOnANonObjectClassMapInEveryMode pins the every-mode
+// contract for the class map: a perTestCeilingClasses that is present but not an
+// object — `null` in particular, which `budget.get` cannot tell from an absent
+// key and which silently disarms every class ceiling — is the same broken
+// config as a non-object packages value, so it fails in every posture, --bless
+// included, not only under --strict.
+func TestTimingBudgetFailsOnANonObjectClassMapInEveryMode(t *testing.T) {
+	const measured = "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+	for _, value := range []string{`null`, `[]`} {
+		assertBudgetFailsInEveryMode(t, value, measured,
+			`{"perTestCeilingClasses":`+value+`,"packages":{"pkg":100}}`)
 	}
 }
 
