@@ -360,7 +360,10 @@ export class TranscriptRepository {
   readonly #binding: Omit<TranscriptRepositoryBinding, "seedModel">;
   readonly #listeners = new Set<() => void>();
   readonly #writes = new Set<Promise<void>>();
-  readonly #preflightWrites = new Map<Parameters<SessionEntryCache["commitBatch"]>[0], Promise<void>>();
+  readonly #preflightWrites = new Map<
+    Parameters<SessionEntryCache["commitBatch"]>[0],
+    { revision: number; write: Promise<void> }
+  >();
   readonly #pending = new Map<string, TranscriptItemRow<CachedSessionItem>>();
   #model: ThreadModel | undefined;
   #boundary = 0;
@@ -2199,6 +2202,37 @@ export class TranscriptRepository {
    */
   #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0], retryRevision?: number): Promise<void> {
     if (this.#binding.mayPersist?.() === false) return this.#declinePersistence(batch);
+    if (retryRevision === undefined && batch.coverage?.kind === "read" && !batch.replacement) {
+      // An ordinary read supersedes certificates, not the accepted payloads
+      // omitted by its response. Carry compatible preflight bodies and turns
+      // into its write. Newer rows already include the reducer's version/richness
+      // merge, so retain one object per key for admission and pending cleanup.
+      const inherited = [...this.#preflightWrites]
+        .filter(
+          ([prior, entry]) =>
+            entry.revision === this.#sourceRevision &&
+            (prior.coverage?.kind === "read" || prior.coverage?.kind === "suffix"),
+        )
+        .map(([prior]) => prior);
+      if (inherited.length > 0) {
+        batch = {
+          ...batch,
+          items: [
+            ...new Map(
+              [...inherited.flatMap((prior) => prior.items), ...batch.items].map((row) => [row.transcriptKey, row]),
+            ).values(),
+          ],
+          turns: [
+            ...new Map(
+              [...inherited.flatMap((prior) => prior.turns ?? []), ...(batch.turns ?? [])].map((turn) => [
+                turn.id,
+                turn,
+              ]),
+            ).values(),
+          ],
+        };
+      }
+    }
     const model = this.#model;
     const history = model?.history;
     if (retryRevision === undefined && model && history?.incarnation !== undefined && !this.#seedAuthorityInvalid) {
@@ -2249,7 +2283,7 @@ export class TranscriptRepository {
       batch.coverage?.kind === "suffix"
         ? [...this.#preflightWrites]
             .filter(([prior]) => prior.coverage?.readId === batch.coverage?.readId)
-            .map(([, write]) => write)
+            .map(([, entry]) => entry.write)
         : [];
     if (retryRevision === undefined && this.#capacityRefusal !== undefined) {
       // A lookup retains its candidate just like a write. Charge it to ordinary
@@ -2303,7 +2337,7 @@ export class TranscriptRepository {
         return this.#admitWrite(batch, issuedRevision, false);
       };
       const checked = check();
-      this.#preflightWrites.set(batch, checked);
+      this.#preflightWrites.set(batch, { revision: issuedRevision, write: checked });
       this.#writes.add(checked);
       void checked.finally(() => {
         this.#preflightWrites.delete(batch);

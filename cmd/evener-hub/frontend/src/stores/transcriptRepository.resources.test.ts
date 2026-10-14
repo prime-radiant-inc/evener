@@ -981,6 +981,98 @@ it("drops a held capacity preflight after a newer authoritative baseline commits
   }
 });
 
+it.each(["read", "suffix"] as const)(
+  "preserves an omitted accepted update from a delayed %s preflight",
+  async (kind) => {
+    const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+    unused.dispose();
+    const cache = makeCache(6_500);
+    const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+    const reader = owner.attachReader();
+    const gate = deferred<void>();
+    try {
+      await offer(owner);
+      expect(
+        owner.acceptRead(
+          { ...readItems("base", 2, [item("oversize", 1, 2), item("target", 2, 1)]), requestGeneration: 2 },
+          { lifetime: 1, readId: "base", boundary: "base" },
+        ),
+      ).toBe(true);
+      await owner.settled();
+      const updated = { ...item("target", 2, 2), text: "accepted update omitted by newer response" } as ThreadItem;
+      const realPlan = cache.planCapacity.bind(cache);
+      vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+        expect(batch.coverage?.kind).toBe(kind);
+        const plan = await realPlan(batch);
+        await gate.promise;
+        return plan;
+      });
+      if (kind === "read") {
+        expect(
+          owner.acceptRead(
+            { ...readItems("update", 3, [updated]), requestGeneration: 3 },
+            { lifetime: 1, readId: "update", boundary: "update" },
+          ),
+        ).toBe(true);
+      } else {
+        expect(
+          owner.accept(
+            {
+              method: "history/updated",
+              params: {
+                ref,
+                threadId,
+                bootGeneration: "1",
+                epoch: 0,
+                snapshot: { incarnation: identity.incarnation, length: 3 },
+                items: [updated],
+              },
+            } as AnyNotification,
+            { lifetime: 1 },
+          ),
+        ).toBe(true);
+      }
+      const commits = vi.spyOn(cache, "commitBatch");
+      expect(
+        owner.acceptRead(
+          { ...readItems("new", 4, [item("oversize", 1, 4), item("new", 4)]), requestGeneration: 4 },
+          { lifetime: 1, readId: "new", boundary: "new" },
+        ),
+      ).toBe(true);
+      expect(
+        reader
+          .getSnapshot()
+          ?.history?.turns.flatMap((turn) => turn.items)
+          .find((item) => item.transcriptKey === "item-target"),
+      ).toMatchObject({ version: 2, text: updated.text });
+      await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+      expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+      gate.resolve();
+      await owner.settled();
+      reader.dispose();
+      expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toEqual([]);
+      const reopened = owner.attachReader();
+      try {
+        const opened = await reopened.openLocal(40);
+        const disk = (await cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-target");
+        expect(disk).toMatchObject({ version: 2, item: { text: updated.text } });
+        expect(
+          opened.model?.turns.flatMap((turn) => turn.items).find((item) => item.transcriptKey === "item-target"),
+        ).toMatchObject({ version: 2, text: updated.text });
+        expect(opened.status).toBe("current");
+        expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(4);
+        expect((await cache.getLatestWindow(historyKey, 40)).coverage.at(-1)?.readId).toBe("new");
+      } finally {
+        reopened.dispose();
+      }
+    } finally {
+      gate.resolve();
+      reader.dispose();
+      owner.dispose();
+    }
+  },
+);
+
 it("persists a distinct page request after intrinsic capacity refusal", async () => {
   const { owner: unused, makeCache, offer } = capacityFixture(100_000);
   unused.dispose();
