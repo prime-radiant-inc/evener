@@ -46,11 +46,11 @@ func TestRgCollectorBoundsPendingBytesAndResumes(t *testing.T) {
 func TestRgCollectorByteBudgetIsPathPrioritized(t *testing.T) {
 	t.Parallel()
 	pad := strings.Repeat("p", 512)
-	make := func(name string) []byte { return []byte("/base/" + name + "\x001:hit" + pad + "\n") }
+	record := func(name string) []byte { return []byte("/base/" + name + "\x001:hit" + pad + "\n") }
 	run := func(first, second string) string {
 		c := newRgRecordCollector("/base", false, 4, 700) // holds one record, not two
-		c.Write(make(first))
-		c.Write(make(second))
+		c.Write(record(first))
+		c.Write(record(second))
 		c.flush()
 		return c.retained()
 	}
