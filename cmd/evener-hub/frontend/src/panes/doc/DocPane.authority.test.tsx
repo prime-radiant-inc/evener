@@ -860,3 +860,51 @@ test("a concurrently mounted pane recovers from its superseded ticket with a fre
   expect(within(hostA.container).getByText("First occurrence: same")).toBeTruthy();
   expect(beginReads.length).toBe(3);
 });
+
+test("a remounted pane with retained lease authority recovers from its superseded first read", async () => {
+  const f = await fixture("reader-remount-stale");
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+
+  // The pane reads and accepts first: its retained work holds a lease and it
+  // has content on screen.
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const first = mountAnnotated(f, ports, client, "doc-remount-b");
+  const workB = documentReaderWork("doc-remount-b", f.document, ports);
+  await waitFor(() => expect(workB.lease).not.toBeNull());
+  await waitFor(() => expect(within(first.container).getByText("First occurrence: same")).toBeTruthy());
+  first.unmount();
+  // The remounted mount retains the lease in the reader work registry.
+  expect(workB.lease).not.toBeNull();
+
+  // The fresh mount starts on the loading skeleton; its raw read is held on
+  // a deferred so pane A's ticket is issued while B's read is still in
+  // flight - A's issuance alone supersedes B's ticket.
+  let releaseB: (() => void) | undefined;
+  mockRead.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        releaseB = () => resolve(docContent(SOURCE, "rev-A"));
+      }),
+  );
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { beginReads, acceptances } = observeReadOwners(f.repo);
+  const second = mountAnnotated(f, ports, client, "doc-remount-b");
+  await waitFor(() => expect(beginReads.length).toBe(1));
+  mountAnnotated(f, ports, client, "doc-remount-a");
+  await waitFor(() => expect(beginReads.length).toBe(2));
+  await act(async () => {
+    releaseB?.();
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(acceptances.some((a) => a.state === "stale-ticket")).toBe(true));
+
+  // The remounted pane must not stay on its skeleton forever: with nothing
+  // rendered, the retained lease cannot keep anything on screen, so the
+  // same bounded recovery applies - one fresh reread whose ticket is the
+  // newest issued accepts and renders.
+  await waitFor(() => expect(beginReads.length).toBe(3));
+  await waitFor(() => expect(within(second.container).getByText("First occurrence: same")).toBeTruthy());
+  expect(workB.lease).not.toBeNull();
+});
