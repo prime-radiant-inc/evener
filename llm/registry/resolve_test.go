@@ -187,6 +187,193 @@ func TestResolve_AliasSeeding(t *testing.T) {
 	}
 }
 
+// An alias of a row whose effort control was derived — not catalog-recorded —
+// must not inherit that control as if it were evidence: the alias derives no
+// google thinking shape, exactly like its target (roborev round 3).
+func TestResolve_AliasOfDerivedEffortRow(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.cu-alias]\nalias_of = \"gemini-2.5-computer-use-preview-10-2025\"\n")
+	target := mustResolve(t, r, "google/gemini-2.5-computer-use-preview-10-2025")
+	if target.Caps.ThinkingShape != nil {
+		t.Fatalf("target row must derive no shape, got %v", *target.Caps.ThinkingShape)
+	}
+	alias := mustResolve(t, r, "google/cu-alias")
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("alias must not derive a shape from the target's derived effort control, got %v", *alias.Caps.ThinkingShape)
+	}
+	// A budget-shaped target's alias carries the budget shape through.
+	r2 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.flash-alias]\nalias_of = \"gemini-2.5-flash\"\n")
+	alias = mustResolve(t, r2, "google/flash-alias")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("budget alias must inherit the shape: %+v", alias.Caps.ThinkingShape)
+	}
+}
+
+// A cross-protocol alias carries no shape verdict — its target resolved under
+// a protocol that has none — so it derives from the catalog controls it
+// inherited, exactly like a directly named row (roborev round 4).
+func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
+	// The openai-chat target carries no shape of its own, but its catalog
+	// row records budget_tokens — the alias derives from those inherited
+	// controls, not from the target's (absent) verdict.
+	r := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.or-pro]\nalias_of = \"openrouter/google/gemini-2.5-pro\"\n")
+	target := mustResolve(t, r, "openrouter/google/gemini-2.5-pro")
+	if target.Protocol != ProtocolOpenAIChat || target.Caps.ThinkingShape != nil {
+		t.Fatalf("the openai-chat target carries no shape: %+v", target.Caps.ThinkingShape)
+	}
+	alias := mustResolve(t, r, "google/or-pro")
+	if alias.Protocol != ProtocolGoogle {
+		t.Fatalf("alias protocol = %s", alias.Protocol)
+	}
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("cross-protocol alias must derive budget from the inherited catalog controls: %+v", alias.Caps.ThinkingShape)
+	}
+
+	// A cross-protocol target whose effort control its own derivation
+	// invented — empty catalog reasoning_options — is not evidence either:
+	// the alias must not derive a level from it (roborev round 5).
+	r2 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.img-alias]\nalias_of = \"openrouter/google/gemini-3-pro-image\"\n")
+	target = mustResolve(t, r2, "openrouter/google/gemini-3-pro-image")
+	if target.Provenance["ReasoningControls"] != "derived" {
+		t.Fatalf("the target's effort control must be derived, not recorded: %v", target.Provenance)
+	}
+	alias = mustResolve(t, r2, "google/img-alias")
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("alias of a derived-controls target must derive no shape, got %v", *alias.Caps.ThinkingShape)
+	}
+
+	// A same-protocol alias whose own config supplies budget controls
+	// re-derives from that evidence: the target's absent verdict is stale
+	// once the alias's layers change the controls (roborev round 10).
+	r7 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.cu-budget]\nalias_of = \"gemini-2.5-computer-use-preview-10-2025\"\nreasoning_controls = [\"budget_tokens\"]\n")
+	alias = mustResolve(t, r7, "google/cu-budget")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("alias with its own budget controls must derive budget: %+v", alias.Caps.ThinkingShape)
+	}
+
+	// A same-protocol alias whose own config changes the controls also
+	// invalidates the target's inherited shape: overriding a level-shaped
+	// target with budget controls must produce budget, not level
+	// (roborev round 11).
+	r8 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.level-to-budget]\nalias_of = \"gemini-3.1-pro-preview\"\nreasoning_controls = [\"budget_tokens\"]\n")
+	alias = mustResolve(t, r8, "google/level-to-budget")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("alias overriding level to budget must derive budget: %+v", alias.Caps.ThinkingShape)
+	}
+
+	// An explicit thinking_shape on the alias always wins over both
+	// inheritance and derivation.
+	r9 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.explicit-budget]\nalias_of = \"gemini-3.1-pro-preview\"\nthinking_shape = \"budget\"\n")
+	alias = mustResolve(t, r9, "google/explicit-budget")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
+		t.Fatalf("explicit thinking_shape must win: %+v", alias.Caps.ThinkingShape)
+	}
+
+	// A cross-protocol alias of a target whose catalog recorded the effort
+	// control still derives no shape: the evidence belongs to the target's
+	// protocol, and a third-party gateway may record effort for a
+	// budget-shaped model (roborev round 9).
+	r3 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.or-31pro]\nalias_of = \"openrouter/google/gemini-3.1-pro-preview\"\n")
+	target = mustResolve(t, r3, "openrouter/google/gemini-3.1-pro-preview")
+	if target.Provenance["ReasoningControls"] != "snapshot/row" {
+		t.Fatalf("the target's effort control must be catalog-recorded: %v", target.Provenance)
+	}
+	alias = mustResolve(t, r3, "google/or-31pro")
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("cross-protocol alias must not derive a shape from inherited controls, got %v", *alias.Caps.ThinkingShape)
+	}
+
+	// An alias whose own config supplies the effort control and a ladder
+	// re-establishes evidence: the inherited derived-controls fact must not
+	// suppress the level the alias's own layers vouch for.
+	r4 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.img-explicit]\nalias_of = \"openrouter/google/gemini-3-pro-image\"\nreasoning_controls = [\"effort\"]\neffort_values = [\"low\", \"high\"]\n")
+	alias = mustResolve(t, r4, "google/img-explicit")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
+		t.Fatalf("an alias with its own recorded controls must derive level: %+v", alias.Caps.ThinkingShape)
+	}
+
+	// A transport override on a same-protocol alias does not change the
+	// protocol, so the shape inherits normally. The reviewer's stated
+	// scenario (transport override blocking protocol inheritance) requires
+	// a cross-protocol pair; that case is covered above.
+	r5 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.gemini-transport-alias]\nalias_of = \"gemini-3.1-pro-preview\"\ntransport = \"vertex-gemini\"\n")
+	alias = mustResolve(t, r5, "google/gemini-transport-alias")
+	if alias.Protocol != ProtocolGoogle {
+		t.Fatalf("alias protocol = %s", alias.Protocol)
+	}
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
+		t.Fatalf("a same-protocol alias with a transport override still inherits the shape: %+v", alias.Caps.ThinkingShape)
+	}
+
+	// Controls supplied through a config glob on the alias's own row count as
+	// evidence: the alias's own layer restated them (roborev round 8).
+	r6 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.img-glob-alias]\nalias_of = \"openrouter/google/gemini-3-pro-image\"\nreasoning_controls = [\"effort\"]\n")
+	alias = mustResolve(t, r6, "google/img-glob-alias")
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
+		t.Fatalf("alias with its own config controls must derive level: %+v", alias.Caps.ThinkingShape)
+	}
+
+	// A cross-protocol alias whose target records toggle-only controls but
+	// carries an effort ladder must not derive a level: the pass-through
+	// appends effort for the ladder, but that invented control is not
+	// evidence (roborev round 12). The target is openrouter's
+	// gemini-2.5-flash: toggle-only controls with a budget-shaped model.
+	r10 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.or-25flash]\nalias_of = \"openrouter/google/gemini-2.5-flash\"\n")
+	target = mustResolve(t, r10, "openrouter/google/gemini-2.5-flash")
+	if target.Provenance["ReasoningControls"] == "derived" {
+		t.Fatalf("the target's toggle control must be recorded: %v", target.Provenance)
+	}
+	alias = mustResolve(t, r10, "google/or-25flash")
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("alias of a toggle-only target with an inherited ladder must derive no shape, got %v", *alias.Caps.ThinkingShape)
+	}
+}
+
+// A shape verdict is protocol-specific: a cross-protocol target's shape is
+// never inherited, because the alias's protocol reads it differently — a
+// google row handed anthropic's derived "budget" would emit a thinkingBudget
+// no catalog evidence vouches for (roborev round 6).
+func TestResolve_CrossProtocolAliasNeverInheritsShape(t *testing.T) {
+	// The anthropic target derives "budget" from its cataloged
+	// budget_tokens control; a google alias of it must not inherit that
+	// verdict — the shape belongs to the target's protocol.
+	// The anthropic provider's own row derives "adaptive" from its cataloged
+	// effort control; a google alias of it must not inherit that verdict —
+	// the shape belongs to the target's protocol.
+	r := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "ANTHROPIC_API_KEY": "k"}, "[providers.google.models.an-alias]\nalias_of = \"anthropic/claude-opus-4-7\"\n")
+	target := mustResolve(t, r, "anthropic/claude-opus-4-7")
+	if target.Protocol != ProtocolAnthropic || target.Caps.ThinkingShape == nil || *target.Caps.ThinkingShape != "adaptive" {
+		t.Fatalf("the anthropic target must derive adaptive: %+v", target.Caps.ThinkingShape)
+	}
+	alias := mustResolve(t, r, "google/an-alias")
+	if alias.Protocol != ProtocolGoogle {
+		t.Fatalf("alias protocol = %s", alias.Protocol)
+	}
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("a google alias must not inherit an anthropic shape, got %v", *alias.Caps.ThinkingShape)
+	}
+}
+
+// A same-provider alias whose target row overrides the provider's protocol
+// inherits the target's shape: the alias resolves as the target's protocol,
+// so the verdict is already settled for it (roborev round 7).
+func TestResolve_AliasInheritsTargetProtocolShape(t *testing.T) {
+	// openrouter defaults to openai-chat; the target row overrides to
+	// google. The alias must inherit the target's derived google shape, not
+	// discard it by comparing against the provider default.
+	r := fixtureLoad(t, map[string]string{"OPENROUTER_API_KEY": "k"}, "[providers.openrouter.models.\"google/gemini-3.1-pro-preview\"]\nprotocol = \"google\"\n[providers.openrouter.models.gemini-via-google]\nalias_of = \"google/gemini-3.1-pro-preview\"\n")
+	target := mustResolve(t, r, "openrouter/google/gemini-3.1-pro-preview")
+	if target.Protocol != ProtocolGoogle || target.Caps.ThinkingShape == nil || *target.Caps.ThinkingShape != "level" {
+		t.Fatalf("the google-protocol target must derive level: %+v", target.Caps.ThinkingShape)
+	}
+	alias := mustResolve(t, r, "openrouter/gemini-via-google")
+	if alias.Protocol != ProtocolGoogle {
+		t.Fatalf("alias protocol = %s", alias.Protocol)
+	}
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
+		t.Fatalf("alias must inherit the target's google shape: %+v", alias.Caps.ThinkingShape)
+	}
+}
+
 // TestResolve_Opus45OneMStillBeta pins Opus 4.5's [1m] rows as beta-gated,
 // unlike Sonnet 4.5's [1m] rows above (TestResolve_AliasSeeding), which
 // became plain GA aliases. Live evidence against api.anthropic.com on

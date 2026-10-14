@@ -1255,19 +1255,27 @@ ceiling.
 
 | class | ceiling | what it covers |
 | --- | --- | --- |
-| install | 80s | installs real binaries and runs them |
-| transcript large-fixture | 95s | transcript indexing over a large fixture |
 | delegate-attention & idle | 40s | delegate attention and idle lifecycles |
 | deploy-host integration | 30s | host deploy and remote-host attach |
 | session-activity | 30s | session-activity tree capture |
 | retirement | 30s | daemon retirement lifecycles |
 | eval harness | 20s | memory and prompt evals |
 | plugin-git integration | 15s | plugin materialization over real git |
-| gate-runner integration | 15s | the module-test runner's own tests |
 | live-stack E2E | 15s | hub and TUI end-to-end suites |
-| dev-tool compile/CLI | 15s | `evener-dev` compile and CLI tests |
 
-Two classes are deliberately absent. **bounded-wait unit** has no ceiling of its
+Four classes were removed on 2026-10-14 (Jesse's ruling, issue #4615):
+**dev-tool compile/CLI**, **install**, **transcript large-fixture** and
+**gate-runner integration**. A wall ceiling on these classes measures how busy
+the runner is, not the code, so a strict breach there fails a test that is merely
+waiting on a loaded host. The sighting was #4615: on PR #4497's head
+`TestCrossCompileWindows` was reported at 52.26s against its 15s `dev-tool
+compile/CLI` ceiling — 3.5x, so no margin derived from observations would have
+held — while the same test passed at the previous head, whose 67-line diff was in
+`internal/transcriptindex`, nothing that can add 37 seconds to a Windows
+cross-compile. Their members now fall back to the flat `perTestCeilingSeconds`
+and warn-only in every mode, exactly like the rest of the unclassified backlog.
+
+Two further classes are deliberately absent. **bounded-wait unit** has no ceiling of its
 own yet: a wall ceiling on a test whose whole job is to sit out a wait mostly
 measures the runner, so its members stay unclassified on the flat number below.
 The **web repo-audit** test (`no new copy-only TypeScript tests`) was a class of
