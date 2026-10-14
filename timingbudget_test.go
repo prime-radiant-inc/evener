@@ -769,17 +769,20 @@ func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.
 	dir := t.TempDir()
 	for _, tc := range []struct {
 		name     string
+		pkg      string
 		test     string
 		seconds  string
 		wantFail bool
 	}{
 		{
 			name:    "removed runner-bound class member warns",
+			pkg:     "primeradiant.com/evener/cmd/evener-dev",
 			test:    "TestCrossCompileWindows",
 			seconds: "52.26",
 		},
 		{
 			name:     "kept class member still fails",
+			pkg:      "primeradiant.com/evener/internal/plugins",
 			test:     "TestGitCloneSurvivesAHookThatOrphansAPipeHolder",
 			seconds:  "20.00",
 			wantFail: true,
@@ -787,7 +790,7 @@ func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			measured := filepath.Join(dir, tc.test+".tsv")
-			writeAuditScriptFixture(t, measured, "TEST\tprimeradiant.com/evener\t"+tc.test+"\t"+tc.seconds+"\n")
+			writeAuditScriptFixture(t, measured, "TEST\t"+tc.pkg+"\t"+tc.test+"\t"+tc.seconds+"\n")
 			out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
 			if !tc.wantFail {
 				if err != nil {
