@@ -29,6 +29,7 @@ import { registerPaneForTests } from "../../shell/paneRegistry";
 import { PaneVisibilityContext } from "../../shell/paneVisibility";
 import {
   documentPaneState,
+  recordDocumentPaneState,
   registerDockviewApi,
   resetWorkspaceStoreForTests,
   useWorkspaceStore,
@@ -48,6 +49,7 @@ import {
   type AnnotationOperationRow,
   type AnnotationPayloadRow,
 } from "../../stores/localCompositionSchema";
+import { nextRealTask } from "../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { readModuleCss } from "../../styles/cssBlock";
 import type { BoundDocumentMap } from "../../widgets/markdown/documentSourceMap";
@@ -1200,6 +1202,12 @@ test("same-document remount restores the note, capture and PaneScaffold scroll; 
   mountAnnotated(f, ports, client, removedPane);
   workspaceStore.getState().closePane(removedPane);
   expect(() => subscribeDocumentReaderWork(removedPane, () => {})).toThrow("reader work not created");
+
+  // The demand's initial read for that last mount settles on a longer
+  // microtask chain than the retired effect did; drain it inside the test's
+  // act windows so teardown meets an idle reader instead of an update
+  // escaping act.
+  await screen.findByText("First occurrence: same");
 });
 
 // ---------------------------------------------------------------------------
@@ -1282,7 +1290,9 @@ test("an older raw read resolving after a newer one cannot display or authorize 
   const client = connectFakeClient();
 
   // Two explicit held reads: the mount read is the older; the real foreground
-  // reread is the newer. Both requests must be issued before either releases.
+  // reread is the newer. The demand coalesces the newer behind the older, so
+  // the older settles (superseded) before the newer's fetch is issued; the
+  // stale body still arrives after the newer demand exists.
   let releaseOlder: ((value: DocFileContent) => void) | undefined;
   const older = new Promise<DocFileContent>((resolve) => {
     releaseOlder = resolve;
@@ -1303,13 +1313,19 @@ test("an older raw read resolving after a newer one cannot display or authorize 
   mountAnnotated(f, ports, client, "doc-stale-read");
 
   // Wait for the first raw request, THEN drive the real foreground reread, and
-  // require both requests before releasing either.
+  // release the superseded older response: the coalesced newer fetch issues
+  // only once the older settles.
   await waitFor(() => expect(mockRead).toHaveBeenCalledTimes(1));
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   fireEvent(document, new Event("visibilitychange"));
+  await act(async () => {
+    releaseOlder?.(docContent("STALE SNAPSHOT BODY\n", "rev-old"));
+  });
   await waitFor(() => expect(mockRead).toHaveBeenCalledTimes(2));
+  // The superseded older body neither displays nor authorizes.
+  expect(screen.queryByText(/STALE SNAPSHOT BODY/)).toBeNull();
 
-  // Release the NEWER response first, then the older (stale) one last.
+  // Release the NEWER response.
   await act(async () => {
     releaseNewer?.(docContent(SOURCE, "rev-new"));
   });
@@ -1491,22 +1507,25 @@ test("a peer fence and save keeps foreign offsets off the retained display, then
     await f.repo.saveAnnotation(peerOperation);
   });
 
-  // The save's committed wake is replacement-epoch evidence: the reader
-  // schedules a current read without any foreground event or remount.
-  await waitFor(() => expect(beginReads.mock.calls.length).toBeGreaterThan(readsBeforeSave));
-  // While that read is in flight the foreign annotation never paints over the
-  // retained display.
+  // The save's committed wake is replacement-epoch evidence: the reader's
+  // demand carries a pending current read without any foreground event or
+  // remount. That read is coalesced behind the held revalidation read, so the
+  // retained display keeps the old source while both are pending and the
+  // foreign annotation never paints over it.
   await waitFor(() => expect(releaseHeldRead).toBeTruthy());
   expect(screen.getByText("First occurrence: same")).toBeTruthy();
   expect(highlightBands().map((band) => band.getAttribute("data-operation-id"))).toEqual([]);
 
-  // The scheduled read completes against the replacement source and adopts
-  // the peer's epoch; the peer's annotation then paints over the text it was
-  // captured against.
+  // Opening the gate settles the superseded revalidation read; the wake's
+  // coalesced read then issues (proving the wake scheduled it - without the
+  // wake, the settle would leave the demand idle), completes against the
+  // replacement source and adopts the peer's epoch; the peer's annotation
+  // then paints over the text it was captured against.
   holdReads = false;
   await act(async () => {
     releaseHeldRead?.(docContent(CHANGED, "rev-B"));
   });
+  await waitFor(() => expect(beginReads.mock.calls.length).toBeGreaterThan(readsBeforeSave));
   await screen.findByText("CHANGED");
   await waitFor(() => expect(work.lease?.epoch).toBe(peerEpoch));
   const replacementMap = await waitForCurrentBoundMap(work, maps);
@@ -3468,4 +3487,177 @@ test("the annotated reader keeps a plain text file's copyable code block", async
   cleanupAfterTest(() => host.unmount());
   expect((await screen.findByText("plain body line")).closest("pre")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+});
+
+// ---------------------------------------------------------------------------
+// The demand owner (#4578): the annotated reader schedules every read through
+// createDocumentReadDemand - the same engine the legacy reader uses - so its
+// lifecycle joins the shared paced-retry, reconnect, resync and reopen
+// recovery instead of running its own nonce-driven effect.
+// ---------------------------------------------------------------------------
+// Under faked setTimeout the repository's IndexedDB events still need REAL
+// macrotasks (fake-indexeddb queues on setImmediate) while React's jsdom
+// scheduler needs the FAKE clock advanced to flush renders: alternate both
+// inside one act scope until the read cycle reaches quiescence.
+async function settleFakeReadCycle(hops = 40): Promise<void> {
+  for (let i = 0; i < hops; i += 1) {
+    await act(async () => {
+      await nextRealTask();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+}
+
+test("a transient raw-read failure paces the annotated reader's retry while it is visible and connected", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const f = await fixture("reader-paced-retry");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  let failReads = true;
+  mockRead.mockImplementation(() =>
+    failReads ? Promise.reject(new Error("transient read fault")) : Promise.resolve(docContent(SOURCE, "rev-A")),
+  );
+  mountAnnotated(f, ports, client, "doc-paced-retry");
+
+  // The first cycle fails transiently before anything rendered: the error
+  // surface shows, and the demand paces its first retry one second out.
+  await settleFakeReadCycle();
+  expect(screen.getByText("Couldn't load file")).toBeTruthy();
+  expect(mockRead).toHaveBeenCalledTimes(1);
+
+  // The first paced retry waits a full second: 999ms is quiet, then the
+  // retry at 1s fails the same transient way and paces again.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(999);
+  });
+  expect(mockRead).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  await settleFakeReadCycle();
+  expect(mockRead).toHaveBeenCalledTimes(2);
+
+  // The second paced retry (2s out) reads successfully and the pane recovers
+  // to usable content; recovered and idle, it schedules nothing further.
+  failReads = false;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  await settleFakeReadCycle();
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+  expect(mockRead).toHaveBeenCalledTimes(3);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(mockRead).toHaveBeenCalledTimes(3);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("a controller reconnect re-reads through the demand owner", async () => {
+  const f = await fixture("reader-reconnect");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  mountAnnotated(f, ports, client, "doc-reconnect");
+  await screen.findByText("First occurrence: same");
+  expect(mockRead).toHaveBeenCalledTimes(1);
+
+  // A drop to reconnecting deactivates the demand; recovery to ready arms it
+  // again and reads once.
+  act(() => client.emitStateChange("reconnecting"));
+  act(() => client.emitStateChange("ready"));
+  await waitFor(() => expect(mockRead).toHaveBeenCalledTimes(2));
+
+  // Replacing the ready client with a new one is a ready transition too: the
+  // demand refreshes and reads again.
+  const replacement = new FakeClient("ready");
+  cleanupAfterTest(() => replacement.close());
+  act(() => connectionStore.getState().connect(replacement));
+  await waitFor(() => expect(mockRead).toHaveBeenCalledTimes(3));
+  await screen.findByText("First occurrence: same");
+});
+
+test("an owning thread resync refreshes the annotated reader; an unrelated resync does not", async () => {
+  const f = await fixture("reader-resync");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  mountAnnotated(f, ports, client, "doc-resync");
+  await screen.findByText("First occurrence: same");
+  expect(mockRead).toHaveBeenCalledTimes(1);
+
+  act(() =>
+    client.emitNotification({
+      method: "evener/thread/resync",
+      params: { ref: "other:unrelated", threadId: "thr_other" },
+    }),
+  );
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(mockRead).toHaveBeenCalledTimes(1);
+  act(() => client.emitNotification({ method: "evener/thread/resync", params: { ref: "root", threadId: "thr_root" } }));
+  await waitFor(() => expect(mockRead).toHaveBeenCalledTimes(2));
+  await screen.findByText("First occurrence: same");
+});
+
+test("a recorded reopen of the same document refreshes the reader without a remount", async () => {
+  const f = await fixture("reader-reopen");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const paneId = workspaceStore.getState().openPane("doc", annotatedParams(f));
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.id === paneId);
+  if (!pane) throw new Error("the doc pane did not open");
+  const binding = {
+    reference: { path: "NOTES.md", cwd: "/work/a", readTarget: "/work/a/NOTES.md", provenance: "relative" as const },
+    origin: undefined,
+    reopen: 0,
+  };
+  // The canonical binding exists BEFORE the reader mounts - the real opener
+  // records it when the pane opens - so later records cannot change the read
+  // identity: only the reopen generation can move.
+  act(() => recordDocumentPaneState(pane, binding));
+  mountAnnotated(f, ports, client, paneId);
+  await screen.findByText("First occurrence: same");
+  expect(mockRead).toHaveBeenCalledTimes(1);
+
+  // Re-recording the same generation is not a reopen and reads nothing.
+  act(() => recordDocumentPaneState(pane, binding));
+  await act(async () => {
+    await nextRealTask();
+  });
+  expect(mockRead).toHaveBeenCalledTimes(1);
+
+  // Reopening the same document increments the retained generation; the
+  // reader re-reads in place, keeping its rendered content through the cycle.
+  act(() => recordDocumentPaneState(pane, { ...binding, reopen: 1 }));
+  await waitFor(() => expect(mockRead).toHaveBeenCalledTimes(2));
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+});
+
+test("the annotated reader's Reload action refreshes the demand without dropping the displayed content", async () => {
+  const f = await fixture("reader-reload");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  mountAnnotated(f, ports, client, "doc-reload");
+  await screen.findByText("First occurrence: same");
+  expect(mockRead).toHaveBeenCalledTimes(1);
+
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await waitFor(() => expect(mockRead).toHaveBeenCalledTimes(2));
+  // The refresh keeps the rendered content on screen through the re-read.
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
 });

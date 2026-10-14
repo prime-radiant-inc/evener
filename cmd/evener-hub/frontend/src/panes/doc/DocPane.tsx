@@ -14,10 +14,14 @@ import {
 } from "@evener/appwire-client";
 import {
   bindFilePath,
+  createDocumentReadDemand,
   DOC_FILE_MAX_BYTES,
   type DocFileContent,
   DocFileError,
   type DocFileErrorKind,
+  type DocumentReadAttempt,
+  type DocumentReadDemand,
+  type DocumentReadOutcome,
   docImageReadURL,
   type FileReference,
   readDocFile,
@@ -27,7 +31,7 @@ import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import type { PaneProps } from "../../shell/paneRegistry";
 import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore, workspaceStore } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, onConnectionNotification, readyConnectionTransition } from "../../stores/connection";
 import type { DocumentAnnotationPorts } from "../../stores/documentAnnotationRuntime";
 import { createSecureUUID } from "../../stores/secureUUID";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
@@ -52,6 +56,7 @@ import {
 import { observeFinishedDocumentSelections } from "./documentSelection";
 import type { DocOpeningOrigin, DocParams } from "./openDoc";
 import { useDocumentRead } from "./useDocumentRead";
+import { useReopenGeneration } from "./useReopenGeneration";
 
 const CLASS = {
   markdown: requireClass(styles.markdown, "docpane.module.css", "markdown"),
@@ -240,8 +245,36 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   const [authoritySuspended, setAuthoritySuspended] = useState(false);
   const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
   const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null);
-  const [readNonce, setReadNonce] = useState(0);
   const [, bump] = useState(0);
+  // The reopen generation arrives through the stable-snapshot hook: a closing
+  // pane's record disappearing must not change it, or the dying pane re-renders
+  // into a read that supersedes live peers' tickets.
+  const reopen = useReopenGeneration(paneId);
+  const visible = usePaneVisible();
+  // The read demand is the single scheduler of this reader's pipeline: it
+  // coalesces concurrent triggers, paces transient-failure retries while the
+  // pane is visible and connected, and retires stale attempts when a newer
+  // demand supersedes them - the same engine the legacy reader schedules
+  // through (useDocumentRead).
+  const readDemandRef = useRef<DocumentReadDemand | undefined>(undefined);
+  // Every read captures its inputs from here at start: rebinds and other
+  // prop changes refresh the demand instead of re-running an effect.
+  const latestReadInputs = useRef<
+    | {
+        session: string;
+        readTarget: string;
+        key: DocumentKey;
+        ports: DocumentAnnotationPorts;
+        work: DocumentReaderWork;
+        enterExpiryPending: () => void;
+        visible: boolean;
+      }
+    | undefined
+  >(undefined);
+  const previousReadIdentity = useRef<{ identity: string; reopen: number } | undefined>(undefined);
+  const refreshRead = useCallback((): void => {
+    readDemandRef.current?.refresh();
+  }, []);
   const hostRef = useRef<HTMLDivElement>(null);
   // The most recent fence's receipt, awaiting this reader's reread: the reread's
   // acceptance proves the fence settled and completes the expired epoch's
@@ -329,11 +362,11 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         const authority = work.lease ?? work.attempted?.lease ?? null;
         if (!authority || ticket.namespaceIncarnation === authority.namespaceIncarnation) return;
         retireAuthority("reading");
-        setReadNonce((value) => value + 1);
+        refreshRead();
       },
       () => {},
     );
-  }, [work, ports, key, retireAuthority]);
+  }, [work, ports, key, retireAuthority, refreshRead]);
 
   // A leaseless expiry-pending reader lost its fence, and ANY committed wake may
   // be the replacement epoch a repository retry just committed — the expired
@@ -345,9 +378,9 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // cannot loop.
   const recoverLeaselessExpiryOnWake = useCallback(() => {
     if (work.lease === null && work.attempted === null && work.phase === "expiry-pending") {
-      setReadNonce((value) => value + 1);
+      refreshRead();
     }
-  }, [work]);
+  }, [work, refreshRead]);
 
   // A committed wake whose views all name a foreign epoch is a peer's fence
   // committed while this reader still displays the retained snapshot: the
@@ -364,9 +397,9 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       const authority = work.lease ?? work.attempted?.lease ?? null;
       if (!authority) return;
       if (next.length > 0 && next.some((view) => view.receipt.epoch === authority.epoch)) return;
-      setReadNonce((value) => value + 1);
+      refreshRead();
     },
-    [work],
+    [work, refreshRead],
   );
 
   // View refresh through the actual repository subscription. A committed wake
@@ -411,19 +444,29 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     retireAuthority("expiry-pending");
   }, [retireAuthority]);
 
-  // The read loop. The current ticket is issued BEFORE the raw fetch, so every
+  // The read demand schedules this reader's pipeline: the same engine the
+  // legacy reader schedules through (useDocumentRead). Every read captures
+  // its inputs at start, so rebinds and prop changes refresh the demand
+  // instead of re-running an effect, concurrent triggers coalesce, and a
+  // transient failure paces its retry while this pane is visible and
+  // connected. The current ticket is issued BEFORE the raw fetch, so every
   // successful cycle — an unchanged reopen or foreground reread included —
   // advances the durable read generation and revalidates through real
-  // acceptance. The repository preserves the durable head/snapshot identity for
-  // an exactly identical current read, so a retained immutable attempt stays
-  // valid without any pane-local content cache. A stale ticket is ignored, a
-  // changed read fences (expiry-pending), and a committed fence is followed by
-  // one more current read to adopt the replacement epoch. A failed raw read
-  // never replaces the retained work and never accepts fabricated content.
+  // acceptance. The repository preserves the durable head/snapshot identity
+  // for an exactly identical current read, so a retained immutable attempt
+  // stays valid without any pane-local content cache. A stale ticket is
+  // ignored, a changed read fences (expiry-pending), and a committed fence
+  // is followed by one more current read to adopt the replacement epoch. A
+  // failed raw read never replaces the retained work and never accepts
+  // fabricated content.
+  useLayoutEffect(() => {
+    latestReadInputs.current = { session, readTarget, key, ports, work, enterExpiryPending, visible };
+  });
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      void readNonce; // re-run the read for each foreground reread
+    const readDocument = async (attempt: DocumentReadAttempt): Promise<DocumentReadOutcome> => {
+      const inputs = latestReadInputs.current;
+      if (!inputs || !attempt.isCurrent()) return "success";
+      const { session, readTarget, key, ports, work, enterExpiryPending } = inputs;
       // Display document content: from this point the mount has something
       // rendered that a stale acceptance's early return preserves.
       const displayContent = (displayed: DocFileContent): void => {
@@ -435,7 +478,8 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       // its binding) re-reads the same document, and blanking it to the
       // loading skeleton would tear down the reading position, the selection
       // surface and any bound scope mid-read.
-      if (readNonce === 0) setState((previous) => (previous.status === "ok" ? previous : { status: "loading" }));
+      if (!renderedContentRef.current)
+        setState((previous) => (previous.status === "ok" ? previous : { status: "loading" }));
 
       // A thrown beginRead storage fault is uncertainty, not proof the document
       // changed: fall through to the raw read and suspend usable authority,
@@ -446,7 +490,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       } catch {
         ticket = null;
       }
-      if (cancelled) return;
+      if (!attempt.isCurrent()) return "success";
 
       let content: DocFileContent;
       try {
@@ -458,15 +502,18 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // the comment editor. The failure shows alongside them until a later
         // reread succeeds; only a first read without content shows the
         // full-pane error state.
-        if (!cancelled)
+        const kind = errorKind(err);
+        if (attempt.isCurrent())
           setState((previous) =>
             previous.status === "ok"
-              ? { status: "ok", content: previous.content, rereadError: errorKind(err) }
-              : { status: "error", kind: errorKind(err) },
+              ? { status: "ok", content: previous.content, rereadError: kind }
+              : { status: "error", kind },
           );
-        return;
+        // A transient failure reports through the outcome so the demand paces
+        // its retry while this pane stays visible and connected.
+        return kind === "error" ? "transient" : "terminal";
       }
-      if (cancelled) return;
+      if (!attempt.isCurrent()) return "success";
 
       if (ticket === null) {
         // Render the real raw content without adopting or fabricating accepted
@@ -474,30 +521,33 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // attempt, note and prior lease evidence are retained for recovery.
         displayContent(content);
         setAuthoritySuspended(true);
-        return;
+        return "success";
       }
 
       let accepted: AcceptedReadResult;
       try {
         accepted = await ports.repository.acceptRead(ticket, content);
       } catch {
-        if (cancelled) return;
+        if (!attempt.isCurrent()) return "success";
         const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence;
         if (evidence && evidenceProvesChange(content, evidence)) {
           // A DEFINITE change to the annotated source is confirmed expiry even
           // though acceptance threw: retire the stale capture/attempt.
           displayContent(content);
           enterExpiryPending();
-          return;
+          return "success";
         }
         // Otherwise the throw is uncertainty, not confirmed expiry: render the
         // raw content, suspend usable authority and retain the exact
         // note/capture/attempt and the shared retry ownership.
         displayContent(content);
         setAuthoritySuspended(true);
-        return;
+        // The acceptance never completed, so the demand paces a retry while
+        // this pane is visible and connected; the next cycle revalidates
+        // through a fresh ticket and a real acceptance.
+        return "transient";
       }
-      if (cancelled) return;
+      if (!attempt.isCurrent()) return "success";
       if (accepted.state === "stale-ticket") {
         // A concurrently mounted pane's ticket can be superseded by another
         // pane's issuance alone; this read was honest work against a dead
@@ -510,11 +560,11 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // acceptance emits no wake, so the return would strand the fresh
         // mount on its loading skeleton forever. With nothing rendered, the
         // same bounded recovery below applies.
-        if ((work.lease !== null || work.attempted !== null) && renderedContentRef.current) return;
+        if ((work.lease !== null || work.attempted !== null) && renderedContentRef.current) return "success";
         if (leaselessStaleRef.current === 0) {
           leaselessStaleRef.current = 1;
-          setReadNonce((value) => value + 1);
-          return;
+          readDemandRef.current?.refresh();
+          return "success";
         }
         // A SECOND consecutive stale acceptance means another reader's
         // in-flight issuance keeps superseding ours; re-issuing would only
@@ -527,7 +577,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         leaselessStaleRef.current = 0;
         displayContent(content);
         setAuthoritySuspended(true);
-        return;
+        return "success";
       }
       displayContent(content);
       if (accepted.state === "accepted") {
@@ -563,7 +613,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           // reader tries once per acceptance and never blocks adoption on it.
           void ports.repository.finishExpiry(fencedExpiry).catch(() => undefined);
         }
-        return;
+        return "success";
       }
       // A RETURNED expiry-pending is confirmed source expiry, even while its
       // fence commit is still pending: retire the stale capture/attempt but keep
@@ -574,23 +624,59 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // Retain the receipt: the reread's acceptance settles the fence and
         // completes the expired epoch's deletion there.
         expiryReceiptRef.current = accepted.receipt;
-        setReadNonce((value) => value + 1);
+        refreshRead();
       }
-    })();
-    return () => {
-      cancelled = true;
+      return "success";
     };
-  }, [session, readTarget, key, ports, work, readNonce, enterExpiryPending]);
-
-  // A genuine foreground reread of the current ticket, in addition to the shared
-  // retained-attempt retry.
-  useEffect(() => {
+    const demand = createDocumentReadDemand(readDocument);
+    readDemandRef.current = demand;
+    const updateActive = () =>
+      demand.setActive(
+        (latestReadInputs.current?.visible ?? false) &&
+          document.visibilityState !== "hidden" &&
+          connectionStore.getState().state === "ready",
+      );
+    const unsubscribeConnection = connectionStore.subscribe((state, prior) => {
+      updateActive();
+      if (state.client !== prior.client && readyConnectionTransition(state, prior) && prior.state === "ready")
+        demand.refresh();
+    });
+    // A resync names an exact session. There is no remote-attachment-ready
+    // notification, so transient attachment failures also retain paced demand.
+    const unsubscribeNotifications = onConnectionNotification((notification) => {
+      if (
+        notification.method === "evener/thread/resync" &&
+        notification.params.ref === latestReadInputs.current?.session
+      )
+        demand.refresh();
+    });
+    // A genuine foreground reread of the current ticket, in addition to the
+    // shared retained-attempt retry.
     const onForeground = (): void => {
-      if (document.visibilityState === "visible") setReadNonce((value) => value + 1);
+      if (document.visibilityState === "visible") demand.refresh();
     };
     document.addEventListener("visibilitychange", onForeground);
-    return () => document.removeEventListener("visibilitychange", onForeground);
-  }, []);
+    updateActive();
+    return () => {
+      demand.dispose();
+      readDemandRef.current = undefined;
+      unsubscribeConnection();
+      unsubscribeNotifications();
+      document.removeEventListener("visibilitychange", onForeground);
+    };
+  }, [refreshRead]);
+  useLayoutEffect(() => {
+    const inputs = latestReadInputs.current;
+    if (!inputs) return;
+    const identity = JSON.stringify([inputs.session, inputs.key, inputs.readTarget]);
+    const previous = previousReadIdentity.current;
+    previousReadIdentity.current = { identity, reopen };
+    readDemandRef.current?.setActive(
+      inputs.visible && document.visibilityState !== "hidden" && connectionStore.getState().state === "ready",
+    );
+    if (previous === undefined) return;
+    if (previous.identity !== identity || previous.reopen !== reopen) readDemandRef.current?.refresh();
+  });
 
   // The PaneScaffold body is the real scroll owner: retain and restore its
   // position across host swaps.
@@ -728,6 +814,14 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       title={filenameOf(path)}
       paneId={paneId}
       focused={focused}
+      actions={
+        // The same foreground reread control the legacy reader exposes: a
+        // press refreshes the demand, which retires the in-flight attempt
+        // and starts a fresh ticket-before-fetch cycle.
+        <Button size="sm" variant="quiet" onClick={refreshRead}>
+          Reload
+        </Button>
+      }
       scaffoldMarker="doc-reader-scroll"
       footer={footer}
     >
