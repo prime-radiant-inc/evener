@@ -31,6 +31,7 @@ import {
   installResumeOnlyProjection,
   notifyReadyForMutationDispatch,
   readMutationPersistence,
+  requestClickTimeStopBarrier,
   resendRecoveryMutation,
   retryBlockedMutation,
   subscribeMutationPersistence,
@@ -300,12 +301,18 @@ export function useComposerSubmitting(ref: string): boolean {
 // recovery tray, the draft UI) - neither of which the package names.
 export function submitWithPendingTracking(
   opts: SubmitWithPendingTrackingOptions,
-  perform: (submitted: SubmittedDraft) => Promise<unknown>,
+  perform: (submitted: SubmittedDraft, stopBarrier?: Promise<number> | undefined) => Promise<unknown>,
 ): Promise<void> {
   const skillNames = [...(opts.skillNames ?? [])];
   // The source captures the immutable payload BEFORE any wait; both `perform`
   // and settlement are driven from that same submitted value.
   const operation = (async () => {
+    // §4's barrier is the click's OWN storage observation, so request it in
+    // this synchronous prefix - before the preparation's first await. A
+    // recovery resend never enqueues a row (it rewrites the durable pending
+    // turn instead), so it requests no barrier: an unconsumed read could
+    // reject unhandled.
+    const stopBarrier = opts.recoveryId === undefined ? requestClickTimeStopBarrier(opts.ref) : undefined;
     const source = opts.source;
     let settlement: DraftSettlement = { cleared: false, draftUnchanged: false, persistence: "pending" };
     let accepted = false;
@@ -352,7 +359,7 @@ export function submitWithPendingTracking(
         },
       },
       async () => {
-        accepted = (await perform(submitted)) !== false;
+        accepted = (await perform(submitted, stopBarrier)) !== false;
       },
       ({ draftUnchanged }) => {
         if (!accepted) return;
