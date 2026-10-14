@@ -434,6 +434,32 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     expect((failure as DOMException).name).toBe("VersionError");
   });
 
+  test("an old tab's version-3 open against the version-4 database fails closed", async () => {
+    const storage = store();
+    await storage.enqueueIntent(intent("a row the old code cannot count"));
+    storage.close();
+
+    // The deployed pre-counter code opens the database at version 3. The
+    // version-4 database this build writes must refuse that open with a
+    // VersionError instead of sharing rows whose attempt evidence the old
+    // code cannot count: a new tab's refusal rollback would decrement a
+    // counter that never counted the old tab's concurrent dispatch, erasing
+    // the row's only attempt evidence so Stop could misclassify a possibly
+    // delivered row as never sent (docs/design/stop-cancellation-outbox.md
+    // §8). Failing the open is the safe direction: every outbox read and
+    // write in the old tab then reports a storage error, and projections
+    // degrade to "storage unavailable" - the safe mixed-version state is a
+    // reload, never a silent share.
+    const openRequest = indexedDB.open(databaseName, 3);
+    const failure = await new Promise<unknown>((resolve, reject) => {
+      openRequest.addEventListener("success", () => reject(new Error("the version-3 open unexpectedly succeeded")), {
+        once: true,
+      });
+      openRequest.addEventListener("error", () => resolve(openRequest.error), { once: true });
+    });
+    expect((failure as DOMException).name).toBe("VersionError");
+  });
+
   test("discardCanceledOfInstance removes only the superseded instance's canceled rows", async () => {
     const storage = store();
     const deadRow = await storage.enqueueIntent({ ...intent("superseded instance's row"), threadId: "thr-old" });

@@ -10339,3 +10339,69 @@ test("a refusal's busy marker leaves when another tab settles the row", async ()
   expect(threadsStore.getState().transientRefusalPaces.get("ref_a")).toBeUndefined();
   restoreScheduler();
 });
+
+// #4342 (review): the settle prune is fire-and-forget at every call site,
+// so a storage read failing inside it must not escape as an unhandled
+// rejection - and a failed read proves nothing, so it clears nothing: the
+// marker and its armed retry survive for a later recovery pass. The
+// unhandled-rejection claim itself is pinned by this file run's exit, not
+// an in-test listener (vitest intercepts process-level unhandledRejection
+// dispatch, so a per-test listener cannot discriminate; see the
+// transcript-scroll precedent) - before the fix, this suite exits 1 naming
+// the stubbed storage failure.
+test("a refusal's busy marker survives a prune whose storage read fails", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", (params) => {
+    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    });
+  });
+  const restoreScheduler = installBackpressureRetrySchedulerForTests(() => () => {});
+
+  await threadsStore.getState().send("ref_a", "held through a failed prune");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  const [row] = await storage.listOutbox("ref_a");
+  if (!row) throw new Error("expected the refused row to stay durable");
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(row.clientMutationId);
+
+  // The dispatch-tail prune's shared-storage read fails for the marked row:
+  // the dispatcher drain's own read of the same row comes first and its
+  // failure is handled by the dispatch chain, so the failure is armed for
+  // the second read - the tail prune's.
+  let failedReads = 0;
+  let markerReads = 0;
+  const originalRead = storage.getOutbox.bind(storage);
+  const read = vi.spyOn(storage, "getOutbox").mockImplementation((clientMutationId: string) => {
+    if (clientMutationId === row.clientMutationId) {
+      markerReads += 1;
+      if (markerReads > 1) {
+        failedReads += 1;
+        return Promise.reject(new MutationStorageTimeoutError());
+      }
+    }
+    return originalRead(clientMutationId);
+  });
+  notifyReadyForMutationDispatch(["ref_a"]);
+  await flushIndexedDBUntil(() => failedReads > 0, 30);
+  read.mockRestore();
+  expect(failedReads).toBeGreaterThan(0);
+  // The failed prune proved nothing: the marker and its retry survive.
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(row.clientMutationId);
+
+  // Once storage answers again, the same dispatch-tail path still prunes a
+  // row that settled meanwhile - the recovery pass the marker was kept for.
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.settleReceipt(row.clientMutationId, "reflected");
+  otherTab.close();
+  notifyReadyForMutationDispatch(["ref_a"]);
+  await flushIndexedDBUntil(() => threadsStore.getState().transientRefusalPaces.get("ref_a") === undefined);
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")).toBeUndefined();
+  restoreScheduler();
+});

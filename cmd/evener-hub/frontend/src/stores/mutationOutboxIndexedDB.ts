@@ -55,14 +55,17 @@ export interface MutationOutboxIndexedDBOptions {
 }
 
 const DATABASE_NAME = "evener-mutation-outbox";
-// Version 3 is a compatibility fence, not a schema migration: the upgrade
-// handler below is unchanged and purely additive. The deployed version-2 code
-// reads a canceled row as a non-submitting FIFO head and stalls the ref's
-// queue, so this build must not share a database with it - a version-2 open
-// against this database fails with VersionError, and the old tab fails closed
-// (storage-unavailable errors) instead of silently stalling
+// Version 4 is a compatibility fence, not a schema migration: the upgrade
+// handler below is unchanged and purely additive. The deployed version-3 code
+// shares attempt evidence through the `attempted` flag alone, so its dispatch
+// never counts unresolved attempts and a refusal rollback in this build could
+// erase evidence the older tab's concurrent attempt still needs - this build
+// must not share a database with it. A version-3 open against this database
+// fails with VersionError, and the old tab fails closed (storage-unavailable
+// errors) instead of silently erasing attempt evidence: the safe
+// mixed-version state is a reload, never a silent share
 // (docs/design/stop-cancellation-outbox.md §8).
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const OUTBOX_STORE = "outbox";
 const OPTIMISTIC_STORE = "optimistic";
 const RECOVERY_STORE = "recovery";

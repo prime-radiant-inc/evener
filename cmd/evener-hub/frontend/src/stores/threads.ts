@@ -1942,7 +1942,16 @@ async function pruneSettledTransientRefusals(runtime: MutationRuntime, targetRef
     const entry = threadsStore.getState().transientRefusalPaces.get(targetRef);
     if (!entry) continue;
     const cancelRetry = transientRefusalCancels.get(targetRef);
-    const row = await runtime.storage.getOutbox(entry.clientMutationId);
+    // A failed read proves nothing, so it clears nothing: the marker and its
+    // armed retry stay for a later recovery pass. The prune is fire-and-forget
+    // at every call site, so containing the failure here is also what keeps a
+    // storage error from escaping as an unhandled rejection.
+    let row: MutationOutboxRecord | undefined;
+    try {
+      row = await runtime.storage.getOutbox(entry.clientMutationId);
+    } catch {
+      continue;
+    }
     if (!isCurrentMutationRuntime(runtime)) return;
     if (row?.state === "submitting") continue;
     // The refused row settled: its entry, its busy marker, and any retry

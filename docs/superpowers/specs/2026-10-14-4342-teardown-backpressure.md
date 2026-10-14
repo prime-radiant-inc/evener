@@ -484,6 +484,15 @@ fixtures, and an injectable transport/observer where needed.
   that legacy evidence too. Cross-tab
   settlements clear this tab's marker through the dispatch-tail prune, and
   every surface renders the refusal state only for `submitting` rows.
+  The same review's mixed-version finding fences the browser database at
+  version 4 (the stop-cancellation §8 precedent): a deployed version-3 tab
+  dispatches without counting, so sharing rows with it would let this
+  build's refusal rollback erase evidence the older tab's attempt still
+  needs; its version-3 open now fails closed instead. The prune's own
+  shared-storage read can fail, and a failed read proves nothing: the
+  marker and its armed retry survive for a later recovery pass, and the
+  fire-and-forget prune contains the failure rather than leaking an
+  unhandled rejection.
 - Item 8's TUI e2e uses a fixture-specific refusal message, so the pin proves
   the hub's message reaches the TUI's failure line verbatim rather than two
   copies of a known string agreeing, and asserts the refusal's ledger

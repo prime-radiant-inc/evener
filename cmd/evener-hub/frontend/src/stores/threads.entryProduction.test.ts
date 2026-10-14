@@ -1453,7 +1453,7 @@ it("ordinary browser routes reads notifications paging reopen reconnect and fina
   expect(await lease.release()).toEqual({ kind: "saved" });
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
   expect(await factory.databases()).toEqual([
-    { name: "evener-mutation-outbox", version: 3 },
+    { name: "evener-mutation-outbox", version: 4 },
     { name: SESSION_CACHE_DATABASE_NAME, version: SESSION_CACHE_DATABASE_VERSION },
   ]);
 });
