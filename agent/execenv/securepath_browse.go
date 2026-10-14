@@ -772,7 +772,11 @@ func readBounded(ctx context.Context, r io.Reader, f readDeadlineSetter, limit i
 		disarm := armStreamDeadline(ctx, f)
 		defer disarm()
 	}
-	data, err = io.ReadAll(io.LimitReader(r, limit+1))
+	// A read that cannot take a deadline — an ordinary regular file refuses
+	// SetReadDeadline — never fails for a cancellation on its own, so check ctx
+	// before each read: a cancelled read must stop rather than finish and let
+	// the caller write on a cancelled call (#4621 round 4, MEDIUM 1).
+	data, err = io.ReadAll(io.LimitReader(ctxReadGuard{ctx: ctx, r: r}, limit+1))
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, false, cerr
@@ -782,7 +786,27 @@ func readBounded(ctx context.Context, r io.Reader, f readDeadlineSetter, limit i
 		}
 		return nil, false, err
 	}
+	// io.ReadAll may return with the last read already satisfied before ctx was
+	// cancelled; a successful read of a cancelled call is still no data.
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, false, cerr
+	}
 	return data, int64(len(data)) > limit, nil
+}
+
+// ctxReadGuard fails a read once ctx is done, so a read that cannot arm a
+// deadline still stops promptly on cancellation. A context that can never be
+// cancelled reads straight through.
+type ctxReadGuard struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (g ctxReadGuard) Read(p []byte) (int, error) {
+	if err := g.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return g.r.Read(p)
 }
 
 // armStreamDeadline arms f's read deadline for grepReadStallTimeout, watched
