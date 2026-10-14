@@ -101,7 +101,10 @@ export interface UsageFacts {
 }
 
 export function usageFacts(
-	session: Pick<ThreadModel, "usage" | "cost" | "workMillis" | "contextUsed" | "contextWindow" | "failedToolCalls">,
+	session: Pick<
+		ThreadModel,
+		"usage" | "cost" | "workMillis" | "contextUsed" | "contextWindow" | "contextAssumed" | "failedToolCalls"
+	>,
 ): UsageFacts {
 	const facts: UsageFacts = {};
 	const usage = session.usage;
@@ -116,7 +119,11 @@ export function usageFacts(
 	if (session.workMillis > 0) facts.workTime = compactDuration(session.workMillis);
 	if (session.contextWindow > 0)
 		facts.context = {
-			text: `${formatTokenCount(session.contextUsed)} of ${formatTokenCount(session.contextWindow)}`,
+			// The "~" marks an ASSUMED window the way the cost row marks its
+			// derived estimate ("~$…"): the used count stays plain because it
+			// is measured; only the capacity is assumed. ContextGauge speaks
+			// this same text, so the accessible label carries the estimate too.
+			text: `${formatTokenCount(session.contextUsed)} of ${session.contextAssumed ? "~" : ""}${formatTokenCount(session.contextWindow)}`,
 			fraction: Math.min(1, Math.max(0, session.contextUsed / session.contextWindow)),
 		};
 	const failed = session.failedToolCalls ?? 0;

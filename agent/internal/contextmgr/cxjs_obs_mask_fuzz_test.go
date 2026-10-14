@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -176,9 +177,11 @@ func FuzzCxjsObsMaskManageContext(f *testing.F) {
 	})
 }
 
-// cxjs_checkGuards exercises the two early-return guards of ManageContext: a nil
-// Manager and a non-positive context window. Both must be no-ops that leave the
-// history unchanged and return nil.
+// cxjs_checkGuards exercises the early-return guard of ManageContext (a nil
+// Manager) and the unknown-window contract: a zero-value profile reports
+// window 0, which the strategy budgets against the assumed window instead of
+// skipping (issue #4564), so with every threshold at 0 its layers must run.
+// Only the nil Manager is a no-op.
 func cxjs_checkGuards(t *testing.T, history []schema.Turn, sysChars int) {
 	// nil Manager guard.
 	nilStrat := &ObsMaskStrategy{cm: nil}
@@ -191,18 +194,22 @@ func cxjs_checkGuards(t *testing.T, history []schema.Turn, sysChars int) {
 		t.Fatalf("nil-Manager guard mutated history")
 	}
 
-	// Non-positive context window guard: a zero-value profile reports window 0.
+	// Unknown window: a zero-value profile reports window 0.
 	cm := NewManager(&provider.Profile{}, llm.NewClient(), cheapmodel.New(llm.NewClient()))
 	cm.ObservationMaskThreshold = 0
 	cm.CheckpointThreshold = 0
 	zeroStrat := NewObsMaskStrategy(cm)
 	h2 := cxjs_cloneHistory(history)
-	before2 := cxjs_historyJSON(h2)
-	if err := zeroStrat.ManageContext(context.Background(), &h2, sysChars, ctxmgr_noopEmit); err != nil {
-		t.Fatalf("zero-window ManageContext returned error: %v", err)
+	ran := 0
+	counting := func(events.EventKind, events.EventData) { ran++ }
+	if err := zeroStrat.ManageContext(context.Background(), &h2, sysChars, counting); err != nil {
+		t.Fatalf("unknown-window ManageContext returned error: %v", err)
 	}
-	if cxjs_historyJSON(h2) != before2 {
-		t.Fatalf("zero-window guard mutated history")
+	if ran == 0 {
+		t.Fatal("unknown-window strategy ran no layer; it must budget against the assumed window (issue #4564)")
+	}
+	if len(h2) > len(history) {
+		t.Fatalf("compaction grew history: %d -> %d", len(history), len(h2))
 	}
 }
 

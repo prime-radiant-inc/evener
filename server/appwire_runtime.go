@@ -2557,6 +2557,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ContextUsed:           metrics.Used,
 			ContextWindow:         metrics.Window,
 			ContextRemaining:      metrics.Remaining,
+			ContextAssumed:        metrics.Assumed,
 			Capabilities:          s.appCapabilitiesLocked(status.State, processing),
 			Diagnostics:           threadDiagnostics,
 			Queue:                 queue,

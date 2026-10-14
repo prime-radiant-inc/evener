@@ -74,6 +74,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextUsed: 0,
     contextWindow: 0,
     contextPressure: 0,
+    contextAssumed: false,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -602,6 +603,38 @@ test("renders exact context counts and percentage in its accessible label and ho
   );
 });
 
+// An assumed window (#4596): the daemon budgets an unknown window against a
+// conservative default and says so on the wire (contextAssumed). The strip's
+// spoken and hover label marks the CAPACITY with the same "~" that marks the
+// cost row's derived estimate, never as an error. Asserted structurally -
+// figures and the mark, not label prose - so wording tweaks don't break this
+// while the estimate indicator stays pinned, including its absence once a
+// window something vouches for arrives.
+test("an assumed context window marks only the capacity figure as an estimate", () => {
+  const { rerender } = render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({ contextUsed: 64_000, contextWindow: 128_000, contextPressure: 0.5, contextAssumed: true })}
+      now={1_000_000}
+    />,
+  );
+  const meter = screen.getByRole("meter");
+  expect(meter.getAttribute("value")).toBe("64000");
+  expect(meter.getAttribute("max")).toBe("128000");
+  const label = meter.getAttribute("aria-label") ?? "";
+  expect(label).toContain("~128000");
+  expect(label).not.toContain("~64000");
+  expect(screen.getByTestId("status-row-context").getAttribute("title") ?? "").toContain("~128000");
+  rerender(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({ contextUsed: 64_000, contextWindow: 128_000, contextPressure: 0.5, contextAssumed: false })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.getByRole("meter").getAttribute("aria-label") ?? "").not.toContain("~");
+});
+
 // The gauge's severity comes from the shared contextTone ladder (see
 // statusFormat.ts), which the details panel reads too - the same session must
 // never look calm on one surface and alarming on the other. DetailsPanel.test
@@ -677,6 +710,7 @@ test.each(["ended", "closed", "notLoaded"] as const)(
           contextUsed: 64_000,
           contextWindow: 128_000,
           contextPressure: 0.5,
+          contextAssumed: false,
           workMillis: 840_000,
           cost: "~$1.83",
         })}

@@ -1585,6 +1585,7 @@ test("the composer's shared PromptCard leads with the attachment and inline sess
       contextUsed: 64_000,
       contextWindow: 128_000,
       contextPressure: 0.5,
+      contextAssumed: false,
     },
   });
   const card = screen.getByTestId("composer-input-card");

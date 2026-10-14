@@ -1291,6 +1291,7 @@ export function threadModelFromCache(record: CachedSessionRecord, now: number): 
     contextUsed: 0,
     contextWindow: 0,
     contextPressure: 0,
+    contextAssumed: false,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -1431,6 +1432,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     contextUsed: thread.evener.contextUsed ?? 0,
     contextWindow: thread.evener.contextWindow ?? 0,
     contextPressure: thread.evener.contextPressure ?? 0,
+    contextAssumed: thread.evener.contextAssumed ?? false,
     usage: thread.evener.usage ?? null,
     cost: thread.evener.cost ?? null,
     // Passed straight through, undefined and all: absent is "nobody counted"
