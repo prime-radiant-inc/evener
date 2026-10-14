@@ -4,6 +4,8 @@ import { StrictMode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
+import { DocOpeningProvider } from "../../../doc/docOpeningContext";
+import type { DocParams } from "../../../doc/openDoc";
 import "../../../doc";
 import "../../index";
 import { AgentMessageItem } from "./AgentMessageItem";
@@ -99,6 +101,33 @@ test("file hyperlink has the standard open-beside affordance", () => {
   expect(workspaceStore.getState().panes).toMatchObject([
     { type: "doc", params: { session: "local:034MXwo6BpPH0QQCgdICSf", path, kind: "file" } },
   ]);
+});
+
+// The captured opening provenance must reach every document-opening request
+// the transcript produces, not just the added Open button: clicking the link
+// text itself opens the document too, and its annotations must reconcile
+// against the originating composer while it is still available.
+test("an authored filename link carries the doc-opening origin into the document", () => {
+  const owner = workspaceStore.getState().openPane("session", { ref: thread.ref });
+  const origin = { kind: "browser-origin" as const, paneId: owner, compositionOwnerId: "composer-fixture" };
+  render(
+    <DocOpeningProvider origin={origin}>{message("[design](docs/a.md)", false, thread, owner)}</DocOpeningProvider>,
+  );
+  expect(fireEvent.click(screen.getByRole("link", { name: "design" }))).toBe(false);
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!doc) throw new Error("document did not open");
+  expect((doc.params as DocParams).origin).toEqual(origin);
+});
+
+test("a generated filename link carries the doc-opening origin into the document", () => {
+  const owner = workspaceStore.getState().openPane("session", { ref: thread.ref });
+  const origin = { kind: "browser-origin" as const, paneId: owner, compositionOwnerId: "composer-fixture" };
+  render(<DocOpeningProvider origin={origin}>{message("Review docs/a.md", false, thread, owner)}</DocOpeningProvider>);
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(fireEvent.click(screen.getByRole("link", { name: "docs/a.md" }))).toBe(false);
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!doc) throw new Error("document did not open");
+  expect((doc.params as DocParams).origin).toEqual(origin);
 });
 
 test.each([["local:remote:034MXwo6BpPH0QQCgdICSf", false]] as const)(

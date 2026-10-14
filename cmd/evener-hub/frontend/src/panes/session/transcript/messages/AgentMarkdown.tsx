@@ -40,7 +40,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     const qualifiedRef = sessionRef?.includes(":") ? sessionRef : `local:${sessionRef ?? ""}`;
     const context =
       sessionRef && isValidTranscriptRef(qualifiedRef) && cwd && sourcePaneId
-        ? { sessionRef, cwd, sourcePaneId }
+        ? { sessionRef, cwd, sourcePaneId, ...(origin === undefined ? {} : { origin }) }
         : undefined;
     if (context) {
       // Only authored eligible anchors get the existing OpenButton. Capture
