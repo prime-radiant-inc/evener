@@ -19,7 +19,7 @@ export interface DocumentRenderMap extends DocumentRenderIdentity {
 }
 export type MappedSelection =
   | { state: "mapped"; sourceRange: SourceRange; selectedRenderedText: string }
-  | { state: "unmapped"; reason: "outside" | "stale" | "chrome" | "unverified" };
+  | { state: "unmapped"; reason: "outside" | "stale" | "chrome" | "unverified" | "transformed" };
 export interface BoundDocumentMap {
   identity: DocumentRenderIdentity;
   capture(selection: Selection): MappedSelection;
@@ -1192,6 +1192,22 @@ export function bindDocumentMap(root: HTMLElement, map: DocumentRenderMap): Boun
         const required = run.sourceSpans.some((span) => span.start < sourceRange.end && span.end > sourceRange.start);
         if (required && (!verified(node, run) || !selected.intersectsNode(node)))
           return { state: "unmapped", reason: "unverified" };
+      }
+      // A saved source range must round-trip to EXACTLY the selected rendered
+      // characters: a transformed spelling can render several characters from
+      // one source span (an HTML entity like `&fjlig;` renders "fj"), and a
+      // partial selection of such a span would otherwise save a range that
+      // reconstructs the WHOLE spelling - a highlight beyond what was
+      // selected. Refuse the boundary; a full-spelling selection still maps.
+      for (const [node, run] of nodes) {
+        if (!verified(node, run)) continue;
+        const sliceStart = selected.startContainer === node ? selected.startOffset : 0;
+        const sliceEnd = selected.endContainer === node ? selected.endOffset : node.length;
+        for (let i = 0; i < node.data.length; i++) {
+          const span = run.sourceSpans[i];
+          if (!span || span.start < sourceRange.start || span.end > sourceRange.end) continue;
+          if (i < sliceStart || i >= sliceEnd) return { state: "unmapped", reason: "transformed" };
+        }
       }
       try {
         validateSourceRange(map.source, sourceRange);

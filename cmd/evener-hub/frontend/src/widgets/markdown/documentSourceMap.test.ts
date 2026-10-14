@@ -352,3 +352,23 @@ test("renders and maps literal dollar replacement sequences in code", () => {
     selectedRenderedText: "a$$b $&",
   });
 });
+
+test("a partial selection of a multi-character transformed spelling is refused instead of expanded", () => {
+  const entity = documentFor("a &fjlig; b");
+  // The full rendered spelling maps and reconstructs exactly.
+  expect(entity.container.textContent).toContain("fj");
+  const full = entity.map.capture(selectText(entity.container, "fj"));
+  expect(full).toMatchObject({ state: "mapped", selectedRenderedText: "fj" });
+  if (full.state !== "mapped") throw new Error("the full spelling should map");
+  expect(
+    entity.map
+      .rangesFor(full.sourceRange)
+      .map((range) => range.toString())
+      .join(""),
+  ).toBe("fj");
+  // Selecting only its first character must not save a source range that
+  // reconstructs BOTH characters - a highlight beyond what was selected. The
+  // boundary cannot round-trip, so the capture refuses it.
+  const partial = entity.map.capture(selectText(entity.container, "f"));
+  expect(partial).toEqual({ state: "unmapped", reason: "transformed" });
+});
