@@ -18,7 +18,12 @@ import { render } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { DocumentMarkdown } from "../../widgets/markdown/DocumentMarkdown";
-import { type BoundDocumentMap, bindDocumentMap, renderDocument } from "../../widgets/markdown/documentSourceMap";
+import {
+  type BoundDocumentMap,
+  bindDocumentMap,
+  parseDocument,
+  renderDocument,
+} from "../../widgets/markdown/documentSourceMap";
 import { type FinishedDocumentSelection, observeFinishedDocumentSelections } from "./documentSelection";
 import { FIRST, SECOND, SOURCE } from "./testing/annotationFixtures";
 
@@ -501,7 +506,7 @@ test("observes the root's owning document, not the global selection", () => {
   if (!owner || !ownerWindow) throw new Error("missing iframe document");
   expect(owner).not.toBe(document);
 
-  const rendered = renderDocument(SOURCE, { displayedSnapshotId: "snap-1", mappingId: "map-1" });
+  const rendered = renderDocument(parseDocument(SOURCE), { displayedSnapshotId: "snap-1", mappingId: "map-1" });
   const root = owner.createElement("div");
   owner.body.append(root);
   for (const segment of rendered.segments) {

@@ -2,7 +2,7 @@ import { render, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { DocumentMarkdown } from "./DocumentMarkdown";
-import { type BoundDocumentMap, bindDocumentMap, renderDocument } from "./documentSourceMap";
+import { type BoundDocumentMap, bindDocumentMap, parseDocument, renderDocument } from "./documentSourceMap";
 import { Markdown } from "./index";
 
 // Replace only Mermaid's external SVG generator. Its real security sanitizer,
@@ -157,6 +157,50 @@ test("identity and source replacement invalidate old maps even with identical re
   view.unmount();
   expect(bound).toBeNull();
 });
+test("an identity refresh preserves the rendered DOM and its selection for unchanged source", () => {
+  let bound: BoundDocumentMap | null = null;
+  const onMap = (value: BoundDocumentMap | null) => {
+    bound = value;
+  };
+  const view = render(
+    <DocumentMarkdown source="same same." identity={{ displayedSnapshotId: "s1", mappingId: "m1" }} onMap={onMap} />,
+  );
+  if (!bound) throw new Error("no first map");
+  const old = bound as BoundDocumentMap;
+  const text = view.container.querySelector("p")?.firstChild;
+  if (!(text instanceof Text)) throw new Error("no paragraph text");
+  const selection = selectionFor(text, 5, 9);
+  expect(old.capture(selection)).toEqual({
+    state: "mapped",
+    sourceRange: { start: 5, end: 9 },
+    selectedRenderedText: "same",
+  });
+
+  // A successful reread of unchanged content refreshes the map authority with
+  // a fresh identity but must not rebuild the content: the text nodes holding
+  // the browser selection survive, the selection itself stays, and the new
+  // map verifies the same runs over the preserved DOM.
+  view.rerender(
+    <DocumentMarkdown source="same same." identity={{ displayedSnapshotId: "s2", mappingId: "m2" }} onMap={onMap} />,
+  );
+  if (!bound) throw new Error("no replacement map");
+  const fresh = bound as BoundDocumentMap;
+  expect(fresh).not.toBe(old);
+  expect(fresh.identity).toEqual({ displayedSnapshotId: "s2", mappingId: "m2" });
+  expect(old.capture(selection)).toEqual({ state: "unmapped", reason: "stale" });
+  expect(text.isConnected).toBe(true);
+  const selectionAfter = window.getSelection();
+  if (!selectionAfter) throw new Error("selection unavailable");
+  expect(selectionAfter.anchorNode).toBe(text);
+  expect(selectionAfter.anchorOffset).toBe(5);
+  expect(fresh.capture(selectionAfter)).toEqual({
+    state: "mapped",
+    sourceRange: { start: 5, end: 9 },
+    selectedRenderedText: "same",
+  });
+  view.unmount();
+  expect(bound).toBeNull();
+});
 test("changing the map callback does not lose verified DOM runs", () => {
   const first = vi.fn();
   let second: BoundDocumentMap | null = null;
@@ -214,7 +258,7 @@ test("captures surviving prose across a sanitizer-omitted image", () => {
   expect(map.rangesFor({ start: 8, end: 14 })).toEqual([]);
 });
 test("does not trust an unchanged run marker with altered sanitized node text", () => {
-  const rendered = renderDocument("same", { displayedSnapshotId: "s", mappingId: "m" });
+  const rendered = renderDocument(parseDocument("same"), { displayedSnapshotId: "s", mappingId: "m" });
   const root = document.createElement("div");
   document.body.append(root);
   const segment = rendered.segments[0];
@@ -345,7 +389,7 @@ test("effect replay retains verified text without changing rendered DOM", () => 
 });
 
 test("rebinding invalidates the old lease and rejects unrelated runs with identical text", () => {
-  const first = renderDocument("same", { displayedSnapshotId: "s1", mappingId: "m1" });
+  const first = renderDocument(parseDocument("same"), { displayedSnapshotId: "s1", mappingId: "m1" });
   const segment = first.segments[0];
   if (segment?.kind !== "markdown") throw new Error("no prose");
   const root = document.createElement("div");
@@ -358,7 +402,7 @@ test("rebinding invalidates the old lease and rejects unrelated runs with identi
   const s = selectionFor(p);
   expect(old.capture(s)).toEqual({ state: "unmapped", reason: "stale" });
   expect(replay.capture(s)).toMatchObject({ state: "mapped", sourceRange: { start: 0, end: 4 } });
-  const replacement = renderDocument("\ufeffsame", { displayedSnapshotId: "s2", mappingId: "m2" });
+  const replacement = renderDocument(parseDocument("\ufeffsame"), { displayedSnapshotId: "s2", mappingId: "m2" });
   const different = bindDocumentMap(root, replacement.map);
   expect(replay.capture(s)).toEqual({ state: "unmapped", reason: "stale" });
   expect(different.capture(s)).toEqual({ state: "unmapped", reason: "chrome" });

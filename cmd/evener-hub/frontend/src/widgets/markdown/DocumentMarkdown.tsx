@@ -4,6 +4,7 @@ import {
   type BoundDocumentMap,
   bindDocumentMap,
   type DocumentRenderIdentity,
+  parseDocument,
   renderDocument,
 } from "./documentSourceMap";
 import { MARKDOWN_CLASS } from "./rendering";
@@ -15,9 +16,13 @@ export function DocumentMarkdown(props: {
 }): ReactElement {
   const { source, identity, onMap } = props;
   const { displayedSnapshotId, mappingId } = identity;
+  // One parse per source: an identity-only refresh (every successful reread
+  // assigns a fresh mappingId) reuses the same parse, so the rendered content
+  // and its verified runs survive while the map authority advances.
+  const parsed = useMemo(() => parseDocument(source), [source]);
   const rendered = useMemo(
-    () => renderDocument(source, { displayedSnapshotId, mappingId }),
-    [source, displayedSnapshotId, mappingId],
+    () => renderDocument(parsed, { displayedSnapshotId, mappingId }),
+    [parsed, displayedSnapshotId, mappingId],
   );
   const root = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -33,7 +38,7 @@ export function DocumentMarkdown(props: {
   // verified markers. A changed source/identity builds fresh content and maps.
   const content = useMemo(
     () =>
-      rendered.segments.map((segment) =>
+      parsed.segments.map((segment) =>
         segment.kind === "mermaid" ? (
           <div key={segment.key} data-document-diagram-run={segment.runId}>
             <MermaidDiagram source={segment.text} />
@@ -43,7 +48,7 @@ export function DocumentMarkdown(props: {
           <div key={segment.key} className={MARKDOWN_CLASS.root} dangerouslySetInnerHTML={{ __html: segment.html }} />
         ),
       ),
-    [rendered],
+    [parsed],
   );
   return <div ref={root}>{content}</div>;
 }

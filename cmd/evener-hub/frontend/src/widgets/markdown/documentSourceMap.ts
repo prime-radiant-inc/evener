@@ -1017,10 +1017,15 @@ class ProvenanceTokenizer extends Tokenizer {
 export type DocumentRenderSegment =
   | { kind: "markdown"; html: string; key: string }
   | { kind: "mermaid"; text: string; runId: string; key: string };
-export function renderDocument(
-  source: string,
-  identity: DocumentRenderIdentity,
-): { map: DocumentRenderMap; segments: DocumentRenderSegment[] } {
+export interface DocumentRenderParse {
+  source: string;
+  textRuns: DocumentTextRun[];
+  segments: DocumentRenderSegment[];
+}
+// The parse is the expensive per-source work (lexing, provenance, sanitized
+// HTML). It carries no render identity, so one parse can serve every later
+// identity refresh for the same source.
+export function parseDocument(source: string): DocumentRenderParse {
   let input = originalTrace(source);
   if (input.text.startsWith("\ufeff")) input = slice(input, 1);
   input = replace(input, /\r\n|\r/g, (m) => spelling(m, "\n"));
@@ -1105,7 +1110,13 @@ export function renderDocument(
     } else prose.push(token);
   }
   flush();
-  return { map: { ...identity, source, textRuns: runs }, segments };
+  return { source, textRuns: runs, segments };
+}
+export function renderDocument(
+  parse: DocumentRenderParse,
+  identity: DocumentRenderIdentity,
+): { map: DocumentRenderMap; segments: DocumentRenderSegment[] } {
+  return { map: { ...identity, source: parse.source, textRuns: parse.textRuns }, segments: parse.segments };
 }
 
 const bindings = new WeakMap<HTMLElement, object>();
