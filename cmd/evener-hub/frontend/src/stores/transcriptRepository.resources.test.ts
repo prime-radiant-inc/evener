@@ -981,6 +981,60 @@ it("drops a held capacity preflight after a newer authoritative baseline commits
   }
 });
 
+it("drops a held capacity preflight after a newer ordinary read commits and survives prune/reopen", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  await offer(owner);
+  const commits = vi.spyOn(cache, "commitBatch");
+  const gate = deferred<void>();
+  const realPlan = cache.planCapacity.bind(cache);
+  vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+    const plan = await realPlan(batch);
+    await gate.promise;
+    return plan;
+  });
+  const accept = (label: string, generation: number) =>
+    owner.acceptRead(
+      {
+        ...readItems(label, generation, [item("oversize", 1, generation), item(label, generation)]),
+        requestGeneration: generation,
+        olderCursor: label,
+      },
+      { lifetime: 1, readId: label, boundary: label },
+    );
+  try {
+    expect(accept("old", 2)).toBe(true);
+    expect(accept("new", 3)).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+    await vi.waitFor(async () =>
+      expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(3),
+    );
+    gate.resolve();
+    await owner.settled().catch(() => {});
+    reader.dispose();
+    expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toEqual([]);
+    const reopened = owner.attachReader();
+    try {
+      const opened = await reopened.openLocal(40);
+      expect(opened.model?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toContain("new");
+      expect(opened.status).toBe("current");
+    } finally {
+      reopened.dispose();
+    }
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(3);
+    expect((await cache.getLatestWindow(historyKey, 40)).coverage.at(-1)?.readId).toBe("new");
+  } finally {
+    gate.resolve();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
 it.each([1, 2])(
   "recovers from an intrinsic refusal through the sole oversize write for changed disk-eligible content at version %i",
   async (version) => {

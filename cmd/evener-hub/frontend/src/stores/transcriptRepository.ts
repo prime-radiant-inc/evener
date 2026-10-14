@@ -1123,6 +1123,13 @@ export class TranscriptRepository {
       }
       const restored = this.#restoreWindow(this.#model ?? current, rows, turns, () => this.#acceptsLifetime(lifetime));
       if (!restored) return { kind: "server" };
+      // Item rows can outlive their separately read turn metadata. A turn
+      // removed from the hydrated display cannot restore those rows, so they
+      // must remain reachable through the existing local continuation.
+      const restoredTurns = new Set(restored.turns.map((turn) => turn.id));
+      if (this.#turnIDsForRows(rows, []).some((turnId) => !restoredTurns.has(turnId))) {
+        return { kind: "reconcile" };
+      }
       if (beforePublish && !beforePublish()) return { kind: "superseded" };
       this.#localOlder = nextBefore ? { ...local, before: nextBefore } : undefined;
       this.#model = restored;
@@ -2277,7 +2284,12 @@ export class TranscriptRepository {
           this.#inFlight.delete(batch);
           this.#admission.release(bodies, this);
         }
-        if (issuedRevision !== this.#sourceRevision) {
+        // Ordinary reads share a source revision but replace the read window.
+        // A delayed plan must not commit the window an intervening read replaced.
+        if (
+          issuedRevision !== this.#sourceRevision ||
+          (batch.coverage !== undefined && batch.coverage.readId !== this.#coverageReadId)
+        ) {
           for (const row of batch.items) {
             if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
           }
