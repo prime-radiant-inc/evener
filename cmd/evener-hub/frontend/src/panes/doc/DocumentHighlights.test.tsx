@@ -1133,6 +1133,41 @@ test("isolates matching pointer-up reveal from cancel, unrelated pointer, Shift 
   }
 });
 
+// RoboRev round 32 low: a Shift-click is a selection adjustment, and the tap
+// machinery already refuses Shift presses - but the click path's toggle ran
+// unconditionally, so extending a text selection across a band revealed or
+// dismissed a saved note. The trailing click of a Shift press carries the same
+// modifier: both the selection and the note's visibility must stay untouched.
+test("a Shift-click extends the selection without revealing or dismissing a note", () => {
+  // Extending a selection over an unrevealed band reveals nothing.
+  {
+    const { view, scroll, prose } = pinnedProseReader();
+    expect(noteTexts(scroll)).toEqual([]);
+    act(() => {
+      pointerEvent("pointerdown", prose, { pointerId: 95, clientX: 30, clientY: 20, shiftKey: true });
+      pointerEvent("pointerup", prose, { pointerId: 95, clientX: 30, clientY: 20, buttons: 0, shiftKey: true });
+      fireEvent.click(prose, { clientX: 30, clientY: 20, shiftKey: true });
+    });
+    expect(noteTexts(scroll)).toEqual([]);
+    view.unmount();
+  }
+  // Extending a selection over a revealed note's band leaves the note
+  // visible: the press never armed a tap, so its trailing click cannot
+  // dismiss either.
+  {
+    const { view, scroll, prose, band } = pinnedProseReader();
+    fireEvent.click(band);
+    expect(noteTexts(scroll)).toEqual(["note"]);
+    act(() => {
+      pointerEvent("pointerdown", prose, { pointerId: 96, clientX: 30, clientY: 20, shiftKey: true });
+      pointerEvent("pointerup", prose, { pointerId: 96, clientX: 30, clientY: 20, buttons: 0, shiftKey: true });
+      fireEvent.click(prose, { clientX: 30, clientY: 20, shiftKey: true });
+    });
+    expect(noteTexts(scroll)).toEqual(["note"]);
+    view.unmount();
+  }
+});
+
 // A reader displaying a revealed pending reference whose stack is pinned and
 // scrollable, so the wheel arbitration can be observed without a live browser.
 function pendingReferenceReader(): {

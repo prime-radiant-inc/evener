@@ -102,6 +102,12 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       // merely trails an already-handled pointer press is consumed here. Hover
       // keeps its reveal-only semantics.
       if (event.type === "click") {
+        // A selection-modified click is the selection's, never the note's:
+        // the tap machinery already refuses Shift presses as selection
+        // adjustments, and the trailing click of such a press carries the
+        // same modifier - extending a text selection across a band must
+        // neither reveal nor dismiss the note it crosses.
+        if (event instanceof MouseEvent && event.shiftKey) return;
         if (
           event instanceof MouseEvent &&
           handledTap !== null &&
