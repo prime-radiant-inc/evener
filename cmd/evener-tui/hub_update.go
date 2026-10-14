@@ -1033,11 +1033,17 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// standing retry retires with its status, and the generation
 			// advances so its in-flight or paced re-read lands superseded
 			// instead of entering the abandoned navigation or clearing the
-			// viewer (#4343 round-30 medium 2). Only the open retires: an
-			// in-place refresh of an already-open viewer stays where it is.
+			// viewer (#4343 round-30 medium 2). The selection itself already
+			// departed (#4343 round-31); this landing covers what armed in
+			// between, and clears a cycling target issued in the window so
+			// its superseded landing reconciles the displayed session
+			// instead of deferring onto the abandoned target. Only the open
+			// retires: an in-place refresh of an already-open viewer stays
+			// where it is.
 			m.entryRepairRetire()
 			m.liveNavSeq++
 			m.liveNavEntryPendingSeq = 0
+			m.liveNavPendingRef = ""
 		}
 		m.transcriptView = &hubTranscriptViewState{
 			Ref:      msg.target.Ref,

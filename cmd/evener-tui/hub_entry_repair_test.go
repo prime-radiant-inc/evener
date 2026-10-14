@@ -1995,6 +1995,335 @@ func TestASuccessfulRetryReadHoldsForAnOpenTranscriptView(t *testing.T) {
 	}
 }
 
+// Opening the transcript viewer while a cycling read is in flight must not
+// strand the displayed session's subscription: the open supersedes the
+// cycle, and the superseded response re-establishes the displayed session
+// instead of deferring onto the abandoned pending target, which no later
+// landing would ever settle (#4343 round-31 medium 1).
+func TestAViewerOpenReconcilesASupersededCycle(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+
+	// Session A is displayed.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refA.String(),
+		detail: hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+	shown.tree = liveCycleTree()
+
+	// A cycling press to B issues; its response is held in flight.
+	pressed, cycleCmd := shown.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	if cycleCmd == nil {
+		t.Fatal("setup: the cycling press issued no read")
+	}
+	cycling := pressed.(hubModel)
+	if cycling.liveNavPendingRef != "local:01B" {
+		t.Fatalf("setup: the press left pending ref %q, want local:01B", cycling.liveNavPendingRef)
+	}
+
+	// The user opens a child transcript while the cycle is in flight.
+	opened, _ := cycling.Update(hubTranscriptMsg{
+		target: appwire.ThreadTranscriptTarget{Ref: "local:01CHILD", Title: "Child transcript"},
+	})
+	viewing := opened.(hubModel)
+	if viewing.transcriptView == nil {
+		t.Fatal("setup: the transcript read did not open the viewer")
+	}
+
+	// The superseded cycling response lands: the displayed session's
+	// subscription must be re-established, not deferred onto the abandoned
+	// pending target.
+	afterCycle, reconcile := viewing.Update(cycleCmd().(hubSessionMsg))
+	reconciled := afterCycle.(hubModel)
+	if reconcile == nil {
+		t.Fatal("the superseded cycle deferred the displayed session's re-establishment onto its own abandoned target")
+	}
+	if !reconciled.liveNavRecoveryInFlight || reconciled.liveNavRecoveryRef != refA.String() {
+		t.Fatalf("the superseded cycle re-established the wrong session: inFlight = %v ref = %q",
+			reconciled.liveNavRecoveryInFlight, reconciled.liveNavRecoveryRef)
+	}
+
+	// The recovery completes: the fence clears and A stays displayed.
+	afterRecovery, _ := reconciled.Update(hubSessionMsg{
+		ref:                   refA.String(),
+		detail:                hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: reconciled.liveNavRecoveryFlight,
+		liveNavSeq:            reconciled.liveNavSeq,
+	})
+	restored := afterRecovery.(hubModel)
+	if restored.liveNavRecoveryInFlight {
+		t.Fatal("the recovery flight did not conclude at its own landing")
+	}
+	if restored.detail.Ref != refA.String() {
+		t.Fatalf("the restore moved the display to %q", restored.detail.Ref)
+	}
+}
+
+// Selecting a child transcript is the departure moment for a cycling read in
+// flight, the same as a pick is: the superseded response re-establishes the
+// displayed session's subscription instead of applying the abandoned switch
+// or deferring onto its dead pending target (#4343 round-31 medium 1).
+func TestSelectingATranscriptReconcilesASupersededCycle(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, func(_ context.Context, _ appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+			return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
+				{Ref: "local:01A", Title: "main session (live)", Kind: "main", Status: appwire.ThreadStatusIdle},
+				{Ref: "local:01CHILD", Title: "child transcript", Kind: "subagent", Status: appwire.ThreadStatusNotLoaded},
+			}}, nil
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+
+	// Session A is displayed.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refA.String(),
+		detail: hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+	shown.tree = liveCycleTree()
+
+	// A cycling press to B issues; its response is held in flight.
+	pressed, cycleCmd := shown.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	if cycleCmd == nil {
+		t.Fatal("setup: the cycling press issued no read")
+	}
+	cycling := pressed.(hubModel)
+	if cycling.liveNavPendingRef != "local:01B" {
+		t.Fatalf("setup: the press left pending ref %q, want local:01B", cycling.liveNavPendingRef)
+	}
+
+	// The user opens the transcript picker and selects a child transcript;
+	// its read is held in flight, so the selection is the last event.
+	pickerOpen := cycling
+	pickerOpen.session.setInputValue("/agents")
+	listed, listCmd := pickerOpen.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if listCmd == nil {
+		t.Fatal("setup: /agents issued no transcript-list fetch")
+	}
+	withTargets, _ := listed.(hubModel).Update(listCmd())
+	if withTargets.(hubModel).sessionTranscriptPicker == nil {
+		t.Fatal("setup: the transcript targets opened no picker")
+	}
+	afterDown, _ := withTargets.Update(tea.KeyMsg{Type: tea.KeyDown})
+	selected, fetchCmd := afterDown.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if fetchCmd == nil {
+		t.Fatal("setup: the selection issued no transcript read")
+	}
+	if got := selected.(hubModel).sessionTranscriptPicker; got != nil {
+		t.Fatal("setup: the selection left the picker open")
+	}
+
+	// The superseded cycling response lands: A stays displayed and its
+	// subscription is re-established.
+	afterCycle, reconcile := selected.Update(cycleCmd().(hubSessionMsg))
+	reconciled := afterCycle.(hubModel)
+	if reconciled.detail.Ref != refA.String() {
+		t.Fatalf("the cycle superseded by the transcript selection still applied: display = %q", reconciled.detail.Ref)
+	}
+	if reconcile == nil {
+		t.Fatal("the superseded cycle deferred the displayed session's re-establishment onto its own abandoned target")
+	}
+	if !reconciled.liveNavRecoveryInFlight || reconciled.liveNavRecoveryRef != refA.String() {
+		t.Fatalf("the superseded cycle re-established the wrong session: inFlight = %v ref = %q",
+			reconciled.liveNavRecoveryInFlight, reconciled.liveNavRecoveryRef)
+	}
+	_ = fetchCmd
+}
+
+// Selecting a child transcript retires the pending entry retry at the
+// selection itself — the picker closes there and the read's window follows,
+// in which neither the closed picker nor the unopened viewer holds the
+// automatic completion: a success landing inside the window enters nothing
+// (#4343 round-31 medium 2).
+func TestSelectingATranscriptRetiresTheEntryRetryThroughTheFetchWindow(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, func(_ context.Context, _ appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+			return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
+				{Ref: "local:01B", Title: "main session (live)", Kind: "main", Status: appwire.ThreadStatusIdle},
+				{Ref: "local:01CHILD", Title: "child transcript", Kind: "subagent", Status: appwire.ThreadStatusNotLoaded},
+			}}, nil
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session B is displayed when a pick of A answers rebuilding: the retry
+	// arms.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refB.String(),
+		detail: hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+	picked := shown
+	picked.issuePickedSessionRead(refA)
+	armedUpdate, _ := picked.Update(hubSessionMsg{
+		ref:          refA.String(),
+		err:          rebuildingEntryError(t),
+		liveNavEntry: true,
+		liveNavSeq:   picked.liveNavSeq,
+	})
+	armed := armedUpdate.(hubModel)
+	if armed.entryRepairRef != refA {
+		t.Fatalf("setup: the pick's rebuilding answer did not arm: ref = %v", armed.entryRepairRef)
+	}
+	armedSeq := armed.entryRepairSeq
+
+	// The user opens the transcript picker and selects a child transcript;
+	// its read is held in flight, so the fetch window stands open.
+	armed.session.setInputValue("/agents")
+	listed, listCmd := armed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if listCmd == nil {
+		t.Fatal("setup: /agents issued no transcript-list fetch")
+	}
+	withTargets, _ := listed.(hubModel).Update(listCmd())
+	if withTargets.(hubModel).sessionTranscriptPicker == nil {
+		t.Fatal("setup: the transcript targets opened no picker")
+	}
+	afterDown, _ := withTargets.Update(tea.KeyMsg{Type: tea.KeyDown})
+	selected, fetchCmd := afterDown.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if fetchCmd == nil {
+		t.Fatal("setup: the selection issued no transcript read")
+	}
+
+	// The retry's paced re-read succeeds inside the window: the selection
+	// retired it, so the success enters nothing and B's subscription —
+	// re-pointed by the re-read — is restored.
+	afterSuccess, reconcile := selected.Update(hubSessionMsg{
+		ref:           refA.String(),
+		detail:        hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	})
+	held := afterSuccess.(hubModel)
+	if held.mode != hubModeSession || held.detail.Ref != refB.String() {
+		t.Fatalf("the automatic completion switched sessions inside the transcript fetch window: mode = %v detail = %v", held.mode, held.detail.Ref)
+	}
+	if reconcile == nil {
+		t.Fatal("the discarded completion left the displayed session's subscription unrestored")
+	}
+	if !held.liveNavRecoveryInFlight || held.liveNavRecoveryRef != refB.String() {
+		t.Fatalf("the discarded completion restored the wrong session: inFlight = %v ref = %q",
+			held.liveNavRecoveryInFlight, held.liveNavRecoveryRef)
+	}
+
+	// The held transcript read then lands and opens the viewer over the
+	// session still displayed.
+	opened, _ := held.Update(fetchCmd())
+	viewing := opened.(hubModel)
+	if viewing.transcriptView == nil || viewing.transcriptView.Ref != "local:01CHILD" {
+		t.Fatalf("the selected transcript did not open over the displayed session: viewer = %+v", viewing.transcriptView)
+	}
+}
+
+// A transcript read that fails after the selection keeps the entry retry
+// retired: the selection was the departure, and the failure — which never
+// opens the viewer — must not rearm the abandoned navigation (#4343
+// round-31 medium 2).
+func TestASelectedTranscriptReadFailureLeavesTheEntryRetryRetired(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, func(_ context.Context, _ appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+			return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
+				{Ref: "local:01B", Title: "main session (live)", Kind: "main", Status: appwire.ThreadStatusIdle},
+				{Ref: "local:01CHILD", Title: "child transcript", Kind: "subagent", Status: appwire.ThreadStatusNotLoaded},
+			}}, nil
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session B is displayed when a pick of A answers rebuilding: the retry
+	// arms.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refB.String(),
+		detail: hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+	picked := shown
+	picked.issuePickedSessionRead(refA)
+	armedUpdate, _ := picked.Update(hubSessionMsg{
+		ref:          refA.String(),
+		err:          rebuildingEntryError(t),
+		liveNavEntry: true,
+		liveNavSeq:   picked.liveNavSeq,
+	})
+	armed := armedUpdate.(hubModel)
+	if armed.entryRepairRef != refA {
+		t.Fatalf("setup: the pick's rebuilding answer did not arm: ref = %v", armed.entryRepairRef)
+	}
+
+	// The user selects a child transcript; the read is held in flight.
+	armed.session.setInputValue("/agents")
+	listed, listCmd := armed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if listCmd == nil {
+		t.Fatal("setup: /agents issued no transcript-list fetch")
+	}
+	withTargets, _ := listed.(hubModel).Update(listCmd())
+	if withTargets.(hubModel).sessionTranscriptPicker == nil {
+		t.Fatal("setup: the transcript targets opened no picker")
+	}
+	afterDown, _ := withTargets.Update(tea.KeyMsg{Type: tea.KeyDown})
+	selected, fetchCmd := afterDown.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if fetchCmd == nil {
+		t.Fatal("setup: the selection issued no transcript read")
+	}
+	afterSelect := selected.(hubModel)
+	if afterSelect.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the transcript selection left the pending entry retry armed through the fetch window")
+	}
+
+	// The transcript read fails: no viewer opens, and the failure does not
+	// rearm the retired navigation.
+	failed, _ := afterSelect.Update(hubTranscriptMsg{
+		target: appwire.ThreadTranscriptTarget{Ref: "local:01CHILD", Title: "Child transcript"},
+		err:    errors.New("transcript read failed"),
+	})
+	failedModel := failed.(hubModel)
+	if failedModel.transcriptView != nil {
+		t.Fatal("the failed transcript read opened the viewer")
+	}
+	if failedModel.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the failed transcript read rearmed the retired entry retry")
+	}
+	if failedModel.mode != hubModeSession || failedModel.detail.Ref != refB.String() {
+		t.Fatalf("the failed transcript read moved the display: mode = %v detail = %v", failedModel.mode, failedModel.detail.Ref)
+	}
+	_ = fetchCmd
+}
+
 // A picked read supersedes an in-flight cycle: the obsolete pending target
 // retires at issuance, so a stale cycling response reconciles the displayed
 // session's subscription instead of deferring forever on it, and the next

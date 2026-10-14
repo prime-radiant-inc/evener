@@ -388,8 +388,9 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      instead, restores the displayed session's subscription when one is
      displayed, and leaves the entry for the
      user to re-pick. Navigating away — entering
-     another session, opening another pane, opening the transcript
-     viewer, leaving the hub surface, or
+     another session, opening another pane, selecting a transcript to
+     open (at the selection itself, before its read lands), leaving the
+     hub surface, or
      submitting the spawn form again — retires the pending retry and its
      status, and a late-landing retry
      for a departed intent enters nothing. Picks are fenced the same way
@@ -701,7 +702,10 @@ being repaired.
    history-failed answer ends the retry and shows the error on the
    same line; an ordinary transient failure keeps the retry armed with
    the status standing; a navigation away retires the pending retry —
-   opening the raw transcript viewer included — and a late-landing
+   selecting a raw transcript to open included, at the selection itself:
+   the read's window holds the retirement, so a success landing inside
+   it enters nothing and a failed read leaves the retry retired — and a
+   late-landing
    retry for a departed intent enters nothing; the automatic
    completion holds for an open transcript viewer, leaving the viewer
    standing; the
