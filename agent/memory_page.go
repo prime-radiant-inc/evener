@@ -277,6 +277,9 @@ func listMemoryPages(env *execenv.LocalExecutionEnvironment) ([]memoryPage, erro
 // listMemoryPagesCtx is listMemoryPages with the caller's context threaded to
 // each page read, so a cancelled memory read ends a read parked on a stream.
 func listMemoryPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment) ([]memoryPage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	root := env.WorkingDirectory()
 	entries, err := env.ListVisibleDirectory(root, memoryPageWalkDepth)
 	if err != nil {
@@ -284,6 +287,9 @@ func listMemoryPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironm
 	}
 	var pages []memoryPage
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		rel := filepath.ToSlash(entry.Name)
 		if !entry.IsRegular || !isMemoryPagePath(rel) {
 			continue
@@ -293,6 +299,12 @@ func listMemoryPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironm
 			continue
 		}
 		raw, err := env.ReadFileRawCtx(ctx, filepath.Join(root, entry.Name))
+		// A cancelled read must not become a degraded filename-only page: the
+		// unreadable-file fallback below is for a genuinely unreadable page, not
+		// for a caller that gave up (#4621 round 2, M4).
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
 		if page, ok := memoryPageFromRead(rel, raw, err, entry.ModTime); ok {
 			pages = append(pages, page)
 		}
@@ -305,6 +317,10 @@ func listMemoryPagesCtx(ctx context.Context, env *execenv.LocalExecutionEnvironm
 // that cannot be read is its filename entry.
 func memoryPageFromRead(rel string, raw []byte, err error, modTime time.Time) (memoryPage, bool) {
 	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// A context error is not an unreadable page: report no entry rather than
+		// fabricate a filename-only one. The caller propagates the context error.
+		return memoryPage{}, false
 	case errors.Is(err, fs.ErrNotExist):
 		return memoryPage{}, false
 	case err != nil:

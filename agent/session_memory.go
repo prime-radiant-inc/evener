@@ -439,6 +439,12 @@ func (s *Session) readMemoryScope(ctx context.Context, scope string, pages []str
 	_ = s.renderMemoryScope(ctx, env, &p) // a failed rendering leaves p unavailable
 	records := make(map[string]memoryPageRecord, len(pages))
 	for _, page := range pages {
+		if err := ctx.Err(); err != nil {
+			// A cancelled read must not return a degraded projection as success:
+			// leave it unavailable and report no records (#4621 round 2, M4).
+			p.Status = "unavailable"
+			return p, nil
+		}
 		if record, ok := readMemoryPageRecord(ctx, env, page); ok {
 			records[page] = record
 		}

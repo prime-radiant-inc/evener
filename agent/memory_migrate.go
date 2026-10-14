@@ -546,6 +546,11 @@ func migrateLegacyMemoryIndexesCtx(ctx context.Context, env *execenv.LocalExecut
 		abs := filepath.Join(root, filepath.FromSlash(page))
 		body, err := env.ReadFileRawCtx(ctx, abs)
 		if err != nil {
+			// A cancelled read must stop the migration, not be skipped as an
+			// unreadable page (#4621 round 2, M4).
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
 			// Removed since the listing or unreadable, the page is skipped so the
 			// scope still finishes.
 			continue
