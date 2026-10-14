@@ -850,6 +850,19 @@ function clearEntryTranscriptLocalOpening(ref: string): void {
   });
 }
 
+/** Scheduling identity for older demand, not an opaque wire cursor. */
+export function olderTranscriptPageKey(ref: string): string | null | undefined {
+  const model = threadsStore.getState().threads.get(ref);
+  if (!model) return undefined;
+  const route = entryTranscriptRoute(ref);
+  const local = route?.repository?.localOlderPosition();
+  // This is a scheduling identity only. The wire path reads model.olderCursor,
+  // never this key. Tag both kinds so an opaque server cursor cannot collide.
+  if (local)
+    return JSON.stringify(["local", route?.repository?.getBaselineIdentity(), local.entry, local.item, local.sub ?? 0]);
+  return model.olderCursor ? JSON.stringify(["server", model.olderCursor]) : null;
+}
+
 // Publish the repository's own model into the real store. Called while the
 // fixture's reader is attached: the repository is the route's single owner of
 // recorded ingestion, so its accepted updates (not a parallel legacy reduce)
@@ -914,15 +927,21 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     const displayed = new Map(
       result.model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
     );
-    const requested = result.model?.history?.turns.flatMap((turn) => turn.items).slice(-200) ?? [];
-    return requested.every((item) => {
-      const restored = displayed.get(item.transcriptKey ?? item.id);
-      return (
-        restored !== undefined &&
-        (restored.version ?? 0) >= (item.version ?? 0) &&
-        !encodeTranscriptItem(restored).identityOnly
-      );
-    });
+    // Legacy reads keep their recorded bodies in turns, without versioned
+    // history. Do not mistake that nonempty accepted window for an empty one.
+    const requested =
+      (result.model?.history?.turns ?? result.model?.turns)?.flatMap((turn) => turn.items).slice(-200) ?? [];
+    return (
+      requested.length > 0 &&
+      requested.every((item) => {
+        const restored = displayed.get(item.transcriptKey ?? item.id);
+        return (
+          restored !== undefined &&
+          (restored.version ?? 0) >= (item.version ?? 0) &&
+          !encodeTranscriptItem(restored).identityOnly
+        );
+      })
+    );
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
@@ -5474,6 +5493,159 @@ function foldCanonicalNotification(
   return { model: updated, endedResumeOnly: endedRefs.includes(model.ref) };
 }
 
+// Every suppressed frame shares the ordinary pending-byte budget. Overflow
+// drops the owner's frames and retains only a recovery obligation, never a
+// closure whose captured notification can keep an unaccounted body alive.
+interface ClearReplayOwner {
+  fixture: EntryTranscriptRoute;
+  repository: TranscriptRepository;
+  lifetime: number;
+  client: AppwireClientLike | null;
+  epoch: number;
+  frames: Array<{ notification: AnyNotification; bytes: number; fieldGeneration?: number }>;
+  overflow: boolean;
+}
+const pendingClearReplay = new Map<EntryTranscriptRoute, ClearReplayOwner>();
+
+function releaseClearReplayFrames(owner: ClearReplayOwner): void {
+  entryWriteAdmissionFor(owner.fixture.cache).release(
+    owner.frames.map(({ notification, bytes }) => ({ key: notification, bytes })),
+    owner,
+  );
+  owner.frames = [];
+}
+
+function discardPendingClearReplay(): void {
+  for (const owner of pendingClearReplay.values()) releaseClearReplayFrames(owner);
+  pendingClearReplay.clear();
+}
+
+function retainClearReplay(
+  fixture: EntryTranscriptRoute,
+  repository: TranscriptRepository,
+  notification: AnyNotification,
+): void {
+  let owner = pendingClearReplay.get(fixture);
+  if (!owner) {
+    owner = {
+      fixture,
+      repository,
+      lifetime: fixture.lifetime,
+      client: wiredClient,
+      epoch: readyEpoch,
+      frames: [],
+      overflow: false,
+    };
+    pendingClearReplay.set(fixture, owner);
+  }
+  if (owner.overflow) return;
+  const bytes = encodedPayloadBytes(notification);
+  if (!entryWriteAdmissionFor(fixture.cache).retain([{ key: notification, bytes }], owner, "background")) {
+    releaseClearReplayFrames(owner);
+    owner.overflow = true;
+    return;
+  }
+  owner.frames.push({ notification, bytes, fieldGeneration: clearReplayFieldGeneration(fixture.ref, notification) });
+}
+
+function clearReplayFieldGeneration(ref: string, notification: AnyNotification): number | undefined {
+  if (notification.method === "evener/goal/updated") return goalUpdateGenerations.get(ref) ?? 0;
+  if (notification.method === "evener/notes/updated") return notesUpdateGenerations.get(ref) ?? 0;
+  return undefined;
+}
+
+function currentClearReplayOwner(owner: ClearReplayOwner): boolean {
+  const { fixture, repository, lifetime, client, epoch } = owner;
+  const ref = fixture.ref;
+  return (
+    entryTranscriptRoute(ref) === fixture &&
+    fixture.repository === repository &&
+    fixture.lifetime === lifetime &&
+    !fixture.clearInert &&
+    client === wiredClient &&
+    epoch === readyEpoch &&
+    canonicalThreadOwnerActive(ref) &&
+    !threadsStore.getState().deletedRefs.has(ref) &&
+    !threadsStore.getState().cacheLifetimes.get(ref)?.suppressed
+  );
+}
+
+function replayPendingClearReplay(): void {
+  const replay = [...pendingClearReplay.values()];
+  pendingClearReplay.clear();
+  for (const owner of replay) {
+    if (!currentClearReplayOwner(owner)) {
+      releaseClearReplayFrames(owner);
+      continue;
+    }
+    if (owner.overflow) {
+      const ref = owner.fixture.ref;
+      owner.repository.beginFreshBaseline();
+      publishEntryTranscriptModel(ref);
+      if (owner.client?.state === "ready") {
+        void refreshTrackedThread(
+          owner.client,
+          owner.epoch,
+          ref,
+          true,
+          false,
+          undefined,
+          undefined,
+          hydrationIntentFor(ref),
+        ).catch(() => {});
+      }
+      continue;
+    }
+    // Release one frame immediately before passing it to repository admission.
+    // The rest remain charged until their own replay or retirement.
+    for (const frame of owner.frames) {
+      entryWriteAdmissionFor(owner.fixture.cache).release([{ key: frame.notification, bytes: frame.bytes }], owner);
+      if (
+        currentClearReplayOwner(owner) &&
+        frame.fieldGeneration === clearReplayFieldGeneration(owner.fixture.ref, frame.notification)
+      )
+        acceptEntryNotification(owner.fixture, owner.repository, frame.notification);
+    }
+    owner.frames = [];
+  }
+}
+
+function acceptEntryNotification(
+  fixture: EntryTranscriptRoute,
+  repository: TranscriptRepository,
+  n: AnyNotification,
+): boolean {
+  const ref = fixture.ref;
+  const beforeInvalidation = repository.getSnapshot()?.history?.invalidatedAtGeneration;
+  const accepted = repository.accept(n, { lifetime: fixture.lifetime });
+  if (accepted) {
+    if (!fixture.unsubscribeRepository) publishEntryTranscriptModel(ref);
+  }
+  const invalidation = repository.getSnapshot()?.history?.invalidatedAtGeneration;
+  if (
+    productionEntryRoutes.get(ref) === fixture &&
+    invalidation !== undefined &&
+    invalidation !== beforeInvalidation &&
+    !pendingThreadHydrations.has(ref) &&
+    canonicalThreadOwnerActive(ref) &&
+    wiredClient?.state === "ready"
+  ) {
+    // The repository already published this transition. The later legacy
+    // fold sees no diff, so the entry owner must wake its own recovery.
+    void refreshTrackedThread(
+      wiredClient,
+      readyEpoch,
+      ref,
+      true,
+      false,
+      undefined,
+      undefined,
+      hydrationIntentFor(ref),
+    ).catch(() => {});
+  }
+  return accepted;
+}
+
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     // A resync always re-reads the named ref, legacy and v6 threads alike:
@@ -5511,6 +5683,7 @@ function handleNotification(n: AnyNotification): void {
   const now = Date.now();
   const route = notificationRoutingKey(n);
   const entryAcceptedRefs = new Set<string>();
+  const clearReplayRoutes: Array<{ fixture: EntryTranscriptRoute; repository: TranscriptRepository }> = [];
   // Synchronous repository publication can replace the store model before its
   // transition fold runs. Keep the actual pre-accept model for state-dependent
   // settlement, while folding content from the repository's current model.
@@ -5519,42 +5692,16 @@ function handleNotification(n: AnyNotification): void {
     const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
     for (const ref of refs) {
       const fixture = entryTranscriptRoute(ref);
-      if (
-        fixture &&
-        threadsStore.getState().clearInFlight !== undefined &&
-        (n.method === "history/updated" || n.method.startsWith("overlay/")) &&
-        canonicalThreadOwnerActive(ref)
-      ) {
+      if (fixture && threadsStore.getState().clearInFlight !== undefined && canonicalThreadOwnerActive(ref)) {
         fixture.clearRefreshGeneration = hydrationOwnerGeneration("thread", ref);
       }
       if (fixture?.ref === ref && fixture.repository && threadsStore.getState().clearInFlight === undefined) {
-        const beforeInvalidation = fixture.repository.getSnapshot()?.history?.invalidatedAtGeneration;
-        if (fixture.repository.accept(n, { lifetime: fixture.lifetime })) {
-          entryAcceptedRefs.add(ref);
-          if (!fixture.unsubscribeRepository) publishEntryTranscriptModel(ref);
-        }
-        const invalidation = fixture.repository.getSnapshot()?.history?.invalidatedAtGeneration;
-        if (
-          productionEntryRoutes.get(ref) === fixture &&
-          invalidation !== undefined &&
-          invalidation !== beforeInvalidation &&
-          !pendingThreadHydrations.has(ref) &&
-          canonicalThreadOwnerActive(ref) &&
-          wiredClient?.state === "ready"
-        ) {
-          // The repository already published this transition. The later legacy
-          // fold sees no diff, so the entry owner must wake its own recovery.
-          void refreshTrackedThread(
-            wiredClient,
-            readyEpoch,
-            ref,
-            true,
-            false,
-            undefined,
-            undefined,
-            hydrationIntentFor(ref),
-          ).catch(() => {});
-        }
+        if (acceptEntryNotification(fixture, fixture.repository, n)) entryAcceptedRefs.add(ref);
+      } else if (fixture?.ref === ref && fixture.repository && threadsStore.getState().clearInFlight !== undefined) {
+        // Preserve metadata in the same order as recorded and overlay input.
+        // Otherwise content replay can publish the repository's stale status
+        // over metadata the ordinary store accepted during suppression.
+        clearReplayRoutes.push({ fixture, repository: fixture.repository });
       } else if (
         fixture &&
         productionEntryRoutes.get(ref) === fixture &&
@@ -5685,6 +5832,9 @@ function handleNotification(n: AnyNotification): void {
     for (const ref of acceptedWatchedThreads) acceptedNotesRefs.add(ref);
     for (const ref of acceptedNotesRefs) invalidateNotesResponseFallback(ref);
   }
+  // Capture after this notification has advanced its field generation. Later
+  // response-only mutations or pushes may supersede it before Clear aborts.
+  for (const { fixture, repository } of clearReplayRoutes) retainClearReplay(fixture, repository, n);
   // Metadata may already be published by the repository's synchronous accept
   // subscription, leaving no diff for the store fold. Account those accepted
   // refs too, once each even when the store also publishes the same frame.
@@ -7007,7 +7157,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const client = await requireReadyClient();
       const capturedEpoch = readyEpoch;
       const model = threadsStore.getState().threads.get(ref);
-      if (!model?.olderCursor) return; // untracked, or no more history to page in
+      if (!model) return;
       const capturedRef = model.ref;
       const capturedCursor = model.olderCursor;
       const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
@@ -7034,7 +7184,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           fixtureState?.localBefore === capturedLocalBefore &&
           (threadsStore.getState().hydrations.get(ref) ?? 0) === capturedHydrations &&
           (olderPageGenerations.get(ref) ?? 0) === capturedPageGeneration &&
-          !pendingThreadHydrations.has(ref)
+          !pendingThreadHydrations.has(ref) &&
+          entryTranscriptRoute(ref) === fixtureState &&
+          fixtureState?.repository === fixtureRepository &&
+          !threadsStore.getState().deletedRefs.has(ref)
         );
       };
       // The entry fixture's repository owns recorded ingestion for its one
@@ -7055,7 +7208,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // returned, and the background-only route (no attached reader
             // subscription) still receives the model here.
             olderPageGenerations.set(ref, capturedPageGeneration + 1);
-            if (fixtureState.localBefore) fixtureState.localBefore = fixtureRepository.oldestPosition();
+            if (fixtureState.localBefore) fixtureState.localBefore = fixtureRepository.localOlderPosition();
             publishEntryTranscriptModel(ref);
           },
         );
@@ -7094,6 +7247,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           return;
         }
       }
+      // No server cursor does not imply no local bodies: try the repository
+      // first, and never manufacture a wire cursor from its local boundary.
+      if (!capturedCursor) return;
       let resp: ThreadTurnsListResponse;
       try {
         resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
@@ -7129,6 +7285,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         current.olderCursor !== capturedCursor ||
         (threadsStore.getState().hydrations.get(ref) ?? 0) !== capturedHydrations ||
         (olderPageGenerations.get(ref) ?? 0) !== capturedPageGeneration ||
+        threadsStore.getState().deletedRefs.has(ref) ||
+        (fixtureRepository !== undefined &&
+          (entryTranscriptRoute(ref) !== fixtureState || fixtureState?.repository !== fixtureRepository)) ||
         pendingThreadHydrations.has(ref)
       )
         return;
@@ -7147,7 +7306,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         if (fixtureState) fixtureState.localBefore = undefined;
         const snapshot = fixture?.repository?.getSnapshot();
         if (snapshot) putThreadModel(ref, snapshot);
-      } else {
+      } else if (!(fixtureState && fixtureRepository && capturedAuthority !== undefined)) {
+        // Only a page no repository owns falls back to the ordinary merge. A
+        // repository-owned page it refused (a disposed owner after a deletion
+        // fence, a lost lifetime, an authority change) must not be published
+        // here: the repository is the sole owner of its recorded content.
         putThreadModel(ref, mergeOlderItemPage(current, resp));
       }
     } finally {
@@ -7728,12 +7891,18 @@ function deleteCachedRefs(refs: string[]): void {
   // entry histories are deleted durably through the cache's own per-history
   // fence below.
   if (!entryTranscriptFixtureForTests && !byCache.has(currentEntryCache())) byCache.set(currentEntryCache(), new Set());
-  const histories = (async () => {
-    for (const [cache, captured] of byCache) {
-      for (const historyKey of await cache.historyKeysForRequestedRefs(refs)) captured.add(historyKey);
-      for (const historyKey of captured) await cache.deleteHistory(historyKey);
-    }
-  })();
+  const histories = Promise.allSettled(
+    [...byCache].flatMap(([cache, captured]) => [
+      ...[...captured].map((historyKey) => cache.deleteHistory(historyKey)),
+      // Discovery adds disk-only histories. It cannot gate already-known keys,
+      // and must not delete them twice (each deletion advances their fence).
+      cache
+        .historyKeysForRequestedRefs(refs)
+        .then((keys) =>
+          Promise.allSettled(keys.filter((key) => !captured.has(key)).map((key) => cache.deleteHistory(key))),
+        ),
+    ]),
+  );
   void trackProjectionWork(histories).catch(() => {
     // Durable storage is best-effort, but retired claims never resume writes.
   });
@@ -7818,15 +7987,21 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     // The abort drops only its own marker — lifetime suppression is never touched,
     // so another source's mid-flight arming stands. Durable observations
     // never need reverting: optimistic arming did not change their epoch.
-    threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
     // Neither database changed, so the suppressed entry route is re-enabled: a
     // still-held foreground model resumes ordinary recorded ingestion
     // (publication and persistence) without a release/reacquire.
+    // Re-enable BEFORE resuming the retired hydration work: a resumed task
+    // re-checks its route, and one that runs while the route is still inert
+    // rejects as retired.
     for (const route of entryRoutes) {
       route.clearInert = false;
       route.repository?.resumePersistence();
     }
+    threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
     residencyIfCreated?.releaseClearClaim();
+    // Input the clear window suppressed must survive an aborted clear: replay
+    // it now that the routes and the write gate are open again.
+    replayPendingClearReplay();
     reconcileClearInput();
     return { committed: false };
   }
@@ -7849,6 +8024,9 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     route.repository?.cancelPersistenceAfterClear();
     route.clearInert = false;
   }
+  // The clear committed, so the content its window suppressed is gone: drop the
+  // held replay rather than resurrecting it after the clear.
+  discardPendingClearReplay();
   onCacheEpochObserved(result.epoch);
   residencyIfCreated?.clear(result.epoch);
   // Every open lease whose captured epoch predates the committed epoch: the
@@ -8158,6 +8336,7 @@ export function resetThreadsStoreForTests(): void {
   for (const [ref, generation] of ensureGenerations) ensureGenerations.set(ref, generation + 1);
   entryRouteRetirements.clear();
   olderPageGenerations.clear();
+  discardPendingClearReplay();
   goalUpdateGenerations.clear();
   notesUpdateGenerations.clear();
   inflightHydrates.clear();

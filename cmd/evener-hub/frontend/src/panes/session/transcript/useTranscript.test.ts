@@ -11,7 +11,13 @@ import { connectionStore } from "../../../stores/connection";
 import { activityDelegate } from "../../../stores/sessionActivityTestUtils";
 import { SessionEntryCache } from "../../../stores/sessionEntryCache";
 import { observeProductionEntryForTests } from "../../../stores/testing/entryProductionHarness";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import {
+  acquireBackgroundThread,
+  resetThreadsStoreForTests,
+  setProductionEntryCacheForTests,
+  settleEntryTranscriptForTests,
+  threadsStore,
+} from "../../../stores/threads";
 import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
 import { retainedTranscriptReadView } from "./transcriptReadView";
@@ -109,6 +115,80 @@ function cascadeReaders() {
     b: retainedTranscriptReadView(conversationPaneLifetime(b), "ref_a", "cascade"),
   };
 }
+
+test("loadOlder schedules cached bodies after a bounded opening without a server cursor", async () => {
+  const cache = new SessionEntryCache({
+    databaseName: "hook-bounded-opening",
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+  });
+  setProductionEntryCacheForTests(cache);
+  const fake = connectFakeClient();
+  fake.on("thread/read", (params) => ({
+    thread: testThread("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          version: 225,
+          items: Array.from({ length: 225 }, (_, index) => ({
+            id: `row-${index + 1}`,
+            transcriptKey: `row-${index + 1}`,
+            turnId: "turn_1",
+            type: "agentMessage",
+            text: `row-${index + 1}`,
+            position: { entry: index + 1, item: 0 },
+            version: index + 1,
+          })),
+        },
+      ],
+    }),
+    bootGeneration: "1",
+    epoch: 0,
+    snapshot: { incarnation: "inc-a", length: 225 },
+    requestGeneration: params.requestGeneration,
+    overlay: [],
+  }));
+  fake.on("thread/unsubscribe", () => ({}));
+  const lease = acquireBackgroundThread("ref_a");
+  await lease.ready;
+  await settleEntryTranscriptForTests("ref_a");
+  // This stimulus is local opening, not a wall-clock cache timeout under load.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await threadsStore.getState().ensureThread("ref_a");
+  } finally {
+    vi.useRealTimers();
+  }
+  const reads = fake.calls.filter((call) => call.method === "thread/read").length;
+  const { result, unmount } = renderHook(() => useTranscript("ref_a"));
+  try {
+    const bodies = () =>
+      result.current.model?.turns
+        .flatMap((turn) => turn.items)
+        .map((item) => item.text)
+        .filter(Boolean);
+    // Rows 1..25 remain cached below the loaded window. Reachability
+    // supersedes the old undefined display-cursor expectation.
+    expect(result.current.model?.olderCursor).toBeDefined();
+    expect(result.current.hasOlder).toBe(true);
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
+    await act(async () => {
+      await result.current.loadOlder();
+    });
+    expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`));
+    expect(result.current.hasOlder).toBe(false);
+    expect(result.current.model?.olderCursor).toBeUndefined();
+    expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+  } finally {
+    unmount();
+    threadsStore.getState().releaseThread("ref_a");
+    await lease.release();
+    cache.close();
+  }
+});
 
 test.each([
   { sourceType: "session", secondMount: "before" },

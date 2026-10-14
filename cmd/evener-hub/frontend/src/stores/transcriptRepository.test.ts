@@ -7,6 +7,7 @@ import {
   type ThreadModel,
   type ThreadReadResponse,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
@@ -17,6 +18,7 @@ import {
   ENTRY_META_STORE,
   ENTRY_TURN_STORE,
   entryHistoryKey,
+  SESSION_CACHE_LOOKUP_DEADLINE_MS,
   type TranscriptResolvedIdentity,
 } from "./sessionCacheSchema";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
@@ -902,10 +904,324 @@ it("opens the latest window after repeated committed live appends pass the initi
       .filter(Boolean),
   ).toEqual(Array.from({ length: 40 }, (_, index) => `live row ${index + 51}`));
   expect(opened.before).toEqual({ entry: 51, item: 0 });
+  // The opened 40-body window starts at entry 51, but durable bodies for the
+  // omitted rows 11..50 are still on disk. Ordinary older demand must reach
+  // them, rather than stopping at the oldest identity the model still holds.
+  const older = await owner.loadOlderPage(40, 1);
+  expect(older.kind).toBe("local");
+  const olderBodies = (older.kind === "local" ? older.model : owner.getSnapshot())?.turns
+    .flatMap((turn) => turn.items)
+    .map((item) => item.text)
+    .filter(Boolean);
+  expect(olderBodies).toContain("row-11");
+  expect(olderBodies).toContain("live row 46");
   await expect(fixture.cache.getCoverage(historyKey, "suffix:read-repeated-suffix")).resolves.toMatchObject({
     representedSnapshot: 8_504,
     end: { entry: 90 },
   });
+  reader.dispose();
+  owner.dispose();
+});
+
+it.each([undefined, "opaque-server-before-row-1"])(
+  "pages bodies omitted by the production 200-row opening with server cursor %s",
+  async (olderCursor) => {
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const owner = repository(fixture.cache);
+    const response = readMany(225);
+    response.olderCursor = olderCursor;
+    expect(owner.acceptRead(response, { lifetime: 1, readId: "bounded", boundary: "bounded" })).toBe(true);
+    await owner.settled();
+    expect(await fixture.cache.getLatest(historyKey, 300)).toHaveLength(225);
+    expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toHaveLength(0);
+    const reader = owner.attachReader();
+    const opened = await reader.openLocal(200);
+    const bodies = () =>
+      owner
+        .getSnapshot()
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text)
+        .filter(Boolean);
+    expect(opened.status).toBe("current");
+    expect(opened.before).toEqual({ entry: 26, item: 0 });
+    expect(opened.olderCursor).toBe(olderCursor);
+    expect(owner.oldestPosition()).toEqual({ entry: 1, item: 0 });
+    expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
+    expect((await owner.loadOlderPage(10, 1)).kind).toBe("local");
+    expect(bodies()).toEqual(Array.from({ length: 210 }, (_, index) => `row-${index + 16}`));
+    expect((await owner.loadOlderPage(200, 1)).kind).toBe("local");
+    expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`));
+    expect(owner.getSnapshot()?.olderCursor).toBe(olderCursor);
+    expect((await owner.loadOlderPage(200, 1)).kind).toBe(olderCursor ? "server" : "exhausted");
+    reader.dispose();
+    owner.dispose();
+  },
+);
+
+it("exposes the raw opening continuation even without a coverage certificate", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(45), { lifetime: 1, readId: "raw", boundary: "raw" });
+  await owner.settled();
+  const getLatestWindow = fixture.cache.getLatestWindow.bind(fixture.cache);
+  vi.spyOn(fixture.cache, "getLatestWindow").mockImplementation(async (...args) => ({
+    ...(await getLatestWindow(...args)),
+    coverage: [],
+    complete: false,
+  }));
+  const reader = owner.attachReader();
+  try {
+    const opened = await reader.openLocal(20);
+    expect(opened.status).toBe("recovery-needed");
+    expect(opened.before).toEqual({ entry: 26, item: 0 });
+    expect(owner.localOlderPosition()).toEqual({ entry: 26, item: 0 });
+    expect((await owner.loadOlderPage(40, 1)).kind).toBe("local");
+    expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toEqual(
+      Array.from({ length: 45 }, (_, index) => `row-${index + 1}`),
+    );
+    expect(owner.localOlderPosition()).toBeUndefined();
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+// 2026-10-14 supersession: these raw continuation failures formerly expected
+// `server`. A cursorless bounded opening cannot use that fallback, so require
+// reconciliation while retaining the no-publication and deadline assertions.
+it.each(["rows", "metadata"] as const)("raw older paging reconciles when %s rejects", async (stage) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(45), { lifetime: 1, readId: "raw", boundary: "raw" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  await reader.openLocal(20);
+  expect(owner.localOlderPosition()).toEqual({ entry: 26, item: 0 });
+  const before = owner.getSnapshot();
+  const spy = vi
+    .spyOn(fixture.cache, stage === "rows" ? "getBefore" : "getTurn")
+    .mockRejectedValue(new Error("IndexedDB unavailable"));
+  try {
+    await expect(owner.loadOlderPage(20, 1)).resolves.toEqual({ kind: "reconcile" });
+    expect(spy).toHaveBeenCalled();
+    expect(owner.getSnapshot()).toBe(before);
+  } finally {
+    spy.mockRestore();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it.each(["reject", "timeout"] as const)(
+  "cursorless raw older %s recovers omitted bodies through the store",
+  async (failure) => {
+    const { FakeClient } = await import("@evener/appwire-client/testing/fakeClient");
+    const { connectionStore } = await import("./connection");
+    const { observeProductionEntryForTests } = await import("./testing/entryProductionHarness");
+    const { acquireBackgroundThread, resetThreadsStoreForTests, threadsStore } = await import("./threads");
+    resetThreadsStoreForTests();
+    const fixture = createEntryCacheFixture();
+    fixtures.push(fixture);
+    const observed = observeProductionEntryForTests(fixture.cache, ref);
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", (params) => ({ ...readMany(225), requestGeneration: params.requestGeneration }));
+    connectionStore.getState().connect(fake);
+    const lease = acquireBackgroundThread(ref);
+    let spy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await lease.ready;
+      await observed.settled();
+      // Control the opening deadline too: CPU contention must not turn this
+      // local-continuation stimulus into a fresh full server read.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await threadsStore.getState().ensureThread(ref);
+      const bodies = () =>
+        threadsStore
+          .getState()
+          .threads.get(ref)
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.text)
+          .filter(Boolean);
+      expect(bodies()).toHaveLength(200);
+      // Rows 1..25 remain unloaded: local reachability supersedes the old
+      // undefined display-cursor assertion, without inventing a wire cursor.
+      expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
+      expect(observed.inspect().repository?.localOlderPosition()).toEqual({ entry: 26, item: 0 });
+      const reads = fake.calls.filter((call) => call.method === "thread/read").length;
+      spy = vi.spyOn(fixture.cache, "getBefore");
+      if (failure === "reject") spy.mockRejectedValue(new Error("raw lookup failed"));
+      else {
+        spy.mockImplementation(() => new Promise(() => {}));
+      }
+      const paging = threadsStore.getState().loadOlderTurns(ref);
+      if (failure === "timeout") await vi.advanceTimersByTimeAsync(SESSION_CACHE_LOOKUP_DEADLINE_MS);
+      await paging;
+      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+      expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+      expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`));
+      expect(observed.inspect().repository?.localOlderPosition()).toBeUndefined();
+      expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeUndefined();
+    } finally {
+      spy?.mockRestore();
+      vi.useRealTimers();
+      await lease.release();
+      observed.dispose();
+      resetThreadsStoreForTests();
+      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    }
+  },
+);
+
+it.each(["rows", "metadata"] as const)("raw older paging bounds stalled %s and ignores late results", async (stage) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(45), { lifetime: 1, readId: "raw", boundary: "raw" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  await reader.openLocal(20);
+  const rows = await fixture.cache.getBefore<{ turnId: string }>(historyKey, { entry: 26, item: 0 }, 20);
+  const turn = await fixture.cache.getTurn(historyKey, rows[0]!.item.turnId);
+  const before = owner.getSnapshot();
+  const publish = vi.fn();
+  const unsubscribe = owner.subscribe(publish);
+  const gate = deferred<void>();
+  const reached = deferred<void>();
+  const rowSpy = vi.spyOn(fixture.cache, "getBefore");
+  const turnSpy = vi.spyOn(fixture.cache, "getTurn");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  rowSpy.mockImplementation(async () => {
+    if (stage === "rows") await gate.promise;
+    else await new Promise((resolve) => setTimeout(resolve, 100));
+    return rows;
+  });
+  turnSpy.mockImplementation(async () => {
+    reached.resolve();
+    if (stage === "metadata") await gate.promise;
+    return turn;
+  });
+  let result: unknown;
+  const lookup = owner.loadOlderPage(20, 1).then((value) => {
+    result = value;
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(100);
+    if (stage === "metadata") await reached.promise;
+    await vi.advanceTimersByTimeAsync(SESSION_CACHE_LOOKUP_DEADLINE_MS - 101);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toEqual({ kind: "reconcile" });
+    gate.resolve();
+    await lookup;
+    await fixture.cache.getClearEpoch();
+    await fixture.cache.getHistoryGeneration(historyKey);
+    expect(owner.getSnapshot()).toBe(before);
+    expect(publish).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    gate.resolve();
+    await lookup;
+    rowSpy.mockRestore();
+    turnSpy.mockRestore();
+    vi.useRealTimers();
+    unsubscribe();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("keeps the bounded-opening frontier after a rejected page and retires it on a new baseline", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(45), { lifetime: 1, readId: "frontier", boundary: "frontier" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  await reader.openLocal(20);
+  const opened = owner.getSnapshot();
+  expect((await owner.loadOlderPage(20, 1, () => false)).kind).toBe("superseded");
+  expect(owner.getSnapshot()).toBe(opened);
+  expect(owner.localOlderPosition()).toEqual({ entry: 26, item: 0 });
+  expect((await owner.loadOlderPage(20, 1)).kind).toBe("local");
+  expect(owner.localOlderPosition()).toEqual({ entry: 6, item: 0 });
+  expect(
+    owner
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean),
+  ).toEqual(Array.from({ length: 40 }, (_, index) => `row-${index + 6}`));
+  owner.beginFreshBaseline();
+  expect(owner.localOlderPosition()).toBeUndefined();
+  reader.dispose();
+  owner.dispose();
+});
+
+it("bounded-opening paging never imports raw bodies below the held identity interval", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(45), { lifetime: 1, readId: "floor", boundary: "floor" });
+  await owner.settled();
+  const rows = await fixture.cache.getLatest(historyKey, 100);
+  const first = rows[0]!;
+  await fixture.cache.putItems([
+    {
+      ...first,
+      transcriptKey: "unrepresented",
+      position: { entry: 0, item: 0 },
+      item: {
+        id: "unrepresented",
+        transcriptKey: "unrepresented",
+        turnId: "turn_1",
+        type: "assistant",
+        text: "outside held interval",
+      },
+    },
+  ]);
+  const reader = owner.attachReader();
+  await reader.openLocal(20);
+  expect((await owner.loadOlderPage(200, 1)).kind).toBe("local");
+  expect(owner.localOlderPosition()).toBeUndefined();
+  expect(
+    owner
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean),
+  ).toEqual(Array.from({ length: 45 }, (_, index) => `row-${index + 1}`));
+  reader.dispose();
+  owner.dispose();
+});
+
+it.each(["baseline", "Clear"] as const)("a held raw older lookup cannot publish after %s", async (retirement) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(45), { lifetime: 1, readId: "held-local", boundary: "held-local" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  await reader.openLocal(20);
+  const gate = deferred<void>();
+  const called = deferred<void>();
+  const original = fixture.cache.getBefore.bind(fixture.cache);
+  vi.spyOn(fixture.cache, "getBefore").mockImplementation(async (...args) => {
+    const rows = await original(...args);
+    called.resolve();
+    await gate.promise;
+    return rows;
+  });
+  const pending = owner.loadOlderPage(20, 1);
+  await called.promise;
+  if (retirement === "baseline") owner.beginFreshBaseline();
+  else await fixture.cache.clear();
+  const held = owner.getSnapshot();
+  gate.resolve();
+  expect((await pending).kind).toBe("reconcile");
+  expect(owner.getSnapshot()).toBe(held);
   reader.dispose();
   owner.dispose();
 });
@@ -2627,6 +2943,73 @@ it("extends coverage from accepted provenance for sparse positions and turn-only
     end: { entry: 700, item: 4 },
   });
   expect(sameLengthSuffix?.boundary).not.toBe(firstSuffix?.boundary);
+  owner.dispose();
+});
+
+// D4: the suffix boundary identity must stay bounded independently of the
+// number of events; it must not embed one suffix token per prior update. The
+// previousBoundary chain keeps its equality semantics for cache continuity.
+it("keeps the suffix boundary identity bounded across repeated updates", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(read("bounded", 1, "bounded-key"), {
+    lifetime: 1,
+    readId: "read-bounded",
+    boundary: "read-bounded-boundary",
+  });
+  await owner.settled();
+
+  let priorBoundary: string | undefined;
+  for (let generation = 2; generation <= 100; generation += 1) {
+    expect(
+      owner.accept(
+        {
+          method: "history/updated",
+          params: {
+            ref,
+            threadId,
+            bootGeneration: "1",
+            epoch: 0,
+            snapshot: { incarnation: identity.incarnation, length: generation },
+            items: [
+              {
+                type: "agentMessage",
+                id: "bounded-key",
+                transcriptKey: "bounded-key",
+                turnId: "turn_1",
+                position: { entry: 1, item: 0 },
+                version: generation,
+                text: "bounded",
+              },
+            ],
+          },
+        } as AnyNotification,
+        { lifetime: 1 },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    const coverage = await fixture.cache.getCoverage(historyKey, "suffix:read-bounded");
+    expect(coverage).toBeDefined();
+    // The cache still validates the previousBoundary chain: each generation's
+    // coverage advances to its own snapshot and takes a fresh boundary.
+    expect(coverage?.representedSnapshot).toBe(generation);
+    if (priorBoundary !== undefined) expect(coverage?.boundary).not.toBe(priorBoundary);
+    priorBoundary = coverage?.boundary;
+  }
+
+  const stored = await fixture.cache.getCoverage(historyKey, "suffix:read-bounded");
+  // Bounded identity, independent of the number of updates.
+  expect(stored?.boundary.length).toBeLessThan(64);
+  // The continuity chain still validates: the latest window is complete and its
+  // suffix certificate covers the final snapshot.
+  const window = await fixture.cache.getLatestWindow(historyKey, 40);
+  expect(window.complete).toBe(true);
+  expect(
+    window.coverage.some(
+      (row) => row.kind === "suffix" && row.readId === "read-bounded" && row.representedSnapshot === 100,
+    ),
+  ).toBe(true);
   owner.dispose();
 });
 

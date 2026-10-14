@@ -5,14 +5,24 @@ import type {
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "@evener/appwire-client";
+import { encodeTranscriptItem } from "@evener/appwire-client";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
 import { EntryWriteAdmission } from "./entryWriteAdmission";
-import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
-import type { EntryWriteOutcome } from "./sessionEntryCache";
+import {
+  ENTRY_ITEM_STORE,
+  ENTRY_TURN_STORE,
+  entryHistoryKey,
+  type TranscriptResolvedIdentity,
+} from "./sessionCacheSchema";
+import { type EntryWriteOutcome, SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
+import { holdNextTransaction, settleRealTasks } from "./testing/stalledIndexedDB";
 import { TranscriptRepository } from "./transcriptRepository";
 
 const fixtures: ReturnType<typeof createEntryCacheFixture>[] = [];
+const rawCaches: SessionEntryCache[] = [];
+const rawDatabases: Array<{ factory: IDBFactory; name: string }> = [];
 const identity: TranscriptResolvedIdentity = {
   clientId: "client-a",
   hostId: "host-a",
@@ -102,6 +112,7 @@ function repository(
   retryScheduler?: (attempt: number, retry: () => void) => () => void,
   admission?: EntryWriteAdmission,
   reconcile?: () => void,
+  isPreferred?: () => boolean,
 ) {
   return new TranscriptRepository(cache, {
     ref,
@@ -124,6 +135,7 @@ function repository(
     ...(retryScheduler ? { retryScheduler } : {}),
     ...(admission ? { admission } : {}),
     ...(reconcile ? { reconcile } : {}),
+    ...(isPreferred ? { isPreferred } : {}),
   });
 }
 
@@ -160,6 +172,15 @@ async function keysInCache(cache: ReturnType<typeof createEntryCacheFixture>["ca
 
 afterEach(async () => {
   for (const fixture of fixtures.splice(0)) await fixture.dispose();
+  for (const cache of rawCaches.splice(0)) cache.close();
+  for (const { factory, name } of rawDatabases.splice(0)) {
+    await new Promise<void>((resolve, reject) => {
+      const request = factory.deleteDatabase(name);
+      request.addEventListener("success", () => resolve(), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+      request.addEventListener("blocked", () => reject(new Error(`${name} deletion blocked`)), { once: true });
+    });
+  }
 });
 
 // Behaviour 4 (storage recovery): a transient disk fault must not permanently
@@ -194,7 +215,18 @@ it("restores durable local readiness after a transient write failure once a late
       .getSnapshot()
       ?.turns.flatMap((turn) => turn.items)
       .map((item) => item.transcriptKey),
-  ).toEqual(["item-before", "item-dropped"]);
+  ).toEqual(["item-dropped"]);
+  // Round 22 supersedes the identity-only baseline key in DISPLAY: retain
+  // its exact key/position in history, and show only the accepted bodies.
+  expect(
+    reader
+      .getSnapshot()
+      ?.history?.turns.flatMap((turn) => turn.items)
+      .map(encodeTranscriptItem)
+      .filter((item) => item.identityOnly)
+      .map((item) => ({ key: item.transcriptKey, position: item.position, text: item.text })),
+  ).toEqual([{ key: "item-before", position: { entry: 1, item: 0 }, text: "" }]);
+  expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toEqual(["dropped"]);
   // The failed row was never durably written: only the baseline is on disk.
   expect(await keysInCache(fixture.cache)).toEqual(["item-before"]);
 
@@ -241,7 +273,18 @@ it("defers and eventually commits every failed batch, including a second one", a
       .getSnapshot()
       ?.turns.flatMap((turn) => turn.items)
       .map((item) => item.transcriptKey),
-  ).toEqual(["item-base", "item-alpha", "item-beta"]);
+  ).toEqual(["item-alpha", "item-beta"]);
+  // Round 22 supersedes the identity-only baseline key in DISPLAY: retain
+  // its exact key/position in history, and show only the accepted bodies.
+  expect(
+    reader
+      .getSnapshot()
+      ?.history?.turns.flatMap((turn) => turn.items)
+      .map(encodeTranscriptItem)
+      .filter((item) => item.identityOnly)
+      .map((item) => ({ key: item.transcriptKey, position: item.position, text: item.text })),
+  ).toEqual([{ key: "item-base", position: { entry: 1, item: 0 }, text: "" }]);
+  expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toEqual(["alpha", "beta"]);
   expect(await keysInCache(fixture.cache)).toEqual(["item-base"]);
 
   // Restore real commits; drive only the paced callbacks (no new input).
@@ -385,7 +428,18 @@ it("does not arm a transient retry for a capacity refusal and reconsiders change
       .getSnapshot()
       ?.turns.flatMap((turn) => turn.items)
       .map((item) => item.transcriptKey),
-  ).toEqual(["item-base", "item-oversize"]);
+  ).toEqual(["item-oversize"]);
+  // Round 22 supersedes the identity-only baseline key in DISPLAY: retain
+  // its exact key/position in history, and show only the accepted bodies.
+  expect(
+    reader
+      .getSnapshot()
+      ?.history?.turns.flatMap((turn) => turn.items)
+      .map(encodeTranscriptItem)
+      .filter((item) => item.identityOnly)
+      .map((item) => ({ key: item.transcriptKey, position: item.position, text: item.text })),
+  ).toEqual([{ key: "item-base", position: { entry: 1, item: 0 }, text: "" }]);
+  expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toEqual(["oversize"]);
   expect(await keysInCache(fixture.cache)).toEqual(["item-base"]);
   expect((await reader.openLocal(40)).status).toBe("recovery-needed");
 
@@ -400,6 +454,1190 @@ it("does not arm a transient retry for a capacity refusal and reconsiders change
   reader.dispose();
   owner.dispose();
 });
+
+it.each([1, 2])("ordinary capacity refusal survives a narrower commit at position %i", async (kept) => {
+  const name = `ordinary-gap-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  rawDatabases.push({ factory, name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: 5_000,
+  });
+  rawCaches.push(cache);
+  const admission = new EntryWriteAdmission(100_000);
+  const { scheduled, scheduler } = capturingScheduler();
+  const owner = repository(cache, 1, undefined, scheduler, admission);
+  const commits = vi.spyOn(cache, "commitBatch");
+  const submit = (items: ThreadItem[], generation: number) =>
+    owner.acceptRead(
+      { ...readItems("range", 2, items), requestGeneration: generation },
+      { lifetime: 1, readId: `read-${generation}`, boundary: `boundary-${generation}` },
+    );
+  try {
+    submit([bigItem("left", 1, 10_000), bigItem("right", 2, 10_000)], 1);
+    expect(admission.snapshotForTesting().exemptBytes).toBe(0);
+    await owner.settled();
+    expect(await commits.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    const small = [item("left", 1), item("right", 2)];
+    submit([small[kept - 1]!], 2);
+    await owner.settled();
+    expect(await commits.mock.results[1]!.value).toMatchObject({ outcome: "committed", coverage: "extended" });
+    expect(await keysInCache(cache)).toEqual([kept === 1 ? "item-left" : "item-right"]);
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    const reader = owner.attachReader();
+    try {
+      expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+      submit(small, 3);
+      await owner.settled();
+      expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(false);
+      expect((await reader.openLocal(40)).status).toBe("current");
+      expect(await keysInCache(cache)).toEqual(["item-left", "item-right"]);
+      expect(scheduled).toHaveLength(0);
+    } finally {
+      reader.dispose();
+    }
+  } finally {
+    owner.dispose();
+  }
+});
+
+it.each([1, 2])("authoritative replacement retires only the refused extent it replaces: %i", async (kept) => {
+  const name = `replaced-refusal-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  rawDatabases.push({ factory, name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: 5_000,
+  });
+  rawCaches.push(cache);
+  const admission = new EntryWriteAdmission(100_000);
+  const { scheduler } = capturingScheduler();
+  const owner = repository(cache, 1, undefined, scheduler, admission);
+  const commits = vi.spyOn(cache, "commitBatch");
+  try {
+    owner.acceptRead(readItems("range", 2, [bigItem("left", 1, 10_000), bigItem("right", 2, 10_000)]), {
+      lifetime: 1,
+      readId: "refused",
+      boundary: "refused",
+    });
+    await owner.settled();
+    expect(await commits.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    const small = item(kept === 1 ? "left" : "right", kept);
+    expect(
+      owner.acceptRead(
+        { ...readItems("range", 2, [small]), requestGeneration: 2, authoritative: true },
+        { lifetime: 1, readId: "replacement", boundary: "replacement" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    expect(await commits.mock.results[1]!.value).toMatchObject({ outcome: "committed", coverage: "extended" });
+    expect(await keysInCache(cache)).toEqual([small.transcriptKey]);
+    expect(
+      owner.getSnapshot()?.history?.turns.flatMap((turn) => turn.items.map((item) => item.position?.entry)),
+    ).toEqual(kept === 1 ? [1] : [1, 2]);
+    const reader = owner.attachReader();
+    try {
+      expect((await reader.openLocal(40)).status).toBe(kept === 1 ? "current" : "recovery-needed");
+      expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(kept !== 1);
+    } finally {
+      reader.dispose();
+    }
+  } finally {
+    owner.dispose();
+  }
+});
+
+it.each([1, 2])("authoritative replacement retires only exempt abandonment it replaces: %i", async (kept) => {
+  const name = `replaced-refusal-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  rawDatabases.push({ factory, name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: 5_000,
+  });
+  rawCaches.push(cache);
+  const admission = new EntryWriteAdmission(1_500);
+  const { scheduler } = capturingScheduler();
+  const owner = repository(cache, 1, undefined, scheduler, admission);
+  const commits = vi.spyOn(cache, "commitBatch");
+  try {
+    owner.acceptRead(readItems("range", 2, [bigItem("left", 1, 10_000), bigItem("right", 2, 10_000)]), {
+      lifetime: 1,
+      readId: "refused",
+      boundary: "refused",
+    });
+    await expect(owner.settled()).rejects.toBeInstanceOf(Error);
+    expect(await commits.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    const small = item(kept === 1 ? "left" : "right", kept);
+    expect(
+      owner.acceptRead(
+        { ...readItems("range", 2, [small]), requestGeneration: 2, authoritative: true },
+        { lifetime: 1, readId: "replacement", boundary: "replacement" },
+      ),
+    ).toBe(true);
+    if (kept === 1) await owner.settled();
+    else await expect(owner.settled()).rejects.toBeInstanceOf(Error);
+    expect(await commits.mock.results[1]!.value).toMatchObject({ outcome: "committed", coverage: "extended" });
+    expect(await keysInCache(cache)).toEqual([small.transcriptKey]);
+    expect(
+      owner.getSnapshot()?.history?.turns.flatMap((turn) => turn.items.map((item) => item.position?.entry)),
+    ).toEqual(kept === 1 ? [1] : [1, 2]);
+    const reader = owner.attachReader();
+    try {
+      expect((await reader.openLocal(40)).status).toBe(kept === 1 ? "current" : "recovery-needed");
+      expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(kept !== 1);
+    } finally {
+      reader.dispose();
+    }
+  } finally {
+    owner.dispose();
+  }
+});
+
+// D3: an unchanged intrinsic capacity refusal (the recorded batch's own bytes
+// exceed the disk limit) is memoized independently of memory-queue admission,
+// so repeated reads of the same item/version/window are not re-encoded and
+// re-written. Changed eligible content is reconsidered.
+it.each([1_500, 100_000])("memoizes ordinary rereads above disk capacity with admission limit %i", async (limit) => {
+  const name = `entry-capacity-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  rawDatabases.push({ factory, name });
+  const cache = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    maxBytes: 2_000,
+  });
+  rawCaches.push(cache);
+  const admission = new EntryWriteAdmission(limit);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, admission);
+  const reader = owner.attachReader();
+  const oversize = (): ThreadItem => ({ ...item("oversize", 1), text: "z".repeat(10_000) }) as ThreadItem;
+  const attempts = vi.spyOn(cache, "commitBatch");
+
+  // Three submissions of the same item/version/window with ordinary read churn.
+  expect(
+    owner.acceptRead(readItems("oversize", 1, [oversize()]), {
+      lifetime: 1,
+      readId: "read-gen-1",
+      boundary: "boundary-gen-1",
+    }),
+  ).toBe(true);
+  if (limit === 1_500) expect(admission.snapshotForTesting().exemptBytes).toBeGreaterThan(0);
+  else expect(admission.snapshotForTesting().exemptBytes).toBe(0);
+  // The indivisible batch alone exceeds the disk budget: refused, and reported.
+  if (limit === 1_500) await expect(owner.settled()).rejects.toThrow(/failed/);
+  else await owner.settled();
+  for (const generation of [2, 3]) {
+    expect(
+      owner.acceptRead(
+        { ...readItems("oversize", 1, [oversize()]), requestGeneration: generation },
+        {
+          lifetime: 1,
+          readId: `read-gen-${generation}`,
+          boundary: `boundary-gen-${generation}`,
+        },
+      ),
+    ).toBe(true);
+    await owner.settled().catch(() => {});
+  }
+  // Only the first attempt reaches the database; the unchanged record is
+  // refused from the memo rather than re-encoded and re-written.
+  expect(attempts).toHaveBeenCalledTimes(1);
+  expect(await cache.getLatest(historyKey, 40)).toEqual([]);
+  expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+
+  // Changed eligible content resumes caching.
+  owner.acceptRead(
+    { ...readItems("small", 2, [item("small", 2)]), requestGeneration: 4 },
+    {
+      lifetime: 1,
+      readId: "read-small",
+      boundary: "boundary-small",
+    },
+  );
+  await vi.waitFor(async () =>
+    expect(await cache.getLatest(historyKey, 40)).toContainEqual(
+      expect.objectContaining({ transcriptKey: "item-small" }),
+    ),
+  );
+  expect(attempts).toHaveBeenCalledTimes(2);
+  attempts.mockRestore();
+  reader.dispose();
+  owner.dispose();
+});
+
+function capacityFixture(limit = 1_500) {
+  const factory = new IDBFactory();
+  const name = `entry-capacity-lifetime-${crypto.randomUUID()}`;
+  rawDatabases.push({ factory, name });
+  const makeCache = (maxBytes = 2_000) => {
+    const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name, maxBytes });
+    rawCaches.push(cache);
+    return cache;
+  };
+  const cache = makeCache();
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(limit));
+  const offer = async (target = owner, generation = 1, row = bigItem("oversize", 1, 10_000)) => {
+    expect(
+      target.acceptRead(
+        { ...readItems("oversize", 1, [row]), requestGeneration: generation },
+        {
+          lifetime: 1,
+          readId: `read-${generation}`,
+          boundary: `boundary-${generation}`,
+        },
+      ),
+    ).toBe(true);
+    await target.settled().catch(() => {});
+  };
+  return { cache, owner, makeCache, offer };
+}
+
+it("a stalled retry capacity preflight releases the shared slot for another session", async () => {
+  const { owner: unused, cache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const { scheduled, scheduler } = capturingScheduler();
+  const admission = new EntryWriteAdmission(100_000);
+  const owner = repository(cache, 1, undefined, scheduler, admission);
+  const reader = owner.attachReader();
+  const otherIdentity = { ...identity, sessionId: "other" };
+  const otherKey = entryHistoryKey(otherIdentity);
+  const other = new TranscriptRepository(cache, {
+    ref: "other-ref",
+    threadId: "other-thread",
+    identity: otherIdentity,
+    historyKey: otherKey,
+    clearEpoch: 0,
+    lifetime: 1,
+    admission,
+  });
+  const commits = vi.spyOn(cache, "commitBatch");
+  let hold: ReturnType<typeof holdNextTransaction> | undefined;
+  try {
+    await offer(owner);
+    commits.mockResolvedValueOnce({ outcome: "failed", error: new Error("transient") });
+    owner.acceptRead(
+      { ...read("small", 2), requestGeneration: 2 },
+      { lifetime: 1, readId: "retry", boundary: "retry" },
+    );
+    await expect(owner.settled()).rejects.toBeInstanceOf(Error);
+    expect(owner.retainedInventoryForTesting().retryBodies.length).toBeGreaterThan(0);
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    expect(scheduled).toHaveLength(1);
+    hold = holdNextTransaction([ENTRY_ITEM_STORE, ENTRY_TURN_STORE], "readonly");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    scheduled[0]!.fire();
+    await hold.reached;
+    const response = read("other", 1);
+    response.thread.id = "other-thread";
+    response.thread.sessionId = "other";
+    response.thread.evener.ref = "other-ref";
+    expect(other.acceptRead(response, { lifetime: 1, readId: "other", boundary: "other" })).toBe(true);
+    let settled = false;
+    const settling = owner.settled().then(() => {
+      settled = true;
+    });
+    void settling.catch(() => {});
+    expect(admission.snapshotForTesting().retainedBytes).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(settled).toBe(false);
+    expect(commits).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await settleRealTasks(() => settled);
+    expect(settled).toBe(true);
+    await settling;
+    await other.settled();
+    expect(admission.snapshotForTesting().retainedBytes).toBe(0);
+    expect(await cache.getLatest(otherKey, 40)).toHaveLength(1);
+    expect(commits).toHaveBeenCalledTimes(4);
+    hold.release();
+    await cache.getClearEpoch();
+    expect(commits).toHaveBeenCalledTimes(4);
+  } finally {
+    hold?.release();
+    vi.useRealTimers();
+    await owner.settled().catch(() => {});
+    await other.settled().catch(() => {});
+    reader.dispose();
+    owner.dispose();
+    other.dispose();
+  }
+});
+
+it.each(["dispose", "invalidate"] as const)(
+  "does not commit a retry after %s during capacity planning",
+  async (retire) => {
+    const { owner: unused, cache, offer } = capacityFixture(100_000);
+    unused.dispose();
+    const { scheduled, scheduler } = capturingScheduler();
+    const admission = new EntryWriteAdmission(100_000);
+    const owner = repository(cache, 1, undefined, scheduler, admission);
+    const reader = owner.attachReader();
+    const gate = deferred<void>();
+    const reached = deferred<void>();
+    const commits = vi.spyOn(cache, "commitBatch");
+    const realPlan = cache.planCapacity.bind(cache);
+    try {
+      await offer(owner);
+      expect(await commits.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+      commits.mockResolvedValueOnce({ outcome: "failed", error: new Error("transient") });
+      expect(
+        owner.acceptRead(
+          { ...read("small", 2), requestGeneration: 2 },
+          {
+            lifetime: 1,
+            readId: "retry",
+            boundary: "retry",
+          },
+        ),
+      ).toBe(true);
+      await expect(owner.settled()).rejects.toBeInstanceOf(Error);
+      expect(scheduled).toHaveLength(1);
+      vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+        const plan = await realPlan(batch);
+        reached.resolve();
+        await gate.promise;
+        return plan;
+      });
+      scheduled[0]!.fire();
+      await reached.promise;
+      expect(commits).toHaveBeenCalledTimes(2);
+      expect(admission.snapshotForTesting().retainedBytes).toBeGreaterThan(0);
+      owner[retire]();
+      gate.resolve();
+      await owner.settled().catch(() => {});
+      expect(commits).toHaveBeenCalledTimes(2);
+      expect(await keysInCache(cache)).toEqual([]);
+      expect(admission.snapshotForTesting().retainedBytes).toBe(0);
+    } finally {
+      gate.resolve();
+      reader.dispose();
+      owner.dispose();
+    }
+  },
+);
+
+it("retires a retry when a replacement lands during its capacity lookup", async () => {
+  const { owner: unused, cache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const { scheduled, scheduler } = capturingScheduler();
+  const admission = new EntryWriteAdmission(100_000);
+  const owner = repository(cache, 1, undefined, scheduler, admission);
+  const reader = owner.attachReader();
+  const gate = deferred<void>();
+  const reached = deferred<void>();
+  const commits = vi.spyOn(cache, "commitBatch");
+  const realPlan = cache.planCapacity.bind(cache);
+  try {
+    await offer(owner);
+    expect(await commits.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+    commits.mockResolvedValueOnce({ outcome: "failed", error: new Error("transient") });
+    expect(
+      owner.acceptRead(
+        { ...read("old", 2), requestGeneration: 2 },
+        {
+          lifetime: 1,
+          readId: "old",
+          boundary: "old",
+        },
+      ),
+    ).toBe(true);
+    await expect(owner.settled()).rejects.toBeInstanceOf(Error);
+    expect(owner.retainedInventoryForTesting().retryBodies.length).toBeGreaterThan(0);
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    expect(scheduled).toHaveLength(1);
+    const plans = vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+      const plan = await realPlan(batch);
+      reached.resolve();
+      await gate.promise;
+      return plan;
+    });
+    scheduled[0]!.fire();
+    await reached.promise;
+    expect(
+      owner.acceptRead(
+        { ...read("new", 3), authoritative: true, requestGeneration: 3 },
+        {
+          lifetime: 1,
+          readId: "new",
+          boundary: "new",
+        },
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(3));
+    expect(await commits.mock.results[2]!.value).toMatchObject({ outcome: "committed" });
+    gate.resolve();
+    await owner.settled();
+    expect(plans).toHaveBeenCalled();
+    expect(commits).toHaveBeenCalledTimes(3);
+    expect(await keysInCache(cache)).toEqual(["item-new"]);
+    expect(admission.snapshotForTesting().retainedBytes).toBe(0);
+  } finally {
+    gate.resolve();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("keeps a dependent suffix behind its baseline capacity preflight", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const { scheduled, scheduler } = capturingScheduler();
+  const owner = repository(cache, 1, undefined, scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  const gate = deferred<void>();
+  const reached = deferred<void>();
+  try {
+    await offer(owner);
+    const commits = vi.spyOn(cache, "commitBatch");
+    const realPlan = cache.planCapacity.bind(cache);
+    vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+      const plan = await realPlan(batch);
+      reached.resolve();
+      await gate.promise;
+      return plan;
+    });
+    expect(
+      owner.acceptRead(
+        { ...read("base", 1), requestGeneration: 2 },
+        {
+          lifetime: 1,
+          readId: "baseline",
+          boundary: "baseline",
+        },
+      ),
+    ).toBe(true);
+    await reached.promise;
+    expect(owner.accept(historyNotification("suffix", 2, 2), { lifetime: 1 })).toBe(true);
+    // Let the suffix's real preflight finish while its baseline stays held.
+    await cache.getClearEpoch();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(commits).not.toHaveBeenCalled();
+    gate.resolve();
+    await owner.settled();
+    expect(commits.mock.calls.map(([batch]) => batch.coverage?.kind)).toEqual(["read", "suffix"]);
+    for (const result of commits.mock.results) {
+      expect(await result.value).toMatchObject({ outcome: "committed", coverage: "extended" });
+    }
+    expect(await keysInCache(cache)).toEqual(["item-base", "item-suffix"]);
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(false);
+    expect(scheduled).toHaveLength(0);
+  } finally {
+    gate.resolve();
+    await owner.settled().catch(() => {});
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("drops a held capacity preflight after a newer authoritative baseline commits", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  await offer(owner);
+  const commits = vi.spyOn(cache, "commitBatch");
+  const gate = deferred<void>();
+  const realPlan = cache.planCapacity.bind(cache);
+  vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+    const plan = await realPlan(batch);
+    await gate.promise;
+    return plan;
+  });
+  const accept = (label: string, generation: number) =>
+    owner.acceptRead(
+      { ...read(label, generation), authoritative: true, requestGeneration: generation, olderCursor: label },
+      { lifetime: 1, readId: label, boundary: label },
+    );
+  try {
+    expect(accept("old", 2)).toBe(true);
+    expect(accept("new", 3)).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+    await vi.waitFor(async () =>
+      expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(3),
+    );
+    gate.resolve();
+    await owner.settled().catch(() => {});
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(3);
+    expect((await cache.getLatestWindow(historyKey, 40)).coverage.at(-1)?.readId).toBe("new");
+  } finally {
+    gate.resolve();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it.each([1, 2])(
+  "recovers from an intrinsic refusal through the sole oversize write for changed disk-eligible content at version %i",
+  async (version) => {
+    const { owner: unused, makeCache } = capacityFixture();
+    unused.dispose();
+    const cache = makeCache(6_500);
+    const admission = new EntryWriteAdmission(1_500);
+    const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, admission);
+    const reader = owner.attachReader();
+    const commits = vi.spyOn(cache, "commitBatch");
+    const plans = vi.spyOn(cache, "planCapacity");
+    try {
+      owner.acceptRead(readItems("oversize", 1, [bigItem("oversize", 1, 10_000)]), {
+        lifetime: 1,
+        readId: "refused",
+        boundary: "refused",
+      });
+      await expect(owner.settled()).rejects.toBeInstanceOf(Error);
+      expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+      expect(owner.retainedInventoryForTesting()).toMatchObject({
+        retryBodies: [],
+        backgroundAcceptBodies: [],
+        inFlightBodies: [],
+      });
+      expect(await commits.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+      const changed = { ...bigItem("oversize", 1, 3_500), version };
+      owner.acceptRead(
+        { ...readItems("oversize", 1, [changed]), requestGeneration: 2, authoritative: true },
+        {
+          lifetime: 1,
+          readId: "eligible",
+          boundary: "eligible",
+        },
+      );
+      expect(plans).not.toHaveBeenCalled();
+      expect(admission.snapshotForTesting().retainedBytes).toBe(0);
+      expect(admission.snapshotForTesting().exemptBytes).toBeGreaterThan(1_500);
+      await owner.settled();
+      expect(commits).toHaveBeenCalledTimes(2);
+      expect(await commits.mock.results[1]!.value).toMatchObject({ outcome: "committed", coverage: "extended" });
+      expect(await cache.getLatest(historyKey, 40)).toContainEqual(
+        expect.objectContaining({ item: expect.objectContaining({ text: changed.text }) }),
+      );
+      expect(admission.snapshotForTesting().exemptBytes).toBe(0);
+    } finally {
+      reader.dispose();
+      owner.dispose();
+    }
+  },
+);
+
+it.each(["newer", "older"])("preserves a declined %s extent after a narrower commit", async (direction) => {
+  const { owner: unused, makeCache } = capacityFixture();
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const admission = new EntryWriteAdmission(1_500);
+  const { scheduled, scheduler } = capturingScheduler();
+  const reconcile = vi.fn();
+  const owner = repository(cache, 1, undefined, scheduler, admission, reconcile);
+  const reader = owner.attachReader();
+  const commits = vi.spyOn(cache, "commitBatch");
+  const plans = vi.spyOn(cache, "planCapacity");
+  const submit = (items: ThreadItem[], length: number, generation: number) => {
+    expect(
+      owner.acceptRead(
+        { ...readItems("base", length, items), requestGeneration: generation },
+        { lifetime: 1, readId: `read-${generation}`, boundary: `boundary-${generation}` },
+      ),
+    ).toBe(true);
+  };
+  try {
+    const basePosition = direction === "older" ? 3 : 1;
+    const betaPosition = direction === "older" ? 1 : 2;
+    const finalLength = direction === "older" ? 3 : 2;
+    submit([bigItem("base", basePosition, 10_000)], basePosition, 1);
+    await expect(owner.settled()).rejects.toBeInstanceOf(Error);
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    expect(owner.retainedInventoryForTesting()).toMatchObject({
+      retryBodies: [],
+      backgroundAcceptBodies: [],
+      inFlightBodies: [],
+    });
+    expect(await commits.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+
+    // The changed candidate widens the refused extent. Its oversize write is
+    // declined only because another writer owns the sole immediate slot.
+    const competingWriter = {};
+    expect(admission.retainExempt([], competingWriter)).toBe(true);
+    const beta = bigItem("beta", betaPosition, 3_500);
+    submit([item("base", basePosition, 4), beta], finalLength, 2);
+    admission.releaseExempt(competingWriter);
+    await expect(owner.settled()).rejects.toBeInstanceOf(Error);
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    expect(owner.retainedInventoryForTesting()).toMatchObject({
+      retryBodies: [],
+      backgroundAcceptBodies: [],
+      inFlightBodies: [],
+    });
+    expect(plans).not.toHaveBeenCalled();
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect(await keysInCache(cache)).toEqual([]);
+    expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items)).toContainEqual(beta);
+    expect(admission.snapshotForTesting().retainedBytes).toBe(0);
+    expect(admission.snapshotForTesting().exemptBytes).toBe(0);
+    expect(owner.retainedInventoryForTesting().inFlightBodies).toHaveLength(0);
+
+    // This real commit covers the original refusal, not the dropped beta end
+    // (newer) or start (older). Neither boundary of the abandoned hull may shrink.
+    submit([item("base", basePosition, 4)], finalLength, 3);
+    await owner.settled().catch(() => {});
+    expect(commits).toHaveBeenCalledTimes(2);
+    expect(await commits.mock.results[1]!.value).toMatchObject({ outcome: "committed", coverage: "extended" });
+    expect(await keysInCache(cache)).toEqual(["item-base"]);
+    expect.soft(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    await expect.soft(owner.settled()).rejects.toBeInstanceOf(Error);
+    expect.soft(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    expect
+      .soft(owner.retainedInventoryForTesting())
+      .toMatchObject({ retryBodies: [], backgroundAcceptBodies: [], inFlightBodies: [] });
+    expect((await reader.openLocal(40)).status).toBe("recovery-needed");
+    expect(scheduled).toHaveLength(0);
+    expect(reconcile).not.toHaveBeenCalled();
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it.each([1_500, 100_000])("bounds concurrent unchanged memo preflights with admission limit %i", async (limit) => {
+  const { cache, owner: unused } = capacityFixture(limit);
+  unused.dispose();
+  const admission = new EntryWriteAdmission(limit);
+  const { scheduled, scheduler } = capturingScheduler();
+  const reconcile = vi.fn();
+  const owner = repository(cache, 1, undefined, scheduler, admission, reconcile);
+  const attempts = vi.spyOn(cache, "commitBatch");
+  const submit = (generation: number) =>
+    owner.acceptRead(
+      { ...readItems("oversize", 1, [bigItem("oversize", 1, 10_000)]), requestGeneration: generation },
+      { lifetime: 1, readId: `bounded-${generation}`, boundary: `bounded-${generation}` },
+    );
+  try {
+    expect(submit(1)).toBe(true);
+    await owner.settled().catch(() => {});
+    expect(attempts).toHaveBeenCalledTimes(1);
+    const plans = vi.spyOn(cache, "planCapacity");
+    for (let generation = 2; generation < 130; generation++) expect(submit(generation)).toBe(true);
+
+    // Real IndexedDB cannot finish these lookups during the synchronous burst.
+    // Every submitted ASCII item contains at least 10,000 payload bytes, so
+    // ordinary admission permits at most floor(limit / 10,000) live preflights.
+    expect(plans.mock.calls.length).toBeLessThanOrEqual(Math.floor(limit / 10_000));
+    if (limit === 100_000) expect(plans.mock.calls.length).toBeGreaterThan(0);
+    const charge = admission.snapshotForTesting();
+    expect(charge.retainedBytes).toBeGreaterThanOrEqual(plans.mock.calls.length * 10_000);
+    expect(charge.retainedBytes).toBeLessThanOrEqual(limit);
+    expect(charge.exemptBytes).toBe(0);
+    for (const row of owner.retainedInventoryForTesting().pendingRows) expect(admission.isRetained(row)).toBe(true);
+    const inFlight = owner.retainedInventoryForTesting().inFlightBodies;
+    expect(inFlight).toHaveLength(
+      plans.mock.calls.reduce((sum, [batch]) => sum + batch.items.length + (batch.turns?.length ?? 0), 0),
+    );
+    for (const body of inFlight) expect(admission.isRetained(body)).toBe(true);
+
+    await owner.settled().catch(() => {});
+    expect(admission.snapshotForTesting().retainedBytes).toBe(0);
+    expect(owner.retainedInventoryForTesting().pendingRows).toHaveLength(0);
+    expect(owner.retainedInventoryForTesting().inFlightBodies).toHaveLength(0);
+    expect(attempts).toHaveBeenCalledTimes(1);
+    for (const entry of scheduled) entry.fire();
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(scheduled).toHaveLength(0);
+  } finally {
+    await owner.settled().catch(() => {});
+    owner.dispose();
+  }
+});
+
+it.each([1_500, 100_000])(
+  "overlapping unchanged memo checks do not reconcile with admission limit %i",
+  async (limit) => {
+    const { cache, owner: unused } = capacityFixture(limit);
+    unused.dispose();
+    const { scheduled, scheduler } = capturingScheduler();
+    const reconcile = vi.fn();
+    const owner = repository(cache, 1, undefined, scheduler, new EntryWriteAdmission(limit), reconcile);
+    const attempts = vi.spyOn(cache, "commitBatch");
+    const offer = (generation: number) =>
+      owner.acceptRead(
+        { ...readItems("oversize", 1, [bigItem("oversize", 1, 10_000)]), requestGeneration: generation },
+        { lifetime: 1, readId: `read-${generation}`, boundary: `boundary-${generation}` },
+      );
+    try {
+      expect(offer(1)).toBe(true);
+      await owner.settled().catch(() => {});
+      expect(attempts).toHaveBeenCalledTimes(1);
+      expect(scheduled).toHaveLength(0);
+      expect(offer(2)).toBe(true);
+      expect(offer(3)).toBe(true);
+      await owner.settled().catch(() => {});
+      expect(attempts).toHaveBeenCalledTimes(1);
+      for (const entry of scheduled) entry.fire();
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(scheduled).toHaveLength(0);
+    } finally {
+      owner.dispose();
+    }
+  },
+);
+
+it("falls back after an aborted memo read without an unhandled rejection", async () => {
+  const { cache, owner, offer } = capacityFixture(100_000);
+  const commits = vi.spyOn(cache, "commitBatch");
+  let reads: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    await offer();
+    const original = IDBObjectStore.prototype.get;
+    let aborted = 0;
+    reads = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, key) {
+      const request = original.call(this, key);
+      if (aborted === 0 && this.name === "transcriptItems" && this.transaction.mode === "readonly") {
+        aborted++;
+        this.transaction.abort();
+      }
+      return request;
+    });
+    await offer(owner, 2);
+    // Let the abort/completion events reach Vitest's unhandled-rejection guard.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(aborted).toBe(1);
+    expect(commits).toHaveBeenCalledTimes(2);
+    expect(await commits.mock.results[1]?.value).toEqual({ outcome: "refused", reason: "capacity" });
+  } finally {
+    reads?.mockRestore();
+    owner.dispose();
+  }
+});
+
+it("reconsiders a stale oversized predecessor after its boundary shrinks", async () => {
+  const { cache, owner } = capacityFixture(100_000);
+  const small = { ...item("oversize", 1), version: 2 };
+  expect(
+    (
+      await cache.commitBatch({
+        historyKey,
+        clearEpoch: 0,
+        items: [
+          { historyKey, transcriptKey: small.transcriptKey!, position: small.position!, version: 2, item: small },
+        ],
+      })
+    ).outcome,
+  ).toBe("committed");
+  const attempts = vi.spyOn(cache, "commitBatch");
+  const offer = async (boundary: string, generation: number) => {
+    expect(
+      owner.acceptRead(
+        { ...readItems("oversize", 1, [bigItem("oversize", 1, 10_000)]), requestGeneration: generation },
+        {
+          lifetime: 1,
+          readId: `read-${generation}`,
+          boundary,
+        },
+      ),
+    ).toBe(true);
+    await owner.settled();
+  };
+  try {
+    await offer("b".repeat(10_000), 1);
+    expect(await attempts.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+    const refused = attempts.mock.calls[0]![0];
+    const direct = { ...refused, coverage: { ...refused.coverage!, boundary: "short", readId: "read-2" } };
+    await offer("short", 2);
+    const ownerAttempts = attempts.mock.calls.length;
+    // Independent real writer control, even when the owner suppressed its retry.
+    expect((await cache.commitBatch(direct)).outcome).toBe("committed");
+    expect(ownerAttempts).toBe(2);
+    expect((await attempts.mock.results[1]!.value).outcome).toBe("committed");
+    expect(await cache.getLatest(historyKey, 40)).toContainEqual(expect.objectContaining({ version: 2 }));
+  } finally {
+    owner.dispose();
+  }
+});
+
+it("reconsiders an authoritative omitted-text reread at the same recorded identity", async () => {
+  const { cache, owner, offer } = capacityFixture(100_000);
+  const attempts = vi.spyOn(cache, "commitBatch");
+  const full = bigItem("oversize", 1, 10_000);
+  const { text: _text, ...sparse } = full;
+  const control = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  try {
+    await offer(owner, 1, full);
+    expect(await attempts.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+    await offer(owner, 2, sparse);
+    const ownerAttempts = attempts.mock.calls.length;
+    const ownerRows = await cache.getLatest(historyKey, 40);
+    await offer(control, 3, sparse);
+    expect(await cache.getLatest(historyKey, 40)).toContainEqual(
+      expect.objectContaining({ transcriptKey: full.transcriptKey }),
+    );
+    expect(ownerAttempts).toBe(2);
+    expect(ownerRows).toContainEqual(expect.objectContaining({ transcriptKey: full.transcriptKey }));
+    expect((await attempts.mock.results[1]!.value).outcome).toBe("committed");
+  } finally {
+    owner.dispose();
+    control.dispose();
+  }
+});
+
+it.each([
+  { name: "stable recorded bytes over disk", size: 10_000, boundarySize: 1, intrinsic: true },
+  { name: "volatile certificate over disk", size: 500, boundarySize: 10_000, intrinsic: false },
+  { name: "smaller certificate", size: 500, boundarySize: 1, intrinsic: false },
+])("classifies capacity refusal from $name without side effects", async ({ size, boundarySize, intrinsic }) => {
+  const { cache, owner } = capacityFixture();
+  try {
+    const row = {
+      historyKey,
+      transcriptKey: "offered",
+      position: { entry: 1, item: 0 },
+      version: 1,
+      item: { id: "offered", turnId: "t", type: "agentMessage", text: "x".repeat(size) },
+    };
+    const batch = {
+      historyKey,
+      clearEpoch: 0,
+      items: [row],
+      coverage: {
+        kind: "read" as const,
+        readId: "read",
+        boundary: "b".repeat(boundarySize),
+        start: row.position,
+        end: row.position,
+        representedSnapshot: 1,
+      },
+    };
+    const attempts = vi.spyOn(cache, "commitBatch");
+    const plan = await cache.planCapacity(batch);
+    for (let repeat = 0; repeat < 3; repeat += 1) expect(cache.isIntrinsicCapacityRefusal(plan)).toBe(intrinsic);
+    expect(attempts).not.toHaveBeenCalled();
+    expect(await cache.getByteTotals(historyKey)).toEqual({ historyBytes: 0, aggregateBytes: 0 });
+    expect(await cache.getLatest(historyKey, 40)).toEqual([]);
+  } finally {
+    owner.dispose();
+  }
+});
+
+it("memoizes identical under-admission over-disk submissions", async () => {
+  const { cache, owner, offer } = capacityFixture(100_000);
+  const attempts = vi.spyOn(cache, "commitBatch");
+  const classifications = vi.spyOn(cache, "isIntrinsicCapacityRefusal");
+  try {
+    await offer();
+    await offer();
+    await offer();
+    expect(attempts).toHaveBeenCalledTimes(1);
+    expect(classifications).toHaveBeenCalledTimes(1);
+    expect(await cache.getLatest(historyKey, 40)).toEqual([]);
+  } finally {
+    owner.dispose();
+  }
+});
+
+it.each(["item", "turn"])("classifies %s bytes at the real disk encoding boundary", async (kind) => {
+  const { cache, owner, makeCache } = capacityFixture();
+  try {
+    const batch = {
+      historyKey,
+      clearEpoch: 0,
+      items:
+        kind === "item"
+          ? [
+              {
+                historyKey,
+                transcriptKey: "encoded",
+                position: { entry: 1, item: 0 },
+                version: 1,
+                item: {
+                  id: "encoded",
+                  turnId: "t",
+                  type: "agentMessage",
+                  text: "é",
+                  pendingText: new Set(["λ".repeat(200)]),
+                },
+              },
+            ]
+          : [],
+      turns:
+        kind === "turn"
+          ? [{ id: "t", version: 1, status: "completed" as const, items: [], error: "λ".repeat(200) }]
+          : [],
+    };
+    // The independent oracle is the real write and stored byte total, not the
+    // classifier's helper. Include UTF-8 and iterable pending text encoding.
+    const plan = await cache.planCapacity(batch);
+    expect((await cache.commitBatch(batch)).outcome).toBe("committed");
+    const { historyBytes } = await cache.getByteTotals(historyKey);
+    expect(historyBytes).toBeGreaterThan(400);
+    const exact = makeCache(historyBytes);
+    const below = makeCache(historyBytes - 1);
+    expect(exact.isIntrinsicCapacityRefusal(plan)).toBe(false);
+    expect(below.isIntrinsicCapacityRefusal(plan)).toBe(true);
+    expect(await cache.getByteTotals(historyKey)).toEqual({ historyBytes, aggregateBytes: historyBytes });
+  } finally {
+    owner.dispose();
+  }
+});
+
+it("keeps an intrinsic capacity memo across unrelated successful cache writes", async () => {
+  const { cache, owner, offer } = capacityFixture();
+  const attempts = vi.spyOn(cache, "commitBatch");
+  try {
+    await offer();
+    for (const generation of [2, 3]) {
+      const other = `other-${generation}`;
+      expect(
+        (
+          await cache.commitBatch({
+            historyKey: other,
+            clearEpoch: 0,
+            items: [
+              {
+                historyKey: other,
+                transcriptKey: other,
+                position: { entry: 1, item: 0 },
+                version: 1,
+                item: { id: other, turnId: "t", type: "agentMessage", text: "small" },
+              },
+            ],
+          })
+        ).outcome,
+      ).toBe("committed");
+      await offer(owner, generation);
+    }
+    expect(attempts.mock.calls.filter(([batch]) => batch.historyKey === historyKey)).toHaveLength(1);
+    expect(await cache.getLatest(historyKey, 40)).toEqual([]);
+  } finally {
+    owner.dispose();
+  }
+});
+
+it.each(["item version", "window"])("reconsiders an intrinsic capacity memo on changed %s", async (change) => {
+  const { cache, owner, offer } = capacityFixture();
+  const attempts = vi.spyOn(cache, "commitBatch");
+  try {
+    await offer();
+    await offer(owner, 2);
+    expect(attempts).toHaveBeenCalledTimes(1);
+    const changed = {
+      ...item("oversize", 1),
+      ...(change === "item version" ? { version: 2 } : { position: { entry: 1, item: 1 } }),
+    } as ThreadItem;
+    await offer(owner, 3, changed);
+    expect(attempts).toHaveBeenCalledTimes(2);
+    expect(await cache.getLatest(historyKey, 40)).toContainEqual(
+      expect.objectContaining({ transcriptKey: "item-oversize" }),
+    );
+  } finally {
+    owner.dispose();
+  }
+});
+
+it.each(["disk limit", "Clear", "cache lifetime"])(
+  "reconsiders an intrinsic capacity memo on changed %s",
+  async (change) => {
+    const { cache, owner, makeCache, offer } = capacityFixture();
+    const attempts = vi.spyOn(cache, "commitBatch");
+    let replacement: TranscriptRepository | undefined;
+    try {
+      await offer();
+      await offer(owner, 2);
+      expect(attempts).toHaveBeenCalledTimes(1);
+      owner.dispose();
+      let epoch = 0;
+      if (change === "Clear") {
+        const cleared = await cache.clear();
+        expect(cleared.committed).toBe(true);
+        epoch = cleared.epoch;
+      }
+      const nextCache = change === "Clear" ? cache : makeCache(change === "disk limit" ? 30_000 : 2_000);
+      replacement = new TranscriptRepository(nextCache, {
+        ref,
+        threadId,
+        historyKey,
+        identity,
+        clearEpoch: epoch,
+        lifetime: 1,
+        admission: new EntryWriteAdmission(1_500),
+        retryScheduler: capturingScheduler().scheduler,
+      });
+      const nextAttempts = nextCache === cache ? attempts : vi.spyOn(nextCache, "commitBatch");
+      const before = nextAttempts.mock.calls.length;
+      await offer(replacement, 3);
+      expect(nextAttempts).toHaveBeenCalledTimes(before + 1);
+      if (change === "disk limit") {
+        expect(await nextCache.getLatest(historyKey, 40)).toContainEqual(
+          expect.objectContaining({ transcriptKey: "item-oversize" }),
+        );
+      } else {
+        expect(await nextCache.getLatest(historyKey, 40)).toEqual([]);
+        await offer(replacement, 4);
+        expect(nextAttempts).toHaveBeenCalledTimes(before + 1);
+      }
+    } finally {
+      owner.dispose();
+      replacement?.dispose();
+    }
+  },
+);
+
+// Counterexample A: a capacity refusal often means the accumulated history, not
+// the offered batch alone, exceeds the budget. Eviction of that history by an
+// unrelated write can cure it, so the refusal must not be memoized.
+it.each([1_500, 100_000])(
+  "does not memoize aggregate refusal after external eviction with admission limit %i",
+  async (limit) => {
+    const name = `entry-aggregate-${crypto.randomUUID()}`;
+    const factory = new IDBFactory();
+    rawDatabases.push({ factory, name });
+    const cache = new SessionEntryCache({
+      indexedDB: factory,
+      keyRange: IDBKeyRange,
+      databaseName: name,
+      maxBytes: 6_500,
+    });
+    rawCaches.push(cache);
+    const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(limit));
+    owner.acceptRead(readItems("alpha", 1, [bigItem("alpha", 1, 3_500)]), {
+      lifetime: 1,
+      readId: "read-alpha",
+      boundary: "boundary-alpha",
+    });
+    await owner.settled();
+
+    const attempts = vi.spyOn(cache, "commitBatch");
+    const betaRead = (owner2: TranscriptRepository) =>
+      owner2.acceptRead(readItems("beta", 2, [bigItem("beta", 2, 3_500)]), {
+        lifetime: 1,
+        readId: "read-beta",
+        boundary: "boundary-beta",
+      });
+    // The same history's accumulated bytes exceed the budget: refused (not
+    // indivisible — the offered batch alone is only ~3,500 bytes).
+    expect(betaRead(owner)).toBe(true);
+    await vi.waitFor(() => expect(attempts).toHaveBeenCalledTimes(1));
+    if (limit === 1_500) await expect(owner.settled()).rejects.toThrow(/failed/);
+    else await owner.settled();
+    expect((await cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).not.toContain("item-beta");
+
+    // An unrelated history's commit evicts the accumulated subject history.
+    const sibling = new SessionEntryCache({
+      indexedDB: factory,
+      keyRange: IDBKeyRange,
+      databaseName: name,
+      maxBytes: 6_500,
+    });
+    rawCaches.push(sibling);
+    const other = "other/session/inc";
+    const otherOutcome = await sibling.commitBatch({
+      historyKey: other,
+      clearEpoch: 0,
+      items: [
+        {
+          historyKey: other,
+          transcriptKey: "item-other",
+          position: { entry: 1, item: 0 },
+          version: 1,
+          item: { id: "item-other", turnId: "t", type: "agentMessage", text: "o".repeat(5_000) },
+        },
+      ],
+    });
+    expect(otherOutcome.outcome).toBe("committed");
+    expect(await cache.getLatest(historyKey, 40)).toEqual([]);
+
+    // The body's own bytes fit; the earlier refusal must not suppress the
+    // identical batch now that the accumulated history was evicted.
+    const beforeOwner = attempts.mock.calls.length;
+    betaRead(owner);
+    await owner.settled();
+    expect(attempts.mock.calls.length).toBeGreaterThan(beforeOwner);
+    expect(await cache.getLatest(historyKey, 40)).toContainEqual(
+      expect.objectContaining({ transcriptKey: "item-beta" }),
+    );
+    // Fresh-owner control against the same cache: the identical batch fits.
+    const control = repository(cache);
+    betaRead(control);
+    await control.settled();
+    expect(await cache.getLatest(historyKey, 40)).toContainEqual(
+      expect.objectContaining({ transcriptKey: "item-beta" }),
+    );
+    attempts.mockRestore();
+    control.dispose();
+    owner.dispose();
+  },
+);
+
+// Counterexample B: the coverage certificate contributes to admission cost, so
+// a refusal of one certificate must not suppress the same item/version under a
+// smaller certificate that fits.
+it.each([1_500, 100_000])(
+  "reconsiders a capacity refusal when the coverage certificate changes with admission limit %i",
+  async (limit) => {
+    const name = `entry-certificate-${crypto.randomUUID()}`;
+    const factory = new IDBFactory();
+    rawDatabases.push({ factory, name });
+    const cache = new SessionEntryCache({
+      indexedDB: factory,
+      keyRange: IDBKeyRange,
+      databaseName: name,
+      maxBytes: 4_000,
+    });
+    rawCaches.push(cache);
+    const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(limit));
+    const attempts = vi.spyOn(cache, "commitBatch");
+    const tinyRead = (owner2: TranscriptRepository, boundary: string) =>
+      owner2.acceptRead(readItems("tiny", 1, [bigItem("tiny", 1, 2_000)]), {
+        lifetime: 1,
+        readId: "read-tiny",
+        boundary,
+      });
+
+    // A 5,000-character boundary pushes the history over the budget: refused.
+    expect(tinyRead(owner, "b".repeat(5_000))).toBe(true);
+    await vi.waitFor(() => expect(attempts).toHaveBeenCalledTimes(1));
+    if (limit === 1_500) await expect(owner.settled()).rejects.toThrow(/failed/);
+    else await owner.settled();
+    expect(await cache.getLatest(historyKey, 40)).toEqual([]);
+
+    // A non-indivisible refusal is never memoized: the identical long-certificate
+    // batch is attempted again rather than suppressed.
+    const beforeIdentical = attempts.mock.calls.length;
+    expect(tinyRead(owner, "b".repeat(5_000))).toBe(true);
+    if (limit === 1_500) await expect(owner.settled()).rejects.toThrow(/failed/);
+    else await owner.settled();
+    expect(attempts.mock.calls.length).toBeGreaterThan(beforeIdentical);
+
+    // The same recorded identity with a short boundary must also be attempted:
+    // certificate overhead did not establish an intrinsic refusal to memoize.
+    const beforeShort = attempts.mock.calls.length;
+    expect(tinyRead(owner, "short")).toBe(true);
+    await vi.waitFor(async () =>
+      expect(await cache.getLatest(historyKey, 40)).toContainEqual(
+        expect.objectContaining({ transcriptKey: "item-tiny" }),
+      ),
+    );
+    expect(attempts.mock.calls.length).toBeGreaterThan(beforeShort);
+    // Fresh-owner control against the same cache: the short certificate fits.
+    const control = repository(cache);
+    tinyRead(control, "short");
+    await control.settled();
+    expect(await cache.getLatest(historyKey, 40)).toContainEqual(
+      expect.objectContaining({ transcriptKey: "item-tiny" }),
+    );
+    attempts.mockRestore();
+    control.dispose();
+    owner.dispose();
+  },
+);
 
 // Behaviour 2 (active output above the budget): unfinished overlay output is
 // memory-only. It causes no disk write even when its body is far larger than
@@ -558,6 +1796,31 @@ it("reports a failed settlement for a failed write with no demand", async () => 
   owner.dispose();
 });
 
+// D2: a desired Live background session has demand but no attached reader, so a
+// failed background write must still schedule bounded-backoff recovery once
+// storage recovers.
+it("schedules bounded-backoff recovery for a no-reader background failure while demand exists", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler, undefined, undefined, () => true);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "read-base", boundary: "boundary-base" });
+  await owner.settled();
+
+  // One failed no-reader background write; demand is present but no reader is.
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort") });
+  owner.acceptRead(read("beta", 2), { lifetime: 1, readId: "read-beta", boundary: "boundary-beta" });
+  await vi.waitFor(() => expect(scheduled.length).toBeGreaterThanOrEqual(1));
+  failure.mockRestore();
+
+  // Storage is healthy again and nothing else happens: the paced retry recovers.
+  scheduled[0]!.fire();
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-beta"));
+  await owner.settled();
+  owner.dispose();
+});
 it("keeps a new foreground suffix behind a failed predecessor awaiting retry", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
@@ -928,6 +2191,51 @@ it("does not clear a failed disposition when a different window commits at the s
   await expect(owner.settled()).rejects.toThrow(/(cancelled|failed)/);
   expect(await keysInCache(fixture.cache)).toContain("item-alpha");
   expect(await keysInCache(fixture.cache)).not.toContain("item-beta");
+  owner.dispose();
+});
+
+// D1: a later, narrower successful read must not certify a partial transcript
+// as current. Gamma extends its own read coverage but does not carry the
+// abandoned Beta suffix forward, so local opening must stay recovery-needed.
+it("keeps local opening recovery-needed when a later narrower window does not carry an abandoned write", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readItems("base", 1, [item("base", 1)]), {
+    lifetime: 1,
+    readId: "read-base",
+    boundary: "boundary-base",
+  });
+  await owner.settled();
+
+  // Beta's background write (no reader demand) fails and records a failed
+  // abandonment of its suffix extent.
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort") });
+  owner.accept(historyNotification("beta", 2, 2), { lifetime: 1 });
+  await expect(owner.settled()).rejects.toThrow(/failed/);
+  failure.mockRestore();
+
+  // A latest Gamma window with an older cursor whose coverage starts above
+  // beta. Its own read certificate still extends.
+  const gamma = readItems("gamma", 4, [item("gamma", 3)]);
+  gamma.olderCursor = "cursor-older";
+  owner.acceptRead(gamma, { lifetime: 1, readId: "read-gamma", boundary: "boundary-gamma" });
+  await expect(owner.settled()).rejects.toThrow(/failed/);
+
+  // Disk holds base and gamma, but the abandoned beta body is missing.
+  expect(await keysInCache(fixture.cache)).toContain("item-base");
+  expect(await keysInCache(fixture.cache)).toContain("item-gamma");
+  expect(await keysInCache(fixture.cache)).not.toContain("item-beta");
+
+  const reader = owner.attachReader();
+  const opened = await reader.openLocal(40);
+  // The abandoned extent was not carried forward, so opening must not report
+  // current while settlement still reports failed recovery.
+  expect(opened.status).toBe("recovery-needed");
+  expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+  reader.dispose();
   owner.dispose();
 });
 

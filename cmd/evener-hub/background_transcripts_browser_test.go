@@ -888,22 +888,47 @@ func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFi
 	}
 }
 
+// backgroundAssertionSink is the part of *testing.T the entry owner assertions
+// need. Parameterizing on it lets a regression test drive an owning assertion
+// directly and record its verdicts, so the test fails if the owner stops
+// comparing bodies instead of only exercising a helper the owner happens to call.
+type backgroundAssertionSink interface {
+	Helper()
+	Fatalf(format string, args ...any)
+	Errorf(format string, args ...any)
+	Error(args ...any)
+}
+
+// backgroundMilestoneDetail shares milestone lookup and malformed-detail
+// handling with the skill guard, reporting through the sink.
+func backgroundMilestoneDetail(t backgroundAssertionSink, milestones []skillGuardMilestone, name string, into any) bool {
+	t.Helper()
+	return skillGuardMilestoneDetail(t, milestones, name, into)
+}
+
 // assertBackgroundEntryNarrowViewport reads the 420px repeat-activation
 // milestone: the transcript was re-activated through the mobile shell, and the
-// driver compared the real model content before and after that re-activation.
-// The Go owner cannot read the DOM, so it asserts the driver's comparison of
-// the two real item sets (counts and the preserved flag computed from the
-// model), not a constant the driver wrote after its wait.
-func assertBackgroundEntryNarrowViewport(t *testing.T, milestones []skillGuardMilestone) {
+// driver recorded the real model's item payloads before and after that
+// re-activation. The Go owner cannot read the DOM, but it does not trust the
+// driver's boolean: it re-derives preservation from the two recorded payloads,
+// requiring every before item to survive in order with the same text, output,
+// arguments and status, and independently confirms the produced gap content
+// survived.
+//
+// It takes a backgroundAssertionSink rather than *testing.T so an owner-level
+// regression test can drive THIS assertion directly and capture its verdicts.
+func assertBackgroundEntryNarrowViewport(t backgroundAssertionSink, milestones []skillGuardMilestone) {
 	t.Helper()
 	var narrow struct {
-		Width            int  `json:"width"`
-		BeforeItems      int  `json:"beforeItems"`
-		AfterItems       int  `json:"afterItems"`
-		ContentPreserved bool `json:"contentPreserved"`
-		SentinelAfter    bool `json:"sentinelAfter"`
+		Width            int                      `json:"width"`
+		BeforeItems      int                      `json:"beforeItems"`
+		AfterItems       int                      `json:"afterItems"`
+		ContentPreserved bool                     `json:"contentPreserved"`
+		SentinelAfter    bool                     `json:"sentinelAfter"`
+		BeforePayload    []backgroundItemIdentity `json:"beforePayload"`
+		AfterPayload     []backgroundItemIdentity `json:"afterPayload"`
 	}
-	if skillGuardMilestoneDetail(t, milestones, "narrow-viewport", &narrow) {
+	if backgroundMilestoneDetail(t, milestones, "narrow-viewport", &narrow) {
 		if narrow.Width != 420 {
 			t.Errorf("narrow-viewport: activated at %dpx, want 420px", narrow.Width)
 		}
@@ -913,8 +938,21 @@ func assertBackgroundEntryNarrowViewport(t *testing.T, milestones []skillGuardMi
 		if !narrow.ContentPreserved {
 			t.Error("narrow-viewport: repeat activation did not preserve the transcript content")
 		}
+		// Independently compare the recorded before/after bodies. The driver's
+		// contentPreserved boolean is not trusted; a rewrite that kept IDs but
+		// emptied a text or tool output must fail here.
+		if len(narrow.BeforePayload) == 0 || len(narrow.AfterPayload) == 0 {
+			t.Errorf("narrow-viewport: the milestone recorded no before/after bodies to compare (%d -> %d)", len(narrow.BeforePayload), len(narrow.AfterPayload))
+		} else if preserved, why := backgroundPayloadPreserved(narrow.BeforePayload, narrow.AfterPayload); !preserved {
+			t.Errorf("narrow-viewport: repeat activation did not preserve the transcript bodies: %s", why)
+		}
 		if !narrow.SentinelAfter {
 			t.Error("narrow-viewport: the produced content was absent after the mobile-shell re-activation")
+		}
+		// Re-derive the sentinel from the recorded bodies, independently of the
+		// driver's sentinelAfter boolean.
+		if !backgroundPayloadContainsText(narrow.AfterPayload, backgroundGapTurn) {
+			t.Errorf("narrow-viewport: no after item carries the produced gap content %q", backgroundGapTurn)
 		}
 	}
 }
@@ -1024,6 +1062,74 @@ func readWindowContainsText(data []byte, value string) (bool, error) {
 	return false, nil
 }
 
+// backgroundItemIdentity mirrors one entry-driver item identity (run.mjs's
+// itemIdentity): turnId/id/type anchor the item, and text/output/arguments/status
+// are its body. The driver records these for the narrow-viewport before and after
+// models so the Go owner can compare the bodies itself.
+type backgroundItemIdentity struct {
+	TurnID    *string `json:"turnId"`
+	ID        *string `json:"id"`
+	Type      *string `json:"type"`
+	Text      string  `json:"text"`
+	Output    string  `json:"output"`
+	Arguments *string `json:"arguments"`
+	Status    *string `json:"status"`
+}
+
+func backgroundNullableEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func backgroundItemEqual(a, b backgroundItemIdentity) bool {
+	return backgroundNullableEqual(a.TurnID, b.TurnID) &&
+		backgroundNullableEqual(a.ID, b.ID) &&
+		backgroundNullableEqual(a.Type, b.Type) &&
+		a.Text == b.Text &&
+		a.Output == b.Output &&
+		backgroundNullableEqual(a.Arguments, b.Arguments) &&
+		backgroundNullableEqual(a.Status, b.Status)
+}
+
+// backgroundPayloadPreserved RE-DERIVES the driver's narrow-viewport
+// preservation claim from the two recorded item payloads, independently of the
+// driver's contentPreserved boolean. Every before item must appear in the after
+// model, in order, with the same body (text, tool output, arguments, status). The
+// after model may carry OLDER content the re-activation fetched; it must not drop
+// or rewrite any item that was present before.
+func backgroundPayloadPreserved(before, after []backgroundItemIdentity) (bool, string) {
+	if len(before) == 0 {
+		return false, "no before items were recorded"
+	}
+	index := 0
+	for _, item := range after {
+		if index >= len(before) {
+			break
+		}
+		if backgroundItemEqual(before[index], item) {
+			index++
+		}
+	}
+	if index != len(before) {
+		return false, fmt.Sprintf("only %d of %d before items survived in order with their body", index, len(before))
+	}
+	return true, ""
+}
+
+// backgroundPayloadContainsText reports whether any recorded item's text or tool
+// output carries want, so the Go owner can confirm produced content survived
+// without trusting the driver's sentinelAfter boolean.
+func backgroundPayloadContainsText(payload []backgroundItemIdentity, want string) bool {
+	for _, item := range payload {
+		if strings.Contains(item.Text, want) || strings.Contains(item.Output, want) {
+			return true
+		}
+	}
+	return false
+}
+
 // backgroundGapTurnID returns the turn id of the daemon's own durable turn that
 // carries backgroundGapTurn, read from the retained producer transcript.
 func backgroundGapTurnID(transcript string) (string, error) {
@@ -1089,6 +1195,129 @@ func TestBackgroundEntryProducerReadsNestedTurnIdentity(t *testing.T) {
 	}
 	if got.assistantTurnID != "turn_m41" || got.toolCallID != "background_tool_call" || got.toolResultCallID != got.toolCallID {
 		t.Fatalf("producer identities = %+v", got)
+	}
+}
+
+func TestBackgroundPayloadPreservedRejectsBodyLoss(t *testing.T) {
+	str := func(s string) *string { return &s }
+	// The sentinel is item c; the text-loss and output-loss cases damage the
+	// OTHER items so the body comparison, not the sentinel, is what fails.
+	before := []backgroundItemIdentity{
+		{ID: str("a"), Type: str("assistant"), Text: "BACKGROUND_OTHER_TEXT", Status: str("done")},
+		{ID: str("b"), Type: str("tool"), Output: "BACKGROUND_TOOL_OUTPUT", Arguments: str(`{"command":"ls"}`), Status: str("done")},
+		{ID: str("c"), Type: str("assistant"), Text: "BACKGROUND_GAP_TURN", Status: str("done")},
+	}
+	// Control: identical payloads are preserved.
+	if ok, why := backgroundPayloadPreserved(before, before); !ok {
+		t.Fatalf("identical payloads were not preserved: %s", why)
+	}
+	// Same IDs and order, sentinel intact, but another item's text emptied.
+	lostText := []backgroundItemIdentity{before[0], before[1], before[2]}
+	lostText[0].Text = ""
+	if ok, _ := backgroundPayloadPreserved(before, lostText); ok {
+		t.Error("an emptied text with unchanged IDs was accepted as preserved")
+	}
+	// Same IDs and order, but an item's tool output emptied.
+	lostOutput := []backgroundItemIdentity{before[0], before[1], before[2]}
+	lostOutput[1].Output = ""
+	if ok, _ := backgroundPayloadPreserved(before, lostOutput); ok {
+		t.Error("an emptied tool output with unchanged IDs was accepted as preserved")
+	}
+	// Same IDs and order, but a changed tool argument.
+	changedArguments := []backgroundItemIdentity{before[0], before[1], before[2]}
+	changedArguments[1].Arguments = str(`{"command":"pwd"}`)
+	if ok, _ := backgroundPayloadPreserved(before, changedArguments); ok {
+		t.Error("changed arguments with unchanged IDs were accepted as preserved")
+	}
+	// Same IDs and order, but a changed status.
+	changedStatus := []backgroundItemIdentity{before[0], before[1], before[2]}
+	changedStatus[2].Status = str("error")
+	if ok, _ := backgroundPayloadPreserved(before, changedStatus); ok {
+		t.Error("a changed status with unchanged IDs was accepted as preserved")
+	}
+	// The same items in a different order are not preserved.
+	reordered := []backgroundItemIdentity{before[1], before[0], before[2]}
+	if ok, _ := backgroundPayloadPreserved(before, reordered); ok {
+		t.Error("reordered items were accepted as preserved")
+	}
+	// Older content fetched by the re-activation is allowed...
+	withOlder := append([]backgroundItemIdentity{{ID: str("older"), Type: str("assistant"), Text: "old"}}, before...)
+	if ok, why := backgroundPayloadPreserved(before, withOlder); !ok {
+		t.Errorf("older prepended content wrongly failed preservation: %s", why)
+	}
+	// ...but a dropped before item is not.
+	if ok, _ := backgroundPayloadPreserved(before, before[1:]); ok {
+		t.Error("a dropped before item was accepted as preserved")
+	}
+}
+
+// backgroundFailureRecorder captures an owner assertion's Error/Errorf/Fatalf
+// calls so a regression test can require that it fails on damaged input without
+// failing the surrounding test.
+type backgroundFailureRecorder struct {
+	failures []string
+}
+
+func (r *backgroundFailureRecorder) Helper() {}
+
+func (r *backgroundFailureRecorder) Fatalf(format string, args ...any) {
+	r.failures = append(r.failures, fmt.Sprintf(format, args...))
+}
+
+func (r *backgroundFailureRecorder) Errorf(format string, args ...any) {
+	r.failures = append(r.failures, fmt.Sprintf(format, args...))
+}
+
+func (r *backgroundFailureRecorder) Error(args ...any) {
+	r.failures = append(r.failures, fmt.Sprint(args...))
+}
+
+// TestBackgroundNarrowViewportOwnerRejectsDamagedBody drives the OWNING
+// assertion (assertBackgroundEntryNarrowViewport), not a helper it calls, with a
+// milestone whose booleans and counts all pass but whose before/after bodies
+// disagree: another item's text is emptied while the sentinel stays intact. The
+// owning assertion must fail. A version that trusts the driver's
+// contentPreserved boolean and counts instead of comparing bodies would accept
+// it, so this test fails when the owner stops comparing bodies.
+func TestBackgroundNarrowViewportOwnerRejectsDamagedBody(t *testing.T) {
+	str := func(s string) *string { return &s }
+	intact := []backgroundItemIdentity{
+		{ID: str("a"), Type: str("assistant"), Text: "BACKGROUND_OTHER_TEXT", Status: str("done")},
+		{ID: str("b"), Type: str("tool"), Output: "BACKGROUND_TOOL_OUTPUT", Arguments: str(`{"command":"ls"}`), Status: str("done")},
+		{ID: str("c"), Type: str("assistant"), Text: backgroundGapTurn, Status: str("done")},
+	}
+	damaged := []backgroundItemIdentity{intact[0], intact[1], intact[2]}
+	damaged[0].Text = ""
+
+	milestone := func(before, after []backgroundItemIdentity) skillGuardMilestone {
+		detail, err := json.Marshal(map[string]any{
+			"width":            420,
+			"beforeItems":      len(before),
+			"afterItems":       len(after),
+			"contentPreserved": true,
+			"sentinelAfter":    true,
+			"beforePayload":    before,
+			"afterPayload":     after,
+		})
+		if err != nil {
+			t.Fatalf("marshal narrow-viewport milestone: %v", err)
+		}
+		return skillGuardMilestone{Milestone: "narrow-viewport", Detail: detail}
+	}
+
+	// Control: the intact milestone passes the owner assertion.
+	control := &backgroundFailureRecorder{}
+	assertBackgroundEntryNarrowViewport(control, []skillGuardMilestone{milestone(intact, intact)})
+	if len(control.failures) != 0 {
+		t.Fatalf("the owner assertion rejected an intact milestone: %v", control.failures)
+	}
+
+	// Every boolean and count is green; only the recorded bodies disagree. The
+	// owning assertion must still fail.
+	recorder := &backgroundFailureRecorder{}
+	assertBackgroundEntryNarrowViewport(recorder, []skillGuardMilestone{milestone(intact, damaged)})
+	if len(recorder.failures) == 0 {
+		t.Fatal("assertBackgroundEntryNarrowViewport accepted a milestone whose recorded bodies disagree")
 	}
 }
 

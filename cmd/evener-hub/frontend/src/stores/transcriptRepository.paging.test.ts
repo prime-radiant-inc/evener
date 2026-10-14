@@ -548,9 +548,8 @@ test.each(["read", "page"])("a versionless recorded header survives %s ingestion
     ]);
     // Ordinary older demand at the restored start of history must not ask the
     // store to reconcile a header the accepted read/page already supplied.
-    // A read has no page certificate; its server continuation is a no-op when
-    // the model has no cursor. A terminal page has a certified exhaustion.
-    expect((await repo.loadOlderPage(40, 1)).kind).toBe(source === "read" ? "server" : "exhausted");
+    // Both the no-cursor read frontier and the terminal page are exhausted.
+    expect((await repo.loadOlderPage(40, 1)).kind).toBe("exhausted");
     expect(repo.getSnapshot()?.olderCursor).toBeUndefined();
   } finally {
     reopened.dispose();
@@ -971,6 +970,106 @@ test("a disposed reader's in-flight openLocal publishes nothing and the reposito
     repo.dispose();
   }
 });
+
+test.each(["empty", "short"])(
+  "a %s raw page after eviction cannot erase an unrestored local frontier",
+  async (page) => {
+    const cache = new SessionEntryCache({
+      indexedDB: new IDBFactory(),
+      keyRange: IDBKeyRange,
+      databaseName: `entry-local-frontier-${crypto.randomUUID()}`,
+      maxBytes: 20_000,
+      now: () => 1000,
+    });
+    const repo = repository(cache, 1, () => 1000);
+    try {
+      repo.acceptRead(readOf([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), { lifetime: 1, readId: "r1", boundary: "b1" });
+      await repo.settled();
+      const reader = repo.attachReader();
+      const opened = await reader.openLocal(3);
+      // Round 22 supersedes seven empty DISPLAY strings before row-8..10:
+      // identities belong in history as eviction/frontier evidence, not rows.
+      expect(
+        opened.model?.history?.turns
+          .flatMap((turn) => turn.items)
+          .filter((item) => item.position && item.position.entry < 8)
+          .map((item) => ({ key: item.transcriptKey, position: item.position, text: item.text })),
+      ).toEqual(
+        Array.from({ length: 7 }, (_, index) => ({
+          key: `item-${index + 1}`,
+          position: { entry: index + 1, item: 0 },
+          text: "",
+        })),
+      );
+      expect(opened.model?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toEqual([
+        "row-8",
+        "row-9",
+        "row-10",
+      ]);
+      expect(repo.localOlderPosition()).toEqual({ entry: 8, item: 0 });
+      expect(repo.getSnapshot()?.olderCursor).toBeUndefined();
+      const before = await cache.getByteTotals(historyKey);
+      expect(
+        (
+          await cache.commitBatch({
+            historyKey: "other-history",
+            clearEpoch: 0,
+            items: [
+              {
+                historyKey: "other-history",
+                transcriptKey: "other",
+                position: { entry: 1, item: 0 },
+                version: 1,
+                item: { ...itemOf(1), text: "x".repeat(20_000 - before.historyBytes + 500) },
+              },
+            ],
+          })
+        ).outcome,
+      ).toBe("committed");
+      expect(await cache.getLatest(historyKey, 40)).toEqual([]);
+      if (page === "short") {
+        expect(
+          (
+            await cache.commitBatch({
+              historyKey,
+              clearEpoch: 0,
+              items: [
+                { historyKey, transcriptKey: "item-1", position: { entry: 1, item: 0 }, version: 1, item: itemOf(1) },
+              ],
+            })
+          ).outcome,
+        ).toBe("committed");
+      }
+      expect(await cache.getClearEpoch()).toBe(0);
+      expect((await repo.loadOlderPage(40, 1)).kind).toBe("reconcile");
+      expect(repo.localOlderPosition()).toEqual({ entry: 8, item: 0 });
+      // Same supersession after eviction: seven identities remain in history,
+      // rather than the old seven-empty-display-row expectation.
+      expect(
+        reader
+          .getSnapshot()
+          ?.history?.turns.flatMap((turn) => turn.items)
+          .filter((item) => item.position && item.position.entry < 8)
+          .map((item) => ({ key: item.transcriptKey, position: item.position, text: item.text })),
+      ).toEqual(
+        Array.from({ length: 7 }, (_, index) => ({
+          key: `item-${index + 1}`,
+          position: { entry: index + 1, item: 0 },
+          text: "",
+        })),
+      );
+      expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toEqual([
+        "row-8",
+        "row-9",
+        "row-10",
+      ]);
+      reader.dispose();
+    } finally {
+      repo.dispose();
+      cache.close();
+    }
+  },
+);
 
 test("an open reader keeps its loaded rows when disk eviction removes the history", async () => {
   const databaseName = `entry-paging-evict-${crypto.randomUUID()}`;

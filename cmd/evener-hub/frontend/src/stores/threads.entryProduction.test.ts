@@ -612,6 +612,7 @@ it.each(["release", "delete", "Clear"] as const)(
 it.each(["evicted", "failed-write"] as const)(
   "opening a background model recovers bodies after %s",
   async (failure) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let now = 1_000;
     const storage = new SessionEntryCache({
       databaseName: SESSION_CACHE_DATABASE_NAME,
@@ -665,6 +666,17 @@ it.each(["evicted", "failed-write"] as const)(
         .map((item) => item.text),
     ).toEqual(["recorded"]);
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+    if (failure === "failed-write") {
+      const repository = productionEntryTranscriptForTests("local:a").repository!;
+      // Foreground recovery does not fast-forward an already paced retry.
+      expect(repository.retainedInventoryForTesting().retryBodies.length).toBeGreaterThan(0);
+      await expect(settleEntryTranscriptForTests("local:a")).rejects.toBeInstanceOf(Error);
+      await vi.advanceTimersByTimeAsync(249);
+      expect(repository.retainedInventoryForTesting().retryBodies.length).toBeGreaterThan(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await settleEntryTranscriptForTests("local:a");
+      expect(repository.retainedInventoryForTesting().retryBodies).toEqual([]);
+    }
     await settleEntryTranscriptForTests("local:a");
     const key = entryHistoryKey({ ...identity, clientId: location.origin });
     expect((await storage.getLatest<CachedSessionItem>(key, 10)).map((row) => row.item.text)).toEqual(["recorded"]);
@@ -673,6 +685,7 @@ it.each(["evicted", "failed-write"] as const)(
 );
 
 it.each([false, true])("opening verifies accepted bodies when the latest write was lost: %s", async (lost) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const storage = cache();
   setProductionEntryCacheForTests(storage);
   let latest = response("local:a", [turn("K", 1, "version one")]);
@@ -716,6 +729,16 @@ it.each([false, true])("opening verifies accepted bodies when the latest write w
       ?.turns.flatMap((turn) => turn.items)
       .map((item) => item.text),
   ).toEqual(["version two exact body"]);
+  if (lost) {
+    const repository = productionEntryTranscriptForTests("local:a").repository!;
+    expect(repository.retainedInventoryForTesting().retryBodies.length).toBeGreaterThan(0);
+    await expect(settleEntryTranscriptForTests("local:a")).rejects.toBeInstanceOf(Error);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(repository.retainedInventoryForTesting().retryBodies.length).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await settleEntryTranscriptForTests("local:a");
+    expect(repository.retainedInventoryForTesting().retryBodies).toEqual([]);
+  }
   await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest<CachedSessionItem>(key, 10))[0]?.item.text).toBe("version two exact body");
   background.release();
@@ -813,25 +836,72 @@ it.each(["opening", "paging"])(
         .getState()
         .threads.get("local:a")
         ?.turns.flatMap((turn) => turn.items);
-    if (stage === "opening")
+    // Round 22 supersedes the old display expectation of 50 empty strings
+    // followed by 200 bodies: the no-trim ruling preserves HISTORY evidence,
+    // not blank display rows. Keep exact identities and positions in history.
+    const bodies = () =>
+      items()
+        ?.map((item) => item.text)
+        .filter(Boolean);
+    if (stage === "opening") {
+      const identities = threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.history?.turns.flatMap((turn) => turn.items)
+        .map(encodeTranscriptItem)
+        .filter((item) => item.identityOnly);
+      expect(identities).toEqual(
+        Array.from({ length: 50 }, (_, entry) => ({
+          id: `body-${entry}`,
+          turnId: `body-${entry}`,
+          transcriptKey: `body-${entry}`,
+          type: "agentMessage",
+          version: 1,
+          position: { entry, item: 0 },
+          text: "",
+          textOmitted: true,
+          identityOnly: true,
+        })),
+      );
       expect(items()?.map((item) => item.text)).toEqual(
         turns.slice(-200).flatMap((turn) => (turn.items ?? []).map((item) => item.text)),
       );
+      // The virtual list and its near-top scroll origin start at hydrated
+      // content, not at the retained identity prefix.
+      expect(
+        threadsStore
+          .getState()
+          .threads.get("local:a")
+          ?.turns.map((turn) => turn.id),
+      ).toEqual(turns.slice(-200).map((turn) => turn.id));
+    }
+    expect(bodies()).toEqual(turns.slice(-200).flatMap((turn) => (turn.items ?? []).map((item) => item.text)));
     expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBeDefined();
+    const raw = vi.spyOn(storage, "getBefore");
     const older = vi.spyOn(storage, "getOlderWindow");
     await threadsStore.getState().loadOlderTurns("local:a");
-    expect(older).toHaveBeenCalled();
-    expect(older.mock.calls[0]?.[1]).toEqual({ entry: 50, item: 0 });
-    expect((await older.mock.results.at(-1)?.value)?.rows).toHaveLength(40);
-    expect(items()?.map((item) => item.text)).toEqual(
-      turns.slice(10).flatMap((turn) => (turn.items ?? []).map((item) => item.text)),
-    );
+    // Supersedes the feature-only getOlderWindow-at-50 oracle: the known
+    // identity interval restores through raw paging before certified demand.
+    expect(raw).toHaveBeenCalledTimes(1);
+    expect(raw.mock.calls[0]?.[1]).toEqual({ entry: 50, item: 0 });
+    expect(await raw.mock.results[0]?.value).toHaveLength(40);
+    expect(older).not.toHaveBeenCalled();
+    expect(bodies()).toEqual(turns.slice(10).flatMap((turn) => (turn.items ?? []).map((item) => item.text)));
+    expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBeDefined();
     await threadsStore.getState().loadOlderTurns("local:a");
+    expect(raw).toHaveBeenCalledTimes(2);
+    expect(raw.mock.calls[1]?.[1]).toEqual({ entry: 10, item: 0 });
+    expect(await raw.mock.results[1]?.value).toHaveLength(10);
+    expect(older).not.toHaveBeenCalled();
     expect(productionEntryTranscriptForTests("local:a").repository?.oldestPosition()).toEqual({ entry: 0, item: 0 });
     expect(items()?.map((item) => item.text)).toEqual(
       turns.flatMap((turn) => (turn.items ?? []).map((item) => item.text)),
     );
+    expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBeUndefined();
     await threadsStore.getState().loadOlderTurns("local:a");
+    expect(raw).toHaveBeenCalledTimes(2);
+    expect(older).toHaveBeenCalled();
+    expect(older.mock.calls[0]?.[1]).toEqual({ entry: 0, item: 0 });
     expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBeUndefined();
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
     expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
@@ -1201,6 +1271,68 @@ it("entry store repairs aggregate overflow through an automatic authoritative re
   }
 });
 
+it("opening an overflow-dropped window requests the now-available source", async () => {
+  const restore = installBackgroundTranscriptOptionsForTests({ pendingBytes: 2048 });
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const admission = entryWriteAdmissionFor(storage);
+  const owner = {};
+  const bodies = [{ key: {}, bytes: 2048 }];
+  expect(admission.retain(bodies, owner, "writing")).toBe(true);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const background = acquireBackgroundThread("local:a");
+  try {
+    await background.ready;
+    await expect(settleEntryTranscriptForTests("local:a")).rejects.toBeInstanceOf(Error);
+    expect(
+      productionEntryTranscriptForTests("local:a").repository?.getRecoveryStateForTesting().cacheContinuityLost,
+    ).toBe(true);
+    expect(productionEntryTranscriptForTests("local:a").repository?.retainedInventoryForTesting()).toMatchObject({
+      retryBodies: [],
+      backgroundAcceptBodies: [],
+      inFlightBodies: [],
+    });
+    expect(await storage.getLatest(entryHistoryKey({ ...identity, clientId: location.origin }), 10)).toEqual([]);
+    await vi.advanceTimersByTimeAsync(250);
+    await expect(settleEntryTranscriptForTests("local:a")).rejects.toBeInstanceOf(Error);
+    expect(
+      productionEntryTranscriptForTests("local:a").repository?.getRecoveryStateForTesting().cacheContinuityLost,
+    ).toBe(true);
+    expect(productionEntryTranscriptForTests("local:a").repository?.retainedInventoryForTesting()).toMatchObject({
+      retryBodies: [],
+      backgroundAcceptBodies: [],
+      inFlightBodies: [],
+    });
+    expect(await storage.getLatest(entryHistoryKey({ ...identity, clientId: location.origin }), 10)).toEqual([]);
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    expect(reads).toBe(2);
+    expect(
+      productionEntryTranscriptForTests("local:a")
+        .repository?.getSnapshot()
+        ?.history?.turns.flatMap((turn) => turn.items),
+    ).toEqual([]);
+    admission.release(bodies, owner);
+    await threadsStore.getState().ensureThread("local:a");
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text),
+    ).toEqual(["recorded"]);
+  } finally {
+    admission.release(bodies, owner);
+    threadsStore.getState().releaseThread("local:a");
+    background.release();
+    vi.useRealTimers();
+    resetThreadsStoreForTests();
+    restore();
+  }
+});
+
 it("entry store and cache share one clock for metadata and TTL", async () => {
   const now = Date.now() + 15 * 24 * 60 * 60 * 1000;
   const storage = new SessionEntryCache({
@@ -1220,6 +1352,44 @@ it("entry store and cache share one clock for metadata and TTL", async () => {
   } finally {
     resetThreadsStoreForTests();
   }
+});
+
+it("ordinary older paging restores the bodies omitted by a 200-row local opening without a server cursor", async () => {
+  const storage = cache();
+  const ref = "local:a";
+  const read = response(
+    ref,
+    Array.from({ length: 225 }, (_, index) => turn(`row-${index + 1}`, index + 1)),
+  );
+  read.snapshot = { incarnation: "inc-a", length: 225 };
+  const client = connect(read);
+  const lease = acquireBackgroundThread(ref);
+  await lease.ready;
+  await settleEntryTranscriptForTests(ref);
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 300)).toHaveLength(225);
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get(ref)
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text)
+      .filter(Boolean);
+  expect(bodies()).toEqual([]);
+  await threadsStore.getState().ensureThread(ref);
+  expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
+  // Supersedes undefined: rows 1..25 remain below the loaded 26..225
+  // window, so the display must expose local demand until they are restored.
+  expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeDefined();
+  const readsBefore = client.calls.filter((call) => call.method === "thread/read").length;
+  await threadsStore.getState().loadOlderTurns(ref);
+  expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`));
+  expect(threadsStore.getState().threads.get(ref)?.olderCursor).toBeUndefined();
+  await threadsStore.getState().loadOlderTurns(ref);
+  expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
+  threadsStore.getState().releaseThread(ref);
+  await lease.release();
 });
 
 it("ordinary browser routes reads notifications paging reopen reconnect and final release through entries", async () => {
@@ -1371,6 +1541,68 @@ it("ordinary Clear removes entries once and suppresses the held cache lifetime w
   expect(await countCachedSessions()).toBe(1);
 });
 
+it.each(["goal", "note"] as const)(
+  "Clear replay preserves newer response-only %s and reconciles metadata",
+  async (field) => {
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const client = connect();
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    const held = deferred<void>();
+    vi.spyOn(storage, "clear").mockImplementation(async () => {
+      await held.promise;
+      return { committed: false, epoch: 0 };
+    });
+    const clearing = clearCachedSessions();
+    expect(threadsStore.getState().clearInFlight).toBeDefined();
+    if (field === "goal") {
+      client.emitNotification({
+        method: "evener/goal/updated",
+        params: {
+          ref: "local:a",
+          threadId: "thread-a",
+          goal: { objective: "old", status: "active", iterations: 0 },
+        },
+      });
+      client.on("goal/set", () => ({ started: true }));
+      await threadsStore.getState().setGoal("local:a", "new");
+    } else {
+      client.emitNotification({
+        method: "evener/notes/updated",
+        params: { ref: "local:a", threadId: "thread-a", humanNote: "old" },
+      });
+      client.on("notes/human/set", (params) => ({
+        note: params.note ?? "",
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          threadId: "thread-a",
+          disposition: "applied",
+          projectionState: "notProjected",
+        },
+      }));
+      await threadsStore.getState().setHumanNote("local:a", "new");
+      await vi.waitFor(() => expect(threadsStore.getState().threads.get("local:a")?.humanNote).toBe("new"));
+    }
+    const value = () => {
+      const model = threadsStore.getState().threads.get("local:a");
+      return field === "goal" ? model?.goal?.objective : model?.humanNote;
+    };
+    expect(value()).toBe("new");
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    const refresh = deferred<ThreadReadResponse>();
+    client.on("thread/read", () => refresh.promise);
+    try {
+      held.resolve();
+      expect(await clearing).toEqual({ committed: false });
+      expect.soft(value()).toBe("new");
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+    } finally {
+      refresh.resolve(response());
+    }
+  },
+);
+
 it.each([true, false])("input suppressed during Clear is reconciled after committed=%s", async (committed) => {
   const storage = cache();
   setProductionEntryCacheForTests(storage);
@@ -1520,7 +1752,8 @@ it.each(["before", "after", "failed-after"])(
       if (settlesFirst) admission.releaseBackground(other);
       else admission.cancelBackground(other);
       heldWrite.resolve();
-      await expect(settleEntryTranscriptForTests("local:a")).rejects.toThrow("transcript recovery was cancelled");
+      await expect(settleEntryTranscriptForTests("local:a")).rejects.toBeInstanceOf(Error);
+      expect(await storage.getLatest(entryHistoryKey({ ...identity, clientId: location.origin }), 10)).toEqual([]);
       expect(admission.retainedBytes).toBe(0);
       expect(
         admission.tryAcquireBackground(
@@ -1569,6 +1802,83 @@ it("an aborted ordinary Clear preserves disk rows and the held entry route resum
   });
   await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded", "after-abort"]);
+});
+
+it("an aborted ordinary Clear replays recorded input delivered while Clear was pending", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+
+  // Hold the clear transaction open so a recorded update lands inside the
+  // window, then abort the real transaction: nothing changed, so the update
+  // must survive without a release or reopen.
+  const realClear = storage.clear.bind(storage);
+  const clearGate = deferred<void>();
+  const clearSpy = vi.spyOn(storage, "clear").mockImplementation(async () => {
+    await clearGate.promise;
+    return realClear();
+  });
+  const clearing = clearCachedSessions();
+  await vi.waitFor(() => expect(threadsStore.getState().clearInFlight).toBeDefined());
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("during-clear", 2, "DURING_CLEAR_BODY").items,
+    },
+  });
+  await settleProjectionWorkForTests();
+  // Nothing is published while the clear is pending.
+  expect(JSON.stringify(threadsStore.getState().threads.get("local:a") ?? null)).not.toContain("DURING_CLEAR_BODY");
+
+  const originalClear = IDBObjectStore.prototype.clear;
+  const fault = vi.spyOn(IDBObjectStore.prototype, "clear").mockImplementationOnce(function (this: IDBObjectStore) {
+    this.transaction.abort();
+    return originalClear.call(this);
+  });
+  clearGate.resolve();
+  await expect(clearing).resolves.toEqual({ committed: false });
+  fault.mockRestore();
+  clearSpy.mockRestore();
+
+  await settleEntryTranscriptForTests("local:a");
+  expect(JSON.stringify(threadsStore.getState().threads.get("local:a") ?? null)).toContain("DURING_CLEAR_BODY");
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toContain("during-clear");
+});
+
+it.each(["reject", "stall"])("captured deletion is independent of metadata discovery: %s", async (mode) => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 10)).toHaveLength(1);
+  const discovery = deferred<string[]>();
+  vi.spyOn(storage, "historyKeysForRequestedRefs").mockImplementation(() =>
+    mode === "reject" ? Promise.reject(new Error("metadata unavailable")) : discovery.promise,
+  );
+  client.on("evener/session/delete", () => ({
+    deleted: ["a"],
+    skipped: [],
+    navigation: { generation_id: "generation-test", targets: [] },
+  }));
+  try {
+    await deleteSession(client, "local:a");
+    expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true);
+    await vi.waitFor(async () => expect(await storage.getHistoryGeneration(key)).toBe(1));
+    expect(await storage.getLatest(key, 10)).toEqual([]);
+  } finally {
+    discovery.resolve([]);
+    await settleProjectionWorkForTests();
+  }
 });
 
 it("ordinary deletion removes bound histories and durably refuses the captured pre-delete write", async () => {
@@ -1760,6 +2070,44 @@ it("ordinary overlapping refresh keeps two loaded pages and the deepest usable c
     "overlap",
     "window",
   ]);
+});
+
+it("a page issued before deletion does not publish after the deletion fence retires its owner", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  const latest = response("local:a", [turn("window", 30)]);
+  latest.snapshot = { incarnation: "inc-a", length: 60 };
+  latest.olderCursor = "page-1";
+  client.on("thread/read", (params) => ({ ...latest, requestGeneration: params.requestGeneration }));
+  const pageGate = deferred<void>();
+  client.on("thread/turns/list", async () => {
+    await pageGate.promise;
+    return {
+      data: [turn("deleted-late", 10, "DELETED_LATE_PAGE_BODY")],
+      nextCursor: "page-2",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 60 },
+    };
+  });
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+
+  const paging = threadsStore.getState().loadOlderTurns("local:a");
+  markCacheSessionsDeleted(["local:a"]);
+  await vi.waitFor(() => expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true));
+  // Return the page that was already in flight when the deletion fence landed.
+  pageGate.resolve();
+  await paging;
+  expect(JSON.stringify(threadsStore.getState().threads.get("local:a") ?? null)).not.toContain(
+    "DELETED_LATE_PAGE_BODY",
+  );
+  expect(
+    (await storage.getLatest(entryHistoryKey({ ...identity, clientId: location.origin }), 10)).map(
+      (row) => row.transcriptKey,
+    ),
+  ).not.toContain("deleted-late");
 });
 
 it("ordinary reconnect keeps a same-turn tail outside the recovered window without fabricating a missing row", async () => {
@@ -2206,10 +2554,11 @@ it("ordinary failed source refresh preserves only the prior committed rows until
   await threadsStore.getState().ensureThread("local:a");
   await settleEntryTranscriptForTests("local:a");
   const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const sourceFailure = new WireError("source unavailable", -32000, { evenerErrorInfo: "transcriptHistoryFailed" });
   client.on("thread/read", () => {
-    throw new WireError("source unavailable", -32000, { evenerErrorInfo: "transcriptHistoryFailed" });
+    throw sourceFailure;
   });
-  await expect(threadsStore.getState().refreshThread("local:a")).rejects.toThrow("source unavailable");
+  await expect(threadsStore.getState().refreshThread("local:a")).rejects.toBe(sourceFailure);
   await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
   expect(threadsStore.getState().threads.get("local:a")?.history?.failed).toBeDefined();
@@ -2404,6 +2753,139 @@ const tool: AnyNotification = {
   },
 };
 
+it("aborted Clear replays a delta only to the suppressed foreground owner, not its watcher", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect(readOf());
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().watchThread(ref, { includeTurns: true });
+  client.emitNotification(tool);
+  const clearing = deferred<{ committed: false; epoch: number }>();
+  vi.spyOn(storage, "clear").mockReturnValueOnce(clearing.promise);
+  const clear = clearCachedSessions();
+  client.emitNotification({
+    method: "overlay/delta",
+    params: { ref, threadId, key: "tool:old", field: "output", delta: "-once" },
+  });
+  await settleProjectionWorkForTests();
+  const output = (watched: boolean) => {
+    const state = threadsStore.getState();
+    const model = (watched ? state.watchedThreads : state.threads).get(ref);
+    return model?.overlay?.["tool:old"]?.item.output;
+  };
+  expect(output(true)).toEqual("provisional-tool-once");
+  expect(output(false)).toEqual("provisional-tool");
+  clearing.resolve({ committed: false, epoch: 0 });
+  expect(await clear).toEqual({ committed: false });
+  await settleProjectionWorkForTests();
+  expect(output(false)).toEqual("provisional-tool-once");
+  expect(output(true)).toEqual("provisional-tool-once");
+});
+
+it("aborted Clear preserves status accepted during suppression after replaying content", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect(readOf());
+  await threadsStore.getState().ensureThread(ref);
+  client.emitNotification({ method: "thread/status/changed", params: { ref, threadId, status: { type: "active" } } });
+  const clearing = deferred<{ committed: false; epoch: number }>();
+  vi.spyOn(storage, "clear").mockReturnValueOnce(clearing.promise);
+  const clear = clearCachedSessions();
+  client.emitNotification(tool);
+  client.emitNotification({ method: "thread/status/changed", params: { ref, threadId, status: { type: "idle" } } });
+  await settleProjectionWorkForTests();
+  expect(threadsStore.getState().threads.get(ref)?.status).toEqual({ type: "idle" });
+  clearing.resolve({ committed: false, epoch: 0 });
+  expect(await clear).toEqual({ committed: false });
+  await settleProjectionWorkForTests();
+  expect(threadsStore.getState().threads.get(ref)?.status).toEqual({ type: "idle" });
+  expect(productionEntryTranscriptForTests(ref)?.repository?.getSnapshot()?.status).toEqual({ type: "idle" });
+  expect(threadsStore.getState().threads.get(ref)?.overlay?.["tool:old"]?.item.output).toBe("provisional-tool");
+});
+
+it.each([false, true])(
+  "Clear replay is budgeted and overflow recovery follows the Clear outcome, committed=%s",
+  async (committed) => {
+    const restore = installBackgroundTranscriptOptionsForTests({ pendingBytes: 64_000 });
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const client = connect(readOf());
+    let reads = 0;
+    client.on("thread/read", (params) => {
+      reads += 1;
+      return {
+        ...(reads === 1 ? readOf() : readOf([recorded("recovered-after-clear")], 60)),
+        requestGeneration: params.requestGeneration,
+      };
+    });
+    const owner = acquireBackgroundThread(ref);
+    await owner.ready;
+    await settleEntryTranscriptForTests(ref);
+    const admission = entryWriteAdmissionFor(storage);
+    const gate = deferred<void>();
+    const realClear = storage.clear.bind(storage);
+    vi.spyOn(storage, "clear").mockImplementationOnce(async () => {
+      await gate.promise;
+      return committed ? realClear() : { committed: false, epoch: 0 };
+    });
+    const clear = clearCachedSessions();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        client.emitNotification({
+          method: "history/updated",
+          params: {
+            ref,
+            threadId,
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 41 + index },
+            items: [{ ...recorded("x".repeat(32_000)), version: 41 + index }],
+          },
+        });
+        if (index === 0) expect(admission.snapshotForTesting().retainedBytes).toBeGreaterThan(32_000);
+        expect(admission.snapshotForTesting().retainedBytes).toBeLessThanOrEqual(64_000);
+        expect(admission.snapshotForTesting().exemptBytes).toBe(0);
+      }
+      expect(reads).toBe(1);
+      gate.resolve();
+      expect(await clear).toEqual({ committed });
+      if (!committed) {
+        await vi.waitFor(() => expect(reads).toBe(2));
+        await settleEntryTranscriptForTests(ref);
+        const key = entryHistoryKey({
+          clientId: location.origin,
+          hostId: "local",
+          sessionId: readOf().thread.sessionId,
+          incarnation: "inc-1",
+        });
+        expect(JSON.stringify(await storage.getLatest(key, 100))).toContain("recovered-after-clear");
+      } else {
+        // Supersede reads === 1: the incoming finding requires reconciliation
+        // after committed Clear too. Its owner-fenced reconcile starts read 2;
+        // this path discards replay owners and does not run overflow replay.
+        // Background-only publication prunes history bodies, so visibility is
+        // asserted by the foreground "input suppressed during Clear" test,
+        // not by adding a foreground owner to this budget/disk-suppression case.
+        await vi.waitFor(() => expect(reads).toBe(2));
+        await settleEntryTranscriptForTests(ref);
+        expect(await storage.count()).toBe(0);
+      }
+      // An aborted Clear replays the input its window suppressed, and that
+      // replay can re-arm the overflow retry. The replay's replacement read and
+      // the retry's replacement read then run in sequence for the same ref, so
+      // its pending write drains after this point rather than before it. The
+      // predicate is unchanged: a retained byte is still a failure, it just
+      // gets to finish first.
+      await vi.waitFor(() => expect(admission.snapshotForTesting().retainedBytes).toBe(0));
+    } finally {
+      gate.resolve();
+      await clear;
+      await owner.release();
+      restore();
+    }
+  },
+);
+
 it("aborted Clear restarts a pending end read from the current owner", async () => {
   const storage = cache();
   setProductionEntryCacheForTests(storage);
@@ -2505,4 +2987,46 @@ it("ordinary default reconnect handles the retired end-read rejection without an
   await renewed.ready;
   expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(3);
   expect(await renewed.release()).toEqual({ kind: "saved" });
+});
+
+it("an aborted Clear resumes a parked background end read without an unhandled rejection", async () => {
+  const client = new FakeClient("ready");
+  const pendingEnd = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", () => (++reads === 2 ? pendingEnd.promise : readOf()));
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+  const owner = acquireBackgroundThread(ref);
+  await owner.ready;
+  await settleEntryTranscriptForTests(ref);
+  // The overlay/end starts the repository's background end-reconciliation read.
+  client.emitNotification(tool);
+  client.emitNotification(end);
+  await vi.waitFor(() => expect(reads).toBe(2));
+
+  // Abort a Clear while that read is parked. The resumed task must run after
+  // its route is re-enabled, not reject through threads.ts:1006.
+  const realClear = SessionEntryCache.prototype.clear;
+  const clearGate = deferred<void>();
+  const clearSpy = vi.spyOn(SessionEntryCache.prototype, "clear").mockImplementation(async function (
+    this: SessionEntryCache,
+  ) {
+    await clearGate.promise;
+    return realClear.call(this);
+  });
+  const clearing = clearCachedSessions();
+  await vi.waitFor(() => expect(threadsStore.getState().clearInFlight).toBeDefined());
+  const originalClear = IDBObjectStore.prototype.clear;
+  const fault = vi.spyOn(IDBObjectStore.prototype, "clear").mockImplementationOnce(function (this: IDBObjectStore) {
+    this.transaction.abort();
+    return originalClear.call(this);
+  });
+  clearGate.resolve();
+  await expect(clearing).resolves.toEqual({ committed: false });
+  fault.mockRestore();
+  clearSpy.mockRestore();
+
+  pendingEnd.resolve({ ...readOf([recorded("obsolete-end")], 41), overlay: [], requestGeneration: 2 });
+  await settleEntryTranscriptForTests(ref);
+  await owner.release();
 });

@@ -125,6 +125,78 @@ afterEach(async () => {
   for (const { factory, name } of databases.splice(0)) await deleteFixtureDatabase(factory, name);
 });
 
+it("plans replacement capacity after removing held bodies", async () => {
+  const factory = new IDBFactory();
+  const name = `entry-preflight-${crypto.randomUUID()}`;
+  databases.push({ factory, name });
+  const options = { indexedDB: factory, keyRange: IDBKeyRange, databaseName: name };
+  const seed = new SessionEntryCache({ ...options, maxBytes: 100_000 });
+  const cache = new SessionEntryCache({ ...options, maxBytes: 2_000 });
+  caches.push(seed, cache);
+  const row = {
+    historyKey: "history",
+    transcriptKey: "item",
+    position: { entry: 1, item: 0 },
+    version: 1,
+    item: { id: "item", type: "agentMessage", turnId: "turn", text: "x".repeat(10_000) },
+  };
+  expect((await seed.commitBatch({ historyKey: "history", clearEpoch: 0, items: [row] })).outcome).toBe("committed");
+  const batch = {
+    historyKey: "history",
+    clearEpoch: 0,
+    replacement: { from: row.position },
+    items: [
+      { ...row, version: 2, item: markItemTextOmitted({ id: "item", type: "assistant", turnId: "turn", text: "" }) },
+    ],
+  };
+  const plan = await cache.planCapacity(batch);
+  // The real writer is the independent control: it deletes the rich predecessor.
+  expect((await cache.commitBatch(batch)).outcome).toBe("committed");
+  expect(cache.isIntrinsicCapacityRefusal(plan)).toBe(false);
+  expect((await cache.getLatest<{ text?: string }>("history", 10))[0]?.item.text).not.toContain("xxx");
+});
+
+it.each([false, true])("replacement preflight matches writer turn scope with older shared item %s", async (shared) => {
+  const factory = new IDBFactory();
+  const name = `entry-preflight-turn-${crypto.randomUUID()}`;
+  databases.push({ factory, name });
+  const options = { indexedDB: factory, keyRange: IDBKeyRange, databaseName: name };
+  const seed = new SessionEntryCache({ ...options, maxBytes: 100_000 });
+  const cache = new SessionEntryCache({ ...options, maxBytes: 1 });
+  caches.push(seed, cache);
+  const row = {
+    historyKey: "history",
+    transcriptKey: "item",
+    position: { entry: 2, item: 0, sub: 1 },
+    version: 1,
+    item: { id: "item", type: "agentMessage", turnId: "turn", text: "body" },
+  };
+  const turn = { id: "turn", status: "completed", version: 9, items: [], error: "prior" };
+  const older = { ...row, transcriptKey: "older", position: { entry: 2, item: 0, sub: 0 } };
+  expect(
+    (
+      await seed.commitBatch({
+        historyKey: "history",
+        clearEpoch: 0,
+        items: shared ? [older, row] : [row],
+        turns: [turn],
+      })
+    ).outcome,
+  ).toBe("committed");
+  const batch = {
+    historyKey: "history",
+    clearEpoch: 0,
+    replacement: { from: row.position },
+    items: [row],
+    turns: [{ id: "turn", status: "completed", version: 1, items: [] }],
+  };
+  const plan = await cache.planCapacity(batch);
+  expect(await cache.commitBatch(batch)).toEqual({ outcome: "refused", reason: "capacity" });
+  expect(plan).toEqual(cache.refusedCapacityPlan(batch));
+  // The refused writer rolls back both the boundary row and shared metadata.
+  expect(await seed.getTurn("history", "turn")).toMatchObject({ version: 9 });
+});
+
 it("rejects an older replacement from another cache before deleting newer authority", async () => {
   const factory = new IDBFactory();
   const name = `entry-authority-${crypto.randomUUID()}`;
@@ -1160,6 +1232,51 @@ it("keeps baseline paging cursor associated with its range across multiple appen
   const cachedBeforeCursor = await cache.getLatestWindow(historyKey, 4, "B4");
   expect(cachedBeforeCursor.rows).toEqual(rows);
   expect(cachedBeforeCursor.coverage).toEqual(latest.coverage);
+});
+
+it.each([undefined, "older-source"])("a read and its suffix share the paging frontier: %s", async (serverCursor) => {
+  const { cache } = newEntryCache();
+  const historyKey = "shared-frontier";
+  const rows = Array.from({ length: 251 }, (_, index) => itemRow(historyKey, index));
+  await expect(
+    cache.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: rows.slice(0, 250),
+      coverage: {
+        kind: "read",
+        readId: "baseline",
+        start: rows[0]!.position,
+        end: rows[249]!.position,
+        representedSnapshot: 250,
+        boundary: "B250",
+        serverCursor,
+      },
+    }),
+  ).resolves.toMatchObject({ outcome: "committed", coverage: "extended" });
+  await expect(
+    cache.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [rows[250]!],
+      coverage: {
+        kind: "suffix",
+        readId: "baseline",
+        continuityId: "live",
+        start: rows[0]!.position,
+        end: rows[250]!.position,
+        representedSnapshot: 251,
+        previousBoundary: "B250",
+        boundary: "B251",
+      },
+    }),
+  ).resolves.toMatchObject({ outcome: "committed", coverage: "extended" });
+  const opening = await cache.getLatestWindow(historyKey, 200);
+  expect(opening.rows).toEqual(rows.slice(-200));
+  const older = await cache.getOlderWindow(historyKey, opening.rows[0]!.position, 200);
+  expect(older.rows).toEqual(rows.slice(0, 51));
+  expect(older).toMatchObject({ complete: true, stale: false });
+  expect(older.serverCursor).toBe(serverCursor);
 });
 
 it("preserves a longer peer read and its cursor after a shorter compatible read", async () => {

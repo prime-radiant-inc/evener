@@ -353,6 +353,21 @@ function legacySupersededByProbe(
 // or conflicting cursors), and uncertainty must never present as exhausted
 // history.
 function chooseFrontier(chain: readonly TranscriptCoverageRow[]): { cursor?: string; verified: boolean } {
+  // A suffix extends its read's upper end, not its older continuation. Its
+  // absent cursor must not compete with that read at their shared frontier.
+  chain = chain.filter(
+    (cert) =>
+      cert.kind !== "suffix" ||
+      !chain.some(
+        (read) =>
+          read.kind === "read" &&
+          read.readId === cert.readId &&
+          read.authority === cert.authority &&
+          read.start !== null &&
+          cert.start !== null &&
+          comparePosition(read.start, cert.start) === 0,
+      ),
+  );
   const consumed = new Set<string>();
   for (const predecessor of chain) {
     if (predecessor.serverCursor === undefined) continue;
@@ -528,61 +543,188 @@ function turnModel(row: TranscriptTurnRow): TurnModel {
   return { id: row.turnId, ...row.metadata, items: [] };
 }
 
-// Versioned upsert of keyed item/turn rows within one open transaction. Shared
-// by the ordinary batch path and migration so both honour the same identity and
-// richness rules. Returns the encoded-byte delta and the count of newly created
-// items; a row that loses to its held version contributes nothing.
+function incomingEntryItem(row: TranscriptItemRow<unknown>): ItemModel {
+  const cachedInput = row.item as Partial<CachedSessionItem> | null;
+  const encodedInput =
+    cachedInput && (cachedInput.identityOnly === true || cachedInput.textOmitted === true)
+      ? (row.item as CachedSessionItem)
+      : encodeTranscriptItem(row.item as ItemModel);
+  const incoming = decodeTranscriptItem(encodedInput);
+  if (!incoming) throw new Error("invalid transcript item for entry write");
+  return incoming;
+}
+
+function encodeEntryItemRow(row: TranscriptItemRow<unknown>, item: ItemModel) {
+  return { ...row, positionSub: row.position.sub ?? 0, item: encodeTranscriptItem(item) };
+}
+
+function encodeEntryTurnRow(historyKey: string, turn: TurnModel): TranscriptTurnRow {
+  return { historyKey, turnId: turn.id, version: turn.version, metadata: turnMetadata(turn) };
+}
+
+export interface EntryCapacityPlan {
+  readonly identity: string;
+  readonly recordedBytes: number;
+}
+
+// Both replacement writes and readonly preflights use this scope. A turn is
+// removed only when no item below the replacement boundary still owns it.
+async function scanReplacementItems(
+  itemStore: IDBObjectStore,
+  historyKey: string,
+  from: ThreadItemPosition,
+  remove?: (cursor: IDBCursorWithValue) => void,
+) {
+  const removed = { bytes: 0, items: 0 };
+  const keptTurns = new Set<string>();
+  const removedTurns = new Set<string>();
+  await new Promise<void>((resolve, reject) => {
+    const request = itemStore.index("historyKey").openCursor(historyKey);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return resolve();
+      const row = cursor.value as TranscriptItemRow<CachedSessionItem>;
+      if (comparePosition(row.position, from) >= 0) {
+        removed.bytes += encodedBytes(row);
+        removed.items++;
+        removedTurns.add(row.item.turnId);
+        remove?.(cursor);
+      } else {
+        keptTurns.add(row.item.turnId);
+      }
+      cursor.continue();
+    };
+  });
+  for (const turnId of keptTurns) removedTurns.delete(turnId);
+  return { removed, removedTurns };
+}
+
+// The one version/richness computation for writes and capacity memo checks.
+// Maps model earlier puts in this batch, including duplicate keys, without
+// mutating storage. Only rows that actually survive the merge enter the plan.
+async function planEntryRows(
+  itemStore: IDBObjectStore,
+  turnStore: IDBObjectStore,
+  historyKey: string,
+  items: readonly TranscriptItemRow<unknown>[],
+  turns: readonly TurnModel[],
+  replacementFrom?: ThreadItemPosition,
+) {
+  let byteDelta = 0;
+  let changedItems = 0;
+  const itemRows = new Map<string, ReturnType<typeof encodeEntryItemRow>>();
+  const turnRows = new Map<string, TranscriptTurnRow>();
+  const removedTurns = replacementFrom
+    ? (await scanReplacementItems(itemStore, historyKey, replacementFrom)).removedTurns
+    : undefined;
+  for (const row of items) {
+    let current: (TranscriptItemRow<CachedSessionItem> & { positionSub?: number }) | undefined = itemRows.get(
+      row.transcriptKey,
+    );
+    if (!current) {
+      current = await requestResult(
+        itemStore.get([row.historyKey, row.transcriptKey]) as IDBRequest<
+          (TranscriptItemRow<CachedSessionItem> & { positionSub?: number }) | undefined
+        >,
+      );
+      if (current && replacementFrom && comparePosition(current.position, replacementFrom) >= 0) current = undefined;
+    }
+    const incoming = incomingEntryItem(row);
+    const held = current ? decodeTranscriptItem(current.item) : undefined;
+    const merged: ItemModel = mergeTranscriptItemVersioned(held, current?.version, incoming, row.version);
+    if (current && merged === held) continue;
+    const encodedRow = encodeEntryItemRow(row, merged);
+    const oldBytes = current ? encodedBytes(current) : 0;
+    const newBytes = encodedBytes(encodedRow);
+    byteDelta += newBytes - oldBytes;
+    changedItems += current ? 0 : 1;
+    itemRows.set(row.transcriptKey, encodedRow);
+  }
+  for (const incoming of turns) {
+    const heldRow =
+      turnRows.get(incoming.id) ??
+      (removedTurns?.has(incoming.id)
+        ? undefined
+        : await requestResult(turnStore.get([historyKey, incoming.id]) as IDBRequest<TranscriptTurnRow | undefined>));
+    const held = heldRow ? turnModel(heldRow) : undefined;
+    const merged = mergeTranscriptTurnVersioned(held, { ...incoming, items: [] });
+    if (held && merged === held) continue;
+    const row = encodeEntryTurnRow(historyKey, merged);
+    const oldBytes = heldRow ? encodedBytes(heldRow) : 0;
+    const newBytes = encodedBytes(row);
+    byteDelta += newBytes - oldBytes;
+    turnRows.set(incoming.id, row);
+  }
+  return { byteDelta, changedItems, itemRows, turnRows };
+}
+
+function capacityPlan(plan: Awaited<ReturnType<typeof planEntryRows>>, batch: EntryBatch): EntryCapacityPlan {
+  let recordedBytes = 0;
+  const items = [...plan.itemRows.values()].map((row) => {
+    const bytes = encodedBytes(row);
+    recordedBytes += bytes;
+    return [row.transcriptKey, row.version, positionKey(row.position), bytes];
+  });
+  const turns = [...plan.turnRows.values()].map((row) => {
+    const bytes = encodedBytes(row);
+    recordedBytes += bytes;
+    return [row.turnId, row.version ?? 0, bytes];
+  });
+  const position = (value: { entry: number; item: number; sub?: number } | null | undefined) =>
+    value ? positionKey(value) : null;
+  return {
+    recordedBytes,
+    identity: JSON.stringify([
+      batch.historyKey,
+      items.map((row) => JSON.stringify(row)).sort(),
+      turns.map((row) => JSON.stringify(row)).sort(),
+      position(batch.coverage?.start),
+      position(batch.coverage?.end),
+    ]),
+  };
+}
+
+// A planned row can only be written at an offered key/version/position. If a
+// required memo row is absent, no durable merge can reproduce that identity.
+// Do not compare offered byte lengths: held richer rows can change those.
+export function mayMatchCapacityIdentity(batch: EntryBatch, identity: string): boolean {
+  const [historyKey, items, turns, start, end] = JSON.parse(identity) as [
+    string,
+    string[],
+    string[],
+    [number, number, number] | null,
+    [number, number, number] | null,
+  ];
+  const position = (value: { entry: number; item: number; sub?: number } | null | undefined) =>
+    value ? positionKey(value) : null;
+  if (
+    batch.historyKey !== historyKey ||
+    JSON.stringify(position(batch.coverage?.start)) !== JSON.stringify(start) ||
+    JSON.stringify(position(batch.coverage?.end)) !== JSON.stringify(end)
+  )
+    return false;
+  const offeredItems = new Set(
+    batch.items.map((row) => JSON.stringify([row.transcriptKey, row.version, positionKey(row.position)])),
+  );
+  const offeredTurns = new Set((batch.turns ?? []).map((turn) => JSON.stringify([turn.id, turn.version ?? 0])));
+  return (
+    items.every((row) => offeredItems.has(JSON.stringify((JSON.parse(row) as unknown[]).slice(0, 3)))) &&
+    turns.every((row) => offeredTurns.has(JSON.stringify((JSON.parse(row) as unknown[]).slice(0, 2))))
+  );
+}
+
 async function applyEntryRows(
   itemStore: IDBObjectStore,
   turnStore: IDBObjectStore,
   historyKey: string,
   items: readonly TranscriptItemRow<unknown>[],
   turns: readonly TurnModel[],
-): Promise<{ byteDelta: number; changedItems: number }> {
-  let byteDelta = 0;
-  let changedItems = 0;
-  for (const row of items) {
-    const current = await requestResult(
-      itemStore.get([row.historyKey, row.transcriptKey]) as IDBRequest<
-        (TranscriptItemRow<CachedSessionItem> & { positionSub?: number }) | undefined
-      >,
-    );
-    const cachedInput = row.item as Partial<CachedSessionItem> | null;
-    const encodedInput =
-      cachedInput && (cachedInput.identityOnly === true || cachedInput.textOmitted === true)
-        ? (row.item as CachedSessionItem)
-        : encodeTranscriptItem(row.item as ItemModel);
-    const incoming = decodeTranscriptItem(encodedInput);
-    if (!incoming) throw new Error("invalid transcript item for entry write");
-    const held = current ? decodeTranscriptItem(current.item) : undefined;
-    const merged: ItemModel = mergeTranscriptItemVersioned(held, current?.version, incoming, row.version);
-    if (current && merged === held) continue;
-    const encodedRow = { ...row, positionSub: row.position.sub ?? 0, item: encodeTranscriptItem(merged) };
-    const oldBytes = current ? encodedBytes(current) : 0;
-    const newBytes = encodedBytes(encodedRow);
-    byteDelta += newBytes - oldBytes;
-    changedItems += current ? 0 : 1;
-    itemStore.put(encodedRow);
-  }
-  for (const incoming of turns) {
-    const heldRow = await requestResult(
-      turnStore.get([historyKey, incoming.id]) as IDBRequest<TranscriptTurnRow | undefined>,
-    );
-    const held = heldRow ? turnModel(heldRow) : undefined;
-    const merged = mergeTranscriptTurnVersioned(held, { ...incoming, items: [] });
-    if (held && merged === held) continue;
-    const row: TranscriptTurnRow = {
-      historyKey,
-      turnId: incoming.id,
-      version: merged.version,
-      metadata: turnMetadata(merged),
-    };
-    const oldBytes = heldRow ? encodedBytes(heldRow) : 0;
-    const newBytes = encodedBytes(row);
-    byteDelta += newBytes - oldBytes;
-    turnStore.put(row);
-  }
-  return { byteDelta, changedItems };
+) {
+  const plan = await planEntryRows(itemStore, turnStore, historyKey, items, turns);
+  for (const row of plan.itemRows.values()) itemStore.put(row);
+  for (const row of plan.turnRows.values()) turnStore.put(row);
+  return plan;
 }
 
 /** Keyed transcript entry storage on the shared session-cache schema. */
@@ -599,6 +741,7 @@ export class SessionEntryCache {
   // a fallback to the construction-time `isPreferred` seam.
   readonly #preferredHistories = new Map<string, () => boolean>();
   readonly #writeListeners = new Set<() => void>();
+  readonly #capacityPlans = new WeakMap<EntryBatch, EntryCapacityPlan>();
 
   constructor(options: SessionEntryCacheOptions) {
     this.#keyRange = options.keyRange ?? globalThis.IDBKeyRange;
@@ -628,6 +771,44 @@ export class SessionEntryCache {
   /** The same clock used for TTL, LRU and metadata written by this cache's owners. */
   now(): number {
     return this.#now();
+  }
+
+  /** Pure classification of actual planned rows, never certificates or metadata. */
+  isIntrinsicCapacityRefusal(plan: EntryCapacityPlan | undefined): boolean {
+    return plan !== undefined && plan.recordedBytes > this.#maxBytes;
+  }
+
+  /** Scalar evidence from the actual refused transaction, retaining no bodies. */
+  refusedCapacityPlan(batch: EntryBatch): EntryCapacityPlan | undefined {
+    return this.#capacityPlans.get(batch);
+  }
+
+  /** Recheck a memo against current held versions using the writer's planner. */
+  async planCapacity(batch: EntryBatch): Promise<EntryCapacityPlan> {
+    const database = await this.#connection.open();
+    // Bound requests and completion with the ordinary transaction watchdog.
+    // Late work only computes rows, never publishes a plan after the race fails.
+    const plan = await this.#runTransaction(
+      database,
+      [ENTRY_ITEM_STORE, ENTRY_TURN_STORE],
+      "readonly",
+      async (transaction, complete) => {
+        // Observe both failures immediately, including abort after request failure.
+        const [rows] = await Promise.all([
+          planEntryRows(
+            transaction.objectStore(ENTRY_ITEM_STORE),
+            transaction.objectStore(ENTRY_TURN_STORE),
+            batch.historyKey,
+            batch.items,
+            batch.turns ?? [],
+            batch.replacement?.from,
+          ),
+          complete,
+        ]);
+        return rows;
+      },
+    );
+    return capacityPlan(plan, batch);
   }
 
   subscribeWrites(listener: () => void): () => void {
@@ -704,6 +885,7 @@ export class SessionEntryCache {
   }
 
   async commitBatch(batch: EntryBatch): Promise<EntryWriteOutcome> {
+    this.#capacityPlans.delete(batch);
     if (batch.items.some((row) => row.historyKey !== batch.historyKey)) {
       return { outcome: "failed", error: new Error("entry batch contains a different history identity") };
     }
@@ -817,8 +999,10 @@ export class SessionEntryCache {
         metaStore.put({ historyKey: AGGREGATE_META_KEY, encodedBytes: aggregateBytes });
         const policy = await this.#enforcePolicy(transaction, { kind: "entry", historyKey: batch.historyKey });
         if (policy.overCapacity) {
+          const refusalPlan = capacityPlan(written, batch);
           transaction.abort();
           await complete.catch(() => {});
+          this.#capacityPlans.set(batch, refusalPlan);
           return { outcome: "refused", reason: "capacity" };
         }
         await complete;
@@ -845,30 +1029,11 @@ export class SessionEntryCache {
     const itemStore = transaction.objectStore(ENTRY_ITEM_STORE);
     const turnStore = transaction.objectStore(ENTRY_TURN_STORE);
     const coverageStore = transaction.objectStore(ENTRY_COVERAGE_STORE);
-    const removed = { bytes: 0, items: 0 };
-    const keptTurns = new Set<string>();
-    const removedTurns = new Set<string>();
     // Stream the rows, retaining only turn identities, not a second history body.
-    await new Promise<void>((resolve, reject) => {
-      const request = itemStore.index("historyKey").openCursor(historyKey);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (!cursor) return resolve();
-        const row = cursor.value as TranscriptItemRow<CachedSessionItem>;
-        if (comparePosition(row.position, from) >= 0) {
-          removed.bytes += encodedBytes(row);
-          removed.items++;
-          removedTurns.add(row.item.turnId);
-          itemStore.delete(cursor.primaryKey);
-        } else {
-          keptTurns.add(row.item.turnId);
-        }
-        cursor.continue();
-      };
+    const { removed, removedTurns } = await scanReplacementItems(itemStore, historyKey, from, (cursor) => {
+      itemStore.delete(cursor.primaryKey);
     });
     for (const turnId of removedTurns) {
-      if (keptTurns.has(turnId)) continue;
       const row = await requestResult(turnStore.get([historyKey, turnId]) as IDBRequest<TranscriptTurnRow | undefined>);
       if (!row) continue;
       removed.bytes += encodedBytes(row);
@@ -1306,6 +1471,27 @@ export class SessionEntryCache {
       [historyKey, 0, 0, 0],
       [historyKey, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
     );
+    try {
+      const rows = await latestRowsFromIndex<T>(index, range, limit);
+      await complete;
+      return rows;
+    } catch (error) {
+      await complete.catch(() => {});
+      throw error;
+    }
+  }
+
+  /** Bounded stored bodies, not a coverage certificate or a server continuation. */
+  async getBefore<T>(historyKey: string, before: ThreadItemPosition, limit: number): Promise<TranscriptItemRow<T>[]> {
+    if (!isPosition(before)) throw new RangeError("entry older rows require a real boundary position");
+    if (!Number.isInteger(limit) || limit < 0)
+      throw new RangeError("entry window limit must be a non-negative integer");
+    if (limit === 0 || comparePosition(before, { entry: 0, item: 0 }) === 0) return [];
+    const database = await this.#connection.open();
+    const transaction = database.transaction(ENTRY_ITEM_STORE, "readonly");
+    const complete = transactionCompletion(transaction);
+    const index = transaction.objectStore(ENTRY_ITEM_STORE).index("historyKey_position");
+    const range = this.#keyRange.bound([historyKey, 0, 0, 0], [historyKey, ...positionKey(before)], false, true);
     try {
       const rows = await latestRowsFromIndex<T>(index, range, limit);
       await complete;

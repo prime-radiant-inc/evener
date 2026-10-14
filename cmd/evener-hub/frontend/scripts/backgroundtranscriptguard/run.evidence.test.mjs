@@ -16,6 +16,7 @@ import {
   collectProductionPeak,
   countTargetRequestsInWindow,
   EVIDENCE_EXPR,
+  narrowViewportContentPreserved,
   readTraceFrames,
   reduceProducedPeak,
   samplePeaksOnce,
@@ -563,5 +564,70 @@ describe("review finding 7 — gate-controlled producer sampling lifetime", () =
     returned = true;
     await delay(30);
     expect(samplesAfterReturn).toBe(0);
+  });
+});
+
+describe("narrow-viewport repeat activation must preserve the transcript payload", () => {
+  // The item shape readTargetDomain records: identity plus the body fields the
+  // reopen oracle compares (text, output, arguments, status).
+  const textItem = (id, text, over = {}) => ({
+    turnId: "t1",
+    id,
+    type: "assistant",
+    text,
+    output: "",
+    arguments: null,
+    status: "done",
+    ...over,
+  });
+  const toolItem = (id, output, over = {}) => ({
+    turnId: "t1",
+    id,
+    type: "tool",
+    text: "",
+    output,
+    arguments: '{"command":"ls"}',
+    status: "done",
+    ...over,
+  });
+
+  test("a body-loss rewrite with unchanged IDs is rejected", () => {
+    // The sentinel is the third item; damage the OTHER text item and the tool
+    // output, so the body path fails, not the separate sentinel.
+    const before = {
+      items: [
+        textItem("a", "BACKGROUND_OTHER_TEXT"),
+        toolItem("b", "BACKGROUND_TOOL_OUTPUT"),
+        textItem("c", "BACKGROUND_GAP_TURN"),
+      ],
+    };
+    // Same IDs and order, sentinel intact, but another item's text was emptied.
+    // Identity-only preservation would report this as preserved.
+    const lostText = {
+      items: [textItem("a", ""), toolItem("b", "BACKGROUND_TOOL_OUTPUT"), textItem("c", "BACKGROUND_GAP_TURN")],
+    };
+    // Same IDs and order, sentinel intact, but the tool output emptied.
+    const lostOutput = {
+      items: [textItem("a", "BACKGROUND_OTHER_TEXT"), toolItem("b", ""), textItem("c", "BACKGROUND_GAP_TURN")],
+    };
+    expect(narrowViewportContentPreserved(before, lostText)).toBe(false);
+    expect(narrowViewportContentPreserved(before, lostOutput)).toBe(false);
+  });
+
+  test("identical payloads are preserved; changed arguments, status, order or a dropped item are not", () => {
+    const before = { items: [textItem("a", "hello"), toolItem("b", "OUT")] };
+    expect(narrowViewportContentPreserved(before, before)).toBe(true);
+    const changedArgs = {
+      items: [textItem("a", "hello"), toolItem("b", "OUT", { arguments: '{"command":"pwd"}' })],
+    };
+    expect(narrowViewportContentPreserved(before, changedArgs)).toBe(false);
+    const changedStatus = {
+      items: [textItem("a", "hello", { status: "error" }), toolItem("b", "OUT")],
+    };
+    expect(narrowViewportContentPreserved(before, changedStatus)).toBe(false);
+    const reordered = { items: [toolItem("b", "OUT"), textItem("a", "hello")] };
+    expect(narrowViewportContentPreserved(before, reordered)).toBe(false);
+    const dropped = { items: [toolItem("b", "OUT")] };
+    expect(narrowViewportContentPreserved(before, dropped)).toBe(false);
   });
 });

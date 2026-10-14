@@ -32,11 +32,15 @@ import {
   activitySummary,
   answerActivityRead,
 } from "../../stores/sessionActivityTestUtils";
+import { SessionEntryCache } from "../../stores/sessionEntryCache";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import {
+  acquireBackgroundThread,
   resetThreadsStoreForTests,
   sendResumesLocalModel,
   setMutationStorageForTests,
+  setProductionEntryCacheForTests,
+  settleEntryTranscriptForTests,
   subscribeMutationPersistence,
   threadsStore,
 } from "../../stores/threads";
@@ -2073,6 +2077,95 @@ test("a failed older-page fetch surfaces inline with a retry instead of failing 
   // the whole point of C3. The failure still has to be visible.
   await screen.findByText(/couldn't load older turns: boom/i);
   expect(screen.getByTestId("load-older-retry")).toBeTruthy();
+});
+
+test("the live older control loads cached bodies without a server cursor after a bounded opening", async () => {
+  const cache = new SessionEntryCache({
+    databaseName: "session-bounded-opening",
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+  });
+  setProductionEntryCacheForTests(cache);
+  const fake = connectFakeClient();
+  fake.on("thread/read", (params) => ({
+    thread: testThread("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          version: 225,
+          items: Array.from({ length: 225 }, (_, index) => ({
+            id: `row-${index + 1}`,
+            transcriptKey: `row-${index + 1}`,
+            turnId: "turn_1",
+            type: "agentMessage",
+            text: `row-${index + 1}`,
+            position: { entry: index + 1, item: 0 },
+            version: index + 1,
+          })),
+        },
+      ],
+    }),
+    bootGeneration: "1",
+    epoch: 0,
+    snapshot: { incarnation: "inc-a", length: 225 },
+    requestGeneration: params.requestGeneration,
+    overlay: [],
+  }));
+  fake.on("thread/unsubscribe", () => ({}));
+  const lease = acquireBackgroundThread("ref_a");
+  await lease.ready;
+  await settleEntryTranscriptForTests("ref_a");
+  // Freeze only the opening deadline, so CPU contention cannot substitute a
+  // full read for the bounded local-window stimulus this UI test exercises.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await threadsStore.getState().ensureThread("ref_a");
+  } finally {
+    vi.useRealTimers();
+  }
+  const reads = fake.calls.filter((call) => call.method === "thread/read").length;
+  // Rows 1..25 are still unrestored, so the displayed local continuation is
+  // defined even though the server supplied no opaque cursor.
+  expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBeDefined();
+  const bodies = () =>
+    threadsStore
+      .getState()
+      .threads.get("ref_a")
+      ?.turns.flatMap((turn) => turn.items.map((item) => item.text))
+      .filter(Boolean);
+  expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 26}`));
+  const gate = deferred<void>();
+  const getBefore = cache.getBefore.bind(cache);
+  vi.spyOn(cache, "getBefore").mockImplementation(async (...args) => {
+    await gate.promise;
+    return getBefore(...args);
+  });
+  const mounted = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  try {
+    expect(await screen.findByText("Loading older turns…")).toBeTruthy();
+    await act(async () => {
+      gate.resolve();
+      await settleEntryTranscriptForTests("ref_a");
+    });
+    await waitFor(() => expect(bodies()).toEqual(Array.from({ length: 225 }, (_, index) => `row-${index + 1}`)));
+    expect(screen.getByText("row-1")).toBeTruthy();
+    expect(screen.queryByText("Loading older turns…")).toBeNull();
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBeUndefined();
+    expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+  } finally {
+    gate.resolve();
+    mounted.unmount();
+    threadsStore.getState().releaseThread("ref_a");
+    await lease.release();
+    cache.close();
+  }
 });
 
 test("older turns load with no click at all once the paging trigger fires", async () => {

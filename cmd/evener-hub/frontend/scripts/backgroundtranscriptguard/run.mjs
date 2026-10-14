@@ -363,6 +363,17 @@ function restoredContainsRetained(retained, restored) {
   return index === retainedItems.length;
 }
 
+// narrowViewportContentPreserved reports whether a repeat activation at a narrow
+// viewport preserved the transcript's actual payload. Preservation means the
+// before/after bodies agree in order — text, tool output, arguments and status —
+// not merely that the same item IDs are present. It reuses the reopen restore's
+// own comparison (restoredContainsRetained) rather than defining a second one;
+// the restored model may carry OLDER content the re-activation fetched, but it
+// must not be missing or rewrite any item that was present before.
+function narrowViewportContentPreserved(before, after) {
+  return restoredContainsRetained(before, after);
+}
+
 // targetDomainExpr returns the target's complete model domain: non-prelude turn
 // ids with each item's id/type/text/output/argument identity, plus the model
 // cursor. It is the content oracle; it never reads a DOM tail.
@@ -1447,10 +1458,7 @@ async function runEntryProductionJourney(driver) {
   const narrowAfter = await readTargetDomain(driver, SESSION_B);
   const beforeItems = (narrowBefore?.items ?? []).map((item) => item.id).sort();
   const afterItems = (narrowAfter?.items ?? []).map((item) => item.id).sort();
-  const contentPreserved =
-    beforeItems.length > 0 &&
-    beforeItems.length === afterItems.length &&
-    beforeItems.every((id, index) => id === afterItems[index]);
+  const contentPreserved = narrowViewportContentPreserved(narrowBefore, narrowAfter);
   const sentinelAfter = domainContent(narrowAfter).includes(GAP_SENTINEL);
   driver.milestone("narrow-viewport", {
     width: NARROW_VIEWPORT.width,
@@ -1458,6 +1466,10 @@ async function runEntryProductionJourney(driver) {
     afterItems: afterItems.length,
     contentPreserved,
     sentinelAfter,
+    // The full before/after item identities, so the Go owner can compare the
+    // bodies independently of this driver-computed boolean.
+    beforePayload: (narrowBefore?.items ?? []).map(itemIdentity),
+    afterPayload: (narrowAfter?.items ?? []).map(itemIdentity),
   });
   if (!contentPreserved) {
     throw new Error(
@@ -2297,6 +2309,7 @@ export {
   furtherHistoryValidator,
   holderSnapshot,
   holderValidator,
+  narrowViewportContentPreserved,
   observedConnection,
   producerOperationApplied,
   readShellOutputRegion,

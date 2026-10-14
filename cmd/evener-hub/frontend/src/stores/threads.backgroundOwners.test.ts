@@ -158,6 +158,13 @@ describe("background thread claims", () => {
     const second = acquireBackgroundThread("local:one");
     await Promise.all([first.ready, second.ready]);
     const resident = threadsStore.getState().threads.get("local:one");
+    // Healthy empty-source proof: the accepted read has no recorded bodies,
+    // only a live overlay, and admission has lost no coverage. Unlike an
+    // overflow-dropped empty model, this needs no recovery read on adoption.
+    expect(resident?.history?.turns.flatMap((turn) => turn.items)).toEqual([]);
+    expect(productionEntryTranscriptForTests("local:one").repository?.getRecoveryStateForTesting()).toMatchObject({
+      cacheContinuityLost: false,
+    });
     expect(
       resident?.turns
         .flatMap((turn) => turn.items)

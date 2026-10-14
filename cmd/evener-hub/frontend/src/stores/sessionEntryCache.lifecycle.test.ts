@@ -94,6 +94,64 @@ function row(historyKey: string, entry: number) {
   };
 }
 
+it.each(["request", "completion"] as const)(
+  "bounds capacity preflight stalled %s and ignores late plans",
+  async (event) => {
+    const { cache, factory } = newCache();
+    await cache.commitBatch({ historyKey: "seed", clearEpoch: 0, items: [row("seed", 1)] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const opened = vi.spyOn(factory, "open");
+    const aborted = vi.spyOn(IDBTransaction.prototype, "abort");
+    const closed = vi.spyOn(IDBDatabase.prototype, "close");
+    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    if (event === "completion") {
+      const transact = IDBDatabase.prototype.transaction;
+      vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+        const transaction = transact.apply(this, args);
+        if (!hold) hold = holdIndexedDBEvent(transaction, "complete");
+        return transaction;
+      });
+    } else {
+      const get = IDBObjectStore.prototype.get;
+      vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, ...args) {
+        const request = get.apply(this, args);
+        if (!hold) hold = holdIndexedDBEvent(request, "success");
+        return request;
+      });
+    }
+    let result: unknown;
+    const pending = cache.planCapacity({ historyKey: "seed", clearEpoch: 0, items: [row("seed", 2)] }).then(
+      (plan) => {
+        result = { kind: "planned", plan };
+      },
+      (error: unknown) => {
+        result = { kind: "rejected", error };
+      },
+    );
+    try {
+      await settleRealTasks(() => hold !== undefined);
+      expect(hold).toBeDefined();
+      await hold!.reached;
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(result).toEqual({ kind: "rejected", error: expect.any(Error) });
+      await pending;
+      const failure = result;
+      expect(aborted).toHaveBeenCalled();
+      expect(closed).toHaveBeenCalled();
+      hold!.release();
+      const plan = await cache.planCapacity({ historyKey: "seed", clearEpoch: 0, items: [row("seed", 2)] });
+      expect(plan.recordedBytes).toBeGreaterThan(0);
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(result).toBe(failure);
+    } finally {
+      hold?.release();
+      await pending;
+    }
+  },
+);
+
 it.each([
   ["count", "request"],
   ["count", "completion"],

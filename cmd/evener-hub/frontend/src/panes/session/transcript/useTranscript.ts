@@ -7,11 +7,12 @@ import { HistoryPaging, sessionActionError } from "@evener/appwire-client";
 import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { workspaceStore } from "../../../shell/workspace";
 import { useConnectionStore } from "../../../stores/connection";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { olderTranscriptPageKey, threadsStore, useThreadsStore } from "../../../stores/threads";
 import type { TranscriptReadView } from "./transcriptReadView";
 
 export interface UseTranscriptResult {
   model: ThreadModel | undefined;
+  hasOlder: boolean;
   loadOlder(): Promise<void>; // thread/turns/list via olderCursor -> prependOlderTurns
   loadingOlder: boolean;
   cancelOlder(): void;
@@ -67,9 +68,9 @@ function createPaging(ref: string, binding: string | undefined): TranscriptPagin
       () => {
         const current = threadsStore.getState().threads.get(ref);
         if (current === undefined || (current.instanceId ?? current.threadId) !== entry.binding) return undefined;
-        // The loaded model's optional wire cursor is absent at history end.
-        // An unavailable model or binding is handled above, not as an end.
-        return current.olderCursor ?? null;
+        // Local bodies may remain even when the server has no continuation.
+        // The store's tagged scheduling key never goes onto the wire.
+        return olderTranscriptPageKey(ref);
       },
       () => threadsStore.getState().loadOlderTurns(ref),
       () => {
@@ -142,6 +143,7 @@ export function useTranscript(ref: string, reader: string | TranscriptReadView |
   const view = typeof reader === "string" ? undefined : (reader ?? undefined);
   const viewId = typeof reader === "string" ? reader : (reader?.id ?? ref);
   const model = useThreadsStore((s) => s.threads.get(ref));
+  const hasOlder = useThreadsStore(() => olderTranscriptPageKey(ref) != null);
   const { state: connection } = useConnectionStore();
   const binding = model?.instanceId ?? model?.threadId;
   const [entry, setEntry] = useState(() => {
@@ -229,6 +231,7 @@ export function useTranscript(ref: string, reader: string | TranscriptReadView |
   }, [committedEntry, viewId, ref]);
   return {
     model,
+    hasOlder,
     loadOlder,
     cancelOlder,
     loadingOlder: state.loading || (state.pending && state.error === null),
