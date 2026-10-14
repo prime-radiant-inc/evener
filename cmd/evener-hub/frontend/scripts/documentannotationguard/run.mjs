@@ -681,16 +681,39 @@ async function assertSavedNoteViaHighlight(operationId) {
   assert.ok(Array.isArray(bands) && bands.length > 0, "the document exposes its saved highlight bands");
   const band = bands.find((candidate) => candidate.operationId === operationId);
   assert.ok(band, "a saved band carries the applied operation id");
-  await driver.clickAt((band.left + band.right) / 2, (band.top + band.bottom) / 2);
-  await driver.waitPage(
-    `(() => {
-      const scope = window.__annotationDocumentScope;
-      if (!scope || !scope.isConnected) return null;
-      const node = scope.querySelector("[data-annotation-note]");
-      return node && node.textContent === ${q(NOTE)} ? true : null;
-    })()`,
-    { label: "the highlight click opens the literal saved note", timeoutMs: 5000 },
-  );
+  // The click coordinates come from a separate CDP roundtrip after the rect
+  // read: a layout reflow between the two (a font swap, an async diagram
+  // growth) moves the painted band and the click lands on bare prose, so the
+  // reveal never fires and the wait times out. Re-read the CURRENT rect and
+  // click again, bounded, so the reveal is always exercised against where the
+  // band actually is. A repeated tap only toggles a note that is already
+  // revealed, and each attempt waits for exactly that note, so a missed click
+  // (no note) is always safe to retry.
+  let opened = false;
+  for (let attempt = 1; attempt <= 3 && !opened; attempt += 1) {
+    if (attempt > 1) {
+      const fresh = await evaluate(driver.send, highlightBandsExpr);
+      const moved = Array.isArray(fresh) ? fresh.find((candidate) => candidate.operationId === operationId) : null;
+      assert.ok(moved, "the saved band is still painted for its reveal click");
+      await driver.clickAt((moved.left + moved.right) / 2, (moved.top + moved.bottom) / 2);
+    } else {
+      await driver.clickAt((band.left + band.right) / 2, (band.top + band.bottom) / 2);
+    }
+    try {
+      await driver.waitPage(
+        `(() => {
+        const scope = window.__annotationDocumentScope;
+        if (!scope || !scope.isConnected) return null;
+        const node = scope.querySelector("[data-annotation-note]");
+        return node && node.textContent === ${q(NOTE)} ? true : null;
+      })()`,
+        { label: "the highlight click opens the literal saved note", timeoutMs: 1800 },
+      );
+      opened = true;
+    } catch (error) {
+      if (attempt === 3) throw error;
+    }
+  }
   const view = await evaluate(driver.send, noteVisibilityExpr);
   assert.ok(view, "the revealed note surface was measured on the current navigation");
   assert.equal(view.text, NOTE, "the note surface renders the literal saved note");
