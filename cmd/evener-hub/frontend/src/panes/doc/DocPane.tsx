@@ -247,11 +247,20 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // acceptance proves the fence settled and completes the expired epoch's
   // deletion then. A fault leaves the persisted receipt for the retry sweep.
   const expiryReceiptRef = useRef<ExpiryReceipt | null>(null);
-  // Consecutive stale-ticket acceptances while this reader stayed leaseless.
-  // One retry recovers a reader whose ticket a COMPLETED read superseded; a
-  // second consecutive stale is the two-reader interleave whose retry the raw
-  // render below replaces.
+  // Consecutive stale-ticket acceptances while this reader had nothing
+  // rendered to keep - a leaseless pane, or a remounted pane still on its
+  // loading skeleton. One retry recovers a reader whose ticket a COMPLETED
+  // read superseded; a second consecutive stale is the two-reader interleave
+  // whose retry the raw render below replaces.
   const leaselessStaleRef = useRef(0);
+  // True once this mount has displayed document content (a status:"ok"
+  // state). A stale acceptance's early return preserves RENDERED authority -
+  // but a remounted pane can hold its retained lease with nothing yet
+  // displayed, and returning there would strand the fresh mount on its
+  // loading skeleton forever, because a peer's successful acceptance emits
+  // no wake. Within a mount, displayed content never goes back off screen
+  // (failed rereads keep it), so the flag only ever turns true.
+  const renderedContentRef = useRef(false);
 
   const key: DocumentKey = useMemo(
     () => ({ namespace: { kind: "browser", origin: location.origin }, sessionRef: session, path }),
@@ -415,6 +424,12 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     let cancelled = false;
     void (async () => {
       void readNonce; // re-run the read for each foreground reread
+      // Display document content: from this point the mount has something
+      // rendered that a stale acceptance's early return preserves.
+      const displayContent = (displayed: DocFileContent): void => {
+        renderedContentRef.current = true;
+        setState({ status: "ok", content: displayed });
+      };
       // A revalidation of already-rendered content keeps that content on
       // screen: a binding re-record (an origin churn, a restored pane gaining
       // its binding) re-reads the same document, and blanking it to the
@@ -457,7 +472,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // Render the real raw content without adopting or fabricating accepted
         // authority; usable highlights/selection stay suspended while the exact
         // attempt, note and prior lease evidence are retained for recovery.
-        setState({ status: "ok", content });
+        displayContent(content);
         setAuthoritySuspended(true);
         return;
       }
@@ -471,14 +486,14 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         if (evidence && evidenceProvesChange(content, evidence)) {
           // A DEFINITE change to the annotated source is confirmed expiry even
           // though acceptance threw: retire the stale capture/attempt.
-          setState({ status: "ok", content });
+          displayContent(content);
           enterExpiryPending();
           return;
         }
         // Otherwise the throw is uncertainty, not confirmed expiry: render the
         // raw content, suspend usable authority and retain the exact
         // note/capture/attempt and the shared retry ownership.
-        setState({ status: "ok", content });
+        displayContent(content);
         setAuthoritySuspended(true);
         return;
       }
@@ -486,13 +501,16 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       if (accepted.state === "stale-ticket") {
         // A concurrently mounted pane's ticket can be superseded by another
         // pane's issuance alone; this read was honest work against a dead
-        // ticket. A leaseless pane with no retained operation has nothing to
-        // lose: one fresh reread whose ticket is the newest issued recovers it
-        // instead of leaving it on its loading skeleton forever. A pane holding
-        // a lease keeps its rendered authority - its stale foreground rereads
-        // stay rendered and the next current acceptance adopts or retires them
-        // - so it never retries from here.
-        if (work.lease !== null || work.attempted !== null) return;
+        // ticket. A pane with something already rendered keeps its rendered
+        // authority - its stale foreground rereads stay rendered and the next
+        // current acceptance adopts or retires them - so it never retries
+        // from here. A REMOUNTED pane can hold its retained lease with
+        // nothing yet displayed, and there the early return's justification
+        // does not hold: nothing is being kept, and a peer's successful
+        // acceptance emits no wake, so the return would strand the fresh
+        // mount on its loading skeleton forever. With nothing rendered, the
+        // same bounded recovery below applies.
+        if ((work.lease !== null || work.attempted !== null) && renderedContentRef.current) return;
         if (leaselessStaleRef.current === 0) {
           leaselessStaleRef.current = 1;
           setReadNonce((value) => value + 1);
@@ -507,11 +525,11 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // reader's ticket then settles, and a foreground reread, a reopen or
         // a later committed wake revalidates this pane.
         leaselessStaleRef.current = 0;
-        setState({ status: "ok", content });
+        displayContent(content);
         setAuthoritySuspended(true);
         return;
       }
-      setState({ status: "ok", content });
+      displayContent(content);
       if (accepted.state === "accepted") {
         leaselessStaleRef.current = 0;
         // A durable difference from the retained authority proves this reader's
