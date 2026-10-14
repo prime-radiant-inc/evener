@@ -98,16 +98,16 @@ export function openDocBeside(request: DocumentOpenRequest): void {
     // The serialized origin must follow the live capture: a note authored
     // after this reuse captures params.origin as its destination, so leaving
     // the first composer's identity here would strand every later annotation
-    // on a composer that no longer exists. Destinations already captured by
-    // prepared or saved operations keep their own payloads. The assignment
-    // keeps the pane record's identity, like promotePane's slot swap, so the
-    // workspace's per-record state stays keyed to it; the publish below
-    // carries the change to consumers.
+    // on a composer that no longer exists. An originless capture replaces it
+    // too: a surface without composition authority must leave new annotations
+    // PENDING, not deliver them into the first opener's composer. Equal
+    // provenance (both captured or both absent) keeps the record untouched.
+    // Destinations already captured by prepared or saved operations keep
+    // their own payloads. The assignment keeps the pane record's identity,
+    // like promotePane's slot swap, so the workspace's per-record state stays
+    // keyed to it; the publish below carries the change to consumers.
     const capturedOrigin = request.origin;
-    if (
-      capturedOrigin !== undefined &&
-      !sameOpeningOrigin((existingDocument.params as Partial<DocParams>).origin, capturedOrigin)
-    ) {
+    if (!sameOpeningOrigin((existingDocument.params as Partial<DocParams>).origin, capturedOrigin)) {
       existingDocument.params = params;
     }
     // Publish a changed binding before the reused pane is focused, so

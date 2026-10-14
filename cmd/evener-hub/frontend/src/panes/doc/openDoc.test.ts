@@ -186,6 +186,34 @@ test("openDocBeside refreshes the reused document's serialized origin", () => {
   expect(documentPaneState(document)).toEqual({ reference, origin: source, reopen: 1 });
 });
 
+// An originless opening surface has no composition authority: annotations
+// authored through the reused pane must stay PENDING, not save into the first
+// opener's composer, so the reuse replaces the serialized provenance with
+// absence exactly as it replaces it with a fresh capture.
+test("openDocBeside replaces the reused document's serialized origin when the new open carries none", () => {
+  vi.restoreAllMocks();
+  const sourceId = workspaceStore.getState().openPane("transcript", { ref: "sess_7" });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const reference = bindFilePath("src/x.ts", "/work");
+  if (!source || !reference) throw new Error("fixture did not create a source and bound file");
+
+  openDocBeside({
+    session: "sess_7",
+    reference,
+    sourcePaneId: sourceId,
+    origin: { kind: "browser-origin", paneId: "pane_session_1", compositionOwnerId: "composer-first" },
+  });
+
+  // The next open-beside captures no opening scope at all — a surface with no
+  // doc-opening provider, or one that renders without composition authority.
+  openDocBeside({ session: "sess_7", reference, sourcePaneId: sourceId });
+
+  const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!document) throw new Error("the reused document pane is missing");
+  expect((document.params as DocParams).origin).toBeUndefined();
+  expect(documentPaneState(document)).toEqual({ reference, origin: source, reopen: 1 });
+});
+
 // A cascade origin keeps its secondary slot on a NEW document open because
 // promoting the inspection into main would break "main is the routed session"
 // and let the next primary navigation replace the whole cascade. Reusing an
