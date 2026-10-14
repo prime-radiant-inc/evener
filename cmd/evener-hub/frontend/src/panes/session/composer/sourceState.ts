@@ -325,7 +325,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
         : {}),
     };
   }
-  function publishValue(value: SkillEditorValue): void {
+  function publishValue(value: SkillEditorValue, options?: { restores?: boolean }): void {
     if (disposed) return;
     // Change detection reuses the submission-ownership semantics — text, ordered
     // skill names, normalized command names and mention presence — so absent
@@ -348,12 +348,18 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     textRef.current = value.text;
     skillNamesRef.current = [...value.skillNames];
     mergeSelection(value);
-    state.setState({
+    state.setState((snapshot) => ({
       text: textRef.current,
       skillNames: skillNamesRef.current,
       commandNames: selectionMetaRef.current.commandNames,
       mentions: selectionMetaRef.current.mentions,
-    });
+      // A published external winner is an authoritative restoration for a
+      // mounted editor: identical text would otherwise keep its old atoms, and
+      // the editor's echo would overwrite the winner's selections. The bump
+      // rides the SAME notification as the value, and a publication that
+      // early-returns above never notifies or restores.
+      ...(options?.restores ? { restoreEpoch: snapshot.restoreEpoch + 1 } : {}),
+    }));
     syncProjection();
   }
   function storedValue(row: {
@@ -583,7 +589,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       if (!record) return null;
       if (disposed || localGeneration !== generation || !sameBacking(runtimeBacking, backing)) return null;
       if (pendingRecoveryWrite?.id === recoveryId) return null;
-      publishValue(recoveryValue(record));
+      publishValue(recoveryValue(record), { restores: true });
       draftToken = row.token;
       return {
         key: { namespace: { ...k.namespace }, sessionRef: k.sessionRef },
@@ -592,7 +598,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
         localGeneration: generation,
       };
     }
-    publishValue(storedValue(row));
+    publishValue(storedValue(row), { restores: true });
     draftToken = row.token;
     return {
       key: { namespace: { ...k.namespace }, sessionRef: k.sessionRef },

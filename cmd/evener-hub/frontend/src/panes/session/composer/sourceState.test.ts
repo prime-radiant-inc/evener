@@ -1,7 +1,8 @@
 import { AppwireClient } from "@evener/appwire-client";
 import type { SubmittedDraft } from "@evener/appwire-client/state/mutation";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
+import { createElement, useSyncExternalStore } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
@@ -37,6 +38,7 @@ import {
   submitWithPendingTracking,
   subscribeComposerSubmissionCommitted,
 } from "./queue/pendingTurnsStore";
+import { SkillEditor } from "./SkillEditor";
 import type { SkillEditorValue } from "./skillDocument";
 import { type ComposerSourceState, createComposerSourceState } from "./sourceState";
 
@@ -3544,6 +3546,64 @@ test("a same-ref edit accepted after the first source captures its token is pres
   } finally {
     reopened.close();
   }
+});
+
+test("a durable winner's identical-text selection change is an authoritative restoration for a mounted editor", async () => {
+  const fixture = sourceFixture("restore-epoch-competing-selections");
+  const rootKey = browserDraftKey("root");
+  const source = await durableSource(fixture, "root", rootKey);
+  // The mounted editor shows the whole text as one skill chip.
+  source.acceptEdit({
+    text: "/same",
+    skillNames: ["same"],
+    mentions: [{ kind: "skill", name: "same", offset: 0 }],
+  });
+  await source.whenSettled();
+  // A second same-ref source wins the durable row with IDENTICAL text as
+  // plain prose: no skill selection, no mentions.
+  const winner = await durableSource(fixture, "root", rootKey);
+  winner.acceptEdit({ text: "/same", skillNames: [], mentions: [] });
+  await winner.whenSettled();
+
+  // The editor, wired exactly as Composer wires it: the source's snapshot
+  // drives it and its echo feeds back through the same edit paths.
+  function EditorPane({ bound }: { bound: ReturnType<typeof createComposerSourceState> }) {
+    const snapshot = useSyncExternalStore(bound.subscribe, bound.getSnapshot, bound.getSnapshot);
+    const value: SkillEditorValue = {
+      text: snapshot.text,
+      skillNames: snapshot.skillNames,
+      ...(snapshot.commandNames === undefined ? {} : { commandNames: snapshot.commandNames }),
+      ...(snapshot.mentions === undefined ? {} : { mentions: snapshot.mentions.map((m) => ({ ...m })) }),
+    };
+    return createElement(SkillEditor, {
+      value,
+      restoreEpoch: snapshot.restoreEpoch,
+      "aria-label": "Message",
+      onChange: (next: SkillEditorValue) => {
+        bound.editSkillNames(next.skillNames);
+        bound.editText(next.text);
+        bound.persistDraft(next.text);
+      },
+    });
+  }
+  const view = render(createElement(EditorPane, { bound: source }));
+  const editor = view.getByRole("textbox");
+  expect(editor.querySelectorAll('[data-skill-name="same"]')).toHaveLength(1);
+
+  // Preparation reconciles the winning durable row into the mounted editor.
+  let preparation: Awaited<ReturnType<typeof source.prepareAnnotation>> = null;
+  await act(async () => {
+    preparation = await source.prepareAnnotation();
+  });
+  expect(preparation).not.toBeNull();
+
+  // The winner's plain-prose value must replace the chip even though the text
+  // is identical: a stale editor that keeps its atoms and echoes them back
+  // would overwrite the winning selections.
+  await waitFor(() => expect(editor.querySelectorAll("[data-skill-name]")).toHaveLength(0));
+  expect(source.getSnapshot().skillNames).toEqual([]);
+  expect(source.getSnapshot().mentions).toEqual([]);
+  view.unmount();
 });
 
 // A same-ref source B may commit an IDENTICAL full value while source A's own
