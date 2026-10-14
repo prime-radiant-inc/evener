@@ -1562,6 +1562,21 @@ func TestADirectlyConstructedServerHealsAMissingSidecarOnItsOwn(t *testing.T) {
 	logged := captureRepairLog(t)
 	web := NewWebServer(cfg)
 	_ = web.Handler()
+	// The registry's recorded callback — which fires once the outcome is
+	// recorded and the log lines are written — is the first point where the
+	// re-read can pass and the log is whole: the recipe publishes CURRENT
+	// before it releases its lock and the registry records after, so a
+	// pointer-watching test races the repair's tail (roborev PR #4497
+	// round-25 medium 2).
+	recorded := make(chan struct{}, 1)
+	oldRecorded := transcriptIndexRepairRecorded
+	transcriptIndexRepairRecorded = func(path string) {
+		if oldRecorded != nil {
+			oldRecorded(path)
+		}
+		recorded <- struct{}{}
+	}
+	t.Cleanup(func() { transcriptIndexRepairRecorded = oldRecorded })
 	read := func() (appwire.ThreadReadResponse, error) {
 		value, err := web.appRPC.Router().Dispatch(context.Background(), appwire.Request{
 			ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
@@ -1584,8 +1599,8 @@ func TestADirectlyConstructedServerHealsAMissingSidecarOnItsOwn(t *testing.T) {
 	_, err := read()
 	requireTranscriptIndexRebuilding(t, err)
 
-	// The armed repair is the real recipe — no seam — and the sidecar it
-	// commits is the re-read's signal.
+	// The armed repair is the real recipe — no seam. The sidecar it commits
+	// is the build's proof; the recorded callback orders what follows.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if _, err := os.Stat(filepath.Join(transcriptindex.DirFor(path), "CURRENT")); err == nil {
@@ -1595,6 +1610,11 @@ func TestADirectlyConstructedServerHealsAMissingSidecarOnItsOwn(t *testing.T) {
 			t.Fatal("the armed repair never built the sidecar")
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+	select {
+	case <-recorded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the armed repair never recorded its outcome")
 	}
 	if lines := logged(); len(lines) != 2 {
 		t.Fatalf("repair log = %q, want exactly two lines for one repair", lines)

@@ -224,6 +224,21 @@ func (m hubModel) reestablishDisplayedSubscription() (hubModel, tea.Cmd) {
 	return m.reestablishDisplayedSubscriptionRead(true)
 }
 
+// settleDeferredReconcile consumes the superseded read's recorded
+// reconciliation obligation and re-establishes the displayed session's
+// subscription now: the flight the obligation rode has ended, and no
+// later landing is guaranteed soon — a retryable failure may pace its
+// retries for minutes. errShown rides onto the reconciled model, so the
+// settle never displaces the status or error the concluding flight
+// surfaces.
+func (m hubModel) settleDeferredReconcile(errShown error) (hubModel, tea.Cmd) {
+	m.liveNavNeedsReconcile = false
+	retried, reconcile := m.reestablishDisplayedSubscription()
+	retried.liveNavNeedsReconcile = false
+	retried.err = errShown
+	return retried, reconcile
+}
+
 // resubscribeDisplayedSessionAfterReconnect is the reconnect flavor: the
 // replacement connection carries no subscriptions (the dead connection's died
 // with it), so the read stays ADDITIVE — a replacing one has nothing to cull,

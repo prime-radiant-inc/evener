@@ -1849,46 +1849,50 @@ func TestATerminalRetryRereadSettlesTheDeferredReconciliation(t *testing.T) {
 	cycleTarget := pressed.liveNavPendingRef
 	pressed.issuePickedSessionRead(refA)
 
-	// The stale cycling response lands: discarded, its reconciliation
-	// deferred on the pending pick.
-	afterStale, staleCmd := pressed.Update(hubSessionMsg{
-		ref:        cycleTarget,
-		detail:     hubSessionDetail{Ref: cycleTarget, SessionID: "sess_cycle", State: appwire.ThreadStatusIdle},
-		liveNavSeq: cycleSeq,
-	})
-	stale := afterStale.(hubModel)
-	if staleCmd != nil {
-		t.Fatal("the stale cycling response issued a recovery read that races the pending pick")
-	}
-	if !stale.liveNavNeedsReconcile {
-		t.Fatal("setup: the stale cycling response recorded no obligation")
-	}
-
-	// A's response is the rebuilding rejection: the retry arms, and the
-	// obligation rides on — the armed re-read is now the flight whose
-	// landing settles it.
-	afterArm, _ := stale.Update(hubSessionMsg{
+	// A's response is the rebuilding rejection: the retry arms over the
+	// displayed C, its re-read pending — and with nothing deferred yet,
+	// the arming settles nothing.
+	afterArm, armCmd := pressed.Update(hubSessionMsg{
 		ref:          refA.String(),
 		err:          rebuildingEntryError(t),
-		liveNavSeq:   stale.liveNavSeq,
+		liveNavSeq:   pressed.liveNavSeq,
 		liveNavEntry: true,
 	})
 	armed := afterArm.(hubModel)
 	if armed.entryRepairRef != refA {
 		t.Fatal("setup: the rebuilding answer did not arm the retry")
 	}
-	if !armed.liveNavNeedsReconcile {
-		t.Fatal("setup: the arming dropped the recorded obligation")
+	if armed.liveNavNeedsReconcile {
+		t.Fatal("setup: the arming settled an obligation nothing had recorded")
+	}
+
+	// The re-read goes in flight, and the stale cycling response lands
+	// while it runs: discarded, its reconciliation deferred onto the
+	// pending re-read — the flight whose landing must settle it.
+	afterTick, reReadCmd := armed.Update(executeEntryRepairCmd(t, armCmd))
+	ticking := afterTick.(hubModel)
+	if reReadCmd == nil {
+		t.Fatal("setup: the retry's tick re-issued no read")
+	}
+	afterStale, staleCmd := ticking.Update(hubSessionMsg{
+		ref:        cycleTarget,
+		detail:     hubSessionDetail{Ref: cycleTarget, SessionID: "sess_cycle", State: appwire.ThreadStatusIdle},
+		liveNavSeq: cycleSeq,
+	})
+	stale := afterStale.(hubModel)
+	if staleCmd != nil {
+		t.Fatal("the stale cycling response issued a recovery read that races the pending re-read")
+	}
+	if !stale.liveNavNeedsReconcile {
+		t.Fatal("setup: the stale cycling response recorded no obligation")
 	}
 
 	// The re-read's answer is terminal — A was deleted while its repair
 	// ran: the retry ends, and the obligation settles NOW, with the
 	// deletion still shown and C still displayed.
-	afterEnd, settle := armed.Update(hubSessionMsg{
-		ref:           refA.String(),
-		err:           targetDeletedEntryError(t),
-		entryRetrySeq: armed.entryRepairSeq,
-	})
+	terminal := reReadCmd().(hubSessionMsg)
+	terminal.err = targetDeletedEntryError(t)
+	afterEnd, settle := stale.Update(terminal)
 	ended := afterEnd.(hubModel)
 	if ended.liveNavNeedsReconcile {
 		t.Fatal("the terminal re-read stranded the deferred reconciliation")
@@ -1977,5 +1981,188 @@ func TestTheRetryRereadFencesARecoveryIssuedDuringBackoff(t *testing.T) {
 	}
 	if !settled {
 		t.Fatal("the landing issued no tagged reconcile for the entered session")
+	}
+}
+
+// A pick's rebuilding answer settles the deferred reconciliation its
+// flight inherited: with C displayed and picks of A then B in flight, A's
+// superseded success leaves the subscription re-pointed while the
+// obligation defers onto B — and B's rebuilding landing must reconcile C
+// alongside arming its paced retry, or C stays unsubscribed through every
+// retry the repair paces (roborev PR #4497 round-25 medium 1).
+func TestAPicksRebuildingAnswerReconcilesTheDisplayedSessionAlongsideItsRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	enteredC, _ := m.Update(hubSessionMsg{
+		ref:    "local:01C",
+		detail: hubSessionDetail{Ref: "local:01C", SessionID: "sess_c", State: appwire.ThreadStatusIdle},
+	})
+	watching := enteredC.(hubModel)
+
+	// The user palette-picks A, then B: B's issuance supersedes A's
+	// pending pick.
+	staged := watching
+	pickA := staged.issuePickedSessionRead(refA)
+	msgA := pickA().(hubSessionMsg)
+	pickB := staged.issuePickedSessionRead(refB)
+	msgB := pickB().(hubSessionMsg)
+	msgB.err = rebuildingEntryError(t)
+
+	// A's late success lands superseded: the discard defers the displayed
+	// session's reconciliation onto B's pending pick.
+	afterStale, staleCmd := staged.Update(msgA)
+	stale := afterStale.(hubModel)
+	if staleCmd != nil {
+		t.Fatal("the superseded pick issued a recovery read that races the pending pick")
+	}
+	if !stale.liveNavNeedsReconcile {
+		t.Fatal("the superseded pick dropped its reconciliation obligation instead of recording it")
+	}
+
+	// B's landing answers rebuilding: the paced retry arms, and the
+	// inherited obligation settles NOW — C is still the displayed session,
+	// and its subscription must not wait out the retries.
+	after, cmd := stale.Update(msgB)
+	shown := after.(hubModel)
+	if shown.liveNavNeedsReconcile {
+		t.Fatal("the rebuilding answer left the inherited reconciliation unconsumed")
+	}
+	if shown.mode != hubModeSession || shown.detail.Ref != "local:01C" {
+		t.Fatalf("the rebuilding answer moved off the displayed session: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	if shown.entryRepairRef != refB {
+		t.Fatalf("the rebuilding answer disarmed its retry: entryRepairRef = %v, want %v", shown.entryRepairRef, refB)
+	}
+	reconciled := false
+	retried := false
+	if cmd != nil {
+		for _, c := range flattenBatch(t, cmd) {
+			msg := c()
+			if recovery, ok := msg.(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == "local:01C" {
+				reconciled = true
+			}
+			if _, ok := msg.(hubEntryRepairTickMsg); ok {
+				retried = true
+			}
+		}
+	}
+	if !reconciled {
+		t.Fatal("the rebuilding answer issued no reconcile for the displayed session")
+	}
+	if !retried {
+		t.Fatal("the rebuilding answer dropped its paced retry")
+	}
+}
+
+// The retry's own re-read settles the reconciliation it inherits the same
+// way: B's rebuilding answer arms the retry first (nothing deferred yet),
+// the re-read goes in flight, A's superseded success defers onto it, and
+// the re-read's ordinary transient — the armed-failure path's own traffic
+// — must reconcile the displayed session alongside keeping the retry armed.
+func TestTheArmedRetryReadReconcilesTheDisplayedSessionOnItsOwnRebuildingAnswer(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	enteredC, _ := m.Update(hubSessionMsg{
+		ref:    "local:01C",
+		detail: hubSessionDetail{Ref: "local:01C", SessionID: "sess_c", State: appwire.ThreadStatusIdle},
+	})
+	watching := enteredC.(hubModel)
+
+	staged := watching
+	pickA := staged.issuePickedSessionRead(refA)
+	msgA := pickA().(hubSessionMsg)
+	pickB := staged.issuePickedSessionRead(refB)
+	msgB := pickB().(hubSessionMsg)
+	msgB.err = rebuildingEntryError(t)
+
+	// B's landing answers rebuilding before A's success lands: the retry
+	// arms with nothing deferred, and its re-read goes in flight.
+	afterB, cmdB := staged.Update(msgB)
+	armed := afterB.(hubModel)
+	if armed.entryRepairRef != refB {
+		t.Fatalf("the rebuilding answer did not arm its retry: entryRepairRef = %v, want %v", armed.entryRepairRef, refB)
+	}
+	if armed.liveNavNeedsReconcile {
+		t.Fatal("no superseded landing preceded the arming: nothing should have deferred")
+	}
+	afterTick, reReadCmd := armed.Update(executeEntryRepairCmd(t, cmdB))
+	ticking := afterTick.(hubModel)
+	if reReadCmd == nil {
+		t.Fatal("the retry's tick re-issued no read")
+	}
+
+	// A's late success lands superseded by the armed generation: the
+	// discard defers onto the pending re-read.
+	afterStale, staleCmd := ticking.Update(msgA)
+	stale := afterStale.(hubModel)
+	if staleCmd != nil {
+		t.Fatal("the superseded pick issued a recovery read that races the pending re-read")
+	}
+	if !stale.liveNavNeedsReconcile {
+		t.Fatal("the superseded pick dropped its reconciliation obligation instead of recording it")
+	}
+
+	// The re-read answers an ordinary transient — mid-repair contention,
+	// the armed-failure path's own traffic — tagged with its fresh
+	// generation: the settle fires alongside keeping the retry, and the
+	// transient rides after the status on the line.
+	ordinary := errors.New("thread history is unavailable at this moment")
+	reread := reReadCmd().(hubSessionMsg)
+	reread.err = ordinary
+	after, cmd := stale.Update(reread)
+	shown := after.(hubModel)
+	if shown.liveNavNeedsReconcile {
+		t.Fatal("the armed failure left the inherited reconciliation unconsumed")
+	}
+	if !errors.Is(shown.err, ordinary) {
+		t.Fatalf("the settle displaced the ordinary transient: model error = %v", shown.err)
+	}
+	assertStatusLine(t, shown, rebuildingEntryError(t))
+	if shown.mode != hubModeSession || shown.detail.Ref != "local:01C" {
+		t.Fatalf("the armed failure moved off the displayed session: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	if shown.entryRepairRef != refB {
+		t.Fatalf("the armed failure disarmed its retry: entryRepairRef = %v, want %v", shown.entryRepairRef, refB)
+	}
+	reconciled := false
+	retried := false
+	if cmd != nil {
+		for _, c := range flattenBatch(t, cmd) {
+			msg := c()
+			if recovery, ok := msg.(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == "local:01C" {
+				reconciled = true
+			}
+			if _, ok := msg.(hubEntryRepairTickMsg); ok {
+				retried = true
+			}
+		}
+	}
+	if !reconciled {
+		t.Fatal("the armed failure issued no reconcile for the displayed session")
+	}
+	if !retried {
+		t.Fatal("the armed failure dropped its paced retry")
 	}
 }

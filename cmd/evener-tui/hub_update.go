@@ -400,8 +400,23 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.entryRepairSeq = m.liveNavSeq
 					}
 					m.err = nil
+					if (msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile && m.mode == hubModeSession {
+						// The failed flight carried the superseded read's
+						// deferred reconciliation: settle it alongside the
+						// retry this failure schedules, or the displayed
+						// session stays unsubscribed through every paced
+						// retry the repair runs.
+						retried, reconcile := m.settleDeferredReconcile(nil)
+						return retried, tea.Batch(reconcile, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq))
+					}
 					return m, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq)
 				case armedFor && !isHubTranscriptEntryTerminal(msg.err):
+					if (msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile && m.mode == hubModeSession {
+						// Same settle, armed-failure flavor: the standing
+						// status rides after the reconcile.
+						retried, reconcile := m.settleDeferredReconcile(msg.err)
+						return retried, tea.Batch(reconcile, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq))
+					}
 					m.err = msg.err
 					return m, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq)
 				case armedFor:
@@ -418,14 +433,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// a tracked flight (the discard helper defers onto tracked
 				// pending reads), so only a tracked conclusion can carry
 				// one: a pick's landing (liveNavEntry) or the retry's own
-				// re-read (entryRetrySeq). The arming cases above keep
-				// theirs: a flight they just armed or kept armed settles
-				// it at that flight's landing.
+				// re-read (entryRetrySeq). The retryable cases above settle
+				// theirs at the failed flight's own end — the armed flight
+				// they schedule may not land for minutes — so only the
+				// non-retryable conclusions reach this second settle point.
 				if (msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile && m.mode == hubModeSession {
-					m.liveNavNeedsReconcile = false
-					retried, reconcile := m.reestablishDisplayedSubscription()
-					retried.liveNavNeedsReconcile = false
-					retried.err = msg.err
+					retried, reconcile := m.settleDeferredReconcile(msg.err)
 					return retried, reconcile
 				}
 			}
