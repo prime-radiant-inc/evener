@@ -328,9 +328,11 @@ vet:
 ##   exits zero; a malformed budget file (a top-level value that is not an object,
 ##   invalid JSON, a packages value that is present but not an object, a package
 ##   budget value that is not a finite number, a perTestCeilingSeconds that is
-##   present but not a finite number, or a perTestCeilingClasses that is present
-##   but not an object) is a broken config and is nonzero in every mode, naming
-##   the file and the entry (#4609, #4614, #4618, #4622).
+##   present but not a finite number, a perTestCeilingClasses that is present
+##   but not an object, or a class ceilingSeconds that is not a finite,
+##   float-convertible number including an integer too large to convert) is a
+##   broken config and is nonzero in every mode, naming the file and the entry
+##   (#4609, #4614, #4618, #4622, #4629).
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 
