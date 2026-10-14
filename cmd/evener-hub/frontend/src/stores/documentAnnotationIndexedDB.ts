@@ -103,6 +103,11 @@ export interface BrowserDocumentAnnotationRepository extends AnnotationReadRepos
   saveAnnotation(operation: PreparedAnnotation, cancellation?: AnnotationSaveCancellation): Promise<SaveReceipt>;
   listAnnotations(key: DocumentKey): Promise<AnnotationView[]>;
   finishExpiry(receipt: ExpiryReceipt): Promise<void>;
+  // Cancel exactly ONE durable pending operation outside any acceptance: the
+  // completion a proven source change needs when a faulted beginRead left no
+  // ticket to fence with. The row's operation identity is the caller's own
+  // retained attempt.
+  discardPendingOperation(key: DocumentKey, operationId: string): Promise<void>;
   retryPending(reason: AnnotationRetryReason): Promise<void>;
   retryPendingWithOutcome(reason: AnnotationRetryReason): Promise<BrowserAnnotationRetryOutcome>;
   resetOwnedNamespace(
@@ -1024,6 +1029,35 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       },
     );
     if (removed) this.#publishDocumentWake(documentKey);
+  }
+
+  // Cancel exactly ONE durable pending operation outside any acceptance. The
+  // beginRead-fault reader calls this with its retained attempt's identity once
+  // the raw fetch proves a definite source change: without it, the runtime's
+  // next retry pass re-applies the obsolete operation with its old identity (the
+  // fence that would have cancelled the epoch's pending rows requires a ticket
+  // the fault never issued). Only a row still pending for the exact
+  // namespace-qualified operation identity is flipped to the fence's terminal
+  // cancelled receipt; an absent row (the save never committed), a terminal
+  // receipt (applied, cancelled, unclaimed) and every other operation stay
+  // untouched, so a replay is an idempotent no-op. No wake is published: the
+  // discard's only producer is the reader's own fault branch, which publishes
+  // its own state in the same flow, and the acceptance that follows on healed
+  // storage fences the epoch and wakes peers - the same shape settleUnclaimed
+  // keeps.
+  async discardPendingOperation(key: DocumentKey, operationId: string): Promise<void> {
+    if (key.namespace.kind !== "browser") return;
+    const operationKey = annotationOperationKey(key.namespace, operationId);
+    await this.#transaction([ANNOTATION_OPERATIONS_STORE], "readwrite", async (transaction) => {
+      const row = await requestResult<AnnotationOperationRow | undefined>(
+        transaction.objectStore(ANNOTATION_OPERATIONS_STORE).get(operationKey),
+      );
+      if (row?.state !== "pending") return;
+      const { destination: _destination, payloadKey: _payloadKey, ...terminal } = row;
+      await requestResult(
+        transaction.objectStore(ANNOTATION_OPERATIONS_STORE).put({ ...terminal, state: "cancelled" }),
+      );
+    });
   }
 
   // Complete retained pending expiry fences first, then visit persisted pending

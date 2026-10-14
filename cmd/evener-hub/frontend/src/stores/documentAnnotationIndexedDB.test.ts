@@ -906,6 +906,71 @@ it("fences a pending note before deletion and resumes useful work afterward", as
   expect(await rowsForTests<unknown>(f.factory, f.databaseName, MUTATION_OUTBOX_STORE)).toEqual(outboxBefore);
 });
 
+it("discards one durable pending operation outside an acceptance, leaving every other receipt untouched", async () => {
+  const f = await fixture("discard-pending-operation");
+  // op-1 is the fixture's own durable pending row; op-2 is a second pending
+  // operation saved from the same accepted lease, so the discard's per-operation
+  // scope is observable against a sibling the fence would sweep with it.
+  const second = preparedAnnotationFromLease(f.operation.lease, "op-2", "second note", f.destination);
+  await f.repo.saveAnnotation(second);
+  const op2Key = annotationOperationKey(f.document.namespace, "op-2");
+  const rowsBefore = await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE);
+  const op1Before = rowsBefore.find((row) => row.operationKey === f.operationKey);
+  const op2Before = rowsBefore.find((row) => row.operationKey === op2Key);
+  if (!op1Before || !op2Before) throw new Error("pending operation rows missing");
+  if (op1Before.state !== "pending" || op2Before.state !== "pending")
+    throw new Error("fixture operations are not both pending");
+
+  // The discard cancels exactly op-1 with the same terminal receipt shape the
+  // fence writes for an expired epoch's pending rows: no destination/payloadKey.
+  await f.repo.discardPendingOperation(f.document, "op-1");
+  const rowsAfter = await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE);
+  const { destination: _destination, payloadKey: _payloadKey, ...op1Terminal } = op1Before;
+  expect(rowsAfter.find((row) => row.operationKey === f.operationKey)).toEqual({ ...op1Terminal, state: "cancelled" });
+  // The sibling pending row is untouched, and the payload survives for the
+  // eventual fence's finishExpiry deletion: the discard cancels the receipt, it
+  // does not run the epoch-wide deletion an acceptance owns.
+  expect(rowsAfter.find((row) => row.operationKey === op2Key)).toEqual(op2Before);
+  expect(
+    (await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)).some(
+      (row) => row.payloadKey === f.operationKey,
+    ),
+  ).toBe(true);
+
+  // The cancelled row no longer lists and its handoff answers cancelled, so no
+  // retry pass can re-apply the discarded operation.
+  expect((await f.repo.listAnnotations(f.document)).map((view) => view.receipt.operationId)).toEqual(["op-2"]);
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("cancelled");
+
+  // Idempotent and absent-identity safe: a replayed discard and a discard of an
+  // identity that never saved resolve without writing anything.
+  const settledRows = await rowsForTests<AnnotationOperationRow>(
+    f.factory,
+    f.databaseName,
+    ANNOTATION_OPERATIONS_STORE,
+  );
+  await f.repo.discardPendingOperation(f.document, "op-1");
+  await f.repo.discardPendingOperation(f.document, "never-saved");
+  expect(await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)).toEqual(
+    settledRows,
+  );
+
+  // A terminal receipt is never flipped: once op-2 applies, its discard leaves
+  // the applied receipt exactly as it is.
+  expect((await f.repo.handoff(f.document, "op-2")).state).toBe("applied");
+  const appliedRows = await rowsForTests<AnnotationOperationRow>(
+    f.factory,
+    f.databaseName,
+    ANNOTATION_OPERATIONS_STORE,
+  );
+  await f.repo.discardPendingOperation(f.document, "op-2");
+  expect(
+    (await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)).find(
+      (row) => row.operationKey === op2Key,
+    ),
+  ).toEqual(appliedRows.find((row) => row.operationKey === op2Key));
+});
+
 it("rejects a save against a confirmed-suppressed epoch whose fence transaction failed", async () => {
   const fail = true;
   const f = await fixture("suppressed-epoch-save", {
