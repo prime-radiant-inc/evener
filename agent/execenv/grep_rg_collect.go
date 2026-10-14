@@ -28,27 +28,40 @@ import (
 // fires; a block dropped for the count is that cut, not the byte budget.
 //
 // budget bounds BOTH what the collector retains and what it buffers pending a
-// delimiter. Retention applies path priority to bytes as well as to the block
-// count, so a byte overflow evicts the path-largest kept block rather than
-// whichever record happened to arrive first; a record no eviction can fit is
-// dropped (disclosed). Pending bytes are bounded the same way: an oversized or
+// delimiter. Retention applies path priority to bytes at RECORD granularity: a
+// byte overflow evicts the path-last retained record, never a whole block, so
+// the retained records are the ordered prefix of records that fits. A
+// block-granular eviction would keep one file's second record while dropping a
+// path-earlier file's first, so the retained set would depend on which file
+// ripgrep finished first — the defect the collector exists to remove. Every byte
+// eviction is disclosed; the block-count cut is not, since it is the caller's
+// own maxResults cut. Pending bytes are bounded the same way: an oversized or
 // unterminated record is dropped and its remainder skipped, so its own size can
 // never outgrow the cap, and the record after it is admitted normally. Every
-// drop flows through one disclosure — the retained-output note the native arm
-// uses.
+// byte drop flows through one disclosure — the retained-output note the native
+// arm uses.
 type rgRecordCollector struct {
 	filesOnly bool
 	keep      int
 	budget    int
 	prefix    []byte // the searched directory's path-separator-terminated prefix
 
-	blocks        map[string][]byte // path -> raw record bytes, arrival order
+	blocks        map[string]*rgRecordBlock // path -> its retained records
 	retainedBytes int
 	dropped       bool
 	separated     bool
 
 	cur        string // the path of the last complete record, for "--" grouping
 	pendingSep bool
+
+	// cut is the order position the byte budget stopped at: the earliest record
+	// an eviction dropped. Everything at or after it is excluded, so the
+	// retained records stay the ordered PREFIX that fits. Without it, a record
+	// evicted to make room for a path-earlier one would leave a hole that a
+	// later path's smaller record could fill, and the retained set would depend
+	// on emission order again.
+	cutSet  bool
+	cutPath string
 
 	// skipping is set when an oversized record's head was dropped: the rest of
 	// that record is discarded until its delimiter, then parsing resumes with
@@ -60,6 +73,21 @@ type rgRecordCollector struct {
 
 	buf       []byte
 	rawPrefix []byte
+}
+
+// rgRecordBlock is one path's retained records, in the order ripgrep emitted
+// them for that path, so its last record is the first a byte cut drops.
+type rgRecordBlock struct {
+	records [][]byte
+}
+
+// bytes is the block's records with the group separators inside them.
+func (b *rgRecordBlock) bytes() []byte {
+	var out []byte
+	for _, r := range b.records {
+		out = append(out, r...)
+	}
+	return out
 }
 
 // rgCollectorDiagnosticBytes bounds the raw stream the collector keeps for a
@@ -77,7 +105,7 @@ func newRgRecordCollector(dir string, filesOnly bool, keep, budget int) *rgRecor
 		keep:      keep,
 		budget:    budget,
 		prefix:    []byte(strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator)),
-		blocks:    map[string][]byte{},
+		blocks:    map[string]*rgRecordBlock{},
 	}
 }
 
@@ -206,9 +234,10 @@ func (c *rgRecordCollector) skipOversized(p []byte) []byte {
 func (c *rgRecordCollector) record(path string, raw []byte) {
 	if c.pendingSep {
 		if c.cur == path {
-			if b, ok := c.blocks[path]; ok && c.retainedBytes+3 <= c.budget {
-				c.blocks[path] = append(b, '-', '-', '\n')
-				c.retainedBytes += 3
+			// The separator belongs to the record after it, so evicting that
+			// record drops the separator with it.
+			if _, ok := c.blocks[path]; ok {
+				raw = append([]byte("--\n"), raw...)
 			}
 		} else {
 			c.separated = true
@@ -219,70 +248,88 @@ func (c *rgRecordCollector) record(path string, raw []byte) {
 	c.appendRaw(path, raw)
 }
 
-// appendRaw adds raw to path's block, creating the block if room allows. A new
-// path beyond keep evicts the largest kept path when this one is smaller — that
-// eviction is the caller's maxResults cut. A record no byte room can be made
-// for is dropped and discloses truncation.
+// appendRaw files one complete record under its path. A new path beyond keep
+// evicts the largest kept path when this one is smaller — that eviction is the
+// caller's maxResults cut, and it is not a disclosure. A byte-budget cut is: the
+// retained records are then the ordered prefix of records that fits, so the
+// retained set is the same whichever file ripgrep finished first.
 func (c *rgRecordCollector) appendRaw(path string, raw []byte) {
+	if c.cutSet && (path == c.cutPath || rgPathLess(c.cutPath, path)) {
+		// Past the cut: the budget could not hold everything before this record,
+		// so it cannot hold this one either.
+		c.dropped = true
+		return
+	}
 	b, ok := c.blocks[path]
 	if !ok {
 		if len(c.blocks) >= c.keep && !c.makeRoom(path) {
 			return
 		}
-		if !c.makeByteRoom(path, len(raw)) {
-			c.dropped = true
-			return
-		}
-		c.blocks[path] = append([]byte(nil), raw...)
-		c.retainedBytes += len(raw)
-		return
+		b = &rgRecordBlock{}
+		c.blocks[path] = b
 	}
-	if !c.makeByteRoom(path, len(raw)) {
-		c.dropped = true
-		return
-	}
-	c.blocks[path] = append(b, raw...)
+	b.records = append(b.records, raw)
 	c.retainedBytes += len(raw)
+	c.trimToBudget()
 }
 
-// makeRoom evicts the largest kept path when path sorts before it, reporting
-// whether a place was made. The scan is O(keep) and only runs once the map is
-// full; keep is maxResults-sized, so it stays cheap.
-func (c *rgRecordCollector) makeRoom(path string) bool {
+// trimToBudget evicts records from the end of the path order until the retained
+// bytes fit, disclosing each eviction and moving the cut to the earliest record
+// one dropped: everything after that record is outside the retained prefix.
+func (c *rgRecordCollector) trimToBudget() {
+	if c.budget <= 0 {
+		return
+	}
+	for c.retainedBytes > c.budget {
+		largest := c.largestPath()
+		if largest == "" {
+			return
+		}
+		c.dropped = true
+		if !c.cutSet || rgPathLess(largest, c.cutPath) {
+			c.cutSet = true
+			c.cutPath = largest
+		}
+		c.evictTailRecord(largest)
+	}
+}
+
+// evictTailRecord drops a path's last retained record, removing the block when
+// that was its only one.
+func (c *rgRecordCollector) evictTailRecord(path string) {
+	b := c.blocks[path]
+	if b == nil || len(b.records) == 0 {
+		return
+	}
+	c.retainedBytes -= len(b.records[len(b.records)-1])
+	b.records = b.records[:len(b.records)-1]
+	if len(b.records) == 0 {
+		delete(c.blocks, path)
+	}
+}
+
+// largestPath is the path-last kept path, whose last record is the first a byte
+// cut drops.
+func (c *rgRecordCollector) largestPath() string {
 	largest := ""
 	for p := range c.blocks {
 		if largest == "" || rgPathLess(largest, p) {
 			largest = p
 		}
 	}
-	if !rgPathLess(path, largest) {
-		return false
-	}
-	c.retainedBytes -= len(c.blocks[largest])
-	delete(c.blocks, largest)
-	return true
+	return largest
 }
 
-// makeByteRoom evicts the path-largest kept blocks that sort AFTER path until
-// need more bytes fit, reporting whether it made room. Retention is
-// path-prioritized for bytes as well as for the block count, so a budget
-// overflow keeps the path-earlier record whoever arrived first — without this,
-// a byte overflow would restore the emission-order dependence the collector
-// exists to remove.
-func (c *rgRecordCollector) makeByteRoom(path string, need int) bool {
-	for c.retainedBytes+need > c.budget {
-		evict := ""
-		for p := range c.blocks {
-			if rgPathLess(path, p) && (evict == "" || rgPathLess(evict, p)) {
-				evict = p
-			}
-		}
-		if evict == "" {
-			return false
-		}
-		c.retainedBytes -= len(c.blocks[evict])
-		delete(c.blocks, evict)
+// makeRoom evicts the largest kept path when path sorts before it, reporting
+// whether a place was made. The scan is O(keep) and only runs once the map is
+// full; keep is maxResults-sized, so it stays cheap.
+func (c *rgRecordCollector) makeRoom(path string) bool {
+	largest := c.largestPath()
+	if largest == "" || !rgPathLess(path, largest) {
+		return false
 	}
+	c.retainedBytes -= len(c.blocks[largest].bytes())
+	delete(c.blocks, largest)
 	return true
 }
 
@@ -300,7 +347,7 @@ func (c *rgRecordCollector) retained() string {
 		if i > 0 && c.separated {
 			out = append(out, '-', '-', '\n')
 		}
-		out = append(out, c.blocks[p]...)
+		out = append(out, c.blocks[p].bytes()...)
 	}
 	return string(out)
 }
