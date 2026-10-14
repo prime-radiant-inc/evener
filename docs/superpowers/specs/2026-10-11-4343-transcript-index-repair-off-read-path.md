@@ -387,8 +387,9 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      instead, restores the displayed session's subscription when one is
      displayed, and leaves the entry for the
      user to re-pick. Navigating away — entering
-     another session, opening another pane, leaving the hub surface —
-     retires the pending retry and its status, and a late-landing retry
+     another session, opening another pane, leaving the hub surface, or
+     submitting the spawn form again — retires the pending retry and its
+     status, and a late-landing retry
      for a departed intent enters nothing. Picks are fenced the same way
      from the issuing side: an entry read a navigation pick issues
      carries the generation it was issued under, and a response that lands

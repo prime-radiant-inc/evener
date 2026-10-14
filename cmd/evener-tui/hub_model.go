@@ -375,6 +375,12 @@ type hubModel struct {
 	// the read's issuance; cleared at its landing (any outcome) and on
 	// reconnect (the dead connection's flight never lands there).
 	liveNavRecoveryInFlight bool
+	// liveNavRecoveryFlight is the id of the in-flight recovery read, bumped
+	// at every issuance and never reset, so a completion can be judged
+	// against the flight it belongs to: a stale completion — a dead
+	// connection's late response after a reconnect — must not unfence a
+	// newer flight.
+	liveNavRecoveryFlight uint64
 	// liveNavRecoveryRetries counts consecutive failed recovery reads
 	// (reestablishDisplayedSubscription). A persistent RPC failure must not
 	// loop recovery forever: after hubLiveNavRecoveryMaxRetries the failure

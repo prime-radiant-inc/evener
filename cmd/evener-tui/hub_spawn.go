@@ -323,6 +323,17 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		WorkingDir:      strings.TrimSpace(m.spawnDir),
 		LaunchOverrides: m.spawnLaunchOverridesForLaunch(),
 	}
+	// A second submission is newer intent of the same class as the form's
+	// departures: an entry-repair retry armed for a previous launch from
+	// this form retires with its status, and the generation advances so its
+	// in-flight or paced re-read lands superseded instead of entering the
+	// previous session over this launch. The prompt baseline below belongs
+	// to this launch alone.
+	if m.entryRepairRef != (appwire.Ref{}) {
+		m.entryRepairRetire()
+		m.liveNavSeq++
+		m.liveNavEntryPendingSeq = 0
+	}
 	m.err = nil
 	m.spawnSubmitting = true
 	// The submitted prompt, recorded so the entry read's automatic

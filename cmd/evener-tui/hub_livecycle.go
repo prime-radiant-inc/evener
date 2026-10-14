@@ -262,6 +262,18 @@ func (m hubModel) replacedDisplayedChildren(msg hubSessionMsg) bool {
 	return msg.subscriptionReplaced && m.detail.Ref != "" && m.detail.Ref == msg.ref
 }
 
+// concludeRecoveryFlight clears the in-flight recovery fence when this
+// landing is the flight's own: a completion tagged with an older flight's
+// id — a dead connection's late response after a reconnect — must not
+// unfence a newer flight. Every path a recovery response can take calls
+// this: the non-session early return and the recovery handler itself.
+func (m *hubModel) concludeRecoveryFlight(msg hubSessionMsg) {
+	if msg.liveNavRecovery && m.liveNavRecoveryInFlight &&
+		msg.liveNavRecoveryFlight == m.liveNavRecoveryFlight {
+		m.liveNavRecoveryInFlight = false
+	}
+}
+
 // resubscribeDisplayedSessionAfterReconnect is the reconnect flavor: the
 // replacement connection carries no subscriptions (the dead connection's died
 // with it), so the read stays ADDITIVE — a replacing one has nothing to cull,
@@ -280,16 +292,22 @@ func (m hubModel) reestablishDisplayedSubscriptionRead(replace bool) (hubModel, 
 	}
 	if m.liveNavRecoveryInFlight {
 		// A recovery read is already in flight for this display: its landing
-		// is the restore this caller is owed. A second concurrent one would
-		// race its server-side replacement — each fetch re-points the
+		// is the restore this caller is owed, so the demand is recorded for
+		// that landing to settle with a follow-up: a superseded read's
+		// replacement can re-point the server-side subscription while this
+		// flight is still collecting its older pages, and the restore would
+		// otherwise be silently lost. A second concurrent read would race
+		// its server-side replacement — each fetch re-points the
 		// connection's subscriptions and culls the children, so the first's
 		// success re-arms children the second's fetch may cull after it,
 		// and the second's landing then skips re-subscribing them because
-		// watchedChildRefs still marks them watched. Coalesce onto the
-		// in-flight read.
+		// watchedChildRefs still marks them watched.
+		m.liveNavNeedsReconcile = true
 		return m, nil
 	}
 	m.liveNavRecoveryInFlight = true
+	m.liveNavRecoveryFlight++
+	flight := m.liveNavRecoveryFlight
 	seq := m.liveNavSeq
 	m.watchedChildRefs = nil // the recovery response's child re-arm re-fills it
 	m.liveNavRecoveryRetries = 0
@@ -300,6 +318,7 @@ func (m hubModel) reestablishDisplayedSubscriptionRead(replace bool) (hubModel, 
 		if sessionMsg, ok := msg.(hubSessionMsg); ok {
 			sessionMsg.liveNavSeq = seq
 			sessionMsg.liveNavRecovery = true
+			sessionMsg.liveNavRecoveryFlight = flight
 			return sessionMsg
 		}
 		return msg

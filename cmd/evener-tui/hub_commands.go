@@ -42,7 +42,12 @@ type hubSessionMsg struct {
 	// and re-arms child subscriptions, then drops, never switching sessions
 	// (roborev PR #1044 round-12 medium 2).
 	liveNavRecovery bool
-	liveNavRefresh  bool
+	// liveNavRecoveryFlight is the id of the recovery flight the read was
+	// issued under: a completion only concludes the flight it belongs to,
+	// so a stale completion cannot unfence a newer flight (#4343
+	// round-29 medium 2).
+	liveNavRecoveryFlight uint64
+	liveNavRefresh        bool
 	// entryRetrySeq tags a read re-issued by a pending entry-repair retry
 	// (#4343): the armed retry's generation. Update discards a tagged read
 	// whose retry the model no longer holds — its success must not enter

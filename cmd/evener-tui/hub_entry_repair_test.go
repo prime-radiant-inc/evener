@@ -1297,6 +1297,63 @@ func TestASuccessfulRetryReadHoldsForSpawnFormEdits(t *testing.T) {
 	}
 }
 
+// Submitting a second spawn while a previous launch's entry-repair retry is
+// armed is newer intent of the same class as the form's departures: the
+// previous launch's retry retires with its status and the navigation
+// generation advances, so its in-flight or paced re-read can neither enter
+// the previous session over the newer launch nor pass the prompt baseline
+// that now belongs to the new submission alone.
+func TestASecondSpawnSubmissionRetiresThePreviousLaunchRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{wireErrorByRef: map[string]appwire.WireError{
+		"local:01S": appwire.WithHistoryReadIdentity(appwire.TranscriptIndexRebuilding(), appwire.DaemonlessBootGeneration, 0),
+	}}
+	m, cleanup := newEntryPickModel(t, reads)
+	defer cleanup()
+	refS := mustParseRef(t, "local:01S")
+
+	opened, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	spawned, read := opened.(hubModel).Update(hubSpawnMsg{resp: hubSpawnResponse{Ref: refS.String()}})
+	if read == nil {
+		t.Fatal("setup: the spawn landing issued no entry read")
+	}
+	answer := read().(hubSessionMsg)
+	armed, tick := spawned.Update(answer)
+	armedModel := armed.(hubModel)
+	if armedModel.entryRepairRef != refS {
+		t.Fatalf("setup: the spawn's rebuilding entry did not arm: ref = %v", armedModel.entryRepairRef)
+	}
+	armedSeq := armedModel.entryRepairSeq
+	afterTick, _ := armedModel.Update(executeEntryRepairCmd(t, tick)) // the first re-read in flight
+
+	// The user edits the standing form and submits a second spawn.
+	ticking := afterTick.(hubModel)
+	ticking.session.input.SetValue("second task")
+	ticking.spawnModel = "openai/gpt-test" // the form's model: the fixture injected the first spawn directly
+	submitted, spawnCmd := ticking.submitSpawnForm()
+	if spawnCmd == nil {
+		t.Fatal("setup: the second submission sent no spawn")
+	}
+	afterSubmit := submitted.(hubModel)
+	if afterSubmit.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the second submission left the previous launch's retry armed")
+	}
+	if afterSubmit.liveNavSeq <= ticking.liveNavSeq {
+		t.Fatal("the second submission did not advance the navigation generation")
+	}
+
+	// The previous launch's successful re-read lands anyway: it must enter
+	// nothing — the newer launch is pending and the form keeps it.
+	held, _ := afterSubmit.Update(hubSessionMsg{
+		ref:           refS.String(),
+		detail:        hubSessionDetail{Ref: refS.String(), SessionID: "sess_s", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	})
+	if held.(hubModel).mode != hubModeSpawn {
+		t.Fatalf("the previous launch's retry entered the old session over the newer launch: mode = %v", held.(hubModel).mode)
+	}
+}
+
 // A replacing read for the session already displayed culls the child
 // subscriptions server-side with the main one it re-points. When its pages
 // then fail, that flight is the last one that knows the children are gone:
@@ -1359,11 +1416,12 @@ func TestASameRefReplacedPagingFailureRestoresTheChildren(t *testing.T) {
 	// The recovery lands: the children re-arm after the replacement, so the
 	// rail's live activity resumes instead of staying silent.
 	landed, _ := failed.(hubModel).Update(hubSessionMsg{
-		ref:             refB.String(),
-		detail:          hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
-		messages:        []transcript.ChatMessage{child},
-		liveNavRecovery: true,
-		liveNavSeq:      failed.(hubModel).liveNavSeq,
+		ref:                   refB.String(),
+		detail:                hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		messages:              []transcript.ChatMessage{child},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: failed.(hubModel).liveNavRecoveryFlight,
+		liveNavSeq:            failed.(hubModel).liveNavSeq,
 	})
 	converged := landed.(hubModel)
 	if !converged.watchedChildRefs["local:01CHILD"] {
@@ -1453,20 +1511,237 @@ func TestTwoSupersededPicksShareOneRecoveryFlight(t *testing.T) {
 	}
 
 	// The shared flight's landing restores the display's subscriptions and
-	// re-arms its children.
-	landed, _ := afterStaleC.(hubModel).Update(hubSessionMsg{
+	// re-arms its children — and the demand the coalesce recorded settles
+	// with it: a follow-up flight issues, because the second stale pick's
+	// replacement may have re-pointed the subscription after this flight's
+	// own read leg (#4343 round-29 medium 1).
+	landed, landingCmd := afterStaleC.(hubModel).Update(hubSessionMsg{
 		ref:    refD.String(),
 		detail: hubSessionDetail{Ref: refD.String(), SessionID: "sess_d", State: appwire.ThreadStatusIdle},
 		messages: []transcript.ChatMessage{{
 			Kind: transcript.MsgTool,
 			Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{TranscriptRef: "local:01CHILD", Status: "running"}},
 		}},
-		liveNavRecovery: true,
-		liveNavSeq:      settled.liveNavSeq,
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: afterStaleA.(hubModel).liveNavRecoveryFlight,
+		liveNavSeq:            settled.liveNavSeq,
 	})
-	recovered := landed.(hubModel)
+	sawFollowUp := false
+	if landingCmd != nil {
+		for _, c := range flattenBatch(t, landingCmd) {
+			if msg, ok := c().(hubSessionMsg); ok && msg.liveNavRecovery && msg.ref == refD.String() {
+				sawFollowUp = true
+			}
+		}
+	}
+	if !sawFollowUp {
+		t.Fatal("the coalesced demand settled no follow-up at the shared flight's landing")
+	}
+	// The follow-up's landing completes the restore, re-arming the
+	// children the interim issuance cleared for its own re-fill.
+	afterFollowUp, _ := landed.(hubModel).Update(hubSessionMsg{
+		ref:    refD.String(),
+		detail: hubSessionDetail{Ref: refD.String(), SessionID: "sess_d", State: appwire.ThreadStatusIdle},
+		messages: []transcript.ChatMessage{{
+			Kind: transcript.MsgTool,
+			Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{TranscriptRef: "local:01CHILD", Status: "running"}},
+		}},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: landed.(hubModel).liveNavRecoveryFlight,
+		liveNavSeq:            settled.liveNavSeq,
+	})
+	recovered := afterFollowUp.(hubModel)
 	if !recovered.watchedChildRefs["local:01CHILD"] {
 		t.Fatalf("the shared recovery flight did not re-arm the children: %v", recovered.watchedChildRefs)
+	}
+}
+
+// A recovery flight coalesces a demand that arrives while it runs: the fence
+// records it, and the flight's own landing settles it with a follow-up — a
+// superseded read's replacement can re-point the server-side subscription
+// while the flight is still collecting its older pages, and the coalesced
+// caller's restore would otherwise be silently lost. A completion tagged
+// with an older flight's id cannot unfence a newer one.
+func TestACoalescedRecoveryDemandSettlesAtTheFlightLanding(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session B is displayed; two picks of A issue and a pick of B
+	// supersedes both and lands.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refB.String(),
+		detail: hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+	pickA1 := shown
+	pickA1.issuePickedSessionRead(refA)
+	seqA1 := pickA1.liveNavSeq
+	pickA2 := pickA1
+	pickA2.issuePickedSessionRead(refA)
+	seqA2 := pickA2.liveNavSeq
+	pickB := pickA2
+	pickB.issuePickedSessionRead(refB)
+	landedB, _ := pickB.Update(hubSessionMsg{
+		ref:          refB.String(),
+		detail:       hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   pickB.liveNavSeq,
+	})
+	settled := landedB.(hubModel)
+
+	// The first superseded pick lands: B's recovery read issues.
+	afterStale1, reconcile1 := settled.Update(hubSessionMsg{
+		ref:          refA.String(),
+		detail:       hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   seqA1,
+	})
+	_ = reconcile1
+	flight := afterStale1.(hubModel).liveNavRecoveryFlight
+	if flight == 0 {
+		t.Fatal("setup: the first superseded pick issued no recovery flight")
+	}
+
+	// The second superseded pick lands while that flight is in flight —
+	// its read leg done, its pages still fetching: the demand coalesces
+	// onto the flight, recorded rather than lost.
+	afterStale2, reconcile2 := afterStale1.(hubModel).Update(hubSessionMsg{
+		ref:          refA.String(),
+		detail:       hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   seqA2,
+	})
+	if reconcile2 != nil {
+		t.Fatal("the coalesced demand issued a second recovery read that races the in-flight one")
+	}
+	if !afterStale2.(hubModel).liveNavNeedsReconcile {
+		t.Fatal("the coalesced demand was not recorded for the flight's landing to settle")
+	}
+
+	// The flight's response lands: the snapshot applies and the recorded
+	// demand settles — a follow-up recovery read for B issues.
+	afterLanding, landingCmd := afterStale2.(hubModel).Update(hubSessionMsg{
+		ref:                   refB.String(),
+		detail:                hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: flight,
+		liveNavSeq:            afterStale2.(hubModel).liveNavSeq,
+	})
+	followUp := false
+	if landingCmd != nil {
+		for _, c := range flattenBatch(t, landingCmd) {
+			if msg, ok := c().(hubSessionMsg); ok && msg.liveNavRecovery && msg.ref == refB.String() {
+				followUp = true
+			}
+		}
+	}
+	if !followUp {
+		t.Fatal("the flight's landing settled no follow-up for the coalesced demand")
+	}
+	if afterLanding.(hubModel).liveNavRecoveryFlight == flight {
+		t.Fatal("the follow-up reused the landed flight's id")
+	}
+
+	// A completion tagged with the older flight's id — a dead connection's
+	// late response — must not unfence the follow-up.
+	afterStaleCompletion, _ := afterLanding.(hubModel).Update(hubSessionMsg{
+		ref:                   refB.String(),
+		detail:                hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: flight,
+		liveNavSeq:            afterLanding.(hubModel).liveNavSeq,
+	})
+	if !afterStaleCompletion.(hubModel).liveNavRecoveryInFlight {
+		t.Fatal("a completion tagged with an older flight's id unfenced the newer flight")
+	}
+}
+
+// A recovery response that lands after the user left session mode — to the
+// dashboard, or a spawn form — must still conclude its flight: a stranded
+// fence would coalesce every later subscription recovery into nothing until
+// a reconnect happened to clear it.
+func TestANonSessionRecoveryLandingStillConcludesItsFlight(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session B is displayed when the user leaves for the dashboard; a
+	// recovery flight's response lands there.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refB.String(),
+		detail: hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+	// A recovery read for B is in flight — the fence set, the flight's id
+	// recorded — when the user leaves for the dashboard.
+	shown.liveNavRecoveryInFlight = true
+	shown.liveNavRecoveryFlight = 1
+	afterDepart, _ := shown.updateKey(tea.KeyMsg{Type: tea.KeyCtrlO})
+	departed := afterDepart.(hubModel)
+	if departed.mode == hubModeSession {
+		t.Fatal("setup: ctrl+o did not leave the session")
+	}
+	afterLanding, _ := departed.Update(hubSessionMsg{
+		ref:                   refB.String(),
+		detail:                hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: 1,
+		liveNavSeq:            1,
+	})
+	landed := afterLanding.(hubModel)
+	if landed.liveNavRecoveryInFlight {
+		t.Fatal("the non-session landing left the recovery flight fenced")
+	}
+
+	// The user re-enters a session; a superseded read's discard must be
+	// able to issue its recovery — a stranded fence would coalesce it into
+	// nothing.
+	afterReentry, _ := landed.Update(hubSessionMsg{
+		ref:          refA.String(),
+		detail:       hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   landed.liveNavSeq,
+	})
+	reentered := afterReentry.(hubModel)
+	if reentered.mode != hubModeSession || reentered.detail.Ref != refA.String() {
+		t.Fatalf("setup: the re-entry did not apply: mode = %v detail = %v", reentered.mode, reentered.detail.Ref)
+	}
+	afterStale, staleCmd := reentered.Update(hubSessionMsg{
+		ref:          refB.String(),
+		detail:       hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   reentered.liveNavSeq - 1,
+	})
+	_ = afterStale
+	sawRecovery := false
+	if staleCmd != nil {
+		for _, c := range flattenBatch(t, staleCmd) {
+			if msg, ok := c().(hubSessionMsg); ok && msg.liveNavRecovery && msg.ref == refA.String() {
+				sawRecovery = true
+			}
+		}
+	}
+	if !sawRecovery {
+		t.Fatal("the discard after re-entry issued no recovery: a stranded fence coalesced it")
 	}
 }
 
@@ -1946,10 +2221,11 @@ func TestAnOlderRetryResponseDefersWhileTheNewerRetryReadRuns(t *testing.T) {
 	// recovery flights are fenced while in flight (round-28 medium 3), so a
 	// settle that coalesces onto this flight can only conclude after it.
 	afterResub, _ := rebound.Update(hubSessionMsg{
-		ref:             "local:01C",
-		detail:          hubSessionDetail{Ref: "local:01C", SessionID: "sess_c", State: appwire.ThreadStatusIdle},
-		liveNavRecovery: true,
-		liveNavSeq:      rebound.liveNavSeq,
+		ref:                   "local:01C",
+		detail:                hubSessionDetail{Ref: "local:01C", SessionID: "sess_c", State: appwire.ThreadStatusIdle},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: rebound.liveNavRecoveryFlight,
+		liveNavSeq:            rebound.liveNavSeq,
 	})
 	rebound = afterResub.(hubModel)
 	afterTick, reread := rebound.Update(hubEntryRepairTickMsg{ref: refA, seq: newSeq})
@@ -2656,10 +2932,11 @@ func TestAnArmedPagingFailureAfterAReplacedReadRestoresTheDisplayedSession(t *te
 	// recovery flights are fenced while in flight (round-28 medium 3), so
 	// the armed failure's settle below must not coalesce onto this one.
 	afterRecovery, _ := armed.Update(hubSessionMsg{
-		ref:             "local:01A",
-		detail:          hubSessionDetail{Ref: "local:01A", SessionID: "sess_a", State: appwire.ThreadStatusIdle},
-		liveNavRecovery: true,
-		liveNavSeq:      armed.liveNavSeq,
+		ref:                   "local:01A",
+		detail:                hubSessionDetail{Ref: "local:01A", SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: armed.liveNavRecoveryFlight,
+		liveNavSeq:            armed.liveNavSeq,
 	})
 	armed = afterRecovery.(hubModel)
 

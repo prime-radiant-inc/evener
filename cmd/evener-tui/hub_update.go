@@ -220,7 +220,13 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// re-establish it (round-8 medium 2). A read from before a
 			// reconnect also lands here - but its seq cannot match, because
 			// applyHubReconnect bumps liveNavSeq (round-8 medium 4).
+			//
+			// A recovery response landing on this non-session surface still
+			// concludes its flight: a stranded fence would coalesce every
+			// later subscription recovery into nothing until a reconnect
+			// happened to clear it (#4343 round-29 medium 2).
 			if m.mode != hubModeSession {
+				m.concludeRecoveryFlight(msg)
 				m.liveNavPendingRef = ""
 				return m, nil
 			}
@@ -235,10 +241,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// round-12 medium 2).
 			if msg.liveNavRecovery {
 				// This landing concludes the in-flight recovery flight, whatever
-				// it says: clear the fence before branching, so a stale drop or a
-				// failure retry can issue the next flight (its own issuance sets
-				// the fence again).
-				m.liveNavRecoveryInFlight = false
+				// it says — but only this flight's own landing, judged by the
+				// flight id: a stale completion cannot unfence a newer flight.
+				// Clear before branching, so a stale drop or a failure retry
+				// can issue the next flight (its own issuance sets the fence
+				// again).
+				m.concludeRecoveryFlight(msg)
 				if msg.liveNavSeq != m.liveNavSeq || m.detail.Ref != msg.ref {
 					// A stale recovery response's ThreadRead still replaced
 					// the server-side subscription, and concurrent RPCs have
@@ -301,7 +309,16 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// mutation before the return: subscribeNewChildren fills
 				// watchedChildRefs on the model the caller keeps.
 				recoveryChildren := m.subscribeNewChildren()
-				return m, tea.Batch(append(recoveryPreCut, recoveryChildren)...)
+				// A demand that arrived while this flight ran — the fence
+				// coalesced it onto this flight — settles now: the flight is
+				// done, and a superseded read's replacement may have
+				// re-pointed the server-side subscription after this flight's
+				// own read leg. The follow-up flight carries the restore.
+				var followUp tea.Cmd
+				if m.liveNavNeedsReconcile {
+					m, followUp = m.reestablishDisplayedSubscription()
+				}
+				return m, tea.Batch(append(recoveryPreCut, recoveryChildren, followUp)...)
 			}
 			if msg.liveNavSeq != m.liveNavSeq {
 				// A newer cycling read is still in flight: IT owns the
