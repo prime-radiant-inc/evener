@@ -803,13 +803,19 @@ func discloseAssumedWindow(cm *Manager, prof *provider.Profile, emitFn func(even
 // past a few hundred K input tokens must force a fold whatever the pressure
 // estimate says — the char/4 estimate can badly lag a tokenizer-dense
 // history, and threshold scaling can move the ordinary gates out of reach.
-// LastInputTokens is safe to read apart from the caller's pressure snapshot:
-// SetProfile clears a measurement together with the profile it belonged to,
-// so the count either matches the profile this pass decided on or is already
-// 0. A known window governs on its own, so the tripwire never fires for one.
-func (cm *Manager) unknownWindowTripwireFires(prof *provider.Profile) bool {
-	_, unknown := effectiveWindowOf(prof)
-	return unknown && cm.LastInputTokens() >= UnknownWindowInputTripwire
+// The verdict is one locked snapshot, not a profile check plus a separate
+// count read: RecordInputTokensFor installs a count only for the profile that
+// produced it, and SetProfile clears the count on a target change, so the
+// stored count belongs to the CURRENT profile or to no one. A pass whose
+// captured target was switched out has no measurement it may act on —
+// reading the count separately could catch the switched-to model's own
+// measurement instead — and a window that has since become known governs on
+// its own, so the unknown check reads the current profile too.
+func (cm *Manager) unknownWindowTripwireFires(captured *provider.Profile) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	_, unknown := effectiveWindowOf(cm.profile)
+	return unknown && sameProfileTarget(captured, cm.profile) && cm.lastInputTokens >= UnknownWindowInputTripwire
 }
 
 // assumptionStillGoverns reports whether an assumption-state captured under

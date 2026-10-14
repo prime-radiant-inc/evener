@@ -531,3 +531,39 @@ func TestEstimateUsageMarksAssumedWindow(t *testing.T) {
 		t.Fatalf("EstimateUsage() = %+v, want the arrived window with Assumed false", got)
 	}
 }
+
+// TestTripwireRejectsAnotherModelsMeasurement pins the tripwire's pairing
+// property: the verdict must come from one snapshot in which the measurement
+// still belongs to the profile the pass decided on. The interleaving that
+// defeats a separate count read: the A-pass captures its (unknown-window)
+// profile, then SetProfile(B) clears A's measurement and
+// RecordInputTokensFor(B, …) installs B's own count — the A-pass must not
+// read B's count and fold on it.
+func TestTripwireRejectsAnotherModelsMeasurement(t *testing.T) {
+	// The A-pass: an unknown-window profile and the snapshot it captured.
+	cm := NewManager(unknownGatewayProfile(), nil, cheapmodel.New(nil))
+	captured, _, _ := cm.profileSnapshot()
+	if _, unknown := effectiveWindowOf(captured); !unknown {
+		t.Fatal("fixture: the gateway profile must resolve an unknown window")
+	}
+
+	// The interleaving: A is switched out for a KNOWN-window model, and the
+	// new model records a measurement far past the tripwire.
+	b := testProfile("openai", "gpt-5", 1_000_000)
+	cm.SetProfile(b)
+	if !cm.RecordInputTokensFor(b, UnknownWindowInputTripwire+50_000, 0) {
+		t.Fatal("fixture: the new model's measurement was refused")
+	}
+
+	// The A-pass's tripwire, evaluated on its captured profile: B's count is
+	// not A's measurement, so it must not fire — on the pre-fix head it does.
+	if cm.unknownWindowTripwireFires(captured) {
+		t.Fatal("the A-pass tripwire fired on the switched-to model's measurement")
+	}
+
+	// B's own pass, on its own captured profile: a known window never trips,
+	// whatever the count — its ordinary thresholds govern.
+	if cm.unknownWindowTripwireFires(b) {
+		t.Fatal("a known-window pass tripped the unknown-window wire")
+	}
+}
