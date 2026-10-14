@@ -2923,7 +2923,11 @@ describe("useThreadsStore.ensureThread", () => {
       runScheduledHydrationRetry(0);
       await flushUntil(() => !threadsStore.getState().repairingRefs.has("ref_a"));
       expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
-      expect(threadsStore.getState().threads.get("ref_a")?.history?.failed).toBe("thread history failed at entry 3");
+      // The diagnostic's presence is the contract, not its wording (Copy Is
+      // Not a Test Oracle): the failed flag is set, the held content from the
+      // first read survives under it, and no further retry is armed.
+      expect(threadsStore.getState().threads.get("ref_a")?.history?.failed).toBeDefined();
+      expect(threadsStore.getState().threads.get("ref_a")?.name).toBe("Held");
       expect(scheduledHydrationRetries.length).toBe(1);
     });
 

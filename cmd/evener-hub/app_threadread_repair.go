@@ -2,7 +2,9 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -413,6 +415,19 @@ func (r *transcriptIndexRepairRegistry) run(path string, viaLane bool, refused s
 		delete(r.entries, path)
 		transcriptIndexRepairLog("transcript index repair finished (%s)", base)
 	default:
+		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
+			// The transcript is gone: the deletion's cleanup already ran
+			// (forget), and a delayed registration carrying a pre-deletion
+			// refusal resurrected this entry. Retire it with its queued
+			// asks instead of retaining a failed count for a session that
+			// no longer exists. A stat failure that is not a missing file
+			// keeps the ordinary failure accounting: the transcript may
+			// still be there (#4343 fast-follow low 1).
+			delete(r.entries, path)
+			r.laneQueue = slices.DeleteFunc(r.laneQueue, func(ask transcriptIndexLaneAsk) bool { return ask.path == path })
+			transcriptIndexRepairLog("transcript index repair found the transcript gone (%s)", base)
+			break
+		}
 		e.inFlight = false
 		if stamp, ok := r.statLocked(path); ok && (e.stamp == nil || stamp != *e.stamp) {
 			// A changed transcript starts the count over: the failures were
