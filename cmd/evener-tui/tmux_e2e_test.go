@@ -928,6 +928,50 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	}
 }
 
+// #4342: the hub's typed backpressure refusal (connectionBackpressure)
+// surfaces through the TUI's existing Send failed line with the hub's own
+// message — which promises no client-side retry the TUI does not make — and
+// the draft stays in the composer so the user can re-press Send. No TUI
+// automatic retry exists for it; this pins the message-only contract.
+func TestTUITmuxE2E_BackpressureRefusalSurfacesSendFailedWithDraft(t *testing.T) {
+	t.Parallel()
+	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	hub.SetSessionState("01LIVE", appwire.ThreadStatusIdle)
+	registerTUIE2EHubCleanup(t, hub)
+	app := startTUITmux(t, bin, hub)
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("● IDLE", "send: ready")
+
+	hub.SetRefuseSend(true)
+	app.TypeLine("busy hub draft")
+	app.WaitFor("Send failed.",
+		"error: Send failed: appwire turn/start: this test hub is too busy to take the message",
+		"cause appwire turn/start: this test hub is too busy to take the message",
+		"> busy hub draft")
+	// The refusal promised no automatic retry, and the TUI made none:
+	// exactly one send reached the hub, and it was refused.
+	if refusals := hub.RefusedSends(); len(refusals) != 1 || refusals[0] != "busy hub draft" {
+		t.Fatalf("refused sends = %q, want exactly the one typed refusal of the draft", refusals)
+	}
+	if sends := hub.Sends(); len(sends) != 0 {
+		t.Fatalf("accepted sends after a typed refusal = %d, want 0", len(sends))
+	}
+	// The draft survived: re-pressing Send on a hub that accepts now
+	// delivers it.
+	hub.SetRefuseSend(false)
+	app.SendKeys("Enter")
+	hub.WaitForSends(t, 1)
+	if sends := hub.Sends(); sends[0] != "busy hub draft" {
+		t.Fatalf("re-pressed send = %q, want the preserved draft", sends[0])
+	}
+}
+
 func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
@@ -1835,6 +1879,8 @@ type tuiE2EHub struct {
 	authRequired    bool
 	failTasks       bool
 	failSend        bool
+	refuseSend      bool
+	refusedSends    []string
 	failSpawn       bool
 	failFork        bool
 }
@@ -2554,6 +2600,14 @@ func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartP
 	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.refuseSend {
+		// A fixture-specific message: the test pins that whatever the hub
+		// said arrives on the TUI's failure line verbatim, not that two
+		// copies of a known string agree.
+		h.refusedSends = append(h.refusedSends, testInputText(params.Input))
+		return appwire.TurnStartResponse{}, appwire.BackpressureRefusal(params.ClientMutationID,
+			"this test hub is too busy to take the message")
+	}
 	if h.failSend {
 		return appwire.TurnStartResponse{}, errors.New("send failed")
 	}
@@ -2778,6 +2832,18 @@ func (h *tuiE2EHub) SetFailSend(fail bool) {
 	h.mu.Lock()
 	h.failSend = fail
 	h.mu.Unlock()
+}
+
+func (h *tuiE2EHub) SetRefuseSend(refuse bool) {
+	h.mu.Lock()
+	h.refuseSend = refuse
+	h.mu.Unlock()
+}
+
+func (h *tuiE2EHub) RefusedSends() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.refusedSends...)
 }
 
 func (h *tuiE2EHub) SetFailSpawn(fail bool) {

@@ -184,6 +184,13 @@ export interface ThreadsStoreState {
   mutationReconciliationStorageBlocked: ReadonlySet<string>;
   restartBlockingObligations: ReadonlyMap<string, symbol>;
   mutationAuthorityRefs: ReadonlySet<string>;
+  // #4342: the clientMutationIds of rows the hub refused in band as
+  // transient backpressure (connectionBackpressure: notAccepted plus an
+  // automatic retry disposition) whose paced retry has not gone out yet.
+  // The pending chips read this to say the hub did not accept the message
+  // yet, instead of showing an ordinary in-flight send; a marker clears as
+  // its paced attempt goes out, and a fresh refusal re-marks it.
+  transientMutationRefusals: ReadonlySet<string>;
   // The resumed identity when a store-driven resume (resumeFencedForSend)
   // returned a different ref than it started with, keyed by the ref the pane
   // was showing. The pane reads this and follows the new identity (Session.tsx)
@@ -972,6 +979,66 @@ export function installHydrationRetrySchedulerForTests(scheduler: HydrationRetry
   };
 }
 
+// #4342's paced re-drive for a mutation the hub refused in band as transient
+// backpressure: the row stays queued, and this paces when the next attempt
+// goes out so a saturated hub is not hammered and a freed hub is re-driven
+// promptly. A scheduler, not a clock, mirroring the hydration retry's
+// injectable seam: tests install a manual queue and invoke the retry
+// directly. The returned function cancels the scheduled callback.
+type BackpressureRetryScheduler = (attempt: number, retry: () => void) => () => void;
+
+const BACKPRESSURE_RETRY_BASE_MS = 500;
+const BACKPRESSURE_RETRY_MAX_MS = 15_000;
+
+const backoffBackpressureRetryScheduler: BackpressureRetryScheduler = (attempt, retry) => {
+  const delay = Math.min(BACKPRESSURE_RETRY_MAX_MS, BACKPRESSURE_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1));
+  const timer = setTimeout(retry, delay);
+  return () => clearTimeout(timer);
+};
+
+let backpressureRetryScheduler = backoffBackpressureRetryScheduler;
+
+export function installBackpressureRetrySchedulerForTests(scheduler: BackpressureRetryScheduler): () => void {
+  const previous = backpressureRetryScheduler;
+  backpressureRetryScheduler = scheduler;
+  return () => {
+    backpressureRetryScheduler = previous;
+  };
+}
+
+// Per ref, the row the hub last refused in band and the consecutive refusal
+// count pacing its retry. Serialized per-ref dispatch means at most one
+// refused row per ref at a time (the FIFO head), so one entry per ref is
+// exact. The count deliberately survives the retry that re-dispatches the
+// row — the refusal that follows a refused retry is what doubles the pace —
+// and a refusal naming a different row starts the ladder over. An entry
+// whose row settled lingers invisibly (its marker left with the attempt)
+// until the ref's next refusal replaces it.
+const transientRefusalPace = new Map<string, { clientMutationId: string; attempt: number }>();
+
+// Records a hub backpressure refusal of one queued row: marks the row busy in
+// the store and arms its paced retry. The retry clears the busy marker as
+// the attempt goes out (a fresh refusal re-marks it at the next pace step)
+// and re-drives the ref's ordinary dispatch, which every ready, discovery
+// and lifecycle event also does — the pace only shortens the wait.
+function markTransientMutationRefusal(runtime: MutationRuntime, record: MutationOutboxRecord): void {
+  const previous = transientRefusalPace.get(record.targetRef);
+  const attempt = previous?.clientMutationId === record.clientMutationId ? previous.attempt + 1 : 1;
+  transientRefusalPace.set(record.targetRef, { clientMutationId: record.clientMutationId, attempt });
+  threadsStore.setState((state) => ({
+    transientMutationRefusals: new Set(state.transientMutationRefusals).add(record.clientMutationId),
+  }));
+  backpressureRetryScheduler(attempt, () => {
+    if (!isCurrentMutationRuntime(runtime)) return;
+    threadsStore.setState((state) => {
+      const next = new Set(state.transientMutationRefusals);
+      next.delete(record.clientMutationId);
+      return { transientMutationRefusals: next };
+    });
+    scheduleMutationDispatch(runtime, [record.targetRef]);
+  });
+}
+
 let wiredClient: AppwireClientLike | null = null;
 let readyEpoch = 0;
 let unwireNotification: (() => void) | null = null;
@@ -1542,6 +1609,10 @@ function getMutationRuntime(): MutationRuntime | null {
       // read can prove absence while journal writes still fail, creating a
       // read/retry loop without giving persistence time to recover.
       dispatchableMutationRefs.delete(targetRef);
+    },
+    onTransientRefusal: (record) => {
+      if (!isCurrentMutationRuntime(runtime)) return;
+      markTransientMutationRefusal(runtime, record);
     },
     onClearResponse: applyClearResponse,
     onHumanNoteReconciled: (record) => {
@@ -5108,6 +5179,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   mutationReconciliationStorageBlocked: new Set(),
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
+  transientMutationRefusals: new Set(),
   resumedIdentities: new Map(),
   resumeFailures: new Map(),
   stoppingRefs: new Set(),
@@ -6447,6 +6519,7 @@ export function resetThreadsStoreForTests(): void {
   undeliveredMutationIds.clear();
   mutationStateGenerations.clear();
   dispatchableMutationRefs.clear();
+  transientRefusalPace.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
   refCounts.clear();

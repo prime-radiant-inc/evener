@@ -75,6 +75,7 @@ import {
   FRAME_TIMES_WINDOW_MS,
   hasBlockedUnknown,
   hasQueuedNonSend,
+  installBackpressureRetrySchedulerForTests,
   installHydrationRetrySchedulerForTests,
   notifyReadyForMutationDispatch,
   putThreadModel,
@@ -6704,6 +6705,187 @@ test("a send whose durable write the browser refuses for quota goes out directly
   threadsStore.getState().releaseThread("ref_a");
   expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   await unsubscribed;
+});
+
+// #4342: the hub's high-water backpressure refusal is transient. The row
+// stays queued in the outbox FIFO (never recovery), the pending surface
+// shows the hub did not accept it yet — the busy marker clears as the next
+// attempt goes out and a fresh refusal re-marks it — and the store paces
+// retries through the injectable backoff scheduler, one arm per refusal,
+// doubling while the hub keeps refusing. A retry the hub accepts settles
+// the row and leaves nothing marked.
+test("a backpressured send stays queued, surfaces busy, and paces retries that redeliver", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  let refuse = true;
+  fake.on("turn/start", (params) => {
+    if (refuse) {
+      throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      });
+    }
+    return {
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    };
+  });
+  const scheduled: Array<{ attempt: number; retry: () => void }> = [];
+  const restoreScheduler = installBackpressureRetrySchedulerForTests((attempt, retry) => {
+    scheduled.push({ attempt, retry });
+    return () => {};
+  });
+
+  await threadsStore.getState().send("ref_a", "held by backpressure");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  const [refused] = await storage.listOutbox("ref_a");
+  if (!refused) throw new Error("expected the refused row to stay durable");
+  expect(refused.state).toBe("submitting");
+  expect(refused.attempted).toBe(false);
+  expect(threadsStore.getState().transientMutationRefusals.has(refused.clientMutationId)).toBe(true);
+  expect(scheduled.map((entry) => entry.attempt)).toEqual([1]);
+
+  // Firing the retry while the hub still refuses: the marker cleared as the
+  // attempt went out, and the second refusal re-marks it at a doubled pace.
+  const firstRetry = scheduled[0];
+  if (!firstRetry) throw new Error("expected the first paced retry to be armed");
+  firstRetry.retry();
+  await flushIndexedDBUntil(
+    () =>
+      fake.calls.filter((call) => call.method === "turn/start").length === 2 &&
+      threadsStore.getState().transientMutationRefusals.has(refused.clientMutationId),
+  );
+  expect(scheduled.map((entry) => entry.attempt)).toEqual([1, 2]);
+
+  // A retry the hub accepts settles the row and clears the marker.
+  refuse = false;
+  const secondRetry = scheduled[1];
+  if (!secondRetry) throw new Error("expected the doubled paced retry to be armed");
+  secondRetry.retry();
+  await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/start").length === 3);
+  const settleProbe = new MutationOutboxIndexedDB();
+  for (let turn = 0; turn < 30 && (await storage.listOutbox("ref_a")).length > 0; turn += 1) {
+    await settleProbe.listTargetRefs();
+  }
+  settleProbe.close();
+  expect(await storage.listOutbox("ref_a")).toEqual([]);
+  expect(threadsStore.getState().transientMutationRefusals.size).toBe(0);
+  restoreScheduler();
+});
+
+// #4342: the dispatcher's attempted-marker rollback is what keeps a
+// refused row out of the browser's own reconnect reconcile park — the
+// non-authoritative first read marks submitting+attempted rows
+// blockedUnknown, and a parked row stops dispatching. A refused row
+// (its marker cleared by the refusal itself) survives the scan still
+// submitting, and the ordinary ready drive redelivers it.
+test("a backpressured send survives the non-authoritative reconcile park and redelivers", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  let snapshot = readResponse("ref_a");
+  fake.on("thread/read", () => snapshot);
+  let refuse = true;
+  fake.on("turn/start", (params) => {
+    if (!refuse) {
+      return {
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+        receipt: mutationReceipt(params.clientMutationId),
+      };
+    }
+    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    });
+  });
+  const restoreScheduler = installBackpressureRetrySchedulerForTests(() => () => {});
+
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().send("ref_a", "held across a reconnect");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  const [refused] = await storage.listOutbox("ref_a");
+  if (!refused) throw new Error("expected the refused row to stay durable");
+  expect(refused.state).toBe("submitting");
+
+  // A reconnect whose first read is not mutation-authoritative runs the
+  // reconcile's onlyAttempted park over the ref's submitting rows.
+  snapshot = readResponse("ref_a");
+  Object.assign(snapshot.thread.evener, { mutationStateAuthoritative: false });
+  await threadsStore.getState().refreshThread("ref_a");
+  const [survived] = await storage.listOutbox("ref_a");
+  if (!survived) throw new Error("expected the refused row to survive the reconcile");
+  expect(survived.clientMutationId).toBe(refused.clientMutationId);
+  expect(survived.state).toBe("submitting");
+
+  // The ordinary ready drive redelivers the row; the hub refusing again
+  // proves the redelivery reached the wire while the row never parked.
+  notifyReadyForMutationDispatch(["ref_a"]);
+  await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/start").length === 2);
+  const [redelivered] = await storage.listOutbox("ref_a");
+  if (!redelivered) throw new Error("expected the refused row to stay durable through redelivery");
+  expect(redelivered.state).toBe("submitting");
+  expect(redelivered.clientMutationId).toBe(refused.clientMutationId);
+
+  // Once the hub accepts, the same drive settles the row.
+  refuse = false;
+  notifyReadyForMutationDispatch(["ref_a"]);
+  await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/start").length === 3);
+  const settleProbe = new MutationOutboxIndexedDB();
+  for (let turn = 0; turn < 30 && (await storage.listOutbox("ref_a")).length > 0; turn += 1) {
+    await settleProbe.listTargetRefs();
+  }
+  settleProbe.close();
+  expect(await storage.listOutbox("ref_a")).toEqual([]);
+  restoreScheduler();
+});
+
+// #4342: the direct-send fallback (C13) has no durable row, so a
+// backpressure refusal there can neither pace nor surface busy: it
+// rejects the send with the hub's own message through the existing
+// send-failure path, nothing is queued, and no retry is armed. The user
+// re-presses Send; the spec claims no paced retry for this path.
+test("a backpressure refusal on the direct-send path rejects with the hub's message and pins nothing", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", (params) => {
+    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    });
+  });
+  const scheduled: number[] = [];
+  const restoreScheduler = installBackpressureRetrySchedulerForTests((attempt) => {
+    scheduled.push(attempt);
+    return () => {};
+  });
+  // Force the direct path the same way the quota test does: the durable
+  // write refuses at once, so the send goes out as a plain RPC.
+  const add = vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+    throw new DOMException("storage full", "QuotaExceededError");
+  });
+
+  await expect(threadsStore.getState().send("ref_a", "sent from a full origin")).rejects.toThrow(
+    "the hub's inbound queue is busy and did not accept this message",
+  );
+  expect(add).toHaveBeenCalledTimes(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  expect(await storage.listOutbox()).toEqual([]);
+  expect(threadsStore.getState().transientMutationRefusals.size).toBe(0);
+  expect(scheduled).toEqual([]);
+  restoreScheduler();
 });
 
 // Behind an undelivered durable send the fallback refuses rather than jump
