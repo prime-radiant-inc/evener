@@ -2272,6 +2272,108 @@ it("retry visits persisted pending work in save order and leaves another session
   expect(await f.outbox.listOutbox()).toEqual([]);
 });
 
+// #4580. The append guard used to block a later handoff behind ANY earlier
+// pending operation in the same session, so a permanently unresolvable
+// recipient starved every later eligible handoff forever. The contracts below:
+// append ordering is scoped to the captured recipient, and a destination no
+// composition owner can ever claim settles its own receipt terminal while the
+// saved annotation and its copyable fallback survive.
+it("an ownerless earlier handoff does not block a later healthy handoff in the same session", async () => {
+  const f = await fixture("readonly-not-blocking");
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  const baseline = await f.drafts.load(f.key);
+  if (!baseline) throw new Error("baseline draft missing");
+
+  // The earlier same-session operation is captured for an ownerless read-only
+  // view: no composition owner can ever claim it, so on its own it can only
+  // stay pending.
+  const readonly = await acceptedOperation(f.repo, f.document, "op-readonly", "Read-only note.", {
+    kind: "browser-readonly-session",
+    sourcePaneId: "pane-A",
+  });
+  await f.repo.saveAnnotation(readonly);
+  const healthy = await acceptedOperation(f.repo, f.document, "op-healthy", "Healthy note.", f.destination);
+  await f.repo.saveAnnotation(healthy);
+
+  // The later handoff to the live composer must not wait behind the ownerless
+  // one: the two handoffs share a session, but not a recipient.
+  const handed = await f.repo.handoff(f.document, "op-healthy");
+  expect(handed.state).toBe("applied");
+  const draft = await f.drafts.load(f.key);
+  if (!draft) throw new Error("draft missing after healthy handoff");
+  const healthyReference = REFERENCE.replace('"Keep this scope."', '"Healthy note."');
+  expect(draft.text).toBe(`${baseline.text}\n\n${healthyReference}`);
+  expect(draft.token.sessionRevision).toBe(baseline.token.sessionRevision + 1);
+
+  // The unblocking cost the ownerless note nothing: it is still saved, still
+  // listed with the pending outcome its copyable reference renders from, and
+  // still pending until its own handoff attempt settles it.
+  const readonlyRow = (
+    await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)
+  ).find((row) => row.operationId === "op-readonly");
+  expect(readonlyRow).toMatchObject({ state: "pending" });
+  const readonlyView = (await f.repo.listAnnotations(f.document)).find(
+    (view) => view.receipt.operationId === "op-readonly",
+  );
+  expect(readonlyView?.operation).toEqual(readonly);
+  expect(readonlyView?.handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+});
+
+const neverResolvableDestinations: Array<{ name: string; destination: DestinationProvenance }> = [
+  { name: "read-only session", destination: { kind: "browser-readonly-session", sourcePaneId: "pane-A" } },
+  { name: "restored session", destination: { kind: "browser-restored-session" } },
+  { name: "native session", destination: { kind: "native-session" } },
+];
+
+it.each(neverResolvableDestinations)(
+  "a never-resolvable $name handoff settles unclaimed and preserves the saved annotation and its copyable fallback",
+  async ({ destination }) => {
+    const f = await fixture(`unclaimed-${destination.kind}`);
+    expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+    const baseline = await f.drafts.load(f.key);
+    if (!baseline) throw new Error("baseline draft missing");
+
+    const dead = await acceptedOperation(f.repo, f.document, "op-dead", "Dead note.", destination);
+    await f.repo.saveAnnotation(dead);
+
+    // The attempt reports the same permanent owner-unavailable outcome it
+    // always reported - and settles the receipt terminal instead of leaving
+    // it as pending work the retry machinery revisits forever.
+    expect(await f.repo.handoff(f.document, "op-dead")).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+    const operationKey = annotationOperationKey(f.document.namespace, "op-dead");
+    const settledRow = (
+      await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)
+    ).find((row) => row.operationKey === operationKey);
+    expect(settledRow).toMatchObject({ state: "unclaimed" });
+
+    // The terminal state PRESERVES the saved annotation: exactly its one
+    // payload row remains, the listing still shows the note, and the view
+    // keeps the pending owner-unavailable outcome the copyable reference
+    // renders from.
+    const payloads = (
+      await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)
+    ).filter((row) => row.payloadKey === operationKey);
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]?.operation).toEqual(dead);
+    const view = (await f.repo.listAnnotations(f.document)).find((entry) => entry.receipt.operationId === "op-dead");
+    expect(view?.operation).toEqual(dead);
+    expect(view?.handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+
+    // A repeat attempt answers identically over the settled receipt, nothing
+    // ever reaches a draft, and the retry outcome no longer counts the
+    // unclaimed handoff as pending work.
+    expect(await f.repo.handoff(f.document, "op-dead")).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+    expect(await f.drafts.load(f.key)).toEqual(baseline);
+    expect(await f.repo.retryPendingWithOutcome("foreground")).toEqual({ pending: false });
+  },
+);
+
 // A. Keyed subscribers against real storage: exact-DocumentKey wakeups after commit,
 // scoped consumer reads across expiry and reset, retirement on unsubscribe/close, and
 // best-effort cross-adapter delivery that rereads committed data as authority.
