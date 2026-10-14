@@ -726,6 +726,74 @@ describe("per-message fork affordance", () => {
     }
   });
 
+  test("a press joins the fork already in flight: a remount during the RPC itself never repeats it", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    let releaseFork: (() => void) | undefined;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return new Promise((resolve) => {
+        releaseFork = () =>
+          resolve({
+            thread: forkWireThread({
+              id: `child_${forkCalls}`,
+              sessionId: `child_${forkCalls}`,
+              evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+            }),
+            originalInput: "literal /same\nsecond line",
+          });
+      });
+    });
+    const repository = createBrowserDraftRepository({});
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    // The toasts store outlives this describe's reset, so the silent join is
+    // asserted against the count this test started with, not absolute absence.
+    const errorToastsBefore = getToasts().filter((toast) => toast.kind === "error").length;
+    try {
+      const row = item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" });
+      const { unmount } = render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await act(async () => {
+        fireEvent.click(button);
+        await nextRealTask();
+      });
+      // The fork RPC is in flight and nothing has been retained yet.
+      expect(forkCalls).toBe(1);
+
+      // The row unmounts while the RPC itself is still pending, and the
+      // remounted button has fresh state. Its press must JOIN the fork
+      // already in flight, not issue a second RPC into a duplicate child.
+      unmount();
+      render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const remountedButton = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await act(async () => {
+        fireEvent.click(remountedButton);
+        await nextRealTask();
+        await nextRealTask();
+      });
+      expect(forkCalls).toBe(1);
+
+      await act(async () => {
+        releaseFork?.();
+        await nextRealTask();
+        await nextRealTask();
+      });
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the forked child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+      // The single fork completed silently: no error reached the user.
+      expect(getToasts().filter((toast) => toast.kind === "error").length).toBe(errorToastsBefore);
+    } finally {
+      releaseFork?.();
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
+  });
+
   test("a user message with a sessionRef renders a Fork-from-here button; a read-only one (no ref) does not", () => {
     const { rerender } = render(
       <UserMessageItem

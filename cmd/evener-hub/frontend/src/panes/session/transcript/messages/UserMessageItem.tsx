@@ -73,9 +73,16 @@ export interface ForkFromHereButtonProps {
 // from, written the moment the hub creates the child, and survives until a
 // press completes (or conflicts on) that child's seeding.
 const unseededForks = new Map<string, { ref: string; originalInput: string }>();
+// One fork operation per (session, message) at a time, registered before the
+// first await: a row that unmounts mid-press remounts with fresh state and
+// nothing retained yet (the child exists only after the RPC returns), and its
+// press must JOIN the operation already in flight - forking again would
+// create a duplicate child session.
+const forkOperations = new Map<string, Promise<void>>();
 
 export function resetForkRetentionForTests(): void {
   unseededForks.clear();
+  forkOperations.clear();
 }
 
 function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonProps) {
@@ -85,6 +92,33 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
   async function handleFork() {
     setBusy(true);
     const retentionKey = JSON.stringify([sessionRef, transcriptKey]);
+    const inFlight = forkOperations.get(retentionKey);
+    if (inFlight) {
+      // A previous press - possibly from a row that has since unmounted - is
+      // already forking or seeding this message. Join it instead of creating
+      // another child; the operation reports its own outcome.
+      try {
+        await inFlight;
+      } catch {
+        // The originating press already reported its own failure.
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    const operation = performFork(retentionKey);
+    forkOperations.set(retentionKey, operation);
+    try {
+      await operation;
+    } catch {
+      // performFork reports its own failures.
+    } finally {
+      forkOperations.delete(retentionKey);
+      setBusy(false);
+    }
+  }
+
+  async function performFork(retentionKey: string): Promise<void> {
     const retained = unseededForks.get(retentionKey);
     let ref = retained?.ref;
     let originalInput = retained?.originalInput ?? "";
@@ -147,8 +181,6 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
       // The child the RPC already created stays retained through a local
       // fault: the next press retries only its seeding.
       toasts.push("error", sessionActionError("Couldn't fork from here", err));
-    } finally {
-      setBusy(false);
     }
   }
 
