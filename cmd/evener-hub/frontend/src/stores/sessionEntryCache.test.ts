@@ -4,6 +4,7 @@ import {
   markItemIdentityOnly,
   markItemTextOmitted,
 } from "@evener/appwire-client";
+import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { IDBDatabase, IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -21,6 +22,7 @@ import {
 import { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
+import { TranscriptRepository } from "./transcriptRepository";
 
 const caches: Array<{ close(): void }> = [];
 const databases: Array<{ factory: IDBFactory; name: string }> = [];
@@ -205,11 +207,7 @@ it("rejects an older replacement from another cache before deleting newer author
   const protectedRows = await newerCache.getLatest(historyKey, 40);
   const protectedMeta = await readEntryMeta(factory, name, historyKey);
   expect(protectedMeta).toMatchObject({ sourceAuthority: { representedSnapshot: 6 } });
-  for (const stale of [
-    snapshot(5),
-    { ...snapshot(7), sourceAuthority: { ...snapshot(7).sourceAuthority, bootGeneration: "other-boot" } },
-    { ...snapshot(7), sourceAuthority: undefined },
-  ]) {
+  for (const stale of [snapshot(5), { ...snapshot(7), sourceAuthority: undefined }]) {
     expect(await olderCache.commitBatch(stale)).toEqual({ outcome: "refused", reason: "source-authority" });
     expect(await newerCache.getLatest(historyKey, 40)).toEqual(protectedRows);
     expect(await readEntryMeta(factory, name, historyKey)).toEqual(protectedMeta);
@@ -224,6 +222,101 @@ it("rejects an older replacement from another cache before deleting newer author
     persisted.flat().reduce((sum, entry) => sum + independentJsonBytes(entry), 0) +
     independentJsonBytes(persistedSessionMetadataPayload(protectedMeta));
   expect(await newerCache.getByteTotals(historyKey)).toEqual({ historyBytes: bytes, aggregateBytes: bytes });
+  // Round-14 corrects Ruling 199: incomparable generations replace rather
+  // than requiring Clear. The older/missing-authority assertions above stand.
+  const incomparable = {
+    ...snapshot(7),
+    sourceAuthority: { ...snapshot(7).sourceAuthority, bootGeneration: "other-boot" },
+  };
+  expect((await olderCache.commitBatch(incomparable)).outcome).toBe("committed");
+  expect(await newerCache.getLatest(historyKey, 40)).toMatchObject(incomparable.items);
+  expect(await readEntryMeta(factory, name, historyKey)).toMatchObject({
+    sourceAuthority: incomparable.sourceAuthority,
+  });
+});
+
+it("commits repository-generated replacement after a daemon restart", async () => {
+  const fixture = createEntryCacheFixture();
+  caches.push(fixture.cache);
+  databases.push({ factory: fixture.indexedDB, name: fixture.name });
+  const identity = { clientId: "client", hostId: "host", sessionId: "session", incarnation: "I" };
+  const historyKey = entryHistoryKey(identity);
+  const wire = currentRead("ref");
+  wire.thread.sessionId = identity.sessionId;
+  wire.snapshot = { incarnation: "I", length: 100 };
+  wire.bootGeneration = "1";
+  wire.epoch = 3;
+  wire.overlay = [];
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref: "ref",
+    threadId: wire.thread.id,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 1,
+  });
+  const reader = owner.attachReader();
+  const writes = vi.spyOn(fixture.cache, "commitBatch");
+  try {
+    expect(owner.acceptRead(wire, { lifetime: 1, readId: "before", boundary: "before" })).toBe(true);
+    await owner.settled();
+    expect(await readEntryMeta(fixture.indexedDB, fixture.name, historyKey)).toMatchObject({
+      sourceAuthority: { bootGeneration: "1", epoch: 3, incarnation: "I", representedSnapshot: 100 },
+    });
+    expect(
+      owner.acceptRead(
+        { ...wire, bootGeneration: "2", epoch: 0 },
+        {
+          lifetime: 1,
+          readId: "after",
+          boundary: "after",
+        },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    expect(writes.mock.calls.at(-1)?.[0].replacement).toBeDefined();
+    expect(await readEntryMeta(fixture.indexedDB, fixture.name, historyKey)).toMatchObject({
+      sourceAuthority: { bootGeneration: "2", epoch: 0, incarnation: "I", representedSnapshot: 100 },
+    });
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it.each([
+  { bootGeneration: "2", epoch: 0, incarnation: "I", representedSnapshot: 100 },
+  { bootGeneration: "1", epoch: 4, incarnation: "I", representedSnapshot: 1 },
+  { bootGeneration: "1", epoch: 0, incarnation: "other", representedSnapshot: 1 },
+  { bootGeneration: "daemonless", epoch: 0, incarnation: "I", representedSnapshot: 1 },
+  { bootGeneration: "1@other-owner", epoch: 0, incarnation: "I", representedSnapshot: 1 },
+])("advances durable source authority to %j for replacement and additive writes", async (incoming) => {
+  for (const replacement of [true, false]) {
+    const fixture = createEntryCacheFixture();
+    caches.push(fixture.cache);
+    databases.push({ factory: fixture.indexedDB, name: fixture.name });
+    const sourceAuthority = { bootGeneration: "1", epoch: 3, incarnation: "I", representedSnapshot: 100 };
+    const batch = { historyKey: "authority", clearEpoch: 0, items: [], sourceAuthority };
+    expect((await fixture.cache.commitBatch(batch)).outcome).toBe("committed");
+    expect(
+      (
+        await fixture.cache.commitBatch({
+          ...batch,
+          sourceAuthority: incoming,
+          ...(replacement ? { replacement: { from: { entry: 0, item: 0 } } } : {}),
+        })
+      ).outcome,
+    ).toBe("committed");
+    expect(await readEntryMeta(fixture.indexedDB, fixture.name, "authority")).toMatchObject({
+      sourceAuthority: incoming,
+    });
+    if (incoming.incarnation === "I" && (incoming.bootGeneration === "2" || incoming.bootGeneration === "1")) {
+      expect(await fixture.cache.commitBatch({ ...batch, replacement: { from: { entry: 0, item: 0 } } })).toEqual({
+        outcome: "refused",
+        reason: "source-authority",
+      });
+    }
+  }
 });
 
 it("allows unfenced legacy replacements then fences later replacements after authority is stored", async () => {
