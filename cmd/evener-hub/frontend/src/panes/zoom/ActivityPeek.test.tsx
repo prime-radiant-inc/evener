@@ -19,7 +19,7 @@ import {
 } from "../../stores/browserDraftRepository";
 import { connectionStore } from "../../stores/connection";
 import { activityDelegate, activitySummary, activityThread } from "../../stores/sessionActivityTestUtils";
-import { resetThreadsStoreForTests } from "../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../widgets/toast/store";
 import { useAttachments } from "../session/composer/attachments/useAttachments";
@@ -181,6 +181,17 @@ test.each(["success", "failure"] as const)(
     await act(async () => {
       const live = conversationPaneLifetime(restored);
       await retainedConversationComposer(live, "grandchild")?.ready();
+    });
+    // The merged world produces each conversation's transcript entries in
+    // the background: a column mounts before production publishes its model,
+    // and that publication would otherwise land after the test's last act
+    // window. Join the mounted columns' in-flight ensureThread reads inside
+    // act so the publications settle inside the test's windows.
+    await act(async () => {
+      const state = threadsStore.getState();
+      await state.ensureThread("root");
+      await state.ensureThread("child");
+      await state.ensureThread("grandchild");
     });
     await act(async () => {
       if (outcome === "success") await encoding.resolve();

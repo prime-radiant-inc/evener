@@ -53,8 +53,8 @@ import {
   MUTATION_OUTBOX_STORE,
 } from "../stores/localCompositionSchema";
 import type { RecoveryWriteGuard } from "../stores/mutationOutboxIndexedDB";
-import { SessionCacheIndexedDB } from "../stores/sessionCacheIndexedDB";
-import { clearCachedSessions, resetThreadsStoreForTests, setSessionCacheAdapterForTests } from "../stores/threads";
+import { SessionEntryCache } from "../stores/sessionEntryCache";
+import { clearCachedSessions, resetThreadsStoreForTests, setProductionEntryCacheForTests } from "../stores/threads";
 
 it.each(["draft", "recovery"] as const)("appends only to %s backing in the SAME session", async (backing) => {
   const f = await fixture(`append-${backing}`);
@@ -1778,10 +1778,9 @@ it("history clear retains annotations in ALL 101 files", async () => {
   // unrelated test cannot leak into this one.
   resetThreadsStoreForTests();
   const f = await fixture("cache");
-  const cache = new SessionCacheIndexedDB({ indexedDB: f.factory, databaseName: "history-cache" });
-  setSessionCacheAdapterForTests(cache);
+  const cache = new SessionEntryCache({ indexedDB: f.factory, databaseName: "history-cache" });
+  setProductionEntryCacheForTests(cache);
   cleanupAfterTest(() => {
-    setSessionCacheAdapterForTests(undefined);
     resetThreadsStoreForTests();
     cache.close();
   });
