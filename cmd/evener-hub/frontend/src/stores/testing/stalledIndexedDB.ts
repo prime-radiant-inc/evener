@@ -137,6 +137,13 @@ export function holdIndexedDBEvent(target: EventTarget, type: string) {
 // `reached` resolves once the held event has arrived, which is when the
 // write is durably done yet still in flight for everything awaiting it.
 export function holdNextWriteTransaction(stores: readonly string[]) {
+  return holdNextTransactionEvent(stores, "complete");
+}
+
+// Holds the named event of the next readwrite transaction opened over
+// exactly `stores` - the abort-event twin a rollback's bounded-wait coverage
+// needs, since an aborted transaction never fires "complete".
+export function holdNextTransactionEvent(stores: readonly string[], event: "complete" | "abort") {
   const transact = IDBDatabase.prototype.transaction;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   let markReached: (() => void) | undefined;
@@ -154,7 +161,7 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
       transaction.objectStoreNames.length === stores.length &&
       stores.every((store) => transaction.objectStoreNames.contains(store))
     ) {
-      hold = holdIndexedDBEvent(transaction, "complete");
+      hold = holdIndexedDBEvent(transaction, event);
       void hold.reached.then(() => markReached?.());
     }
     return transaction;

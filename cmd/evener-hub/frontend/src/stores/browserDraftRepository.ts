@@ -808,7 +808,10 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     } catch (error) {
       if (!timedOut) {
         tryAbortTransaction(transaction);
-        await completed.catch(() => undefined);
+        // The rollback wait shares the same deadline the happy path honors:
+        // a stalled abort event must not keep the call pending past the
+        // watchdog.
+        await Promise.race([completed.catch(() => undefined), deadline]).catch(() => undefined);
       }
       throw error;
     } finally {

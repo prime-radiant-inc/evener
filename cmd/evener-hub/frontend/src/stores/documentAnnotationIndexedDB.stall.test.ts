@@ -11,7 +11,12 @@ import {
   ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_OPERATIONS_STORE,
 } from "./localCompositionSchema";
-import { holdIndexedDBEvent, holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
+import {
+  holdIndexedDBEvent,
+  holdNextTransactionEvent,
+  holdNextWriteTransaction,
+  nextRealTask,
+} from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -56,6 +61,60 @@ test("a stalled annotation transaction stops waiting and the same adapter can re
   expect(failure).toMatchObject({ message: "Document annotation repository transaction timed out" });
   hold.release();
   // The watchdog retired the stalled connection; a fresh read still works.
+  expect((await repository.beginRead(document)).key).toEqual(document);
+  repository.close();
+  drafts.close();
+});
+
+// The repository's watchdog bounds the happy path; the rollback the error
+// path awaits must share that bound. A body that rejects before the deadline
+// enters the catch, whose completed-wait used to sit OUTSIDE the deadline
+// race - a stalled abort event kept the call pending forever, past the
+// watchdog, blocking the shared annotation retry pass for good.
+test("a body rejection with a stalled abort event still settles within the watchdog", async () => {
+  const factory = new IDBFactory();
+  const drafts = createBrowserDraftRepository({
+    indexedDB: factory,
+    databaseName: "annotation-abort-stall",
+    storage: new MemoryStorage(),
+  });
+  const repository = createDocumentAnnotationRepository({
+    indexedDB: factory,
+    databaseName: "annotation-abort-stall",
+    drafts,
+    targetFor: () => null,
+  });
+  const key = browserDraftKey("root", "https://stall.example");
+  const document: DocumentKey = { ...key, path: "NOTES.md" };
+  await repository.beginRead(document);
+  // The next readwrite transaction over the read stores has its ABORT event
+  // held: the rollback the catch awaits after the body rejects can never
+  // settle on its own.
+  const hold = holdNextTransactionEvent([ANNOTATION_NAMESPACES_STORE, ANNOTATION_HEADS_STORE], "abort");
+  // The beginRead body rejects through a one-shot request-creation fault.
+  const getSpy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementationOnce(() => {
+    throw new Error("request creation fault");
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let failure: unknown;
+  let settled = false;
+  repository
+    .beginRead(document)
+    .catch((error: unknown) => {
+      failure = error;
+    })
+    .finally(() => {
+      settled = true;
+    });
+  await vi.advanceTimersByTimeAsync(10_001);
+  // The call must settle by the watchdog deadline even though its rollback
+  // event never arrived.
+  expect(settled).toBe(true);
+  expect(failure).toBeDefined();
+  hold.release();
+  getSpy.mockRestore();
+  // Subsequent recovery: the watchdog retired the stalled connection, and a
+  // fresh read still works.
   expect((await repository.beginRead(document)).key).toEqual(document);
   repository.close();
   drafts.close();
