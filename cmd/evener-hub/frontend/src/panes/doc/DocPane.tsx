@@ -697,8 +697,15 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // completes the expired epoch's deletion there.
         expiryReceiptRef.current = accepted.receipt;
         refreshRead();
+        return "success";
       }
-      return "success";
+      // A receipt-less pending means the fence itself faulted: the repository
+      // retained the expiry work for its own retry, but that retry only runs
+      // on a later storage success. Keep the outcome transient so THIS reader
+      // paces its own recovery: the next cycle re-fences, and once the fence
+      // commits the reread adopts the replacement epoch - no reopen,
+      // foreground action or Reload required.
+      return "transient";
     };
     const demand = createDocumentReadDemand(readDocument);
     readDemandRef.current = demand;

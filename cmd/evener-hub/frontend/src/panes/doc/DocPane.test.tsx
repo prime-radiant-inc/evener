@@ -3866,6 +3866,90 @@ test("a proven-change acceptance fault keeps its paced retry and recovers withou
   expect(vi.getTimerCount()).toBe(0);
 });
 
+test("a receipt-less expiry-pending keeps its paced retry and recovers when the fence commits", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  let failFence = false;
+  const f = await fixture("read-fault-fence-pending", {
+    beforeCommit: (operation) => {
+      if (operation === "expiry" && failFence) throw new Error("fence transaction fault");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  mountAnnotated(f, ports, client, "doc-fence-pending-paced");
+  const work = documentReaderWork("doc-fence-pending-paced", f.document, ports);
+
+  // Arm a capture with real evidence against the accepted content, using the
+  // real Selection/Range gesture under faked setTimeout.
+  await settleFakeReadCycle();
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+  const paragraph = screen.getByText("First occurrence: same");
+  const node = paragraph.firstChild;
+  if (!node || node.nodeType !== Node.TEXT_NODE) throw new Error("missing source text node");
+  const range = document.createRange();
+  range.setStart(node, 18);
+  range.setEnd(node, 22);
+  const selection = document.getSelection();
+  if (!selection) throw new Error("missing selection");
+  fireEvent.pointerDown(paragraph, PRIMARY_POINTER);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  fireEvent.pointerUp(paragraph, PRIMARY_POINTER);
+  if (!work.comment.capture) throw new Error("no capture armed");
+  const leaseBefore = work.lease;
+  if (!leaseBefore) throw new Error("no lease before the fault");
+
+  // The repository returns expiry-pending WITHOUT a receipt when the fence
+  // transaction itself faults: its retained expiry work only runs on a later
+  // storage success, so a "success" outcome here leaves a visible reader
+  // unable to annotate until some external trigger happens. The outcome must
+  // stay transient so this reader paces its own recovery.
+  failFence = true;
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+  });
+  await settleFakeReadCycle();
+  expect(work.phase).toBe("expiry-pending");
+  expect(work.lease).toBeNull();
+  expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+  // Once the fence fault heals, the paced cycle re-fences for real and the
+  // reread adopts the replacement epoch - no reopen, foreground action or
+  // Reload - leaving the reader able to capture another passage.
+  failFence = false;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  await settleFakeReadCycle();
+  expect(work.phase).toBe("reading");
+  expect(work.lease).not.toBeNull();
+  expect(work.lease?.epoch).not.toBe(leaseBefore.epoch);
+  const changedParagraph = screen.getByText("First occurrence: same");
+  const changedNode = changedParagraph.firstChild;
+  if (!changedNode || changedNode.nodeType !== Node.TEXT_NODE) throw new Error("missing changed text node");
+  const changedRange = document.createRange();
+  changedRange.setStart(changedNode, 18);
+  changedRange.setEnd(changedNode, 22);
+  const changedSelection = document.getSelection();
+  if (!changedSelection) throw new Error("missing changed selection");
+  fireEvent.pointerDown(changedParagraph, PRIMARY_POINTER);
+  changedSelection.removeAllRanges();
+  changedSelection.addRange(changedRange);
+  fireEvent.pointerUp(changedParagraph, PRIMARY_POINTER);
+  expect(work.comment.capture?.sourceRange).toEqual(FIRST);
+  // Recovered and idle: nothing further is scheduled.
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 test("a reader mounted while the document is hidden starts reading on the visibility transition itself", async ({
   onTestFinished,
 }) => {
