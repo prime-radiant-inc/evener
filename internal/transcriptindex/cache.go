@@ -181,6 +181,11 @@ func (c *Cache) Release(x *Index) {
 		_ = x.Close()
 		return
 	}
+	// A parked handle holds no record buffers: the buffering serves active
+	// builds and extensions, and idle retention is the memory the cache's
+	// capacity bound was never meant to carry. Re-acquired handles read and
+	// extend through the files.
+	x.releaseRecordBuffers()
 	c.idlePushBack(e)
 }
 

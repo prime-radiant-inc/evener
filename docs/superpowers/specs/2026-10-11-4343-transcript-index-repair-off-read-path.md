@@ -164,7 +164,13 @@ redundant double catch-up on every cold read: one inside `Open`, one at
    no in-flight open can park an acquirer behind a rebuild (an unbuilt
    open is milliseconds). The hub cache's callers are the read path
    (which always catches up explicitly) and `Forget` (project deletion,
-   which does not read).
+	   which does not read). A handle parked in the cache releases the
+	   in-memory record buffers its open loaded: the buffering serves
+	   active builds and extensions, and idle retention would change the
+	   cache's memory bound from handles and headers to complete sidecars
+	   (whole record files, up to the per-table buffer limit, three tables
+	   per handle, times the cache's capacity). A re-acquired handle reads
+	   and extends through the files.
 
 3. Hub past read path (`app_threadread.go`). `withPastTranscriptIndex`
    keeps today's shape — acquire, `CatchUp()`, run — and adds one

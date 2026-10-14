@@ -112,6 +112,16 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entryRepairRetire()
 				return m.discardSupersededSessionRead()
 			}
+			// An overlay open on a non-session surface holds the same way:
+			// the switch would leave a dashboard panel or a spawn-surface
+			// picker registered with the focus trap but invisible on the
+			// session view, silently consuming keys. Retire the retry and
+			// drop the success; the user re-picks when ready (#4343
+			// round-33 medium 1).
+			if msg.err == nil && m.mode != hubModeSession && topmostOverlayName(m) != "" {
+				m.entryRepairRetire()
+				return m.discardSupersededSessionRead()
+			}
 			// The spawn form stands through its entry read's retry window,
 			// and it is an editable surface: the submitted prompt is a draft
 			// the user may keep typing into. A success whose form has been

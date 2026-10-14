@@ -2430,6 +2430,108 @@ func TestAReplacingReadCompletingDuringARecoveryKeepsTheOwedReconcile(t *testing
 	}
 }
 
+// An overlay open on a non-session surface holds the automatic completion too:
+// switching into the session would leave a dashboard panel registered with the
+// focus trap but invisible on the session view, silently consuming keys. The
+// retry retires and the user re-picks when ready (#4343 round-33 medium 1).
+func TestAnAutomaticEntryHoldsForAnOpenDashboardPanel(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	m, cleanup := newEntryPickModel(t, reads)
+	defer cleanup()
+	refA := mustParseRef(t, "local:01A")
+
+	// A dashboard pick answers rebuilding: the retry arms on the dashboard.
+	picked := m
+	picked.issuePickedSessionRead(refA)
+	armedUpdate, _ := picked.Update(hubSessionMsg{
+		ref:          refA.String(),
+		err:          rebuildingEntryError(t),
+		liveNavEntry: true,
+		liveNavSeq:   picked.liveNavSeq,
+	})
+	armed := armedUpdate.(hubModel)
+	if armed.entryRepairRef != refA {
+		t.Fatalf("setup: the dashboard pick's rebuilding answer did not arm: ref = %v", armed.entryRepairRef)
+	}
+	armedSeq := armed.entryRepairSeq
+
+	// The user opens the credentials panel while the retry paces.
+	armed.credentialsPanel = newCredentialsPanelForTest()
+
+	// The retry's re-read succeeds while the panel stands: the automatic
+	// entry holds on the dashboard surface exactly as it holds in session
+	// mode — a switch would strand the panel the user is using.
+	success := hubSessionMsg{
+		ref:           refA.String(),
+		detail:        hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	}
+	held, heldCmd := armed.Update(success)
+	stayed := held.(hubModel)
+	if stayed.mode != hubModeDashboard || stayed.detail.Ref != "" {
+		t.Fatalf("the automatic entry switched into the session under an open dashboard panel: mode = %v detail = %v", stayed.mode, stayed.detail.Ref)
+	}
+	if stayed.credentialsPanel == nil {
+		t.Fatal("the automatic entry dismissed the panel the user was using")
+	}
+	if stayed.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the held entry retry stayed armed after declining the switch")
+	}
+	if heldCmd != nil {
+		t.Fatal("the declined entry scheduled work from the dashboard")
+	}
+}
+
+// A picker open on the spawn surface holds the automatic completion as well:
+// the spawn flow's retry completing under the palette would switch into the
+// spawned session and leave the picker registered against a surface that no
+// longer shows it (#4343 round-33 medium 1).
+func TestAnAutomaticEntryHoldsForAnOpenPickerOnTheSpawnSurface(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{wireErrorByRef: map[string]appwire.WireError{
+		"local:01S": appwire.WithHistoryReadIdentity(appwire.TranscriptIndexRebuilding(), appwire.DaemonlessBootGeneration, 0),
+	}}
+	m, cleanup := newEntryPickModel(t, reads)
+	defer cleanup()
+	refS := mustParseRef(t, "local:01S")
+
+	// The spawn's entry read answers rebuilding with the form standing: the
+	// retry arms (round 14's rule).
+	opened, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	spawned, read := opened.(hubModel).Update(hubSpawnMsg{resp: hubSpawnResponse{Ref: refS.String()}})
+	answer := read().(hubSessionMsg)
+	armed, _ := spawned.Update(answer)
+	armedModel := armed.(hubModel)
+	if armedModel.entryRepairRef != refS {
+		t.Fatalf("setup: the spawn's rebuilding entry did not arm: ref = %v", armedModel.entryRepairRef)
+	}
+	armedSeq := armedModel.entryRepairSeq
+
+	// The user opens the command palette while the retry paces.
+	withPalette := armedModel
+	withPalette.openCommandPalette()
+
+	// The retry's re-read succeeds under the palette: the automatic entry
+	// holds — the spawn surface keeps standing with its picker.
+	success := hubSessionMsg{
+		ref:           refS.String(),
+		detail:        hubSessionDetail{Ref: refS.String(), SessionID: "sess_s", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	}
+	held, _ := withPalette.Update(success)
+	stayed := held.(hubModel)
+	if stayed.mode != hubModeSpawn {
+		t.Fatalf("the automatic entry switched out of the spawn surface under its open palette: mode = %v", stayed.mode)
+	}
+	if stayed.commandPalette == nil {
+		t.Fatal("the automatic entry dismissed the palette the user was using")
+	}
+	if stayed.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the held entry retry stayed armed after declining the switch")
+	}
+}
+
 // A picked read supersedes an in-flight cycle: the obsolete pending target
 // retires at issuance, so a stale cycling response reconciles the displayed
 // session's subscription instead of deferring forever on it, and the next

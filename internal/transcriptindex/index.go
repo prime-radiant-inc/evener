@@ -1355,6 +1355,22 @@ func (x *Index) closeBuild() error {
 	return errors.Join(errs...)
 }
 
+// releaseRecordBuffers drops the in-memory record buffers an open loaded:
+// they exist for active builds and extensions — appends and in-place
+// rewrites become memcpys — and a handle parked in a cache must not keep
+// whole record files resident, or browsing large histories changes the
+// cache's memory bound from handles and headers to complete sidecars (one
+// recordBufferLimit file per table, three tables, times the cache's
+// capacity). Reads fall back to the file, and a later extension writes
+// through — the pre-buffering behavior. Only call this where no other
+// operation can hold the index: the cache's Release at zero references,
+// whose lock excludes every Acquire while it runs.
+func (x *Index) releaseRecordBuffers() {
+	x.items.buf, x.items.flushed = nil, 0
+	x.turns.buf, x.turns.flushed = nil, 0
+	x.strings.buf, x.strings.flushed = nil, 0
+}
+
 func randomName() (string, error) {
 	var id [8]byte
 	if _, err := rand.Read(id[:]); err != nil {
