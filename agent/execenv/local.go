@@ -2493,26 +2493,50 @@ func grepTargetsOneFile(dir string) bool {
 // rgRetainedRecords returns the complete leading records a truncated ripgrep
 // capture kept. The capture holds a head and a tail around the omission marker;
 // only the head is a prefix of ripgrep's own output, so it is parsed and the
-// tail discarded. The head is cut back to its last complete record — a record
-// ends with a newline in content/count mode and with a NUL in
-// files-with-matches mode — so a path or line split at the cut never becomes a
-// bogus row. An empty result means the cap tripped before one record finished.
-// A match line that itself contains the marker prefix would cut early, keeping
+// tail discarded. Complete records are identified by ripgrep's actual --null
+// shape, never by "last newline": a content/count record is `<path>\0<line>\n`,
+// a files-with-matches record is `<path>\0`, and a pathname may itself contain
+// newlines (only its NUL terminates it) — so a cut inside such a pathname would
+// otherwise be read as a record boundary and retained as a bogus row. A single
+// named file carries no path, so its records are plain newline-terminated
+// lines. An empty result means the cap tripped before one record finished. A
+// match line that itself contains the marker prefix would cut early, keeping
 // fewer of ripgrep's records: still ripgrep's rules, never another tool's.
 func rgRetainedRecords(captured string, filesOnly bool) string {
 	if i := strings.Index(captured, outputOmissionMarker[:6]); i >= 0 {
 		captured = captured[:i]
 	}
 	if filesOnly {
+		// A files-with-matches record is a pathname and its NUL; a pathname
+		// never contains a NUL, so the last NUL ends the last complete record.
 		if i := strings.LastIndexByte(captured, 0); i >= 0 {
 			return captured[:i+1]
 		}
 		return ""
 	}
-	if i := strings.LastIndexByte(captured, '\n'); i >= 0 {
-		return captured[:i+1]
+	if strings.IndexByte(captured, 0) < 0 {
+		// A single named file: plain newline-terminated lines, no path.
+		if i := strings.LastIndexByte(captured, '\n'); i >= 0 {
+			return captured[:i+1]
+		}
+		return ""
 	}
-	return ""
+	// Walk record by record: each is a path up to its NUL then one line up to
+	// its newline. Stop at the last record that completed.
+	pos := 0
+	for pos < len(captured) {
+		nul := strings.IndexByte(captured[pos:], 0)
+		if nul < 0 {
+			break
+		}
+		start := pos + nul + 1
+		nl := strings.IndexByte(captured[start:], '\n')
+		if nl < 0 {
+			break
+		}
+		pos = start + nl + 1
+	}
+	return captured[:pos]
 }
 
 // ripgrepOutputLines splits ripgrep's --null output into lines in the shape
