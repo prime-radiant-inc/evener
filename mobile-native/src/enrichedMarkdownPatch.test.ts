@@ -31,3 +31,29 @@ describe("react-native-enriched-markdown inline-code patch", () => {
 		expect(impl).toContain("effectiveMultiplier = [self fontSizeMultiplier]");
 	});
 });
+
+// The document model's rendered-to-source boundary mapping lives in the same
+// patch. A transformed spelling (the HTML entity `&fjlig;` renders "fj")
+// produces several rendered characters from ONE atomic source span, so a
+// partial selection of it has no source coordinates that round-trip to
+// exactly the selected characters. Expanding such a boundary to the whole
+// span saved a source range whose restored highlight covered BOTH characters
+// (issue #4627); the boundary must be refused instead, while a complete
+// spelling keeps mapping exactly.
+describe("react-native-enriched-markdown selection-boundary patch", () => {
+	it("refuses partial boundaries inside transformed spellings instead of expanding them", () => {
+		const model = addedLines("ios/parser/ENRMOriginalDocumentModel.m");
+		const boundary = model.slice(
+			model.indexOf("- (NSUInteger)sourceBoundaryForFragment:"),
+			model.indexOf("- (NSRange)sourceRangeForRenderedRange:"),
+		);
+		// The whole-span expansion the issue is about must be gone.
+		expect(boundary).not.toContain("NSMaxRange(fragment.sourceRange) : fragment.sourceRange.location");
+		expect(boundary).not.toContain("end:(BOOL)end");
+		// A partial boundary of a transformed fragment cannot round-trip, so
+		// the mapper refuses it rather than saving a lying whole-spelling range.
+		expect(boundary).toContain("return NSNotFound;");
+		// Complete-spelling selections keep mapping exactly.
+		expect(boundary).toContain("if (offset == fragment.text.length) return NSMaxRange(fragment.sourceRange);");
+	});
+});
