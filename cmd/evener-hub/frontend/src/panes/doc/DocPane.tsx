@@ -518,10 +518,13 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       if (ticket === null) {
         // Render the real raw content without adopting or fabricating accepted
         // authority; usable highlights/selection stay suspended while the exact
-        // attempt, note and prior lease evidence are retained for recovery.
+        // attempt, note and prior lease evidence are retained for recovery. The
+        // storage fault is uncertainty, not a source change, so the demand
+        // paces a retry while this pane is visible and connected; the next
+        // cycle revalidates through a fresh ticket and a real acceptance.
         displayContent(content);
         setAuthoritySuspended(true);
-        return "success";
+        return "transient";
       }
 
       let accepted: AcceptedReadResult;

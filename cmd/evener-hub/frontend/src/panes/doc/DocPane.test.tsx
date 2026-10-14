@@ -3610,6 +3610,62 @@ test("a transient raw-read failure paces the annotated reader's retry while it i
   expect(vi.getTimerCount()).toBe(0);
 });
 
+test("a beginRead storage fault on the first open paces its own retry and recovers without a foreground action", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const f = await fixture("read-fault-paced-retry");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  // The fault disarms itself after its first hit, so exactly the first cycle's
+  // beginRead fails; the paced retry runs against healed storage.
+  const fault = { value: true };
+  faultBeginReadTransaction(fault);
+  mountAnnotated(f, ports, client, "doc-read-fault-paced");
+  const work = documentReaderWork("doc-read-fault-paced", f.document, ports);
+
+  // The faulted first cycle renders the real raw content with no fabricated
+  // authority: no lease, no bound map, and no usable capture.
+  await settleFakeReadCycle();
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+  expect(work.lease).toBeNull();
+
+  // The fault is uncertainty, not a source change: the demand paces the retry
+  // itself while the pane is visible and connected, and the healed retry
+  // adopts real accepted authority with no foreground action or remount.
+  fault.value = false;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  await settleFakeReadCycle();
+  expect(work.lease).not.toBeNull();
+  expect(maps.at(-1)?.identity.displayedSnapshotId).toBe(work.lease?.displayedSnapshotId);
+  // selectPassage polls with findByText, which never advances under faked
+  // timers: drive the same real Selection/Range gesture inline instead.
+  const paragraph = screen.getByText("First occurrence: same");
+  const node = paragraph.firstChild;
+  if (!node || node.nodeType !== Node.TEXT_NODE) throw new Error("missing source text node");
+  const range = document.createRange();
+  range.setStart(node, 18);
+  range.setEnd(node, 22);
+  const selection = document.getSelection();
+  if (!selection) throw new Error("missing selection");
+  fireEvent.pointerDown(paragraph, PRIMARY_POINTER);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  fireEvent.pointerUp(paragraph, PRIMARY_POINTER);
+  expect(work.comment.capture?.sourceRange).toEqual(FIRST);
+  expect(screen.getByRole("textbox")).toBeTruthy();
+  // Recovered and idle: nothing further is scheduled.
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 test("a controller reconnect re-reads through the demand owner", async () => {
   const f = await fixture("reader-reconnect");
   await settleBaseline(f);
