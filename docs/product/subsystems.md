@@ -111,7 +111,10 @@ changing navigation state. See the [sidebar placement contract](../web-ui/design
 
 For shared-notes transcript updates, S05's shared projector owns the
 Conversation/System events visibility rule and prevents terminal fallback from
-restoring hidden snapshots. S02's browser renderer and S03's native labelled
+restoring hidden snapshots. S01 records `NOTES_CONTEXT` transcript snapshots for
+both human and agent updates while omitting agent-only self-echoes from model
+requests until compaction re-projects the current state. S02's browser renderer
+and S03's native labelled
 notice preserve complete literal text behind an initially folded disclosure,
 with explicit expansion scoped to session and item. S03 keeps list-row text
 bounded and resolves expanded snapshots from retained canonical turns, falling

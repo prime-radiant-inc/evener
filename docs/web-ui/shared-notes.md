@@ -19,7 +19,12 @@ as a separate field. The TUI details drawer indents them the same way. The
 message that tells the agent you changed your note starts `human updated their
 whiteboard:` and indents the note's continuation lines the same way. The web
 and TUI transcripts show that message as the agent received it. The phone's
-row for it removes the indent and shows your note as saved.
+row for it removes the indent and shows your note as saved. When the agent
+updates its own note or the link list (`notes_agent_set`, `urls_add`,
+`urls_remove`) with no concurrent human change, the `notes-context` snapshot is
+still recorded in the transcript for **Shared notes updated** rows, while model
+requests omit the redundant self-echo until compaction folds history and
+re-projects the current shared notes.
 
 The agent's note is a capsule of the session for a manager checking in. The
 agent writes it in plain words, in three parts on their own lines: a short
