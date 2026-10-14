@@ -21,7 +21,9 @@ func HandleThreadHistory(router *Router, read apphistory.ReadFunc, list apphisto
 	HandleTyped(router, appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		filter := apphistory.NewFilter(params.Selection())
 		ctx = context.WithValue(ctx, historyContentContextKey{}, historyContentRequest{filter: filter, preserve: !params.IncludeTurns})
-		response, err := apphistory.Read(ctx, params, read, list)
+		response, err := RetrySubscription(ctx, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
+			return apphistory.Read(ctx, params, read, list)
+		})
 		if err == nil {
 			filter.Seed(response.Overlay)
 		}
@@ -101,4 +103,55 @@ func (c *Connection) enqueueHistory(record SequencedNotification, filter *apphis
 		return false
 	}
 	return !keep || c.enqueue(appwire.Message{Notification: &notification})
+}
+
+type subscriptionRetryContextKey struct{}
+
+type subscriptionAttempt struct {
+	wait <-chan struct{}
+}
+
+// RetrySubscription retries subscription preparation after a conflicting history
+// response commits or aborts. The operation must return without holding its
+// ownership locks and must not dispatch mutations. Nested scopes leave retry to
+// the outer owner so waits cannot retain a caller's relay or deletion lock.
+func RetrySubscription[T any](ctx context.Context, prepare func(context.Context) (T, error)) (T, error) {
+	if _, nested := ctx.Value(subscriptionRetryContextKey{}).(*subscriptionAttempt); nested {
+		return prepare(ctx)
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			var zero T
+			return zero, err
+		}
+		attempt := &subscriptionAttempt{}
+		result, err := prepare(context.WithValue(ctx, subscriptionRetryContextKey{}, attempt))
+		if attempt.wait == nil {
+			return result, err
+		}
+		select {
+		case <-attempt.wait:
+		case <-ctx.Done():
+			var zero T
+			return zero, ctx.Err()
+		}
+	}
+}
+
+// Defer preservation while a history owner is awaiting its response. Callers
+// hold hydrationMu; returning lets their own ownership scopes unwind before the
+// outer preparation retries. The pending owner, buffer and admission stay intact.
+func (c *Connection) deferHistorySubscription(ctx context.Context, responseID, threadID string, replace bool) bool {
+	c.responseMu.Lock()
+	defer c.responseMu.Unlock()
+	for key, pending := range c.hydrations {
+		if key == responseID || pending.historyDone == nil || (!replace && !pending.replace && pending.threadID != threadID) {
+			continue
+		}
+		if attempt, ok := ctx.Value(subscriptionRetryContextKey{}).(*subscriptionAttempt); ok {
+			attempt.wait = pending.historyDone
+		}
+		return true
+	}
+	return false
 }
