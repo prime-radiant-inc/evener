@@ -33,22 +33,36 @@
 #         a ceiling, so enforcing the flat 3s would red the gate on tests that
 #         were always over it. Give the test a class to enforce it.
 #     bounded-wait unit has no class yet by ruling, so its members stay on the
-#     flat ceiling; the web repo-audit test is a class of one and is split or
-#     sped up rather than blessed.
+#     flat ceiling; the web repo-audit test was a class of one and #4608 split it
+#     into one case per slice rather than blessing it.
 #
 # A package the budget file does not mention is a WARN, not silently skipped —
 # see kata b6rv's stop condition. When the budget file is missing or its
 # "packages" map is empty, the WHOLE run is that same warn state and --check
 # always exits 0: the tree must stay green until a real baseline is blessed
 # (`make test-rebaseline`), never fail on a budget nobody has measured yet.
+# A MALFORMED budget file is different: only a missing (or empty) file is the
+# deliberate warn state. An unparseable file is a broken config, not an absent
+# one, so it fails in every mode naming the file and the parse error — otherwise
+# a stray comma would read as no baseline and silently disarm every ratio and
+# every perTestCeilingClasses ceiling (issue #4609). A `packages` value that is
+# present but not an object is the same broken config reached a different way: a
+# hand-edit `"packages": []` would otherwise read as no baseline and disarm the
+# whole ratchet with a green gate, and `"packages": "x"` would crash with a
+# traceback. It fails in every mode through the same path, naming the file
+# (issue #4614). The values INSIDE that map, and a `perTestCeilingClasses` that
+# is present but not an object, are the same broken config reached yet another
+# way (issue #4618): a string or null package budget crashes or reads as "no
+# entry", a bool IS an int so the ratio is computed against True, and a null
+# class map silently drops every class ceiling. Both fail in every mode too,
+# naming the entry or the field.
 #
-# The one thing that fails in EVERY mode, --check or not, is a broken
-# measurement: `go list` or `go test` exiting nonzero, or a package go list
-# reported that the go test -json stream never mentions (issue #172 — a
-# package that fails to build used to contribute no rows, so --bless quietly
-# wrote a budget without it). A failed measurement exits before the comparison
-# and before any --bless: there is no honest baseline to write from a stream
-# nobody vouches for.
+# A broken measurement also fails in EVERY mode, --check or not: `go list` or
+# `go test` exiting nonzero, or a package go list reported that the go test
+# -json stream never mentions (issue #172 — a package that fails to build used
+# to contribute no rows, so --bless quietly wrote a budget without it). A failed
+# measurement exits before the comparison and before any --bless: there is no
+# honest baseline to write from a stream nobody vouches for.
 #
 # Usage:
 #   scripts/gate/test-timing-budget.sh                # measure + print (fails
@@ -330,13 +344,52 @@ with open(measured_path) as fh:
 			if parts[1]:
 				sums.setdefault(parts[1], 0.0)
 
+def fail_malformed(what):
+	# A malformed budget is a broken config, not an absent one. The missing-file
+	# warn state below is deliberate (kata b6rv): the tree stays green until a
+	# measured baseline is blessed. A syntax error must not ride that path —
+	# collapsing it into `budget = {}` reads as no baseline and silently disarms
+	# every package ratio and every perTestCeilingClasses ceiling, with nothing
+	# naming the syntax error (issue #4609). Fail in every mode, before any bless,
+	# naming the file and the problem.
+	with open(out_path, "w") as fh:
+		fh.write("FAIL  MALFORMED BUDGET: testing-budget.json " + what
+			+ " (" + budget_path + ")\n")
+	sys.exit(1)
+
 try:
 	with open(budget_path) as fh:
 		budget = json.load(fh)
-except (FileNotFoundError, ValueError):
+except FileNotFoundError:
 	budget = {}
+except ValueError as exc:
+	fail_malformed("could not be parsed: " + str(exc))
 
-packages = budget.get("packages") or {}
+# A `packages` value present but not an object is a broken config, not an empty
+# map: `packages or {}` swallowed the falsy mistakes ([], 0, false, "") into the
+# NO BASELINE warn state (exit 0, nothing enforced) and crashed on the truthy
+# ones (issue #4614). Test the KEY, not the value — `budget.get` cannot tell an
+# absent key from an explicit `null`, and `{"packages": null}` disarms the same
+# way — and route it through the malformed-config path above (#4609), which fails
+# in every mode naming the file. `isinstance(budget, dict)` keeps a non-object
+# TOP-level budget on its existing path (a traceback), which #4609 left alone.
+if isinstance(budget, dict) and "packages" in budget and not isinstance(budget["packages"], dict):
+	fail_malformed("packages must be an object mapping each package to its budget seconds (got "
+		+ type(budget["packages"]).__name__ + ")")
+packages = budget.get("packages", {})
+
+# Every package VALUE must be a number, not only the map's type (issue #4618).
+# A string crashes the ratio below with a TypeError traceback, a bool IS an int
+# in Python (True/False) so the ratio is computed against 1 or 0, and a null
+# reads as "no budget entry" — a WARN that leaves the package silently
+# unenforced. Route each through the malformed-config path above, which fails in
+# every mode naming the entry. The loop runs only for an object `packages`; a
+# non-object TOP-level budget never reaches here and keeps its traceback (#4609).
+for pkg, budget_secs in packages.items():
+	if isinstance(budget_secs, bool) or not isinstance(budget_secs, (int, float)):
+		fail_malformed("packages[" + json.dumps(pkg) + "] must be a number of seconds (got "
+			+ type(budget_secs).__name__ + ")")
+
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 
 # The per-class ceilings (#4601, ruling 2026-10-13). A test whose name is listed
@@ -347,12 +400,19 @@ ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 # several classes (issue #4601). A name matched by more than one class is a
 # config error, reported as a FAIL: the map is hand-edited, and silently
 # picking the first class would enforce the wrong number.
-# The raw field: absent (None) means no classes, which is fine. Any other
-# non-object value (a list, string, number, or bool) is a config error the
-# validation below reports — a plain `or {}` here would silently turn a falsy
-# malformed value such as [] or false into an empty map and disarm every class.
-raw_classes = budget.get("perTestCeilingClasses")
-ceiling_classes = raw_classes if isinstance(raw_classes, dict) else {}
+# A perTestCeilingClasses present but not an object is a broken config, not "no
+# classes": `budget.get` cannot tell an absent key from an explicit `null`, so
+# `{"perTestCeilingClasses": null}` read as an empty map and silently disarmed
+# every class ceiling, while the other non-object values (`[]`, `false`, `0`,
+# `""`) failed only under the strict posture (issue #4618). Test the KEY and
+# route all of them through the malformed-config path above, as the `packages`
+# value does (#4614): they fail in every mode, not only strict. An absent key
+# still means no classes, which is fine. The `packages` read above has already
+# made `budget` an object, so no isinstance guard is needed here.
+if "perTestCeilingClasses" in budget and not isinstance(budget["perTestCeilingClasses"], dict):
+	fail_malformed("perTestCeilingClasses must be an object mapping each class to "
+		"{ceilingSeconds, tests} (got " + type(budget["perTestCeilingClasses"]).__name__ + ")")
+ceiling_classes = budget.get("perTestCeilingClasses", {})
 
 def class_memberships(name):
 	found = []
@@ -381,11 +441,8 @@ def raise_worst(level):
 # `tests` string that iterates as characters and matches nothing — instead of
 # saying what is wrong: it FAILs naming the class and drops the class, leaving
 # its tests on the flat warn-only default below rather than crashing the check.
-if raw_classes is not None and not isinstance(raw_classes, dict):
-	lines.append("FAIL  testing-budget.json perTestCeilingClasses must be an object mapping each "
-		"class to {ceilingSeconds, tests} (got " + type(raw_classes).__name__ + ")")
-	raise_worst("fail")
-
+# (The map itself being a non-object is the harder error above, handled before
+# any class is read.)
 valid_classes = {}
 for class_name, spec in ceiling_classes.items():
 	if (not isinstance(spec, dict)

@@ -98,6 +98,15 @@ export type EntryCoverageInput =
       boundary: string;
     };
 
+interface EntrySourceAuthority {
+  bootGeneration: string;
+  epoch: number;
+  incarnation: string;
+  representedSnapshot: number;
+}
+
+type EntryHistoryMeta = TranscriptHistoryMetaRow & { sourceAuthority?: EntrySourceAuthority };
+
 export interface EntryBatch {
   historyKey: string;
   clearEpoch: number;
@@ -109,13 +118,15 @@ export interface EntryBatch {
   turns?: readonly TurnModel[];
   // Accepted authoritative read replaces this position through history's end.
   replacement?: { from: ThreadItemPosition };
+  // Source identity and represented boundary, never a tab-local read/revision.
+  sourceAuthority?: EntrySourceAuthority;
   coverage?: EntryCoverageInput;
   sessionMetadata?: TranscriptSessionMetadata;
 }
 
 export type EntryWriteOutcome =
   | { outcome: "committed"; coverage: "extended" | "unchanged" | "not-extended"; encodedBytes: number }
-  | { outcome: "refused"; reason: "clear-epoch" | "history-fence" | "capacity" }
+  | { outcome: "refused"; reason: "clear-epoch" | "history-fence" | "capacity" | "source-authority" }
   // Failure withholds a commit claim, not proof of rollback. In particular a
   // lost completion event can time out after the transaction durably committed.
   | { outcome: "failed"; error: unknown };
@@ -141,24 +152,40 @@ function encodedBytes(value: unknown): number {
 }
 
 type SessionMetadataPayload = Pick<
-  TranscriptHistoryMetaRow,
-  "historyKey" | "requestedRefs" | "resolvedIdentity" | "savedAt" | "accessedAt" | "formatVersion" | "cachedHeader"
+  EntryHistoryMeta,
+  | "historyKey"
+  | "requestedRefs"
+  | "resolvedIdentity"
+  | "savedAt"
+  | "accessedAt"
+  | "formatVersion"
+  | "cachedHeader"
+  | "sourceAuthority"
 >;
 
-function sessionMetadataPayload(
-  row: TranscriptHistoryMetaRow | TranscriptSessionMetadata,
-): SessionMetadataPayload | undefined {
+function sessionMetadataPayload(row: EntryHistoryMeta | TranscriptSessionMetadata): SessionMetadataPayload | undefined {
   const { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion, cachedHeader } = row;
+  const sourceAuthority = (row as EntryHistoryMeta).sourceAuthority;
   if (
     requestedRefs === undefined &&
     resolvedIdentity === undefined &&
     savedAt === undefined &&
     accessedAt === undefined &&
-    formatVersion === undefined
+    formatVersion === undefined &&
+    sourceAuthority === undefined
   ) {
     return undefined;
   }
-  return { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion, cachedHeader };
+  return {
+    historyKey,
+    requestedRefs,
+    resolvedIdentity,
+    savedAt,
+    accessedAt,
+    formatVersion,
+    cachedHeader,
+    sourceAuthority,
+  };
 }
 
 function comparePosition(left: ThreadItemPosition | null, right: ThreadItemPosition | null): number {
@@ -679,12 +706,29 @@ export class SessionEntryCache {
         }
 
         const historyMeta = (await requestResult(
-          metaStore.get(batch.historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
+          metaStore.get(batch.historyKey) as IDBRequest<EntryHistoryMeta | undefined>,
         )) ?? { historyKey: batch.historyKey, encodedBytes: 0, itemCount: 0 };
         if ((historyMeta.generation ?? 0) !== (batch.historyGeneration ?? 0)) {
           transaction.abort();
           await complete.catch(() => {});
           return { outcome: "refused", reason: "history-fence" };
+        }
+        const heldAuthority = historyMeta.sourceAuthority;
+        const authority = batch.sourceAuthority;
+        const advancesAuthority =
+          authority !== undefined &&
+          (!heldAuthority ||
+            (authority.bootGeneration === heldAuthority.bootGeneration &&
+              authority.epoch === heldAuthority.epoch &&
+              authority.incarnation === heldAuthority.incarnation &&
+              authority.representedSnapshot >= heldAuthority.representedSnapshot));
+        // Source identities are equality tokens, not chronologically sortable.
+        // Once fenced, an absent/incomparable source cannot replace durable
+        // content. A Clear or history deletion is required to reset that fence.
+        if (batch.replacement && heldAuthority && !advancesAuthority) {
+          transaction.abort();
+          await complete.catch(() => {});
+          return { outcome: "refused", reason: "source-authority" };
         }
         const aggregateMeta = (await requestResult(
           metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
@@ -704,17 +748,22 @@ export class SessionEntryCache {
         const coverageResult = await this.#applyCoverage(coverageStore, batch.historyKey, batch.coverage);
         historyBytes += coverageResult.byteDelta;
         aggregateBytes += coverageResult.byteDelta;
-        if (batch.sessionMetadata) {
-          const previousPayload = sessionMetadataPayload(historyMeta);
-          const nextPayload = sessionMetadataPayload(batch.sessionMetadata);
-          const previousBytes = previousPayload ? encodedBytes(previousPayload) : 0;
-          const nextBytes = nextPayload ? encodedBytes(nextPayload) : 0;
-          historyBytes += nextBytes - previousBytes;
-          aggregateBytes += nextBytes - previousBytes;
-        }
-        metaStore.put({
+        // Additive predecessors may still merge rows, but must not lower the
+        // high-water source boundary or its associated session metadata.
+        const sessionMetadata = !heldAuthority || advancesAuthority ? batch.sessionMetadata : undefined;
+        const nextMeta = {
           ...historyMeta,
-          ...batch.sessionMetadata,
+          ...sessionMetadata,
+          ...(advancesAuthority ? { sourceAuthority: authority } : {}),
+        };
+        const previousPayload = sessionMetadataPayload(historyMeta);
+        const nextPayload = sessionMetadataPayload(nextMeta);
+        const metadataDelta =
+          (nextPayload ? encodedBytes(nextPayload) : 0) - (previousPayload ? encodedBytes(previousPayload) : 0);
+        historyBytes += metadataDelta;
+        aggregateBytes += metadataDelta;
+        metaStore.put({
+          ...nextMeta,
           historyKey: batch.historyKey,
           encodedBytes: historyBytes,
           itemCount: historyMeta.itemCount - removed.items + changedItems,
@@ -1446,12 +1495,14 @@ export class SessionEntryCache {
     return { historyBytes: history?.encodedBytes ?? 0, aggregateBytes: aggregate?.encodedBytes ?? 0 };
   }
 
-  async getSessionMetadata(historyKey: string): Promise<TranscriptSessionMetadata | undefined> {
+  async getSessionMetadata(
+    historyKey: string,
+  ): Promise<(TranscriptSessionMetadata & Pick<EntryHistoryMeta, "sourceAuthority">) | undefined> {
     const database = await this.#connection.open();
     const transaction = database.transaction(ENTRY_META_STORE, "readonly");
     const complete = transactionCompletion(transaction);
     const row = await requestResult(
-      transaction.objectStore(ENTRY_META_STORE).get(historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
+      transaction.objectStore(ENTRY_META_STORE).get(historyKey) as IDBRequest<EntryHistoryMeta | undefined>,
     );
     await complete;
     if (
@@ -1472,6 +1523,7 @@ export class SessionEntryCache {
       accessedAt: row.accessedAt,
       formatVersion: row.formatVersion,
       ...(row.cachedHeader ? { cachedHeader: row.cachedHeader } : {}),
+      ...(row.sourceAuthority ? { sourceAuthority: row.sourceAuthority } : {}),
     };
   }
 

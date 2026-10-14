@@ -32,6 +32,16 @@ func runTimingBudgetScript(t *testing.T, measured, budget string, flags, extraEn
 	writeAuditScriptFixture(t, measuredPath, measured)
 	budgetPath := filepath.Join(dir, "budget.json")
 	writeAuditScriptFixture(t, budgetPath, budget)
+	return runTimingBudgetFixture(t, measuredPath, budgetPath, dir, flags, extraEnv)
+}
+
+// runTimingBudgetFixture runs the runner against explicit on-disk fixture paths
+// with the given extra flags and environment. The caller writes the fixtures, so
+// budgetPath may name a file that does not exist — that is how the missing-file
+// warn state is exercised — and measuredPath and budgetPath may be asserted in
+// the output. dir receives the runner's scratch (dir/tmp).
+func runTimingBudgetFixture(t *testing.T, measuredPath, budgetPath, dir string, flags, extraEnv []string) (string, error) {
+	t.Helper()
 	tmpDir := filepath.Join(dir, "tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", tmpDir, err)
@@ -129,12 +139,14 @@ func TestTimingParseHelperEmitsTheRatchetsRows(t *testing.T) {
 	}
 }
 
-// runBless runs the real runner's bless path over budgetJSON with extra
-// flags and returns the budget it wrote. The caller names a module list that
-// matches nothing, so no producer runs: the bless only rewrites and preserves
-// entries, which is exactly the marker decision under test, with no test suite
-// to wait on and nothing faked.
-func runBless(t *testing.T, budgetJSON string, args ...string) string {
+// runBlessCommand writes budgetJSON to a fresh budget file and runs the real
+// runner's bless path over it with extra flags, returning the combined output,
+// the file's content after the run, and the run's error. The caller names a
+// module list that matches nothing, so no producer runs: the bless only rewrites
+// and preserves entries, which is exactly the decision under test, with no test
+// suite to wait on and nothing faked. Returning the error (rather than failing)
+// lets a caller assert a refused bless, which is why runBless wraps it.
+func runBlessCommand(t *testing.T, budgetJSON string, args ...string) (string, string, error) {
 	t.Helper()
 	dir := t.TempDir()
 	budget := filepath.Join(dir, "budget.json")
@@ -147,14 +159,23 @@ func runBless(t *testing.T, budgetJSON string, args ...string) string {
 		timingBudgetScript, "--budget", budget, "--no-web", "--bless",
 	}, args...)...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, runErr := cmd.CombinedOutput()
+	got, readErr := os.ReadFile(budget)
+	if readErr != nil {
+		t.Fatalf("read blessed budget: %v", readErr)
+	}
+	return string(out), string(got), runErr
+}
+
+// runBless runs the real runner's bless path and returns the budget it wrote,
+// failing the test if the bless did not succeed.
+func runBless(t *testing.T, budgetJSON string, args ...string) string {
+	t.Helper()
+	out, got, err := runBlessCommand(t, budgetJSON, args...)
+	if err != nil {
 		t.Fatalf("bless failed: %v\n%s", err, out)
 	}
-	got, err := os.ReadFile(budget)
-	if err != nil {
-		t.Fatalf("read blessed budget: %v", err)
-	}
-	return string(got)
+	return got
 }
 
 // TestTimingBudgetBlessKeepsAWallTimeMarker pins the marker rule for a narrowed
@@ -464,9 +485,11 @@ func TestTimingBudgetWarnsOnAClassBreachOnALocalRun(t *testing.T) {
 // TestTimingBudgetFailsWhenTheClassMapIsNotAnObject pins the outer shape of the
 // map: a perTestCeilingClasses that is present but not an object is a config
 // error, not a crash and not a silent empty map — including the falsy values
-// (an empty list, false, 0, "") that a plain `or {}` would quietly accept.
+// (an empty list, false, 0, "") that a plain `or {}` would quietly accept, and
+// `null`, which `budget.get` cannot tell from an absent key and which would
+// otherwise silently disarm every class ceiling (issue #4618).
 func TestTimingBudgetFailsWhenTheClassMapIsNotAnObject(t *testing.T) {
-	for _, value := range []string{`["nope"]`, `[]`, `false`, `0`, `""`, `"a string"`} {
+	for _, value := range []string{`["nope"]`, `[]`, `false`, `0`, `""`, `"a string"`, `null`} {
 		t.Run(value, func(t *testing.T) {
 			measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 			budget := `{"perTestCeilingSeconds":3,"perTestCeilingClasses":` + value + `,"packages":{"pkg":100}}`
@@ -475,5 +498,262 @@ func TestTimingBudgetFailsWhenTheClassMapIsNotAnObject(t *testing.T) {
 				t.Fatalf("a present non-object class map (%s) must fail under --strict, not read as no classes:\n%s", value, out)
 			}
 		})
+	}
+}
+
+// TestTimingBudgetFailsWhenThePackagesValueIsNotAnObject pins issue #4614. The
+// budget's packages value feeds every ratio and, through it, the class
+// ceilings. A value that is present but not an object is a hand-edit mistake
+// (`[]` instead of `{}`, a stray `null`) that a plain `packages or {}` swallows
+// into the NO BASELINE warn state — --check exits 0 with the whole ratchet
+// silently disarmed — while the truthy values crash with a traceback. It must
+// fail loudly in every mode instead. The fixture measurement is valid, so only
+// the packages value can make the run nonzero: the exit status and the absence
+// of a traceback are the assertions, never the diagnostic wording
+// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
+func TestTimingBudgetFailsWhenThePackagesValueIsNotAnObject(t *testing.T) {
+	for _, value := range []string{`[]`, `0`, `false`, `""`, `null`, `"x"`, `5`, `true`} {
+		t.Run(value, func(t *testing.T) {
+			out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", `{"packages":`+value+`}`)
+			assertBrokenConfigFails(t, out, err)
+		})
+	}
+}
+
+// TestTimingBudgetFailsOnANonObjectPackagesValueInEveryMode pins that a
+// non-object packages value fails in every posture, not only strict: a broken
+// config is not a ratio warning, so bare (no --check), warn-only --check
+// --local, a CI-shaped --check ($CI set, no --strict), and --bless must each
+// exit 1. It runs several values rather than `[]` alone: a guard that fired for
+// `[]` only, or only under --strict, would pass a single-value test while the
+// silent disarm (`false`, `null`) or traceback (`5`) reappeared in the other
+// postures. `[]` is the issue's example; `false`/`null` disarm silently (exit 0
+// before the fix), and `5` exits 1 there only via a traceback, so the no
+// traceback assertion is what makes the truthy case non-vacuous. On --bless the
+// file is left byte-for-byte untouched, because failing before the bless write
+// is the observable behavior that matters.
+func TestTimingBudgetFailsOnANonObjectPackagesValueInEveryMode(t *testing.T) {
+	const measured = "SUM\tpkg\t100.00\n"
+	for _, value := range []string{`[]`, `false`, `null`, `5`} {
+		assertBudgetFailsInEveryMode(t, value, measured, `{"packages":`+value+`}`)
+	}
+}
+
+// assertBrokenConfigFails asserts the #4609/#4614/#4618 contract structurally:
+// a budget value that is present but broken exits 1 and never crashes with a
+// traceback. The diagnostic wording is never asserted
+// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
+func assertBrokenConfigFails(t *testing.T, out string, err error) {
+	t.Helper()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("a broken budget value must exit 1, not pass or crash: exit = %v\n%s", err, out)
+	}
+	if strings.Contains(out, "Traceback") {
+		t.Fatalf("a broken budget value crashed with a traceback instead of failing structurally:\n%s", out)
+	}
+}
+
+// assertBudgetFailsInEveryMode drives the runner over one budget fixture in all
+// four postures a check may run under — bare, warn-only --check --local, a
+// CI-shaped --check ($CI set, no --strict), and --bless — and asserts each exits
+// 1 with no traceback. On --bless it also asserts the budget file is left
+// byte-for-byte untouched: failing before the bless write is the observable
+// behavior that matters. Subtests are named name/<posture>.
+func assertBudgetFailsInEveryMode(t *testing.T, name, measured, budget string) {
+	t.Helper()
+	t.Run(name+"/bare", func(t *testing.T) {
+		out, err := runTimingBudgetScript(t, measured, budget, nil, nil)
+		assertBrokenConfigFails(t, out, err)
+	})
+	t.Run(name+"/warn-only", func(t *testing.T) {
+		out, err := runTimingBudgetCompareMode(t, measured, budget, false)
+		assertBrokenConfigFails(t, out, err)
+	})
+	t.Run(name+"/ci-env", func(t *testing.T) {
+		out, err := runTimingBudgetScript(t, measured, budget, []string{"--check"}, []string{"CI=1"})
+		assertBrokenConfigFails(t, out, err)
+	})
+	t.Run(name+"/bless", func(t *testing.T) {
+		out, got, err := runBlessCommand(t, budget, "--modules", "no-such-module")
+		assertBrokenConfigFails(t, out, err)
+		if got != budget {
+			t.Fatalf("--bless overwrote a broken budget instead of refusing it:\n%s", got)
+		}
+	})
+}
+
+// TestTimingBudgetFailsOnANonNumericPackageValue pins issue #4618. A package
+// budget that is present but not a number is a broken config, not a budget: a
+// string crashes the ratio with a TypeError traceback, a bool IS an int in
+// Python (True/False) so the ratio is computed against 1/0, and a null reads as
+// "no budget entry" — a WARN that leaves the package silently unenforced. A
+// list or object crashes like the string. Each must exit 1 with no traceback,
+// naming the offending entry. The fixture uses a 1.00s measurement against a
+// 1.00s-equivalent budget, so a bool would read OK and a null would merely warn
+// — only a real rejection makes the run nonzero. The entry name is a data value
+// identifying which entry failed, not copy
+// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
+func TestTimingBudgetFailsOnANonNumericPackageValue(t *testing.T) {
+	measured := "SUM\tslowpkg\t1.00\n"
+	for _, value := range []string{`"x"`, `true`, `null`, `[]`, `{}`} {
+		t.Run(value, func(t *testing.T) {
+			budget := `{"metric":"package-wall-seconds","packages":{"slowpkg":` + value + `}}`
+			out, err := runTimingBudgetCompare(t, measured, budget)
+			assertBrokenConfigFails(t, out, err)
+			if !strings.Contains(out, "slowpkg") {
+				t.Fatalf("the failure does not name the offending package entry slowpkg:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestTimingBudgetFailsOnANonNumericPackageValueInEveryMode pins that a
+// non-numeric package budget fails in every posture, not only strict: the
+// silent WARN (`null`) or the Python bool (`true`) must not survive a bare run,
+// a warn-only --check --local, a CI-shaped --check, or --bless. It runs two
+// values rather than one so a guard that only caught a string crash, or only
+// fired under --strict, cannot pass. On --bless the file is left byte-for-byte
+// untouched, because failing before the bless write is the observable behavior
+// that matters.
+func TestTimingBudgetFailsOnANonNumericPackageValueInEveryMode(t *testing.T) {
+	// `true` is the sharp case: against a 1.00s budget it makes a 1.00s
+	// measurement read OK, so only rejecting the bool can make the run nonzero.
+	const measured = "SUM\tpkg\t1.00\n"
+	for _, value := range []string{`true`, `null`} {
+		assertBudgetFailsInEveryMode(t, value, measured, `{"packages":{"pkg":`+value+`}}`)
+	}
+}
+
+// TestTimingBudgetFailsOnANonObjectClassMapInEveryMode pins the every-mode
+// contract for the class map: a perTestCeilingClasses that is present but not an
+// object — `null` in particular, which `budget.get` cannot tell from an absent
+// key and which silently disarms every class ceiling — is the same broken
+// config as a non-object packages value, so it fails in every posture, --bless
+// included, not only under --strict.
+func TestTimingBudgetFailsOnANonObjectClassMapInEveryMode(t *testing.T) {
+	const measured = "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+	for _, value := range []string{`null`, `[]`} {
+		assertBudgetFailsInEveryMode(t, value, measured,
+			`{"perTestCeilingClasses":`+value+`,"packages":{"pkg":100}}`)
+	}
+}
+
+// TestTimingBudgetKeepsThePackagesFallbacks pins the values the #4614 guard
+// must NOT reject: an absent packages key and a present empty map keep the
+// deliberate NO BASELINE warn state (exit 0), and a real map is compared as
+// before. A present empty map `{"packages":{}}` is distinct from an absent key
+// — a regression that rejected the empty map while accepting an absent one
+// would otherwise pass — and these are the "present but not an object" rule's
+// boundary: the fix closes the malformed values without disarming a budget
+// that legitimately has no packages yet.
+func TestTimingBudgetKeepsThePackagesFallbacks(t *testing.T) {
+	cases := map[string]string{
+		"absent key":        `{"perTestCeilingSeconds":3}`,
+		"present empty map": `{"packages":{}}`,
+		"real map":          `{"packages":{"pkg":100}}`,
+	}
+	for name, budget := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", budget)
+			if err != nil {
+				t.Fatalf("a %s budget must keep exiting 0, not fail the run: %v\n%s", name, err, out)
+			}
+		})
+	}
+}
+
+// TestTimingBudgetFailsOnAMalformedBudget pins issue #4609.
+// json.JSONDecodeError is a ValueError, and the comparer's
+// `except (FileNotFoundError, ValueError)` used to treat a syntax error exactly
+// like a missing file: an empty budget and --check exiting 0, with every package
+// ratio and every perTestCeilingClasses ceiling silently unenforced. A malformed
+// file is a broken config and must fail loudly in every mode. The fixture
+// measurement is valid, so only the malformed budget can make the run nonzero:
+// the exit status is the assertion, never the diagnostic wording
+// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle"). Red before
+// the fix: exit 0.
+func TestTimingBudgetFailsOnAMalformedBudget(t *testing.T) {
+	dir := t.TempDir()
+	malformed := `{ "packages": { "pkg": 1 }` // missing both closing braces
+	measuredPath := filepath.Join(dir, "measured.tsv")
+	writeAuditScriptFixture(t, measuredPath, "SUM\tpkg\t100.00\n")
+	budgetPath := filepath.Join(dir, "budget.json")
+	writeAuditScriptFixture(t, budgetPath, malformed)
+	out, err := runTimingBudgetFixture(t, measuredPath, budgetPath, dir, []string{"--check", "--strict"}, nil)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("a malformed budget must fail --check --strict with exit 1: exit = %v\n%s", err, out)
+	}
+}
+
+// TestTimingBudgetFailsOnAMalformedBudgetWhenWarnOnly pins the "non-zero under
+// --check" half of #4609. --check with neither $CI nor --strict is the
+// warn-only posture for ratios — a real ratio excess only warns and exits 0 —
+// but a broken config is not a ratio warning: a malformed budget must fail
+// regardless of the strictness posture, so the exit status is the assertion.
+func TestTimingBudgetFailsOnAMalformedBudgetWhenWarnOnly(t *testing.T) {
+	out, err := runTimingBudgetScript(t, "SUM\tpkg\t100.00\n", `{"packages":`, []string{"--check"}, nil)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("a malformed budget must fail --check even on a warn-only run: exit = %v\n%s", err, out)
+	}
+}
+
+// TestTimingBudgetBlessRefusesAMalformedBudget pins the same fail-loud rule on
+// the bless path. A narrowed --bless reads the existing file to preserve the
+// entries it did not measure; reading a malformed file as an empty budget would
+// make the bless rewrite it from that empty fallback and drop every preserved
+// entry. The refusal is asserted by the exit status and by the file being left
+// byte-for-byte untouched — the observable behavior, not the wording.
+func TestTimingBudgetBlessRefusesAMalformedBudget(t *testing.T) {
+	const malformed = `{ "packages": `
+	out, got, err := runBlessCommand(t, malformed, "--modules", "no-such-module")
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("--bless must refuse a malformed budget: exit = %v\n%s", err, out)
+	}
+	if got != malformed {
+		t.Fatalf("--bless overwrote a malformed budget instead of refusing it:\n%s", got)
+	}
+}
+
+// TestTimingBudgetKeepsTheMissingFileWarnState pins the deliberate warn state
+// #4609 separates from a syntax error: a budget file that does not exist is not
+// a broken config — the tree stays green until a measured baseline is blessed —
+// so --check --strict must still exit 0, unlike a malformed file. The exit
+// status is the assertion.
+func TestTimingBudgetKeepsTheMissingFileWarnState(t *testing.T) {
+	dir := t.TempDir()
+	measuredPath := filepath.Join(dir, "measured.tsv")
+	writeAuditScriptFixture(t, measuredPath, "SUM\tpkg\t100.00\n")
+	budgetPath := filepath.Join(dir, "absent-budget.json") // never written
+	out, err := runTimingBudgetFixture(t, measuredPath, budgetPath, dir, []string{"--check", "--strict"}, nil)
+	if err != nil {
+		t.Fatalf("a missing budget file must keep exiting 0 (the warn state), not fail the run: %v\n%s", err, out)
+	}
+}
+
+// TestTimingBudgetKeepsTheEmptyObjectWarnState pins a valid-but-partial case:
+// an empty JSON object is valid, has no packages, and must keep exiting 0 like a
+// missing file — it is not a malformed-budget failure. The exit status is the
+// assertion.
+func TestTimingBudgetKeepsTheEmptyObjectWarnState(t *testing.T) {
+	out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", "{}")
+	if err != nil {
+		t.Fatalf("an empty budget object must keep exiting 0, not fail the run: %v\n%s", err, out)
+	}
+}
+
+// TestTimingBudgetKeepsTheClassMapOnlyWarnState pins the other valid-but-partial
+// case: a file with a perTestCeilingClasses map but no packages is still no
+// baseline — the map is validated, but with no packages the run keeps exiting 0,
+// exactly as before #4609. The exit status is the assertion.
+func TestTimingBudgetKeepsTheClassMapOnlyWarnState(t *testing.T) {
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeilingClasses":{"retirement":{"ceilingSeconds":20,"tests":["TestClassed"]}}}`
+	out, err := runTimingBudgetCompare(t, "SUM\tpkg\t100.00\n", budget)
+	if err != nil {
+		t.Fatalf("a class-map-only budget must keep exiting 0, not fail the run: %v\n%s", err, out)
 	}
 }
