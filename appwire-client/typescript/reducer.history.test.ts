@@ -660,6 +660,75 @@ describe("the live overlay", () => {
     expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), "notice:0"]]]);
   });
 
+  test("overlay/end drops uncovered slots for the shared reducer default", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
+    const text = streamOverlay("t1", "r1", 0, "pending text");
+    const reasoning: OverlayItem = {
+      ...streamOverlay("t1", "r1", 1, "pending reasoning"),
+      key: "stream:r1/1:reasoning",
+      item: { type: "reasoning", id: "reasoning-live", turnId: "t1", roundId: "r1", text: "pending reasoning" },
+    };
+    const preview: OverlayItem = {
+      key: "preview:call_c",
+      kind: "preview",
+      turnId: "t1",
+      roundId: "r1",
+      streamId: "r1/1",
+      callId: "call_c",
+      item: { type: "agentMessage", id: "preview:call_c", turnId: "t1", callId: "call_c", text: "preview" },
+    };
+    const toolHistoryKey = itemKey("t1", 4);
+    const tool = toolOverlay("t1", "r1", toolHistoryKey, "running output");
+    let next = [text, reasoning, preview, tool].reduce(
+      (current, overlayItem) => applyNotification(current, upserted(overlayItem), NOW),
+      model,
+    );
+
+    next = applyNotification(
+      next,
+      { method: "overlay/end", params: { threadId: THREAD_ID, ref: REF, roundId: "r1" } },
+      NOW,
+    );
+    expect(next.overlay).toEqual({});
+
+    next = applyNotification(
+      next,
+      updated([
+        item("t1", 1, { roundId: "r1", text: "recorded text" }),
+        item("t1", 2, { type: "reasoning", roundId: "r1", text: "recorded reasoning" }),
+        item("t1", 3, { callId: "call_c", text: "recorded preview" }),
+        item("t1", 4, {
+          type: "commandExecution",
+          callId: "call_1",
+          text: undefined,
+          output: "recorded output",
+          status: "completed",
+          completedAtEntry: 5,
+        }),
+      ]),
+      NOW,
+    );
+    expect(next.overlay).toEqual({});
+    expect(shown(next)).toEqual([
+      ["t1", [itemKey("t1", 0), itemKey("t1", 1), itemKey("t1", 2), itemKey("t1", 3), itemKey("t1", 4)]],
+    ]);
+  });
+
+  test("history-before-end retires a covered stream once and leaves no overlay to erase", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
+    const stream = streamOverlay("t1", "r1", 0, "text");
+    let next = applyNotification(model, upserted(stream), NOW);
+    next = applyNotification(next, updated([item("t1", 1, { roundId: "r1", text: "recorded" })]), NOW);
+    expect(next.overlay).toEqual({});
+    const ended = applyNotification(
+      next,
+      { method: "overlay/end", params: { threadId: THREAD_ID, ref: REF, roundId: "r1" } },
+      NOW,
+    );
+    expect(ended.overlay).toEqual({});
+    expect(shown(ended)).toEqual(shown(next));
+  });
+
   test("a read replaces the overlay with its own", () => {
     const model = applyNotification(
       hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" }),

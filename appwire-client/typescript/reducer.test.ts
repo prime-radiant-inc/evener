@@ -10,11 +10,17 @@ import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
+  decodeTranscriptItem,
+  encodeTranscriptItem,
   foldWarningParams,
   hydrateThread,
   imageSessionRouteForSession,
+  itemTextPresence,
+  markItemIdentityOnly,
   markItemTextOmitted,
   mergeOlderItemPage,
+  mergeTranscriptItemVersioned,
+  mergeTranscriptTurnVersioned,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationTargetsThread,
@@ -38,6 +44,113 @@ import type {
 } from "./types.gen";
 import { NOTIFICATION_NAMES } from "./types.gen";
 import { WarningCodeContextBudget } from "./warnings";
+
+test("entry item codec preserves omitted text, identity-only markers, and rich recorded fields", () => {
+  const omitted = markItemTextOmitted({ id: "item-1", turnId: "turn-1", type: "assistant", text: "" });
+  const explicitEmpty: ItemModel = { id: "item-2", turnId: "turn-1", type: "assistant", text: "" };
+  const identity = markItemIdentityOnly({ id: "item-3", turnId: "turn-1", type: "toolResult", text: "" });
+  const rich: ItemModel = {
+    id: "item-4",
+    turnId: "turn-1",
+    type: "toolResult",
+    text: "tool result",
+    output: "structured result",
+    error: "denied",
+    images: [{ src: "data:image/png;base64,AA==", name: "in.png" }],
+    reasoningSummaries: [["reasoning chunk"]],
+  };
+
+  const decodedOmitted = decodeTranscriptItem(encodeTranscriptItem(omitted));
+  const decodedEmpty = decodeTranscriptItem(encodeTranscriptItem(explicitEmpty));
+  const decodedIdentity = decodeTranscriptItem(encodeTranscriptItem(identity));
+  const decodedRich = decodeTranscriptItem(encodeTranscriptItem(rich));
+  expect(decodedOmitted && itemTextPresence(decodedOmitted)).toBe("omitted");
+  expect(decodedEmpty && itemTextPresence(decodedEmpty)).toBe("provided");
+  expect(decodedIdentity && encodeTranscriptItem(decodedIdentity).identityOnly).toBe(true);
+  expect(decodedRich).toMatchObject(rich);
+  expect(decodeTranscriptItem({ id: "bad" })).toBeUndefined();
+});
+
+test("versioned entry merge rejects older input and preserves richer equal-version text", () => {
+  const held: ItemModel = { id: "item-1", turnId: "turn-1", type: "assistant", text: "known text" };
+  const stale: ItemModel = { ...held, text: "stale text" };
+  const omitted = markItemTextOmitted({ ...held, text: "" });
+
+  expect(mergeTranscriptItemVersioned(held, 4, stale, 3)).toBe(held);
+  expect(mergeTranscriptItemVersioned(held, 4, omitted, 4)).toMatchObject({ text: "known text" });
+});
+
+test("recorded history rejects equal-version explicit empty fields but accepts a newer clear", () => {
+  const heldImages = [{ type: "image", url: "data:image/png;base64,AA==", mediaType: "image/png" }];
+  let model = testHydrateV6({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_1",
+            transcriptKey: "entry-4/item-0",
+            turnId: "turn_1",
+            type: "assistant",
+            text: "known text",
+            images: heldImages,
+            version: 4,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const update = (version: number, text: string, images: typeof heldImages) =>
+    applyNotification(
+      model,
+      {
+        method: "history/updated",
+        params: {
+          threadId: "thr_t",
+          ref: "ref_t",
+          bootGeneration: "",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: version },
+          items: [
+            {
+              id: "item_1",
+              transcriptKey: "entry-4/item-0",
+              turnId: "turn_1",
+              type: "assistant",
+              text,
+              images,
+              version,
+              status: "completed",
+            },
+          ],
+        },
+      },
+      1000 + version,
+    );
+
+  model = update(4, "", []);
+  const equalVersion = itemAt(turnAt(model, 0), 0);
+  expect(equalVersion).toMatchObject({ text: "known text", version: 4 });
+  expect(equalVersion.images?.map(({ src }) => src)).toEqual([heldImages[0]!.url]);
+
+  model = update(5, "", []);
+  const newerVersion = itemAt(turnAt(model, 0), 0);
+  expect(newerVersion).toMatchObject({ text: "", version: 5 });
+  expect(newerVersion.images?.map(({ src }) => src)).toEqual([heldImages[0]!.url]);
+});
+
+test("versioned turn merge rejects older and equal metadata without copying item arrays", () => {
+  const item: ItemModel = { id: "item-1", turnId: "turn-1", type: "assistant", text: "body" };
+  const held: TurnModel = { id: "turn-1", status: "completed", version: 8, items: [item] };
+  expect(mergeTranscriptTurnVersioned(held, { ...held, status: "stale", version: 7, items: [] })).toBe(held);
+  expect(mergeTranscriptTurnVersioned(held, { ...held, status: "equal", items: [] })).toBe(held);
+  const newer = mergeTranscriptTurnVersioned(held, { ...held, status: "new", version: 9, items: [] });
+  expect(newer).toMatchObject({ status: "new", version: 9 });
+  expect(newer.items).toBe(held.items);
+});
 
 // Each fixture is newline-delimited JSON: the first line is
 // {"hydrate": ThreadReadResponse, "ref": string}, every following line is a

@@ -1094,7 +1094,10 @@ func skillGuardReadMilestones(t *testing.T, path string) []skillGuardMilestone {
 	return out
 }
 
-func skillGuardMilestoneDetail(t *testing.T, milestones []skillGuardMilestone, name string, into any) bool {
+func skillGuardMilestoneDetail(t interface {
+	Helper()
+	Fatalf(string, ...any)
+}, milestones []skillGuardMilestone, name string, into any) bool {
 	t.Helper()
 	for _, m := range milestones {
 		if m.Milestone != name {

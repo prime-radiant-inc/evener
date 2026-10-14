@@ -2,7 +2,7 @@ import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@eve
 import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
 import { createElement, createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetThreadsStoreForTests } from "../../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } from "../../../../widgets/virtuallist";
 import { mountReaderScene } from "../transcriptReaderTestUtils";
 import { installTranscriptGeometry } from "../transcriptReadingGeometryTestUtils";
@@ -136,6 +136,17 @@ function makeMeasure(initial: ScrollMetrics) {
       current = { ...current, ...next };
     },
   };
+}
+
+// Drives the store's opening state the way openEntryTranscriptFixture does:
+// through a published store update, never by repairing the DOM from the test.
+function setLocalOpening(ref: string, pending: boolean): void {
+  threadsStore.setState((state) => {
+    const localOpenings = new Map(state.localOpenings);
+    if (pending) localOpenings.set(ref, 1);
+    else localOpenings.delete(ref);
+    return { localOpenings };
+  });
 }
 
 // jsdom implements no TouchEvent constructor, so a touch is a plain Event
@@ -3110,6 +3121,224 @@ describe("near-top triggers loadOlder", () => {
     });
 
     expect(loadOlder).not.toHaveBeenCalled();
+  });
+
+  // The real entry-slice opening: the pane's mount/measurement scroll has the
+  // transcript painting its rows, so scrollTop sits at 0 with the virtualizer's
+  // rendered rows still unmeasured. That reads as "reader at the top of a short
+  // transcript" and would page in history over the network during a local-only
+  // opening. The trigger holds until measurement lands, then resumes - the
+  // existing "a scroll event landing near the top calls loadOlder" test above
+  // proves ordinary near-top paging is unchanged for an already-measured port.
+  test("does not page while the rendered rows are unmeasured, then resumes once they measure", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(SCROLLED_AWAY);
+    const loadOlder = vi.fn().mockResolvedValue(undefined);
+    const sizer = document.createElement("div");
+    el.appendChild(sizer);
+    const rows = [0, 1, 2].map(() => {
+      const row = document.createElement("div");
+      sizer.appendChild(row);
+      return row;
+    });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+        listRef: ref,
+        loadOlder,
+        measure,
+      }),
+    );
+
+    act(() => {
+      set({ scrollTop: 50 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(loadOlder).not.toHaveBeenCalled();
+
+    // The browser's real partial state: one row measured while the rest are
+    // still zero. A single measured row must not unblock the trigger.
+    Object.defineProperty(rows[0]!, "offsetHeight", { configurable: true, value: 53 });
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(loadOlder).not.toHaveBeenCalled();
+
+    // Measurement lands for every rendered row: the port's own geometry
+    // genuinely is short, so near-top paging resumes.
+    for (const row of rows) Object.defineProperty(row, "offsetHeight", { configurable: true, value: 40 });
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  // The store-owned recorded opening: while the entry-backed reader is still
+  // restoring bodies, the pane's rows measure zero but paging must hold. The
+  // hold comes from the store's own opening state, not row geometry, so it
+  // holds even a row the virtualizer HAS measured at zero. When the opening
+  // settles (success, failure or no model) the store publishes, the hold lifts
+  // and the hook's one-shot re-check resumes ordinary paging.
+  test("holds near-top paging while the store reports the recorded opening, then resumes when it settles", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(SCROLLED_AWAY);
+    const loadOlder = vi.fn().mockResolvedValue(undefined);
+    const markOpening = (pending: boolean) =>
+      threadsStore.setState((state) => {
+        const localOpenings = new Map(state.localOpenings);
+        if (pending) localOpenings.set("ref_a", 1);
+        else localOpenings.delete("ref_a");
+        return { localOpenings };
+      });
+    markOpening(true);
+    try {
+      renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+          listRef: ref,
+          loadOlder,
+          measure,
+        }),
+      );
+
+      act(() => {
+        set({ scrollTop: 50 });
+        el.dispatchEvent(new Event("scroll"));
+      });
+      expect(loadOlder).not.toHaveBeenCalled();
+
+      act(() => {
+        markOpening(false);
+      });
+      expect(loadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      markOpening(false);
+    }
+  });
+
+  // N2: Session persists across ref changes. An unkeyed previous-pending flag
+  // would read the next session's ordinary state as the previous session's
+  // opening settling, and submit the NEXT ref's older-page demand before its
+  // own initial scroll placement. The transition memory is keyed to ref+port,
+  // so navigation takes no load action. B's port is overflowing here, so no
+  // short-page demand fires either; the bug is the near-top branch alone.
+  test("a same-pane switch from a pending ref to an ordinary ref submits no demand for the new ref", () => {
+    const handleA = makeListHandle();
+    const handleB = makeListHandle();
+    const measureA = makeMeasure(SCROLLED_AWAY);
+    const measureB = makeMeasure(SCROLLED_AWAY); // scrollTop 0, overflowing port
+    const loadA = vi.fn().mockResolvedValue(undefined);
+    const loadB = vi.fn().mockResolvedValue(undefined);
+    setLocalOpening("ref_a", true);
+    try {
+      const { rerender } = renderHook(
+        ({ r, handle, loadOlder, measure }) =>
+          useTranscriptScroll({
+            ref: r,
+            model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+            listRef: handle.ref,
+            loadOlder,
+            measure,
+          }),
+        {
+          initialProps: { r: "ref_a", handle: handleA, loadOlder: loadA, measure: measureA.measure },
+        },
+      );
+
+      // A is pending: its near-top scroll is held.
+      act(() => {
+        measureA.set({ scrollTop: 50 });
+        handleA.el.dispatchEvent(new Event("scroll"));
+      });
+      expect(loadA).not.toHaveBeenCalled();
+
+      // Same mounted pane, ordinary B. B never had an opening, so the hold's
+      // lift is not B's settlement: no B demand before B's own placement.
+      rerender({ r: "ref_b", handle: handleB, loadOlder: loadB, measure: measureB.measure });
+      expect(loadB).not.toHaveBeenCalled();
+      expect(handleB.el.hasAttribute("data-opening-hold")).toBe(false);
+    } finally {
+      setLocalOpening("ref_a", false);
+    }
+  });
+
+  // N2: the resume re-check must keep the readiness gates the normal triggers
+  // use. Releasing the hold while a rendered row is still unmeasured must not
+  // page; after genuine measurement, the ordinary near-top trigger resumes.
+  test("releasing the opening hold with an unmeasured row does not page, then measurement resumes paging", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(SCROLLED_AWAY);
+    const loadOlder = vi.fn().mockResolvedValue(undefined);
+    const sizer = document.createElement("div");
+    el.appendChild(sizer);
+    const row = document.createElement("div"); // offsetHeight 0: unmeasured
+    sizer.appendChild(row);
+    setLocalOpening("ref_a", true);
+    try {
+      renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+          listRef: ref,
+          loadOlder,
+          measure,
+        }),
+      );
+
+      act(() => {
+        set({ scrollTop: 50 });
+        el.dispatchEvent(new Event("scroll"));
+      });
+      expect(loadOlder).not.toHaveBeenCalled();
+
+      // The opening settles while the row is still unmeasured: the resume's
+      // near-top branch must keep the unmeasured guard and hold.
+      act(() => {
+        setLocalOpening("ref_a", false);
+      });
+      expect(loadOlder).not.toHaveBeenCalled();
+
+      // Genuine measurement recovery: the ordinary trigger resumes.
+      Object.defineProperty(row, "offsetHeight", { configurable: true, value: 40 });
+      act(() => {
+        el.dispatchEvent(new Event("scroll"));
+      });
+      expect(loadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      setLocalOpening("ref_a", false);
+    }
+  });
+
+  // The short-page branch of the resume, distinct from the near-top branch: the
+  // port does not overflow (scrollHeight <= clientHeight) but the reader is NOT
+  // near the top, so only shouldAutoLoadOlder can resume the demand.
+  test("releasing the opening hold on a short, not-near-top port resumes through shouldAutoLoadOlder", () => {
+    const { ref, el } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 500, scrollHeight: 300, clientHeight: 500 });
+    const loadOlder = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(el, "offsetHeight", { configurable: true, value: 500 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 300 });
+    setLocalOpening("ref_a", true);
+    try {
+      renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+          listRef: ref,
+          loadOlder,
+          measure,
+        }),
+      );
+      act(() => {
+        setLocalOpening("ref_a", false);
+      });
+      expect(loadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      setLocalOpening("ref_a", false);
+    }
   });
 });
 

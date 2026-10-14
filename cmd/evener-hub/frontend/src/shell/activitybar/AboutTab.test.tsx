@@ -369,9 +369,13 @@ test("visible About work time advances during an active turn", async () => {
 test("About keeps accepted accounting during disconnection and refreshes on ready", async () => {
   let cost = "~$1.00";
   const client = activityClient();
-  client.on("thread/read", ({ ref }) => {
+  client.on("thread/read", ({ ref, requestGeneration }) => {
     const response = activityDetailsThread(ref);
     if (response.thread.evener) response.thread.evener.cost = cost;
+    response.bootGeneration = "1";
+    response.epoch = 1;
+    response.snapshot = { incarnation: "inc-about", length: 0 };
+    response.requestGeneration = requestGeneration;
     return response;
   });
   connectionStore.getState().connect(client);

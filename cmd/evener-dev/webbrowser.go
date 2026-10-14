@@ -22,18 +22,23 @@ import (
 	"strings"
 )
 
-// browserGuards is every guard in verdict order. The last three
-// (skillguard, cascadeguard, backgroundjobsguard) are the never-signalled
+// browserGuards is every guard in verdict order. The last four
+// (skillguard, cascadeguard, backgroundjobsguard, backgroundtranscriptguard) are the never-signalled
 // checks that also need the built production frontend (needsBuild);
 // retirementguard is never-signalled too, but needs no build. Keep the
-// building three last.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "sessioncacheguard", "skillguard", "cascadeguard", "backgroundjobsguard"}
+// building four last.
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "skillguard", "cascadeguard", "backgroundjobsguard", backgroundTranscriptGuard}
 
 const (
-	skillGuard          = "skillguard"
-	cascadeGuard        = "cascadeguard"
-	retirementGuard     = "retirementguard"
-	backgroundJobsGuard = "backgroundjobsguard"
+	skillGuard      = "skillguard"
+	cascadeGuard    = "cascadeguard"
+	retirementGuard = "retirementguard"
+	// backgroundTranscriptGuard is the whole-journey guard: cmd/evener-hub's
+	// TestBackgroundTranscriptsEntrySliceBrowser (browserguard build tag) drives
+	// the real background-to-disk-to-pane journey in real Chrome through a real
+	// hub and two real `evener serve` daemons, on the production entry route.
+	backgroundTranscriptGuard = "backgroundtranscriptguard"
+	backgroundJobsGuard       = "backgroundjobsguard"
 )
 
 // newBrowserGate is the browser gate over its guards; the caller supplies
@@ -98,6 +103,21 @@ func browserGuardSpec(guard, root string) guardSpec {
 			env:             []string{"TMPDIR=" + filepath.Join(root, "tmp"), "NODE_DISABLE_COMPILE_CACHE=1", vite},
 			privateGoHome:   true,
 			waitOnInterrupt: true,
+		}
+	case backgroundTranscriptGuard:
+		// backgroundtranscriptguard's contract is cmd/evener-hub's
+		// TestBackgroundTranscriptsEntrySliceBrowser (browserguard build tag):
+		// the real background-to-disk-to-pane journey on the production entry
+		// route in real Chrome through a real hub and two real `evener serve`
+		// daemons. Like the skill guard it is a go test, so its driver, Chrome
+		// and helper daemons are cleaned up by the test binary's own t.Cleanup.
+		return guardSpec{
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsEntrySliceBrowser$", "-count=1"},
+			needsBuild:      true,
+			waitOnInterrupt: true,
+			dir:             ".",
+			env:             []string{vite},
 		}
 	default:
 		return guardSpec{
