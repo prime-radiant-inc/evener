@@ -575,12 +575,50 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       if (!attempt.isCurrent()) return "success";
 
       if (ticket === null) {
-        // Render the real raw content without adopting or fabricating accepted
-        // authority; usable highlights/selection stay suspended while the exact
-        // attempt, note and prior lease evidence are retained for recovery. The
-        // storage fault is uncertainty, not a source change, so the demand
-        // paces a retry while this pane is visible and connected; the next
-        // cycle revalidates through a fresh ticket and a real acceptance.
+        // The raw fetch succeeded, so its content is real evidence even though
+        // the metadata read faulted: a DEFINITE change against the retained
+        // capture proves the stale work must retire - the same comparison the
+        // acceptance-fault branch makes. The ticket this branch lacks is also
+        // the ticket a fence needs, so the retirement must take the durable
+        // pending-operation row with it: without the discard, the runtime's
+        // next retry pass re-applies the obsolete operation with its old
+        // identity. The discard runs FIRST and its own fault falls back to the
+        // interim retention below - work, capture and durable row retire
+        // together or not at all.
+        const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence;
+        if (evidence && evidenceProvesChange(content, evidence)) {
+          const attempted = work.attempted;
+          if (attempted) {
+            try {
+              await ports.repository.discardPendingOperation(attempted.lease.key, attempted.operationId);
+            } catch {
+              // The discard is durable work under the same flaky storage that
+              // faulted the metadata read; keep the exact retained work and
+              // let the paced retry attempt the whole retirement again.
+              if (!attempt.isCurrent()) return "success";
+              displayContent(content);
+              setAuthoritySuspended(true);
+              return "transient";
+            }
+            if (!attempt.isCurrent()) return "success";
+          }
+          // No ticket was issued, so no fence recorded and no repository
+          // expiry work exists to ever wake this reader: the outcome must
+          // stay transient, keeping the demand's paced retry alive until a
+          // real acceptance fences the proven change and the reread adopts
+          // the replacement epoch - recovery then needs no reload, foreground
+          // action or remount.
+          displayContent(content);
+          enterExpiryPending();
+          return "transient";
+        }
+        // Otherwise the fault is uncertainty, not proof: render the real raw
+        // content without adopting or fabricating accepted authority; usable
+        // highlights/selection stay suspended while the exact attempt, note
+        // and prior lease evidence are retained for recovery. The storage
+        // fault is not a source change, so the demand paces a retry while
+        // this pane is visible and connected; the next cycle revalidates
+        // through a fresh ticket and a real acceptance.
         displayContent(content);
         setAuthoritySuspended(true);
         return "transient";

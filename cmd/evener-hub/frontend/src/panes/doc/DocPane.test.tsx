@@ -36,6 +36,7 @@ import {
   workspaceStore,
 } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { createDocumentAnnotationRepository } from "../../stores/documentAnnotationIndexedDB";
 import {
   createDocumentAnnotationRuntime,
   type DocumentAnnotationPorts,
@@ -69,7 +70,7 @@ import {
 // below so workspaceStore.openPane("doc", ...) can seed an already-open doc
 // pane to focus away from before testing that Back moves focus back.
 import { type DocParams, openDocBeside } from "./openDoc";
-import { FIRST, SOURCE } from "./testing/annotationFixtures";
+import { FIRST, REFERENCE, SOURCE } from "./testing/annotationFixtures";
 import {
   acceptedOperation,
   blobBytes,
@@ -800,6 +801,23 @@ function faultBeginReadTransaction(armed: { value: boolean }): void {
     const scope = [...this.transaction.objectStoreNames].sort().join("|");
     if (armed.value && this.transaction.mode === "readwrite" && scope === BEGIN_READ_SCOPE) {
       armed.value = false;
+      throw new Error("annotation storage read fault");
+    }
+    return realGet.call(this, query);
+  });
+}
+
+// A PERSISTENT beginRead fault: unlike the one-shot seam above, EVERY beginRead
+// transaction faults until the test disarms it, so the demand's paced retries
+// cannot heal the fault while assertions are still running.
+function faultBeginReadPersistently(armed: { value: boolean }): void {
+  const realGet = FDBObjectStore.prototype.get;
+  vi.spyOn(FDBObjectStore.prototype, "get").mockImplementation(function (
+    this: IDBObjectStore,
+    query: IDBValidKey | IDBKeyRange,
+  ) {
+    const scope = [...this.transaction.objectStoreNames].sort().join("|");
+    if (armed.value && this.transaction.mode === "readwrite" && scope === BEGIN_READ_SCOPE) {
       throw new Error("annotation storage read fault");
     }
     return realGet.call(this, query);
@@ -3548,6 +3566,147 @@ test("a failed first Send survives an unchanged acceptRead fault with its author
   const prohibited = new Set(["turn/start", "turn/steer", "turn/queue", "thread/start", "thread/resume"]);
   expect(client.calls.slice(callBaseline).filter((call) => prohibited.has(call.method))).toEqual([]);
   expect((await f.outbox.listOutbox()).map((row) => row.clientMutationId)).toEqual([]);
+});
+
+test("a beginRead fault behind a proven source change discards the durable pending row and retires the retained attempt together, keeping the exact note, then recovers with a distinct new operation", async () => {
+  // The peer adapter below shares the fixture's database, so it also shares the
+  // annotation wake channel. Without this stub its committed wake would settle
+  // the reader's retained work through Node's real BroadcastChannel; the
+  // staged save must stay unobserved by this reader until the fault branch
+  // processes it.
+  vi.stubGlobal("BroadcastChannel", undefined);
+  cleanupAfterTest(() => {
+    vi.unstubAllGlobals();
+  });
+  let fail = false;
+  const f = await fixture("read-fault-proven-change", {
+    beforeCommit: (operation) => {
+      if (operation === "save" && fail) throw new Error("first-save fault");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { acceptances } = observeReadOwners(f.repo);
+  const listReads = observeListAnnotations(f.repo);
+  const baseline = await f.drafts.load(f.key);
+  if (!baseline) throw new Error("missing baseline");
+
+  mountAnnotated(f, ports, client, "doc-read-fault-proven-change");
+  const work = documentReaderWork("doc-read-fault-proven-change", f.document, ports);
+  await screen.findByText("First occurrence: same");
+  // The mount's map must be fully bound (and its reader-open pass done over an
+  // empty failed set) BEFORE the failed Send, or that pass re-saves the retained
+  // attempt as soon as the fault clears and the wake settles the work.
+  await waitForCurrentBoundMap(work, maps);
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+  fail = true;
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(work.phase).toBe("unsaved"));
+  const attempted = work.attempted;
+  if (!attempted) throw new Error("first attempt not retained");
+  const original = structuredClone(attempted);
+  expect(await operationRowsFor(f, original.operationId)).toHaveLength(0);
+
+  // A peer adapter (another tab) commits the retained attempt's durable pending
+  // row - the shape a stalled-then-recovered save leaves behind. The
+  // BroadcastChannel stub above keeps the peer's wake from reaching this
+  // reader's work subscription: the row is durable while the attempt stays
+  // retained.
+  fail = false;
+  const peer = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => null,
+  });
+  cleanupAfterTest(() => peer.close());
+  await peer.saveAnnotation(original);
+  const pendingRow = (await operationRowsFor(f, original.operationId))[0];
+  if (pendingRow?.state !== "pending") throw new Error("peer pending row missing");
+  expect(work.attempted).toEqual(original);
+
+  // The raw fetch proves a definite change (rev-B) while every beginRead
+  // faults: the reader must retire work, capture and durable row TOGETHER.
+  mockRead.mockResolvedValue(docContent(`${SOURCE}\nCHANGED`, "rev-B"));
+  const armed = { value: true };
+  faultBeginReadPersistently(armed);
+  cleanupAfterTest(() => {
+    armed.value = false;
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await screen.findByText("CHANGED");
+  expect(work.attempted).toBeNull();
+  expect(work.comment.capture).toBeUndefined();
+  expect(work.comment.note).toBe("Keep this scope.");
+  expect(work.phase).toBe("expiry-pending");
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Keep this scope.");
+  expect((await operationRowsFor(f, original.operationId))[0]?.state).toBe("cancelled");
+
+  // The runtime's next retry pass must find nothing to re-apply: the retained
+  // failure was invalidated and the durable row is terminal, so the obsolete
+  // operation can never save or append behind the proven change.
+  await act(async () => {
+    await ports.runtime.retryPending("storage-recovered");
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  expect((await operationRowsFor(f, original.operationId))[0]?.state).toBe("cancelled");
+  expect((await f.repo.listAnnotations(f.document)).map((view) => view.receipt.operationId)).toEqual(["op-1"]);
+  expect(await f.drafts.load(f.key)).toEqual(baseline);
+
+  // Recover through a real acceptance once the storage heals: the proven
+  // change fences the expired epoch and the reread adopts the replacement.
+  armed.value = false;
+  const acceptBase = acceptances.length;
+  const mapBase = maps.length;
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await waitForFreshAcceptedMap(acceptances, maps, work, acceptBase, mapBase);
+  await act(async () => {
+    await settleReaderRefreshes(listReads);
+  });
+  await selectFirstPassage();
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Keep this scope." } });
+  const saves = vi.spyOn(f.repo, "saveAnnotation");
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(work.attempted).toBeNull());
+  const produced = saves.mock.calls.at(-1)?.[0];
+  if (!produced) throw new Error("no produced operation");
+  // A real NEW save with a distinct operation identity, not the retired attempt.
+  expect(produced.operationId).not.toBe(original.operationId);
+  await waitFor(async () =>
+    expect(
+      (await f.repo.listAnnotations(f.document)).find((v) => v.receipt.operationId === produced.operationId)?.handoff
+        .state,
+    ).toBe("already-applied"),
+  );
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  // The changed-source fence expired the old epoch: only the new operation is
+  // visible, with the new revision, its receipt and a completed handoff.
+  const views = await f.repo.listAnnotations(f.document);
+  expect(views.map((v) => v.receipt.operationId)).toEqual([produced.operationId]);
+  expect(views[0]?.operation.capture.evidence.wholeRevision).toBe("rev-B");
+  expect(await payloadRowsFor(f, produced.operationId)).toEqual([produced]);
+  // The retired attempt's rev-A reference never appended: the single occurrence
+  // is settleBaseline's own op-1 append, which used the same note and capture.
+  const draftFinal = await f.drafts.load(f.key);
+  if (!draftFinal) throw new Error("missing draft after recovery");
+  expect(draftFinal.text.split(REFERENCE)).toHaveLength(2);
+  const recoveredReference = formatAnnotationReference(produced.capture, produced.lease.key.path, produced.note);
+  expect(draftFinal.text.split(recoveredReference)).toHaveLength(2);
+  expect(draftFinal).toEqual({
+    ...baseline,
+    text: `${baseline.text}\n\n${recoveredReference}`,
+    token: { ...baseline.token, sessionRevision: baseline.token.sessionRevision + 1 },
+    editedAt: expect.any(Number),
+  });
+  expectStampedNoEarlierThan(draftFinal, baseline);
 });
 test.each(["main", "secondary"] as const)(
   "visible %s document reads independently of focus, hiding pauses and close releases ownership",
