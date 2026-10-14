@@ -65,6 +65,25 @@ func assumedWindowResolver(ref string) (*provider.Profile, error) {
 	return nil, nil
 }
 
+// declaredWindowResolver maps "openai/<model>" to the catalog profile and
+// "win/<model>" to a profile whose context window is declared at 4096 — a known
+// window small enough that the base system prompt alone crosses its 0.80
+// compaction threshold, with a window figure (4096) the rendered percentage
+// cannot collide with.
+func declaredWindowResolver(ref string) (*provider.Profile, error) {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) != 2 {
+		return nil, nil
+	}
+	switch parts[0] {
+	case "openai":
+		return NewOpenAIProfile(parts[1]), nil
+	case "win":
+		return WithContextWindow(NewOpenAIProfile(parts[1]), 4096), nil
+	}
+	return nil, nil
+}
+
 // lastMarkerTurn returns the most recently appended TurnModelSwitch turn, or
 // fails the test if none exists.
 func lastMarkerTurn(t *testing.T, sess *Session) schema.Turn {
@@ -264,20 +283,91 @@ func TestSetModel_MarkerIdentifiesAssumedWindow(t *testing.T) {
 	}
 }
 
-// TestModelSwitchMarker_KnownWindowUnchanged pins that a known window still
-// renders the marker byte-for-byte as before the unknown-window disclosure:
-// only a switch whose budget is the 128K assumption may change the line.
-func TestModelSwitchMarker_KnownWindowUnchanged(t *testing.T) {
+// TestSetModel_KnownWindowMarkerStaysUnassumed replaces the known-window
+// full-copy golden (review of #4633): the old test compared the whole marker
+// against hardcoded prose, so a wording edit broke it with no behavior change.
+// A switch to a model with a declared window now drives the same marker path
+// behaviorally, and each claim is a structured fact around the marker, not its
+// prose:
+//   - the switch turn's structured identity names both models;
+//   - the context metrics the marker budgeted against report the declared
+//     4096-token window and Assumed == false, so the disclosure stays off;
+//   - estimated usage crossed the 0.80 checkpoint threshold, so the marker
+//     carries the warning line with the percentage derived from that estimate;
+//   - the marker does not print the assumed token figure the unknown-window
+//     branch adds — the one clause that must stay absent for a known window.
+//
+// The last claim is an absence, so it is mutation-checked: forcing the assumed
+// branch in SetModel makes this test fail. The figure is the window the metrics
+// report, not hardcoded copy, so a reworded warning still passes.
+func TestSetModel_KnownWindowMarkerStaysUnassumed(t *testing.T) {
 	t.Parallel()
-	got := buildModelSwitchMarkerText(modelSwitchMarkerParams{
-		oldProfile:        NewOpenAIProfile("gpt-5.4"),
-		nextProfile:       NewOpenAIProfile("gpt-5.5"),
-		contextWarning:    true,
-		contextWarningPct: 92,
-	})
-	const want = "Switched model: openai/gpt-5.4 → openai/gpt-5.5\nWarning: context usage is at ~92% of openai's context window, over the compaction threshold."
-	if got != want {
-		t.Fatalf("known-window marker text = %q, want %q", got, want)
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "win"}),
+		withConfig(SessionConfig{
+			ResolveProfile: declaredWindowResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+
+	// The turn before the switch must survive it: the marker is appended, not a
+	// replacement for history.
+	prior := schema.NewTurn(schema.TurnUserInput, llm.User("before the switch"))
+	sess.history = []schema.Turn{prior}
+
+	if err := sess.SetModel("win/gpt-5.5"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+
+	marker := lastMarkerTurn(t, sess)
+	// The turn's machine identity, not its rendered line, names the models.
+	wantIdentity := schema.ModelSwitchInfo{
+		OldProvider: "openai", OldModel: "gpt-5.4",
+		NewProvider: "openai", NewModel: "gpt-5.5",
+	}
+	if marker.ModelSwitch == nil || *marker.ModelSwitch != wantIdentity {
+		t.Fatalf("marker identity = %v, want %+v", marker.ModelSwitch, wantIdentity)
+	}
+	sess.mu.Lock()
+	history := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	if len(history) != 2 {
+		t.Fatalf("history after switch = %d turns, want 2 (the prior turn plus the marker): %+v", len(history), history)
+	}
+	if history[0].Kind != schema.TurnUserInput || history[0].Message.Text() != "before the switch" {
+		t.Fatalf("switch did not preserve the pre-switch turn: %+v", history[0])
+	}
+
+	// The window the marker budgeted against is the declared one, reported as
+	// NOT assumed — measured with the same history and prompt the marker saw
+	// (the marker turn itself is recorded after that estimate).
+	metrics := sess.contextMgr.EstimateUsage([]schema.Turn{prior}, len(sess.cachedSystemPrompt))
+	if metrics.Assumed {
+		t.Fatalf("context metrics = %+v, want a declared window, not the unknown-window assumption", metrics)
+	}
+	if metrics.Window != 4096 {
+		t.Fatalf("context metrics window = %d, want the declared 4096", metrics.Window)
+	}
+	// Estimated usage crossed the threshold, so a warning line fired, with the
+	// percentage the estimate produces.
+	pressure := float64(metrics.Used) / float64(metrics.Window)
+	if pressure < sess.contextMgr.CheckpointThreshold {
+		t.Fatalf("estimated pressure %.3f < threshold %.2f; no warning would fire", pressure, sess.contextMgr.CheckpointThreshold)
+	}
+	text := marker.Message.Text()
+	if strings.Count(text, "\n") < 1 {
+		t.Fatalf("marker = %q, want a warning line beyond the bare switch line", text)
+	}
+	if wantPct := strconv.Itoa(int(pressure*100 + 0.5)); !strings.Contains(text, wantPct) {
+		t.Fatalf("marker = %q, want the ~%s%% warning percentage the estimate produces", text, wantPct)
+	}
+	// A known window must not disclose an assumed token figure — the clause the
+	// forced-assumed mutation adds. The figure is the window the metrics report,
+	// so no prose is pinned.
+	if assumedFigure := strconv.Itoa(metrics.Window); strings.Contains(text, assumedFigure) {
+		t.Fatalf("marker = %q, want no assumed-window disclosure for a known window (found window figure %s)", text, assumedFigure)
 	}
 }
 
