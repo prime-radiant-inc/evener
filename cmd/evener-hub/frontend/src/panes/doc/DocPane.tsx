@@ -725,8 +725,11 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
 
   const { content } = state;
   if (content.binary) {
+    // A text-to-binary reread can strand an unsent note in retained work -
+    // the same reachability the loading and error states owe it.
     return scaffold(
       <EmptyState title="Binary file not shown" hint={`${filenameOf(path)} (${formatDocBytes(content.sizeBytes)})`} />,
+      commentBoxFooter ?? statusFooter,
     );
   }
 

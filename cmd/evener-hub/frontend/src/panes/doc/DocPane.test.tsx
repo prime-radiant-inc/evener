@@ -2946,6 +2946,38 @@ test("a retained unsent comment stays reachable through a remount whose first fe
   second.unmount();
 });
 
+test("a retained unsent comment stays reachable when a reread turns the document binary", async () => {
+  const f = await fixture("binary-retained-comment");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const first = mountAnnotated(f, ports, client, "doc-binary-comment");
+  const work = documentReaderWork("doc-binary-comment", f.document, ports);
+  await screen.findByText("First occurrence: same");
+  // A pending note against the retained capture, never sent.
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+  expect(work.comment.note).toBe("Keep this scope.");
+  first.unmount();
+
+  // The pane remounts and the document now reads as binary: the EmptyState
+  // names the file honestly, but the retained note must stay reachable -
+  // editable and cancellable - instead of vanishing with the text surface.
+  mockRead.mockResolvedValue(textContent({ binary: true, sizeBytes: 2048 }));
+  const second = mountAnnotated(f, ports, client, "doc-binary-comment");
+  await screen.findByText("Binary file not shown");
+  const note = await screen.findByRole("textbox");
+  expect((note as HTMLTextAreaElement).value).toBe("Keep this scope.");
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+  // Cancel dismisses the retained work and the footer returns to the honest
+  // status line.
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(work.comment.note).toBe("");
+  expect(screen.queryByRole("textbox")).toBeNull();
+  second.unmount();
+});
+
 test("a first reader open whose beginRead storage read faults still shows the scripted raw content with no fabricated authority, then recovers through an ordinary read", async () => {
   const f = await fixture("read-fault-first-open");
   await settleBaseline(f);
