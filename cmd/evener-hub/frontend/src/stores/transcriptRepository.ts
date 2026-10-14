@@ -322,6 +322,7 @@ export class TranscriptRepository {
   #recoveryNeeded = false;
   #disposed = false;
   #invalidated = false;
+  #persistenceCleared = false;
   #cacheContinuityLost = false;
   // Transiently failed batches are retained in a queue and retried in order on
   // bounded backoff while a reader holds demand. A second failed batch is
@@ -562,6 +563,14 @@ export class TranscriptRepository {
   /** The owner calls this after lifting reversible persistence suppression. */
   resumePersistence(): void {
     this.#continueBackground();
+  }
+
+  /** A committed Clear cancels queued persistence, not display or issued writes. */
+  cancelPersistenceAfterClear(): void {
+    this.#persistenceCleared = true;
+    this.#cancelRetry();
+    this.#abandonBackgroundAccepts("cancelled");
+    this.#pending.clear();
   }
 
   /** Adopt a source failure under the same captured lifetime as a read. */
@@ -2167,7 +2176,7 @@ export class TranscriptRepository {
       const retain = (item: ItemModel) =>
         item.transcriptKey === undefined ||
         !refused.has(item.transcriptKey) ||
-        refused.get(item.transcriptKey) !== item.version;
+        refused.get(item.transcriptKey) !== (item.version ?? 0);
       this.#model = {
         ...this.#model,
         history: {
@@ -2288,7 +2297,7 @@ export class TranscriptRepository {
     atFront: boolean,
     bodies: EntryRetainedBody[],
   ): void {
-    if (this.#disposed || this.#invalidated) {
+    if (this.#disposed || this.#invalidated || this.#persistenceCleared) {
       this.#recordAbandonment("cancelled", [batch.coverage]);
       this.#admission.release(bodies, this);
       return;

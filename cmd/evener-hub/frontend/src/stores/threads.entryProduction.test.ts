@@ -1381,6 +1381,102 @@ it.each([true, false])("input suppressed during Clear is reconciled after commit
   }
 });
 
+it.each(["before", "after", "failed-after"])(
+  "committed Clear cancels queued background persistence, predecessor=%s",
+  async (ordering) => {
+    const settlesFirst = ordering === "before";
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const client = connect();
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:a");
+    const repository = productionEntryTranscriptForTests("local:a").repository;
+    if (!repository) throw new Error("expected background repository");
+    const admission = entryWriteAdmissionFor(storage);
+    const heldWrite = deferred<void>();
+    const heldClear = deferred<void>();
+    const realCommit = storage.commitBatch.bind(storage);
+    const writes = vi.spyOn(storage, "commitBatch").mockImplementation(async (batch) => {
+      if (batch.items.some((row) => row.transcriptKey === "predecessor")) {
+        await heldWrite.promise;
+        if (ordering === "failed-after") return { outcome: "failed", error: new Error("transaction failed") };
+      }
+      return realCommit(batch);
+    });
+    const send = (id: string, entry: number) =>
+      client.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: "local:a",
+          threadId: "thread-a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-a", length: entry + 2 },
+          items: turn(id, entry).items,
+        },
+      });
+    send("predecessor", 3);
+    await vi.waitFor(() => expect(writes).toHaveBeenCalledTimes(1));
+    const issuedBytes = admission.retainedBytes;
+    expect(issuedBytes).toBeGreaterThan(0);
+    send("successor", 4);
+    expect(repository.retainedInventoryForTesting().backgroundAcceptBodies.length).toBeGreaterThan(0);
+    expect(admission.retainedBytes).toBeGreaterThan(issuedBytes);
+    // Keep a display owner without creating further hydration demand.
+    const reader = repository.attachReader();
+    const displayed = repository.getSnapshot();
+    const realClear = storage.clear.bind(storage);
+    vi.spyOn(storage, "clear").mockImplementation(async () => {
+      await heldClear.promise;
+      return realClear();
+    });
+    const clearing = clearCachedSessions();
+    try {
+      if (settlesFirst) {
+        heldWrite.resolve();
+        await vi.waitFor(() => expect(repository.retainedInventoryForTesting().inFlightBodies).toEqual([]));
+      }
+      heldClear.resolve();
+      expect(await clearing).toEqual({ committed: true });
+      expect(repository.retainedInventoryForTesting().backgroundAcceptBodies).toEqual([]);
+      expect(repository.retainedInventoryForTesting().retryBodies).toEqual([]);
+      expect(repository.retainedInventoryForTesting().pendingRows).toEqual([]);
+      expect(admission.retainedBytes).toBe(settlesFirst ? 0 : issuedBytes);
+      expect(writes).toHaveBeenCalledTimes(1);
+      expect(repository.getSnapshot()).toEqual(displayed);
+      const other = {};
+      expect(
+        admission.tryAcquireBackground(
+          other,
+          () => false,
+          () => {},
+        ),
+      ).toBe(settlesFirst);
+      if (settlesFirst) admission.releaseBackground(other);
+      else admission.cancelBackground(other);
+      heldWrite.resolve();
+      await expect(settleEntryTranscriptForTests("local:a")).rejects.toThrow("transcript recovery was cancelled");
+      expect(admission.retainedBytes).toBe(0);
+      expect(
+        admission.tryAcquireBackground(
+          other,
+          () => false,
+          () => {},
+        ),
+      ).toBe(true);
+      admission.releaseBackground(other);
+      expect(writes).toHaveBeenCalledTimes(1);
+      expect(repository.getSnapshot()).toEqual(displayed);
+    } finally {
+      heldWrite.resolve();
+      heldClear.resolve();
+      reader.dispose();
+      background.release();
+    }
+  },
+);
+
 it("an aborted ordinary Clear preserves disk rows and the held entry route resumes writes", async () => {
   const storage = cache();
   const client = connect();
