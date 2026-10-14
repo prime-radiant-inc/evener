@@ -140,10 +140,16 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
   return holdNextTransactionEvent(stores, "complete");
 }
 
-// Holds the named event of the next readwrite transaction opened over
-// exactly `stores` - the abort-event twin a rollback's bounded-wait coverage
-// needs, since an aborted transaction never fires "complete".
-export function holdNextTransactionEvent(stores: readonly string[], event: "complete" | "abort") {
+// Holds the named event of the next readwrite transaction opened over exactly
+// `stores` - the abort-event twin a rollback's bounded-wait coverage needs,
+// since an aborted transaction never fires "complete". The mode defaults to
+// readwrite (the write seam's shape); the outcome scan's readonly
+// transaction passes "readonly".
+export function holdNextTransactionEvent(
+  stores: readonly string[],
+  event: "complete" | "abort",
+  mode: IDBTransactionMode = "readwrite",
+) {
   const transact = IDBDatabase.prototype.transaction;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   let markReached: (() => void) | undefined;
@@ -157,7 +163,7 @@ export function holdNextTransactionEvent(stores: readonly string[], event: "comp
     const transaction = transact.apply(this, args);
     if (
       !hold &&
-      transaction.mode === "readwrite" &&
+      transaction.mode === mode &&
       transaction.objectStoreNames.length === stores.length &&
       stores.every((store) => transaction.objectStoreNames.contains(store))
     ) {
