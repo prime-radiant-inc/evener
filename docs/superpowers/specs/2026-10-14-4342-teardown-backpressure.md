@@ -476,7 +476,12 @@ fixtures, and an injectable transport/observer where needed.
   unresolved attempt remains; a row parked `blockedUnknown` while its only
   attempt was in flight reopens to submitting, while one parked with
   earlier evidence stays parked; and the dispatcher arms the busy surface
-  and the pacing only when the rollback comes out clean. Cross-tab
+  and the pacing only when the rollback comes out clean. Records written
+  before the count field existed carry their evidence as the bare
+  `attempted` boolean, which both adapters read as one unresolved attempt
+  (the browser normalizes at read time; native seeds the zero count from
+  the flag before each count-touching write), so a refused retry preserves
+  that legacy evidence too. Cross-tab
   settlements clear this tab's marker through the dispatch-tail prune, and
   every surface renders the refusal state only for `submitting` rows.
 - Item 8's TUI e2e uses a fixture-specific refusal message, so the pin proves

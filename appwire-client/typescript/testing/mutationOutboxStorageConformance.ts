@@ -32,6 +32,12 @@ export interface MutationOutboxStorageFactory {
   // Human-readable host name, used as the describe block's label.
   readonly name: string;
   createStorage(options?: MutationOutboxStorageFactoryOptions): MutationOutboxStorage | Promise<MutationOutboxStorage>;
+  // Rewrites one already-marked record into the pre-unresolvedAttempts
+  // legacy shape: the bare attempted boolean with no count, exactly as the
+  // pre-field adapter wrote it. The legacy contracts below pin that both
+  // adapters read that shape as ONE unresolved attempt, not zero. Only a
+  // host whose persistence can hold the pre-field shape supplies this.
+  stripAttemptCount?(storage: MutationOutboxStorage, clientMutationId: string): Promise<void> | void;
 }
 
 const CONFORMANCE_TARGET = "local:conformance-1";
@@ -302,6 +308,25 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
         unresolvedAttempts: 1,
       });
       await expect(storage.unmarkAttempted("missing")).resolves.toBe(false);
+    });
+
+    // #4342 (round-2 review): records written before the unresolvedAttempts
+    // field existed carry their evidence as the bare attempted boolean. A
+    // refused retry must not erase that legacy evidence: the count reads
+    // the boolean as one unresolved attempt, not zero.
+    test("a refused retry preserves a legacy record's pre-count attempt evidence", async () => {
+      if (!factory.stripAttemptCount) return;
+      const record = await storage.enqueueIntent(conformanceTextIntent("legacy pre-count evidence"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await factory.stripAttemptCount(storage, record.clientMutationId);
+      // The retry's own mark lands on the legacy evidence, not over it.
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: true,
+        unresolvedAttempts: 1,
+      });
     });
 
     test("markUnknown's onlyAttempted guard refuses an un-attempted record", async () => {

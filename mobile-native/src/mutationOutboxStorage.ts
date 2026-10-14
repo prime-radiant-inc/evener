@@ -311,6 +311,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// Commits attempt evidence before transport so another dispatch pass or a
 	// reload cannot mistake a possibly-delivered mutation for an unsent intent.
 	async markAttempted(clientMutationId: string): Promise<boolean> {
+		this.#seedLegacyAttemptCount(clientMutationId);
 		return (
 			changedRows(
 				this.db.runSync(
@@ -329,6 +330,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// skips it and the ordinary flush rediscovers it. Authoritative outcomes
 	// own every other state, so only a submitting row rolls back.
 	async unmarkAttempted(clientMutationId: string): Promise<boolean> {
+		this.#seedLegacyAttemptCount(clientMutationId);
 		// A row parked while its only attempt was in flight reopens: the
 		// in-band refusal is authoritative proof that park's uncertainty
 		// resolves. One parked with earlier unresolved evidence stays parked.
@@ -363,6 +365,19 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			);
 		}
 		return false;
+	}
+
+	// A row written before the unresolved_attempts column existed carries its
+	// evidence as the bare attempted flag over a zero count. Both count
+	// writes seed that legacy shape first, so the refused retry's rollback
+	// decrements real evidence instead of erasing it. Post-field rows never
+	// hold the (attempted, zero-count) shape, so the seed is idempotent.
+	#seedLegacyAttemptCount(clientMutationId: string): void {
+		this.db.runSync(
+			`UPDATE ${TABLES.outbox} SET unresolved_attempts = 1
+				WHERE client_mutation_id = ? AND attempted = 1 AND unresolved_attempts = 0`,
+			clientMutationId,
+		);
 	}
 
 	async markUnknown(

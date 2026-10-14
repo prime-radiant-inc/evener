@@ -708,13 +708,15 @@ export class MutationOutboxIndexedDB {
   // Commit attempt evidence before transport so another tab or a reload cannot
   // mistake a possibly delivered mutation for an unsent intent. Each attempt
   // counts: two tabs may dispatch one row concurrently, and the count is what
-  // lets a refusal roll back its own attempt without erasing the other's.
+  // lets a refusal roll back its own attempt without erasing the other's. A
+  // record written before the count field existed carries its evidence as
+  // the bare attempted boolean, which reads as one unresolved attempt.
   async markAttempted(clientMutationId: string): Promise<boolean> {
     return this.#write(OUTBOX_STORE, "markAttempted", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "submitting") return false;
-      const unresolvedAttempts = (record.unresolvedAttempts ?? 0) + 1;
+      const unresolvedAttempts = (record.unresolvedAttempts ?? (record.attempted ? 1 : 0)) + 1;
       await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts }));
       return true;
     });
@@ -733,13 +735,16 @@ export class MutationOutboxIndexedDB {
     return this.#write(OUTBOX_STORE, "unmarkAttempted", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
+      // A missing count on a pre-field record reads as the one unresolved
+      // attempt its attempted boolean claims.
+      const priorAttempts = record?.unresolvedAttempts ?? (record?.attempted ? 1 : 0);
       if (record?.state === "submitting") {
-        const unresolvedAttempts = Math.max(0, (record.unresolvedAttempts ?? 0) - 1);
+        const unresolvedAttempts = Math.max(0, priorAttempts - 1);
         await requestResult(store.put({ ...record, attempted: unresolvedAttempts > 0, unresolvedAttempts }));
         return unresolvedAttempts === 0;
       }
       if (record?.state === "blockedUnknown") {
-        const unresolvedAttempts = record.unresolvedAttempts ?? 0;
+        const unresolvedAttempts = priorAttempts;
         if (unresolvedAttempts > 1) {
           await requestResult(store.put({ ...record, unresolvedAttempts: unresolvedAttempts - 1 }));
           return false;
