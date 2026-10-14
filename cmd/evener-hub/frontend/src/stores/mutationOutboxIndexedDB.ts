@@ -706,35 +706,48 @@ export class MutationOutboxIndexedDB {
   }
 
   // Commit attempt evidence before transport so another tab or a reload cannot
-  // mistake a possibly delivered mutation for an unsent intent.
+  // mistake a possibly delivered mutation for an unsent intent. Each attempt
+  // counts: two tabs may dispatch one row concurrently, and the count is what
+  // lets a refusal roll back its own attempt without erasing the other's.
   async markAttempted(clientMutationId: string): Promise<boolean> {
-    return this.#setAttempted(clientMutationId, "markAttempted", true);
-  }
-
-  // Rolls the pre-transport attempt evidence back after the hub
-  // authoritatively refused the attempt in band (#4342's
-  // connectionBackpressure): the row is what it was before the dispatch, so
-  // the reconnect reconcile's onlyAttempted-guarded blockedUnknown park skips
-  // it and the ordinary flush rediscovers it. Authoritative outcomes own
-  // every other state, so only a submitting row rolls back.
-  async unmarkAttempted(clientMutationId: string): Promise<boolean> {
-    return this.#setAttempted(clientMutationId, "unmarkAttempted", false);
-  }
-
-  // The one setter both attempted-flag writes share: only a submitting row
-  // ever flips, and the operation label keeps each write's diagnostics
-  // distinct.
-  async #setAttempted(
-    clientMutationId: string,
-    operation: MutationOutboxOperation,
-    attempted: boolean,
-  ): Promise<boolean> {
-    return this.#write(OUTBOX_STORE, operation, async (transaction) => {
+    return this.#write(OUTBOX_STORE, "markAttempted", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "submitting") return false;
-      await requestResult(store.put({ ...record, attempted }));
+      const unresolvedAttempts = (record.unresolvedAttempts ?? 0) + 1;
+      await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts }));
       return true;
+    });
+  }
+
+  // Rolls the refused attempt's pre-transport evidence back after the hub
+  // authoritatively refused the attempt in band (#4342's
+  // connectionBackpressure). Resolves to true only when the row returns to
+  // its never-attempted dispatchable shape: with earlier or concurrent
+  // unresolved attempts remaining, their evidence survives (attempted stays
+  // true) and the row keeps its uncertain treatment; a row parked
+  // blockedUnknown while its only attempt was in flight reopens, because the
+  // refusal is authoritative proof that park's uncertainty resolves, while
+  // one parked with earlier evidence stays parked.
+  async unmarkAttempted(clientMutationId: string): Promise<boolean> {
+    return this.#write(OUTBOX_STORE, "unmarkAttempted", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
+      if (record?.state === "submitting") {
+        const unresolvedAttempts = Math.max(0, (record.unresolvedAttempts ?? 0) - 1);
+        await requestResult(store.put({ ...record, attempted: unresolvedAttempts > 0, unresolvedAttempts }));
+        return unresolvedAttempts === 0;
+      }
+      if (record?.state === "blockedUnknown") {
+        const unresolvedAttempts = record.unresolvedAttempts ?? 0;
+        if (unresolvedAttempts > 1) {
+          await requestResult(store.put({ ...record, unresolvedAttempts: unresolvedAttempts - 1 }));
+          return false;
+        }
+        await requestResult(store.put({ ...record, state: "submitting", attempted: false, unresolvedAttempts: 0 }));
+        return true;
+      }
+      return false;
     });
   }
 

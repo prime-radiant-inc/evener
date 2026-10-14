@@ -227,16 +227,20 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       }
       if (data?.mutationOutcome === "notAccepted" && data.retryDisposition === "automatic") {
         // #4342: the hub refused the attempt in band without queueing it —
-        // the row was never delivered, so it stays queued in the FIFO and the
-        // pre-transport attempt evidence rolls back: a reconnect reconcile's
-        // onlyAttempted-guarded park must skip this row, and the ordinary
-        // flush rediscovers it. The busy surface and the pacing are the
-        // host's, through onTransientRefusal; this loop stops rather than
-        // spinning on the refusal.
-        await this.#storage.unmarkAttempted(record.clientMutationId);
+        // this attempt never reached the queue, so it stays rolled back in
+        // the FIFO while any earlier or concurrent unresolved attempt's
+        // evidence survives. The busy surface and the pacing arm only when
+        // the row comes back to its never-attempted dispatchable shape (so
+        // a reconnect reconcile's onlyAttempted-guarded park skips it and
+        // the ordinary flush rediscovers it): a refusal that leaves
+        // residual evidence — or finds the row already parked or settled
+        // elsewhere — hands the row to its ordinary uncertain treatment
+        // instead. This loop stops rather than spinning on the refusal.
         // mutationErrorData answers only WireErrors, so the data this branch
         // matched on proves the error's shape.
-        this.#onTransientRefusal(record, error as WireError);
+        if (await this.#storage.unmarkAttempted(record.clientMutationId)) {
+          this.#onTransientRefusal(record, error as WireError);
+        }
         return "stop";
       }
       if (data?.mutationOutcome === "notAccepted") {

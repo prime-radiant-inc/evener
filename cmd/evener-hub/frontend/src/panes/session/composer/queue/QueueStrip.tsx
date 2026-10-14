@@ -591,7 +591,7 @@ export function QueueStrip({
           );
         })}
         {pendingQueueEntries.map((entry) => {
-          const hubRefused = entry.id === refusedId;
+          const hubRefused = entry.id === refusedId && entry.state === "submitting";
           return (
             <li
               key={entry.id}

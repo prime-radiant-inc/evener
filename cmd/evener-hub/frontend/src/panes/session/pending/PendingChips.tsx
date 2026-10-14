@@ -52,14 +52,17 @@ export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Elemen
 
   return (
     <ul className={CLASS.chips} data-testid="pending-chips">
-      {optimistic.map((entry) => (
-        <li key={entry.id} className={CLASS.chip} data-busy={entry.id === refusedId ? "true" : undefined}>
-          <span className={CLASS.method}>{entry.id === refusedId ? "Retrying" : "Sending"}</span>
-          <span className={CLASS.text} data-testid="pending-chip-preview">
-            {pendingEntryPreview(entry)}
-          </span>
-        </li>
-      ))}
+      {optimistic.map((entry) => {
+        const hubRefused = entry.id === refusedId && entry.state === "submitting";
+        return (
+          <li key={entry.id} className={CLASS.chip} data-busy={hubRefused ? "true" : undefined}>
+            <span className={CLASS.method}>{hubRefused ? "Retrying" : "Sending"}</span>
+            <span className={CLASS.text} data-testid="pending-chip-preview">
+              {pendingEntryPreview(entry)}
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }

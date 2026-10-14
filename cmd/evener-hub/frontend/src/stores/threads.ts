@@ -1415,6 +1415,10 @@ function dropUnpinnedModel(ref: string): void {
 
 async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterable<string>): Promise<void> {
   if (!isCurrentMutationRuntime(runtime)) return;
+  // Every dispatch tail - including the discovery-driven ones - re-reads the
+  // ref's shared storage, so a refusal whose row another tab settled (this
+  // tab's dispatcher never sees that settle) prunes here.
+  void pruneSettledTransientRefusals(runtime, targetRefs);
   for (const targetRef of targetRefs) {
     if (!isCurrentMutationRuntime(runtime)) return;
     const generation = mutationStateGenerations.get(targetRef) ?? 0;

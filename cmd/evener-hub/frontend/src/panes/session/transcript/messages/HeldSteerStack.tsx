@@ -127,7 +127,7 @@ export function HeldSteerStack({ ref: sessionRef }: { ref: string }): JSX.Elemen
   return (
     <ul className={styles.stack} data-testid="held-steer-stack">
       {entries.map((entry) => {
-        const hubRefused = entry.id === refusedId;
+        const hubRefused = entry.id === refusedId && entry.state === "submitting";
         return (
           <li key={entry.id} data-busy={hubRefused ? "true" : undefined}>
             <UserMessageView

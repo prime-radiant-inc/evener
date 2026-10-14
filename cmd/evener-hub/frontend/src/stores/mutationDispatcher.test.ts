@@ -597,6 +597,45 @@ describe("MutationDispatcher", () => {
     expect(client.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
   });
 
+  // #4342 (review): a refusal rolls back only its own attempt's evidence.
+  // When an earlier attempt is still unresolved (a transport failure left
+  // the row attempted, or another tab holds one in flight), the rollback
+  // resolves without the never-attempted shape, so the row keeps its
+  // uncertain treatment — attempted stays true, the reconcile park keeps
+  // guarding it — and no busy surface or paced retry arms for it.
+  test("a backpressure refusal with residual attempt evidence surfaces no busy state", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "backpressure-evidence", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "earlier attempt unresolved"));
+    // An earlier attempt whose response was lost: evidence retained.
+    await outbox.markAttempted(record.clientMutationId);
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      });
+    });
+    const transientRefusals: MutationOutboxRecord[] = [];
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onTransientRefusal: (refused) => transientRefusals.push(refused),
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({
+      state: "submitting",
+      attempted: true,
+      unresolvedAttempts: 1,
+    });
+    expect(transientRefusals).toEqual([]);
+    expect(client.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+
   // Kata 2f41. The daemon sends BOTH a category (evenerErrorInfo: "conflict") and
   // its own sentence ("turn is not active"). Showing the category tells the
   // user the class of failure instead of the failure, so the message wins.

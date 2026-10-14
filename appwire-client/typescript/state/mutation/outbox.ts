@@ -113,12 +113,16 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // The next record for one ref that is still waiting to be dispatched.
   nextDispatchable(targetRef: string): Promise<MutationOutboxRecord<A> | undefined>;
   markAttempted(clientMutationId: string): Promise<boolean>;
-  // Rolls the pre-transport attempt evidence back after the hub
+  // Rolls the refused attempt's pre-transport evidence back after the hub
   // authoritatively refused the attempt in band without queueing it (#4342's
-  // connectionBackpressure): the row returns to its never-attempted shape,
-  // so each host's reconnect reconcile onlyAttempted-guarded park skips it
-  // and the ordinary flush rediscovers it. Only a submitting row may roll
-  // back; an authoritative outcome owns every other state.
+  // connectionBackpressure). Resolves to true only when the row returns to
+  // its never-attempted dispatchable shape, so each host's reconnect
+  // reconcile onlyAttempted-guarded park skips it and the ordinary flush
+  // rediscovers it. Evidence of an earlier or concurrent unresolved attempt
+  // survives (attempted stays true); a row parked blockedUnknown while its
+  // only attempt was in flight reopens, because the refusal is authoritative
+  // proof that park's uncertainty resolves, while one parked with earlier
+  // evidence stays parked. Authoritative outcomes own every other state.
   unmarkAttempted(clientMutationId: string): Promise<boolean>;
   // The state an uncertain-outcome write may move a record to is exactly
   // "blockedUnknown" - the literal type is deliberate, so the type system

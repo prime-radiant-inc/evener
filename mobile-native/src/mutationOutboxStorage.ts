@@ -111,6 +111,7 @@ export interface Row {
 	created_at: number;
 	state: string;
 	attempted: number;
+	unresolved_attempts: number;
 	recovery_kind: string | null;
 	recovery_reason: string | null;
 }
@@ -132,7 +133,9 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 		intentSequence: row.intent_sequence,
 		createdAt: row.created_at,
 		state: row.state as MutationOutboxState,
-		...(row.state === "accepted" ? {} : { attempted: row.attempted === 1 }),
+		...(row.state === "accepted"
+			? {}
+			: { attempted: row.attempted === 1, unresolvedAttempts: row.unresolved_attempts }),
 		...(row.recovery_kind ? { recoveryKind: row.recovery_kind, recoveryReason: row.recovery_reason ?? undefined } : {}),
 	} as unknown as T;
 }
@@ -161,6 +164,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
 			composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
 			state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0,
+			unresolved_attempts INTEGER NOT NULL DEFAULT 0,
 			recovery_kind TEXT, recovery_reason TEXT)`;
 		for (const table of Object.values(TABLES)) this.db.execSync(schema(table));
 		this.db.execSync(
@@ -203,6 +207,15 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			if (!columns.some((column) => column.name === "instance_id")) {
 				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN instance_id TEXT`);
 			}
+		}
+		// #4342: unresolved attempt counts live beside the attempted flag on
+		// the outbox table. A database created before the column existed
+		// lacks it, and ALTER TABLE has no IF NOT EXISTS, so check the
+		// columns first - the default-zero column is the whole migration, and
+		// rows written before it existed read as zero unresolved attempts.
+		const outboxColumns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${TABLES.outbox})`);
+		if (!outboxColumns.some((column) => column.name === "unresolved_attempts")) {
+			this.db.execSync(`ALTER TABLE ${TABLES.outbox} ADD COLUMN unresolved_attempts INTEGER NOT NULL DEFAULT 0`);
 		}
 	}
 
@@ -301,7 +314,8 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		return (
 			changedRows(
 				this.db.runSync(
-					`UPDATE ${TABLES.outbox} SET attempted = 1 WHERE client_mutation_id = ? AND state = 'submitting'`,
+					`UPDATE ${TABLES.outbox} SET attempted = 1, unresolved_attempts = unresolved_attempts + 1
+						WHERE client_mutation_id = ? AND state = 'submitting'`,
 					clientMutationId,
 				),
 			) > 0
@@ -315,14 +329,40 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// skips it and the ordinary flush rediscovers it. Authoritative outcomes
 	// own every other state, so only a submitting row rolls back.
 	async unmarkAttempted(clientMutationId: string): Promise<boolean> {
-		return (
-			changedRows(
-				this.db.runSync(
-					`UPDATE ${TABLES.outbox} SET attempted = 0 WHERE client_mutation_id = ? AND state = 'submitting'`,
-					clientMutationId,
-				),
-			) > 0
+		// A row parked while its only attempt was in flight reopens: the
+		// in-band refusal is authoritative proof that park's uncertainty
+		// resolves. One parked with earlier unresolved evidence stays parked.
+		const reopened = changedRows(
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox} SET state = 'submitting', attempted = 0, unresolved_attempts = 0
+					WHERE client_mutation_id = ? AND state = 'blockedUnknown' AND unresolved_attempts <= 1`,
+				clientMutationId,
+			),
 		);
+		if (reopened > 0) return true;
+		const row = this.db.getFirstSync<{ state: string; unresolved_attempts: number }>(
+			`SELECT state, unresolved_attempts FROM ${TABLES.outbox} WHERE client_mutation_id = ?`,
+			clientMutationId,
+		);
+		if (row?.state === "submitting") {
+			const unresolvedAttempts = Math.max(0, row.unresolved_attempts - 1);
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox} SET attempted = ?, unresolved_attempts = ?
+					WHERE client_mutation_id = ? AND state = 'submitting'`,
+				unresolvedAttempts > 0 ? 1 : 0,
+				unresolvedAttempts,
+				clientMutationId,
+			);
+			return unresolvedAttempts === 0;
+		}
+		if (row?.state === "blockedUnknown" && row.unresolved_attempts > 1) {
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox} SET unresolved_attempts = unresolved_attempts - 1
+					WHERE client_mutation_id = ? AND state = 'blockedUnknown'`,
+				clientMutationId,
+			);
+		}
+		return false;
 	}
 
 	async markUnknown(

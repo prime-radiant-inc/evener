@@ -7016,6 +7016,47 @@ test("resetting the store cancels pending paced retries", async () => {
   restoreScheduler();
 });
 
+// #4342 (review): the marker's settle prune also runs when the row's
+// settlement happened in ANOTHER tab - this tab's dispatcher never sees
+// that settle, but every dispatch tail re-reads the shared storage, and the
+// prune rides it.
+test("a refusal's busy marker leaves when another tab settles the row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", (params) => {
+    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    });
+  });
+  const restoreScheduler = installBackpressureRetrySchedulerForTests(() => () => {});
+
+  await threadsStore.getState().send("ref_a", "held across tabs");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  const [row] = await storage.listOutbox("ref_a");
+  if (!row) throw new Error("expected the refused row to stay durable");
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(row.clientMutationId);
+
+  // The other tab settles the row straight into the optimistic store, through
+  // its own adapter instance over the shared database: this tab's dispatcher
+  // and storage hooks never see the write, and the suite's broadcast channel
+  // is a stub, so the dispatch tail's prune is the one path that can clear
+  // the marker.
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.settleReceipt(row.clientMutationId, "reflected");
+  otherTab.close();
+  // Any dispatch pass's pin refresh re-reads the ref; the prune rides it.
+  notifyReadyForMutationDispatch(["ref_a"]);
+  await flushIndexedDBUntil(() => threadsStore.getState().transientRefusalPaces.get("ref_a") === undefined);
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")).toBeUndefined();
+  restoreScheduler();
+});
+
 // Behind an undelivered durable send the fallback refuses rather than jump
 // it, and only that earlier durable row keeps the ref pinned.
 test("a refused write behind an undelivered durable send fails and preserves only the durable pin", async () => {

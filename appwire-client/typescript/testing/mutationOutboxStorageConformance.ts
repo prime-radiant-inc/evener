@@ -225,22 +225,82 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
     });
 
     // #4342: after the hub authoritatively refused an attempt in band (a
-    // connectionBackpressure refusal), the dispatcher rolls the row back to
-    // its never-attempted shape so each host's reconnect reconcile
-    // onlyAttempted-guarded blockedUnknown park skips the row and the
-    // ordinary flush rediscovers it. Authoritative outcomes own every other
-    // state, so only a submitting row may roll back.
-    test("unmarkAttempted returns an attempted submitting row to its never-attempted shape", async () => {
+    // connectionBackpressure refusal), the dispatcher rolls back exactly
+    // that attempt's evidence. The row returns to its never-attempted shape
+    // — so each host's reconnect reconcile onlyAttempted-guarded
+    // blockedUnknown park skips it and the ordinary flush rediscovers it —
+    // only when the refused attempt was the row's one unresolved attempt;
+    // evidence of an earlier or concurrent unresolved attempt survives, and
+    // a row parked while its only attempt was in flight reopens, because
+    // that refusal is authoritative proof the park's uncertainty resolves.
+    // Authoritative outcomes own every other state, so only submitting and
+    // blockedUnknown rows roll back.
+    test("unmarkAttempted returns a once-attempted row to its never-attempted shape", async () => {
       const record = await storage.enqueueIntent(conformanceTextIntent("refused in band"));
       await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
       await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(true);
       await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
         state: "submitting",
         attempted: false,
+        unresolvedAttempts: 0,
       });
+    });
+
+    test("unmarkAttempted reopens a row parked while its only attempt was refused in band", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("parked mid-attempt"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: false,
+        unresolvedAttempts: 0,
+      });
+    });
+
+    test("markAttempted counts concurrent unresolved attempts", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("two tabs, one row"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        attempted: true,
+        unresolvedAttempts: 2,
+      });
+    });
+
+    test("unmarkAttempted rolls back only the refused attempt, keeping earlier evidence", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("earlier attempt unresolved"));
+      // An earlier attempt whose response was lost: submitting, evidence
+      // retained (a transport failure leaves exactly this shape).
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      // The re-dispatch marks again, then its attempt is refused in band.
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: true,
+        unresolvedAttempts: 1,
+      });
+      // The earlier attempt's own refusal resolves the last evidence.
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: false,
+        unresolvedAttempts: 0,
+      });
+    });
+
+    test("unmarkAttempted keeps a parked row blocked while earlier evidence remains", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("parked with earlier evidence"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
       await storage.markUnknown(record.clientMutationId, "blockedUnknown");
       await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
-      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "blockedUnknown",
+        attempted: true,
+        unresolvedAttempts: 1,
+      });
       await expect(storage.unmarkAttempted("missing")).resolves.toBe(false);
     });
 

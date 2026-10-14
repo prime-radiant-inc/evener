@@ -89,6 +89,15 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   extends MutationRecord<A> {
   state: MutationOutboxState;
   attempted?: boolean;
+  // #4342: how many attempts this row has in flight or unresolved - a mark
+  // increments, an in-band refusal decrements its own. `attempted` is the
+  // boolean the reconcile park and Stop's cancel guard read; this count is
+  // what keeps that boolean honest when one row carries more than one
+  // unresolved attempt (two tabs dispatching concurrently, or a
+  // transport-failed attempt followed by a refused retry). Optional because
+  // records written before the field existed carry none, and a missing count
+  // reads as zero.
+  unresolvedAttempts?: number;
 }
 
 export interface MutationOptimisticRecord<A extends MutationAttachmentRef = MutationAttachmentRef>

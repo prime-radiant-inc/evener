@@ -272,7 +272,11 @@ The threads store consumes `onTransientRefusal`:
 
 - **Surface:** the affected pending row shows a busy state — the hub explicitly did not
   accept this message yet and it will retry — rather than sitting in the queue with no
-  explanation. The marker clears when the record settles (receipt or reclassification).
+  explanation. The marker clears when the record settles (receipt or reclassification),
+  including a settlement another tab performed: every dispatch tail re-reads the shared
+  storage, and the settle prune rides it, so this tab's marker leaves even when its own
+  dispatcher never saw the settle. A row that is not `submitting` — accepted work, in
+  particular — never reads as refused, whatever the marker names.
 - **Pace:** the store arms a retry through the existing exponential-backoff idiom
   (500ms base doubling to a 15s cap, with an injectable scheduler for tests, mirroring
   `hydrationRetryScheduler`), so a saturated hub is not hammered and a freed hub is
@@ -330,8 +334,18 @@ refusal triggers; `appwire-protocol.md` documents the new discriminant and its c
    when an authoritative read proves it absent, exactly like every uncertain send
    today.
 4. A client that receives a backpressure refusal keeps its outbox record queued
-   (`submitting`), clears its `attempted` marker, surfaces a busy state on the affected
-   row, and paces its next attempt with exponential backoff (500ms → 15s). The record
+   (`submitting`), rolls back the refused attempt's evidence, surfaces a busy state
+   on the affected row, and paces its next attempt with exponential backoff
+   (500ms → 15s). The rollback resolves only the refused attempt: the row's
+   `attempted` marker clears only when that attempt was the row's one unresolved
+   attempt, so evidence of an earlier or concurrent unresolved attempt (a lost
+   response, another tab's in-flight dispatch) survives and the row keeps its
+   uncertain treatment — Stop cannot cancel it as never-sent, and the reconnect
+   reconcile's onlyAttempted-guarded park keeps guarding it. A row parked
+   `blockedUnknown` while its only attempt was in flight reopens, because the
+   refusal is authoritative proof that park's uncertainty resolves. The busy state
+   and the pacing arm only when the rollback returns the row to its
+   never-attempted shape. The record
    settles by the ordinary receipt path when a retry lands, and survives both hosts'
    reconnect reconcile scans.
 5. A refusal that cannot be delivered changes nothing: the record stays `submitting`
@@ -453,6 +467,18 @@ fixtures, and an injectable transport/observer where needed.
   (thread/clear, turn/interrupt, turn/cancelQueued) keep the retry machinery
   without a dedicated row to mark, and notes/human/set's busy state is the
   note editor's own pending state.
+- The refusal's rollback is scoped to the refused attempt (implementation
+  review, high finding, product owner approved fixing it in-PR): each
+  `markAttempted` increments a per-row unresolved-attempt count (the new
+  `unresolvedAttempts` record field; on native, a default-zero SQLite
+  column with the instance_id-style ALTER migration), and `unmarkAttempted`
+  decrements its own attempt's evidence. `attempted` clears only when no
+  unresolved attempt remains; a row parked `blockedUnknown` while its only
+  attempt was in flight reopens to submitting, while one parked with
+  earlier evidence stays parked; and the dispatcher arms the busy surface
+  and the pacing only when the rollback comes out clean. Cross-tab
+  settlements clear this tab's marker through the dispatch-tail prune, and
+  every surface renders the refusal state only for `submitting` rows.
 - Item 8's TUI e2e uses a fixture-specific refusal message, so the pin proves
   the hub's message reaches the TUI's failure line verbatim rather than two
   copies of a known string agreeing, and asserts the refusal's ledger
