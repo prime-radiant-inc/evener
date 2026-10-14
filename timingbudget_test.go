@@ -757,3 +757,37 @@ func TestTimingBudgetKeepsTheClassMapOnlyWarnState(t *testing.T) {
 		t.Fatalf("a class-map-only budget must keep exiting 0, not fail the run: %v\n%s", err, out)
 	}
 }
+
+// TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails pins the
+// 2026-10-14 ruling (issue #4615) against the checked-in testing-budget.json,
+// not a synthetic map: a member of a removed runner-bound class now warns on the
+// flat ceiling instead of failing, while a member of a kept class still fails
+// over its class ceiling. It reads the real budget file (the evener_test package
+// runs with the repo root as its working directory), so the removed half also
+// reds if a removed class creeps back in.
+func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.T) {
+	dir := t.TempDir()
+
+	removed := filepath.Join(dir, "removed.tsv")
+	writeAuditScriptFixture(t, removed, "TEST\tprimeradiant.com/evener\tTestCrossCompileWindows\t52.26\n")
+	out, err := runTimingBudgetFixture(t, removed, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+	if err != nil {
+		t.Fatalf("a removed runner-bound class member must warn, not fail (#4615):\n%s", out)
+	}
+	if !strings.Contains(out, "WARN") || !strings.Contains(out, "TestCrossCompileWindows") {
+		t.Fatalf("the removed class member was not reported on the flat ceiling:\n%s", out)
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Fatalf("the removed class member was still enforced as a failure:\n%s", out)
+	}
+
+	kept := filepath.Join(dir, "kept.tsv")
+	writeAuditScriptFixture(t, kept, "TEST\tprimeradiant.com/evener\tTestGitCloneSurvivesAHookThatOrphansAPipeHolder\t20.00\n")
+	out, err = runTimingBudgetFixture(t, kept, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+	if err == nil {
+		t.Fatalf("a kept class member over its ceiling must still fail:\n%s", out)
+	}
+	if !strings.Contains(out, "FAIL") {
+		t.Fatalf("the kept class member was not enforced over its class ceiling:\n%s", out)
+	}
+}

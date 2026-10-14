@@ -32,9 +32,17 @@
 #         every mode, --strict included: the unclassified backlog never ran under
 #         a ceiling, so enforcing the flat 3s would red the gate on tests that
 #         were always over it. Give the test a class to enforce it.
-#     bounded-wait unit has no class yet by ruling, so its members stay on the
-#     flat ceiling; the web repo-audit test was a class of one and #4608 split it
-#     into one case per slice rather than blessing it.
+#     A 2026-10-14 ruling (issue #4615) removed four runner-bound classes whose
+#     wall time tracks how busy the runner is, not the code - dev-tool
+#     compile/CLI, install, transcript large-fixture and gate-runner integration.
+#     Their members now keep the flat perTestCeilingSeconds and stay warn-only,
+#     like the rest of the unclassified backlog; the sighting was #4615's
+#     TestCrossCompileWindows at 52.26s over its 15s class ceiling on a 67-line
+#     diff in internal/transcriptindex that could not cost 37 seconds. Two
+#     further classes are deliberately absent: bounded-wait unit has no class yet
+#     by ruling, so its members stay on the flat ceiling; the web repo-audit test
+#     was a class of one and #4608 split it into one case per slice rather than
+#     blessing it.
 #
 # A package the budget file does not mention is a WARN, not silently skipped —
 # see kata b6rv's stop condition. When the budget file is missing or its
