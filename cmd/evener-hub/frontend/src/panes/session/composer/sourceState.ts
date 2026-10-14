@@ -12,7 +12,9 @@ import {
   type BrowserDraftRepository,
   browserDraftKey,
   getBrowserDraftRepository,
+  type StoredComposerDraft,
 } from "../../../stores/browserDraftRepository";
+import { sameSessionToken, serializeSessionKey } from "../../../stores/compositionRevision";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import type {
   MutationOutboxIndexedDB,
@@ -518,6 +520,37 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     if (left.kind === "recovery" && right.kind === "recovery") return left.recoveryId === right.recoveryId;
     return true;
   }
+
+  // Adopts a loaded row's token ONLY when the row's revision is one this
+  // source produced. Exactly two shapes qualify: a row at the revision of the
+  // source's own recorded lineage (same revision, whatever incarnation the row
+  // was re-tokened to by a namespace epoch change), and a row a recovery
+  // transfer durably recorded as its own baseline — a transfer's session
+  // write carries no edit, so a competing tab's draft or recovery edit can
+  // never leave the row exactly there, while every recovery edit, discard or
+  // resend moves it past. Any other revision past the lineage is a competing
+  // tab's write (#4581): adopting it would put that tab's authority into this
+  // submission's settlement guard, and its post-send clear would erase the
+  // competing tab's newer row.
+  async function adoptOwnDurableToken(row: StoredComposerDraft, tolerateFault: boolean): Promise<void> {
+    const lineage = draftToken;
+    if (lineage !== null && row.token.sessionRevision === lineage.sessionRevision) {
+      draftToken = { ...row.token };
+      return;
+    }
+    const box = outbox;
+    if (!box) return;
+    const records = tolerateFault ? await box.listRecovery(ref).catch(() => []) : await box.listRecovery(ref);
+    if (
+      records.some(
+        (record) =>
+          record.transferredSessionToken !== undefined && sameSessionToken(record.transferredSessionToken, row.token),
+      )
+    ) {
+      draftToken = { ...row.token };
+    }
+  }
+
   async function prepareAnnotation(): Promise<ComposerPreparation | null> {
     if (disposed) return null;
     await ready();
@@ -644,7 +677,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       const row = tolerateFault
         ? await submissionRepository.load(submissionKey).catch(() => null)
         : await submissionRepository.load(submissionKey);
-      if (row) draftToken = row.token;
+      if (row) await adoptOwnDurableToken(row, tolerateFault);
     }
     const token = getDraftToken();
     const settlementGuard: DraftSettlementGuard = {
@@ -759,7 +792,17 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       const capture = ownedCaptureGuards.get(guard);
       const row = r && k ? await r.load(k) : null;
       if (capture && ownsSubmissionSnapshot(submitted, capture.items)) {
-        if (row) draftToken = row.token;
+        // The accepted dispatch's own guarded write — the resend, or a command
+        // settlement's discard — advanced the row from the guard's captured
+        // token by exactly one, and only that advance is adopted: a competing
+        // tab's newer revision never joins this source's lineage.
+        if (
+          row &&
+          row.token.namespaceIncarnation === guard.token.namespaceIncarnation &&
+          row.token.sessionRevision === guard.token.sessionRevision + 1
+        ) {
+          draftToken = { ...row.token };
+        }
         if (opts?.command === true) {
           // A built-in command's settlement is not a resend: nothing consumed
           // the durable recovery record before this point, so clearing the
@@ -780,6 +823,10 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
           if (discarded !== true) {
             return { cleared: false, draftUnchanged: false, persistence: "pending" };
           }
+          // The command's own guarded discard advanced the row from the
+          // guard's captured token by exactly one; record that completed
+          // advance so this source's next preparation recognizes its lineage.
+          draftToken = { ...guard.token, sessionRevision: guard.token.sessionRevision + 1 };
           // The pristine-composer auto-restore reads the recovery projection,
           // which still lists the discarded record until its next refresh -
           // and this settlement's own clear is what opens that restore's
@@ -821,7 +868,17 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     if (settlement.cleared) {
       const row = await r.load(k);
       if (stillOwnsLocally()) {
-        if (row) draftToken = row.token;
+        // The clear's own durable write advanced the row from the guard's
+        // captured token by exactly one, and only that advance is adopted: a
+        // competing tab's write landing between the clear and this read must
+        // not become this source's authority.
+        if (
+          row &&
+          row.token.namespaceIncarnation === guard.token.namespaceIncarnation &&
+          row.token.sessionRevision === guard.token.sessionRevision + 1
+        ) {
+          draftToken = { ...row.token };
+        }
         clearLocalEditor();
         runtimeBacking = { kind: "draft" };
       }
@@ -1058,10 +1115,15 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     return queueRecoveryPersistence(id, text, nextAttachments, names, commands, mentions);
   }
 
-  function acknowledgeRecoveryWrite(guard: RecoveryWriteGuard): RecoveryWriteGuard {
+  function acknowledgeRecoveryWrite(guard: RecoveryWriteGuard, completed?: DraftSessionToken): RecoveryWriteGuard {
     // Guarded storage writes advance exactly once. Never load a later row here:
-    // a competitor's token is not authority for the continuation of this write.
-    const token = Object.freeze({ ...guard.token, sessionRevision: guard.token.sessionRevision + 1 });
+    // a competitor's token is not authority for the continuation of this
+    // write. The storage hands back the token its own completed write produced;
+    // the guard's derived +1 stays the fallback for guarded writes it does not
+    // answer for (a discard's session write).
+    const token = Object.freeze(
+      completed === undefined ? { ...guard.token, sessionRevision: guard.token.sessionRevision + 1 } : { ...completed },
+    );
     acceptedRecoveryWrites += 1;
     draftToken = token;
     return Object.freeze({ ...guard, token });
@@ -1177,7 +1239,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
               }
               return;
             }
-            const record = await outbox?.updateRecoveryInput(
+            const update = await outbox?.updateRecoveryInput(
               clientMutationId,
               buildInput(acceptedText, acceptedAttachments, acceptedSkillNames, acceptedCommandNames, acceptedMentions),
               durableAttachments(acceptedAttachments),
@@ -1187,9 +1249,9 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
               consumption,
             );
             void refreshPendingTurnsProjection(ref);
-            const updated = record !== undefined;
+            const updated = update !== undefined;
             if (updated) {
-              const persistedGuard = acknowledgeRecoveryWrite(guard);
+              const persistedGuard = acknowledgeRecoveryWrite(guard, update?.sessionToken);
               if (pendingRecoveryWrite?.version === version && recoveryEdits === edits) pendingRecoveryWrite = null;
               onPersisted?.(persistedGuard);
             }

@@ -5,7 +5,6 @@ import type { ComposerMention } from "../../composerInput";
 import type { ItemModel, ThreadModel } from "../../model";
 import type {
   DraftBackingIdentity,
-  DraftSessionToken,
   DraftSettlement,
   DraftSettlementGuard,
   PendingTurnsDraftPort,
@@ -13,7 +12,7 @@ import type {
   SubmittedDraft,
 } from "./pendingTurns";
 import { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
-import type { ClientIdentity, MutationOptimisticRecord } from "./records";
+import type { ClientIdentity, DraftSessionToken, MutationOptimisticRecord } from "./records";
 import { outboxRecord, recoveryRecord, threadModel } from "./testing";
 
 // A fake ClientIdentity's isOwnMutationRecord half, over a fixed id rather

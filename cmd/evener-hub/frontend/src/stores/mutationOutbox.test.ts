@@ -658,11 +658,11 @@ describe("MutationOutboxIndexedDB", () => {
       [newAttachment],
     );
 
-    expect(updated?.payload.input).toEqual([
+    expect(updated?.record.payload.input).toEqual([
       { type: "text", text: "edited text" },
       { type: "image", mediaType: "image/png", data: "CQgH", name: "new.png" },
     ]);
-    expect(updated?.attachments.map((attachment) => attachment.name)).toEqual(["new.png"]);
+    expect(updated?.record.attachments.map((attachment) => attachment.name)).toEqual(["new.png"]);
   });
 
   test.each(["partial", "replace", "clear", "relocate"] as const)(
@@ -693,8 +693,8 @@ describe("MutationOutboxIndexedDB", () => {
         nextMentions,
       );
       const expected = mode === "partial" ? mentions : nextMentions;
-      expect(updated?.composerMentions).toEqual(expected);
-      expect(updated?.composerText).toBe(inputText);
+      expect(updated?.record.composerMentions).toEqual(expected);
+      expect(updated?.record.composerText).toBe(inputText);
       const reopened = new MutationOutboxIndexedDB({ indexedDB, databaseName });
       const recovered = await reopened.getRecovery(original.clientMutationId);
       expect(recovered?.composerMentions).toEqual(expected);

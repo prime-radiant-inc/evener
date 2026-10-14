@@ -232,12 +232,21 @@ test.each([
       const intent = method === "turn" ? turnIntent("rejected input") : noteIntent("unsaved note");
       const sent = await outbox.enqueueIntent(intent);
       const recovered = await outbox.transferToRecovery(sent.clientMutationId, "rejected", "refused");
-      const expectedRecovery = { ...sent, recoveryKind: "rejected", recoveryReason: "refused" };
+      const beforeOpening = await independent.load(browserKey());
+      // The transfer's own session write advanced the migration-seeded row,
+      // and the record carries that completed token as its baseline — the one
+      // revision advance past a source's lineage that can prove it carried no
+      // edit.
+      const expectedRecovery = {
+        ...sent,
+        recoveryKind: "rejected",
+        recoveryReason: "refused",
+        transferredSessionToken: beforeOpening?.token,
+      };
       expect(recovered).toEqual(expectedRecovery);
       expect(await outbox.getRecovery(sent.clientMutationId)).toEqual(expectedRecovery);
       expect(await outbox.getOutbox(sent.clientMutationId)).toBeUndefined();
       expect(await outbox.listOutbox(REF)).toEqual([]);
-      const beforeOpening = await independent.load(browserKey());
       // Continue past this assertion to witness what a later healthy transfer
       // does to the only legacy bytes after the metadata-only first-row write.
       expect.soft(beforeOpening).toMatchObject({ ...expected, key: browserKey(), token: { sessionRevision: 2 } });
@@ -321,11 +330,17 @@ test("inactive metadata refuses an aborted migration and healthy retry preserves
     expect.soft(storage.getItem(composerDraftStorageKey(REF))).toBe(v2);
     armed = false;
     const recovered = await outbox.transferToRecovery(sent.clientMutationId, "rejected", "refused");
-    const expectedRecovery = { ...sent, recoveryKind: "rejected", recoveryReason: "refused" };
+    const afterRecovery = await independent.load(browserKey());
+    const expectedRecovery = {
+      ...sent,
+      recoveryKind: "rejected",
+      recoveryReason: "refused",
+      transferredSessionToken: afterRecovery?.token,
+    };
     expect(recovered).toEqual(expectedRecovery);
     expect(await outbox.getRecovery(sent.clientMutationId)).toEqual(expectedRecovery);
     expect(await outbox.listOutbox(REF)).toEqual([]);
-    expect(await independent.load(browserKey())).toMatchObject({ ...expected, token: { sessionRevision: 2 } });
+    expect(afterRecovery).toMatchObject({ ...expected, token: { sessionRevision: 2 } });
     expect(storage.getItem(draftStorageKey(REF))).toBeNull();
     expect(storage.getItem(composerDraftStorageKey(REF))).toBeNull();
     expect(rpc).not.toHaveBeenCalled();
@@ -557,6 +572,37 @@ describe("MutationOutboxIndexedDB recovery revision participation", () => {
     expect(row?.token.sessionRevision).toBe(1);
   });
 
+  test("a transfer records the session token its own session write produced, and edits keep the row past it", async () => {
+    const { repository, outbox } = openStores();
+    const sent = await outbox.enqueueIntent(turnIntent("recovery"));
+    const recovery = await outbox.transferToRecovery(sent.clientMutationId, "rejected", "refused");
+    const row = await requireRow(repository, browserKey());
+    // The record carries the completed token of the transfer's own session
+    // write as its baseline: the one advance past a source's lineage that can
+    // prove it carried no edit.
+    expect(recovery?.transferredSessionToken).toEqual(row.token);
+
+    // A later guarded recovery edit moves the durable row PAST the recorded
+    // baseline, hands back the token it produced, and the record KEEPS the
+    // baseline — a preparation observing the row at the baseline can adopt it
+    // knowing no competing edit produced that revision.
+    const update = await outbox.updateRecoveryInput(
+      sent.clientMutationId,
+      EDITED_INPUT,
+      [],
+      "edited",
+      [],
+      recoveryGuard(row.token, () => true),
+    );
+    const afterEdit = await requireRow(repository, browserKey());
+    expect(update?.sessionToken).toEqual(afterEdit.token);
+    expect(afterEdit.token.sessionRevision).toBe(row.token.sessionRevision + 1);
+    expect(await outbox.getRecovery(sent.clientMutationId)).toMatchObject({
+      composerText: "edited",
+      transferredSessionToken: row.token,
+    });
+  });
+
   test("updateRecoveryInput advances the session revision exactly once and preserves the ordinary draft", async () => {
     const { repository, outbox, id } = await arrangeTransferred();
     const baseline = (await requireRow(repository, browserKey())).token;
@@ -777,8 +823,12 @@ describe("MutationOutboxIndexedDB recovery revision participation", () => {
       consume,
     );
 
-    expect(result).toMatchObject({ composerText: "edited" });
     const row = await requireRow(repository, browserKey());
+    expect(result?.record).toMatchObject({ composerText: "edited" });
+    // The handed-back session token is the storage's own answer for the
+    // revision the completed write produced: it equals the durable row's
+    // post-write token.
+    expect(result?.sessionToken).toEqual(row.token);
     expect(row).toMatchObject({ text: "", skillNames: [] });
     expect(row.token.sessionRevision).toBe(token.sessionRevision + 1);
   });
@@ -802,8 +852,9 @@ describe("MutationOutboxIndexedDB recovery revision participation", () => {
       consume,
     );
 
-    expect(result).toMatchObject({ composerText: "edited" });
     const row = await requireRow(repository, browserKey());
+    expect(result?.record).toMatchObject({ composerText: "edited" });
+    expect(result?.sessionToken).toEqual(row.token);
     expect(row).toMatchObject(RICH_ORDINARY);
     expect(row.token.sessionRevision).toBe(current.sessionRevision + 1);
   });
@@ -997,8 +1048,9 @@ describe("MutationOutboxIndexedDB recovery revision participation", () => {
       recoveryGuard(pre.token, () => true),
       consume,
     );
-    expect(result).toMatchObject({ composerText: "edited" });
     const finalRow = await requireRow(reopened.repository, browserKey());
+    expect(result?.record).toMatchObject({ composerText: "edited" });
+    expect(result?.sessionToken).toEqual(finalRow.token);
     expect(finalRow).toMatchObject({ text: "", skillNames: [] });
     expect(finalRow.token.sessionRevision).toBe(pre.token.sessionRevision + 1);
   }
