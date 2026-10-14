@@ -71,7 +71,7 @@ func TestGrepOverflowDropsAPartialFirstPathname(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(sub, "we\nird.txt")
+	path := filepath.Join(sub, "we") + "\n" + "ird.txt"
 	record := []byte(path + "\x001:NEEDLE\n")
 	nl := strings.IndexByte(path, '\n')
 	// Head lands after the pathname's newline but before its NUL, so no record
