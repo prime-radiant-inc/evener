@@ -213,6 +213,68 @@ func TestRgCaptureDoesNotMarkAShortStream(t *testing.T) {
 	}
 }
 
+// TestRgCaptureNeverPresentsACutRecordFragment: the cap falls wherever the
+// stream happens to be when it trips, so the head almost always ends mid-record.
+// A fragment must be dropped, never presented as a result — neither a
+// half-written payload line nor a partial pathname, in either framing.
+func TestRgCaptureNeverPresentsACutRecordFragment(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	first := dir + "/a.txt\x001:needle\n"
+	// The cap falls inside the second record's payload line.
+	c := newRgCapture(len(first) + 5)
+	if _, err := c.Write([]byte(first + dir + "/b.txt\x001:need")); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.view(dir, false); got.head != first {
+		t.Fatalf("the head kept a fragment of the record the cap cut: %q", got.head)
+	}
+	// A cut inside a pathname, in the files-only framing, whose records end at
+	// their NUL rather than at a newline.
+	files := []byte(dir + "/a.txt\x00" + dir + "/b.tx")
+	cf := newRgCapture(len(dir) + len("/a.txt\x00") + 3)
+	if _, err := cf.Write(files); err != nil {
+		t.Fatal(err)
+	}
+	if got := cf.view(dir, true); got.head != dir+"/a.txt\x00" {
+		t.Fatalf("a files-only head kept a pathname fragment: %q", got.head)
+	}
+	if strings.Contains(cf.view(dir, true).head, "b.tx") {
+		t.Fatalf("a cut pathname fragment survived into the head: %q", cf.view(dir, true).head)
+	}
+}
+
+// TestGrepRgFailedSearchDiagnosticIsBounded: a failed search shows its stdout
+// beside its stderr, and that diagnostic is a bounded prefix — a firehose of
+// bytes on a failing rg cannot reach the model whole.
+func TestGrepRgFailedSearchDiagnosticIsBounded(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	var flood bytes.Buffer
+	for i := range 40_000 {
+		fmt.Fprintf(&flood, "%d:%s\n", i, strings.Repeat("n", 40))
+	}
+	rec := filepath.Join(t.TempDir(), "flood.out")
+	if err := os.WriteFile(rec, flood.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(t.TempDir(), "rg")
+	writeExecFixture(t, exe, "#!/bin/sh\ncat "+shellQuotePath(rec)+"\necho oops >&2\nexit 2\n")
+	env := rgFakeRgEnv(t, root, exe)
+
+	got, err := env.Grep(context.Background(), "NEEDLE", root, "", false, 100, "content")
+	if err == nil {
+		t.Fatalf("a failing rg reported success: %q", got)
+	}
+	if !strings.Contains(got, "oops") {
+		t.Fatalf("the diagnostic dropped rg's stderr: %q", got)
+	}
+	if len(got) > rgCaptureDiagnosticBytes+len("\noops\n") {
+		t.Fatalf("the diagnostic kept %d bytes of a failing rg's stdout, past its %d-byte bound",
+			len(got), rgCaptureDiagnosticBytes)
+	}
+}
+
 // TestGrepRgCancellationIsAnErrorNotAnEmptySuccess: a cancelled search reports
 // its cancellation rather than returning an empty result that reads as "no
 // matches".
