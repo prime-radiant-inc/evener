@@ -2334,27 +2334,29 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// escape on any platform.
 	filesOnly := outputMode == "files_with_matches"
 	oneFile := grepTargetsOneFile(dir)
-	// Stream rg's output through the bounded collector rather than capturing it
-	// whole: the collector keeps the earliest records in PATH order, so the
-	// retained set depends only on the corpus and the query, never on the
-	// parallel search's file-completion order (#4621 round 5). The byte budget
-	// remains a backstop for a pathological single record.
-	collector := newRgRecordCollector(dir, filesOnly, rgCollectorKeep(outputMode, maxResults, ctxLines), grepRetainedBytes)
-	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, collector)
-	collector.flush()
+	// Bound ripgrep's stdout at the capture itself, then parse the bounded bytes
+	// with the same formatter the native arm's lines go through, so the result
+	// keeps ripgrep's own exclusion rules by construction (rgCapture).
+	capture := newRgCapture(grepRetainedBytes)
+	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, capture)
 	if err == nil {
 		// Keep the first maxResults lines. In content mode that counts context
 		// lines and "--" separators too, which is what the grep tool's
 		// max_results promises ("lines, file paths, or count entries by output
 		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
 		// context_lines a cut can fall inside a match's context.
-		lines := ripgrepOutputLines(collector.retained(), dir, oneFile, filesOnly)
+		view := capture.view(dir, filesOnly)
+		lines := ripgrepOutputLines(view.head, dir, oneFile, filesOnly)
 		var notes []string
-		if collector.truncated() {
-			// The collector kept the earliest records in path order and dropped
-			// the rest; the note discloses it exactly as the native arm's
-			// retained-output budget does.
+		if view.omitted > 0 {
+			// The capture left bytes out; the note discloses that exactly as the
+			// native arm's retained-output budget does, and the stream's last
+			// records ride in the same note so the model still sees how the
+			// matches end — never as rows past maxResults.
 			notes = append(notes, grepRetainedTruncationNote())
+			if tail := rgTailNote(view); tail != "" {
+				notes = append(notes, tail)
+			}
 		}
 		if len(lines) > maxResults {
 			notes = append(notes, grepTruncationNote(maxResults))
@@ -2403,9 +2405,9 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		}
 		return "", nil
 	}
-	// The collector consumed rg's stdout, so a failed search's diagnostic shows
-	// the raw prefix the collector kept beside rg's stderr.
-	return collector.diagnostics() + res.Stderr, err
+	// The capture consumed rg's stdout, so a failed search's diagnostic shows the
+	// bounded prefix it kept beside rg's stderr.
+	return capture.diagnostics() + res.Stderr, err
 }
 
 // grepRgOversizeCount reports how many candidate files ripgrep leaves out of

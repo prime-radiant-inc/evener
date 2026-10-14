@@ -13,8 +13,8 @@ import (
 // retention budget the rg arm must keep ripgrep's own exclusion rules. Rerunning
 // the native walker surfaced files ripgrep excludes — here one excluded by an
 // ancestor .gitignore, which the native walker never reads because it is rooted
-// at the search base (see loadIgnoreSet). The collector parses ripgrep's own
-// records, so an excluded file can never appear.
+// at the search base (see loadIgnoreSet). The rg arm parses the bounded capture
+// of ripgrep's own records, so an excluded file can never appear.
 func TestGrepOverflowKeepsRipgrepsExclusions(t *testing.T) {
 	// Not parallel: shrinks the package-wide grepRetainedBytes budget, which the
 	// collector uses as its byte backstop.

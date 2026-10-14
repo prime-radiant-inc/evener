@@ -93,7 +93,10 @@ func TestGrepArmsDiscloseByteTruncationTheSameWay(t *testing.T) {
 	if nativeNotes == "" {
 		t.Fatalf("native arm carried no disclosure note: %q", nativeOut)
 	}
-	if rgNotes != nativeNotes {
+	// The rg arm's note block opens with the same byte-truncation note and then
+	// shows the stream's last records (rgCapture's tail), which the native arm's
+	// line-by-line retention has no counterpart for.
+	if !strings.HasPrefix(rgNotes, nativeNotes) {
 		t.Fatalf("grep arms disclosed byte truncation differently:\n rg notes     = %q\n native notes = %q", rgNotes, nativeNotes)
 	}
 }
