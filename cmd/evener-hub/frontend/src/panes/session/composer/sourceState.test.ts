@@ -3606,6 +3606,118 @@ test("a durable winner's identical-text selection change is an authoritative res
   view.unmount();
 });
 
+// Hydration is also an authoritative restoration for a mounted editor: a
+// source whose storage read is slow binds an editor that restores stale atoms
+// from the shared projection, and hydration then reads a durable winner with
+// IDENTICAL text as plain prose. Without a restoration epoch, SkillEditor
+// treats the publication as an empty text patch, keeps the stale chip, and
+// echoes its selection back over the winner's row.
+test("hydration restores an identical-text selection change through a mounted editor", async () => {
+  const fixture = sourceFixture("hydration-restore-mounted-editor");
+  const rootKey = browserDraftKey("root");
+  // The late source's first storage read is held mid-flight: hydration starts
+  // at creation, but its value lands only when the pane's slow read settles.
+  const hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+  try {
+    const late = fixture.track(
+      createComposerSourceState("root", { repository: fixture.repository, key: rootKey, outbox: fixture.outbox }),
+    );
+    // Wait for the held read to be durably done, so the same-ref sources below
+    // transact rather than queue behind an undispatched transaction.
+    await hold.reached;
+    // A first same-ref source owns the durable row with the whole text as one
+    // skill chip and publishes it to the shared projection.
+    const owner = await durableSource(fixture, "root", rootKey);
+    owner.acceptEdit({
+      text: "/same",
+      skillNames: ["same"],
+      mentions: [{ kind: "skill", name: "same", offset: 0 }],
+    });
+    await owner.whenSettled();
+    // The late source's editor binds while its read is still in flight: it
+    // does not own the draft, so binding restores the chip from the shared
+    // projection into its snapshot.
+    const unbind = late.bindEditor(fakeEditor({ text: "", cursor: 0, selection: { start: 0, end: 0 } }));
+
+    // The editor, wired exactly as Composer wires it: the source's snapshot
+    // drives it and its echo feeds back through the same edit paths.
+    function EditorPane({ bound }: { bound: ReturnType<typeof createComposerSourceState> }) {
+      const snapshot = useSyncExternalStore(bound.subscribe, bound.getSnapshot, bound.getSnapshot);
+      const value: SkillEditorValue = {
+        text: snapshot.text,
+        skillNames: snapshot.skillNames,
+        ...(snapshot.commandNames === undefined ? {} : { commandNames: snapshot.commandNames }),
+        ...(snapshot.mentions === undefined ? {} : { mentions: snapshot.mentions.map((m) => ({ ...m })) }),
+      };
+      return createElement(SkillEditor, {
+        value,
+        restoreEpoch: snapshot.restoreEpoch,
+        "aria-label": "Message",
+        onChange: (next: SkillEditorValue) => {
+          bound.editSkillNames(next.skillNames);
+          bound.editText(next.text);
+          bound.persistDraft(next.text);
+        },
+      });
+    }
+    const view = render(createElement(EditorPane, { bound: late }));
+    const editor = view.getByRole("textbox");
+    expect(editor.querySelectorAll('[data-skill-name="same"]')).toHaveLength(1);
+
+    // A second same-ref source wins the durable row with IDENTICAL text as
+    // plain prose: no skill selection, no mentions.
+    const winner = await durableSource(fixture, "root", rootKey);
+    winner.acceptEdit({ text: "/same", skillNames: [], mentions: [] });
+    await winner.whenSettled();
+
+    // The held read settles: the row it observed is gone, so hydration
+    // re-reads and publishes the plain winner into the mounted editor.
+    await act(async () => {
+      hold.release();
+      await late.ready();
+    });
+
+    // The mounted editor must adopt the winner's plain value — identical
+    // text, different selections — instead of keeping its chip and echoing
+    // its stale selection back over the winner's row.
+    await waitFor(() => expect(editor.querySelectorAll("[data-skill-name]")).toHaveLength(0));
+    expect(late.getSnapshot().skillNames).toEqual([]);
+    expect(late.getSnapshot().mentions).toEqual([]);
+    // No echo rode the reconciliation: the winner's plain row is untouched.
+    expect((await requireRow(fixture.repository, rootKey)).skillNames).toEqual([]);
+    unbind();
+    view.unmount();
+  } finally {
+    hold.release();
+  }
+});
+
+// The restoration never overruns an accepted edit: the generation guard keeps
+// hydration from publishing over work the source accepted while its read was
+// held in flight.
+test("hydration never publishes over an accepted edit that landed while the read was held", async () => {
+  const fixture = sourceFixture("hydration-held-vs-accepted");
+  const rootKey = browserDraftKey("root");
+  const hold = holdNextWriteTransaction(["composerDrafts", "annotationNamespaces"]);
+  try {
+    const late = fixture.track(
+      createComposerSourceState("root", { repository: fixture.repository, key: rootKey, outbox: fixture.outbox }),
+    );
+    await hold.reached;
+    const owner = await durableSource(fixture, "root", rootKey);
+    owner.acceptEdit({ text: "typed while the read was held", skillNames: [], mentions: [] });
+    await owner.whenSettled();
+    late.acceptEdit({ text: "the late source's own edit", skillNames: [], mentions: [] });
+    await act(async () => {
+      hold.release();
+      await late.ready();
+    });
+    expect(late.getSnapshot().text).toBe("the late source's own edit");
+  } finally {
+    hold.release();
+  }
+});
+
 // A same-ref source B may commit an IDENTICAL full value while source A's own
 // accepted save completion is still held. A then captures the post-drain token
 // (B's) and, if A's cleanup clears, B's committed value must not be lost.

@@ -485,7 +485,13 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
           sameBacking(runtimeBacking, hydrationBacking) &&
           acceptedQueue.length === 0
         ) {
-          publishValue(storedValue(row));
+          // Hydration is an authoritative restoration for a mounted editor,
+          // not a text patch: an editor bound before the storage read settled
+          // can hold stale atoms restored from the shared projection, and the
+          // durable row may differ only in selections over identical text.
+          // Without the epoch bump the editor keeps its atoms and echoes them
+          // back over the winner's row.
+          publishValue(storedValue(row), { restores: true });
         }
       }
       // Hydration's own drain joins the SAME ordered chain as every scheduled
