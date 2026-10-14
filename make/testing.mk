@@ -325,8 +325,14 @@ vet:
 ##   them. A blessed-class per-test ceiling breach is nonzero under CHECK=1; an
 ##   unclassified test over the flat ceiling is reported and named but nonzero in
 ##   no mode. A missing budget file, or one whose packages map is empty, always
-##   exits zero; a malformed budget file (invalid JSON) is a broken config and is
-##   nonzero in every mode, naming the file and the parse error (#4609).
+##   exits zero; a malformed budget file (a top-level value that is not an object,
+##   invalid JSON, a packages value that is present but not an object, a package
+##   budget value that is not a finite number, a perTestCeilingSeconds that is
+##   present but not a finite number, a perTestCeilingClasses that is present
+##   but not an object, or a class ceilingSeconds that is not a finite,
+##   float-convertible number including an integer too large to convert) is a
+##   broken config and is nonzero in every mode, naming the file and the entry
+##   (#4609, #4614, #4618, #4622, #4629).
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 

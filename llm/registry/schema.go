@@ -51,7 +51,7 @@ var (
 	hostRules   = map[string]bool{HostRuleVertexLocation: true, HostRuleOllamaHost: true}
 
 	thinkingFormats       = map[string]bool{"openai": true, "openrouter": true, "zai": true, "deepseek": true, "together": true, "qwen": true, "qwen-chat-template": true, "chat-template": true, "string-thinking": true}
-	thinkingShapes        = map[string]bool{"adaptive": true, "budget": true, "budget+effort": true}
+	thinkingShapes        = map[string]bool{"adaptive": true, "budget": true, "budget+effort": true, "level": true}
 	thinkingDisplays      = map[string]bool{"": true, "summarized": true}
 	maxTokensFields       = map[string]bool{"max_tokens": true, "max_completion_tokens": true}
 	cacheControls         = map[string]bool{"anthropic": true}
