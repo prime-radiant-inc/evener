@@ -1309,6 +1309,66 @@ test("a send whose preparation stalls captures the click's stop epoch, not a pos
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
+test("a second same-ref submission is refused while the first's preparation is still pending", async () => {
+  // Two composers on one session: two sources over the same ref, with the
+  // shared projection store's per-ref guard as the only serializer - a second
+  // pane or a remounted host resets any per-composer busy flag, so the store's
+  // guard is what a same-ref press has to hear.
+  const { source: sourceA } = await browserSource();
+  const { source: sourceB } = await browserSource();
+
+  // Hold composer A's durable draft capture (its preparation) on a gate, the
+  // same shape as the stop-epoch test above: the click has happened and the
+  // capture is in flight.
+  const realSubmissionDraft = sourceA.submissionDraft.bind(sourceA);
+  let preparationStarted!: () => void;
+  const preparationStartedGate = new Promise<void>((resolve) => {
+    preparationStarted = resolve;
+  });
+  let releasePreparation!: () => void;
+  const preparationGate = new Promise<void>((resolve) => {
+    releasePreparation = resolve;
+  });
+  sourceA.submissionDraft = (...args: Parameters<typeof realSubmissionDraft>) => {
+    preparationStarted();
+    return preparationGate.then(() => realSubmissionDraft(...args));
+  };
+
+  const sent: string[] = [];
+  const submissionA = submitWithPendingTracking(
+    { ref: "ref_a", text: "pressed first", source: sourceA, onFailure: vi.fn() },
+    async (submitted) => {
+      sent.push(submitted.text);
+    },
+  );
+  await preparationStartedGate;
+
+  // Composer B presses while A's capture is still pending. Both settled
+  // outcomes are observed before A's gate opens, so the unguarded tree's
+  // whole interleaving - B acquiring the free guard, dispatching, settling
+  // and releasing - completes here.
+  const submissionB = submitWithPendingTracking(
+    { ref: "ref_a", text: "pressed second", source: sourceB, onFailure: vi.fn() },
+    async (submitted) => {
+      sent.push(submitted.text);
+    },
+  );
+  const [outcomeB] = await Promise.allSettled([submissionB]);
+
+  releasePreparation();
+  await submissionA;
+
+  // One dispatch, not two: while A's preparation was pending, B's press had
+  // to hear the runner's existing in-flight refusal rather than wait the
+  // window out and send after A released.
+  expect(sent).toEqual(["pressed first"]);
+  if (outcomeB.status !== "rejected") {
+    throw new Error("the second same-ref press was not refused during the first's preparation");
+  }
+  expect(outcomeB.reason).toBeInstanceOf(Error);
+  expect(outcomeB.reason.message).toBe("A message submission is already pending for this task");
+});
+
 test("a replayed pending receipt keeps a long-running steer until its authoritative identity arrives", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
