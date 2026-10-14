@@ -36,6 +36,11 @@ type ExecResult struct {
 	// same way.
 	StdoutTruncated bool `json:"stdout_truncated,omitempty"`
 	StderrTruncated bool `json:"stderr_truncated,omitempty"`
+	// StdoutRetained is the leading bytes of a truncated stdout capture — a true
+	// prefix of the stream — for a consumer that decodes records from the
+	// retained head without splitting the rendered head/marker/tail text. It is
+	// empty when the capture did not truncate, and is not part of the wire form.
+	StdoutRetained string `json:"-"`
 }
 
 // Truncated reports a capture whose per-stream cap tripped: ErrOutputTruncated
