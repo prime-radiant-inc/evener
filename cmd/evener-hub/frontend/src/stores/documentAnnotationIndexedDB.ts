@@ -402,6 +402,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     invokeObserver(() => this.#options.onStorageSuccess?.());
   }
 
+  // Test-only inspection of the adapter-local issued-ticket map: acceptance
+  // validates against the durable head, so a retained superseded ticket and
+  // a pruned one are observably identical to every production caller. The
+  // bound tests read this to prove the map cannot accumulate one ticket per
+  // abandoned read for the adapter's whole lifetime.
+  issuedReadTicketsForTests(): ReadonlyMap<string, { documentKey: string; readGeneration: number }> {
+    return this.#issuedReads;
+  }
+
   async beginRead(key: DocumentKey): Promise<ReadTicket> {
     if (key.namespace.kind !== "browser") throw new Error("browser annotations require a browser namespace");
     const namespace = key.namespace;
@@ -438,6 +447,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         requestId: createSecureUUID(),
       } satisfies ReadTicket;
     });
+    // Issuing a newer read supersedes every earlier unaccepted ticket for this
+    // document in this adapter: the issuance just advanced the durable read
+    // generation, so those tickets can only ever validate stale now. Dropping
+    // them here bounds the map to one live ticket per document instead of
+    // accumulating one per failed, cancelled or abandoned read for the whole
+    // application lifetime; tickets for other documents keep their own slots.
+    for (const [requestId, issued] of this.#issuedReads) {
+      if (issued.documentKey === documentKey) this.#issuedReads.delete(requestId);
+    }
     this.#issuedReads.set(ticket.requestId, { documentKey, readGeneration: issuedGeneration });
     // Remember the completed current ticket in the same synchronous continuation,
     // carrying the prior completed accepted source for the full document key.
@@ -1374,6 +1392,15 @@ export function createDocumentAnnotationRepository(
   options: DocumentAnnotationOptions,
 ): BrowserDocumentAnnotationRepository {
   return new BrowserDocumentAnnotationRepositoryImpl(options);
+}
+
+// Read one repository adapter's live issued-ticket map. Production acceptance
+// never distinguishes a pruned superseded ticket from a generation-missed one,
+// so only the bound tests use this.
+export function issuedReadTicketsForTests(
+  repository: BrowserDocumentAnnotationRepository,
+): ReadonlyMap<string, { documentKey: string; readGeneration: number }> {
+  return (repository as BrowserDocumentAnnotationRepositoryImpl).issuedReadTicketsForTests();
 }
 
 // Wrap one real retry pass with a completed, read-only receipt scan. The pass
