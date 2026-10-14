@@ -1527,7 +1527,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		return true
 	}
 	var startRelay func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
-	prepareRelay := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	prepareRelayOnce := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		if _, atomic := source.(appsource.RelaySessionSource); !atomic {
 			response, err := source.ReadThread(ctx, params)
 			if err != nil {
@@ -1572,7 +1572,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		return read.response, nil
 	}
-	startRelay = func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
+	prepareRelay := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appserver.RetrySubscription(ctx, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
+			return prepareRelayOnce(ctx, source, params)
+		})
+	}
+	startRelayOnce := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
 		threadID := thread.ID
 		if threadID == "" {
 			return nil
@@ -2069,6 +2074,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}()
 		relayMu.Unlock()
 		return nil
+	}
+	startRelay = func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
+		_, err := appserver.RetrySubscription(ctx, func(ctx context.Context) (struct{}, error) {
+			return struct{}{}, startRelayOnce(ctx, source, params, thread)
+		})
+		return err
 	}
 	startTurn := func(ctx context.Context, source appsource.Source, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false}

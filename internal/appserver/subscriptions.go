@@ -1,8 +1,13 @@
 package appserver
 
-import "sync"
+import (
+	"sync"
+
+	"primeradiant.com/evener/internal/apphistory"
+)
 
 type subscription struct {
+	content  *apphistory.Filter
 	connID   string
 	threadID string
 	// lifecycleKey groups raw delivery aliases for connection-local unsubscribe.
