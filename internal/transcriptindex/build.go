@@ -103,12 +103,28 @@ type builder struct {
 	// seed); kept as a defensive fallback now that restoreBuilder
 	// ordinarily restores it.
 	lastAssistantKnown bool
+
+	// seedBuf, regNames and regCommArgs are the per-entry scratch maps apply
+	// refills rather than allocates: seedBuf holds the entry's seed (seed),
+	// regNames the copy of it the legacy projection may mutate, and regCommArgs
+	// the CommRawArgs snapshot. All are cleared at each entry, so nothing of
+	// one entry's state survives into the next's — the same freshness a fresh
+	// map gave.
+	seedBuf     map[string]string
+	regNames    map[string]string
+	regCommArgs map[string]string
+	// itemBuf, turnBuf and updateBuf are the fixed-size encode scratch of the
+	// hot loop: the encode*Into functions fill them, and the table layer
+	// copies their bytes out synchronously, so reuse is safe.
+	itemBuf   [itemRecordSize]byte
+	turnBuf   [turnRecordSize]byte
+	updateBuf [updateRecordSize]byte
 }
 
 func newBuilder(x *Index) builder {
 	return builder{
 		x: x, calls: map[string]uint64{}, names: map[string]toolName{}, open: map[string]uint64{}, models: map[string]strRef{},
-		commCalls: map[string]commState{},
+		commCalls: map[string]commState{}, seedBuf: map[string]string{}, regNames: map[string]string{}, regCommArgs: map[string]string{},
 	}
 }
 
@@ -131,11 +147,12 @@ func (b *builder) quarantine(ordinal uint64, offset int64, length uint32) error 
 		return err
 	}
 	b.summary.Version = ordinal + 1
-	if err := b.x.turns.write(slot, encodeTurn(b.summary)); err != nil {
+	if err := b.x.turns.write(slot, encodeTurnInto(b.turnBuf[:], b.summary)); err != nil {
 		return err
 	}
 	c := contributor{Offset: offset, Ordinal: ordinal, Length: length}
-	_, err = b.x.items.append(encodeItem(itemRecord{Entry: ordinal + 1, Turn: uint32(slot), Version: ordinal + 1, Opener: c, Flags: itemUnreadable}))
+	record := itemRecord{Entry: ordinal + 1, Turn: uint32(slot), Version: ordinal + 1, Opener: c, Flags: itemUnreadable}
+	_, err = b.x.items.append(encodeItemInto(b.itemBuf[:], record))
 	return err
 }
 
@@ -167,8 +184,8 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 		return err
 	}
 	reg := &apptranscript.ToolCallRegistry{
-		Names:               maps.Clone(seed),
-		CommRawArgs:         b.commRawArgsSnapshot(),
+		Names:               b.registryNames(seed),
+		CommRawArgs:         b.registryCommArgs(),
 		LastAssistantText:   b.lastAssistantText,
 		LastAssistantTurnID: b.lastAssistantTurnID,
 	}
@@ -180,7 +197,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 		merges := apptranscript.MergesByCallID(item)
 		if merges {
 			if name, ok := seed[item.CallID]; ok {
-				if c.Name, err = b.x.strings.put([]byte(name)); err != nil {
+				if c.Name, err = b.x.strings.putString(name); err != nil {
 					return err
 				}
 			}
@@ -209,16 +226,26 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 	return b.stampTurn(b.turnSlot, entry, ordinal, offset, length)
 }
 
-// commRawArgsSnapshot is the real CommRawArgs values ProjectTurn's registry
-// needs to correctly decide, at build time, which items a communicate result
-// entry projects (see commCalls' doc comment: build time needs values, not
-// just positions).
-func (b *builder) commRawArgsSnapshot() map[string]string {
-	snapshot := make(map[string]string, len(b.commCalls))
+// registryNames copies seed into the builder's scratch Names map, the copy
+// applyLegacy hands the projection in place of today's per-entry
+// maps.Clone(seed). The copy matters: the projection deletes communicate names
+// from its registry, and recordNames still reads seed after it.
+func (b *builder) registryNames(seed map[string]string) map[string]string {
+	clear(b.regNames)
+	maps.Copy(b.regNames, seed)
+	return b.regNames
+}
+
+// registryCommArgs refills the builder's scratch CommRawArgs snapshot from
+// commCalls, in place of today's per-entry clone. The projection deletes from
+// it as results consume calls; the refill restores the snapshot for the next
+// entry.
+func (b *builder) registryCommArgs() map[string]string {
+	clear(b.regCommArgs)
 	for id, state := range b.commCalls {
-		snapshot[id] = state.rawArgs
+		b.regCommArgs[id] = state.rawArgs
 	}
-	return snapshot
+	return b.regCommArgs
 }
 
 // communicateResultCallID reports the call id a TOOL/TOOL_RESULTS entry's
@@ -260,7 +287,7 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 			return nil
 		}
 		seen[pos.Offset] = true
-		ref, err := b.x.strings.put([]byte(turnID))
+		ref, err := b.x.strings.putString(turnID)
 		if err != nil {
 			return err
 		}
@@ -499,7 +526,8 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		}
 	}
 	// A result with no name of its own takes its call's.
-	seed := map[string]string{}
+	clear(b.seedBuf)
+	seed := b.seedBuf
 	for _, part := range entry.Message.Content {
 		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.Name == "" {
 			if call, ok := calls[part.ToolResult.ToolCallID]; ok {
@@ -521,7 +549,7 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		}
 		completer := c
 		if name, named := seed[item.CallID]; named {
-			if completer.Name, err = b.x.strings.put([]byte(name)); err != nil {
+			if completer.Name, err = b.x.strings.putString(name); err != nil {
 				return false, err
 			}
 		}
@@ -610,11 +638,11 @@ func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnS
 	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, Context: context}
 	if apptranscript.MergesByCallID(item) {
 		var err error
-		if record.Call, err = b.x.strings.put([]byte(item.CallID)); err != nil {
+		if record.Call, err = b.x.strings.putString(item.CallID); err != nil {
 			return 0, err
 		}
 	}
-	return b.x.items.append(encodeItem(record))
+	return b.x.items.append(encodeItemInto(b.itemBuf[:], record))
 }
 
 // echoesAwaiting reports whether a COMMUNICATE entry's message repeats the
@@ -671,7 +699,7 @@ func hasToolCall(entry *schema.Turn) bool {
 
 // openTurn appends the summary of a turn whose first entry is at ordinal.
 func (b *builder) openTurn(turnID string, kind uint32, ordinal uint64, offset int64) (uint64, error) {
-	id, err := b.x.strings.put([]byte(turnID))
+	id, err := b.x.strings.putString(turnID)
 	if err != nil {
 		return 0, err
 	}
@@ -679,7 +707,7 @@ func (b *builder) openTurn(turnID string, kind uint32, ordinal uint64, offset in
 	if kind == turnKindExecution {
 		record.Status = statusOpen
 	}
-	slot, err := b.x.turns.append(encodeTurn(record))
+	slot, err := b.x.turns.append(encodeTurnInto(b.turnBuf[:], record))
 	if err != nil {
 		return 0, err
 	}
@@ -706,7 +734,8 @@ func (b *builder) seed(entry *schema.Turn) (map[string]string, error) {
 	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
 		return nil, nil
 	}
-	seed := map[string]string{}
+	clear(b.seedBuf)
+	seed := b.seedBuf
 	for _, part := range entry.Message.Content {
 		if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
 			continue
@@ -827,13 +856,13 @@ func (b *builder) addContributor(slot uint64, c contributor, version uint64) err
 			return err
 		}
 	}
-	return b.x.items.write(slot, encodeItem(record))
+	return b.x.items.write(slot, encodeItemInto(b.itemBuf[:], record))
 }
 
 // logUpdate records an in-place update, so a reader holding an older snapshot
 // can find what changed after it.
 func (b *builder) logUpdate(kind uint32, slot uint64, offset int64) error {
-	_, err := b.x.updates.append(encodeUpdate(updateRecord{Kind: kind, Slot: slot, Offset: offset}))
+	_, err := b.x.updates.append(encodeUpdateInto(b.updateBuf[:], updateRecord{Kind: kind, Slot: slot, Offset: offset}))
 	return err
 }
 
@@ -852,6 +881,11 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 	// extension already applied the entry: the truncation before this
 	// extension removed its log record, and readers take each slot once.
 	if version > r.FirstOrdinal+1 {
+		if testKillAtTurnUpdateLog != nil {
+			if err := testKillAtTurnUpdateLog(); err != nil {
+				return err
+			}
+		}
 		if err := b.logUpdate(updatedTurn, slot, offset); err != nil {
 			return err
 		}
@@ -904,7 +938,7 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 		}
 	}
 	r.Version = version
-	if err := b.x.turns.write(slot, encodeTurn(r)); err != nil {
+	if err := b.x.turns.write(slot, encodeTurnInto(b.turnBuf[:], r)); err != nil {
 		return err
 	}
 	b.summary, b.summarySlot, b.hasSummary = r, slot, true
@@ -928,7 +962,7 @@ func (b *builder) modelRef(model string) (strRef, error) {
 	if ref, ok := b.models[model]; ok {
 		return ref, nil
 	}
-	ref, err := b.x.strings.put([]byte(model))
+	ref, err := b.x.strings.putString(model)
 	if err != nil {
 		return strRef{}, err
 	}

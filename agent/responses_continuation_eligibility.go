@@ -54,7 +54,7 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 		}
 	}
 
-	delta := attentionTransparentTurns(history[anchorIndex+1:])
+	delta := responsesContinuationDeltaTurns(history, anchorIndex+1)
 	if len(delta) == 0 {
 		return responsesContinuationAnchorCandidate{}, llm.ResponsesContinuationDecision{
 			HistoryMode: llm.HistoryModeFullHistory,
@@ -76,6 +76,27 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 		HistoryMode: llm.HistoryModeResponsesDelta,
 		Reason:      "continuation_anchor_candidate",
 	}
+}
+
+func responsesContinuationDeltaTurns(history []schema.Turn, start int) []schema.Turn {
+	if start >= len(history) {
+		return nil
+	}
+	tail := history[start:]
+	for i := start; i < len(history); i++ {
+		if history[i].Kind == schema.TurnNotesContext && isNotesSelfEchoTurn(history, i) {
+			filtered := make([]schema.Turn, 0, len(tail)-1)
+			filtered = append(filtered, history[start:i]...)
+			for j := i + 1; j < len(history); j++ {
+				if history[j].Kind == schema.TurnNotesContext && isNotesSelfEchoTurn(history, j) {
+					continue
+				}
+				filtered = append(filtered, history[j])
+			}
+			return attentionTransparentTurns(filtered)
+		}
+	}
+	return attentionTransparentTurns(tail)
 }
 
 func responsesContinuationDeltaIneligibleReason(anchor schema.Turn, delta []schema.Turn) string {

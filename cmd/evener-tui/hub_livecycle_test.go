@@ -47,6 +47,10 @@ type liveCycleReads struct {
 	// read's response a running subagent child so the recovery response's
 	// child re-arm has something to find.
 	threadByRef map[string]appwire.Thread
+	// wireErrorByRef overrides a read's answer with the typed wire error a
+	// real hub would send for that ref: the read executes, and its response
+	// carries the error through the same decode a production client performs.
+	wireErrorByRef map[string]appwire.WireError
 	// failRef, when set, makes reads for that ref fail (round-13 medium 2's
 	// bounded-retry coverage).
 	failRef string
@@ -61,7 +65,11 @@ func (r *liveCycleReads) record(params appwire.ThreadReadParams) (appwire.Thread
 		thread = override
 	}
 	fail := r.failRef != "" && r.failRef == params.Ref
+	wireErr, wired := r.wireErrorByRef[params.Ref]
 	r.mu.Unlock()
+	if wired {
+		return appwire.ThreadReadResponse{}, wireErr
+	}
 	if fail {
 		return appwire.ThreadReadResponse{}, errors.New("thread/read failed")
 	}

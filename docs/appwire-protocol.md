@@ -89,7 +89,16 @@ intent representation, selected paging and reconnect behavior.
 Errors use JSON-RPC codes in `error.code` with a human `error.message`.
 `error.data.evenerErrorInfo` carries a structured evener-specific detail string
 when present. Common cases: method-not-found, invalid-params (params failed to
-unmarshal), invalid-request (e.g. a request before `initialize`).
+unmarshal), invalid-request (e.g. a request before `initialize`). A history
+read whose transcript index needs a rebuild the server has taken ownership of
+in the background answers `transcriptIndexRebuilding` with
+`data.retryDisposition: "automatic"`: retrying is the right response, and the
+read that follows the repair's commit succeeds; a read that met the index's
+lock in ordinary contention — a writer mid-extension or a foreign rebuild,
+with no server repair in flight — answers its sibling
+`transcriptIndexLocked` with the same automatic retry disposition; their
+terminal sibling `transcriptHistoryFailed` names the last entry the failed
+history had recorded.
 
 ## Explicit skill and command input
 

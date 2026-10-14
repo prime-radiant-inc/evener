@@ -545,6 +545,108 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 });
 
+// #4343's client-visible half: a daemonless read whose transcript index is
+// being rebuilt in the background answers the typed transcriptIndexRebuilding
+// discriminant. The store owns the paced retry, the flag, and the label the
+// loading surface reads from it (threads.test.ts pins that lifecycle); this
+// pane pins what the copy is FOR: the repair window shows a loading status —
+// never the deleted surface, a repair is not a deletion — and recovery
+// replaces it with the transcript once a read lands (Copy Is Not a Test
+// Oracle: no assertion pins the label's wording).
+test("a ref whose index is being rebuilt shows a loading status that recovers with the repair, never a deletion", async () => {
+  const fake = connectFakeClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) {
+      throw new WireError("thread history is being rebuilt in the background", -32000, {
+        evenerErrorInfo: "transcriptIndexRebuilding",
+      });
+    }
+    return readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_repaired",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_repaired",
+              turnId: "turn_repaired",
+              type: "agentMessage",
+              text: "the repaired payload",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  // The repair window: the loading surface is showing, and the pane is not
+  // showing the deleted surface.
+  await waitFor(() => expect(screen.getByTestId("loader-label")).toBeTruthy());
+  expect(document.querySelectorAll('[data-testid="empty-state"][data-reason="deleted"]')).toHaveLength(0);
+
+  // A resync re-reads the ref; the read now lands, and recovery replaces
+  // the loading surface with the transcript's own content.
+  fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+  await waitFor(() => expect(screen.queryByTestId("loader-label")).toBeNull());
+  expect(screen.getByText("the repaired payload")).toBeTruthy();
+});
+
+// The round-4 test above pins the repair window's states; this one pins the
+// wiring between them. The store's repairingRefs flag is a contract between
+// the read path and the loading face: while it holds a ref, the pane must show
+// a status a plain in-flight read would not, or a repair is indistinguishable
+// from a stall. The wiring is what matters, not the copy, so the repair label
+// is never asserted as a string - it only has to differ from the label a
+// settled-pending read shows (Copy Is Not a Test Oracle).
+test("a repairing ref's loading status differs from a plain in-flight read's", async () => {
+  // A plain read that never settles holds the loading face with the flag
+  // unset, so its label is the baseline a repair must not repeat.
+  const plain = connectFakeClient();
+  plain.on("thread/read", () => new Promise(() => {}));
+  const plainView = render(
+    <ClientProvider client={plain}>
+      <Session params={{ ref: "ref_plain" }} paneId="p_plain" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("loader-label")).toBeTruthy());
+  const whileLoading = screen.getByTestId("loader-label").textContent;
+  expect(whileLoading).toBeTruthy();
+  plainView.unmount();
+
+  // A ref whose every read answers the hub's transcriptIndexRebuilding
+  // discriminant stays in the repair window: the flag is set (threads.test.ts
+  // pins that lifecycle), and the loading face must answer it.
+  const repairing = connectFakeClient();
+  repairing.on("thread/read", () => {
+    throw new WireError("thread history is being rebuilt in the background", -32000, {
+      evenerErrorInfo: "transcriptIndexRebuilding",
+    });
+  });
+  render(
+    <ClientProvider client={repairing}>
+      <Session params={{ ref: "ref_repair" }} paneId="p_repair" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().repairingRefs.has("ref_repair")).toBe(true));
+  // The flag landing in the store and the pane's re-render are two steps; wait
+  // for the face to answer the flag, not for a tick.
+  await waitFor(() => {
+    const label = screen.getByTestId("loader-label").textContent;
+    expect(label).toBeTruthy();
+    expect(label).not.toBe(whileLoading);
+  });
+});
+
 // The daemon fences every request against a target it has actually deleted
 // with a WireError carrying data.mutationOutcome === "targetDeleted"
 // (cmd/evener-hub/app_sources.go's deletionFenceError, surfaced to thread/read

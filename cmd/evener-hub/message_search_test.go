@@ -44,6 +44,7 @@ func seedSearchSession(t *testing.T, projectsRoot, readable string, updated time
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
+	indexPastTranscriptForTest(t, stateDir, sessionID)
 	return hubcore.PastEntry{ID: sessionID, StateDir: stateDir}, sessionID
 }
 
