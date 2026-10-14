@@ -36,7 +36,10 @@ just because a source window contains only excluded items. An empty older cursor
 means no older selected items remain. The usual single oversized-item exception
 to the soft byte limit still applies.
 
-Opaque cursors bind the selection and source snapshot. Changing any selection
+Opaque cursors bind the selection, requested Ref/ThreadID target, source snapshot,
+boot generation and epoch. Older-page requests retain the read's target fields.
+Selected continuations use snapshot-fenced positional paging, so remote cursor
+cache eviction does not invalidate an unchanged conversation. Changing any selection
 flag requires a fresh latest read; reusing another view's cursor returns
 `transcriptItemCursorStale`. Filtered snapshots have distinct opaque incarnation
 identities, so clients' ordinary history replacement rules also separate views.

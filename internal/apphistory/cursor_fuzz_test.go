@@ -17,7 +17,7 @@ func FuzzHistoryContentCursor(f *testing.F) {
 	f.Add(cursorPrefix+"invalid", uint8(2))
 	for _, mask := range []uint8{1, 2, 30, 62, 63} {
 		selection := appwire.ThreadContentSelection(mask)
-		cursor := contentCursor{Selection: selection.Key(), Snapshot: appwire.SnapshotIdentity{Incarnation: "source", Length: 23}, Cursor: "source-cursor", Before: appwire.ThreadItemPosition{Entry: 7, Item: 3, Sub: 2}}
+		cursor := contentCursor{Selection: selection.Key(), Snapshot: appwire.SnapshotIdentity{Incarnation: "source", Length: 23}, Ref: "local:thread", ThreadID: "thread", BootGeneration: "7", Epoch: 3, Before: appwire.ThreadItemPosition{Entry: 7, Item: 3, Sub: 2}}
 		raw, err := json.Marshal(cursor)
 		if err != nil {
 			f.Fatal(err)

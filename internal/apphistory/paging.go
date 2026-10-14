@@ -22,10 +22,13 @@ const snapshotPrefix = "content1:"
 const pageContentBytes = 1 << 20
 
 type contentCursor struct {
-	Selection string                     `json:"selection"`
-	Snapshot  appwire.SnapshotIdentity   `json:"snapshot"`
-	Cursor    string                     `json:"cursor,omitempty"`
-	Before    appwire.ThreadItemPosition `json:"before"`
+	Selection      string                     `json:"selection"`
+	Snapshot       appwire.SnapshotIdentity   `json:"snapshot"`
+	Ref            string                     `json:"ref,omitempty"`
+	ThreadID       string                     `json:"thread_id,omitempty"`
+	BootGeneration string                     `json:"boot_generation,omitempty"`
+	Epoch          uint64                     `json:"epoch"`
+	Before         appwire.ThreadItemPosition `json:"before"`
 }
 
 // Snapshot binds an opaque incarnation to its selected representation. A
@@ -147,14 +150,17 @@ func List(ctx context.Context, params appwire.ThreadTurnsListParams, list ListFu
 	selection := params.Selection()
 	source := params
 	source.ThreadContentParams = appwire.ThreadContentParams{}
-	var fence *appwire.SnapshotIdentity
+	var fence *contentCursor
 	if strings.HasPrefix(params.Cursor, cursorPrefix) {
 		cursor, err := decodeCursor(params.Cursor, selection)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
-		fence = &cursor.Snapshot
-		source.Cursor = cursor.Cursor
+		if cursor.Ref != strings.TrimSpace(params.Ref) || cursor.ThreadID != strings.TrimSpace(params.ThreadID) {
+			return appwire.ThreadTurnsListResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		fence = &cursor
+		source.Cursor = ""
 		if source.Before == nil {
 			source.Before = &cursor.Before
 		}
@@ -168,7 +174,7 @@ func List(ctx context.Context, params appwire.ThreadTurnsListParams, list ListFu
 	if err != nil {
 		return page, err
 	}
-	if fence != nil && !sameSnapshot(fence, page.Snapshot) {
+	if fence != nil && (!sameSnapshot(&fence.Snapshot, page.Snapshot) || fence.BootGeneration != page.BootGeneration || fence.Epoch != page.Epoch) {
 		return appwire.ThreadTurnsListResponse{}, appwire.TranscriptItemCursorStale()
 	}
 	if selection == 0 {
@@ -186,7 +192,6 @@ func fill(ctx context.Context, params appwire.ThreadTurnsListParams, page appwir
 		return appwire.ThreadTurnsListResponse{}, err
 	}
 	result := page
-	sourceCursor := page.NextCursor
 	var selected []appitempaging.TranscriptItemCandidate
 	var oldest *appwire.ThreadItemPosition
 	// One extra selected item proves whether another selected page exists.
@@ -223,7 +228,7 @@ func fill(ctx context.Context, params appwire.ThreadTurnsListParams, page appwir
 		if len(candidates) == 0 {
 			return appwire.ThreadTurnsListResponse{}, errors.New("history source returned an empty continuation page")
 		}
-		page, err = list(ctx, appwire.ThreadTurnsListParams{Ref: params.Ref, ThreadID: params.ThreadID, ItemsView: params.ItemsView, ItemLimit: appwire.TranscriptItemPageLimit, Cursor: page.NextCursor})
+		page, err = list(ctx, appwire.ThreadTurnsListParams{Ref: params.Ref, ThreadID: params.ThreadID, ItemsView: params.ItemsView, ItemLimit: appwire.TranscriptItemPageLimit, Before: oldest})
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
@@ -275,9 +280,9 @@ func fill(ctx context.Context, params appwire.ThreadTurnsListParams, page appwir
 		if result.Snapshot == nil {
 			return appwire.ThreadTurnsListResponse{}, errors.New("selected history needs a source snapshot")
 		}
-		// Before can move the source cursor even when the first source window
-		// was exhausted. Its snapshot still fences the resulting page.
-		cursor := contentCursor{Selection: selection.Key(), Snapshot: *result.Snapshot, Cursor: sourceCursor, Before: selected[0].Position}
+		// Retained source cursors can expire while a sparse page is filled.
+		// Page by position and fence the returned source history instead.
+		cursor := contentCursor{Selection: selection.Key(), Ref: strings.TrimSpace(params.Ref), ThreadID: strings.TrimSpace(params.ThreadID), Snapshot: *result.Snapshot, BootGeneration: result.BootGeneration, Epoch: result.Epoch, Before: selected[0].Position}
 		raw, err := json.Marshal(cursor)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err

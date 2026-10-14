@@ -330,3 +330,61 @@ func TestSelectedHistoryAdvancesAcrossSubPositions(t *testing.T) {
 		t.Fatalf("sub-position page=%v", got)
 	}
 }
+
+func TestSelectedHistoryContinuationFencesTargetAndLifetime(t *testing.T) {
+	for _, change := range []string{"ref", "thread-id", "boot", "epoch", "snapshot"} {
+		t.Run(change, func(t *testing.T) {
+			f := fixtureHistory()
+			params := appwire.ThreadReadParams{ThreadContentParams: conversationParams(), Ref: "local:thread", ThreadID: "thread", IncludeTurns: true, ItemLimit: 2}
+			read, err := Read(t.Context(), params, f.read, f.list)
+			if err != nil {
+				t.Fatal(err)
+			}
+			older := appwire.ThreadTurnsListParams{ThreadContentParams: params.ThreadContentParams, Ref: params.Ref, ThreadID: params.ThreadID, Cursor: read.OlderCursor, ItemLimit: 2}
+			if change == "ref" {
+				older.Ref = "another:thread"
+			}
+			if change == "thread-id" {
+				older.ThreadID = "another"
+			}
+			_, err = List(t.Context(), older, func(ctx context.Context, p appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+				page, err := f.list(ctx, p)
+				switch change {
+				case "boot":
+					page.BootGeneration = "8"
+				case "epoch":
+					page.Epoch++
+				case "snapshot":
+					page.Snapshot.Incarnation = "replacement"
+				}
+				return page, err
+			})
+			wire, ok := errors.AsType[appwire.WireError](err)
+			data, hasData := appwire.ErrorDataOf(wire.Data)
+			if !ok || !hasData || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+				t.Fatalf("changed %s returned %v, want a stale cursor", change, err)
+			}
+		})
+	}
+}
+
+func TestSelectedHistoryContinuationAllowsAppendAndBefore(t *testing.T) {
+	f := fixtureHistory()
+	params := appwire.ThreadReadParams{ThreadContentParams: conversationParams(), Ref: "local:thread", IncludeTurns: true, ItemLimit: 2}
+	read, err := Read(t.Context(), params, f.read, f.list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := appwire.ThreadItemPosition{Entry: 141}
+	page, err := List(t.Context(), appwire.ThreadTurnsListParams{ThreadContentParams: params.ThreadContentParams, Ref: params.Ref, Cursor: read.OlderCursor, Before: &before, ItemLimit: 2}, func(ctx context.Context, p appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		page, err := f.list(ctx, p)
+		page.Snapshot.Length++
+		return page, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(page.Data); !reflect.DeepEqual(got, []string{"101", "121"}) {
+		t.Fatalf("before override after append=%v", got)
+	}
+}
