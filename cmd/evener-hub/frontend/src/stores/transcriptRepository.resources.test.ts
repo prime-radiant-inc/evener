@@ -981,6 +981,344 @@ it("drops a held capacity preflight after a newer authoritative baseline commits
   }
 });
 
+it.each(["read", "suffix"] as const)(
+  "preserves an omitted accepted update from a delayed %s preflight",
+  async (kind) => {
+    const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+    unused.dispose();
+    const cache = makeCache(6_500);
+    const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+    const reader = owner.attachReader();
+    const gate = deferred<void>();
+    try {
+      await offer(owner);
+      expect(
+        owner.acceptRead(
+          { ...readItems("base", 2, [item("oversize", 1, 2), item("target", 2, 1)]), requestGeneration: 2 },
+          { lifetime: 1, readId: "base", boundary: "base" },
+        ),
+      ).toBe(true);
+      await owner.settled();
+      const updated = { ...item("target", 2, 2), text: "accepted update omitted by newer response" } as ThreadItem;
+      const realPlan = cache.planCapacity.bind(cache);
+      vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+        expect(batch.coverage?.kind).toBe(kind);
+        const plan = await realPlan(batch);
+        await gate.promise;
+        return plan;
+      });
+      if (kind === "read") {
+        expect(
+          owner.acceptRead(
+            { ...readItems("update", 3, [updated]), requestGeneration: 3 },
+            { lifetime: 1, readId: "update", boundary: "update" },
+          ),
+        ).toBe(true);
+      } else {
+        expect(
+          owner.accept(
+            {
+              method: "history/updated",
+              params: {
+                ref,
+                threadId,
+                bootGeneration: "1",
+                epoch: 0,
+                snapshot: { incarnation: identity.incarnation, length: 3 },
+                items: [updated],
+              },
+            } as AnyNotification,
+            { lifetime: 1 },
+          ),
+        ).toBe(true);
+      }
+      const commits = vi.spyOn(cache, "commitBatch");
+      expect(
+        owner.acceptRead(
+          { ...readItems("new", 4, [item("oversize", 1, 4), item("new", 4)]), requestGeneration: 4 },
+          { lifetime: 1, readId: "new", boundary: "new" },
+        ),
+      ).toBe(true);
+      expect(
+        reader
+          .getSnapshot()
+          ?.history?.turns.flatMap((turn) => turn.items)
+          .find((item) => item.transcriptKey === "item-target"),
+      ).toMatchObject({ version: 2, text: updated.text });
+      await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+      expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+      gate.resolve();
+      await owner.settled();
+      reader.dispose();
+      expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toEqual([]);
+      const reopened = owner.attachReader();
+      try {
+        const opened = await reopened.openLocal(40);
+        const disk = (await cache.getLatest(historyKey, 40)).find((row) => row.transcriptKey === "item-target");
+        expect(disk).toMatchObject({ version: 2, item: { text: updated.text } });
+        expect(
+          opened.model?.turns.flatMap((turn) => turn.items).find((item) => item.transcriptKey === "item-target"),
+        ).toMatchObject({ version: 2, text: updated.text });
+        expect(opened.status).toBe("current");
+        expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(4);
+        expect((await cache.getLatestWindow(historyKey, 40)).coverage.at(-1)?.readId).toBe("new");
+      } finally {
+        reopened.dispose();
+      }
+    } finally {
+      gate.resolve();
+      reader.dispose();
+      owner.dispose();
+    }
+  },
+);
+
+it("preserves replacement deletions inherited from a delayed read preflight", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  const gate = deferred<void>();
+  try {
+    await offer(owner);
+    expect(
+      owner.acceptRead(
+        { ...readItems("base", 3, [item("oversize", 1, 2), item("obsolete", 2)]), requestGeneration: 2 },
+        { lifetime: 1, readId: "base", boundary: "base" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    expect((await cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey)).toContain("item-obsolete");
+    const realPlan = cache.planCapacity.bind(cache);
+    vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+      expect(batch.replacement).toEqual({ from: { entry: 1, item: 0 } });
+      const plan = await realPlan(batch);
+      await gate.promise;
+      return plan;
+    });
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("replacement", 4, [item("oversize", 1, 3), item("survivor", 3)]),
+          authoritative: true,
+          requestGeneration: 3,
+        },
+        { lifetime: 1, readId: "replacement", boundary: "replacement" },
+      ),
+    ).toBe(true);
+    const commits = vi.spyOn(cache, "commitBatch");
+    expect(
+      owner.acceptRead(
+        { ...readItems("new", 5, [item("oversize", 1, 4), item("new", 4)]), requestGeneration: 4 },
+        { lifetime: 1, readId: "new", boundary: "new" },
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+    gate.resolve();
+    await owner.settled();
+    reader.dispose();
+    expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toEqual([]);
+    const reopened = owner.attachReader();
+    try {
+      const opened = await reopened.openLocal(40);
+      expect((await cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey).sort()).toEqual([
+        "item-new",
+        "item-oversize",
+        "item-survivor",
+      ]);
+      expect(opened.model?.turns.flatMap((turn) => turn.items.map((item) => item.transcriptKey)).sort()).toEqual([
+        "item-new",
+        "item-oversize",
+        "item-survivor",
+      ]);
+      expect(opened.status).toBe("current");
+      expect((await cache.getLatestWindow(historyKey, 40)).coverage.map((coverage) => coverage.readId)).toEqual([
+        "new",
+      ]);
+    } finally {
+      reopened.dispose();
+    }
+  } finally {
+    gate.resolve();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("persists a distinct page request after intrinsic capacity refusal", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  try {
+    const refusedCommit = vi.spyOn(cache, "commitBatch");
+    await offer(owner);
+    expect(await refusedCommit.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "capacity" });
+    refusedCommit.mockRestore();
+    expect(owner.getRecoveryStateForTesting().cacheContinuityLost).toBe(true);
+    owner.acceptRead(
+      { ...readItems("base", 2, [item("oversize", 1, 2), item("base", 2)]), olderCursor: "older" },
+      { lifetime: 1, readId: "baseline", boundary: "baseline" },
+    );
+    await owner.settled();
+    const plans = vi.spyOn(cache, "planCapacity");
+    const commits = vi.spyOn(cache, "commitBatch");
+    const authority = owner.getBaselineIdentity();
+    expect(
+      owner.acceptPage(
+        {
+          data: [{ id: "turn_1", itemsView: "full", status: "completed", version: 2, items: [item("page", 0, 2)] }],
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: identity.incarnation, length: 2 },
+        },
+        { lifetime: 1, readId: "distinct-page-request", boundary: "page", authority, requestCursor: "older" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    expect(plans).toHaveBeenCalledWith(
+      expect.objectContaining({
+        coverage: expect.objectContaining({ kind: "page", readId: "distinct-page-request", authority }),
+      }),
+    );
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect(await keysInCache(cache)).toContain("item-page");
+    expect(await cache.getCoverage(historyKey, "page:distinct-page-request:page")).toMatchObject({
+      kind: "page",
+      authority,
+      readId: "distinct-page-request",
+    });
+    reader.dispose();
+    expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toEqual([]);
+    const reopened = owner.attachReader();
+    try {
+      const opened = await reopened.openLocal(40);
+      expect(opened.model?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toContain("page");
+    } finally {
+      reopened.dispose();
+    }
+  } finally {
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("drops a held capacity preflight after a newer ordinary read commits and survives prune/reopen", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  await offer(owner);
+  const commits = vi.spyOn(cache, "commitBatch");
+  const gate = deferred<void>();
+  const realPlan = cache.planCapacity.bind(cache);
+  vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+    const plan = await realPlan(batch);
+    await gate.promise;
+    return plan;
+  });
+  const accept = (label: string, generation: number) =>
+    owner.acceptRead(
+      {
+        ...readItems(label, generation, [item("oversize", 1, generation), item(label, generation)]),
+        requestGeneration: generation,
+        olderCursor: label,
+      },
+      { lifetime: 1, readId: label, boundary: label },
+    );
+  try {
+    expect(accept("old", 2)).toBe(true);
+    expect(accept("new", 3)).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+    await vi.waitFor(async () =>
+      expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(3),
+    );
+    gate.resolve();
+    await owner.settled().catch(() => {});
+    reader.dispose();
+    expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toEqual([]);
+    const reopened = owner.attachReader();
+    try {
+      const opened = await reopened.openLocal(40);
+      expect(opened.model?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toContain("new");
+      expect(opened.status).toBe("current");
+    } finally {
+      reopened.dispose();
+    }
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(3);
+    expect((await cache.getLatestWindow(historyKey, 40)).coverage.at(-1)?.readId).toBe("new");
+  } finally {
+    gate.resolve();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("drops a held suffix preflight after a newer ordinary read commits", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  await offer(owner);
+  owner.acceptRead(
+    { ...readItems("old", 2, [item("oversize", 1, 2), item("old", 2)]), requestGeneration: 2 },
+    { lifetime: 1, readId: "old", boundary: "old" },
+  );
+  await owner.settled();
+  const commits = vi.spyOn(cache, "commitBatch");
+  const gate = deferred<void>();
+  const realPlan = cache.planCapacity.bind(cache);
+  vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+    const plan = await realPlan(batch);
+    await gate.promise;
+    return plan;
+  });
+  const accept = (label: string, generation: number) =>
+    owner.acceptRead(
+      {
+        ...readItems(label, generation, [item("oversize", 1, generation), item(label, generation)]),
+        requestGeneration: generation,
+        olderCursor: label,
+      },
+      { lifetime: 1, readId: label, boundary: label },
+    );
+  try {
+    expect(owner.accept(historyNotification("suffix", 3, 3), { lifetime: 1 })).toBe(true);
+    expect(accept("new", 4)).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+    await vi.waitFor(async () =>
+      expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(4),
+    );
+    gate.resolve();
+    await owner.settled().catch(() => {});
+    reader.dispose();
+    expect(owner.getSnapshot()?.turns.flatMap((turn) => turn.items)).toEqual([]);
+    const reopened = owner.attachReader();
+    try {
+      const opened = await reopened.openLocal(40);
+      expect(opened.model?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toContain("new");
+      expect(opened.status).toBe("current");
+    } finally {
+      reopened.dispose();
+    }
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect((await cache.getSessionMetadata(historyKey))?.cachedHeader?.history.length).toBe(4);
+    expect((await cache.getLatestWindow(historyKey, 40)).coverage.at(-1)?.readId).toBe("new");
+  } finally {
+    gate.resolve();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
 it.each([1, 2])(
   "recovers from an intrinsic refusal through the sole oversize write for changed disk-eligible content at version %i",
   async (version) => {
