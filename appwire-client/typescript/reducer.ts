@@ -2279,6 +2279,9 @@ export function threadModelFromCurrentState(
     ...state.fields,
     turns: [],
     capabilities: { ...EMPTY_CAPABILITIES },
+    // The cached field set does not carry the context-assumption flag, and an
+    // unrecorded flag is not an assumption (main's own rebuild default).
+    contextAssumed: false,
     ...admission,
   };
   return withDisplay(model, history, state.overlay);
