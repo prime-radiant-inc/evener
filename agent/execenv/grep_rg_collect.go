@@ -195,7 +195,7 @@ func (c *rgRecordCollector) retained() string {
 	for p := range c.blocks {
 		paths = append(paths, p)
 	}
-	slices.SortFunc(paths, func(a, b string) int { return rgPathOrder(a, b) })
+	slices.SortFunc(paths, rgPathOrder)
 	var out []byte
 	for i, p := range paths {
 		if i > 0 && c.separated {
