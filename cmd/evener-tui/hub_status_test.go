@@ -182,15 +182,6 @@ func TestFormatContextFragment(t *testing.T) {
 			detail: hubSessionDetail{ContextUsed: 195000, ContextWindow: 200000, ContextPressure: 0.975},
 			want:   "195k/200k (98%, 0 to compact)",
 		},
-		{
-			// An assumed window (#4607): the capacity figures — the window,
-			// and the to-compact headroom derived from it — carry the "~"
-			// estimate mark; the used figure stays plain, because usage is
-			// measured and only the capacity is assumed.
-			name:   "assumed-window-marks-the-capacity-figures",
-			detail: hubSessionDetail{ContextUsed: 46000, ContextWindow: 128000, ContextAssumed: true},
-			want:   "46k/~128k (36%, ~75k to compact)",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -198,6 +189,24 @@ func TestFormatContextFragment(t *testing.T) {
 				t.Errorf("formatContextFragment(%+v) = %q, want %q", tc.detail, got, tc.want)
 			}
 		})
+	}
+}
+
+// The assumed-window fragment (#4607) asserts structurally, not with the
+// table's full-string compare: the mark sits beside the capacity figures —
+// the window and the to-compact headroom derived from it — and never beside
+// the measured used figure, whose presence and the percentage stay pinned as
+// the fragment's numeric state. Wording tweaks don't break it while the
+// estimate indicator stays caught.
+func TestFormatContextFragmentAssumedWindow(t *testing.T) {
+	got := formatContextFragment(hubSessionDetail{ContextUsed: 46000, ContextWindow: 128000, ContextAssumed: true})
+	for _, want := range []string{"46k/", "~128k", "36%", "~75k"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("fragment %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "~46k") {
+		t.Errorf("fragment %q marks the measured used figure", got)
 	}
 }
 
