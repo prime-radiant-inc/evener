@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apphistory"
 )
 
 type ServerConfig struct {
@@ -475,6 +476,7 @@ func (s *Server) Broadcast(threadID, method string, params any) {
 type notificationDelivery struct {
 	connection *Connection
 	record     SequencedNotification
+	content    *apphistory.Filter
 }
 
 // routeSequencedLocked runs under projectionMu, the same gate a capture holds
@@ -495,6 +497,7 @@ func (s *Server) routeSequencedLocked(record SequencedNotification) []notificati
 		deliveries = append(deliveries, notificationDelivery{
 			connection: conn,
 			record:     record,
+			content:    s.subs.content(connID, record.ThreadID),
 		})
 	}
 	return deliveries
@@ -506,8 +509,7 @@ func (s *Server) deliverNotifications(deliveries []notificationDelivery) []*Conn
 		if s.afterBroadcastConnectionLookup != nil {
 			s.afterBroadcastConnectionLookup(delivery.connection)
 		}
-		msg := appwire.Message{Notification: &delivery.record.Notification}
-		if !delivery.connection.enqueue(msg) {
+		if !delivery.connection.enqueueHistory(delivery.record, delivery.content) {
 			disconnected = append(disconnected, delivery.connection)
 		}
 	}
@@ -1288,6 +1290,7 @@ func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, 
 		owner = admission.threadID
 	}
 	server.subs.subscribeOwned(conn.id, threadID, owner, replace)
+	server.subs.setContent(conn.id, threadID, 0, historyContent(ctx))
 	if admission != nil {
 		delete(conn.pendingAdmissions, admission)
 	}
@@ -1462,6 +1465,7 @@ func captureSubscription(
 		owner = admission.threadID
 	}
 	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation, owner)
+	server.subs.setContent(conn.id, targetThreadID, generation, historyContent(ctx))
 	if admission != nil {
 		delete(conn.pendingAdmissions, admission)
 	}
@@ -1500,14 +1504,14 @@ func captureSubscription(
 
 func (s *Server) releaseHydration(conn *Connection, threadID string, generation uint64) {
 	s.projectionMu.Lock()
+	content := s.subs.content(conn.id, threadID)
 	records, ok := s.subs.Release(conn.id, threadID, generation)
 	s.deliveryMu.Lock()
 	s.projectionMu.Unlock()
 	disconnected := false
 	if ok {
 		for _, record := range records {
-			msg := appwire.Message{Notification: &record.Notification}
-			if !conn.enqueue(msg) {
+			if !conn.enqueueHistory(record, content) {
 				disconnected = true
 				break
 			}
