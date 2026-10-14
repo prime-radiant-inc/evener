@@ -1198,7 +1198,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
             toasts.push("error", sessionActionError(`${label} failed`, err));
           },
         },
-        async (submitted) => {
+        async (submitted, stopBarrier) => {
           if (submittedRecoveryId !== null) {
             // submissionDraft already drained accepted recovery edits. Rewriting
             // here would advance the durable token past our captured authority.
@@ -1220,18 +1220,50 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           if (kind === "send")
             return threadsStore
               .getState()
-              .send(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
+              .send(
+                ref,
+                submittedText,
+                payload,
+                submittedSkillNames,
+                submittedCommandNames,
+                submittedMentions,
+                stopBarrier,
+              );
           if (kind === "queue")
             return threadsStore
               .getState()
-              .queue(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
+              .queue(
+                ref,
+                submittedText,
+                payload,
+                submittedSkillNames,
+                submittedCommandNames,
+                submittedMentions,
+                stopBarrier,
+              );
           if (kind === "steer")
             return threadsStore
               .getState()
-              .steer(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
+              .steer(
+                ref,
+                submittedText,
+                payload,
+                submittedSkillNames,
+                submittedCommandNames,
+                submittedMentions,
+                stopBarrier,
+              );
           return threadsStore
             .getState()
-            .drainAsSteer(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
+            .drainAsSteer(
+              ref,
+              submittedText,
+              payload,
+              submittedSkillNames,
+              submittedCommandNames,
+              submittedMentions,
+              stopBarrier,
+            );
         },
       );
       if (!source.alive) return;

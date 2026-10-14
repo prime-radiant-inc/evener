@@ -845,8 +845,13 @@ test("a flush that can never settle trips instead of hanging inside act", async 
       (error: unknown) => error,
     );
     await vi.advanceTimersByTimeAsync(60_000);
+    // The count is not pinned: the submit's click-time stop-barrier read
+    // (§4) issues durable work in the press's own prefix, and whatever
+    // pieces of its cold-open chain are still in flight when the clock
+    // freezes sit alongside the stalled perform. The tripwire this test
+    // protects is the trip itself - the named stall rejection, not a hang.
     expect(await flushing).toMatchObject({
-      message: expect.stringMatching(/projection work stalled: 1 operation\(s\) still unsettled after \d+ms/),
+      message: expect.stringMatching(/projection work stalled: \d+ operation\(s\) still unsettled after \d+ms/),
     });
   } finally {
     vi.useRealTimers();
@@ -1234,6 +1239,74 @@ test("a born-canceled send does not hold the cold-start skeleton", async () => {
   expect(pending.result.current).toEqual([expect.objectContaining({ state: "canceled" })]);
   // ... but a turn that provably never sent does not mean a turn is coming:
   expect(coldStart.result.current).toBe(false);
+});
+
+// RoboRev round 31 HIGH, the §4 regression the preparation created: the
+// submit click's stop-epoch capture had drifted from the click's own storage
+// observation to the enqueue's - requested after the draft preparation's
+// first await. A Stop another tab commits while the preparation runs then
+// becomes the send's baseline epoch, and the send dispatches work the Stop
+// meant to cancel. The barrier is requested in the click's synchronous prefix
+// again and carried through the enqueue unchanged.
+test("a send whose preparation stalls captures the click's stop epoch, not a post-Stop one", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = await connect();
+  fake.on("turn/start", (params) => ({
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "pending",
+    },
+  }));
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "pending",
+    },
+  }));
+
+  const { source } = await browserSource();
+  // Hold the preparation across the Stop: the click has happened, the draft
+  // preparation is in flight, and the send's enqueue has not.
+  const realSubmissionDraft = source.submissionDraft.bind(source);
+  let preparationStarted!: () => void;
+  const preparationStartedGate = new Promise<void>((resolve) => {
+    preparationStarted = resolve;
+  });
+  let releasePreparation!: () => void;
+  const preparationGate = new Promise<void>((resolve) => {
+    releasePreparation = resolve;
+  });
+  source.submissionDraft = (...args: Parameters<typeof realSubmissionDraft>) => {
+    preparationStarted();
+    return preparationGate.then(() => realSubmissionDraft(...args));
+  };
+
+  const submit = submitWithPendingTracking(
+    { ref: "ref_a", text: "pressed before the stop", source, onFailure: vi.fn() },
+    (submitted, stopBarrier) =>
+      threadsStore.getState().send("ref_a", submitted.text, undefined, undefined, undefined, undefined, stopBarrier),
+  );
+  await preparationStartedGate;
+
+  // The other tab's Stop commits while the preparation is still held. The
+  // send's row does not exist yet, so the Stop's cancel scan finds nothing -
+  // the epoch bump is the one trace the send's barrier must catch.
+  await threadsStore.getState().interrupt("ref_a");
+
+  releasePreparation();
+  await submit;
+
+  // The send committed born-canceled: its click-time capture predates the
+  // Stop, so the Stop outranks it and nothing dispatches.
+  const rows = await storage.listOutbox("ref_a");
+  expect(rows.filter((row) => row.method === "turn/start")).toEqual([expect.objectContaining({ state: "canceled" })]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
 test("a replayed pending receipt keeps a long-running steer until its authoritative identity arrives", async () => {

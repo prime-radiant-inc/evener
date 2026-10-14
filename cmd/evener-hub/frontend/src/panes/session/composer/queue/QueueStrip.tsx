@@ -397,7 +397,7 @@ export function QueueStrip({
             toasts.push("error", sessionActionError("Drain failed", err));
           },
         },
-        async (submitted) => {
+        async (submitted, stopBarrier) => {
           if (activeRecoveryId) {
             wonRecoveryResend = await resendRecoveryPendingTurn(
               activeRecoveryId,
@@ -414,7 +414,7 @@ export function QueueStrip({
           }
           return threadsStore
             .getState()
-            .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions);
+            .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions, stopBarrier);
         },
       );
       if (!wonRecoveryResend) {
