@@ -445,7 +445,15 @@ func (s *Session) readMemoryScope(ctx context.Context, scope string, pages []str
 			p.Status = "unavailable"
 			return p, nil
 		}
-		if record, ok := readMemoryPageRecord(ctx, env, page); ok {
+		record, ok := readMemoryPageRecord(ctx, env, page)
+		// memoryPageRecordFrom reports a read failure as "no record", which would
+		// swallow a cancellation during the LAST page's read: check ctx after the
+		// read, not only before the next one (#4621 round 4, class sweep).
+		if cerr := ctx.Err(); cerr != nil {
+			p.Status = "unavailable"
+			return p, nil
+		}
+		if ok {
 			records[page] = record
 		}
 	}

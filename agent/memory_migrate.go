@@ -102,6 +102,9 @@ func backUpMemoryIndex(env *execenv.LocalExecutionEnvironment, root string, raw 
 // backUpMemoryIndexCtx is backUpMemoryIndex with the caller's context threaded
 // to each read.
 func backUpMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root string, raw []byte, backup string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if repeated, err := memoryBackupHolds(ctx, env, root, raw); err != nil || repeated {
 		return err
 	}
@@ -143,6 +146,12 @@ func removeMigratedMemoryIndex(env *execenv.LocalExecutionEnvironment, root, leg
 // removeMigratedMemoryIndexCtx is removeMigratedMemoryIndex with the caller's
 // context threaded to the captured-bytes read.
 func removeMigratedMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecutionEnvironment, root, legacy string, raw []byte) error {
+	// Check cancellation BEFORE the rename: staging the index and only then
+	// reporting cancellation would leave MEMORY.md hidden under a private name
+	// until recovery (#4621 round 4, MEDIUM 2).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	staged := filepath.Join(root, memoryIndexStagingPrefix+rand.Text())
 	if err := env.RenamePath(legacy, staged); err != nil {
 		// fs.ErrNotExist: another migration moved the index first.
@@ -182,7 +191,16 @@ func memoryBackupHolds(ctx context.Context, env *execenv.LocalExecutionEnvironme
 		if !entry.IsRegular || entry.Size != int64(len(raw)) || !strings.HasPrefix(strings.ToLower(entry.Name), prefix) {
 			continue
 		}
-		if existing, err := env.ReadFileRawCtx(ctx, filepath.Join(root, entry.Name)); err == nil && bytes.Equal(existing, raw) {
+		existing, err := env.ReadFileRawCtx(ctx, filepath.Join(root, entry.Name))
+		if err != nil {
+			// A cancelled read must stop the migration, not read as "no backup
+			// found" and let it create a duplicate (#4621 round 4, MEDIUM 2).
+			if cerr := ctx.Err(); cerr != nil {
+				return false, cerr
+			}
+			continue // an unreadable entry is not a match
+		}
+		if bytes.Equal(existing, raw) {
 			return true, nil
 		}
 	}
