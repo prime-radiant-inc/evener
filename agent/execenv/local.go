@@ -2332,30 +2332,27 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// "%VAR%" therefore stayed live there. Portable and shell-free beats
 	// platform-specific quoting: with argv in hand there is nothing to
 	// escape on any platform.
-	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
+	filesOnly := outputMode == "files_with_matches"
+	oneFile := grepTargetsOneFile(dir)
+	// Stream rg's output through the bounded collector rather than capturing it
+	// whole: the collector keeps the earliest records in PATH order, so the
+	// retained set depends only on the corpus and the query, never on the
+	// parallel search's file-completion order (#4621 round 5). The byte budget
+	// remains a backstop for a pathological single record.
+	collector := newRgRecordCollector(dir, filesOnly, oneFile, rgCollectorKeep(outputMode, maxResults, ctxLines), grepRetainedBytes)
+	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, collector)
 	if err == nil {
-		filesOnly := outputMode == "files_with_matches"
-		oneFile := grepTargetsOneFile(dir)
-		truncated := res.StdoutTruncated
-		stdout := res.Stdout
-		if truncated {
-			// The capture tripped the byte cap. Keep ripgrep's OWN exclusion
-			// rules by parsing the records the bounded capture retained, rather
-			// than rerunning the native walker: the native walker reads no
-			// .ignore and no .gitignore above the search base, so a rerun could
-			// surface files ripgrep excludes (#4621 round 2, M2). Only the
-			// complete leading records are used, and the byte-truncation note
-			// discloses the rest.
-			stdout = rgRetainedRecords(res.StdoutRetained, filesOnly, oneFile)
-		}
 		// Keep the first maxResults lines. In content mode that counts context
 		// lines and "--" separators too, which is what the grep tool's
 		// max_results promises ("lines, file paths, or count entries by output
 		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
 		// context_lines a cut can fall inside a match's context.
-		lines := ripgrepOutputLines(stdout, dir, oneFile, filesOnly)
+		lines := ripgrepOutputLines(collector.retained(), dir, oneFile, filesOnly)
 		var notes []string
-		if truncated {
+		if collector.truncated() {
+			// The collector kept the earliest records in path order and dropped
+			// the rest; the note discloses it exactly as the native arm's
+			// retained-output budget does.
 			notes = append(notes, grepRetainedTruncationNote())
 		}
 		if len(lines) > maxResults {
@@ -2489,53 +2486,6 @@ func (c *nulCounter) Write(p []byte) (int, error) {
 func grepTargetsOneFile(dir string) bool {
 	info, err := os.Stat(dir)
 	return err == nil && !info.IsDir()
-}
-
-// rgRetainedRecords returns the complete leading records of a truncated ripgrep
-// capture, given the retained HEAD bytes (ExecResult.StdoutRetained, a true
-// prefix of the stream) and the KNOWN output shape — never a shape inferred
-// from the text. Complete records are identified by ripgrep's actual --null
-// form: a content/count record is `<path>\0<line>\n`, a files-with-matches
-// record is `<path>\0`, and a pathname may itself contain newlines (only its NUL
-// terminates it) — so a cut inside such a pathname would otherwise be read as a
-// record boundary and retained as a bogus row. A single named file carries no
-// path, so its records are plain newline-terminated lines. An empty result means
-// the cap tripped before one record finished. The caller passes the shape it
-// already knows (grepTargetsOneFile, the output mode), so a head that happens to
-// lack a NUL can never be mistaken for a single-file stream.
-func rgRetainedRecords(head string, filesOnly, oneFile bool) string {
-	if oneFile {
-		// A single named file carries no pathname: its records are plain lines.
-		// (In files_with_matches mode the one record is ".", which needs no cut.)
-		if i := strings.LastIndexByte(head, '\n'); i >= 0 {
-			return head[:i+1]
-		}
-		return ""
-	}
-	if filesOnly {
-		// A files-with-matches record is a pathname and its NUL; a pathname
-		// never contains a NUL, so the last NUL ends the last complete record.
-		if i := strings.LastIndexByte(head, 0); i >= 0 {
-			return head[:i+1]
-		}
-		return ""
-	}
-	// Content/count: walk record by record — a path up to its NUL then one line
-	// up to its newline — and stop at the last that completed.
-	pos := 0
-	for pos < len(head) {
-		nul := strings.IndexByte(head[pos:], 0)
-		if nul < 0 {
-			break
-		}
-		start := pos + nul + 1
-		nl := strings.IndexByte(head[start:], '\n')
-		if nl < 0 {
-			break
-		}
-		pos = start + nl + 1
-	}
-	return head[:pos]
 }
 
 // ripgrepOutputLines splits ripgrep's --null output into lines in the shape
@@ -2962,7 +2912,7 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 		}
 	}
 
-	result := ExecResult{
+	return ExecResult{
 		Stdout:          stdout.String(),
 		Stderr:          stderr.String(),
 		ExitCode:        exitCode,
@@ -2970,11 +2920,7 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 		DurationMS:      time.Since(start).Milliseconds(),
 		StdoutTruncated: stdout.truncated(),
 		StderrTruncated: stderr.truncated(),
-	}
-	if stdout.truncated() {
-		result.StdoutRetained = stdout.retainedHead()
-	}
-	return result, waitErr
+	}, waitErr
 }
 
 // StreamCommand runs command through the platform shell in its own process

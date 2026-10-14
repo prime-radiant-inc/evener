@@ -110,17 +110,6 @@ func (b *cappedOutputBuffer) String() string {
 // and tail around an omission marker, not the exact stream.
 func (b *cappedOutputBuffer) truncated() bool { return b.over }
 
-// retainedHead returns the leading bytes a truncated capture kept: a true
-// prefix of the stream, rune-trimmed at its cut. A consumer that decodes the
-// stream's records reads this rather than splitting the rendered
-// head/marker/tail string.
-func (b *cappedOutputBuffer) retainedHead() string {
-	if !b.over {
-		return string(b.buf)
-	}
-	return string(runetrim.TrimTrailingPartial(b.head))
-}
-
 // tailView unwinds the rolling window into stream order.
 func (b *cappedOutputBuffer) tailView() []byte {
 	view := make([]byte, 0, len(b.tail))
