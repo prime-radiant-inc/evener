@@ -159,7 +159,10 @@ func removeMigratedMemoryIndexCtx(ctx context.Context, env *execenv.LocalExecuti
 	}
 	captured, err := env.ReadFileRawCtx(ctx, staged)
 	if err != nil {
-		return err
+		// A cancellation (or any other failure) after the rename must not leave
+		// MEMORY.md hidden under its private name: put the captured file back,
+		// no-clobber (#4621 round 7, MEDIUM 3).
+		return errors.Join(err, restoreStagedMemoryIndex(env, staged, legacy))
 	}
 	if bytes.Equal(captured, raw) {
 		return env.RemoveConfinedFile(staged)
@@ -213,6 +216,25 @@ func ignoreNotExist(err error) error {
 		return nil
 	}
 	return err
+}
+
+// restoreStagedMemoryIndex links a staged index back to its MEMORY.md name,
+// reporting only a failure that is not the name being taken. The link refuses
+// rather than replace a rewrite that landed meanwhile, and the staged file is
+// kept when it could not go back, where the next migration finds it by its
+// private name. None of the calls here takes a context, so a cancelled
+// migration's restore still runs.
+func restoreStagedMemoryIndex(env *execenv.LocalExecutionEnvironment, staged, legacy string) error {
+	if err := env.LinkConfinedFile(staged, legacy); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			// A rewrite holds the MEMORY.md name; it stays, and so does the
+			// staged file.
+			return nil
+		}
+		return err
+	}
+	// Both names now hold the index; the private one is no longer needed.
+	return env.RemoveConfinedFile(staged)
 }
 
 // memoryYAMLField encodes one frontmatter line, quoting value as YAML needs.
