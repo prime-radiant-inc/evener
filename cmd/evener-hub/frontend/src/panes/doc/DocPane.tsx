@@ -612,9 +612,13 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           expiryReceiptRef.current = null;
           // This acceptance proves the fence committed, so the expired epoch's
           // deletion can complete now. A faulting deletion leaves the
-          // persisted receipt unfinished for the next retry pass's sweep; the
-          // reader tries once per acceptance and never blocks adoption on it.
-          void ports.repository.finishExpiry(fencedExpiry).catch(() => undefined);
+          // persisted receipt unfinished for the next retry pass's sweep, and
+          // registering the runtime's retry need makes the NEXT real storage
+          // success - this reader's next read cycle, a peer's - start that
+          // pass instead of waiting for a foreground return or a composer-open
+          // event. The reader tries once per acceptance and never blocks
+          // adoption on it.
+          void ports.repository.finishExpiry(fencedExpiry).catch(() => ports.runtime.registerRetryNeed());
         }
         return "success";
       }
@@ -712,20 +716,36 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // only after the CURRENT accepted map for the accepted lease is really bound.
   // An identical durable snapshot still gets a fresh render mapping identity, so
   // this bind always happens on a successful read cycle.
+  // The pass also runs once on the FIRST accepted map of a mount that holds no
+  // failed save of its own: an unfinished persisted expiry (a deletion that
+  // faulted before this mount, in this runtime or a previous one) is retried
+  // by the pass's sweep, so reopening or reloading a document completes it
+  // without waiting for a foreground return or a composer-open event.
+  const readerOpenRetryDoneRef = useRef(false);
   const handleMap = useCallback(
     (map: BoundDocumentMap | null) => {
       setBoundMap(map);
       if (
         map &&
         !authoritySuspended &&
-        work.attempted &&
         work.lease &&
         map.identity.displayedSnapshotId === work.lease.displayedSnapshotId
       ) {
-        void retryDocumentReaders("reader-open");
+        if (work.attempted) {
+          readerOpenRetryDoneRef.current = true;
+          void retryDocumentReaders("reader-open");
+        } else if (!readerOpenRetryDoneRef.current) {
+          // The first accepted map of a mount with no failed save needs only
+          // the runtime's own pass - the sweep of unfinished persisted
+          // expiries - not the reader-refresh publications the shared entry
+          // point also performs, whose bumps land after any pass join and so
+          // escape the test act windows around a plain mount.
+          readerOpenRetryDoneRef.current = true;
+          void ports.runtime.retryPending("reader-open");
+        }
       }
     },
-    [work, authoritySuspended],
+    [work, authoritySuspended, ports],
   );
 
   // The bound map is usable only when it matches the CURRENT accepted lease:
