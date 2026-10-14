@@ -17,6 +17,15 @@ static void checkRange(NSRange actual, NSUInteger start, NSUInteger end, const c
   }
   printf("PASS %s\n", name);
 }
+static void checkRefused(NSRange actual, const char *name)
+{
+  if (actual.location != NSNotFound) {
+    fprintf(stderr, "FAIL %s, got lying range [%lu,%lu)\n", name,
+            (unsigned long)actual.location, (unsigned long)NSMaxRange(actual));
+    exit(1);
+  }
+  printf("PASS %s\n", name);
+}
 static NSMutableAttributedString *renderFragments(NSArray<ENRMSourceFragment *> *fragments)
 {
   NSMutableAttributedString *result = [[NSMutableAttributedString alloc] initWithString:@""];
@@ -119,6 +128,29 @@ int main(void)
     ENRMOriginalDocumentModel *bom = [[ENRMOriginalDocumentModel alloc] initWithSource:@"\uFEFFsame\r\n" snapshotId:@"bom"];
     NSMutableAttributedString *bomText = renderNode([bom projectBlockRange:NSMakeRange(0,7)]);
     checkRange([bom sourceRangeForRenderedRange:NSMakeRange(0,4) inText:bomText],1,5,"original BOM keeps UTF16 coordinates");
+
+    // A transformed spelling renders several characters from one source span,
+    // so a partial boundary of it cannot round-trip to exactly the selected
+    // rendered characters. The complete spelling still maps exactly.
+    ENRMOriginalDocumentModel *ligature = [[ENRMOriginalDocumentModel alloc]
+        initWithSource:@"a &fjlig; b\r\n" snapshotId:@"fjlig"];
+    NSMutableAttributedString *spelling = renderNode([ligature projectBlockRange:NSMakeRange(0,13)]);
+    check([spelling.string isEqualToString:@"a fj b"], "fjlig row renders the decoded spelling");
+    checkRange([ligature sourceRangeForRenderedRange:NSMakeRange(2,2) inText:spelling],2,9,
+               "complete spelling selection maps exactly");
+    NSArray<NSValue *> *reconstructed = [ligature renderedRangesForSourceRange:NSMakeRange(2,9) inText:spelling];
+    check(reconstructed.count == 1 && NSEqualRanges(reconstructed.firstObject.rangeValue, NSMakeRange(2,2)),
+          "saved spelling range reconstructs exactly the selected rendered characters");
+    checkRefused([ligature sourceRangeForRenderedRange:NSMakeRange(2,1) inText:spelling],
+                 "partial leading spelling selection is refused, not expanded");
+    checkRefused([ligature sourceRangeForRenderedRange:NSMakeRange(3,1) inText:spelling],
+                 "partial trailing spelling selection is refused, not expanded");
+    checkRefused([ligature sourceRangeForRenderedRange:NSMakeRange(0,3) inText:spelling],
+                 "selection entering a spelling is refused, not expanded");
+    checkRange([ligature sourceRangeForRenderedRange:NSMakeRange(0,2) inText:spelling],0,2,
+               "prose before the spelling still maps exactly");
+    checkRange([ligature sourceRangeForRenderedRange:NSMakeRange(4,2) inText:spelling],9,11,
+               "prose after the spelling still maps exactly");
 
     NSString *logical = @"Note\n\nfirst same link & 😀\n\nsecond same\n\nitem same\n\nCell\tOther\nsame\ttail\n\nsame()";
     check([model.selectionText.string isEqualToString:logical], "persistent original logical rendered document");
