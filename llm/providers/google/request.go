@@ -385,7 +385,21 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 		})
 	}
 
+	// Consecutive tool-result messages accumulate into one user turn: Gemini
+	// requires the function response parts to sit in the single user turn
+	// that answers the function call turn, not spread across separate turns.
+	var pendingToolParts []map[string]any
+	flushToolParts := func() {
+		if len(pendingToolParts) > 0 {
+			appendContent("user", pendingToolParts)
+			pendingToolParts = nil
+		}
+	}
+
 	for _, m := range msgs {
+		if m.Role != llm.RoleTool {
+			flushToolParts()
+		}
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
 			if t := strings.TrimSpace(m.Text()); t != "" {
@@ -471,9 +485,13 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
-				name := strings.TrimSpace(p.ToolResult.Name)
+				// The functionResponse name must match the functionCall's
+				// wire name, which the call carries — the result's Name is
+				// the canonical name, which the wire edge may have renamed
+				// (e.g. list_dir → list_directory on the google surface).
+				name := toolNameFromCallID(msgs, p.ToolResult.ToolCallID)
 				if name == "" {
-					name = toolNameFromCallID(msgs, p.ToolResult.ToolCallID)
+					name = strings.TrimSpace(p.ToolResult.Name)
 				}
 				if name == "" {
 					name = p.ToolResult.ToolCallID
@@ -515,11 +533,12 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 				}
 				parts = append(parts, map[string]any{"functionResponse": funcResp})
 			}
-			appendContent("user", parts)
+			pendingToolParts = append(pendingToolParts, parts...)
 		default:
 			// ignore
 		}
 	}
+	flushToolParts()
 	return strings.Join(sysParts, "\n\n"), contents, nil
 }
 

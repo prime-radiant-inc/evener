@@ -87,6 +87,10 @@ func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwir
 	return stampDerivedTotals(cfg, entry, thread), true, nil
 }
 
+// afterSavedSubscriptionCapture lets tests hold a saved read between its
+// ownership capture and disk projection. Production leaves it nil.
+var afterSavedSubscriptionCapture func(appwire.ThreadReadParams)
+
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
@@ -123,6 +127,9 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 		})
 		if err != nil {
 			return appwire.ThreadReadResponse{}, false, err
+		}
+		if afterSavedSubscriptionCapture != nil {
+			afterSavedSubscriptionCapture(params)
 		}
 		if !captured {
 			return appwire.ThreadReadResponse{}, false, appwire.SessionUnavailable("thread subscription is unavailable")
