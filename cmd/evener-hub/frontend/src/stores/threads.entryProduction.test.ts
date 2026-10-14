@@ -52,6 +52,7 @@ afterEach(() => {
   resetThreadsStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
   for (const cache of caches.splice(0)) cache.close();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -632,7 +633,8 @@ it.each(["evicted", "failed-write"] as const)(
     const background = acquireBackgroundThread("local:a");
     await background.ready;
     if (failure === "failed-write") {
-      await expect(settleEntryTranscriptForTests("local:a")).rejects.toThrow("transcript recovery failed");
+      await expect(settleEntryTranscriptForTests("local:a")).rejects.toBeInstanceOf(Error);
+      expect(await storage.getLatest(entryHistoryKey({ ...identity, clientId: location.origin }), 10)).toEqual([]);
     } else {
       await settleEntryTranscriptForTests("local:a");
     }
@@ -663,6 +665,9 @@ it.each(["evicted", "failed-write"] as const)(
         .map((item) => item.text),
     ).toEqual(["recorded"]);
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+    await settleEntryTranscriptForTests("local:a");
+    const key = entryHistoryKey({ ...identity, clientId: location.origin });
+    expect((await storage.getLatest<CachedSessionItem>(key, 10)).map((row) => row.item.text)).toEqual(["recorded"]);
     background.release();
   },
 );
@@ -695,8 +700,9 @@ it.each([false, true])("opening verifies accepted bodies when the latest write w
       items: updated.items,
     },
   });
-  if (lost) await expect(settleEntryTranscriptForTests("local:a")).rejects.toThrow("transcript recovery failed");
-  else await settleEntryTranscriptForTests("local:a");
+  if (lost) {
+    await expect(settleEntryTranscriptForTests("local:a")).rejects.toBeInstanceOf(Error);
+  } else await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest(key, 10))[0]?.version).toBe(lost ? 1 : 2);
   expect(threadsStore.getState().threads.get("local:a")?.history?.turns[0]?.items[0]?.text).toBe("");
   writes?.mockRestore();
@@ -710,6 +716,8 @@ it.each([false, true])("opening verifies accepted bodies when the latest write w
       ?.turns.flatMap((turn) => turn.items)
       .map((item) => item.text),
   ).toEqual(["version two exact body"]);
+  await settleEntryTranscriptForTests("local:a");
+  expect((await storage.getLatest<CachedSessionItem>(key, 10))[0]?.item.text).toBe("version two exact body");
   background.release();
 });
 
@@ -755,9 +763,8 @@ it.each(["body", "empty", "omitted"] as const)(
           items: [item],
         },
       });
-      await expect(settleEntryTranscriptForTests("local:a")).rejects.toEqual(
-        new Error("transcript recovery is outstanding"),
-      );
+      await expect(settleEntryTranscriptForTests("local:a")).rejects.toBeInstanceOf(Error);
+      expect(repository.retainedInventoryForTesting().retryBodies.length).toBeGreaterThan(0);
       const reads = client.calls.filter((call) => call.method === "thread/read").length;
       await threadsStore.getState().ensureThread("local:a");
       expect(productionEntryTranscriptForTests("local:a").lastLocalOpenStatus).toBe("recovery-needed");
@@ -769,11 +776,68 @@ it.each(["body", "empty", "omitted"] as const)(
       expect(displayed?.version).toBe(2);
       if (kind === "omitted") expect(displayed?.output).toBe("exact tool output");
       else expect(displayed?.text).toBe(kind === "empty" ? "" : "retained exact body");
+      writes.mockRestore();
+      const key = entryHistoryKey({ ...identity, clientId: location.origin });
+      await vi.waitFor(async () => expect((await storage.getLatest(key, 10))[0]?.version).toBe(2));
+      await settleEntryTranscriptForTests("local:a");
+      expect(repository.retainedInventoryForTesting().retryBodies).toEqual([]);
+      const persisted = (await storage.getLatest<CachedSessionItem>(key, 10))[0]?.item;
+      if (kind === "omitted") expect(persisted?.output).toBe("exact tool output");
+      else expect(persisted?.text).toBe(kind === "empty" ? "" : "retained exact body");
     } finally {
       writes.mockRestore();
       retained.dispose();
       background.release();
     }
+  },
+);
+
+it.each(["opening", "paging"])(
+  "background promotion restores every cached body beyond 200 items: %s",
+  async (stage) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const turns = Array.from({ length: 250 }, (_, index) => turn(`body-${index}`, index));
+    const read = response("local:a", turns);
+    read.snapshot = { incarnation: "inc-a", length: 250 };
+    const client = connect(read);
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:a");
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    await threadsStore.getState().ensureThread("local:a");
+    expect(productionEntryTranscriptForTests("local:a")?.lastLocalOpenStatus).toBe("current");
+    const items = () =>
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items);
+    if (stage === "opening")
+      expect(items()?.map((item) => item.text)).toEqual(
+        turns.slice(-200).flatMap((turn) => (turn.items ?? []).map((item) => item.text)),
+      );
+    expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBeDefined();
+    const older = vi.spyOn(storage, "getOlderWindow");
+    await threadsStore.getState().loadOlderTurns("local:a");
+    expect(older).toHaveBeenCalled();
+    expect(older.mock.calls[0]?.[1]).toEqual({ entry: 50, item: 0 });
+    expect((await older.mock.results.at(-1)?.value)?.rows).toHaveLength(40);
+    expect(items()?.map((item) => item.text)).toEqual(
+      turns.slice(10).flatMap((turn) => (turn.items ?? []).map((item) => item.text)),
+    );
+    await threadsStore.getState().loadOlderTurns("local:a");
+    expect(productionEntryTranscriptForTests("local:a").repository?.oldestPosition()).toEqual({ entry: 0, item: 0 });
+    expect(items()?.map((item) => item.text)).toEqual(
+      turns.flatMap((turn) => (turn.items ?? []).map((item) => item.text)),
+    );
+    await threadsStore.getState().loadOlderTurns("local:a");
+    expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBeUndefined();
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+    expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+    threadsStore.getState().releaseThread("local:a");
+    background.release();
+    vi.useRealTimers();
   },
 );
 
@@ -1759,6 +1823,46 @@ it("ordinary reconnect keeps a same-turn tail outside the recovered window witho
   expect(persisted).toContain("fresh-window");
   expect(persisted).not.toContain("missing-48");
   expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("missing-48");
+});
+
+it("automatic outbox discovery after Clear stays suppressed until explicit foreground acquisition", async () => {
+  const storage = cache();
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  client.on("turn/queue", () => new Promise(() => {}));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  expect(await clearCachedSessions()).toEqual({ committed: true });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, createMutationId: () => "post-clear-auto-pin" });
+  try {
+    await outbox.enqueueIntent({
+      targetRef: "local:a",
+      method: "turn/queue",
+      payload: { ref: "local:a", expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    client.emitStateChange("reconnecting");
+    client.emitStateChange("ready");
+    await settleProjectionWorkForTests();
+    await vi.waitFor(() =>
+      expect(client.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(reads),
+    );
+    await settleEntryTranscriptForTests("local:a");
+    expect(threadsStore.getState().cacheLifetimes.get("local:a")?.suppressed).toBe(true);
+    expect(threadsStore.getState().cacheLifetimes.get("local:a")?.freshForegroundLifetime).toBeUndefined();
+    const key = entryHistoryKey({ ...identity, clientId: location.origin });
+    expect(await storage.getLatest(key, 10)).toEqual([]);
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+    threadsStore.getState().releaseThread("local:a");
+  } finally {
+    background.release();
+    outbox.close();
+  }
 });
 
 it("a fresh foreground lifetime with a surviving background owner caches the cleared epoch", async () => {

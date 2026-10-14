@@ -341,6 +341,7 @@ export class TranscriptRepository {
   #readerCount = 0;
   #coverageBoundary: string | undefined;
   #coverageReadId: string | undefined;
+  #localReadContinuation: string | undefined;
   #continuityId: string | undefined;
   #coverageStart: { entry: number; item: number; sub?: number } | null = null;
   #coverageEnd: { entry: number; item: number; sub?: number } | null = null;
@@ -1020,9 +1021,30 @@ export class TranscriptRepository {
     // The raced work only returns data, so late results can never publish.
     let lookupActive = true;
     const lookup = async () => {
-      const window = await this.#cache.getOlderWindow(this.#binding.historyKey, before, limit, this.#baselineIdentity);
+      let window = await this.#cache.getOlderWindow(this.#binding.historyKey, before, limit, this.#baselineIdentity);
       if (!lookupActive || !this.#acceptsLifetime(lifetime) || this.#sourceRevision !== revisionAtStart) {
         return undefined;
+      }
+      if (
+        window.coverage.length === 0 &&
+        this.#localReadContinuation !== undefined &&
+        this.#localReadContinuation === this.#coverageReadId
+      ) {
+        // Read/suffix certificates predate page authority. Only this live
+        // baseline's exact read can supply their local continuation. The cache
+        // rejects competing authorities, and the normal revision/deadline
+        // guards below still fence both lookups and the eventual publication.
+        const readWindow = await this.#cache.getOlderWindow(this.#binding.historyKey, before, limit);
+        if (!lookupActive || !this.#acceptsLifetime(lifetime) || this.#sourceRevision !== revisionAtStart) {
+          return undefined;
+        }
+        if (
+          readWindow.coverage.length > 0 &&
+          readWindow.coverage.every(
+            (coverage) => coverage.readId === this.#coverageReadId && coverage.authority === undefined,
+          )
+        )
+          window = readWindow;
       }
       const turnIds = window.stale ? [] : this.#turnIDsForRows(window.rows, []);
       const turnMetadata = await this.#readTurnMetadata(turnIds);
@@ -1063,6 +1085,7 @@ export class TranscriptRepository {
       // with no server cursor is real history end; a cursor means more history
       // remains on the network.
       if (window.complete && window.serverCursor === undefined) {
+        this.#localReadContinuation = undefined;
         return { kind: "exhausted", model: { ...(this.#model ?? current), olderCursor: undefined } };
       }
       return { kind: "server" };
@@ -1258,6 +1281,32 @@ export class TranscriptRepository {
           // A racing accepted model wins by item version; the stale query only fills absent slots.
           latest =
             this.#boundary > openingCutBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
+          const oldestReturned = boundedRows[0]?.position;
+          const certifiedStart = window.coverage[0]?.start;
+          const localBefore =
+            oldestReturned && certifiedStart && comparePosition(certifiedStart, oldestReturned) < 0
+              ? oldestReturned
+              : undefined;
+          if (localBefore && latest.history) {
+            // Only a certified continuation makes this prefix reachable again.
+            // Identity-only rows are not a loaded reader window: keeping them
+            // would put the next local page below bodies we never restored.
+            const trim = (turns: readonly TurnModel[]) =>
+              turns.flatMap((turn) => {
+                const items = turn.items.filter(
+                  (item) =>
+                    !item.position ||
+                    comparePosition(item.position, localBefore) >= 0 ||
+                    !encodeTranscriptItem(item).identityOnly,
+                );
+                return items.length === 0 && turn.items.length > 0 ? [] : [{ ...turn, items }];
+              });
+            latest = {
+              ...latest,
+              history: { ...latest.history, turns: trim(latest.history.turns) },
+              turns: trim(latest.turns),
+            };
+          }
           this.#model = latest;
           this.#publish();
           const certifiedSnapshot = window.coverage.at(-1)?.representedSnapshot;
@@ -1280,12 +1329,7 @@ export class TranscriptRepository {
             !this.#recoveryNeeded
               ? "current"
               : "recovery-needed";
-          const oldestReturned = boundedRows[0]?.position;
-          const certifiedStart = window.coverage[0]?.start;
-          const localBefore =
-            oldestReturned && certifiedStart && comparePosition(certifiedStart, oldestReturned) < 0
-              ? oldestReturned
-              : undefined;
+          if (localBefore) this.#localReadContinuation = this.#coverageReadId;
           return {
             model: latest ?? current,
             status,
