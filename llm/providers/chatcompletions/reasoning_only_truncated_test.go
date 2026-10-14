@@ -125,7 +125,7 @@ func TestTruncatedReasoningOnlyResponse(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.body), &raw); err != nil {
 				t.Fatalf("fixture is not JSON: %v", err)
 			}
-			resp, err := fromChatCompletionResponse(raw, nil)
+			resp, err := fromChatCompletionResponse(raw, nil, []byte(tt.body))
 			if err != nil {
 				t.Fatalf("decode: %v", err)
 			}

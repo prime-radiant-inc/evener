@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"maps"
@@ -30,7 +31,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	type toolCallState struct {
 		id   string
 		name string
-		args strings.Builder
+		args bytes.Buffer
 	}
 	toolCalls := map[int]*toolCallState{}
 	var textStarted bool
@@ -88,6 +89,10 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				var completedToolCalls []llm.ToolCallData
 				for _, idx := range slices.Sorted(maps.Keys(toolCalls)) {
 					tc := toolCalls[idx]
+					// rescueClaudeXMLArgs returns the input unchanged when
+					// no XML is present, preserving raw bytes (incl. invalid
+					// UTF-8). It only re-marshals on actual Claude-XML
+					// rescue (rare, intentional).
 					rescuedArgs := rescueClaudeXMLArgs(tc.args.String())
 					tcd := llm.ToolCallData{
 						ID:        tc.id,
@@ -269,7 +274,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 			}
 
 			// Tool call deltas.
-			for _, tc := range choice.Delta.ToolCalls {
+			for tcArrIdx, tc := range choice.Delta.ToolCalls {
 				state, exists := toolCalls[tc.Index]
 				if !exists {
 					// Close reasoning before the first tool call if needed.
@@ -292,13 +297,28 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					})
 				}
 				if tc.Function.Arguments != "" {
-					state.args.WriteString(tc.Function.Arguments)
+					deltaArgs := []byte(tc.Function.Arguments)
+					// Capture the arguments fragment as raw bytes from the
+					// chunk's raw data (ev.Data) to preserve bytes that
+					// json.Unmarshal into string would coerce to U+FFFD.
+					// Degrade, never drop: fall back to the string-form
+					// args when the focused capture fails.
+					if rawFrag, ok := captureChunkArgsRaw(ev.Data, tcArrIdx); ok && rawFrag != nil {
+						if content, cerr := protocolhttp.RawStringContent(rawFrag); cerr == nil {
+							state.args.Write(content)
+							deltaArgs = content
+						} else {
+							state.args.WriteString(tc.Function.Arguments)
+						}
+					} else {
+						state.args.WriteString(tc.Function.Arguments)
+					}
 					s.Send(llm.StreamEvent{
 						Type: llm.StreamEventToolCallDelta,
 						ToolCall: &llm.ToolCallData{
 							ID:        state.id,
 							Name:      state.name,
-							Arguments: json.RawMessage(tc.Function.Arguments),
+							Arguments: deltaArgs,
 							Type:      "function",
 						},
 					})
@@ -309,4 +329,41 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 		},
 	}
 	runner.Run(sctx)
+}
+
+// captureChunkArgsRaw decodes a streaming chunk's raw data with a focused
+// struct that captures the tool-call arguments fragment as json.RawMessage
+// (the string token) rather than string, preserving bytes that
+// json.Unmarshal into string would coerce. toolCallIdx is the index of the
+// tool call in the delta's tool_calls array. Returns (nil, false) if the
+// focused decode fails — the caller falls back to the string-form args.
+func captureChunkArgsRaw(chunkData []byte, toolCallIdx int) (json.RawMessage, bool) {
+	type chunkFunctionRaw struct {
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	type chunkToolCallRaw struct {
+		Index    int              `json:"index"`
+		Function chunkFunctionRaw `json:"function"`
+	}
+	type chunkDeltaRaw struct {
+		ToolCalls []chunkToolCallRaw `json:"tool_calls,omitempty"`
+	}
+	type chunkChoiceRaw struct {
+		Delta chunkDeltaRaw `json:"delta"`
+	}
+	type chunkRaw struct {
+		Choices []chunkChoiceRaw `json:"choices"`
+	}
+	var focused chunkRaw
+	if err := json.Unmarshal(chunkData, &focused); err != nil {
+		return nil, false
+	}
+	if len(focused.Choices) == 0 {
+		return nil, false
+	}
+	delta := focused.Choices[0].Delta
+	if toolCallIdx < 0 || toolCallIdx >= len(delta.ToolCalls) {
+		return nil, false
+	}
+	return delta.ToolCalls[toolCallIdx].Function.Arguments, true
 }
