@@ -239,6 +239,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // attempt and exact note/capture are kept for recovery.
   const [authoritySuspended, setAuthoritySuspended] = useState(false);
   const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
+  const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null);
   const [readNonce, setReadNonce] = useState(0);
   const [, bump] = useState(0);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -579,6 +580,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // the scroll owner, and restores the retained position on each swap.
   const bindHost = useCallback((node: HTMLDivElement | null) => {
     hostRef.current = node;
+    setContentElement(node);
     setScrollElement(node?.parentElement ?? null);
   }, []);
   useEffect(() => {
@@ -727,7 +729,12 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         <div className={CLASS.markdown} ref={bindHost}>
           <DocumentMarkdown source={content.text} identity={identity} onMap={handleMap} />
           {boundForLease && scrollElement && canMeasureRanges() && (
-            <DocumentHighlights map={boundForLease} annotations={epochViews} scrollElement={scrollElement} />
+            <DocumentHighlights
+              map={boundForLease}
+              annotations={epochViews}
+              scrollElement={scrollElement}
+              contentElement={contentElement}
+            />
           )}
         </div>
       ) : (
