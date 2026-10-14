@@ -684,6 +684,27 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // scaffold's footer: a sibling of the scrolling body, inside the pane's own
   // visible area. Placing them after the Markdown inside the scroll body left
   // them at the document's end, past the reading position on long documents.
+  // Retained comment work must stay reachable in EVERY reader state: while a
+  // remount's first fetch is still loading or has failed, the note, its
+  // copyable reference and Cancel remain usable, independently of document
+  // content. Only a pane with no retained work keeps the bare footer shapes
+  // the loading and error states always had.
+  const commentBoxFooter = boxVisible ? (
+    <DocumentCommentBox
+      work={work.comment}
+      onNote={onNote}
+      onSend={onSend}
+      onCancel={onCancel}
+      saving={saving}
+      status={status}
+      suspended={authoritySuspended}
+    />
+  ) : null;
+  const statusFooter = (
+    <div className={CLASS.status} role="status">
+      {status}
+    </div>
+  );
   const scaffold = (children: ReactNode, footer?: ReactNode) => (
     <PaneScaffold
       title={filenameOf(path)}
@@ -696,15 +717,10 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     </PaneScaffold>
   );
 
-  if (state.status === "loading") return scaffold(<Skeleton />);
+  if (state.status === "loading") return scaffold(<Skeleton />, commentBoxFooter);
   if (state.status === "error") {
     const copy = ERROR_COPY[state.kind];
-    return scaffold(
-      <EmptyState title={copy.title} hint={copy.hint} />,
-      <div className={CLASS.status} role="status">
-        {status}
-      </div>,
-    );
+    return scaffold(<EmptyState title={copy.title} hint={copy.hint} />, commentBoxFooter ?? statusFooter);
   }
 
   const { content } = state;
@@ -741,21 +757,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         <CodeBlock text={content.text} fold={false} />
       )}
     </>,
-    boxVisible ? (
-      <DocumentCommentBox
-        work={work.comment}
-        onNote={onNote}
-        onSend={onSend}
-        onCancel={onCancel}
-        saving={saving}
-        status={status}
-        suspended={authoritySuspended}
-      />
-    ) : (
-      <div className={CLASS.status} role="status">
-        {status}
-      </div>
-    ),
+    commentBoxFooter ?? statusFooter,
   );
 }
 

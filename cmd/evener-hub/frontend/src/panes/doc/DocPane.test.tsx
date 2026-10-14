@@ -2901,6 +2901,51 @@ test("Cancel at the real precommit boundary of a foreground retry leaves no canc
 // changed: healthy raw reading must continue and a failed first Send must retain
 // its exact immutable operation until real recovery.
 // ---------------------------------------------------------------------------
+test("a retained unsent comment stays reachable through a remount whose first fetch fails", async () => {
+  const f = await fixture("read-fault-retained-comment");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const first = mountAnnotated(f, ports, client, "doc-read-fault-comment");
+  const work = documentReaderWork("doc-read-fault-comment", f.document, ports);
+  await screen.findByText("First occurrence: same");
+  // A pending note against the retained capture, never sent.
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+  expect(work.comment.note).toBe("Keep this scope.");
+  first.unmount();
+
+  // The pane remounts while its first raw fetch is slow and then fails. The
+  // retained comment survives in the reader work; it must stay reachable in
+  // BOTH the loading state and the failed-read error state - editable,
+  // copyable and cancellable - independently of document content.
+  const held: Array<(error: Error) => void> = [];
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((_resolve, reject) => {
+        held.push(reject);
+      }),
+  );
+  const second = mountAnnotated(f, ports, client, "doc-read-fault-comment");
+  await waitFor(() => expect(held.length).toBeGreaterThan(0));
+  const noteInLoading = await screen.findByRole("textbox");
+  expect((noteInLoading as HTMLTextAreaElement).value).toBe("Keep this scope.");
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+  await act(async () => {
+    held[0]?.(new Error("read fault"));
+  });
+  const noteInError = await screen.findByRole("textbox");
+  expect((noteInError as HTMLTextAreaElement).value).toBe("Keep this scope.");
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+  // Cancel dismisses the retained work from the error state, and the footer
+  // returns to the honest status line.
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(work.comment.note).toBe("");
+  expect(screen.queryByRole("textbox")).toBeNull();
+  second.unmount();
+});
+
 test("a first reader open whose beginRead storage read faults still shows the scripted raw content with no fabricated authority, then recovers through an ordinary read", async () => {
   const f = await fixture("read-fault-first-open");
   await settleBaseline(f);
