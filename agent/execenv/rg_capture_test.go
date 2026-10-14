@@ -354,10 +354,7 @@ func TestGrepRgDisclosesWhenTheTailRecordIsCapped(t *testing.T) {
 	stubGrepRetainedBytes(t, 2)
 	record := "1:x\n"
 	huge := "1:" + strings.Repeat("n", rgTailSlotBytes-2) + "\n"
-	stream := record
-	for range rgTailRecords {
-		stream += huge
-	}
+	stream := record + strings.Repeat(huge, rgTailRecords)
 	env := rgFakeRgEnv(t, root, rgStreamFixture(t, t.TempDir(), "rg", []byte(stream)))
 
 	got, err := env.Grep(context.Background(), "x", file, "", false, 100, "content")
